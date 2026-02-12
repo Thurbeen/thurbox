@@ -1,0 +1,51 @@
+#:schema https://docs.cocogitto.io/cog-schema.json
+
+# Only allow version bumps on these branches
+branch_whitelist = ["main"]
+
+# List of valid commit scopes
+scopes = ["api", "cli", "ui", "git", "core", "docs", "deps", "config"]
+
+# Pre-bump hooks (run BEFORE creating version)
+pre_bump_hooks = [
+    "cargo test",
+    "cargo clippy -- -D warnings",
+    "cargo fmt --all --check",
+    "cargo set-version {{version}}",
+]
+
+# Post-bump hooks (run AFTER creating version)
+post_bump_hooks = [
+    "git push",
+    "git push origin {{version}}",
+]
+
+# Git hooks are managed by prek (see .pre-commit-config.yaml)
+# Install with: prek install
+
+# Custom commit types
+[commit_types]
+feat = { changelog_title = "Features", bump_minor = true, order = 0 }
+fix = { changelog_title = "Bug Fixes", bump_patch = true, order = 1 }
+perf = { changelog_title = "Performance Improvements", bump_patch = true, order = 2 }
+refactor = { changelog_title = "Refactoring", order = 3 }
+docs = { changelog_title = "Documentation", omit_from_changelog = false, order = 4 }
+style = { omit_from_changelog = true }
+test = { omit_from_changelog = true }
+chore = { omit_from_changelog = true }
+build = { changelog_title = "Build System", order = 5 }
+ci = { omit_from_changelog = true }
+revert = { changelog_title = "Reverts", order = 6 }
+
+# Changelog configuration
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+repository = "thurbox"
+owner = "Thurbeen"
+
+# Map git signatures to GitHub usernames
+authors = [
+    { signature = "LeTuR", username = "magicletur" },
+]

@@ -1,0 +1,34 @@
+# Nextest configuration
+# See: https://nexte.st/book/configuration.html
+
+[profile.default]
+# Number of retries for failing tests
+retries = 0
+
+# Number of threads to use for running tests
+test-threads = "num-cpus"
+
+# Show slow tests that take more than 60 seconds
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Fail fast - stop after first failure
+fail-fast = false
+
+# Success output
+success-output = "immediate"
+
+# Failure output
+failure-output = "immediate-final"
+
+# Status level
+status-level = "pass"
+
+[profile.ci]
+# CI-specific configuration
+retries = 2
+fail-fast = true
+slow-timeout = { period = "30s" }
+
+[profile.default.junit]
+# JUnit output configuration
+path = "target/nextest/junit.xml"

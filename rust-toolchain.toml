@@ -1,0 +1,12 @@
+[toolchain]
+# Use stable Rust by default
+channel = "stable"
+
+# Specify components
+components = ["rustfmt", "clippy", "rust-src"]
+
+# Specify targets if needed
+# targets = ["x86_64-unknown-linux-gnu"]
+
+# Profile (minimal, default, or complete)
+profile = "default"

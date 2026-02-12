@@ -1,0 +1,12 @@
+# Minimum supported Rust version
+msrv = "1.75"
+
+# Lint configuration
+avoid-breaking-exported-api = false
+disallowed-names = ["foo", "bar", "baz"]
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
+single-char-binding-names-threshold = 4
+
+# Documentation
+missing-docs-in-crate-items = false
