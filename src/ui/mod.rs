@@ -1,16 +1,20 @@
 pub mod add_project_modal;
+pub mod branch_selector_modal;
 pub mod info_panel;
 pub mod layout;
 pub mod project_list;
 pub mod repo_selector_modal;
+pub mod session_mode_modal;
 pub mod status_bar;
 pub mod terminal_view;
+pub mod worktree_name_modal;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders},
+    widgets::{Block, BorderType, Borders, Paragraph},
+    Frame,
 };
 
 /// Build a [`Block`] with focused or unfocused styling.
@@ -61,6 +65,65 @@ pub fn centered_fixed_height_rect(percent_x: u16, height: u16, area: Rect) -> Re
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// Render a labeled text input field with cursor visualization.
+///
+/// When `focused` is true, a block cursor is shown at the current position.
+/// When unfocused, the value is displayed as plain text with a dimmed border.
+pub fn render_text_field(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    cursor: usize,
+    focused: bool,
+) {
+    let border_color = if focused { Color::Cyan } else { Color::Gray };
+
+    let block = Block::default()
+        .title(format!(" {label} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+
+    let display = if focused {
+        let chars: Vec<char> = value.chars().collect();
+        let (before, after) = if cursor <= chars.len() {
+            let before: String = chars[..cursor].iter().collect();
+            let after: String = chars[cursor..].iter().collect();
+            (before, after)
+        } else {
+            (value.to_string(), String::new())
+        };
+
+        let cursor_char = if after.is_empty() {
+            " ".to_string()
+        } else {
+            after.chars().next().unwrap().to_string()
+        };
+
+        let rest = if after.len() > cursor_char.len() {
+            &after[cursor_char.len()..]
+        } else {
+            ""
+        };
+
+        Line::from(vec![
+            Span::styled(before, Style::default().fg(Color::White)),
+            Span::styled(
+                cursor_char,
+                Style::default().fg(Color::Black).bg(Color::White),
+            ),
+            Span::styled(rest.to_string(), Style::default().fg(Color::White)),
+        ])
+    } else {
+        Line::from(Span::styled(value, Style::default().fg(Color::White)))
+    };
+
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(display), inner);
 }
 
 #[cfg(test)]

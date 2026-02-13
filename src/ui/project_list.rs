@@ -128,12 +128,19 @@ fn render_session_section(
                 Style::default().fg(Color::White)
             };
 
-            let line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{} ", info.status.icon()), style),
                 Span::styled(&info.name, style),
-            ]);
+            ];
 
-            ListItem::new(line)
+            if let Some(wt) = &info.worktree {
+                spans.push(Span::styled(
+                    format!(" [{}]", wt.branch),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 

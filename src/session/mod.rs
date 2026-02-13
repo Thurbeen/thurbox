@@ -3,6 +3,13 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    pub repo_path: PathBuf,
+    pub worktree_path: PathBuf,
+    pub branch: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId(Uuid);
 
@@ -49,6 +56,7 @@ pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
     pub status: SessionStatus,
+    pub worktree: Option<WorktreeInfo>,
 }
 
 impl SessionInfo {
@@ -57,6 +65,7 @@ impl SessionInfo {
             id: SessionId::default(),
             name,
             status: SessionStatus::Running,
+            worktree: None,
         }
     }
 }
@@ -106,5 +115,26 @@ mod tests {
         let info = SessionInfo::new("Test".to_string());
         assert_eq!(info.name, "Test");
         assert_eq!(info.status, SessionStatus::Running);
+    }
+
+    #[test]
+    fn session_info_new_has_no_worktree() {
+        let info = SessionInfo::new("Test".to_string());
+        assert!(info.worktree.is_none());
+    }
+
+    #[test]
+    fn worktree_info_stores_fields() {
+        let wt = WorktreeInfo {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.git/thurbox-worktrees/feat"),
+            branch: "feat".to_string(),
+        };
+        assert_eq!(wt.repo_path, PathBuf::from("/repo"));
+        assert_eq!(
+            wt.worktree_path,
+            PathBuf::from("/repo/.git/thurbox-worktrees/feat")
+        );
+        assert_eq!(wt.branch, "feat");
     }
 }

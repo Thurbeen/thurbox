@@ -77,6 +77,27 @@ pub fn render_info_panel(
         Span::styled(info.id.to_string(), Style::default().fg(Color::DarkGray)),
     ]));
 
+    if let Some(wt) = &info.worktree {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Worktree",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled("Branch: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&wt.branch, Style::default().fg(Color::Green)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Path: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                wt.worktree_path.display().to_string(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 }
