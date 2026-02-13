@@ -1,76 +1,80 @@
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::{
-    layout::{Constraint, Direction, Layout},
-    widgets::{Block, Borders, Paragraph},
-    DefaultTerminal, Frame,
-};
+use std::time::Duration;
 
-fn main() -> Result<()> {
+use anyhow::Result;
+use crossterm::event::{self, Event, KeyEventKind};
+
+use thurbox::app::{App, AppMessage};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Set up panic hook that restores terminal before printing the panic
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        ratatui::restore();
+        original_hook(panic_info);
+    }));
+
+    // File-based logging (stdout is owned by the TUI)
+    let log_dir = dirs_next().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let file_appender = tracing_appender::rolling::daily(log_dir, "thurbox.log");
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("thurbox=debug".parse().unwrap()),
+        )
+        .with_writer(file_appender)
+        .with_ansi(false)
         .init();
 
     let mut terminal = ratatui::init();
-    let res = run_app(&mut terminal);
+    let size = terminal.size()?;
+
+    let mut app = App::new(size.height, size.width);
+    app.spawn_initial_session();
+
+    let res = run_loop(&mut terminal, &mut app).await;
+
+    app.shutdown();
     ratatui::restore();
 
     res
 }
 
-fn run_app(terminal: &mut DefaultTerminal) -> Result<()> {
+async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
-        terminal.draw(render)?;
+        terminal.draw(|f| app.view(f))?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press && should_quit(key) {
-                return Ok(());
+        if event::poll(Duration::from_millis(10))? {
+            let msg = match event::read()? {
+                Event::Key(k) if k.kind == KeyEventKind::Press => {
+                    Some(AppMessage::KeyPress(k.code, k.modifiers))
+                }
+                Event::Resize(cols, rows) => Some(AppMessage::Resize(cols, rows)),
+                _ => None,
+            };
+            if let Some(msg) = msg {
+                app.update(msg);
             }
         }
-    }
-}
 
-fn render(frame: &mut Frame) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
+        app.tick();
 
-    let title = Paragraph::new("Welcome to Thurbox!")
-        .block(Block::default().borders(Borders::ALL).title("Thurbox"));
-    frame.render_widget(title, chunks[0]);
-
-    let content = Paragraph::new("Press 'q' to quit")
-        .block(Block::default().borders(Borders::ALL).title("Main"));
-    frame.render_widget(content, chunks[1]);
-
-    let footer = Paragraph::new("Status: Ready").block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, chunks[2]);
-}
-
-fn should_quit(key: KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn quit_keys_return_true() {
-        assert!(should_quit(KeyEvent::from(KeyCode::Char('q'))));
-        assert!(should_quit(KeyEvent::from(KeyCode::Esc)));
+        if app.should_quit() {
+            break;
+        }
     }
 
-    #[test]
-    fn other_keys_return_false() {
-        assert!(!should_quit(KeyEvent::from(KeyCode::Char('a'))));
-        assert!(!should_quit(KeyEvent::from(KeyCode::Char('Q'))));
-        assert!(!should_quit(KeyEvent::from(KeyCode::Enter)));
-        assert!(!should_quit(KeyEvent::from(KeyCode::Backspace)));
-    }
+    Ok(())
+}
+
+/// Return the data-local directory for log files.
+fn dirs_next() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| {
+        let mut p = std::path::PathBuf::from(h);
+        p.push(".local");
+        p.push("share");
+        p.push("thurbox");
+        std::fs::create_dir_all(&p).ok();
+        p
+    })
 }
