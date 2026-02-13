@@ -2,6 +2,7 @@ default_stages: [pre-commit]
 default_install_hook_types:
   - commit-msg
   - pre-commit
+  - pre-push
 repos:
   - repo: local
     hooks:
@@ -38,17 +39,60 @@ repos:
         pass_filenames: false
         args: ["--all"]
 
+      - id: cargo-nextest
+        name: Cargo nextest
+        entry: cargo nextest run
+        language: system
+        types: [rust]
+        pass_filenames: false
+        args: ["--all"]
+
+      - id: cargo-modules-acyclic
+        name: Cargo modules acyclic check
+        entry: bash -c 'grep -q "pub mod" src/lib.rs 2>/dev/null && cargo modules dependencies --lib --acyclic || true'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: cargo-pup-architecture
+        name: Cargo pup architecture rules
+        entry: bash -c '[ -f pup.ron ] && cargo +nightly-2026-01-22 pup check --pup-config pup.ron || true'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: cargo-deny-advisories
+        name: Cargo deny advisories
+        entry: cargo deny check advisories
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: cargo-deny-bans-licenses-sources
+        name: Cargo deny bans licenses sources
+        entry: cargo deny check bans licenses sources
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: cargo-audit
+        name: Cargo audit
+        entry: cargo audit
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: cargo-doc
+        name: Cargo doc
+        entry: env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: cocogitto-check
         name: Check commit history
         entry: cog check
         language: system
         pass_filenames: false
         always_run: true
-
-      - id: cargo-test
-        name: Cargo test
-        entry: cargo test
-        language: system
-        types: [rust]
-        pass_filenames: false
-        args: ["--lib", "--bins"]
+        stages: [pre-push]

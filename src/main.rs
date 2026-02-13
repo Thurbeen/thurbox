@@ -69,5 +69,8 @@ mod tests {
     #[test]
     fn other_keys_return_false() {
         assert!(!should_quit(KeyEvent::from(KeyCode::Char('a'))));
+        assert!(!should_quit(KeyEvent::from(KeyCode::Char('Q'))));
+        assert!(!should_quit(KeyEvent::from(KeyCode::Enter)));
+        assert!(!should_quit(KeyEvent::from(KeyCode::Backspace)));
     }
 }
