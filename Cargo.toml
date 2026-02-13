@@ -13,10 +13,23 @@ categories = ["command-line-utilities"]
 # TUI framework
 ratatui = "0.30"
 crossterm = "0.29"
+tui-term = "0.3"
+
+# PTY & terminal emulation
+portable-pty = "0.9"
+vt100 = "0.16"
+bytes = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# Session management
+uuid = { version = "1", features = ["v4"] }
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 
 # Error handling
 anyhow = "1.0"
