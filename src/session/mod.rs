@@ -1,6 +1,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,8 @@ pub struct SessionInfo {
     pub name: String,
     pub status: SessionStatus,
     pub worktree: Option<WorktreeInfo>,
+    pub claude_session_id: Option<String>,
+    pub cwd: Option<PathBuf>,
 }
 
 impl SessionInfo {
@@ -66,6 +69,8 @@ impl SessionInfo {
             name,
             status: SessionStatus::Running,
             worktree: None,
+            claude_session_id: None,
+            cwd: None,
         }
     }
 }
@@ -73,7 +78,31 @@ impl SessionInfo {
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
     pub resume_session_id: Option<String>,
+    pub claude_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedSession {
+    pub name: String,
+    pub claude_session_id: String,
+    pub cwd: Option<PathBuf>,
+    pub worktree: Option<PersistedWorktree>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedWorktree {
+    pub repo_path: PathBuf,
+    pub worktree_path: PathBuf,
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersistedState {
+    #[serde(default)]
+    pub sessions: Vec<PersistedSession>,
+    #[serde(default)]
+    pub session_counter: usize,
 }
 
 #[cfg(test)]
@@ -121,6 +150,26 @@ mod tests {
     fn session_info_new_has_no_worktree() {
         let info = SessionInfo::new("Test".to_string());
         assert!(info.worktree.is_none());
+    }
+
+    #[test]
+    fn session_info_new_has_no_claude_session_id() {
+        let info = SessionInfo::new("Test".to_string());
+        assert!(info.claude_session_id.is_none());
+    }
+
+    #[test]
+    fn session_info_new_has_no_cwd() {
+        let info = SessionInfo::new("Test".to_string());
+        assert!(info.cwd.is_none());
+    }
+
+    #[test]
+    fn session_config_default_has_all_none() {
+        let config = SessionConfig::default();
+        assert!(config.resume_session_id.is_none());
+        assert!(config.claude_session_id.is_none());
+        assert!(config.cwd.is_none());
     }
 
     #[test]

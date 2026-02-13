@@ -222,12 +222,13 @@ Worktrees are created at
 `<repo>/.git/thurbox-worktrees/<sanitized-branch>`,
 where `/` in branch names is replaced by `-`.
 
-### Auto-cleanup
+### Cleanup behavior
 
 - Closing a worktree session (`Ctrl+X`) automatically removes
   the worktree via `git worktree remove --force`.
-- Quitting Thurbox (`Ctrl+Q`) cleans up all active worktrees
-  before shutdown.
+- Quitting Thurbox (`Ctrl+Q`) preserves worktrees on disk
+  so they can be resumed on next launch
+  (see [Session Persistence](#session-persistence)).
 - Cleanup errors are logged but do not block session close
   or app shutdown.
 
@@ -267,6 +268,64 @@ where `/` in branch names is replaced by `-`.
 
 ---
 
+## Session Persistence
+
+Closing Thurbox with `Ctrl+Q` saves all active session metadata
+so they can be restored on the next launch.
+
+### How it works
+
+- On every session spawn, Thurbox assigns a `claude_session_id`
+  (UUID v4) via the Claude CLI's `--session-id` flag. This tells
+  Claude to use a stable conversation ID from the start.
+- On shutdown (`Ctrl+Q`), all session metadata is written to
+  `$XDG_DATA_HOME/thurbox/state.toml`
+  (default: `~/.local/share/thurbox/state.toml`).
+- On next startup, Thurbox detects the state file and resumes
+  each session using `--resume <session-id>`, restoring the
+  exact Claude conversations.
+- The state file is cleared after successful restore to prevent
+  stale state from accumulating.
+
+### State file format
+
+```toml
+session_counter = 3
+
+[[sessions]]
+name = "Session 1"
+claude_session_id = "abc-123-def-456"
+cwd = "/home/user/repos/app"
+
+[[sessions]]
+name = "Session 2"
+claude_session_id = "ghi-789-jkl-012"
+cwd = "/home/user/repos/app/.git/thurbox-worktrees/feat-login"
+
+[sessions.worktree]
+repo_path = "/home/user/repos/app"
+worktree_path = "/home/user/repos/app/.git/thurbox-worktrees/feat-login"
+branch = "feat-login"
+```
+
+### Worktree preservation
+
+Worktrees are **not** removed on `Ctrl+Q` shutdown — they
+persist on disk so the resumed session can continue working
+in the same branch checkout. Worktree metadata (repo path,
+worktree path, branch name) is saved in the state file and
+reconstructed on restore.
+
+### Explicit close vs quit
+
+- **`Ctrl+Q` (Quit)**: Saves all sessions, preserves worktrees.
+  Sessions resume on next launch.
+- **`Ctrl+X` (Close)**: Permanently closes the active session.
+  Its worktree (if any) is removed immediately.
+  Closed sessions are not saved and will not be restored.
+
+---
+
 ## Planned Features
 
 Directional intent, not commitments.
@@ -274,7 +333,5 @@ These may change as the project evolves.
 
 - **Multi-session orchestration**: Run N Claude Code instances
   side-by-side, switch between them, broadcast input to all.
-- **Session persistence**: Save/restore session layouts
-  and PTY history across restarts.
 - **Task delegation**: Split a task across multiple sessions
   with dependency tracking.

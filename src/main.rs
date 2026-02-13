@@ -33,7 +33,13 @@ async fn main() -> Result<()> {
     let size = terminal.size()?;
 
     let mut app = App::new(size.height, size.width, project_configs);
-    app.spawn_session();
+
+    let state = project::load_session_state();
+    if state.sessions.is_empty() {
+        app.spawn_session();
+    } else {
+        app.restore_sessions(state);
+    }
 
     let res = run_loop(&mut terminal, &mut app).await;
 
