@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 
@@ -74,6 +74,44 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Detect the repository's default branch name.
+///
+/// Tries `git symbolic-ref refs/remotes/origin/HEAD` first (most reliable),
+/// then falls back to checking for `main` or `master` among local branches.
+pub fn default_branch(repo_path: &Path, local_branches: &[String]) -> Option<String> {
+    if let Some(name) = default_branch_from_remote(repo_path) {
+        if local_branches.iter().any(|b| b == &name) {
+            return Some(name);
+        }
+    }
+
+    // Fallback: prefer "main", then "master"
+    for candidate in ["main", "master"] {
+        if local_branches.iter().any(|b| b == candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+/// Query the remote's default branch via `git symbolic-ref`.
+fn default_branch_from_remote(repo_path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
+        .current_dir(repo_path)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    full_ref.strip_prefix("origin/").map(|s| s.to_string())
+}
+
 /// Deterministic worktree directory path for a repo + branch.
 fn worktree_path(repo_path: &Path, branch: &str) -> PathBuf {
     let sanitized = branch.replace('/', "-");
@@ -145,5 +183,37 @@ mod tests {
             result,
             PathBuf::from("/repo/.git/thurbox-worktrees/-branch")
         );
+    }
+
+    #[test]
+    fn default_branch_prefers_main_over_master() {
+        let branches = vec![
+            "develop".to_string(),
+            "master".to_string(),
+            "main".to_string(),
+        ];
+        // Uses a non-existent path so the git command fails, exercising the fallback.
+        let result = default_branch(Path::new("/nonexistent"), &branches);
+        assert_eq!(result, Some("main".to_string()));
+    }
+
+    #[test]
+    fn default_branch_falls_back_to_master() {
+        let branches = vec!["develop".to_string(), "master".to_string()];
+        let result = default_branch(Path::new("/nonexistent"), &branches);
+        assert_eq!(result, Some("master".to_string()));
+    }
+
+    #[test]
+    fn default_branch_returns_none_when_no_candidates() {
+        let branches = vec!["develop".to_string(), "feature".to_string()];
+        let result = default_branch(Path::new("/nonexistent"), &branches);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn default_branch_returns_none_for_empty_branches() {
+        let result = default_branch(Path::new("/nonexistent"), &[]);
+        assert_eq!(result, None);
     }
 }

@@ -603,7 +603,14 @@ impl App {
                 self.error_message = Some("No branches found in repository".to_string());
                 self.pending_repo_path = None;
             }
-            Ok(branches) => {
+            Ok(mut branches) => {
+                // Move the default branch to front so it's pre-selected.
+                if let Some(default) = git::default_branch(repo_path, &branches) {
+                    if let Some(pos) = branches.iter().position(|b| b == &default) {
+                        let branch = branches.remove(pos);
+                        branches.insert(0, branch);
+                    }
+                }
                 self.available_branches = branches;
                 self.branch_selector_index = 0;
                 self.show_branch_selector = true;
