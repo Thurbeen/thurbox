@@ -4,6 +4,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyEventKind};
 
 use thurbox::app::{App, AppMessage};
+use thurbox::project;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,10 +27,12 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    let project_configs = project::load_project_configs();
+
     let mut terminal = ratatui::init();
     let size = terminal.size()?;
 
-    let mut app = App::new(size.height, size.width);
+    let mut app = App::new(size.height, size.width, project_configs);
     app.spawn_session();
 
     let res = run_loop(&mut terminal, &mut app).await;

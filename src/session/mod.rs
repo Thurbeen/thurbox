@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use uuid::Uuid;
 
@@ -63,6 +64,7 @@ impl SessionInfo {
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
     pub resume_session_id: Option<String>,
+    pub cwd: Option<PathBuf>,
 }
 
 #[cfg(test)]

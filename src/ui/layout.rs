@@ -2,7 +2,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 pub struct PanelAreas {
     pub header: Rect,
-    pub session_list: Option<Rect>,
+    pub left_panel: Option<Rect>,
     pub info_panel: Option<Rect>,
     pub terminal: Rect,
     pub footer: Rect,
@@ -28,7 +28,7 @@ pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
     if area.width < 80 {
         return PanelAreas {
             header,
-            session_list: None,
+            left_panel: None,
             info_panel: None,
             terminal: content,
             footer,
@@ -36,7 +36,7 @@ pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
     }
 
     if show_info_panel && area.width >= 120 {
-        // 3-panel mode: 15% session list | 15% info | 70% terminal
+        // 3-panel mode: 15% left panel | 15% info | 70% terminal
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -48,13 +48,13 @@ pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
 
         PanelAreas {
             header,
-            session_list: Some(horizontal[0]),
+            left_panel: Some(horizontal[0]),
             info_panel: Some(horizontal[1]),
             terminal: horizontal[2],
             footer,
         }
     } else {
-        // 2-panel mode: 20% session list | 80% terminal
+        // 2-panel mode: 20% left panel | 80% terminal
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
@@ -62,7 +62,7 @@ pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
 
         PanelAreas {
             header,
-            session_list: Some(horizontal[0]),
+            left_panel: Some(horizontal[0]),
             info_panel: None,
             terminal: horizontal[1],
             footer,
@@ -79,30 +79,30 @@ mod tests {
     }
 
     #[test]
-    fn narrow_terminal_hides_session_list() {
+    fn narrow_terminal_hides_left_panel() {
         let areas = compute_layout(area(79, 24), false);
-        assert!(areas.session_list.is_none());
+        assert!(areas.left_panel.is_none());
         assert!(areas.info_panel.is_none());
     }
 
     #[test]
     fn normal_width_shows_two_panels() {
         let areas = compute_layout(area(100, 24), false);
-        assert!(areas.session_list.is_some());
+        assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
     }
 
     #[test]
     fn wide_terminal_with_info_panel_shows_three_panels() {
         let areas = compute_layout(area(120, 24), true);
-        assert!(areas.session_list.is_some());
+        assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_some());
     }
 
     #[test]
     fn wide_terminal_without_info_panel_shows_two_panels() {
         let areas = compute_layout(area(120, 24), false);
-        assert!(areas.session_list.is_some());
+        assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
     }
 

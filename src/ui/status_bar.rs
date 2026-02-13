@@ -23,20 +23,39 @@ pub fn render_header(frame: &mut Frame, area: Rect) {
     frame.render_widget(header, area);
 }
 
-pub fn render_footer(frame: &mut Frame, area: Rect, session_count: usize, error: Option<&str>) {
+pub fn render_footer(
+    frame: &mut Frame,
+    area: Rect,
+    session_count: usize,
+    project_count: usize,
+    error: Option<&str>,
+    focus_label: &str,
+) {
+    let focus_badge = Span::styled(
+        format!(" {focus_label} "),
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+
     let status = if let Some(err) = error {
         Line::from(vec![
+            focus_badge,
             Span::styled(" ERROR ", Style::default().fg(Color::White).bg(Color::Red)),
             Span::styled(format!(" {err}"), Style::default().fg(Color::Red)),
         ])
     } else {
+        let counts = if project_count > 0 {
+            format!(" {project_count} project(s) | {session_count} session(s) ")
+        } else {
+            format!(" {session_count} session(s) ")
+        };
         Line::from(vec![
+            focus_badge,
+            Span::styled(counts, Style::default().fg(Color::Gray)),
             Span::styled(
-                format!(" {session_count} session(s) "),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                " Ctrl+N: New  Ctrl+X: Close  Ctrl+L: Switch Focus  Ctrl+Q: Quit ",
+                " Ctrl+N: New  Ctrl+X: Close  Ctrl+L: Cycle Focus  Ctrl+Q: Quit ",
                 Style::default().fg(Color::DarkGray),
             ),
         ])

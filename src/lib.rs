@@ -2,5 +2,6 @@
 
 pub mod app;
 pub mod claude;
+pub mod project;
 pub mod session;
 pub mod ui;

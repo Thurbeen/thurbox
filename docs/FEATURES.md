@@ -5,6 +5,66 @@ For architectural choices, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
+## Project Panel
+
+### Two-section left panel design
+
+The left sidebar is split vertically into two sections:
+projects on top (40%), sessions for the selected project
+on bottom (60%). This replaces the previous session-only sidebar.
+
+**Why a two-section panel, not separate panels?**
+
+- Reuses the existing 3-breakpoint layout (< 80, >= 80, >= 120)
+  without adding a 4th breakpoint for a 4-panel mode.
+- Works at 80 columns — a separate project panel would
+  require ~160 cols minimum to show both project and session lists.
+- Maintains visual hierarchy: projects contain sessions,
+  and the vertical stacking reflects that containment.
+
+**Why not a modal/popup?**
+
+- Projects are persistent context, not transient selections.
+  A modal would hide the project list while working,
+  forcing the user to re-open it to switch.
+- The always-visible panel shows session counts per project
+  at a glance — useful for monitoring multi-project workflows.
+
+### Project ↔ session binding
+
+Each session is bound to the project that was active when
+it was created. Sessions spawn in the project's repo directory.
+If the project has a single repo, the session uses it directly.
+If the project has multiple repos, a selector modal lets the
+user choose which repo to use as the working directory.
+If no repos are configured, the session falls back to `$HOME`.
+When switching projects, only that project's sessions
+are shown in the session list.
+
+### Config file format
+
+Projects are loaded from `~/.config/thurbox/config.toml`
+(`$XDG_CONFIG_HOME` respected):
+
+```toml
+[[projects]]
+name = "my-app"
+repos = [
+    "/home/user/repositories/app-frontend",
+    "/home/user/repositories/app-backend",
+]
+
+[[projects]]
+name = "infra"
+repos = ["/home/user/repositories/infra"]
+```
+
+If the file doesn't exist, Thurbox creates an ephemeral
+Default project using the current working directory.
+The Default project is never persisted to disk.
+
+---
+
 ## Keybinding Design
 
 ### Philosophy: Ctrl = global, everything else = PTY
@@ -30,11 +90,22 @@ as global commands.
 | Key | Context | Action |
 |-----|---------|--------|
 | `Ctrl+Q` | Global | Quit Thurbox |
-| `Ctrl+N` | Global | New session (planned) |
-| `Ctrl+W` | Global | Close current session (planned) |
-| `Ctrl+Tab` | Global | Next session (planned) |
-| `Ctrl+Shift+Tab` | Global | Previous session (planned) |
-| `q` / `Esc` | Unfocused | Quit (scaffold-only, will be removed) |
+| `Ctrl+N` | Project list | Add new project |
+| `Ctrl+N` | Session list / Terminal | New session (selects repo if 2+) |
+| `Ctrl+X` | Global | Close active session |
+| `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal |
+| `Ctrl+I` | Global | Toggle info panel (width >= 120) |
+| `j` / `Down` | Project list | Next project |
+| `k` / `Up` | Project list | Previous project |
+| `Enter` | Project list | Focus session list |
+| `j` / `Down` | Session list | Next session |
+| `k` / `Up` | Session list | Previous session |
+| `Enter` | Session list | Focus terminal |
+| `?` | Project/session list | Show help overlay |
+| `j` / `Down` | Repo selector | Next repo |
+| `k` / `Up` | Repo selector | Previous repo |
+| `Enter` | Repo selector | Select repo and spawn session |
+| `Esc` | Repo selector | Cancel selection |
 | All other keys | Focused terminal | Forwarded to PTY |
 
 ---
@@ -97,8 +168,12 @@ and auto-clear after a timeout or on the next successful action.
 | Width | Layout | Why |
 |-------|--------|-----|
 | `<80` | Terminal only | Sidebar would leave <60 cols — too narrow |
-| `>=80` | List + terminal | 20-col sidebar + 60-col terminal minimum |
-| `>=120` | List + terminal + info | Terminal still gets ~70+ cols |
+| `>=80` | Left panel + terminal | 20-col sidebar (projects + sessions) + 60-col terminal min |
+| `>=120` | Left panel + terminal + info | Terminal still gets ~70+ cols |
+
+The left panel contains both the project list and session list
+as a vertically split two-section panel. This reuses the existing
+breakpoints without requiring a 4th tier.
 
 ### Why not user-configurable?
 

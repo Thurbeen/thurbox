@@ -6,35 +6,76 @@ use ratatui::{
     Frame,
 };
 
+use crate::project::ProjectConfig;
 use crate::session::{SessionInfo, SessionStatus};
 
-pub fn render_info_panel(frame: &mut Frame, area: Rect, info: &SessionInfo) {
+pub fn render_info_panel(
+    frame: &mut Frame,
+    area: Rect,
+    info: &SessionInfo,
+    project: Option<&ProjectConfig>,
+) {
     let block = Block::default()
         .title(" Info ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Gray));
 
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Name: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&info.name, Style::default().fg(Color::White)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+    let mut lines = Vec::new();
+
+    // Project info (if available)
+    if let Some(proj) = project {
+        lines.push(Line::from(vec![
+            Span::styled("Project: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{} {}", info.status.icon(), info.status),
+                &proj.name,
                 Style::default()
-                    .fg(status_color(&info.status))
+                    .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(info.id.to_string(), Style::default().fg(Color::DarkGray)),
-        ]),
-    ];
+        ]));
+        if proj.repos.len() == 1 {
+            lines.push(Line::from(vec![
+                Span::styled("Repo: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    proj.repos[0].display().to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "Repos:",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for repo in &proj.repos {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", repo.display()),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Session info
+    lines.push(Line::from(vec![
+        Span::styled("Name: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&info.name, Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{} {}", info.status.icon(), info.status),
+            Style::default()
+                .fg(status_color(&info.status))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(info.id.to_string(), Style::default().fg(Color::DarkGray)),
+    ]));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);

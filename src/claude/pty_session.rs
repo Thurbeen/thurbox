@@ -41,6 +41,9 @@ impl PtySession {
             cmd.arg("--resume");
             cmd.arg(session_id);
         }
+        if let Some(ref cwd) = config.cwd {
+            cmd.cwd(cwd);
+        }
         cmd.env("TERM", "xterm-256color");
 
         let child = pair
