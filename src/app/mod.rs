@@ -15,7 +15,6 @@ use crate::ui::{info_panel, layout, session_list, status_bar, terminal_view};
 pub enum AppMessage {
     KeyPress(KeyCode, KeyModifiers),
     Resize(u16, u16),
-    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,11 +52,7 @@ impl App {
         }
     }
 
-    pub fn spawn_initial_session(&mut self) {
-        self.spawn_session();
-    }
-
-    fn spawn_session(&mut self) {
+    pub fn spawn_session(&mut self) {
         self.spawn_session_with_config(&SessionConfig::default());
     }
 
@@ -96,7 +91,6 @@ impl App {
 
     pub fn update(&mut self, msg: AppMessage) {
         match msg {
-            AppMessage::Quit => self.should_quit = true,
             AppMessage::KeyPress(code, mods) => self.handle_key(code, mods),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
         }
@@ -143,12 +137,6 @@ impl App {
             }
         }
 
-        // Ctrl+? (Ctrl+Shift+/) for help
-        if code == KeyCode::Char('?') {
-            self.show_help = true;
-            return;
-        }
-
         match self.focus {
             InputFocus::SessionList => self.handle_list_key(code),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
@@ -173,6 +161,9 @@ impl App {
             }
             KeyCode::Enter => {
                 self.focus = InputFocus::Terminal;
+            }
+            KeyCode::Char('?') => {
+                self.show_help = true;
             }
             _ => {}
         }
@@ -277,14 +268,20 @@ impl App {
     fn content_area_size(&self) -> (u16, u16) {
         // Header: 1 line, Footer: 1 line, Borders: 2 lines top+bottom
         let rows = self.terminal_rows.saturating_sub(4);
-        // Borders: 2 cols left+right, session list ~20%
+
+        let three_panel = self.show_info_panel && self.terminal_cols >= 120;
+
         let list_width = if self.terminal_cols >= 80 {
-            self.terminal_cols / 5
+            if three_panel {
+                self.terminal_cols * 15 / 100 // matches layout.rs 3-panel: 15%
+            } else {
+                self.terminal_cols * 20 / 100 // matches layout.rs 2-panel: 20%
+            }
         } else {
             0
         };
-        let info_width = if self.show_info_panel && self.terminal_cols >= 120 {
-            self.terminal_cols * 15 / 100
+        let info_width = if three_panel {
+            self.terminal_cols * 15 / 100 // matches layout.rs 3-panel: 15%
         } else {
             0
         };
@@ -317,7 +314,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+X", "Close active session"),
         help_line("Ctrl+L", "Toggle focus (list / terminal)"),
         help_line("Ctrl+I", "Toggle info panel (width >= 120)"),
-        help_line("?", "Show this help"),
+        help_line("?", "Show this help (session list only)"),
         Line::from(""),
         Line::from(Span::styled(
             "Session List (when focused)",

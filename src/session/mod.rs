@@ -5,15 +5,9 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId(Uuid);
 
-impl SessionId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
 impl Default for SessionId {
     fn default() -> Self {
-        Self::new()
+        Self(Uuid::new_v4())
     }
 }
 
@@ -28,6 +22,16 @@ pub enum SessionStatus {
     Running,
     Idle,
     Error,
+}
+
+impl SessionStatus {
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Running => "●",
+            Self::Idle => "○",
+            Self::Error => "✗",
+        }
+    }
 }
 
 impl fmt::Display for SessionStatus {
@@ -49,17 +53,9 @@ pub struct SessionInfo {
 impl SessionInfo {
     pub fn new(name: String) -> Self {
         Self {
-            id: SessionId::new(),
+            id: SessionId::default(),
             name,
             status: SessionStatus::Running,
-        }
-    }
-
-    pub fn status_icon(&self) -> &'static str {
-        match self.status {
-            SessionStatus::Running => "●",
-            SessionStatus::Idle => "○",
-            SessionStatus::Error => "✗",
         }
     }
 }
@@ -67,4 +63,46 @@ impl SessionInfo {
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
     pub resume_session_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_id_display_is_uuid_format() {
+        let id = SessionId::default();
+        let display = id.to_string();
+        // UUID v4 format: 8-4-4-4-12 hex chars
+        assert_eq!(display.len(), 36);
+        assert_eq!(display.chars().filter(|&c| c == '-').count(), 4);
+    }
+
+    #[test]
+    fn session_id_default_is_unique() {
+        let id1 = SessionId::default();
+        let id2 = SessionId::default();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn session_status_display() {
+        assert_eq!(SessionStatus::Running.to_string(), "Running");
+        assert_eq!(SessionStatus::Idle.to_string(), "Idle");
+        assert_eq!(SessionStatus::Error.to_string(), "Error");
+    }
+
+    #[test]
+    fn session_status_icon() {
+        assert_eq!(SessionStatus::Running.icon(), "●");
+        assert_eq!(SessionStatus::Idle.icon(), "○");
+        assert_eq!(SessionStatus::Error.icon(), "✗");
+    }
+
+    #[test]
+    fn session_info_new_starts_running() {
+        let info = SessionInfo::new("Test".to_string());
+        assert_eq!(info.name, "Test");
+        assert_eq!(info.status, SessionStatus::Running);
+    }
 }

@@ -70,9 +70,9 @@ jobs:
       - name: Install cargo-modules
         if: steps.check-modules.outputs.has_modules == 'true'
         run: cargo install cargo-modules --locked
-      - name: Check for cyclic dependencies
+      - name: Verify module structure
         if: steps.check-modules.outputs.has_modules == 'true'
-        run: cargo modules dependencies --lib --acyclic
+        run: cargo modules structure --lib
 
   architecture:
     name: Architecture Rules
