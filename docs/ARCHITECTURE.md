@@ -95,8 +95,12 @@ are handled in one place.
 **Choice**: Three layout tiers based on terminal width:
 
 - `<80 cols` — terminal panel only (full screen)
-- `>=80 cols` — two panels (session list + terminal)
-- `>=120 cols` — three panels (session list + terminal + info)
+- `>=80 cols` — two panels (left panel + terminal)
+- `>=120 cols` — three panels (left panel + terminal + info)
+
+The left panel is a vertically split two-section panel
+containing the project list (top 40%) and session list
+(bottom 60%).
 
 **Why**: 80 columns is the smallest usable terminal width. Below
 that, showing a sidebar wastes too much space. At 120+, there's
@@ -145,3 +149,77 @@ terminal while developing.
 earlier while keeping compile times reasonable. The release profile
 strips everything for a minimal binary. `release-with-debug` exists
 specifically for `perf` / `flamegraph` workflows.
+
+---
+
+## ADR-8: Config file format — TOML
+
+**Choice**: Project configuration uses TOML format, loaded from
+`~/.config/thurbox/config.toml` (respects `$XDG_CONFIG_HOME`).
+
+**Why**: TOML is human-readable, easy to hand-edit, and has
+first-class Rust support via the `toml` crate (already a
+transitive dependency). The XDG convention is standard on Linux
+and avoids cluttering `$HOME` with dotfiles.
+
+**Rejected**:
+
+- *JSON* — verbose for config (requires quoting keys, no comments),
+  though great for machine interchange.
+- *YAML* — indentation-sensitive, surprising edge cases
+  (the Norway problem: `NO` parses as boolean `false`).
+  Not worth the risk for a config file.
+- *CLI flags only* — doesn't scale to multiple projects.
+  Users would need wrapper scripts or shell aliases.
+- *Embedded in CLAUDE.md* — mixes project-specific AI guidance
+  with application configuration; wrong separation of concerns.
+
+---
+
+## ADR-9: Two-section left panel
+
+**Choice**: The left sidebar is a single panel split vertically
+into two sections — project list (top) and session list (bottom) —
+rather than two independent side-by-side panels.
+
+**Why**: This reuses the existing 3-tier responsive layout
+(< 80, >= 80, >= 120 cols) without adding a 4th breakpoint.
+At 80 columns, showing two separate sidebar panels would leave
+< 40 cols for the terminal — unusable. The vertically stacked
+design mirrors the containment relationship (projects contain
+sessions) and works at all supported widths.
+
+**Rejected**:
+
+- *Separate project and session panels* — requires >= 160 cols
+  to show project + session + terminal simultaneously.
+  Most terminals are 80-120 cols wide.
+- *Modal/popup project selector* — hides project context while
+  working, forces re-opening to switch. Projects are persistent
+  context, not transient selections.
+- *Tabs for projects* — horizontal tabs consume vertical space
+  and don't scale well past 4-5 projects. A vertical list
+  scrolls naturally.
+
+---
+
+## ADR-10: Default project — projects list is never empty
+
+**Choice**: When no projects are configured, an ephemeral
+"Default" project is created using the current working directory.
+It is never persisted to disk. This guarantees
+`projects.len() > 0` at all times.
+
+**Why**: An always-non-empty project list eliminates
+orphaned-session edge cases, removes empty-state UI branches,
+and simplifies `active_project_sessions()` — no `Option` handling
+needed. The default project coexists with user-added projects
+and disappears on restart once user projects exist.
+
+**Rejected**:
+
+- *Replace default on first user project* — would reassign
+  sessions created under the default, causing confusing
+  ownership changes mid-session.
+- *Persist default to disk* — pollutes the config file with
+  auto-generated entries the user didn't create.

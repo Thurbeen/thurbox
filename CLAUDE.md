@@ -68,8 +68,9 @@ The app follows **The Elm Architecture**:
 
 ```text
 session  ← pure data types, no project-local imports
-claude   ← imports session only (NEVER ui or git)
-ui       ← imports session only (NEVER claude or git)
+project  ← pure data types + config loading, imports session only
+claude   ← imports session only (NEVER ui, git, or project)
+ui       ← imports session and project only (NEVER claude or git)
 app      ← coordinator, imports all modules
 ```
 
@@ -83,17 +84,21 @@ app      ← coordinator, imports all modules
   `Arc<Mutex<vt100::Parser>>`, writes input via mpsc channel.
   `input.rs` translates crossterm `KeyCode` → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
-  `SessionInfo`, `SessionConfig`.
+  `SessionInfo`, `SessionConfig` (with optional `cwd`).
   No logic beyond Display/Default impls.
+- **`project/`** — Plain data + config loading: `ProjectId`,
+  `ProjectConfig`, `ProjectInfo`. Loads project list from
+  `~/.config/thurbox/config.toml`. Imports `session` only.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
-  >=120 = optional 3-panel). Widgets: `session_list`,
-  `terminal_view`, `info_panel`, `status_bar`.
+  >=120 = optional 3-panel). Widgets: `project_list` (two-section
+  left panel), `terminal_view`, `info_panel`, `status_bar`.
 
 ### Event Loop (main.rs)
 
 ```text
-tokio::main → init terminal → spawn initial session → loop {
+tokio::main → load project config → init terminal
+→ spawn initial session → loop {
     draw frame → poll crossterm events (10ms)
     → convert to AppMessage → app.update() → app.tick()
 } → app.shutdown() → restore terminal
@@ -123,6 +128,8 @@ framework). Install with `prek install`. Stages:
   rendered by `tui_term::PseudoTerminal`
 - `Ctrl+Q` is the quit key
   (only key not forwarded to PTY when terminal is focused)
+- Config file: `~/.config/thurbox/config.toml`
+  (XDG_CONFIG_HOME respected)
 - Architecture tests in `tests/architecture_rules.rs` are
   `#[ignore]` due to upstream cargo-pup bug with workspace detection
 
