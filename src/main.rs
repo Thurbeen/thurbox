@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+};
+use crossterm::execute;
 
 use thurbox::app::{App, AppMessage};
 use thurbox::project;
@@ -30,6 +33,7 @@ async fn main() -> Result<()> {
     let project_configs = project::load_project_configs();
 
     let mut terminal = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)?;
     let size = terminal.size()?;
 
     let mut app = App::new(size.height, size.width, project_configs);
@@ -44,6 +48,7 @@ async fn main() -> Result<()> {
     let res = run_loop(&mut terminal, &mut app).await;
 
     app.shutdown();
+    execute!(std::io::stdout(), DisableMouseCapture)?;
     ratatui::restore();
 
     res
@@ -58,6 +63,11 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     Some(AppMessage::KeyPress(k.code, k.modifiers))
                 }
+                Event::Mouse(m) => match m.kind {
+                    MouseEventKind::ScrollUp => Some(AppMessage::MouseScrollUp),
+                    MouseEventKind::ScrollDown => Some(AppMessage::MouseScrollDown),
+                    _ => None,
+                },
                 Event::Resize(cols, rows) => Some(AppMessage::Resize(cols, rows)),
                 _ => None,
             };
