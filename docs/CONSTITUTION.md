@@ -94,12 +94,12 @@ because a broken pipeline affects every contributor.
 | Principle | Enforced by | Config file |
 |---|---|---|
 | Crash-free operation | Code review + `#[deny(clippy::unwrap_used)]` (planned) | `clippy.toml` |
-| Module isolation | `cargo-pup` | `pup.ron` |
+| Module isolation | `tests/architecture_rules.rs` | — |
 | Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit |
 | Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
 | Zero vulnerabilities | `cargo-deny check advisories` + `cargo-audit` | `deny.toml` |
 | Conventional commits | `cocogitto` (`cog verify`) | `cog.toml` |
-| TEA pattern | `cargo-pup` rules + code review | `pup.ron` |
+| TEA pattern | `tests/architecture_rules.rs` + code review | — |
 | PTY-first model | Code review | — |
 | Logging off stdout | Code review | — |
 | TDD (Red/Green/Refactor) | `cargo-nextest` + code review | `.config/nextest.toml` |

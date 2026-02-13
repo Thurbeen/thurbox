@@ -52,54 +52,14 @@ jobs:
         run: cargo install cargo-nextest --locked
       - run: cargo nextest run --all --profile ci
 
-  modules:
-    name: Module Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Check for pub mod declarations
-        id: check-modules
-        run: |
-          if grep -q 'pub mod' src/lib.rs 2>/dev/null; then
-            echo "has_modules=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_modules=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-        if: steps.check-modules.outputs.has_modules == 'true'
-      - name: Install cargo-modules
-        if: steps.check-modules.outputs.has_modules == 'true'
-        run: cargo install cargo-modules --locked
-      - name: Verify module structure
-        if: steps.check-modules.outputs.has_modules == 'true'
-        run: cargo modules structure --lib
-
   architecture:
     name: Architecture Rules
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Check for architecture config
-        id: check-arch
-        run: |
-          if [ -f pup.ron ]; then
-            echo "has_arch=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_arch=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        if: steps.check-arch.outputs.has_arch == 'true'
-        with:
-          toolchain: nightly-2026-01-22
-          components: rust-src, rustc-dev, llvm-tools-preview
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
-        if: steps.check-arch.outputs.has_arch == 'true'
-      - name: Install cargo-pup
-        if: steps.check-arch.outputs.has_arch == 'true'
-        run: cargo +nightly-2026-01-22 install cargo_pup --locked
-      - name: Run architecture rules
-        if: steps.check-arch.outputs.has_arch == 'true'
-        run: cargo +nightly-2026-01-22 pup check --pup-config pup.ron
+      - run: cargo test --test architecture_rules
 
   deny:
     name: Cargo Deny
@@ -157,7 +117,6 @@ jobs:
       - fmt
       - clippy
       - nextest
-      - modules
       - architecture
       - deny
       - audit

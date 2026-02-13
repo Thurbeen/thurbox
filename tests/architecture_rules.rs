@@ -1,58 +1,114 @@
-use cargo_pup_lint_config::{LintBuilder, LintBuilderExt, ModuleLintExt, Severity};
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-#[test]
-#[ignore]
-fn ui_layer_isolation() {
-    let mut builder = LintBuilder::new();
-
-    builder
-        .module_lint()
-        .lint_named("ui_no_claude_imports")
-        .matching(|m| m.module(".*::ui::.*"))
-        .with_severity(Severity::Error)
-        .restrict_imports(None, Some(vec![".*::claude::.*".to_string()]))
-        .build();
-
-    builder
-        .assert_lints(None)
-        .expect("UI modules must not import from claude module");
+/// A single architecture violation: a forbidden import found in a source file.
+struct Violation {
+    file: PathBuf,
+    line_number: usize,
+    line: String,
 }
 
-#[test]
-#[ignore]
-fn git_module_independence() {
-    let mut builder = LintBuilder::new();
-
-    builder
-        .module_lint()
-        .lint_named("git_no_ui_imports")
-        .matching(|m| m.module(".*::git::.*"))
-        .with_severity(Severity::Error)
-        .restrict_imports(None, Some(vec![".*::ui::.*".to_string()]))
-        .build();
-
-    builder
-        .assert_lints(None)
-        .expect("Git modules must not import from UI module");
+/// Recursively collect all `.rs` files under `dir`.
+fn collect_rs_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(collect_rs_files(&path));
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files
 }
 
-#[test]
-#[ignore]
-fn claude_module_isolation() {
-    let mut builder = LintBuilder::new();
+/// Scan all `.rs` files in `module_dir` for `use crate::{denied}::` imports.
+/// Returns a list of violations with file path, line number, and line content.
+fn check_no_imports(module_dir: &Path, denied_modules: &[&str]) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let files = collect_rs_files(module_dir);
 
-    builder
-        .module_lint()
-        .lint_named("claude_no_ui_or_git_imports")
-        .matching(|m| m.module(".*::claude::.*"))
-        .with_severity(Severity::Error)
-        .restrict_imports(
-            None,
-            Some(vec![".*::ui::.*".to_string(), ".*::git::.*".to_string()]),
+    for file in files {
+        let content = fs::read_to_string(&file).unwrap_or_default();
+        for (i, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            for denied in denied_modules {
+                let pattern = format!("use crate::{denied}::");
+                if trimmed.starts_with(&pattern) {
+                    violations.push(Violation {
+                        file: file.clone(),
+                        line_number: i + 1,
+                        line: line.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    violations
+}
+
+fn format_violations(module_name: &str, violations: &[Violation]) -> String {
+    let mut msg = format!(
+        "\n{} architecture violation(s) in `{module_name}/`:\n",
+        violations.len()
+    );
+    for v in violations {
+        writeln!(
+            msg,
+            "  {}:{}: {}",
+            v.file.display(),
+            v.line_number,
+            v.line.trim()
         )
-        .build();
+        .unwrap();
+    }
+    msg
+}
 
-    builder
-        .assert_lints(None)
-        .expect("Claude modules must not import from UI or git modules");
+#[test]
+fn ui_layer_isolation() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+    let violations = check_no_imports(&module_dir, &["claude", "git"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("ui", &violations)
+    );
+}
+
+#[test]
+fn git_module_independence() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git");
+    let violations = check_no_imports(&module_dir, &["ui"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("git", &violations)
+    );
+}
+
+#[test]
+fn claude_module_isolation() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/claude");
+    let violations = check_no_imports(&module_dir, &["ui", "git"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("claude", &violations)
+    );
+}
+
+#[test]
+fn project_isolation() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project");
+    let violations = check_no_imports(&module_dir, &["claude", "ui", "git", "app"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("project", &violations)
+    );
 }
