@@ -1,6 +1,8 @@
 # Thurbox
 
-A TUI (Terminal User Interface) for orchestrating multiple Claude Code instances with advanced repository and git worktree management.
+A TUI (Terminal User Interface) for orchestrating multiple
+Claude Code instances with advanced repository
+and git worktree management.
 
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -66,6 +68,9 @@ cargo install cargo-deny
 # Security auditing
 cargo install cargo-audit
 
+# Markdown linting
+cargo install rumdl
+
 # Architecture validation (requires specific nightly)
 rustup toolchain install nightly-2026-01-22
 rustup component add --toolchain nightly-2026-01-22 rust-src rustc-dev llvm-tools-preview
@@ -73,6 +78,7 @@ cargo +nightly-2026-01-22 install cargo_pup
 ```
 
 **Tip**: Install `cargo-binstall` for faster tool installation:
+
 ```bash
 cargo install cargo-binstall
 ```
@@ -80,17 +86,20 @@ cargo install cargo-binstall
 ### Initial Setup
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
 ```
 
 2. Install pre-commit hooks:
+
 ```bash
 prek install
 ```
 
 3. Verify setup:
+
 ```bash
 cargo check
 cargo test
@@ -194,7 +203,7 @@ cog commit feat -B "redesign API interface" api
 
 Thurbox follows a modular architecture with clear separation of concerns:
 
-```
+```text
 thurbox/
 ├── src/
 │   ├── main.rs          # Application entry point

@@ -1,0 +1,5 @@
+[MD013]
+line_length = 100
+# Allow longer lines in tables and code blocks
+tables = false
+code_blocks = false
