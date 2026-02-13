@@ -40,8 +40,7 @@ rumdl fmt .                          # Markdown auto-fix
 ## Architecture Enforcement
 
 ```bash
-cargo modules structure --lib                             # Module viz
-cargo +nightly-2026-01-22 pup check --pup-config pup.ron  # Arch rules
+cargo test --test architecture_rules                      # Arch rules
 cargo deny check advisories                               # Advisories
 cargo deny check bans licenses sources                    # Dep policy
 cargo audit                                               # Audit
@@ -64,7 +63,7 @@ Enforced by cocogitto via pre-commit hooks.
 The app follows **The Elm Architecture**:
 `Event → Message → update(model, msg) → view(model) → Frame`
 
-### Module Dependency Rules (enforced by pup.ron)
+### Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
 session  ← pure data types, no project-local imports
@@ -110,11 +109,11 @@ tokio::main → load project config → init terminal
 
 ## Pre-commit Hooks
 
-12 hooks run automatically via `prek` (Rust-based pre-commit
+11 hooks run automatically via `prek` (Rust-based pre-commit
 framework). Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
-- **pre-commit**: fmt, clippy, check, nextest, modules, pup,
+- **pre-commit**: fmt, clippy, check, nextest, architecture,
   deny, audit, doc, rumdl
 - **pre-push**: commit history check (`cog check`)
 
@@ -130,8 +129,6 @@ framework). Install with `prek install`. Stages:
   (only key not forwarded to PTY when terminal is focused)
 - Config file: `~/.config/thurbox/config.toml`
   (XDG_CONFIG_HOME respected)
-- Architecture tests in `tests/architecture_rules.rs` are
-  `#[ignore]` due to upstream cargo-pup bug with workspace detection
 
 ## Design Documentation
 

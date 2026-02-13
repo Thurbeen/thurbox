@@ -47,19 +47,12 @@ repos:
         pass_filenames: false
         args: ["--all"]
 
-      - id: cargo-modules-structure
-        name: Cargo modules structure check
-        entry: bash -c 'grep -q "pub mod" src/lib.rs 2>/dev/null && cargo modules structure --lib || true'
+      - id: architecture-rules
+        name: Architecture rules
+        entry: cargo test --test architecture_rules
         language: system
+        types: [rust]
         pass_filenames: false
-        always_run: true
-
-      - id: cargo-pup-architecture
-        name: Cargo pup architecture rules
-        entry: bash -c '[ -f pup.ron ] && cargo +nightly-2026-01-22 pup check --pup-config pup.ron || true'
-        language: system
-        pass_filenames: false
-        always_run: true
 
       - id: cargo-deny-advisories
         name: Cargo deny advisories
