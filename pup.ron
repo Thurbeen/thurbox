@@ -1,0 +1,37 @@
+(
+    lints: [
+        Module((
+            name: "ui_no_claude_imports",
+            matches: Module(".*::ui::.*"),
+            rules: [
+                RestrictImports(
+                    allowed_only: None,
+                    denied: Some([".*::claude::.*"]),
+                    severity: Error,
+                ),
+            ],
+        )),
+        Module((
+            name: "git_no_ui_imports",
+            matches: Module(".*::git::.*"),
+            rules: [
+                RestrictImports(
+                    allowed_only: None,
+                    denied: Some([".*::ui::.*"]),
+                    severity: Error,
+                ),
+            ],
+        )),
+        Module((
+            name: "claude_no_ui_or_git_imports",
+            matches: Module(".*::claude::.*"),
+            rules: [
+                RestrictImports(
+                    allowed_only: None,
+                    denied: Some([".*::ui::.*", ".*::git::.*"]),
+                    severity: Error,
+                ),
+            ],
+        )),
+    ],
+)

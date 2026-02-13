@@ -3,9 +3,6 @@
 **/*.rs.bk
 *.pdb
 
-# Cargo
-Cargo.lock
-
 # IDE
 .vscode/
 .idea/
@@ -21,6 +18,9 @@ junit.xml
 
 # Nextest
 .nextest/
+
+# Cargo-pup
+.pup/
 
 # Insta snapshots (review and commit)
 *.snap.new
