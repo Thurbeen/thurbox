@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::session::SessionId;
+use crate::session::{PersistedState, SessionId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectId(Uuid);
@@ -130,6 +130,82 @@ fn config_path() -> Option<PathBuf> {
     })
 }
 
+fn data_dir() -> Option<PathBuf> {
+    // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        let mut p = PathBuf::from(xdg);
+        p.push("thurbox");
+        return Some(p);
+    }
+
+    std::env::var_os("HOME").map(|h| {
+        let mut p = PathBuf::from(h);
+        p.push(".local");
+        p.push("share");
+        p.push("thurbox");
+        p
+    })
+}
+
+fn state_path() -> Option<PathBuf> {
+    data_dir().map(|mut p| {
+        p.push("state.toml");
+        p
+    })
+}
+
+/// Load persisted session state from `$XDG_DATA_HOME/thurbox/state.toml`.
+/// Returns default (empty) state if the file doesn't exist or can't be parsed.
+pub fn load_session_state() -> PersistedState {
+    let Some(path) = state_path() else {
+        return PersistedState::default();
+    };
+
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return PersistedState::default(),
+    };
+
+    match toml::from_str::<PersistedState>(&contents) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!("Failed to parse state at {}: {e}", path.display());
+            PersistedState::default()
+        }
+    }
+}
+
+/// Save persisted session state to `$XDG_DATA_HOME/thurbox/state.toml`.
+pub fn save_session_state(state: &PersistedState) -> std::io::Result<()> {
+    let path = state_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not determine state path",
+        )
+    })?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let contents = toml::to_string_pretty(state)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    std::fs::write(&path, contents)
+}
+
+/// Remove the persisted state file after successful restore.
+pub fn clear_session_state() -> std::io::Result<()> {
+    let Some(path) = state_path() else {
+        return Ok(());
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +312,125 @@ repos = ["/home/user/repos/other"]
         assert!(info.is_default);
         assert_eq!(info.config.name, "Default");
         assert!(!info.config.repos.is_empty());
+    }
+
+    #[test]
+    fn persisted_state_roundtrip() {
+        use crate::session::{PersistedSession, PersistedState, PersistedWorktree};
+
+        let state = PersistedState {
+            sessions: vec![
+                PersistedSession {
+                    name: "Session 1".to_string(),
+                    claude_session_id: "abc-123".to_string(),
+                    cwd: Some(PathBuf::from("/tmp/repo")),
+                    worktree: None,
+                },
+                PersistedSession {
+                    name: "Session 2".to_string(),
+                    claude_session_id: "def-456".to_string(),
+                    cwd: Some(PathBuf::from("/tmp/wt")),
+                    worktree: Some(PersistedWorktree {
+                        repo_path: PathBuf::from("/tmp/repo"),
+                        worktree_path: PathBuf::from("/tmp/wt"),
+                        branch: "feat".to_string(),
+                    }),
+                },
+            ],
+            session_counter: 2,
+        };
+
+        let serialized = toml::to_string_pretty(&state).unwrap();
+        let deserialized: PersistedState = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.sessions.len(), 2);
+        assert_eq!(deserialized.session_counter, 2);
+        assert_eq!(deserialized.sessions[0].name, "Session 1");
+        assert_eq!(deserialized.sessions[0].claude_session_id, "abc-123");
+        assert!(deserialized.sessions[0].worktree.is_none());
+        assert_eq!(deserialized.sessions[1].name, "Session 2");
+        assert!(deserialized.sessions[1].worktree.is_some());
+        let wt = deserialized.sessions[1].worktree.as_ref().unwrap();
+        assert_eq!(wt.branch, "feat");
+    }
+
+    #[test]
+    fn persisted_state_empty_deserializes() {
+        let state: PersistedState = toml::from_str("").unwrap();
+        assert!(state.sessions.is_empty());
+        assert_eq!(state.session_counter, 0);
+    }
+
+    #[test]
+    fn persisted_state_session_without_cwd() {
+        use crate::session::{PersistedSession, PersistedState};
+
+        let state = PersistedState {
+            sessions: vec![PersistedSession {
+                name: "Session 1".to_string(),
+                claude_session_id: "abc-123".to_string(),
+                cwd: None,
+                worktree: None,
+            }],
+            session_counter: 1,
+        };
+
+        let serialized = toml::to_string_pretty(&state).unwrap();
+        let deserialized: PersistedState = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.sessions.len(), 1);
+        assert!(deserialized.sessions[0].cwd.is_none());
+        assert!(deserialized.sessions[0].worktree.is_none());
+    }
+
+    #[test]
+    fn persisted_state_deserializes_from_manual_toml() {
+        use crate::session::PersistedState;
+
+        let toml_str = r#"
+session_counter = 3
+
+[[sessions]]
+name = "Session 1"
+claude_session_id = "abc-123-def-456"
+cwd = "/home/user/repos/app"
+
+[[sessions]]
+name = "Session 2"
+claude_session_id = "ghi-789-jkl-012"
+cwd = "/home/user/repos/app/.git/thurbox-worktrees/feat-login"
+
+[sessions.worktree]
+repo_path = "/home/user/repos/app"
+worktree_path = "/home/user/repos/app/.git/thurbox-worktrees/feat-login"
+branch = "feat-login"
+"#;
+        let state: PersistedState = toml::from_str(toml_str).unwrap();
+        assert_eq!(state.session_counter, 3);
+        assert_eq!(state.sessions.len(), 2);
+        assert_eq!(state.sessions[0].name, "Session 1");
+        assert_eq!(
+            state.sessions[0].cwd,
+            Some(PathBuf::from("/home/user/repos/app"))
+        );
+        assert!(state.sessions[0].worktree.is_none());
+        assert_eq!(state.sessions[1].name, "Session 2");
+        let wt = state.sessions[1].worktree.as_ref().unwrap();
+        assert_eq!(wt.branch, "feat-login");
+        assert_eq!(wt.repo_path, PathBuf::from("/home/user/repos/app"));
+    }
+
+    #[test]
+    fn persisted_state_missing_counter_defaults_to_zero() {
+        use crate::session::PersistedState;
+
+        let toml_str = r#"
+[[sessions]]
+name = "Session 1"
+claude_session_id = "abc-123"
+"#;
+        let state: PersistedState = toml::from_str(toml_str).unwrap();
+        assert_eq!(state.session_counter, 0);
+        assert_eq!(state.sessions.len(), 1);
     }
 }

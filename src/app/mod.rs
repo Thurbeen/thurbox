@@ -13,7 +13,10 @@ use tracing::error;
 use crate::claude::{input, PtySession};
 use crate::git;
 use crate::project::{self, ProjectConfig, ProjectInfo};
-use crate::session::{SessionConfig, SessionInfo, SessionStatus, WorktreeInfo};
+use crate::session::{
+    PersistedSession, PersistedState, PersistedWorktree, SessionConfig, SessionInfo, SessionStatus,
+    WorktreeInfo,
+};
 use crate::ui::{
     add_project_modal, branch_selector_modal, info_panel, layout, project_list,
     repo_selector_modal, session_mode_modal, status_bar, terminal_view, worktree_name_modal,
@@ -646,7 +649,12 @@ impl App {
     ) {
         let (rows, cols) = self.content_area_size();
 
-        match PtySession::spawn_with_config(name, rows, cols, config) {
+        let mut config = config.clone();
+        if config.claude_session_id.is_none() {
+            config.claude_session_id = Some(uuid::Uuid::new_v4().to_string());
+        }
+
+        match PtySession::spawn_with_config(name, rows, cols, &config) {
             Ok(mut session) => {
                 session.info.worktree = worktree;
                 let session_id = session.info.id;
@@ -891,16 +899,65 @@ impl App {
     }
 
     pub fn shutdown(self) {
-        // Clean up all worktrees before shutting down sessions
-        for session in &self.sessions {
-            if let Some(wt) = &session.info.worktree {
-                if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
-                    error!("Failed to remove worktree on shutdown: {e}");
-                }
-            }
-        }
+        self.save_state();
+        // Do NOT remove worktrees — they persist for resume
         for session in self.sessions {
             session.shutdown();
+        }
+    }
+
+    fn save_state(&self) {
+        let sessions: Vec<PersistedSession> = self
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                let claude_session_id = s.info.claude_session_id.as_ref()?;
+                Some(PersistedSession {
+                    name: s.info.name.clone(),
+                    claude_session_id: claude_session_id.clone(),
+                    cwd: s.info.cwd.clone(),
+                    worktree: s.info.worktree.as_ref().map(|wt| PersistedWorktree {
+                        repo_path: wt.repo_path.clone(),
+                        worktree_path: wt.worktree_path.clone(),
+                        branch: wt.branch.clone(),
+                    }),
+                })
+            })
+            .collect();
+
+        let state = PersistedState {
+            sessions,
+            session_counter: self.session_counter,
+        };
+
+        if let Err(e) = project::save_session_state(&state) {
+            error!("Failed to save session state: {e}");
+        }
+    }
+
+    pub fn restore_sessions(&mut self, state: PersistedState) {
+        self.session_counter = state.session_counter;
+
+        for persisted in state.sessions {
+            let name = persisted.name;
+
+            let config = SessionConfig {
+                resume_session_id: Some(persisted.claude_session_id.clone()),
+                claude_session_id: Some(persisted.claude_session_id),
+                cwd: persisted.cwd,
+            };
+
+            let worktree = persisted.worktree.map(|wt| WorktreeInfo {
+                repo_path: wt.repo_path,
+                worktree_path: wt.worktree_path,
+                branch: wt.branch,
+            });
+
+            self.do_spawn_session(name, &config, worktree);
+        }
+
+        if let Err(e) = project::clear_session_state() {
+            error!("Failed to clear session state after restore: {e}");
         }
     }
 

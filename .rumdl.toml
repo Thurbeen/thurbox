@@ -1,3 +1,6 @@
+[global]
+exclude = [".git"]
+
 [MD013]
 line_length = 100
 # Allow longer lines in tables and code blocks

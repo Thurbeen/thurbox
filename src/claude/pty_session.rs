@@ -40,6 +40,9 @@ impl PtySession {
         if let Some(ref session_id) = config.resume_session_id {
             cmd.arg("--resume");
             cmd.arg(session_id);
+        } else if let Some(ref session_id) = config.claude_session_id {
+            cmd.arg("--session-id");
+            cmd.arg(session_id);
         }
         if let Some(ref cwd) = config.cwd {
             cmd.cwd(cwd);
@@ -75,7 +78,9 @@ impl PtySession {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         tokio::spawn(Self::writer_loop(writer, input_rx));
 
-        let info = SessionInfo::new(name);
+        let mut info = SessionInfo::new(name);
+        info.claude_session_id = config.claude_session_id.clone();
+        info.cwd = config.cwd.clone();
         debug!(session_id = %info.id, "Spawned claude PTY session");
 
         Ok(Self {
