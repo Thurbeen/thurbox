@@ -8,6 +8,7 @@ pub struct PanelAreas {
     pub footer: Rect,
 }
 
+/// Compute panel layout areas based on terminal dimensions and info panel visibility.
 pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
     // Vertical split: header | content | footer
     let vertical = Layout::default()
@@ -66,5 +67,55 @@ pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
             terminal: horizontal[1],
             footer,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn area(width: u16, height: u16) -> Rect {
+        Rect::new(0, 0, width, height)
+    }
+
+    #[test]
+    fn narrow_terminal_hides_session_list() {
+        let areas = compute_layout(area(79, 24), false);
+        assert!(areas.session_list.is_none());
+        assert!(areas.info_panel.is_none());
+    }
+
+    #[test]
+    fn normal_width_shows_two_panels() {
+        let areas = compute_layout(area(100, 24), false);
+        assert!(areas.session_list.is_some());
+        assert!(areas.info_panel.is_none());
+    }
+
+    #[test]
+    fn wide_terminal_with_info_panel_shows_three_panels() {
+        let areas = compute_layout(area(120, 24), true);
+        assert!(areas.session_list.is_some());
+        assert!(areas.info_panel.is_some());
+    }
+
+    #[test]
+    fn wide_terminal_without_info_panel_shows_two_panels() {
+        let areas = compute_layout(area(120, 24), false);
+        assert!(areas.session_list.is_some());
+        assert!(areas.info_panel.is_none());
+    }
+
+    #[test]
+    fn header_and_footer_are_one_line() {
+        let areas = compute_layout(area(100, 24), false);
+        assert_eq!(areas.header.height, 1);
+        assert_eq!(areas.footer.height, 1);
+    }
+
+    #[test]
+    fn info_panel_ignored_below_120_cols() {
+        let areas = compute_layout(area(119, 24), true);
+        assert!(areas.info_panel.is_none());
     }
 }

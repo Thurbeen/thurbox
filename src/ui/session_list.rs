@@ -34,7 +34,7 @@ pub fn render_session_list(
             };
 
             let line = Line::from(vec![
-                Span::styled(format!("{} ", info.status_icon()), style),
+                Span::styled(format!("{} ", info.status.icon()), style),
                 Span::styled(&info.name, style),
             ]);
 

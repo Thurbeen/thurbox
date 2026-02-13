@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::session::SessionInfo;
+use crate::session::{SessionInfo, SessionStatus};
 
 pub fn render_info_panel(frame: &mut Frame, area: Rect, info: &SessionInfo) {
     let block = Block::default()
@@ -23,7 +23,7 @@ pub fn render_info_panel(frame: &mut Frame, area: Rect, info: &SessionInfo) {
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{} {}", info.status_icon(), info.status),
+                format!("{} {}", info.status.icon(), info.status),
                 Style::default()
                     .fg(status_color(&info.status))
                     .add_modifier(Modifier::BOLD),
@@ -40,10 +40,10 @@ pub fn render_info_panel(frame: &mut Frame, area: Rect, info: &SessionInfo) {
     frame.render_widget(paragraph, area);
 }
 
-fn status_color(status: &crate::session::SessionStatus) -> Color {
+fn status_color(status: &SessionStatus) -> Color {
     match status {
-        crate::session::SessionStatus::Running => Color::Green,
-        crate::session::SessionStatus::Idle => Color::Yellow,
-        crate::session::SessionStatus::Error => Color::Red,
+        SessionStatus::Running => Color::Green,
+        SessionStatus::Idle => Color::Yellow,
+        SessionStatus::Error => Color::Red,
     }
 }

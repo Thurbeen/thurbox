@@ -47,9 +47,9 @@ repos:
         pass_filenames: false
         args: ["--all"]
 
-      - id: cargo-modules-acyclic
-        name: Cargo modules acyclic check
-        entry: bash -c 'grep -q "pub mod" src/lib.rs 2>/dev/null && cargo modules dependencies --lib --acyclic || true'
+      - id: cargo-modules-structure
+        name: Cargo modules structure check
+        entry: bash -c 'grep -q "pub mod" src/lib.rs 2>/dev/null && cargo modules structure --lib || true'
         language: system
         pass_filenames: false
         always_run: true

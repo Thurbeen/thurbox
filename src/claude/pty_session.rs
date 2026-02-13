@@ -16,14 +16,10 @@ pub struct PtySession {
     pub parser: Arc<Mutex<vt100::Parser>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
-    pub exited: Arc<AtomicBool>,
+    exited: Arc<AtomicBool>,
 }
 
 impl PtySession {
-    pub fn spawn(name: String, rows: u16, cols: u16) -> Result<Self> {
-        Self::spawn_with_config(name, rows, cols, &SessionConfig::default())
-    }
-
     pub fn spawn_with_config(
         name: String,
         rows: u16,
