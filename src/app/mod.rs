@@ -219,9 +219,13 @@ impl App {
         self.spawn_session_with_config(&config);
     }
 
-    fn spawn_session_with_config(&mut self, config: &SessionConfig) {
+    fn next_session_name(&mut self) -> String {
         self.session_counter += 1;
-        let name = format!("Session {}", self.session_counter);
+        self.session_counter.to_string()
+    }
+
+    fn spawn_session_with_config(&mut self, config: &SessionConfig) {
+        let name = self.next_session_name();
         self.do_spawn_session(name, config, None);
     }
 
@@ -697,8 +701,7 @@ impl App {
                     cwd: Some(worktree_path),
                     ..SessionConfig::default()
                 };
-                self.session_counter += 1;
-                let name = format!("Session {}", self.session_counter);
+                let name = self.next_session_name();
                 self.do_spawn_session(name, &config, Some(worktree_info));
             }
             Err(e) => {
@@ -1398,5 +1401,28 @@ mod tests {
     #[test]
     fn mouse_scroll_lines_constant() {
         assert_eq!(MOUSE_SCROLL_LINES, 3);
+    }
+
+    // --- Session naming tests ---
+
+    #[test]
+    fn next_session_name_starts_at_one() {
+        let mut app = App::new(24, 80, vec![]);
+        assert_eq!(app.next_session_name(), "1");
+    }
+
+    #[test]
+    fn next_session_name_increments() {
+        let mut app = App::new(24, 80, vec![]);
+        assert_eq!(app.next_session_name(), "1");
+        assert_eq!(app.next_session_name(), "2");
+        assert_eq!(app.next_session_name(), "3");
+    }
+
+    #[test]
+    fn next_session_name_continues_from_restored_counter() {
+        let mut app = App::new(24, 80, vec![]);
+        app.session_counter = 5;
+        assert_eq!(app.next_session_name(), "6");
     }
 }
