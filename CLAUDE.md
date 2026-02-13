@@ -96,3 +96,12 @@ tokio::main → init terminal → spawn initial session → loop {
 - Terminal state parsed by `vt100::Parser`, rendered by `tui_term::PseudoTerminal`
 - `Ctrl+Q` is the quit key (only key not forwarded to PTY when terminal is focused)
 - Architecture tests in `tests/architecture_rules.rs` are `#[ignore]` due to upstream cargo-pup bug with workspace detection
+
+## Design Documentation
+
+For rationale behind decisions, see `docs/`:
+- `docs/CONSTITUTION.md` — Core principles and non-negotiable rules
+- `docs/ARCHITECTURE.md` — Architectural decisions with rationale
+- `docs/FEATURES.md` — Feature-level design choices
+
+**Rule**: If a code change invalidates or extends a documented decision, update the relevant doc in the same PR.
