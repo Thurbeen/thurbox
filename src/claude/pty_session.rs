@@ -221,6 +221,29 @@ impl PtySession {
         drop(self.master);
         debug!("PTY session shut down");
     }
+
+    /// Create a lightweight stub for unit tests (no real PTY process).
+    #[cfg(test)]
+    pub fn stub(name: &str) -> Self {
+        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("test: open PTY");
+        drop(pair.slave);
+        Self {
+            info: SessionInfo::new(name.to_string()),
+            parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0))),
+            input_tx,
+            master: pair.master,
+            exited: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 fn contains_sequence(haystack: &[u8], needle: &[u8]) -> bool {

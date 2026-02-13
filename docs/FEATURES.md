@@ -93,6 +93,8 @@ keys (intercepted for scrollback navigation).
 | `Ctrl+N` | Project list | Add new project |
 | `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) |
 | `Ctrl+X` | Global | Close active session |
+| `Ctrl+J` | Global | Next session within active project |
+| `Ctrl+K` | Global | Previous session within active project |
 | `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal |
 | `Ctrl+I` | Global | Toggle info panel (width >= 120) |
 | `j` / `Down` | Project list | Next project |
