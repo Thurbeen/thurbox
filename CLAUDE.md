@@ -43,7 +43,6 @@ rumdl fmt .                          # Markdown auto-fix
 cargo test --test architecture_rules                      # Arch rules
 cargo deny check advisories                               # Advisories
 cargo deny check bans licenses sources                    # Dep policy
-cargo audit                                               # Audit
 ```
 
 ## Conventional Commits

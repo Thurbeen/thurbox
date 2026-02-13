@@ -68,13 +68,6 @@ repos:
         pass_filenames: false
         always_run: true
 
-      - id: cargo-audit
-        name: Cargo audit
-        entry: cargo audit
-        language: system
-        pass_filenames: false
-        always_run: true
-
       - id: cargo-doc
         name: Cargo doc
         entry: env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
