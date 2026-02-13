@@ -201,22 +201,7 @@ cog commit feat -B "redesign API interface" api
 
 ## Architecture
 
-Thurbox follows a modular architecture with clear separation of concerns:
-
-```text
-thurbox/
-├── src/
-│   ├── main.rs          # Application entry point
-│   ├── lib.rs           # Library root and error types
-│   ├── claude.rs        # Claude API integration
-│   ├── git.rs           # Git operations and worktree management
-│   └── ui.rs            # TUI components and state
-├── tests/
-│   ├── integration_test.rs      # Integration tests
-│   └── architecture_rules.rs    # Architecture validation
-└── benches/
-    └── benchmarks.rs    # Performance benchmarks
-```
+Thurbox follows a modular architecture with clear separation of concerns.
 
 ### Architectural Rules
 
