@@ -48,8 +48,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
-      - name: Install nextest
-        run: cargo install cargo-nextest --locked
+      - uses: taiki-e/install-action@541dbe11e2898b05bb65bedbd1d0c4e3092b5bdd # v2.67.29
+        with:
+          tool: cargo-nextest
       - run: cargo nextest run --all --profile ci
 
   architecture:
@@ -75,15 +76,6 @@ jobs:
         with:
           command: check ${{ matrix.checks }}
           log-level: warn
-
-  audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
   docs:
     name: Documentation
@@ -119,7 +111,6 @@ jobs:
       - nextest
       - architecture
       - deny
-      - audit
       - docs
       - conventional-commits
     runs-on: ubuntu-latest

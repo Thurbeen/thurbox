@@ -40,7 +40,7 @@ Copyleft crates are rejected at PR time.
 
 ### 5. Zero known vulnerabilities
 
-`cargo-deny` advisories and `cargo-audit` block merges
+`cargo-deny` advisories blocks merges
 when known CVEs affect the dependency tree.
 
 ### 6. Conventional commits
@@ -97,7 +97,7 @@ because a broken pipeline affects every contributor.
 | Module isolation | `tests/architecture_rules.rs` | — |
 | Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit |
 | Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
-| Zero vulnerabilities | `cargo-deny check advisories` + `cargo-audit` | `deny.toml` |
+| Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` |
 | Conventional commits | `cocogitto` (`cog verify`) | `cog.toml` |
 | TEA pattern | `tests/architecture_rules.rs` + code review | — |
 | PTY-first model | Code review | — |
