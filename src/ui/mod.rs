@@ -17,6 +17,17 @@ use ratatui::{
     Frame,
 };
 
+use crate::session::SessionStatus;
+
+pub fn status_color(status: SessionStatus) -> Color {
+    match status {
+        SessionStatus::Busy => Color::Green,
+        SessionStatus::Waiting => Color::Yellow,
+        SessionStatus::Idle => Color::DarkGray,
+        SessionStatus::Error => Color::Red,
+    }
+}
+
 /// Build a [`Block`] with focused or unfocused styling.
 ///
 /// Focused: thick borders in cyan with a highlighted title badge.
@@ -160,6 +171,14 @@ mod tests {
         let rect = centered_fixed_height_rect(50, 50, area(100, 20));
         // Height is clamped to available area
         assert!(rect.height <= 20);
+    }
+
+    #[test]
+    fn status_color_maps_all_variants() {
+        assert_eq!(status_color(SessionStatus::Busy), Color::Green);
+        assert_eq!(status_color(SessionStatus::Waiting), Color::Yellow);
+        assert_eq!(status_color(SessionStatus::Idle), Color::DarkGray);
+        assert_eq!(status_color(SessionStatus::Error), Color::Red);
     }
 
     #[test]

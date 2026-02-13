@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::project::ProjectConfig;
-use crate::session::{SessionInfo, SessionStatus};
+use crate::session::SessionInfo;
 
 pub fn render_info_panel(
     frame: &mut Frame,
@@ -67,7 +67,7 @@ pub fn render_info_panel(
         Span::styled(
             format!("{} {}", info.status.icon(), info.status),
             Style::default()
-                .fg(status_color(&info.status))
+                .fg(super::status_color(info.status))
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -100,12 +100,4 @@ pub fn render_info_panel(
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
-}
-
-fn status_color(status: &SessionStatus) -> Color {
-    match status {
-        SessionStatus::Running => Color::Green,
-        SessionStatus::Idle => Color::Yellow,
-        SessionStatus::Error => Color::Red,
-    }
 }
