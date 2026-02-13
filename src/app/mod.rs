@@ -345,6 +345,14 @@ impl App {
                     self.close_active_session();
                     return;
                 }
+                KeyCode::Char('j') => {
+                    self.switch_session_forward();
+                    return;
+                }
+                KeyCode::Char('k') => {
+                    self.switch_session_backward();
+                    return;
+                }
                 KeyCode::Char('l') => {
                     self.focus = match self.focus {
                         InputFocus::ProjectList => InputFocus::SessionList,
@@ -398,35 +406,15 @@ impl App {
         match code {
             KeyCode::Char('?') => {
                 self.show_help = true;
-                return;
             }
             KeyCode::Enter => {
                 self.focus = InputFocus::Terminal;
-                return;
             }
-            _ => {}
-        }
-
-        let project_sessions = self.active_project_sessions();
-        if project_sessions.is_empty() {
-            return;
-        }
-
-        let current_pos = project_sessions
-            .iter()
-            .position(|&i| i == self.active_index)
-            .unwrap_or(0);
-
-        match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if current_pos + 1 < project_sessions.len() {
-                    self.active_index = project_sessions[current_pos + 1];
-                }
+                self.switch_session_forward();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if current_pos > 0 {
-                    self.active_index = project_sessions[current_pos - 1];
-                }
+                self.switch_session_backward();
             }
             _ => {}
         }
@@ -789,6 +777,29 @@ impl App {
         }
     }
 
+    /// Switch to the next session within the active project.
+    fn switch_session_forward(&mut self) {
+        self.switch_session_by_offset(1);
+    }
+
+    /// Switch to the previous session within the active project.
+    fn switch_session_backward(&mut self) {
+        self.switch_session_by_offset(-1);
+    }
+
+    /// Move the active session by `offset` positions within the active project's session list.
+    fn switch_session_by_offset(&mut self, offset: isize) {
+        let project_sessions = self.active_project_sessions();
+        let current_pos = project_sessions
+            .iter()
+            .position(|&i| i == self.active_index)
+            .unwrap_or(0);
+        let new_pos = current_pos as isize + offset;
+        if new_pos >= 0 && (new_pos as usize) < project_sessions.len() {
+            self.active_index = project_sessions[new_pos as usize];
+        }
+    }
+
     fn handle_resize(&mut self, cols: u16, rows: u16) {
         self.terminal_cols = cols;
         self.terminal_rows = rows;
@@ -1080,6 +1091,7 @@ fn render_help_overlay(frame: &mut Frame) {
             "Ctrl+N",
             "New project (project focus) / session (normal or worktree)",
         ),
+        help_line("Ctrl+J / Ctrl+K", "Next / previous session"),
         help_line("Ctrl+X", "Close active session"),
         help_line("Ctrl+L", "Cycle focus (project / session / terminal)"),
         help_line("Ctrl+I", "Toggle info panel (width >= 120)"),
@@ -1324,6 +1336,74 @@ mod tests {
         input.delete();
         assert_eq!(input.value(), "b");
         assert_eq!(input.cursor_pos(), 0);
+    }
+
+    // --- Session switching tests ---
+
+    /// Create an App with N stub sessions bound to the default project.
+    fn app_with_sessions(count: usize) -> App {
+        let mut app = App::new(24, 120, vec![]);
+        for i in 0..count {
+            let session = PtySession::stub(&format!("Session {}", i + 1));
+            let session_id = session.info.id;
+            app.sessions.push(session);
+            app.projects[0].session_ids.push(session_id);
+        }
+        if !app.sessions.is_empty() {
+            app.active_index = 0;
+        }
+        app
+    }
+
+    #[test]
+    fn switch_forward_advances_to_next_session() {
+        let mut app = app_with_sessions(3);
+        app.active_index = 0;
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 1);
+    }
+
+    #[test]
+    fn switch_forward_at_last_session_is_noop() {
+        let mut app = app_with_sessions(3);
+        app.active_index = 2;
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 2);
+    }
+
+    #[test]
+    fn switch_backward_moves_to_previous_session() {
+        let mut app = app_with_sessions(3);
+        app.active_index = 2;
+        app.switch_session_backward();
+        assert_eq!(app.active_index, 1);
+    }
+
+    #[test]
+    fn switch_backward_at_first_session_is_noop() {
+        let mut app = app_with_sessions(3);
+        app.active_index = 0;
+        app.switch_session_backward();
+        assert_eq!(app.active_index, 0);
+    }
+
+    #[test]
+    fn switch_with_no_sessions_is_noop() {
+        let mut app = app_with_sessions(0);
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 0);
+        app.switch_session_backward();
+        assert_eq!(app.active_index, 0);
+    }
+
+    #[test]
+    fn switch_with_single_session_is_noop() {
+        let mut app = app_with_sessions(1);
+        app.active_index = 0;
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 0);
+        app.switch_session_backward();
+        assert_eq!(app.active_index, 0);
     }
 
     // --- Scroll tests ---
