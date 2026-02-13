@@ -28,9 +28,12 @@ pub fn render_terminal(
 
     let title = {
         let base = if let Some(wt) = &info.worktree {
-            format!(" {} [{}] [{}] ", info.name, wt.branch, info.status)
+            format!(
+                " {} ({}) [{}] [{}] ",
+                info.name, info.role, wt.branch, info.status
+            )
         } else {
-            format!(" {} [{}] ", info.name, info.status)
+            format!(" {} ({}) [{}] ", info.name, info.role, info.status)
         };
         if scroll_offset > 0 {
             // Insert scroll indicator before the trailing space

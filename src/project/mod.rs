@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::session::{PersistedState, SessionId};
+use crate::session::{PersistedState, RoleConfig, SessionId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectId(Uuid);
@@ -25,6 +25,8 @@ impl fmt::Display for ProjectId {
 pub struct ProjectConfig {
     pub name: String,
     pub repos: Vec<PathBuf>,
+    #[serde(default)]
+    pub roles: Vec<RoleConfig>,
 }
 
 pub struct ProjectInfo {
@@ -60,6 +62,7 @@ pub fn create_default_project() -> ProjectConfig {
     ProjectConfig {
         name: "Default".to_string(),
         repos: vec![cwd],
+        roles: Vec::new(),
     }
 }
 
@@ -209,6 +212,7 @@ pub fn clear_session_state() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::RolePermissions;
 
     #[test]
     fn project_id_display_is_uuid_format() {
@@ -259,10 +263,12 @@ repos = ["/home/user/repos/other"]
             ProjectConfig {
                 name: "alpha".to_string(),
                 repos: vec![PathBuf::from("/tmp/alpha")],
+                roles: Vec::new(),
             },
             ProjectConfig {
                 name: "beta".to_string(),
                 repos: vec![PathBuf::from("/tmp/beta")],
+                roles: Vec::new(),
             },
         ];
 
@@ -284,6 +290,7 @@ repos = ["/home/user/repos/other"]
         let configs = vec![ProjectConfig {
             name: "test".to_string(),
             repos: vec![PathBuf::from("/tmp/test")],
+            roles: Vec::new(),
         }];
 
         let file = ConfigFile { projects: configs };
@@ -298,6 +305,7 @@ repos = ["/home/user/repos/other"]
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![PathBuf::from("/tmp/test")],
+            roles: Vec::new(),
         };
         let info = ProjectInfo::new(config);
         assert!(info.session_ids.is_empty());
@@ -325,6 +333,7 @@ repos = ["/home/user/repos/other"]
                     claude_session_id: "abc-123".to_string(),
                     cwd: Some(PathBuf::from("/tmp/repo")),
                     worktree: None,
+                    role: "developer".to_string(),
                 },
                 PersistedSession {
                     name: "Session 2".to_string(),
@@ -335,6 +344,7 @@ repos = ["/home/user/repos/other"]
                         worktree_path: PathBuf::from("/tmp/wt"),
                         branch: "feat".to_string(),
                     }),
+                    role: "reviewer".to_string(),
                 },
             ],
             session_counter: 2,
@@ -371,6 +381,7 @@ repos = ["/home/user/repos/other"]
                 claude_session_id: "abc-123".to_string(),
                 cwd: None,
                 worktree: None,
+                role: "developer".to_string(),
             }],
             session_counter: 1,
         };
@@ -432,5 +443,84 @@ claude_session_id = "abc-123"
         let state: PersistedState = toml::from_str(toml_str).unwrap();
         assert_eq!(state.session_counter, 0);
         assert_eq!(state.sessions.len(), 1);
+    }
+
+    #[test]
+    fn deserialize_config_with_roles() {
+        let toml_str = r#"
+[[projects]]
+name = "myapp"
+repos = ["/tmp/myapp"]
+
+[[projects.roles]]
+name = "developer"
+description = "Full access"
+
+[[projects.roles]]
+name = "reviewer"
+description = "Read-only"
+permission_mode = "plan"
+allowed_tools = ["Read", "Bash(git:*)"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.projects.len(), 1);
+        assert_eq!(config.projects[0].roles.len(), 2);
+        assert_eq!(config.projects[0].roles[0].name, "developer");
+        assert_eq!(config.projects[0].roles[1].name, "reviewer");
+        assert_eq!(
+            config.projects[0].roles[1].permissions.permission_mode,
+            Some("plan".to_string())
+        );
+    }
+
+    #[test]
+    fn serialize_roundtrip_with_roles() {
+        let configs = vec![ProjectConfig {
+            name: "myapp".to_string(),
+            repos: vec![PathBuf::from("/tmp/myapp")],
+            roles: vec![
+                RoleConfig {
+                    name: "developer".to_string(),
+                    description: "Full access".to_string(),
+                    permissions: RolePermissions::default(),
+                },
+                RoleConfig {
+                    name: "reviewer".to_string(),
+                    description: "Read-only".to_string(),
+                    permissions: RolePermissions {
+                        permission_mode: Some("plan".to_string()),
+                        allowed_tools: vec!["Read".to_string()],
+                        ..RolePermissions::default()
+                    },
+                },
+            ],
+        }];
+
+        let file = ConfigFile { projects: configs };
+        let serialized = toml::to_string_pretty(&file).unwrap();
+        let deserialized: ConfigFile = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.projects.len(), 1);
+        assert_eq!(deserialized.projects[0].roles.len(), 2);
+        assert_eq!(deserialized.projects[0].roles[0].name, "developer");
+        assert_eq!(deserialized.projects[0].roles[1].name, "reviewer");
+        assert_eq!(
+            deserialized.projects[0].roles[1]
+                .permissions
+                .permission_mode,
+            Some("plan".to_string())
+        );
+    }
+
+    #[test]
+    fn deserialize_config_without_roles_backward_compat() {
+        let toml_str = r#"
+[[projects]]
+name = "old-project"
+repos = ["/tmp/old"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.projects.len(), 1);
+        assert!(config.projects[0].roles.is_empty());
     }
 }

@@ -99,6 +99,7 @@ keys (intercepted for scrollback navigation).
 | `Ctrl+I` | Global | Toggle info panel (width >= 120) |
 | `j` / `Down` | Project list | Next project |
 | `k` / `Up` | Project list | Previous project |
+| `r` | Project list | Open role editor |
 | `Enter` | Project list | Focus session list |
 | `j` / `Down` | Session list | Next session |
 | `k` / `Up` | Session list | Previous session |
@@ -369,6 +370,75 @@ content. The thumb position is inverted from the offset
 visual expectations. When scrolled up, the block title shows a
 `[N↑]` indicator and the PTY cursor is hidden to avoid visual
 noise in historical output.
+
+---
+
+## Role Editor
+
+Roles can be managed from the TUI via a two-view modal
+accessed with `r` when the project list is focused.
+
+Projects start with no roles. Users add roles explicitly.
+When no roles are defined, sessions spawn with default
+(empty) permissions and no role selector is shown.
+
+### Allow / Ask / Deny Semantics
+
+Each role maps to Claude CLI flags:
+
+| Concept | CLI Flag | In TOML |
+|---------|----------|---------|
+| Allow (auto-approve) | `--allowed-tools "Read Bash(git:*)"` | `allowed_tools = ["Read", "Bash(git:*)"]` |
+| Deny (blocked) | `--disallowed-tools "Edit"` | `disallowed_tools = ["Edit"]` |
+| Ask (prompt user) | *(default for unlisted tools)* | *(omitted from both lists)* |
+| Permission mode | `--permission-mode plan` | `permission_mode = "plan"` |
+
+Bash scope patterns like `Bash(git:*)` and `Bash(cargo:*)`
+are supported in both allowed and disallowed tool lists.
+
+### Role List View
+
+Shows all roles for the active project. Supports
+add (`a`), edit (`e` / `Enter`), and delete (`d`).
+Pressing `Esc` saves changes to the config file and
+closes the modal.
+
+### Role Editor View
+
+Edits a single role with four text fields:
+
+- **Name** — role identifier (required, unique)
+- **Description** — human-readable summary
+- **Allowed Tools** — space-separated tool names
+  (auto-approved)
+- **Disallowed Tools** — space-separated tool names
+  (blocked)
+
+Permission mode defaults to `dontAsk` and can be
+overridden per-role via the config file
+(`permission_mode = "plan"` in the role's TOML block).
+
+`Tab` / `Shift+Tab` cycles between fields.
+`Enter` saves the role, `Esc` discards changes.
+
+### Keybindings (role list)
+
+| Key | Action |
+|-----|--------|
+| `j` / `Down` | Next role |
+| `k` / `Up` | Previous role |
+| `a` | Add new role |
+| `e` / `Enter` | Edit selected role |
+| `d` | Delete selected role |
+| `Esc` | Save and close |
+
+### Keybindings (role editor)
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Cycle fields |
+| `Enter` | Save role |
+| `Esc` | Discard changes |
 
 ---
 

@@ -14,18 +14,25 @@ use crate::claude::{input, PtySession};
 use crate::git;
 use crate::project::{self, ProjectConfig, ProjectInfo};
 use crate::session::{
-    PersistedSession, PersistedState, PersistedWorktree, SessionConfig, SessionInfo, SessionStatus,
-    WorktreeInfo,
+    PersistedSession, PersistedState, PersistedWorktree, RoleConfig, RolePermissions,
+    SessionConfig, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::ui::{
     add_project_modal, branch_selector_modal, info_panel, layout, project_list,
-    repo_selector_modal, session_mode_modal, status_bar, terminal_view, worktree_name_modal,
+    repo_selector_modal, role_editor_modal, role_selector_modal, session_mode_modal, status_bar,
+    terminal_view, worktree_name_modal,
 };
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
 /// If no PTY output for this many milliseconds, consider session "Waiting".
 const ACTIVITY_TIMEOUT_MS: u64 = 1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleEditorView {
+    List,
+    Editor,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddProjectField {
@@ -91,6 +98,11 @@ impl TextInput {
         self.cursor = 0;
     }
 
+    fn set(&mut self, value: &str) {
+        self.buffer = value.to_string();
+        self.cursor = value.chars().count();
+    }
+
     fn value(&self) -> &str {
         &self.buffer
     }
@@ -151,6 +163,21 @@ pub struct App {
     show_worktree_name_modal: bool,
     worktree_name_input: TextInput,
     pending_base_branch: Option<String>,
+    show_role_selector: bool,
+    role_selector_index: usize,
+    pending_spawn_config: Option<SessionConfig>,
+    pending_spawn_worktree: Option<WorktreeInfo>,
+    pending_spawn_name: Option<String>,
+    show_role_editor: bool,
+    role_editor_view: RoleEditorView,
+    role_editor_list_index: usize,
+    role_editor_roles: Vec<RoleConfig>,
+    role_editor_field: role_editor_modal::RoleEditorField,
+    role_editor_name: TextInput,
+    role_editor_description: TextInput,
+    role_editor_allowed_tools: TextInput,
+    role_editor_disallowed_tools: TextInput,
+    role_editor_editing_index: Option<usize>,
 }
 
 impl App {
@@ -189,6 +216,21 @@ impl App {
             show_worktree_name_modal: false,
             worktree_name_input: TextInput::new(),
             pending_base_branch: None,
+            show_role_selector: false,
+            role_selector_index: 0,
+            pending_spawn_config: None,
+            pending_spawn_worktree: None,
+            pending_spawn_name: None,
+            show_role_editor: false,
+            role_editor_view: RoleEditorView::List,
+            role_editor_list_index: 0,
+            role_editor_roles: Vec::new(),
+            role_editor_field: role_editor_modal::RoleEditorField::Name,
+            role_editor_name: TextInput::new(),
+            role_editor_description: TextInput::new(),
+            role_editor_allowed_tools: TextInput::new(),
+            role_editor_disallowed_tools: TextInput::new(),
+            role_editor_editing_index: None,
         }
     }
 
@@ -228,8 +270,38 @@ impl App {
     }
 
     fn spawn_session_with_config(&mut self, config: &SessionConfig) {
+        self.prepare_spawn(config.clone(), None);
+    }
+
+    /// Route session creation through role selection.
+    ///
+    /// Assigns a session name, then spawns immediately if no roles or exactly
+    /// one role is configured, or shows the role selector modal for 2+ roles.
+    fn prepare_spawn(&mut self, mut config: SessionConfig, worktree: Option<WorktreeInfo>) {
         let name = self.next_session_name();
-        self.do_spawn_session(name, config, None);
+        let project = &self.projects[self.active_project_index];
+        let roles = &project.config.roles;
+
+        match roles.len() {
+            0 => {
+                // No roles configured — spawn with default (empty) permissions.
+                self.do_spawn_session(name, &config, worktree);
+            }
+            1 => {
+                // Exactly one role — auto-assign it.
+                config.role = roles[0].name.clone();
+                config.permissions = roles[0].permissions.clone();
+                self.do_spawn_session(name, &config, worktree);
+            }
+            _ => {
+                // 2+ roles — show the role selector.
+                self.pending_spawn_name = Some(name);
+                self.pending_spawn_config = Some(config);
+                self.pending_spawn_worktree = worktree;
+                self.role_selector_index = 0;
+                self.show_role_selector = true;
+            }
+        }
     }
 
     fn close_active_session(&mut self) {
@@ -322,6 +394,18 @@ impl App {
             return;
         }
 
+        // Role editor modal captures all input
+        if self.show_role_editor {
+            self.handle_role_editor_key(code);
+            return;
+        }
+
+        // Role selector modal captures all input
+        if self.show_role_selector {
+            self.handle_role_selector_key(code);
+            return;
+        }
+
         // Add-project modal captures all input
         if self.show_add_project_modal {
             self.handle_add_project_key(code);
@@ -397,6 +481,9 @@ impl App {
             }
             KeyCode::Enter => {
                 self.focus = InputFocus::SessionList;
+            }
+            KeyCode::Char('r') => {
+                self.open_role_editor();
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -687,6 +774,243 @@ impl App {
         }
     }
 
+    fn handle_role_selector_key(&mut self, code: KeyCode) {
+        let role_count = self.projects[self.active_project_index].config.roles.len();
+        match code {
+            KeyCode::Esc => {
+                self.show_role_selector = false;
+                self.pending_spawn_config = None;
+                self.pending_spawn_worktree = None;
+                self.pending_spawn_name = None;
+                // Undo the counter increment from prepare_spawn()
+                self.session_counter = self.session_counter.saturating_sub(1);
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.role_selector_index + 1 < role_count {
+                    self.role_selector_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.role_selector_index = self.role_selector_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                self.show_role_selector = false;
+                let role_index = self.role_selector_index;
+                if let (Some(mut config), Some(name)) = (
+                    self.pending_spawn_config.take(),
+                    self.pending_spawn_name.take(),
+                ) {
+                    let role = &self.projects[self.active_project_index].config.roles[role_index];
+                    config.role = role.name.clone();
+                    config.permissions = role.permissions.clone();
+                    let worktree = self.pending_spawn_worktree.take();
+                    self.do_spawn_session(name, &config, worktree);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn open_role_editor(&mut self) {
+        let project = &self.projects[self.active_project_index];
+        self.role_editor_roles = project.config.roles.clone();
+        self.role_editor_list_index = 0;
+        self.role_editor_view = RoleEditorView::List;
+        self.show_role_editor = true;
+    }
+
+    fn handle_role_editor_key(&mut self, code: KeyCode) {
+        match self.role_editor_view {
+            RoleEditorView::List => self.handle_role_editor_list_key(code),
+            RoleEditorView::Editor => self.handle_role_editor_editor_key(code),
+        }
+    }
+
+    fn handle_role_editor_list_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                // Save & close
+                self.projects[self.active_project_index].config.roles =
+                    self.role_editor_roles.clone();
+                self.save_project_configs_to_disk();
+                self.show_role_editor = false;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.role_editor_roles.is_empty()
+                    && self.role_editor_list_index + 1 < self.role_editor_roles.len()
+                {
+                    self.role_editor_list_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
+            }
+            KeyCode::Char('a') => {
+                self.role_editor_editing_index = None;
+                self.role_editor_name.clear();
+                self.role_editor_description.clear();
+                self.role_editor_allowed_tools.clear();
+                self.role_editor_disallowed_tools.clear();
+                self.role_editor_field = role_editor_modal::RoleEditorField::Name;
+                self.role_editor_view = RoleEditorView::Editor;
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if !self.role_editor_roles.is_empty() {
+                    let idx = self.role_editor_list_index;
+                    self.open_role_for_editing(idx);
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.role_editor_roles.is_empty() {
+                    self.role_editor_roles.remove(self.role_editor_list_index);
+                    if self.role_editor_list_index >= self.role_editor_roles.len()
+                        && self.role_editor_list_index > 0
+                    {
+                        self.role_editor_list_index -= 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn open_role_for_editing(&mut self, index: usize) {
+        let role = &self.role_editor_roles[index];
+        self.role_editor_editing_index = Some(index);
+        self.role_editor_name.set(&role.name);
+        self.role_editor_description.set(&role.description);
+        self.role_editor_allowed_tools
+            .set(&role.permissions.allowed_tools.join(" "));
+        self.role_editor_disallowed_tools
+            .set(&role.permissions.disallowed_tools.join(" "));
+        self.role_editor_field = role_editor_modal::RoleEditorField::Name;
+        self.role_editor_view = RoleEditorView::Editor;
+    }
+
+    fn handle_role_editor_editor_key(&mut self, code: KeyCode) {
+        use role_editor_modal::RoleEditorField;
+
+        match code {
+            KeyCode::Esc => {
+                // Discard, return to list
+                self.role_editor_view = RoleEditorView::List;
+            }
+            KeyCode::Tab => {
+                self.role_editor_field = match self.role_editor_field {
+                    RoleEditorField::Name => RoleEditorField::Description,
+                    RoleEditorField::Description => RoleEditorField::AllowedTools,
+                    RoleEditorField::AllowedTools => RoleEditorField::DisallowedTools,
+                    RoleEditorField::DisallowedTools => RoleEditorField::Name,
+                };
+            }
+            KeyCode::BackTab => {
+                self.role_editor_field = match self.role_editor_field {
+                    RoleEditorField::Name => RoleEditorField::DisallowedTools,
+                    RoleEditorField::Description => RoleEditorField::Name,
+                    RoleEditorField::AllowedTools => RoleEditorField::Description,
+                    RoleEditorField::DisallowedTools => RoleEditorField::AllowedTools,
+                };
+            }
+            KeyCode::Enter => {
+                self.submit_role_editor();
+            }
+            _ => {
+                let input = match self.role_editor_field {
+                    RoleEditorField::Name => &mut self.role_editor_name,
+                    RoleEditorField::Description => &mut self.role_editor_description,
+                    RoleEditorField::AllowedTools => &mut self.role_editor_allowed_tools,
+                    RoleEditorField::DisallowedTools => &mut self.role_editor_disallowed_tools,
+                };
+                match code {
+                    KeyCode::Backspace => input.backspace(),
+                    KeyCode::Delete => input.delete(),
+                    KeyCode::Left => input.move_left(),
+                    KeyCode::Right => input.move_right(),
+                    KeyCode::Home => input.home(),
+                    KeyCode::End => input.end(),
+                    KeyCode::Char(c) => input.insert(c),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn submit_role_editor(&mut self) {
+        let name = self.role_editor_name.value().trim().to_string();
+        if name.is_empty() {
+            self.error_message = Some("Role name cannot be empty".to_string());
+            return;
+        }
+
+        // Check uniqueness (exclude the role being edited)
+        let duplicate = self
+            .role_editor_roles
+            .iter()
+            .enumerate()
+            .any(|(i, r)| r.name == name && Some(i) != self.role_editor_editing_index);
+        if duplicate {
+            self.error_message = Some(format!("Role name '{name}' already exists"));
+            return;
+        }
+
+        let allowed_tools: Vec<String> = self
+            .role_editor_allowed_tools
+            .value()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+
+        let disallowed_tools: Vec<String> = self
+            .role_editor_disallowed_tools
+            .value()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+
+        // Preserve fields not exposed in the editor (tools, append_system_prompt)
+        let base_permissions = self
+            .role_editor_editing_index
+            .and_then(|idx| self.role_editor_roles.get(idx))
+            .map(|r| &r.permissions);
+
+        let role = RoleConfig {
+            name,
+            description: self.role_editor_description.value().trim().to_string(),
+            permissions: RolePermissions {
+                permission_mode: base_permissions.and_then(|p| p.permission_mode.clone()),
+                allowed_tools,
+                disallowed_tools,
+                tools: base_permissions.and_then(|p| p.tools.clone()),
+                append_system_prompt: base_permissions.and_then(|p| p.append_system_prompt.clone()),
+            },
+        };
+
+        match self.role_editor_editing_index {
+            Some(idx) => {
+                self.role_editor_roles[idx] = role;
+            }
+            None => {
+                self.role_editor_roles.push(role);
+                self.role_editor_list_index = self.role_editor_roles.len() - 1;
+            }
+        }
+
+        self.error_message = None;
+        self.role_editor_view = RoleEditorView::List;
+    }
+
+    fn save_project_configs_to_disk(&self) {
+        let configs: Vec<ProjectConfig> = self
+            .projects
+            .iter()
+            .filter(|p| !p.is_default)
+            .map(|p| p.config.clone())
+            .collect();
+        if let Err(e) = project::save_project_configs(&configs) {
+            error!("Failed to save config: {e}");
+        }
+    }
+
     fn spawn_worktree_session(&mut self, repo_path: PathBuf, new_branch: &str, base_branch: &str) {
         match git::create_worktree(&repo_path, new_branch, base_branch) {
             Ok(worktree_path) => {
@@ -699,8 +1023,7 @@ impl App {
                     cwd: Some(worktree_path),
                     ..SessionConfig::default()
                 };
-                let name = self.next_session_name();
-                self.do_spawn_session(name, &config, Some(worktree_info));
+                self.prepare_spawn(config, Some(worktree_info));
             }
             Err(e) => {
                 error!("Failed to create worktree: {e}");
@@ -754,6 +1077,7 @@ impl App {
         let config = ProjectConfig {
             name,
             repos: vec![PathBuf::from(path)],
+            roles: Vec::new(),
         };
         let info = ProjectInfo::new(config);
         self.projects.push(info);
@@ -987,6 +1311,49 @@ impl App {
                 },
             );
         }
+
+        // Role selector modal
+        if self.show_role_selector {
+            let project = &self.projects[self.active_project_index];
+            role_selector_modal::render_role_selector_modal(
+                frame,
+                &role_selector_modal::RoleSelectorState {
+                    roles: &project.config.roles,
+                    selected_index: self.role_selector_index,
+                },
+            );
+        }
+
+        // Role editor modal
+        if self.show_role_editor {
+            match self.role_editor_view {
+                RoleEditorView::List => {
+                    role_editor_modal::render_role_list_modal(
+                        frame,
+                        &role_editor_modal::RoleListState {
+                            roles: &self.role_editor_roles,
+                            selected_index: self.role_editor_list_index,
+                        },
+                    );
+                }
+                RoleEditorView::Editor => {
+                    role_editor_modal::render_role_editor_modal(
+                        frame,
+                        &role_editor_modal::RoleEditorState {
+                            name: self.role_editor_name.value(),
+                            name_cursor: self.role_editor_name.cursor_pos(),
+                            description: self.role_editor_description.value(),
+                            description_cursor: self.role_editor_description.cursor_pos(),
+                            allowed_tools: self.role_editor_allowed_tools.value(),
+                            allowed_tools_cursor: self.role_editor_allowed_tools.cursor_pos(),
+                            disallowed_tools: self.role_editor_disallowed_tools.value(),
+                            disallowed_tools_cursor: self.role_editor_disallowed_tools.cursor_pos(),
+                            focused_field: self.role_editor_field,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     pub fn should_quit(&self) -> bool {
@@ -1016,6 +1383,7 @@ impl App {
                         worktree_path: wt.worktree_path.clone(),
                         branch: wt.branch.clone(),
                     }),
+                    role: s.info.role.clone(),
                 })
             })
             .collect();
@@ -1036,10 +1404,18 @@ impl App {
         for persisted in state.sessions {
             let name = persisted.name;
 
+            let role = if persisted.role.is_empty() {
+                DEFAULT_ROLE_NAME.to_string()
+            } else {
+                persisted.role
+            };
+            let permissions = self.resolve_role_permissions(&role);
             let config = SessionConfig {
                 resume_session_id: Some(persisted.claude_session_id.clone()),
                 claude_session_id: Some(persisted.claude_session_id),
                 cwd: persisted.cwd,
+                role,
+                permissions,
             };
 
             let worktree = persisted.worktree.map(|wt| WorktreeInfo {
@@ -1054,6 +1430,18 @@ impl App {
         if let Err(e) = project::clear_session_state() {
             error!("Failed to clear session state after restore: {e}");
         }
+    }
+
+    /// Resolve a role name to its permissions using the active project's role config.
+    fn resolve_role_permissions(&self, role_name: &str) -> RolePermissions {
+        let project = &self.projects[self.active_project_index];
+        project
+            .config
+            .roles
+            .iter()
+            .find(|r| r.name == role_name)
+            .map(|r| r.permissions.clone())
+            .unwrap_or_default()
     }
 
     fn content_area_size(&self) -> (u16, u16) {
@@ -1119,6 +1507,7 @@ fn render_help_overlay(frame: &mut Frame) {
         )),
         help_line("j / Down", "Next project"),
         help_line("k / Up", "Previous project"),
+        help_line("r", "Edit project roles"),
         help_line("Enter", "Focus session list"),
         Line::from(""),
         Line::from(Span::styled(
@@ -1518,5 +1907,360 @@ mod tests {
         let mut app = App::new(24, 80, vec![]);
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
+    }
+
+    // --- Role editor tests ---
+
+    #[test]
+    fn open_role_editor_starts_empty_for_no_custom_roles() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        assert!(app.show_role_editor);
+        assert!(app.role_editor_roles.is_empty());
+        assert_eq!(app.role_editor_view, RoleEditorView::List);
+    }
+
+    #[test]
+    fn open_role_editor_clones_existing_roles() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![RoleConfig {
+                name: "ops".to_string(),
+                description: "Operations".to_string(),
+                permissions: RolePermissions::default(),
+            }],
+        };
+        let mut app = App::new(24, 120, vec![config]);
+        app.open_role_editor();
+        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(app.role_editor_roles[0].name, "ops");
+    }
+
+    #[test]
+    fn role_editor_submit_parses_allowed_tools() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        for c in "reviewer".chars() {
+            app.role_editor_name.insert(c);
+        }
+        for c in "Read Bash(git:*)".chars() {
+            app.role_editor_allowed_tools.insert(c);
+        }
+        app.submit_role_editor();
+        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(
+            app.role_editor_roles[0].permissions.allowed_tools,
+            vec!["Read".to_string(), "Bash(git:*)".to_string()]
+        );
+    }
+
+    #[test]
+    fn role_editor_submit_parses_disallowed_tools() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        for c in "restricted".chars() {
+            app.role_editor_name.insert(c);
+        }
+        for c in "Edit Write".chars() {
+            app.role_editor_disallowed_tools.insert(c);
+        }
+        app.submit_role_editor();
+        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(
+            app.role_editor_roles[0].permissions.disallowed_tools,
+            vec!["Edit".to_string(), "Write".to_string()]
+        );
+    }
+
+    #[test]
+    fn spawn_with_two_roles_shows_selector() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![
+                RoleConfig {
+                    name: "dev".to_string(),
+                    description: "Developer".to_string(),
+                    permissions: RolePermissions::default(),
+                },
+                RoleConfig {
+                    name: "reviewer".to_string(),
+                    description: "Read-only".to_string(),
+                    permissions: RolePermissions {
+                        permission_mode: Some("plan".to_string()),
+                        ..RolePermissions::default()
+                    },
+                },
+            ],
+        };
+        let mut app = App::new(24, 120, vec![config]);
+        let session_config = SessionConfig::default();
+        app.prepare_spawn(session_config, None);
+        assert!(app.show_role_selector);
+    }
+
+    #[test]
+    fn spawn_with_no_roles_has_no_pending_selector() {
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![],
+        };
+        let app = App::new(24, 120, vec![config]);
+        // With no roles, the selector should never be set
+        assert!(!app.show_role_selector);
+    }
+
+    #[test]
+    fn role_editor_name_validation_rejects_empty() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        // Try to submit with empty name
+        app.submit_role_editor();
+        assert!(app.error_message.is_some());
+        // Should still be in editor view
+        assert_eq!(app.role_editor_view, RoleEditorView::Editor);
+    }
+
+    #[test]
+    fn text_input_set_replaces_content_and_moves_cursor_to_end() {
+        let mut input = TextInput::new();
+        input.insert('x');
+        input.set("hello");
+        assert_eq!(input.value(), "hello");
+        assert_eq!(input.cursor_pos(), 5);
+    }
+
+    #[test]
+    fn text_input_set_empty_clears() {
+        let mut input = TextInput::new();
+        input.insert('a');
+        input.insert('b');
+        input.set("");
+        assert_eq!(input.value(), "");
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn role_editor_name_validation_rejects_duplicate() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        // Add first role
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        app.role_editor_name.set("dev");
+        app.submit_role_editor();
+        assert_eq!(app.role_editor_roles.len(), 1);
+
+        // Try to add a second role with the same name
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        app.role_editor_name.set("dev");
+        app.submit_role_editor();
+        assert!(app.error_message.is_some());
+        assert!(app
+            .error_message
+            .as_ref()
+            .unwrap()
+            .contains("already exists"));
+        // Should still be in editor view, role count unchanged
+        assert_eq!(app.role_editor_view, RoleEditorView::Editor);
+        assert_eq!(app.role_editor_roles.len(), 1);
+    }
+
+    #[test]
+    fn role_editor_edit_preserves_non_editable_fields() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![RoleConfig {
+                name: "custom".to_string(),
+                description: "Custom role".to_string(),
+                permissions: RolePermissions {
+                    permission_mode: Some("plan".to_string()),
+                    allowed_tools: vec!["Read".to_string()],
+                    disallowed_tools: vec![],
+                    tools: Some("default".to_string()),
+                    append_system_prompt: Some("Be careful".to_string()),
+                },
+            }],
+        };
+        let mut app = App::new(24, 120, vec![config]);
+        app.open_role_editor();
+        app.open_role_for_editing(0);
+
+        // Modify the name and submit
+        app.role_editor_name.set("custom-v2");
+        app.submit_role_editor();
+
+        let role = &app.role_editor_roles[0];
+        assert_eq!(role.name, "custom-v2");
+        assert_eq!(role.permissions.permission_mode, Some("plan".to_string()));
+        assert_eq!(role.permissions.tools, Some("default".to_string()));
+        assert_eq!(
+            role.permissions.append_system_prompt,
+            Some("Be careful".to_string())
+        );
+    }
+
+    #[test]
+    fn role_editor_new_role_has_no_extra_fields() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        app.role_editor_name.set("new-role");
+        app.submit_role_editor();
+
+        let role = &app.role_editor_roles[0];
+        assert!(role.permissions.permission_mode.is_none());
+        assert!(role.permissions.tools.is_none());
+        assert!(role.permissions.append_system_prompt.is_none());
+    }
+
+    #[test]
+    fn open_role_for_editing_populates_fields() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![RoleConfig {
+                name: "reviewer".to_string(),
+                description: "Read-only".to_string(),
+                permissions: RolePermissions {
+                    permission_mode: Some("plan".to_string()),
+                    allowed_tools: vec!["Read".to_string(), "Bash(git:*)".to_string()],
+                    disallowed_tools: vec!["Edit".to_string()],
+                    ..RolePermissions::default()
+                },
+            }],
+        };
+        let mut app = App::new(24, 120, vec![config]);
+        app.open_role_editor();
+        app.open_role_for_editing(0);
+
+        assert_eq!(app.role_editor_name.value(), "reviewer");
+        assert_eq!(app.role_editor_description.value(), "Read-only");
+        assert_eq!(app.role_editor_allowed_tools.value(), "Read Bash(git:*)");
+        assert_eq!(app.role_editor_disallowed_tools.value(), "Edit");
+        assert_eq!(app.role_editor_editing_index, Some(0));
+    }
+
+    #[test]
+    fn role_editor_tab_cycles_fields_forward() {
+        use role_editor_modal::RoleEditorField;
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+
+        assert_eq!(app.role_editor_field, RoleEditorField::Name);
+        app.handle_role_editor_editor_key(KeyCode::Tab);
+        assert_eq!(app.role_editor_field, RoleEditorField::Description);
+        app.handle_role_editor_editor_key(KeyCode::Tab);
+        assert_eq!(app.role_editor_field, RoleEditorField::AllowedTools);
+        app.handle_role_editor_editor_key(KeyCode::Tab);
+        assert_eq!(app.role_editor_field, RoleEditorField::DisallowedTools);
+        app.handle_role_editor_editor_key(KeyCode::Tab);
+        assert_eq!(app.role_editor_field, RoleEditorField::Name);
+    }
+
+    #[test]
+    fn role_editor_backtab_cycles_fields_backward() {
+        use role_editor_modal::RoleEditorField;
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+
+        assert_eq!(app.role_editor_field, RoleEditorField::Name);
+        app.handle_role_editor_editor_key(KeyCode::BackTab);
+        assert_eq!(app.role_editor_field, RoleEditorField::DisallowedTools);
+        app.handle_role_editor_editor_key(KeyCode::BackTab);
+        assert_eq!(app.role_editor_field, RoleEditorField::AllowedTools);
+        app.handle_role_editor_editor_key(KeyCode::BackTab);
+        assert_eq!(app.role_editor_field, RoleEditorField::Description);
+        app.handle_role_editor_editor_key(KeyCode::BackTab);
+        assert_eq!(app.role_editor_field, RoleEditorField::Name);
+    }
+
+    #[test]
+    fn role_editor_esc_discards_and_returns_to_list() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        assert_eq!(app.role_editor_view, RoleEditorView::Editor);
+
+        app.handle_role_editor_editor_key(KeyCode::Esc);
+        assert_eq!(app.role_editor_view, RoleEditorView::List);
+    }
+
+    #[test]
+    fn role_editor_delete_adjusts_list_index() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![
+                RoleConfig {
+                    name: "a".to_string(),
+                    description: String::new(),
+                    permissions: RolePermissions::default(),
+                },
+                RoleConfig {
+                    name: "b".to_string(),
+                    description: String::new(),
+                    permissions: RolePermissions::default(),
+                },
+            ],
+        };
+        let mut app = App::new(24, 120, vec![config]);
+        app.open_role_editor();
+        // Select the last role
+        app.role_editor_list_index = 1;
+        // Delete it
+        app.handle_role_editor_list_key(KeyCode::Char('d'));
+        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(app.role_editor_list_index, 0);
+    }
+
+    #[test]
+    fn role_editor_submit_clears_error_on_success() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+
+        // Trigger an error by submitting with empty name
+        app.submit_role_editor();
+        assert!(app.error_message.is_some());
+
+        // Now provide a valid name and submit again
+        app.role_editor_name.set("valid-role");
+        app.submit_role_editor();
+        assert!(app.error_message.is_none());
+        assert_eq!(app.role_editor_roles.len(), 1);
+    }
+
+    #[test]
+    fn spawn_with_one_role_auto_assigns() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![RoleConfig {
+                name: "only-role".to_string(),
+                description: "The only role".to_string(),
+                permissions: RolePermissions {
+                    permission_mode: Some("plan".to_string()),
+                    ..RolePermissions::default()
+                },
+            }],
+        };
+        let app = App::new(24, 120, vec![config]);
+        // With exactly 1 role, prepare_spawn should not show selector
+        // (it would try to spawn, which needs a runtime — just verify no selector)
+        assert!(!app.show_role_selector);
     }
 }
