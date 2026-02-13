@@ -89,6 +89,13 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: rumdl-check
+        name: Markdown lint check
+        entry: rumdl check .
+        language: system
+        types: [markdown]
+        pass_filenames: false
+
       - id: cocogitto-check
         name: Check commit history
         entry: cog check

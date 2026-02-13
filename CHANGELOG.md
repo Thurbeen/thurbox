@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - Initial project setup with Rust TUI framework (Ratatui)
 - Basic application structure with modules for Claude, Git, and UI
 - Pre-commit hooks using prek

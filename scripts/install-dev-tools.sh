@@ -23,6 +23,7 @@ $INSTALL_CMD cargo-nextest
 $INSTALL_CMD cargo-modules
 $INSTALL_CMD cargo-deny
 $INSTALL_CMD cargo-audit
+$INSTALL_CMD rumdl
 
 # Install nightly tools
 echo ""
