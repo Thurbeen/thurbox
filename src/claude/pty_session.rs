@@ -1,8 +1,9 @@
 use std::io::{Read, Write};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -24,12 +25,20 @@ const DA2_RESPONSE: &[u8] = b"\x1b[>1;279;0c"; // xterm version 279
 const KITTY_KEYBOARD_QUERY: &[u8] = b"\x1b[?u";
 const KITTY_KEYBOARD_RESPONSE: &[u8] = b"\x1b[?0u"; // flags=0, query acknowledged
 
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 pub struct PtySession {
     pub info: SessionInfo,
     pub parser: Arc<Mutex<vt100::Parser>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
 }
 
 impl PtySession {
@@ -79,6 +88,7 @@ impl PtySession {
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
         let exited = Arc::new(AtomicBool::new(false));
+        let last_output_at = Arc::new(AtomicU64::new(now_millis()));
 
         // Writer task: receives input bytes and writes to PTY
         let (input_tx, input_rx) = mpsc::unbounded_channel();
@@ -87,9 +97,17 @@ impl PtySession {
         // Reader task: reads PTY output and feeds into vt100 parser
         let parser_clone = Arc::clone(&parser);
         let exited_clone = Arc::clone(&exited);
+        let last_output_clone = Arc::clone(&last_output_at);
         let response_tx = input_tx.clone();
         tokio::task::spawn_blocking(move || {
-            Self::reader_loop(reader, parser_clone, exited_clone, child, response_tx);
+            Self::reader_loop(
+                reader,
+                parser_clone,
+                exited_clone,
+                child,
+                last_output_clone,
+                response_tx,
+            );
         });
 
         let mut info = SessionInfo::new(name);
@@ -103,6 +121,7 @@ impl PtySession {
             input_tx,
             master: pair.master,
             exited,
+            last_output_at,
         })
     }
 
@@ -111,6 +130,7 @@ impl PtySession {
         parser: Arc<Mutex<vt100::Parser>>,
         exited: Arc<AtomicBool>,
         mut child: Box<dyn portable_pty::Child + Send + Sync>,
+        last_output_at: Arc<AtomicU64>,
         response_tx: mpsc::UnboundedSender<Vec<u8>>,
     ) {
         let mut buf = [0u8; 4096];
@@ -122,6 +142,7 @@ impl PtySession {
                 }
                 Ok(n) => {
                     let data = &buf[..n];
+                    last_output_at.store(now_millis(), Ordering::Relaxed);
                     Self::respond_to_queries(data, &response_tx);
                     if let Ok(mut p) = parser.lock() {
                         p.process(data);
@@ -214,6 +235,10 @@ impl PtySession {
         self.exited.load(Ordering::SeqCst)
     }
 
+    pub fn millis_since_last_output(&self) -> u64 {
+        now_millis().saturating_sub(self.last_output_at.load(Ordering::Relaxed))
+    }
+
     /// Graceful shutdown: drop the input sender (closes the writer task)
     /// and drop the master PTY (sends SIGHUP to the child).
     pub fn shutdown(self) {
@@ -242,6 +267,7 @@ impl PtySession {
             input_tx,
             master: pair.master,
             exited: Arc::new(AtomicBool::new(false)),
+            last_output_at: Arc::new(AtomicU64::new(now_millis())),
         }
     }
 }

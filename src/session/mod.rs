@@ -28,7 +28,8 @@ impl fmt::Display for SessionId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
-    Running,
+    Busy,
+    Waiting,
     Idle,
     Error,
 }
@@ -36,7 +37,8 @@ pub enum SessionStatus {
 impl SessionStatus {
     pub fn icon(self) -> &'static str {
         match self {
-            Self::Running => "●",
+            Self::Busy => "●",
+            Self::Waiting => "◉",
             Self::Idle => "○",
             Self::Error => "✗",
         }
@@ -46,7 +48,8 @@ impl SessionStatus {
 impl fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Running => write!(f, "Running"),
+            Self::Busy => write!(f, "Busy"),
+            Self::Waiting => write!(f, "Waiting"),
             Self::Idle => write!(f, "Idle"),
             Self::Error => write!(f, "Error"),
         }
@@ -67,7 +70,7 @@ impl SessionInfo {
         Self {
             id: SessionId::default(),
             name,
-            status: SessionStatus::Running,
+            status: SessionStatus::Busy,
             worktree: None,
             claude_session_id: None,
             cwd: None,
@@ -127,23 +130,25 @@ mod tests {
 
     #[test]
     fn session_status_display() {
-        assert_eq!(SessionStatus::Running.to_string(), "Running");
+        assert_eq!(SessionStatus::Busy.to_string(), "Busy");
+        assert_eq!(SessionStatus::Waiting.to_string(), "Waiting");
         assert_eq!(SessionStatus::Idle.to_string(), "Idle");
         assert_eq!(SessionStatus::Error.to_string(), "Error");
     }
 
     #[test]
     fn session_status_icon() {
-        assert_eq!(SessionStatus::Running.icon(), "●");
+        assert_eq!(SessionStatus::Busy.icon(), "●");
+        assert_eq!(SessionStatus::Waiting.icon(), "◉");
         assert_eq!(SessionStatus::Idle.icon(), "○");
         assert_eq!(SessionStatus::Error.icon(), "✗");
     }
 
     #[test]
-    fn session_info_new_starts_running() {
+    fn session_info_new_starts_busy() {
         let info = SessionInfo::new("Test".to_string());
         assert_eq!(info.name, "Test");
-        assert_eq!(info.status, SessionStatus::Running);
+        assert_eq!(info.status, SessionStatus::Busy);
     }
 
     #[test]

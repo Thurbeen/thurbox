@@ -129,7 +129,10 @@ fn render_session_section(
             };
 
             let mut spans = vec![
-                Span::styled(format!("{} ", info.status.icon()), style),
+                Span::styled(
+                    format!("{} ", info.status.icon()),
+                    Style::default().fg(super::status_color(info.status)),
+                ),
                 Span::styled(&info.name, style),
             ];
 

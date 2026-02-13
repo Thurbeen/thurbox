@@ -24,6 +24,9 @@ use crate::ui::{
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
+/// If no PTY output for this many milliseconds, consider session "Waiting".
+const ACTIVITY_TIMEOUT_MS: u64 = 1000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddProjectField {
     Name,
@@ -824,9 +827,13 @@ impl App {
 
     pub fn tick(&mut self) {
         for session in &mut self.sessions {
-            if session.has_exited() && session.info.status == SessionStatus::Running {
-                session.info.status = SessionStatus::Idle;
-            }
+            session.info.status = if session.has_exited() {
+                SessionStatus::Idle
+            } else if session.millis_since_last_output() > ACTIVITY_TIMEOUT_MS {
+                SessionStatus::Waiting
+            } else {
+                SessionStatus::Busy
+            };
         }
     }
 
