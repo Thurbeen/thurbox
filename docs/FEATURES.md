@@ -91,7 +91,7 @@ as global commands.
 |-----|---------|--------|
 | `Ctrl+Q` | Global | Quit Thurbox |
 | `Ctrl+N` | Project list | Add new project |
-| `Ctrl+N` | Session list / Terminal | New session (selects repo if 2+) |
+| `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) |
 | `Ctrl+X` | Global | Close active session |
 | `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal |
 | `Ctrl+I` | Global | Toggle info panel (width >= 120) |
@@ -106,6 +106,16 @@ as global commands.
 | `k` / `Up` | Repo selector | Previous repo |
 | `Enter` | Repo selector | Select repo and spawn session |
 | `Esc` | Repo selector | Cancel selection |
+| `j` / `Down` | Session mode modal | Next mode |
+| `k` / `Up` | Session mode modal | Previous mode |
+| `Enter` | Session mode modal | Select mode |
+| `Esc` | Session mode modal | Cancel |
+| `j` / `Down` | Base branch selector | Next branch |
+| `k` / `Up` | Base branch selector | Previous branch |
+| `Enter` | Base branch selector | Select base and open name prompt |
+| `Esc` | Base branch selector | Cancel |
+| `Enter` | New branch prompt | Confirm name, create branch and worktree |
+| `Esc` | New branch prompt | Cancel |
 | All other keys | Focused terminal | Forwarded to PTY |
 
 ---
@@ -185,6 +195,78 @@ if real demand emerges.
 
 ---
 
+## Git Worktree Integration
+
+Sessions can optionally run inside git worktrees for branch
+isolation. This is opt-in: after pressing `Ctrl+N`, a session
+mode selector modal asks "Normal" or "Worktree".
+
+### Flow
+
+1. `Ctrl+N` triggers session creation.
+2. If the project has 2+ repos, a repo selector appears first.
+3. A session mode modal offers "Normal" (spawn in repo root)
+   or "Worktree" (spawn in an isolated worktree).
+4. Choosing "Worktree" opens a base branch selector listing
+   local branches from the selected repo.
+5. Selecting a base branch opens a prompt for the new branch
+   name. The user types the name for the new branch to create.
+6. Confirming the name creates a new git branch (from the
+   selected base) in a worktree and spawns the session inside it.
+7. For projects with 0 repos, sessions spawn in `$HOME`
+   with no mode modal (worktrees require a git repo).
+
+### Worktree storage
+
+Worktrees are created at
+`<repo>/.git/thurbox-worktrees/<sanitized-branch>`,
+where `/` in branch names is replaced by `-`.
+
+### Auto-cleanup
+
+- Closing a worktree session (`Ctrl+X`) automatically removes
+  the worktree via `git worktree remove --force`.
+- Quitting Thurbox (`Ctrl+Q`) cleans up all active worktrees
+  before shutdown.
+- Cleanup errors are logged but do not block session close
+  or app shutdown.
+
+### UI indicators
+
+- **Terminal title**: Worktree sessions show the branch in
+  the title bar: `my-session [feature/foo] [Running]`.
+- **Session list**: Branch name appears next to worktree
+  sessions with a green `[branch]` badge.
+- **Info panel**: Shows a "Worktree" section with branch name
+  and worktree path when viewing a worktree session.
+
+### Keybindings (session mode modal)
+
+| Key | Action |
+|-----|--------|
+| `j` / `Down` | Next option |
+| `k` / `Up` | Previous option |
+| `Enter` | Select mode |
+| `Esc` | Cancel |
+
+### Keybindings (base branch selector)
+
+| Key | Action |
+|-----|--------|
+| `j` / `Down` | Next branch |
+| `k` / `Up` | Previous branch |
+| `Enter` | Select base branch and open name prompt |
+| `Esc` | Cancel |
+
+### Keybindings (new branch name prompt)
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Confirm name, create branch and worktree |
+| `Esc` | Cancel |
+
+---
+
 ## Planned Features
 
 Directional intent, not commitments.
@@ -192,8 +274,6 @@ These may change as the project evolves.
 
 - **Multi-session orchestration**: Run N Claude Code instances
   side-by-side, switch between them, broadcast input to all.
-- **Git worktree integration**: Automatically create worktrees
-  for parallel tasks, one session per worktree.
 - **Session persistence**: Save/restore session layouts
   and PTY history across restarts.
 - **Task delegation**: Split a task across multiple sessions

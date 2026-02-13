@@ -16,7 +16,11 @@ pub fn render_terminal(
     info: &SessionInfo,
     focused: bool,
 ) {
-    let title = format!(" {} [{}] ", info.name, info.status);
+    let title = if let Some(wt) = &info.worktree {
+        format!(" {} [{}] [{}] ", info.name, wt.branch, info.status)
+    } else {
+        format!(" {} [{}] ", info.name, info.status)
+    };
     let block = focused_block(&title, focused);
 
     let pseudo_term = PseudoTerminal::new(parser.screen())

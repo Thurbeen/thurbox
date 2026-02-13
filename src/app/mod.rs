@@ -11,11 +11,12 @@ use ratatui::{
 use tracing::error;
 
 use crate::claude::{input, PtySession};
+use crate::git;
 use crate::project::{self, ProjectConfig, ProjectInfo};
-use crate::session::{SessionConfig, SessionInfo, SessionStatus};
+use crate::session::{SessionConfig, SessionInfo, SessionStatus, WorktreeInfo};
 use crate::ui::{
-    add_project_modal, info_panel, layout, project_list, repo_selector_modal, status_bar,
-    terminal_view,
+    add_project_modal, branch_selector_modal, info_panel, layout, project_list,
+    repo_selector_modal, session_mode_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +132,15 @@ pub struct App {
     add_project_field: AddProjectField,
     show_repo_selector: bool,
     repo_selector_index: usize,
+    show_session_mode_modal: bool,
+    session_mode_index: usize,
+    show_branch_selector: bool,
+    branch_selector_index: usize,
+    available_branches: Vec<String>,
+    pending_repo_path: Option<PathBuf>,
+    show_worktree_name_modal: bool,
+    worktree_name_input: TextInput,
+    pending_base_branch: Option<String>,
 }
 
 impl App {
@@ -160,6 +170,15 @@ impl App {
             add_project_field: AddProjectField::Name,
             show_repo_selector: false,
             repo_selector_index: 0,
+            show_session_mode_modal: false,
+            session_mode_index: 0,
+            show_branch_selector: false,
+            branch_selector_index: 0,
+            available_branches: Vec::new(),
+            pending_repo_path: None,
+            show_worktree_name_modal: false,
+            worktree_name_input: TextInput::new(),
+            pending_base_branch: None,
         }
     }
 
@@ -174,11 +193,9 @@ impl App {
                 self.spawn_session_with_config(&config);
             }
             1 => {
-                let config = SessionConfig {
-                    cwd: Some(repos[0].clone()),
-                    ..SessionConfig::default()
-                };
-                self.spawn_session_with_config(&config);
+                self.pending_repo_path = Some(repos[0].clone());
+                self.session_mode_index = 0;
+                self.show_session_mode_modal = true;
             }
             _ => {
                 self.repo_selector_index = 0;
@@ -198,26 +215,7 @@ impl App {
     fn spawn_session_with_config(&mut self, config: &SessionConfig) {
         self.session_counter += 1;
         let name = format!("Session {}", self.session_counter);
-        let (rows, cols) = self.content_area_size();
-
-        match PtySession::spawn_with_config(name, rows, cols, config) {
-            Ok(session) => {
-                let session_id = session.info.id;
-                self.sessions.push(session);
-                self.active_index = self.sessions.len() - 1;
-                self.focus = InputFocus::Terminal;
-                self.error_message = None;
-
-                // Track session in the active project
-                if let Some(project) = self.projects.get_mut(self.active_project_index) {
-                    project.session_ids.push(session_id);
-                }
-            }
-            Err(e) => {
-                error!("Failed to spawn session: {e}");
-                self.error_message = Some(format!("Failed to start claude: {e:#}"));
-            }
-        }
+        self.do_spawn_session(name, config, None);
     }
 
     fn close_active_session(&mut self) {
@@ -226,6 +224,14 @@ impl App {
         }
 
         let session_id = self.sessions[self.active_index].info.id;
+
+        // Clean up worktree if present
+        if let Some(wt) = &self.sessions[self.active_index].info.worktree {
+            if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
+                error!("Failed to remove worktree: {e}");
+            }
+        }
+
         self.sessions.remove(self.active_index);
 
         // Remove session from its project
@@ -279,6 +285,24 @@ impl App {
         // Repo selector modal captures all input
         if self.show_repo_selector {
             self.handle_repo_selector_key(code);
+            return;
+        }
+
+        // Session mode modal captures all input
+        if self.show_session_mode_modal {
+            self.handle_session_mode_key(code);
+            return;
+        }
+
+        // Branch selector modal captures all input
+        if self.show_branch_selector {
+            self.handle_branch_selector_key(code);
+            return;
+        }
+
+        // Worktree name modal captures all input
+        if self.show_worktree_name_modal {
+            self.handle_worktree_name_key(code);
             return;
         }
 
@@ -470,9 +494,175 @@ impl App {
                     [self.repo_selector_index]
                     .clone();
                 self.show_repo_selector = false;
-                self.spawn_session_in_repo(path);
+                self.pending_repo_path = Some(path);
+                self.session_mode_index = 0;
+                self.show_session_mode_modal = true;
             }
             _ => {}
+        }
+    }
+
+    fn handle_session_mode_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.show_session_mode_modal = false;
+                self.pending_repo_path = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.session_mode_index == 0 {
+                    self.session_mode_index = 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.session_mode_index = 0;
+            }
+            KeyCode::Enter => {
+                self.show_session_mode_modal = false;
+                if self.session_mode_index == 0 {
+                    // Normal mode
+                    if let Some(path) = self.pending_repo_path.take() {
+                        self.spawn_session_in_repo(path);
+                    }
+                } else {
+                    // Worktree mode
+                    self.start_branch_selection();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn start_branch_selection(&mut self) {
+        let Some(repo_path) = self.pending_repo_path.as_ref() else {
+            return;
+        };
+        match git::list_branches(repo_path) {
+            Ok(branches) if branches.is_empty() => {
+                self.error_message = Some("No branches found in repository".to_string());
+                self.pending_repo_path = None;
+            }
+            Ok(branches) => {
+                self.available_branches = branches;
+                self.branch_selector_index = 0;
+                self.show_branch_selector = true;
+            }
+            Err(e) => {
+                error!("Failed to list branches: {e}");
+                self.error_message = Some(format!("Failed to list branches: {e:#}"));
+                self.pending_repo_path = None;
+            }
+        }
+    }
+
+    fn handle_branch_selector_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.show_branch_selector = false;
+                self.available_branches.clear();
+                self.pending_repo_path = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.branch_selector_index + 1 < self.available_branches.len() {
+                    self.branch_selector_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.branch_selector_index = self.branch_selector_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let base_branch = self.available_branches[self.branch_selector_index].clone();
+                self.show_branch_selector = false;
+                self.available_branches.clear();
+                self.worktree_name_input.clear();
+                self.pending_base_branch = Some(base_branch);
+                self.show_worktree_name_modal = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_worktree_name_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.show_worktree_name_modal = false;
+                self.worktree_name_input.clear();
+                self.pending_base_branch = None;
+                self.pending_repo_path = None;
+            }
+            KeyCode::Enter => {
+                let new_branch = self.worktree_name_input.value().trim().to_string();
+                if new_branch.is_empty() {
+                    self.error_message = Some("Branch name cannot be empty".to_string());
+                    return;
+                }
+                self.show_worktree_name_modal = false;
+                if let (Some(repo_path), Some(base_branch)) = (
+                    self.pending_repo_path.take(),
+                    self.pending_base_branch.take(),
+                ) {
+                    self.worktree_name_input.clear();
+                    self.spawn_worktree_session(repo_path, &new_branch, &base_branch);
+                }
+            }
+            KeyCode::Backspace => self.worktree_name_input.backspace(),
+            KeyCode::Delete => self.worktree_name_input.delete(),
+            KeyCode::Left => self.worktree_name_input.move_left(),
+            KeyCode::Right => self.worktree_name_input.move_right(),
+            KeyCode::Home => self.worktree_name_input.home(),
+            KeyCode::End => self.worktree_name_input.end(),
+            KeyCode::Char(c) => self.worktree_name_input.insert(c),
+            _ => {}
+        }
+    }
+
+    fn spawn_worktree_session(&mut self, repo_path: PathBuf, new_branch: &str, base_branch: &str) {
+        match git::create_worktree(&repo_path, new_branch, base_branch) {
+            Ok(worktree_path) => {
+                let worktree_info = WorktreeInfo {
+                    repo_path,
+                    worktree_path: worktree_path.clone(),
+                    branch: new_branch.to_string(),
+                };
+                let config = SessionConfig {
+                    cwd: Some(worktree_path),
+                    ..SessionConfig::default()
+                };
+                self.session_counter += 1;
+                let name = format!("Session {}", self.session_counter);
+                self.do_spawn_session(name, &config, Some(worktree_info));
+            }
+            Err(e) => {
+                error!("Failed to create worktree: {e}");
+                self.error_message = Some(format!("Failed to create worktree: {e:#}"));
+            }
+        }
+    }
+
+    fn do_spawn_session(
+        &mut self,
+        name: String,
+        config: &SessionConfig,
+        worktree: Option<WorktreeInfo>,
+    ) {
+        let (rows, cols) = self.content_area_size();
+
+        match PtySession::spawn_with_config(name, rows, cols, config) {
+            Ok(mut session) => {
+                session.info.worktree = worktree;
+                let session_id = session.info.id;
+                self.sessions.push(session);
+                self.active_index = self.sessions.len() - 1;
+                self.focus = InputFocus::Terminal;
+                self.error_message = None;
+
+                if let Some(project) = self.projects.get_mut(self.active_project_index) {
+                    project.session_ids.push(session_id);
+                }
+            }
+            Err(e) => {
+                error!("Failed to spawn session: {e}");
+                self.error_message = Some(format!("Failed to start claude: {e:#}"));
+            }
         }
     }
 
@@ -649,7 +839,7 @@ impl App {
             );
         }
 
-        // Repo selector modal (highest z-order)
+        // Repo selector modal
         if self.show_repo_selector {
             let active_project = &self.projects[self.active_project_index];
             repo_selector_modal::render_repo_selector_modal(
@@ -660,6 +850,40 @@ impl App {
                 },
             );
         }
+
+        // Session mode modal
+        if self.show_session_mode_modal {
+            session_mode_modal::render_session_mode_modal(
+                frame,
+                &session_mode_modal::SessionModeState {
+                    selected_index: self.session_mode_index,
+                },
+            );
+        }
+
+        // Worktree name modal
+        if self.show_worktree_name_modal {
+            let base = self.pending_base_branch.as_deref().unwrap_or("");
+            worktree_name_modal::render_worktree_name_modal(
+                frame,
+                &worktree_name_modal::WorktreeNameState {
+                    name: self.worktree_name_input.value(),
+                    cursor: self.worktree_name_input.cursor_pos(),
+                    base_branch: base,
+                },
+            );
+        }
+
+        // Branch selector modal
+        if self.show_branch_selector {
+            branch_selector_modal::render_branch_selector_modal(
+                frame,
+                &branch_selector_modal::BranchSelectorState {
+                    branches: &self.available_branches,
+                    selected_index: self.branch_selector_index,
+                },
+            );
+        }
     }
 
     pub fn should_quit(&self) -> bool {
@@ -667,6 +891,14 @@ impl App {
     }
 
     pub fn shutdown(self) {
+        // Clean up all worktrees before shutting down sessions
+        for session in &self.sessions {
+            if let Some(wt) = &session.info.worktree {
+                if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
+                    error!("Failed to remove worktree on shutdown: {e}");
+                }
+            }
+        }
         for session in self.sessions {
             session.shutdown();
         }
@@ -717,7 +949,10 @@ fn render_help_overlay(frame: &mut Frame) {
                 .add_modifier(Modifier::BOLD),
         )),
         help_line("Ctrl+Q", "Quit"),
-        help_line("Ctrl+N", "New project (project focus) / session"),
+        help_line(
+            "Ctrl+N",
+            "New project (project focus) / session (normal or worktree)",
+        ),
         help_line("Ctrl+X", "Close active session"),
         help_line("Ctrl+L", "Cycle focus (project / session / terminal)"),
         help_line("Ctrl+I", "Toggle info panel (width >= 120)"),
