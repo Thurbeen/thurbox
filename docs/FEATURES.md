@@ -71,8 +71,8 @@ The Default project is never persisted to disk.
 
 When the terminal panel is focused,
 **all keys are forwarded to the PTY** except those with a `Ctrl`
-modifier. Ctrl-prefixed keys are intercepted by Thurbox
-as global commands.
+modifier (intercepted as global commands) and `Shift+arrow/page`
+keys (intercepted for scrollback navigation).
 
 **Why Ctrl, not Alt?**
 
@@ -116,7 +116,12 @@ as global commands.
 | `Esc` | Base branch selector | Cancel |
 | `Enter` | New branch prompt | Confirm name, create branch and worktree |
 | `Esc` | New branch prompt | Cancel |
-| All other keys | Focused terminal | Forwarded to PTY |
+| `Shift+Up` | Focused terminal | Scroll up 1 line |
+| `Shift+Down` | Focused terminal | Scroll down 1 line |
+| `Shift+PageUp` | Focused terminal | Scroll up half page |
+| `Shift+PageDown` | Focused terminal | Scroll down half page |
+| Mouse wheel | Focused terminal | Scroll up/down 3 lines |
+| All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) |
 
 ---
 
@@ -323,6 +328,45 @@ reconstructed on restore.
 - **`Ctrl+X` (Close)**: Permanently closes the active session.
   Its worktree (if any) is removed immediately.
   Closed sessions are not saved and will not be restored.
+
+---
+
+## Terminal Scrollback
+
+### Scrollback buffer
+
+The terminal uses vt100's built-in 1000-line scrollback buffer.
+`Screen::scrollback()` returns the current offset (0 = at bottom),
+and `Screen::set_scrollback(n)` moves the viewport. When the
+offset is non-zero and new output arrives, vt100 auto-increments
+the offset to keep the view pinned at the same history position.
+When the offset is 0, new output naturally stays at the bottom.
+
+### Scroll keybindings
+
+`Shift+Up/Down` scrolls one line, `Shift+PageUp/PageDown` scrolls
+half a page, and the mouse wheel scrolls three lines per tick.
+Any other keypress while scrolled up snaps back to
+the bottom before forwarding to the PTY. This matches the mental
+model of "I'm reading history, and when I start typing I'm back
+in the present."
+
+**Why Shift, not Ctrl?**
+
+Ctrl-prefixed keys are reserved for Thurbox global commands.
+Shift+arrow and Shift+Page are the conventional scrollback
+keybindings in most terminal emulators (GNOME Terminal, Kitty,
+Alacritty) and do not conflict with Claude Code or shell readline.
+
+### Scrollbar widget
+
+A ratatui `Scrollbar` overlays the right edge of the terminal
+panel (inside the border). It only appears when there is scrollback
+content. The thumb position is inverted from the offset
+(offset 0 = thumb at bottom, max offset = thumb at top) to match
+visual expectations. When scrolled up, the block title shows a
+`[N↑]` indicator and the PTY cursor is hidden to avoid visual
+noise in historical output.
 
 ---
 

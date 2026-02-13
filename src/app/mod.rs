@@ -22,6 +22,8 @@ use crate::ui::{
     repo_selector_modal, session_mode_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
+const MOUSE_SCROLL_LINES: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddProjectField {
     Name,
@@ -106,6 +108,8 @@ impl TextInput {
 
 pub enum AppMessage {
     KeyPress(KeyCode, KeyModifiers),
+    MouseScrollUp,
+    MouseScrollDown,
     Resize(u16, u16),
 }
 
@@ -272,6 +276,8 @@ impl App {
     pub fn update(&mut self, msg: AppMessage) {
         match msg {
             AppMessage::KeyPress(code, mods) => self.handle_key(code, mods),
+            AppMessage::MouseScrollUp => self.scroll_terminal_up(MOUSE_SCROLL_LINES),
+            AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
         }
     }
@@ -423,6 +429,38 @@ impl App {
     }
 
     fn handle_terminal_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        // Scroll keybindings (Shift + navigation keys)
+        if mods.contains(KeyModifiers::SHIFT) {
+            match code {
+                KeyCode::Up => {
+                    self.scroll_terminal_up(1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.scroll_terminal_down(1);
+                    return;
+                }
+                KeyCode::PageUp => {
+                    let amount = self.page_scroll_amount();
+                    self.scroll_terminal_up(amount);
+                    return;
+                }
+                KeyCode::PageDown => {
+                    let amount = self.page_scroll_amount();
+                    self.scroll_terminal_down(amount);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Snap to bottom on any non-scroll key when scrolled up
+        self.with_active_parser(|parser| {
+            if parser.screen().scrollback() > 0 {
+                parser.screen_mut().set_scrollback(0);
+            }
+        });
+
         if let Some(session) = self.sessions.get(self.active_index) {
             if let Some(bytes) = input::key_to_bytes(code, mods) {
                 if let Err(e) = session.send_input(bytes) {
@@ -430,6 +468,35 @@ impl App {
                 }
             }
         }
+    }
+
+    fn with_active_parser(&self, f: impl FnOnce(&mut vt100::Parser)) {
+        if let Some(session) = self.sessions.get(self.active_index) {
+            if let Ok(mut parser) = session.parser.lock() {
+                f(&mut parser);
+            }
+        }
+    }
+
+    fn scroll_terminal_up(&self, lines: usize) {
+        self.with_active_parser(|parser| {
+            let current = parser.screen().scrollback();
+            parser.screen_mut().set_scrollback(current + lines);
+        });
+    }
+
+    fn scroll_terminal_down(&self, lines: usize) {
+        self.with_active_parser(|parser| {
+            let current = parser.screen().scrollback();
+            parser
+                .screen_mut()
+                .set_scrollback(current.saturating_sub(lines));
+        });
+    }
+
+    fn page_scroll_amount(&self) -> usize {
+        let (rows, _) = self.content_area_size();
+        (rows as usize) / 2
     }
 
     fn handle_add_project_key(&mut self, code: KeyCode) {
@@ -801,11 +868,11 @@ impl App {
         // Terminal
         match self.sessions.get(self.active_index) {
             Some(session) => {
-                if let Ok(parser) = session.parser.lock() {
+                if let Ok(mut parser) = session.parser.lock() {
                     terminal_view::render_terminal(
                         frame,
                         areas.terminal,
-                        &parser,
+                        &mut parser,
                         &session.info,
                         self.focus == InputFocus::Terminal,
                     );
@@ -1041,7 +1108,10 @@ fn render_help_overlay(frame: &mut Frame) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )),
-        help_line("*", "All keys forwarded to PTY"),
+        help_line("Shift+\u{2191}/\u{2193}", "Scroll up/down 1 line"),
+        help_line("Shift+PgUp/PgDn", "Scroll up/down half page"),
+        help_line("Mouse wheel", "Scroll up/down 3 lines"),
+        help_line("*", "All other keys forwarded to PTY"),
         Line::from(""),
         Line::from(Span::styled(
             "Press Esc to close",
@@ -1251,5 +1321,82 @@ mod tests {
         input.delete();
         assert_eq!(input.value(), "b");
         assert_eq!(input.cursor_pos(), 0);
+    }
+
+    // --- Scroll tests ---
+
+    fn parser_with_scrollback() -> vt100::Parser {
+        let mut parser = vt100::Parser::new(24, 80, 100);
+        // Fill screen and scrollback by writing many lines
+        for i in 0..50 {
+            parser.process(format!("line {i}\r\n").as_bytes());
+        }
+        parser
+    }
+
+    #[test]
+    fn scrollback_starts_at_zero() {
+        let parser = parser_with_scrollback();
+        assert_eq!(parser.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn scrollback_increments() {
+        let mut parser = parser_with_scrollback();
+        parser.screen_mut().set_scrollback(5);
+        assert_eq!(parser.screen().scrollback(), 5);
+    }
+
+    #[test]
+    fn scrollback_clamps_to_max() {
+        let mut parser = parser_with_scrollback();
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let max = parser.screen().scrollback();
+        // Should be clamped to the actual scrollback content, not usize::MAX
+        assert!(max < usize::MAX);
+        assert!(max > 0);
+    }
+
+    #[test]
+    fn scrollback_restores_after_probe() {
+        let mut parser = parser_with_scrollback();
+        parser.screen_mut().set_scrollback(3);
+
+        // Probe total scrollback (same technique as render_terminal)
+        let saved = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let _total = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(saved);
+
+        assert_eq!(parser.screen().scrollback(), 3);
+    }
+
+    #[test]
+    fn scrollback_zero_stays_at_bottom() {
+        let mut parser = parser_with_scrollback();
+        assert_eq!(parser.screen().scrollback(), 0);
+
+        // New output while at bottom keeps offset at 0
+        parser.process(b"new line\r\n");
+        assert_eq!(parser.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn page_scroll_amount_is_half_content_height() {
+        let app = App::new(50, 100, vec![]);
+        // rows = 50 - 4 = 46, half = 23
+        assert_eq!(app.page_scroll_amount(), 23);
+    }
+
+    #[test]
+    fn page_scroll_amount_small_terminal() {
+        let app = App::new(6, 80, vec![]);
+        // rows = 6 - 4 = 2, half = 1
+        assert_eq!(app.page_scroll_amount(), 1);
+    }
+
+    #[test]
+    fn mouse_scroll_lines_constant() {
+        assert_eq!(MOUSE_SCROLL_LINES, 3);
     }
 }
