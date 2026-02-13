@@ -4,6 +4,8 @@ pub mod info_panel;
 pub mod layout;
 pub mod project_list;
 pub mod repo_selector_modal;
+pub mod role_editor_modal;
+pub mod role_selector_modal;
 pub mod session_mode_modal;
 pub mod status_bar;
 pub mod terminal_view;

@@ -136,6 +136,11 @@ fn render_session_section(
                 Span::styled(&info.name, style),
             ];
 
+            spans.push(Span::styled(
+                format!(" [{}]", info.role),
+                Style::default().fg(Color::Magenta),
+            ));
+
             if let Some(wt) = &info.worktree {
                 spans.push(Span::styled(
                     format!(" [{}]", wt.branch),

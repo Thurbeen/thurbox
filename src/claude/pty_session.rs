@@ -12,6 +12,9 @@ use tracing::{debug, error, warn};
 
 use crate::session::{SessionConfig, SessionInfo};
 
+/// Default permission mode passed to the Claude CLI when no explicit mode is configured.
+const DEFAULT_PERMISSION_MODE: &str = "dontAsk";
+
 // Terminal capability query sequences sent by child processes (e.g., Claude Code).
 // See: https://vt100.net/docs/vt510-rm/DA1.html, DA2, and kitty keyboard protocol.
 const DA1_QUERY: &[u8] = b"\x1b[c";
@@ -30,6 +33,48 @@ fn now_millis() -> u64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Build the CLI argument list from a SessionConfig.
+///
+/// This is extracted as a pure function for testability.
+fn build_claude_args(config: &SessionConfig) -> Vec<String> {
+    let mut args = Vec::new();
+
+    if let Some(ref session_id) = config.resume_session_id {
+        args.push("--resume".to_string());
+        args.push(session_id.clone());
+    } else if let Some(ref session_id) = config.claude_session_id {
+        args.push("--session-id".to_string());
+        args.push(session_id.clone());
+    }
+
+    // Role permission flags — default to "dontAsk" when no mode is configured.
+    let mode = config
+        .permissions
+        .permission_mode
+        .as_deref()
+        .unwrap_or(DEFAULT_PERMISSION_MODE);
+    args.push("--permission-mode".to_string());
+    args.push(mode.to_string());
+    if !config.permissions.allowed_tools.is_empty() {
+        args.push("--allowed-tools".to_string());
+        args.push(config.permissions.allowed_tools.join(" "));
+    }
+    if !config.permissions.disallowed_tools.is_empty() {
+        args.push("--disallowed-tools".to_string());
+        args.push(config.permissions.disallowed_tools.join(" "));
+    }
+    if let Some(ref tools) = config.permissions.tools {
+        args.push("--tools".to_string());
+        args.push(tools.clone());
+    }
+    if let Some(ref prompt) = config.permissions.append_system_prompt {
+        args.push("--append-system-prompt".to_string());
+        args.push(prompt.clone());
+    }
+
+    args
 }
 
 pub struct PtySession {
@@ -59,12 +104,8 @@ impl PtySession {
             .context("Failed to open PTY")?;
 
         let mut cmd = CommandBuilder::new("claude");
-        if let Some(ref session_id) = config.resume_session_id {
-            cmd.arg("--resume");
-            cmd.arg(session_id);
-        } else if let Some(ref session_id) = config.claude_session_id {
-            cmd.arg("--session-id");
-            cmd.arg(session_id);
+        for arg in build_claude_args(config) {
+            cmd.arg(arg);
         }
         if let Some(ref cwd) = config.cwd {
             cmd.cwd(cwd);
@@ -113,6 +154,9 @@ impl PtySession {
         let mut info = SessionInfo::new(name);
         info.claude_session_id = config.claude_session_id.clone();
         info.cwd = config.cwd.clone();
+        if !config.role.is_empty() {
+            info.role = config.role.clone();
+        }
         debug!(session_id = %info.id, "Spawned claude PTY session");
 
         Ok(Self {
@@ -368,5 +412,160 @@ mod tests {
         // Just ESC [ without the trailing 'c' — should not trigger DA1
         PtySession::respond_to_queries(b"\x1b[", &tx);
         assert!(rx.try_recv().is_err());
+    }
+
+    // --- build_claude_args tests ---
+
+    use crate::session::RolePermissions;
+
+    #[test]
+    fn build_args_empty_config() {
+        let config = SessionConfig::default();
+        let args = build_claude_args(&config);
+        assert_eq!(args, vec!["--permission-mode", "dontAsk"]);
+    }
+
+    #[test]
+    fn build_args_no_permissions() {
+        let config = SessionConfig {
+            claude_session_id: Some("abc-123".to_string()),
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec!["--session-id", "abc-123", "--permission-mode", "dontAsk"]
+        );
+    }
+
+    #[test]
+    fn build_args_resume_takes_precedence() {
+        let config = SessionConfig {
+            resume_session_id: Some("resume-id".to_string()),
+            claude_session_id: Some("session-id".to_string()),
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec!["--resume", "resume-id", "--permission-mode", "dontAsk"]
+        );
+    }
+
+    #[test]
+    fn build_args_with_permission_mode() {
+        let config = SessionConfig {
+            permissions: RolePermissions {
+                permission_mode: Some("plan".to_string()),
+                ..RolePermissions::default()
+            },
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(args, vec!["--permission-mode", "plan"]);
+    }
+
+    #[test]
+    fn build_args_with_allowed_tools() {
+        let config = SessionConfig {
+            permissions: RolePermissions {
+                allowed_tools: vec!["Read".to_string(), "Bash(git:*)".to_string()],
+                ..RolePermissions::default()
+            },
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec![
+                "--permission-mode",
+                "dontAsk",
+                "--allowed-tools",
+                "Read Bash(git:*)"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_args_with_disallowed_tools() {
+        let config = SessionConfig {
+            permissions: RolePermissions {
+                disallowed_tools: vec!["Edit".to_string()],
+                ..RolePermissions::default()
+            },
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec!["--permission-mode", "dontAsk", "--disallowed-tools", "Edit"]
+        );
+    }
+
+    #[test]
+    fn build_args_with_tools_empty_string() {
+        let config = SessionConfig {
+            permissions: RolePermissions {
+                tools: Some(String::new()),
+                ..RolePermissions::default()
+            },
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(args, vec!["--permission-mode", "dontAsk", "--tools", ""]);
+    }
+
+    #[test]
+    fn build_args_with_system_prompt() {
+        let config = SessionConfig {
+            permissions: RolePermissions {
+                append_system_prompt: Some("Be careful".to_string()),
+                ..RolePermissions::default()
+            },
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec![
+                "--permission-mode",
+                "dontAsk",
+                "--append-system-prompt",
+                "Be careful"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_args_all_fields() {
+        let config = SessionConfig {
+            claude_session_id: Some("id-1".to_string()),
+            permissions: RolePermissions {
+                permission_mode: Some("plan".to_string()),
+                allowed_tools: vec!["Read".to_string()],
+                disallowed_tools: vec!["Edit".to_string()],
+                tools: Some("default".to_string()),
+                append_system_prompt: Some("Focus".to_string()),
+            },
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec![
+                "--session-id",
+                "id-1",
+                "--permission-mode",
+                "plan",
+                "--allowed-tools",
+                "Read",
+                "--disallowed-tools",
+                "Edit",
+                "--tools",
+                "default",
+                "--append-system-prompt",
+                "Focus",
+            ]
+        );
     }
 }

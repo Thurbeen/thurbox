@@ -73,6 +73,16 @@ pub fn render_info_panel(
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
+        Span::styled("Role: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            &info.role,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
         Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
         Span::styled(info.id.to_string(), Style::default().fg(Color::DarkGray)),
     ]));
