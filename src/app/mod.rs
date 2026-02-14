@@ -40,6 +40,76 @@ pub enum AddProjectField {
     Path,
 }
 
+/// State for an editable list of tool names (allowed or disallowed).
+struct ToolListState {
+    items: Vec<String>,
+    selected: usize,
+    mode: role_editor_modal::ToolListMode,
+    input: TextInput,
+}
+
+impl ToolListState {
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            selected: 0,
+            mode: role_editor_modal::ToolListMode::Browse,
+            input: TextInput::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.items.clear();
+        self.selected = 0;
+        self.mode = role_editor_modal::ToolListMode::Browse;
+        self.input.clear();
+    }
+
+    fn load(&mut self, tools: &[String]) {
+        self.items = tools.to_vec();
+        self.selected = 0;
+        self.mode = role_editor_modal::ToolListMode::Browse;
+        self.input.clear();
+    }
+
+    fn start_adding(&mut self) {
+        self.mode = role_editor_modal::ToolListMode::Adding;
+        self.input.clear();
+    }
+
+    fn confirm_add(&mut self) {
+        let val = self.input.value().trim().to_string();
+        if !val.is_empty() {
+            self.items.push(val);
+            self.selected = self.items.len() - 1;
+        }
+        self.mode = role_editor_modal::ToolListMode::Browse;
+    }
+
+    fn cancel_add(&mut self) {
+        self.mode = role_editor_modal::ToolListMode::Browse;
+    }
+
+    fn delete_selected(&mut self) {
+        if !self.items.is_empty() {
+            self.items.remove(self.selected);
+            if self.selected >= self.items.len() && self.selected > 0 {
+                self.selected -= 1;
+            }
+        }
+    }
+
+    fn move_down(&mut self) {
+        if !self.items.is_empty() && self.selected + 1 < self.items.len() {
+            self.selected += 1;
+        }
+    }
+
+    fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+}
+
 struct TextInput {
     buffer: String,
     cursor: usize,
@@ -175,8 +245,9 @@ pub struct App {
     role_editor_field: role_editor_modal::RoleEditorField,
     role_editor_name: TextInput,
     role_editor_description: TextInput,
-    role_editor_allowed_tools: TextInput,
-    role_editor_disallowed_tools: TextInput,
+    role_editor_allowed_tools: ToolListState,
+    role_editor_disallowed_tools: ToolListState,
+    role_editor_system_prompt: TextInput,
     role_editor_editing_index: Option<usize>,
 }
 
@@ -228,8 +299,9 @@ impl App {
             role_editor_field: role_editor_modal::RoleEditorField::Name,
             role_editor_name: TextInput::new(),
             role_editor_description: TextInput::new(),
-            role_editor_allowed_tools: TextInput::new(),
-            role_editor_disallowed_tools: TextInput::new(),
+            role_editor_allowed_tools: ToolListState::new(),
+            role_editor_disallowed_tools: ToolListState::new(),
+            role_editor_system_prompt: TextInput::new(),
             role_editor_editing_index: None,
         }
     }
@@ -849,8 +921,9 @@ impl App {
                 self.role_editor_editing_index = None;
                 self.role_editor_name.clear();
                 self.role_editor_description.clear();
-                self.role_editor_allowed_tools.clear();
-                self.role_editor_disallowed_tools.clear();
+                self.role_editor_allowed_tools.reset();
+                self.role_editor_disallowed_tools.reset();
+                self.role_editor_system_prompt.clear();
                 self.role_editor_field = role_editor_modal::RoleEditorField::Name;
                 self.role_editor_view = RoleEditorView::Editor;
             }
@@ -880,36 +953,44 @@ impl App {
         self.role_editor_name.set(&role.name);
         self.role_editor_description.set(&role.description);
         self.role_editor_allowed_tools
-            .set(&role.permissions.allowed_tools.join(" "));
+            .load(&role.permissions.allowed_tools);
         self.role_editor_disallowed_tools
-            .set(&role.permissions.disallowed_tools.join(" "));
+            .load(&role.permissions.disallowed_tools);
+        self.role_editor_system_prompt.set(
+            role.permissions
+                .append_system_prompt
+                .as_deref()
+                .unwrap_or(""),
+        );
         self.role_editor_field = role_editor_modal::RoleEditorField::Name;
         self.role_editor_view = RoleEditorView::Editor;
     }
 
     fn handle_role_editor_editor_key(&mut self, code: KeyCode) {
-        use role_editor_modal::RoleEditorField;
+        use role_editor_modal::{RoleEditorField, ToolListMode};
 
+        match self.role_editor_field {
+            RoleEditorField::AllowedTools | RoleEditorField::DisallowedTools => {
+                if self.active_tool_list_mut().mode == ToolListMode::Adding {
+                    self.handle_tool_adding_key(code);
+                } else {
+                    self.handle_tool_browse_key(code);
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // Text field handling (Name, Description, SystemPrompt).
         match code {
             KeyCode::Esc => {
-                // Discard, return to list
                 self.role_editor_view = RoleEditorView::List;
             }
             KeyCode::Tab => {
-                self.role_editor_field = match self.role_editor_field {
-                    RoleEditorField::Name => RoleEditorField::Description,
-                    RoleEditorField::Description => RoleEditorField::AllowedTools,
-                    RoleEditorField::AllowedTools => RoleEditorField::DisallowedTools,
-                    RoleEditorField::DisallowedTools => RoleEditorField::Name,
-                };
+                self.role_editor_field = Self::next_editor_field(self.role_editor_field);
             }
             KeyCode::BackTab => {
-                self.role_editor_field = match self.role_editor_field {
-                    RoleEditorField::Name => RoleEditorField::DisallowedTools,
-                    RoleEditorField::Description => RoleEditorField::Name,
-                    RoleEditorField::AllowedTools => RoleEditorField::Description,
-                    RoleEditorField::DisallowedTools => RoleEditorField::AllowedTools,
-                };
+                self.role_editor_field = Self::prev_editor_field(self.role_editor_field);
             }
             KeyCode::Enter => {
                 self.submit_role_editor();
@@ -918,9 +999,84 @@ impl App {
                 let input = match self.role_editor_field {
                     RoleEditorField::Name => &mut self.role_editor_name,
                     RoleEditorField::Description => &mut self.role_editor_description,
-                    RoleEditorField::AllowedTools => &mut self.role_editor_allowed_tools,
-                    RoleEditorField::DisallowedTools => &mut self.role_editor_disallowed_tools,
+                    RoleEditorField::SystemPrompt => &mut self.role_editor_system_prompt,
+                    _ => return,
                 };
+                match code {
+                    KeyCode::Backspace => input.backspace(),
+                    KeyCode::Delete => input.delete(),
+                    KeyCode::Left => input.move_left(),
+                    KeyCode::Right => input.move_right(),
+                    KeyCode::Home => input.home(),
+                    KeyCode::End => input.end(),
+                    KeyCode::Char(c) => input.insert(c),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn next_editor_field(
+        field: role_editor_modal::RoleEditorField,
+    ) -> role_editor_modal::RoleEditorField {
+        use role_editor_modal::RoleEditorField;
+        match field {
+            RoleEditorField::Name => RoleEditorField::Description,
+            RoleEditorField::Description => RoleEditorField::AllowedTools,
+            RoleEditorField::AllowedTools => RoleEditorField::DisallowedTools,
+            RoleEditorField::DisallowedTools => RoleEditorField::SystemPrompt,
+            RoleEditorField::SystemPrompt => RoleEditorField::Name,
+        }
+    }
+
+    fn prev_editor_field(
+        field: role_editor_modal::RoleEditorField,
+    ) -> role_editor_modal::RoleEditorField {
+        use role_editor_modal::RoleEditorField;
+        match field {
+            RoleEditorField::Name => RoleEditorField::SystemPrompt,
+            RoleEditorField::Description => RoleEditorField::Name,
+            RoleEditorField::AllowedTools => RoleEditorField::Description,
+            RoleEditorField::DisallowedTools => RoleEditorField::AllowedTools,
+            RoleEditorField::SystemPrompt => RoleEditorField::DisallowedTools,
+        }
+    }
+
+    fn active_tool_list_mut(&mut self) -> &mut ToolListState {
+        match self.role_editor_field {
+            role_editor_modal::RoleEditorField::AllowedTools => &mut self.role_editor_allowed_tools,
+            _ => &mut self.role_editor_disallowed_tools,
+        }
+    }
+
+    fn handle_tool_browse_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.role_editor_view = RoleEditorView::List;
+            }
+            KeyCode::Tab => {
+                self.role_editor_field = Self::next_editor_field(self.role_editor_field);
+            }
+            KeyCode::BackTab => {
+                self.role_editor_field = Self::prev_editor_field(self.role_editor_field);
+            }
+            KeyCode::Enter => {
+                self.submit_role_editor();
+            }
+            KeyCode::Char('a') => self.active_tool_list_mut().start_adding(),
+            KeyCode::Char('d') => self.active_tool_list_mut().delete_selected(),
+            KeyCode::Char('j') | KeyCode::Down => self.active_tool_list_mut().move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.active_tool_list_mut().move_up(),
+            _ => {}
+        }
+    }
+
+    fn handle_tool_adding_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.active_tool_list_mut().cancel_add(),
+            KeyCode::Enter => self.active_tool_list_mut().confirm_add(),
+            _ => {
+                let input = &mut self.active_tool_list_mut().input;
                 match code {
                     KeyCode::Backspace => input.backspace(),
                     KeyCode::Delete => input.delete(),
@@ -953,21 +1109,17 @@ impl App {
             return;
         }
 
-        let allowed_tools: Vec<String> = self
-            .role_editor_allowed_tools
-            .value()
-            .split_whitespace()
-            .map(String::from)
-            .collect();
+        let allowed_tools = self.role_editor_allowed_tools.items.clone();
+        let disallowed_tools = self.role_editor_disallowed_tools.items.clone();
 
-        let disallowed_tools: Vec<String> = self
-            .role_editor_disallowed_tools
-            .value()
-            .split_whitespace()
-            .map(String::from)
-            .collect();
+        let system_prompt = self.role_editor_system_prompt.value().trim().to_string();
+        let append_system_prompt = if system_prompt.is_empty() {
+            None
+        } else {
+            Some(system_prompt)
+        };
 
-        // Preserve fields not exposed in the editor (tools, append_system_prompt)
+        // Preserve fields not exposed in the editor (permission_mode, tools)
         let base_permissions = self
             .role_editor_editing_index
             .and_then(|idx| self.role_editor_roles.get(idx))
@@ -981,7 +1133,7 @@ impl App {
                 allowed_tools,
                 disallowed_tools,
                 tools: base_permissions.and_then(|p| p.tools.clone()),
-                append_system_prompt: base_permissions.and_then(|p| p.append_system_prompt.clone()),
+                append_system_prompt,
             },
         };
 
@@ -1344,10 +1496,24 @@ impl App {
                             name_cursor: self.role_editor_name.cursor_pos(),
                             description: self.role_editor_description.value(),
                             description_cursor: self.role_editor_description.cursor_pos(),
-                            allowed_tools: self.role_editor_allowed_tools.value(),
-                            allowed_tools_cursor: self.role_editor_allowed_tools.cursor_pos(),
-                            disallowed_tools: self.role_editor_disallowed_tools.value(),
-                            disallowed_tools_cursor: self.role_editor_disallowed_tools.cursor_pos(),
+                            allowed_tools: &self.role_editor_allowed_tools.items,
+                            allowed_tools_index: self.role_editor_allowed_tools.selected,
+                            allowed_tools_mode: self.role_editor_allowed_tools.mode,
+                            allowed_tools_input: self.role_editor_allowed_tools.input.value(),
+                            allowed_tools_input_cursor: self
+                                .role_editor_allowed_tools
+                                .input
+                                .cursor_pos(),
+                            disallowed_tools: &self.role_editor_disallowed_tools.items,
+                            disallowed_tools_index: self.role_editor_disallowed_tools.selected,
+                            disallowed_tools_mode: self.role_editor_disallowed_tools.mode,
+                            disallowed_tools_input: self.role_editor_disallowed_tools.input.value(),
+                            disallowed_tools_input_cursor: self
+                                .role_editor_disallowed_tools
+                                .input
+                                .cursor_pos(),
+                            system_prompt: self.role_editor_system_prompt.value(),
+                            system_prompt_cursor: self.role_editor_system_prompt.cursor_pos(),
                             focused_field: self.role_editor_field,
                         },
                     );
@@ -1939,16 +2105,17 @@ mod tests {
     }
 
     #[test]
-    fn role_editor_submit_parses_allowed_tools() {
+    fn role_editor_submit_uses_allowed_tools_list() {
         let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
             app.role_editor_name.insert(c);
         }
-        for c in "Read Bash(git:*)".chars() {
-            app.role_editor_allowed_tools.insert(c);
-        }
+        app.role_editor_allowed_tools.items.push("Read".to_string());
+        app.role_editor_allowed_tools
+            .items
+            .push("Bash(git:*)".to_string());
         app.submit_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
         assert_eq!(
@@ -1958,16 +2125,19 @@ mod tests {
     }
 
     #[test]
-    fn role_editor_submit_parses_disallowed_tools() {
+    fn role_editor_submit_uses_disallowed_tools_list() {
         let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
             app.role_editor_name.insert(c);
         }
-        for c in "Edit Write".chars() {
-            app.role_editor_disallowed_tools.insert(c);
-        }
+        app.role_editor_disallowed_tools
+            .items
+            .push("Edit".to_string());
+        app.role_editor_disallowed_tools
+            .items
+            .push("Write".to_string());
         app.submit_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
         assert_eq!(
@@ -2073,7 +2243,7 @@ mod tests {
     }
 
     #[test]
-    fn role_editor_edit_preserves_non_editable_fields() {
+    fn role_editor_edit_preserves_permission_mode_and_tools() {
         use crate::session::{RoleConfig, RolePermissions};
         let config = ProjectConfig {
             name: "test".to_string(),
@@ -2100,8 +2270,10 @@ mod tests {
 
         let role = &app.role_editor_roles[0];
         assert_eq!(role.name, "custom-v2");
+        // permission_mode and tools are not exposed in the editor
         assert_eq!(role.permissions.permission_mode, Some("plan".to_string()));
         assert_eq!(role.permissions.tools, Some("default".to_string()));
+        // system prompt is loaded and re-saved unchanged
         assert_eq!(
             role.permissions.append_system_prompt,
             Some("Be careful".to_string())
@@ -2145,8 +2317,14 @@ mod tests {
 
         assert_eq!(app.role_editor_name.value(), "reviewer");
         assert_eq!(app.role_editor_description.value(), "Read-only");
-        assert_eq!(app.role_editor_allowed_tools.value(), "Read Bash(git:*)");
-        assert_eq!(app.role_editor_disallowed_tools.value(), "Edit");
+        assert_eq!(
+            app.role_editor_allowed_tools.items,
+            vec!["Read".to_string(), "Bash(git:*)".to_string()]
+        );
+        assert_eq!(
+            app.role_editor_disallowed_tools.items,
+            vec!["Edit".to_string()]
+        );
         assert_eq!(app.role_editor_editing_index, Some(0));
     }
 
@@ -2165,6 +2343,8 @@ mod tests {
         app.handle_role_editor_editor_key(KeyCode::Tab);
         assert_eq!(app.role_editor_field, RoleEditorField::DisallowedTools);
         app.handle_role_editor_editor_key(KeyCode::Tab);
+        assert_eq!(app.role_editor_field, RoleEditorField::SystemPrompt);
+        app.handle_role_editor_editor_key(KeyCode::Tab);
         assert_eq!(app.role_editor_field, RoleEditorField::Name);
     }
 
@@ -2176,6 +2356,8 @@ mod tests {
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
         assert_eq!(app.role_editor_field, RoleEditorField::Name);
+        app.handle_role_editor_editor_key(KeyCode::BackTab);
+        assert_eq!(app.role_editor_field, RoleEditorField::SystemPrompt);
         app.handle_role_editor_editor_key(KeyCode::BackTab);
         assert_eq!(app.role_editor_field, RoleEditorField::DisallowedTools);
         app.handle_role_editor_editor_key(KeyCode::BackTab);
@@ -2241,6 +2423,225 @@ mod tests {
         app.submit_role_editor();
         assert!(app.error_message.is_none());
         assert_eq!(app.role_editor_roles.len(), 1);
+    }
+
+    #[test]
+    fn tool_list_state_add_and_confirm() {
+        let mut tls = ToolListState::new();
+        assert!(tls.items.is_empty());
+
+        tls.start_adding();
+        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Adding);
+
+        for c in "Bash(git:*)".chars() {
+            tls.input.insert(c);
+        }
+        tls.confirm_add();
+
+        assert_eq!(tls.items, vec!["Bash(git:*)".to_string()]);
+        assert_eq!(tls.selected, 0);
+        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Browse);
+    }
+
+    #[test]
+    fn tool_list_state_add_and_cancel() {
+        let mut tls = ToolListState::new();
+        tls.start_adding();
+        for c in "Read".chars() {
+            tls.input.insert(c);
+        }
+        tls.cancel_add();
+
+        assert!(tls.items.is_empty());
+        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Browse);
+    }
+
+    #[test]
+    fn tool_list_state_confirm_empty_input_is_no_op() {
+        let mut tls = ToolListState::new();
+        tls.start_adding();
+        tls.confirm_add();
+        assert!(tls.items.is_empty());
+    }
+
+    #[test]
+    fn tool_list_state_confirm_whitespace_input_is_no_op() {
+        let mut tls = ToolListState::new();
+        tls.start_adding();
+        tls.input.insert(' ');
+        tls.input.insert(' ');
+        tls.confirm_add();
+        assert!(tls.items.is_empty());
+    }
+
+    #[test]
+    fn tool_list_state_delete_adjusts_index() {
+        let mut tls = ToolListState::new();
+        tls.items = vec!["A".into(), "B".into(), "C".into()];
+        tls.selected = 2;
+        tls.delete_selected();
+        assert_eq!(tls.items, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(tls.selected, 1);
+    }
+
+    #[test]
+    fn tool_list_state_delete_from_empty_is_no_op() {
+        let mut tls = ToolListState::new();
+        tls.delete_selected();
+        assert!(tls.items.is_empty());
+    }
+
+    #[test]
+    fn tool_list_state_navigation() {
+        let mut tls = ToolListState::new();
+        tls.items = vec!["A".into(), "B".into(), "C".into()];
+        assert_eq!(tls.selected, 0);
+
+        tls.move_down();
+        assert_eq!(tls.selected, 1);
+        tls.move_down();
+        assert_eq!(tls.selected, 2);
+        tls.move_down(); // at end, should not advance
+        assert_eq!(tls.selected, 2);
+
+        tls.move_up();
+        assert_eq!(tls.selected, 1);
+        tls.move_up();
+        assert_eq!(tls.selected, 0);
+        tls.move_up(); // at start, should not go negative
+        assert_eq!(tls.selected, 0);
+    }
+
+    #[test]
+    fn tool_list_state_load_resets_state() {
+        let mut tls = ToolListState::new();
+        tls.items = vec!["old".into()];
+        tls.selected = 0;
+        tls.mode = role_editor_modal::ToolListMode::Adding;
+        tls.input.insert('x');
+
+        tls.load(&["new1".to_string(), "new2".to_string()]);
+        assert_eq!(tls.items, vec!["new1".to_string(), "new2".to_string()]);
+        assert_eq!(tls.selected, 0);
+        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Browse);
+        assert_eq!(tls.input.value(), "");
+    }
+
+    #[test]
+    fn tool_browse_add_via_key_handler() {
+        use role_editor_modal::RoleEditorField;
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+
+        // Navigate to AllowedTools
+        app.role_editor_field = RoleEditorField::AllowedTools;
+
+        // Press 'a' to start adding
+        app.handle_role_editor_editor_key(KeyCode::Char('a'));
+        assert_eq!(
+            app.role_editor_allowed_tools.mode,
+            role_editor_modal::ToolListMode::Adding
+        );
+
+        // Type "Read" and confirm
+        for c in "Read".chars() {
+            app.handle_role_editor_editor_key(KeyCode::Char(c));
+        }
+        app.handle_role_editor_editor_key(KeyCode::Enter);
+
+        assert_eq!(
+            app.role_editor_allowed_tools.items,
+            vec!["Read".to_string()]
+        );
+        assert_eq!(
+            app.role_editor_allowed_tools.mode,
+            role_editor_modal::ToolListMode::Browse
+        );
+    }
+
+    #[test]
+    fn tool_browse_delete_via_key_handler() {
+        use role_editor_modal::RoleEditorField;
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        app.role_editor_field = RoleEditorField::AllowedTools;
+        app.role_editor_allowed_tools.items = vec!["Read".into(), "Write".into()];
+        app.role_editor_allowed_tools.selected = 0;
+
+        app.handle_role_editor_editor_key(KeyCode::Char('d'));
+        assert_eq!(
+            app.role_editor_allowed_tools.items,
+            vec!["Write".to_string()]
+        );
+    }
+
+    #[test]
+    fn tool_adding_esc_cancels() {
+        use role_editor_modal::RoleEditorField;
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        app.role_editor_field = RoleEditorField::DisallowedTools;
+
+        // Start adding, type something, then cancel
+        app.handle_role_editor_editor_key(KeyCode::Char('a'));
+        app.handle_role_editor_editor_key(KeyCode::Char('X'));
+        app.handle_role_editor_editor_key(KeyCode::Esc);
+
+        assert!(app.role_editor_disallowed_tools.items.is_empty());
+        assert_eq!(
+            app.role_editor_disallowed_tools.mode,
+            role_editor_modal::ToolListMode::Browse
+        );
+    }
+
+    #[test]
+    fn system_prompt_loaded_and_saved() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![RoleConfig {
+                name: "dev".to_string(),
+                description: String::new(),
+                permissions: RolePermissions {
+                    append_system_prompt: Some("Be safe".to_string()),
+                    ..RolePermissions::default()
+                },
+            }],
+        };
+        let mut app = App::new(24, 120, vec![config]);
+        app.open_role_editor();
+        app.open_role_for_editing(0);
+
+        // Verify it was loaded
+        assert_eq!(app.role_editor_system_prompt.value(), "Be safe");
+
+        // Modify and submit
+        app.role_editor_system_prompt.set("Be very safe");
+        app.submit_role_editor();
+
+        assert_eq!(
+            app.role_editor_roles[0].permissions.append_system_prompt,
+            Some("Be very safe".to_string())
+        );
+    }
+
+    #[test]
+    fn system_prompt_empty_saves_as_none() {
+        let mut app = App::new(24, 120, vec![]);
+        app.open_role_editor();
+        app.handle_role_editor_list_key(KeyCode::Char('a'));
+        app.role_editor_name.set("test");
+        app.role_editor_system_prompt.set("");
+        app.submit_role_editor();
+
+        assert!(app.role_editor_roles[0]
+            .permissions
+            .append_system_prompt
+            .is_none());
     }
 
     #[test]
