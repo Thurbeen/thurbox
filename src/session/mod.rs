@@ -1,6 +1,5 @@
 use std::fmt;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -85,68 +84,6 @@ impl fmt::Display for SessionStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyncErrorKind {
-    Fetch,
-    Pull,
-    LocalChanges,
-    Network,
-    Unknown,
-}
-
-impl fmt::Display for SyncErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Fetch => write!(f, "Fetch failed"),
-            Self::Pull => write!(f, "Pull failed"),
-            Self::LocalChanges => write!(f, "Uncommitted changes"),
-            Self::Network => write!(f, "Network unreachable"),
-            Self::Unknown => write!(f, "Unknown error"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyncStatus {
-    Unknown,
-    UpToDate,
-    Behind(usize),
-    Ahead(usize),
-    Diverged { ahead: usize, behind: usize },
-    Syncing,
-    Error(SyncErrorKind),
-}
-
-impl SyncStatus {
-    pub fn icon(&self) -> &'static str {
-        match self {
-            Self::Unknown => "?",
-            Self::UpToDate => "\u{27f3}",        // ⟳
-            Self::Behind(_) => "\u{27f2}",       // ⟲
-            Self::Ahead(_) => "\u{27f6}",        // ⟶
-            Self::Diverged { .. } => "\u{21c4}", // ⇄
-            Self::Syncing => "\u{2299}",         // ⊙
-            Self::Error(_) => "\u{2717}",        // ✗
-        }
-    }
-}
-
-impl fmt::Display for SyncStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unknown => write!(f, "Unknown"),
-            Self::UpToDate => write!(f, "Up to date"),
-            Self::Behind(n) => write!(f, "Behind {n} commit{}", if *n == 1 { "" } else { "s" }),
-            Self::Ahead(n) => write!(f, "Ahead {n} commit{}", if *n == 1 { "" } else { "s" }),
-            Self::Diverged { ahead, behind } => {
-                write!(f, "Diverged ({ahead} ahead, {behind} behind)")
-            }
-            Self::Syncing => write!(f, "Syncing..."),
-            Self::Error(kind) => write!(f, "Error: {kind}"),
-        }
-    }
-}
-
 pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
@@ -155,8 +92,6 @@ pub struct SessionInfo {
     pub worktree: Option<WorktreeInfo>,
     pub claude_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
-    pub sync_status: SyncStatus,
-    pub last_sync: Option<Instant>,
 }
 
 impl SessionInfo {
@@ -169,8 +104,6 @@ impl SessionInfo {
             worktree: None,
             claude_session_id: None,
             cwd: None,
-            sync_status: SyncStatus::Unknown,
-            last_sync: None,
         }
     }
 }
@@ -445,66 +378,6 @@ claude_session_id = "abc-123"
         let session: PersistedSession = toml::from_str(toml_str).unwrap();
         assert_eq!(session.name, "Session 1");
         assert_eq!(session.role, "");
-    }
-
-    #[test]
-    fn sync_error_kind_display() {
-        assert_eq!(SyncErrorKind::Fetch.to_string(), "Fetch failed");
-        assert_eq!(SyncErrorKind::Pull.to_string(), "Pull failed");
-        assert_eq!(
-            SyncErrorKind::LocalChanges.to_string(),
-            "Uncommitted changes"
-        );
-        assert_eq!(SyncErrorKind::Network.to_string(), "Network unreachable");
-        assert_eq!(SyncErrorKind::Unknown.to_string(), "Unknown error");
-    }
-
-    #[test]
-    fn sync_status_display() {
-        assert_eq!(SyncStatus::Unknown.to_string(), "Unknown");
-        assert_eq!(SyncStatus::UpToDate.to_string(), "Up to date");
-        assert_eq!(SyncStatus::Syncing.to_string(), "Syncing...");
-        assert_eq!(SyncStatus::Behind(1).to_string(), "Behind 1 commit");
-        assert_eq!(SyncStatus::Behind(3).to_string(), "Behind 3 commits");
-        assert_eq!(SyncStatus::Ahead(1).to_string(), "Ahead 1 commit");
-        assert_eq!(SyncStatus::Ahead(5).to_string(), "Ahead 5 commits");
-        assert_eq!(
-            SyncStatus::Diverged {
-                ahead: 2,
-                behind: 3
-            }
-            .to_string(),
-            "Diverged (2 ahead, 3 behind)"
-        );
-        assert_eq!(
-            SyncStatus::Error(SyncErrorKind::Network).to_string(),
-            "Error: Network unreachable"
-        );
-    }
-
-    #[test]
-    fn sync_status_icon() {
-        assert_eq!(SyncStatus::Unknown.icon(), "?");
-        assert_eq!(SyncStatus::UpToDate.icon(), "\u{27f3}");
-        assert_eq!(SyncStatus::Behind(1).icon(), "\u{27f2}");
-        assert_eq!(SyncStatus::Ahead(1).icon(), "\u{27f6}");
-        assert_eq!(
-            SyncStatus::Diverged {
-                ahead: 1,
-                behind: 1
-            }
-            .icon(),
-            "\u{21c4}"
-        );
-        assert_eq!(SyncStatus::Syncing.icon(), "\u{2299}");
-        assert_eq!(SyncStatus::Error(SyncErrorKind::Fetch).icon(), "\u{2717}");
-    }
-
-    #[test]
-    fn session_info_new_has_unknown_sync_status() {
-        let info = SessionInfo::new("Test".to_string());
-        assert_eq!(info.sync_status, SyncStatus::Unknown);
-        assert!(info.last_sync.is_none());
     }
 
     #[test]

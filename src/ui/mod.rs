@@ -19,7 +19,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::session::{SessionStatus, SyncStatus};
+use crate::session::SessionStatus;
 
 pub fn status_color(status: SessionStatus) -> Color {
     match status {
@@ -27,18 +27,6 @@ pub fn status_color(status: SessionStatus) -> Color {
         SessionStatus::Waiting => Color::Yellow,
         SessionStatus::Idle => Color::DarkGray,
         SessionStatus::Error => Color::Red,
-    }
-}
-
-pub fn sync_status_color(status: SyncStatus) -> Color {
-    match status {
-        SyncStatus::Unknown => Color::DarkGray,
-        SyncStatus::UpToDate => Color::Green,
-        SyncStatus::Behind(_) => Color::Yellow,
-        SyncStatus::Ahead(_) => Color::Cyan,
-        SyncStatus::Diverged { .. } => Color::Magenta,
-        SyncStatus::Syncing => Color::Blue,
-        SyncStatus::Error(_) => Color::Red,
     }
 }
 
@@ -253,26 +241,6 @@ mod tests {
         assert_eq!(status_color(SessionStatus::Waiting), Color::Yellow);
         assert_eq!(status_color(SessionStatus::Idle), Color::DarkGray);
         assert_eq!(status_color(SessionStatus::Error), Color::Red);
-    }
-
-    #[test]
-    fn sync_status_color_maps_all_variants() {
-        assert_eq!(sync_status_color(SyncStatus::Unknown), Color::DarkGray);
-        assert_eq!(sync_status_color(SyncStatus::UpToDate), Color::Green);
-        assert_eq!(sync_status_color(SyncStatus::Behind(1)), Color::Yellow);
-        assert_eq!(sync_status_color(SyncStatus::Ahead(1)), Color::Cyan);
-        assert_eq!(
-            sync_status_color(SyncStatus::Diverged {
-                ahead: 1,
-                behind: 1
-            }),
-            Color::Magenta
-        );
-        assert_eq!(sync_status_color(SyncStatus::Syncing), Color::Blue);
-        assert_eq!(
-            sync_status_color(SyncStatus::Error(crate::session::SyncErrorKind::Network)),
-            Color::Red
-        );
     }
 
     #[test]
