@@ -341,4 +341,28 @@ claude_session_id = "abc-123"
         );
         assert_eq!(wt.branch, "feat");
     }
+
+    #[test]
+    fn persisted_session_with_backend_fields() {
+        let toml_str = r#"
+name = "Session 1"
+claude_session_id = "abc-123"
+backend_id = "%42"
+backend_type = "local-tmux"
+"#;
+        let session: PersistedSession = toml::from_str(toml_str).unwrap();
+        assert_eq!(session.backend_id, "%42");
+        assert_eq!(session.backend_type, "local-tmux");
+    }
+
+    #[test]
+    fn persisted_session_backward_compat_no_backend_fields() {
+        let toml_str = r#"
+name = "Session 1"
+claude_session_id = "abc-123"
+"#;
+        let session: PersistedSession = toml::from_str(toml_str).unwrap();
+        assert_eq!(session.backend_id, "");
+        assert_eq!(session.backend_type, "");
+    }
 }

@@ -20,8 +20,9 @@ const TMUX_SESSION: &str = "thurbox";
 /// Minimum tmux version required.
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 
-/// Per-pane output channel capacity (bounded to provide backpressure).
-const PANE_CHANNEL_CAPACITY: usize = 256;
+/// Per-pane output channel capacity. Sized large enough to buffer heavy output
+/// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
+const PANE_CHANNEL_CAPACITY: usize = 4096;
 
 /// Timeout for waiting for a control mode command response.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -227,24 +228,49 @@ impl ControlMode {
         pane_senders: Arc<Mutex<HashMap<String, SyncSender<Vec<u8>>>>>,
         response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
     ) {
-        let reader = BufReader::new(stdout);
+        let mut reader = BufReader::new(stdout);
         // Accumulates response lines for the current in-flight command.
         let mut collecting: Option<Vec<String>> = None;
+        let mut line_buf = Vec::new();
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
+        loop {
+            line_buf.clear();
+            match reader.read_until(b'\n', &mut line_buf) {
+                Ok(0) => break, // EOF
+                Ok(_) => {}
                 Err(e) => {
                     debug!("Control reader I/O error: {e}");
                     break;
                 }
-            };
+            }
+            // Strip trailing newline.
+            if line_buf.last() == Some(&b'\n') {
+                line_buf.pop();
+            }
+            // Lossy conversion: tmux control mode is mostly ASCII, but raw
+            // bytes can appear (e.g., in %extended-output). Replacing
+            // invalid sequences with U+FFFD is safe — the octal-encoded
+            // payload in %output lines is always valid ASCII.
+            let line = String::from_utf8_lossy(&line_buf);
 
             match parse_notification(&line) {
                 Notification::Output { pane_id, data } => {
                     if let Ok(senders) = pane_senders.lock() {
                         if let Some(tx) = senders.get(&pane_id) {
-                            let _ = tx.send(data);
+                            match tx.try_send(data) {
+                                Ok(()) => {}
+                                Err(std::sync::mpsc::TrySendError::Full(dropped)) => {
+                                    // Channel full — drop this chunk rather than blocking.
+                                    // The reader thread MUST stay unblocked to handle
+                                    // %pause notifications and avoid deadlock.
+                                    debug!(
+                                        pane_id = %pane_id,
+                                        dropped_bytes = dropped.len(),
+                                        "Pane output channel full, dropping chunk"
+                                    );
+                                }
+                                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+                            }
                         }
                     }
                 }
@@ -1229,5 +1255,70 @@ mod tests {
         let backend = LocalTmuxBackend::new();
         let guard = backend.control.lock().unwrap();
         assert!(guard.is_none());
+    }
+
+    #[test]
+    fn control_mode_reader_exact_size_buffer() {
+        let (tx, rx) = sync_channel(16);
+        let mut reader = ControlModeReader::new(rx);
+
+        tx.send(b"abc".to_vec()).unwrap();
+        // Buffer exactly matches data size — no leftover.
+        let mut buf = [0u8; 3];
+        let n = reader.read(&mut buf).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(&buf[..n], b"abc");
+    }
+
+    #[test]
+    fn try_send_drops_when_channel_full() {
+        // Verify the try_send pattern used in reader_thread:
+        // when channel is full, data is dropped without blocking.
+        let (tx, _rx) = sync_channel::<Vec<u8>>(1);
+
+        // Fill the channel.
+        tx.send(b"first".to_vec()).unwrap();
+
+        // Second send should fail (Full), not block.
+        match tx.try_send(b"second".to_vec()) {
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {} // expected
+            other => panic!("Expected TrySendError::Full, got: {other:?}"),
+        }
+    }
+
+    // Compile-time check: channel capacity must be large enough to buffer heavy output.
+    const _: () = assert!(PANE_CHANNEL_CAPACITY >= 1024);
+
+    #[test]
+    fn parse_pause_notification_with_leading_percent() {
+        // Pane IDs from tmux always start with %.
+        assert_eq!(
+            parse_notification("%pause %123"),
+            Notification::Pause {
+                pane_id: "%123".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn shell_escape_allows_equals_comma() {
+        // Equals and comma are safe characters.
+        assert_eq!(shell_escape("key=val,other"), "key=val,other");
+    }
+
+    #[test]
+    fn decode_octal_overflow_wraps() {
+        // \400 = 256, which wraps to 0 as u8. In practice tmux only
+        // produces 0-377 (0-255), so this documents the truncation behavior.
+        assert_eq!(decode_octal("\\400"), vec![0u8]);
+    }
+
+    #[test]
+    fn parse_extended_output_missing_pane_space() {
+        // %extended-output with " : " but no space in metadata falls through.
+        assert_eq!(
+            parse_notification("%extended-output %2 : data"),
+            Notification::Other("%extended-output %2 : data".to_string())
+        );
     }
 }
