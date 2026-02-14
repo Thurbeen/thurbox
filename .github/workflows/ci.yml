@@ -101,6 +101,16 @@ jobs:
         with:
           command: check
 
+  markdown-lint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Lint markdown files
+        uses: rvben/rumdl@f3b94c9ca3ac215c2d363f7a9f732819490872cb # v0.1.20
+        with:
+          report-type: annotations
+
   all-checks:
     name: All Checks
     if: always()
@@ -113,6 +123,7 @@ jobs:
       - deny
       - docs
       - conventional-commits
+      - markdown-lint
     runs-on: ubuntu-latest
     steps:
       - name: Verify all checks passed
