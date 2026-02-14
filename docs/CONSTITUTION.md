@@ -55,11 +55,13 @@ The Elm Architecture (`Event -> Message -> update -> view -> Frame`)
 is the only sanctioned control-flow pattern.
 No ad-hoc event handlers, no component-local state, no callback chains.
 
-### 8. PTY-first session model
+### 8. Backend-first session model
 
-Claude Code sessions run inside real PTYs (`portable-pty`).
+Claude Code sessions run via a pluggable `SessionBackend` trait.
+The default backend is local tmux (`tmux -L thurbox`), which
+provides truly persistent sessions that survive crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
-The PTY is the source of truth.
+The backend is the source of truth for session lifecycle.
 
 ### 9. Logging never touches stdout
 
@@ -100,7 +102,7 @@ because a broken pipeline affects every contributor.
 | Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` |
 | Conventional commits | `cocogitto` (`cog verify`) | `cog.toml` |
 | TEA pattern | `tests/architecture_rules.rs` + code review | — |
-| PTY-first model | Code review | — |
+| Backend-first model | Code review | — |
 | Logging off stdout | Code review | — |
 | TDD (Red/Green/Refactor) | `cargo-nextest` + code review | `.config/nextest.toml` |
 | Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |

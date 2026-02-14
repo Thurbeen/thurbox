@@ -1,34 +1,21 @@
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::session::{SessionConfig, SessionInfo};
 
 /// Default permission mode passed to the Claude CLI when no explicit mode is configured.
 const DEFAULT_PERMISSION_MODE: &str = "dontAsk";
 
-// Terminal capability query sequences sent by child processes (e.g., Claude Code).
-// See: https://vt100.net/docs/vt510-rm/DA1.html, DA2, and kitty keyboard protocol.
-const DA1_QUERY: &[u8] = b"\x1b[c";
-const DA1_QUERY_EXPLICIT: &[u8] = b"\x1b[0c";
-const DA1_RESPONSE: &[u8] = b"\x1b[?62;22c"; // VT220 with color support
-
-const DA2_QUERY: &[u8] = b"\x1b[>c";
-const DA2_QUERY_EXPLICIT: &[u8] = b"\x1b[>0c";
-const DA2_RESPONSE: &[u8] = b"\x1b[>1;279;0c"; // xterm version 279
-
-const KITTY_KEYBOARD_QUERY: &[u8] = b"\x1b[?u";
-const KITTY_KEYBOARD_RESPONSE: &[u8] = b"\x1b[?0u"; // flags=0, query acknowledged
-
-fn now_millis() -> u64 {
+pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
@@ -38,7 +25,7 @@ fn now_millis() -> u64 {
 /// Build the CLI argument list from a SessionConfig.
 ///
 /// This is extracted as a pure function for testability.
-fn build_claude_args(config: &SessionConfig) -> Vec<String> {
+pub fn build_claude_args(config: &SessionConfig) -> Vec<String> {
     let mut args = Vec::new();
 
     if let Some(ref session_id) = config.resume_session_id {
@@ -77,77 +64,135 @@ fn build_claude_args(config: &SessionConfig) -> Vec<String> {
     args
 }
 
-pub struct PtySession {
+/// Metadata returned when discovering existing sessions from the backend.
+pub struct DiscoveredSession {
+    /// Backend-specific ID (e.g., tmux pane_id).
+    pub backend_id: String,
+    /// Window name or label.
+    pub name: String,
+    /// Whether the process is still running.
+    pub is_alive: bool,
+}
+
+/// A newly spawned session from the backend.
+pub struct SpawnedSession {
+    /// Backend-specific session identifier.
+    pub backend_id: String,
+    /// Streaming output bytes from the session.
+    pub output: Box<dyn Read + Send>,
+    /// Input write handle to send bytes to the session.
+    pub input: Box<dyn Write + Send>,
+    /// Captured screen content for parser seeding (output produced before streaming started).
+    pub initial_screen: Vec<u8>,
+}
+
+/// A reconnected session from the backend.
+pub struct AdoptedSession {
+    /// Streaming output bytes from the session.
+    pub output: Box<dyn Read + Send>,
+    /// Input write handle to send bytes to the session.
+    pub input: Box<dyn Write + Send>,
+    /// Captured screen content for parser seeding.
+    pub initial_screen: Vec<u8>,
+}
+
+/// Trait that all session backends implement. The app layer interacts only through this trait.
+pub trait SessionBackend: Send + Sync {
+    /// Human-readable name (e.g., "local-tmux", "ssh-remote").
+    fn name(&self) -> &str;
+
+    /// Check if the backend is available/healthy.
+    fn check_available(&self) -> Result<()>;
+
+    /// Initialize the backend (e.g., start tmux server).
+    fn ensure_ready(&self) -> Result<()>;
+
+    /// Spawn a new session running the given command.
+    fn spawn(
+        &self,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<SpawnedSession>;
+
+    /// Reconnect to an existing session.
+    fn adopt(&self, backend_id: &str, rows: u16, cols: u16) -> Result<AdoptedSession>;
+
+    /// Discover existing sessions managed by this backend.
+    fn discover(&self) -> Result<Vec<DiscoveredSession>>;
+
+    /// Resize a session's terminal.
+    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()>;
+
+    /// Check if a session's process has exited.
+    fn is_dead(&self, backend_id: &str) -> Result<bool>;
+
+    /// Kill/destroy a session (for Ctrl+X close).
+    fn kill(&self, backend_id: &str) -> Result<()>;
+
+    /// Detach from a session without killing it (for Ctrl+Q quit).
+    fn detach(&self, backend_id: &str) -> Result<()>;
+}
+
+/// A running session connected to a backend.
+pub struct Session {
     pub info: SessionInfo,
     pub parser: Arc<Mutex<vt100::Parser>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
-    master: Box<dyn MasterPty + Send>,
+    backend_id: String,
+    backend: Arc<dyn SessionBackend>,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
 }
 
-impl PtySession {
-    pub fn spawn_with_config(
+impl Session {
+    /// Spawn a new session via the given backend.
+    pub fn spawn(
         name: String,
         rows: u16,
         cols: u16,
         config: &SessionConfig,
+        backend: &Arc<dyn SessionBackend>,
     ) -> Result<Self> {
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("Failed to open PTY")?;
+        let args = build_claude_args(config);
+        let window_name = format!("tb-{name}");
 
-        let mut cmd = CommandBuilder::new("claude");
-        for arg in build_claude_args(config) {
-            cmd.arg(arg);
-        }
-        if let Some(ref cwd) = config.cwd {
-            cmd.cwd(cwd);
-        }
-        cmd.env("TERM", "xterm-256color");
-
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .context("Failed to spawn claude. Is the `claude` CLI installed?")?;
-        drop(pair.slave);
-
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .context("Failed to clone PTY reader")?;
-        let writer = pair
-            .master
-            .take_writer()
-            .context("Failed to take PTY writer")?;
+        let spawned = backend.spawn(
+            &window_name,
+            "claude",
+            &args,
+            config.cwd.as_deref(),
+            rows,
+            cols,
+        )?;
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
+
+        // Seed the parser with any output produced before streaming started.
+        if !spawned.initial_screen.is_empty() {
+            if let Ok(mut p) = parser.lock() {
+                p.process(&spawned.initial_screen);
+            }
+        }
+
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(now_millis()));
 
-        // Writer task: receives input bytes and writes to PTY
         let (input_tx, input_rx) = mpsc::unbounded_channel();
-        tokio::spawn(Self::writer_loop(writer, input_rx));
+        tokio::spawn(Self::writer_loop(spawned.input, input_rx));
 
-        // Reader task: reads PTY output and feeds into vt100 parser
         let parser_clone = Arc::clone(&parser);
         let exited_clone = Arc::clone(&exited);
         let last_output_clone = Arc::clone(&last_output_at);
-        let response_tx = input_tx.clone();
         tokio::task::spawn_blocking(move || {
             Self::reader_loop(
-                reader,
+                spawned.output,
                 parser_clone,
                 exited_clone,
-                child,
                 last_output_clone,
-                response_tx,
             );
         });
 
@@ -157,13 +202,74 @@ impl PtySession {
         if !config.role.is_empty() {
             info.role = config.role.clone();
         }
-        debug!(session_id = %info.id, "Spawned claude PTY session");
+        info.backend_id = Some(spawned.backend_id.clone());
+        debug!(session_id = %info.id, backend_id = %spawned.backend_id, "Spawned session via backend");
 
         Ok(Self {
             info,
             parser,
             input_tx,
-            master: pair.master,
+            backend_id: spawned.backend_id,
+            backend: Arc::clone(backend),
+            exited,
+            last_output_at,
+        })
+    }
+
+    /// Reconnect to an existing backend session.
+    pub fn adopt(
+        name: String,
+        rows: u16,
+        cols: u16,
+        backend_id: &str,
+        backend: &Arc<dyn SessionBackend>,
+    ) -> Result<Self> {
+        let adopted = backend.adopt(backend_id, rows, cols)?;
+
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
+
+        // Seed the parser with the captured screen content.
+        debug!(
+            backend_id = %backend_id,
+            initial_screen_bytes = adopted.initial_screen.len(),
+            parser_rows = rows,
+            parser_cols = cols,
+            "Adopting session with initial screen"
+        );
+        if !adopted.initial_screen.is_empty() {
+            if let Ok(mut p) = parser.lock() {
+                p.process(&adopted.initial_screen);
+            }
+        }
+
+        let exited = Arc::new(AtomicBool::new(false));
+        let last_output_at = Arc::new(AtomicU64::new(now_millis()));
+
+        let (input_tx, input_rx) = mpsc::unbounded_channel();
+        tokio::spawn(Self::writer_loop(adopted.input, input_rx));
+
+        let parser_clone = Arc::clone(&parser);
+        let exited_clone = Arc::clone(&exited);
+        let last_output_clone = Arc::clone(&last_output_at);
+        tokio::task::spawn_blocking(move || {
+            Self::reader_loop(
+                adopted.output,
+                parser_clone,
+                exited_clone,
+                last_output_clone,
+            );
+        });
+
+        let mut info = SessionInfo::new(name);
+        info.backend_id = Some(backend_id.to_string());
+        debug!(session_id = %info.id, backend_id = %backend_id, "Adopted session via backend");
+
+        Ok(Self {
+            info,
+            parser,
+            input_tx,
+            backend_id: backend_id.to_string(),
+            backend: Arc::clone(backend),
             exited,
             last_output_at,
         })
@@ -173,68 +279,29 @@ impl PtySession {
         mut reader: Box<dyn Read + Send>,
         parser: Arc<Mutex<vt100::Parser>>,
         exited: Arc<AtomicBool>,
-        mut child: Box<dyn portable_pty::Child + Send + Sync>,
         last_output_at: Arc<AtomicU64>,
-        response_tx: mpsc::UnboundedSender<Vec<u8>>,
     ) {
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
-                    debug!("PTY reader: EOF");
+                    debug!("Session reader: EOF");
                     break;
                 }
                 Ok(n) => {
                     let data = &buf[..n];
                     last_output_at.store(now_millis(), Ordering::Relaxed);
-                    Self::respond_to_queries(data, &response_tx);
                     if let Ok(mut p) = parser.lock() {
                         p.process(data);
                     }
                 }
                 Err(e) => {
-                    debug!("PTY reader error: {e}");
+                    debug!("Session reader error: {e}");
                     break;
                 }
             }
         }
-
-        // Wait for child to fully exit
-        match child.try_wait() {
-            Ok(Some(status)) => debug!("Claude process exited: {status:?}"),
-            Ok(None) => {
-                debug!("Claude process still running after EOF, waiting...");
-                match child.wait() {
-                    Ok(status) => debug!("Claude process exited: {status:?}"),
-                    Err(e) => warn!("Error waiting for claude process: {e}"),
-                }
-            }
-            Err(e) => warn!("Error checking claude process status: {e}"),
-        }
-
         exited.store(true, Ordering::SeqCst);
-    }
-
-    /// Scan PTY output for terminal capability queries and send responses.
-    ///
-    /// Claude Code (via Ink) sends DA1, DA2, and kitty keyboard protocol
-    /// queries to detect terminal capabilities. Without responses, it falls
-    /// back to basic mode and ignores permission settings like "Accept Edits".
-    fn respond_to_queries(data: &[u8], tx: &mpsc::UnboundedSender<Vec<u8>>) {
-        if contains_sequence(data, DA1_QUERY) || contains_sequence(data, DA1_QUERY_EXPLICIT) {
-            let _ = tx.send(DA1_RESPONSE.to_vec());
-            debug!("Responded to DA1 query");
-        }
-
-        if contains_sequence(data, DA2_QUERY) || contains_sequence(data, DA2_QUERY_EXPLICIT) {
-            let _ = tx.send(DA2_RESPONSE.to_vec());
-            debug!("Responded to DA2 query");
-        }
-
-        if contains_sequence(data, KITTY_KEYBOARD_QUERY) {
-            let _ = tx.send(KITTY_KEYBOARD_RESPONSE.to_vec());
-            debug!("Responded to kitty keyboard protocol query");
-        }
     }
 
     async fn writer_loop(
@@ -243,31 +310,26 @@ impl PtySession {
     ) {
         while let Some(data) = input_rx.recv().await {
             if let Err(e) = writer.write_all(&data) {
-                error!("PTY writer error: {e}");
+                error!("Session writer error: {e}");
                 break;
             }
             if let Err(e) = writer.flush() {
-                error!("PTY flush error: {e}");
+                error!("Session flush error: {e}");
                 break;
             }
         }
-        debug!("PTY writer task exiting");
+        debug!("Session writer task exiting");
     }
 
     pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
         self.input_tx
             .send(data)
-            .map_err(|_| anyhow::anyhow!("PTY input channel closed"))
+            .map_err(|_| anyhow::anyhow!("Session input channel closed"))
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
-        if let Err(e) = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        }) {
-            warn!("Failed to resize PTY: {e}");
+        if let Err(e) = self.backend.resize(&self.backend_id, rows, cols) {
+            tracing::warn!("Failed to resize session: {e}");
             return;
         }
         if let Ok(mut parser) = self.parser.lock() {
@@ -283,139 +345,51 @@ impl PtySession {
         now_millis().saturating_sub(self.last_output_at.load(Ordering::Relaxed))
     }
 
-    /// Graceful shutdown: drop the input sender (closes the writer task)
-    /// and drop the master PTY (sends SIGHUP to the child).
-    pub fn shutdown(self) {
-        drop(self.input_tx);
-        drop(self.master);
-        debug!("PTY session shut down");
+    /// Return the backend-specific session identifier.
+    pub fn backend_id(&self) -> &str {
+        &self.backend_id
     }
 
-    /// Create a lightweight stub for unit tests (no real PTY process).
+    /// Return the backend name.
+    pub fn backend_name(&self) -> &str {
+        self.backend.name()
+    }
+
+    /// Kill/destroy the backend session (for Ctrl+X close).
+    pub fn kill(&self) {
+        if let Err(e) = self.backend.kill(&self.backend_id) {
+            tracing::warn!("Failed to kill session: {e}");
+        }
+    }
+
+    /// Detach from the backend session without killing it (for Ctrl+Q quit).
+    pub fn detach(self) {
+        if let Err(e) = self.backend.detach(&self.backend_id) {
+            tracing::warn!("Failed to detach session: {e}");
+        }
+        drop(self.input_tx);
+        debug!("Session detached");
+    }
+
+    /// Create a lightweight stub for unit tests (no real backend process).
     #[cfg(test)]
-    pub fn stub(name: &str) -> Self {
+    pub fn stub(name: &str, backend: &Arc<dyn SessionBackend>) -> Self {
         let (input_tx, _input_rx) = mpsc::unbounded_channel();
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("test: open PTY");
-        drop(pair.slave);
         Self {
             info: SessionInfo::new(name.to_string()),
             parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0))),
             input_tx,
-            master: pair.master,
+            backend_id: String::new(),
+            backend: Arc::clone(backend),
             exited: Arc::new(AtomicBool::new(false)),
             last_output_at: Arc::new(AtomicU64::new(now_millis())),
         }
     }
 }
 
-fn contains_sequence(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn contains_sequence_exact_match() {
-        assert!(contains_sequence(DA1_QUERY, DA1_QUERY));
-    }
-
-    #[test]
-    fn contains_sequence_embedded() {
-        assert!(contains_sequence(b"hello\x1b[cworld", DA1_QUERY));
-    }
-
-    #[test]
-    fn contains_sequence_no_match() {
-        assert!(!contains_sequence(b"hello", DA1_QUERY));
-    }
-
-    #[test]
-    fn contains_sequence_empty_haystack() {
-        assert!(!contains_sequence(b"", DA1_QUERY));
-    }
-
-    #[test]
-    fn respond_to_da1_query() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        PtySession::respond_to_queries(DA1_QUERY, &tx);
-        assert_eq!(rx.try_recv().unwrap(), DA1_RESPONSE);
-    }
-
-    #[test]
-    fn respond_to_da1_query_explicit_zero() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        PtySession::respond_to_queries(DA1_QUERY_EXPLICIT, &tx);
-        assert_eq!(rx.try_recv().unwrap(), DA1_RESPONSE);
-    }
-
-    #[test]
-    fn respond_to_da2_query() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        PtySession::respond_to_queries(DA2_QUERY, &tx);
-        assert_eq!(rx.try_recv().unwrap(), DA2_RESPONSE);
-    }
-
-    #[test]
-    fn respond_to_kitty_keyboard_query() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        PtySession::respond_to_queries(KITTY_KEYBOARD_QUERY, &tx);
-        assert_eq!(rx.try_recv().unwrap(), KITTY_KEYBOARD_RESPONSE);
-    }
-
-    #[test]
-    fn no_response_for_normal_data() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        PtySession::respond_to_queries(b"hello world", &tx);
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn respond_to_da2_query_explicit_zero() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        PtySession::respond_to_queries(DA2_QUERY_EXPLICIT, &tx);
-        assert_eq!(rx.try_recv().unwrap(), DA2_RESPONSE);
-    }
-
-    #[test]
-    fn respond_to_query_embedded_in_output() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        PtySession::respond_to_queries(b"some text\x1b[?umore text", &tx);
-        assert_eq!(rx.try_recv().unwrap(), KITTY_KEYBOARD_RESPONSE);
-    }
-
-    #[test]
-    fn respond_to_multiple_queries_in_single_buffer() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        // Buffer containing both DA1 and kitty queries
-        let mut data = Vec::new();
-        data.extend_from_slice(DA1_QUERY);
-        data.extend_from_slice(b"output");
-        data.extend_from_slice(KITTY_KEYBOARD_QUERY);
-        PtySession::respond_to_queries(&data, &tx);
-        assert_eq!(rx.try_recv().unwrap(), DA1_RESPONSE);
-        assert_eq!(rx.try_recv().unwrap(), KITTY_KEYBOARD_RESPONSE);
-    }
-
-    #[test]
-    fn no_response_for_partial_escape_sequence() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        // Just ESC [ without the trailing 'c' — should not trigger DA1
-        PtySession::respond_to_queries(b"\x1b[", &tx);
-        assert!(rx.try_recv().is_err());
-    }
-
-    // --- build_claude_args tests ---
-
     use crate::session::RolePermissions;
 
     #[test]

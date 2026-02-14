@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
@@ -10,7 +11,7 @@ use ratatui::{
 };
 use tracing::error;
 
-use crate::claude::{input, PtySession};
+use crate::claude::{input, Session, SessionBackend};
 use crate::git;
 use crate::project::{self, ProjectConfig, ProjectInfo};
 use crate::session::{
@@ -208,8 +209,9 @@ pub enum InputFocus {
 pub struct App {
     projects: Vec<ProjectInfo>,
     active_project_index: usize,
-    sessions: Vec<PtySession>,
+    sessions: Vec<Session>,
     active_index: usize,
+    backend: Arc<dyn SessionBackend>,
     focus: InputFocus,
     should_quit: bool,
     error_message: Option<String>,
@@ -252,7 +254,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(rows: u16, cols: u16, project_configs: Vec<ProjectConfig>) -> Self {
+    pub fn new(
+        rows: u16,
+        cols: u16,
+        project_configs: Vec<ProjectConfig>,
+        backend: Arc<dyn SessionBackend>,
+    ) -> Self {
         let projects: Vec<ProjectInfo> = if project_configs.is_empty() {
             vec![ProjectInfo::new_default(project::create_default_project())]
         } else {
@@ -264,6 +271,7 @@ impl App {
             active_project_index: 0,
             sessions: Vec::new(),
             active_index: 0,
+            backend,
             focus: InputFocus::ProjectList,
             should_quit: false,
             error_message: None,
@@ -390,6 +398,8 @@ impl App {
             }
         }
 
+        // Kill the backend session before removing from the list.
+        self.sessions[self.active_index].kill();
         self.sessions.remove(self.active_index);
 
         // Remove session from its project
@@ -1197,7 +1207,7 @@ impl App {
             config.claude_session_id = Some(uuid::Uuid::new_v4().to_string());
         }
 
-        match PtySession::spawn_with_config(name, rows, cols, &config) {
+        match Session::spawn(name, rows, cols, &config, &self.backend) {
             Ok(mut session) => {
                 session.info.worktree = worktree;
                 let session_id = session.info.id;
@@ -1528,9 +1538,10 @@ impl App {
 
     pub fn shutdown(self) {
         self.save_state();
-        // Do NOT remove worktrees — they persist for resume
+        // Do NOT remove worktrees — they persist for resume.
+        // Detach from backend sessions without killing them — they persist in tmux.
         for session in self.sessions {
-            session.shutdown();
+            session.detach();
         }
     }
 
@@ -1550,6 +1561,8 @@ impl App {
                         branch: wt.branch.clone(),
                     }),
                     role: s.info.role.clone(),
+                    backend_id: s.backend_id().to_string(),
+                    backend_type: s.backend_name().to_string(),
                 })
             })
             .collect();
@@ -1567,6 +1580,9 @@ impl App {
     pub fn restore_sessions(&mut self, state: PersistedState) {
         self.session_counter = state.session_counter;
 
+        // Discover existing sessions from the backend.
+        let discovered = self.backend.discover().unwrap_or_default();
+
         for persisted in state.sessions {
             let name = persisted.name;
 
@@ -1575,14 +1591,6 @@ impl App {
             } else {
                 persisted.role
             };
-            let permissions = self.resolve_role_permissions(&role);
-            let config = SessionConfig {
-                resume_session_id: Some(persisted.claude_session_id.clone()),
-                claude_session_id: Some(persisted.claude_session_id),
-                cwd: persisted.cwd,
-                role,
-                permissions,
-            };
 
             let worktree = persisted.worktree.map(|wt| WorktreeInfo {
                 repo_path: wt.repo_path,
@@ -1590,7 +1598,63 @@ impl App {
                 branch: wt.branch,
             });
 
-            self.do_spawn_session(name, &config, worktree);
+            // Try to match a discovered backend session by backend_id.
+            let matching_discovered = if !persisted.backend_id.is_empty() {
+                discovered
+                    .iter()
+                    .find(|d| d.backend_id == persisted.backend_id && d.is_alive)
+            } else {
+                // Fall back to matching by window name (tb-<name>).
+                let expected_name = format!("tb-{name}");
+                discovered
+                    .iter()
+                    .find(|d| d.name == expected_name && d.is_alive)
+            };
+
+            if let Some(disc) = matching_discovered {
+                // Adopt the existing backend session — reconnect without re-spawning.
+                let (rows, cols) = self.content_area_size();
+                match Session::adopt(name.clone(), rows, cols, &disc.backend_id, &self.backend) {
+                    Ok(mut session) => {
+                        session.info.claude_session_id = Some(persisted.claude_session_id.clone());
+                        session.info.cwd = persisted.cwd;
+                        session.info.role = role;
+                        session.info.worktree = worktree;
+                        let session_id = session.info.id;
+                        self.sessions.push(session);
+                        self.active_index = self.sessions.len() - 1;
+                        self.focus = InputFocus::Terminal;
+
+                        if let Some(project) = self.projects.get_mut(self.active_project_index) {
+                            project.session_ids.push(session_id);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to adopt session '{name}': {e}");
+                        // Fall back to spawning a new session with --resume.
+                        let permissions = self.resolve_role_permissions(&role);
+                        let config = SessionConfig {
+                            resume_session_id: Some(persisted.claude_session_id.clone()),
+                            claude_session_id: Some(persisted.claude_session_id),
+                            cwd: persisted.cwd,
+                            role,
+                            permissions,
+                        };
+                        self.do_spawn_session(name, &config, worktree);
+                    }
+                }
+            } else {
+                // No matching backend session — spawn new with --resume.
+                let permissions = self.resolve_role_permissions(&role);
+                let config = SessionConfig {
+                    resume_session_id: Some(persisted.claude_session_id.clone()),
+                    claude_session_id: Some(persisted.claude_session_id),
+                    cwd: persisted.cwd,
+                    role,
+                    permissions,
+                };
+                self.do_spawn_session(name, &config, worktree);
+            }
         }
 
         if let Err(e) = project::clear_session_state() {
@@ -1742,6 +1806,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     // --- TextInput tests ---
@@ -1909,11 +1975,64 @@ mod tests {
 
     // --- Session switching tests ---
 
+    /// Stub backend that does nothing — for unit tests only.
+    struct StubBackend;
+    impl SessionBackend for StubBackend {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::claude::backend::SpawnedSession> {
+            anyhow::bail!("stub backend does not spawn")
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::claude::backend::AdoptedSession> {
+            anyhow::bail!("stub backend does not adopt")
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::claude::backend::DiscoveredSession>> {
+            Ok(vec![])
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn stub_backend() -> Arc<dyn SessionBackend> {
+        Arc::new(StubBackend)
+    }
+
     /// Create an App with N stub sessions bound to the default project.
     fn app_with_sessions(count: usize) -> App {
-        let mut app = App::new(24, 120, vec![]);
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, vec![], backend.clone());
         for i in 0..count {
-            let session = PtySession::stub(&format!("Session {}", i + 1));
+            let session = Session::stub(&format!("Session {}", i + 1), &backend);
             let session_id = session.info.id;
             app.sessions.push(session);
             app.projects[0].session_ids.push(session_id);
@@ -2035,14 +2154,14 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(50, 100, vec![]);
+        let app = App::new(50, 100, vec![], stub_backend());
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(6, 80, vec![]);
+        let app = App::new(6, 80, vec![], stub_backend());
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -2056,13 +2175,13 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(24, 80, vec![]);
+        let mut app = App::new(24, 80, vec![], stub_backend());
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(24, 80, vec![]);
+        let mut app = App::new(24, 80, vec![], stub_backend());
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -2070,7 +2189,7 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(24, 80, vec![]);
+        let mut app = App::new(24, 80, vec![], stub_backend());
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
@@ -2079,7 +2198,7 @@ mod tests {
 
     #[test]
     fn open_role_editor_starts_empty_for_no_custom_roles() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         assert!(app.show_role_editor);
         assert!(app.role_editor_roles.is_empty());
@@ -2098,7 +2217,7 @@ mod tests {
                 permissions: RolePermissions::default(),
             }],
         };
-        let mut app = App::new(24, 120, vec![config]);
+        let mut app = App::new(24, 120, vec![config], stub_backend());
         app.open_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
         assert_eq!(app.role_editor_roles[0].name, "ops");
@@ -2106,7 +2225,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
@@ -2126,7 +2245,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
@@ -2168,7 +2287,7 @@ mod tests {
                 },
             ],
         };
-        let mut app = App::new(24, 120, vec![config]);
+        let mut app = App::new(24, 120, vec![config], stub_backend());
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, None);
         assert!(app.show_role_selector);
@@ -2181,14 +2300,14 @@ mod tests {
             repos: vec![],
             roles: vec![],
         };
-        let app = App::new(24, 120, vec![config]);
+        let app = App::new(24, 120, vec![config], stub_backend());
         // With no roles, the selector should never be set
         assert!(!app.show_role_selector);
     }
 
     #[test]
     fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
@@ -2219,7 +2338,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         // Add first role
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -2260,7 +2379,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config]);
+        let mut app = App::new(24, 120, vec![config], stub_backend());
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2282,7 +2401,7 @@ mod tests {
 
     #[test]
     fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
@@ -2311,7 +2430,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config]);
+        let mut app = App::new(24, 120, vec![config], stub_backend());
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2331,7 +2450,7 @@ mod tests {
     #[test]
     fn role_editor_tab_cycles_fields_forward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2351,7 +2470,7 @@ mod tests {
     #[test]
     fn role_editor_backtab_cycles_fields_backward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2370,7 +2489,7 @@ mod tests {
 
     #[test]
     fn role_editor_esc_discards_and_returns_to_list() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -2398,7 +2517,7 @@ mod tests {
                 },
             ],
         };
-        let mut app = App::new(24, 120, vec![config]);
+        let mut app = App::new(24, 120, vec![config], stub_backend());
         app.open_role_editor();
         // Select the last role
         app.role_editor_list_index = 1;
@@ -2410,7 +2529,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2530,7 +2649,7 @@ mod tests {
     #[test]
     fn tool_browse_add_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2563,7 +2682,7 @@ mod tests {
     #[test]
     fn tool_browse_delete_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::AllowedTools;
@@ -2580,7 +2699,7 @@ mod tests {
     #[test]
     fn tool_adding_esc_cancels() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::DisallowedTools;
@@ -2612,7 +2731,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config]);
+        let mut app = App::new(24, 120, vec![config], stub_backend());
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2631,7 +2750,7 @@ mod tests {
 
     #[test]
     fn system_prompt_empty_saves_as_none() {
-        let mut app = App::new(24, 120, vec![]);
+        let mut app = App::new(24, 120, vec![], stub_backend());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("test");
@@ -2659,7 +2778,7 @@ mod tests {
                 },
             }],
         };
-        let app = App::new(24, 120, vec![config]);
+        let app = App::new(24, 120, vec![config], stub_backend());
         // With exactly 1 role, prepare_spawn should not show selector
         // (it would try to spawn, which needs a runtime — just verify no selector)
         assert!(!app.show_role_selector);
