@@ -146,11 +146,6 @@ fn render_session_section(
                     format!(" [{}]", wt.branch),
                     Style::default().fg(Color::Green),
                 ));
-                let sync_color = super::sync_status_color(info.sync_status);
-                spans.push(Span::styled(
-                    format!(" {}", info.sync_status.icon()),
-                    Style::default().fg(sync_color),
-                ));
             }
 
             ListItem::new(Line::from(spans))

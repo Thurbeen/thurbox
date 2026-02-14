@@ -1,6 +1,4 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
@@ -10,7 +8,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
-use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 use crate::claude::{input, PtySession};
@@ -18,8 +15,7 @@ use crate::git;
 use crate::project::{self, ProjectConfig, ProjectInfo};
 use crate::session::{
     PersistedInstance, PersistedSession, PersistedState, PersistedWorktree, RoleConfig,
-    RolePermissions, SessionConfig, SessionId, SessionInfo, SessionStatus, SyncStatus,
-    WorktreeInfo, DEFAULT_ROLE_NAME,
+    RolePermissions, SessionConfig, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::sync::{FileWatcher, SyncEvent};
 use crate::ui::{
@@ -29,8 +25,6 @@ use crate::ui::{
 };
 
 const MOUSE_SCROLL_LINES: usize = 3;
-/// Auto-sync interval: ~30 seconds at 100 Hz tick rate (10ms poll).
-const SYNC_INTERVAL_TICKS: u32 = 3000;
 
 /// If no PTY output for this many milliseconds, consider session "Waiting".
 const ACTIVITY_TIMEOUT_MS: u64 = 1000;
@@ -204,7 +198,6 @@ pub enum AppMessage {
     MouseScrollDown,
     Resize(u16, u16),
     Sync(SyncEvent),
-    SyncStatusUpdated(SessionId, SyncStatus),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,11 +253,6 @@ pub struct App {
     role_editor_editing_index: Option<usize>,
     file_watcher: Option<FileWatcher>,
     instance_id: String,
-    // Auto-sync
-    sync_interval_ticks: u32,
-    sync_in_progress: HashSet<SessionId>,
-    sync_tx: mpsc::UnboundedSender<AppMessage>,
-    sync_rx: mpsc::UnboundedReceiver<AppMessage>,
 }
 
 impl App {
@@ -279,8 +267,6 @@ impl App {
         } else {
             project_configs.into_iter().map(ProjectInfo::new).collect()
         };
-
-        let (sync_tx, sync_rx) = mpsc::unbounded_channel();
 
         Self {
             projects,
@@ -328,10 +314,6 @@ impl App {
             role_editor_editing_index: None,
             file_watcher,
             instance_id: uuid::Uuid::new_v4().to_string(),
-            sync_interval_ticks: SYNC_INTERVAL_TICKS,
-            sync_in_progress: HashSet::new(),
-            sync_tx,
-            sync_rx,
         }
     }
 
@@ -462,16 +444,6 @@ impl App {
             AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
             AppMessage::Sync(event) => self.handle_sync(event),
-            AppMessage::SyncStatusUpdated(session_id, status) => {
-                self.sync_in_progress.remove(&session_id);
-                for session in &mut self.sessions {
-                    if session.info.id == session_id {
-                        session.info.sync_status = status;
-                        session.info.last_sync = Some(Instant::now());
-                        break;
-                    }
-                }
-            }
         }
     }
 
@@ -572,14 +544,6 @@ impl App {
                 KeyCode::Char('i') => {
                     if self.terminal_cols >= 120 {
                         self.show_info_panel = !self.show_info_panel;
-                    }
-                    return;
-                }
-                KeyCode::Char('s') => {
-                    if let Some(session) = self.sessions.get(self.active_index) {
-                        if session.info.worktree.is_some() {
-                            self.trigger_session_sync(session.info.id);
-                        }
                     }
                     return;
                 }
@@ -1370,49 +1334,6 @@ impl App {
                 SessionStatus::Busy
             };
         }
-
-        // Poll for sync status updates from background tasks
-        while let Ok(msg) = self.sync_rx.try_recv() {
-            self.update(msg);
-        }
-
-        // Periodic auto-sync
-        self.sync_interval_ticks = self.sync_interval_ticks.saturating_sub(1);
-        if self.sync_interval_ticks == 0 {
-            self.trigger_auto_sync();
-            self.sync_interval_ticks = SYNC_INTERVAL_TICKS;
-        }
-    }
-
-    fn trigger_auto_sync(&mut self) {
-        for session in &self.sessions {
-            if let Some(ref wt) = session.info.worktree {
-                if !self.sync_in_progress.contains(&session.info.id) {
-                    self.sync_in_progress.insert(session.info.id);
-                    spawn_sync_task(session.info.id, wt, &self.sync_tx);
-                }
-            }
-        }
-    }
-
-    fn trigger_session_sync(&mut self, session_id: SessionId) {
-        if self.sync_in_progress.contains(&session_id) {
-            return;
-        }
-
-        let session = match self.sessions.iter_mut().find(|s| s.info.id == session_id) {
-            Some(s) => s,
-            None => return,
-        };
-
-        let wt = match &session.info.worktree {
-            Some(wt) => wt,
-            None => return,
-        };
-
-        session.info.sync_status = SyncStatus::Syncing;
-        self.sync_in_progress.insert(session_id);
-        spawn_sync_task(session_id, wt, &self.sync_tx);
     }
 
     pub fn view(&self, frame: &mut Frame) {
@@ -1879,32 +1800,6 @@ impl App {
     }
 }
 
-fn spawn_sync_task(
-    session_id: SessionId,
-    wt: &WorktreeInfo,
-    tx: &tokio::sync::mpsc::UnboundedSender<AppMessage>,
-) {
-    let wt_path = wt.worktree_path.clone();
-    let branch = wt.branch.clone();
-    let tx = tx.clone();
-
-    tokio::spawn(async move {
-        let status = tokio::task::spawn_blocking(move || {
-            if let Err(e) = git::fetch_remote(&wt_path, "origin") {
-                return SyncStatus::Error(e);
-            }
-            match git::sync_status(&wt_path, &branch) {
-                Ok(status) => status,
-                Err(e) => SyncStatus::Error(e),
-            }
-        })
-        .await
-        .unwrap_or(SyncStatus::Error(crate::session::SyncErrorKind::Unknown));
-
-        let _ = tx.send(AppMessage::SyncStatusUpdated(session_id, status));
-    });
-}
-
 fn render_help_overlay(frame: &mut Frame) {
     let area = centered_rect(60, 70, frame.area());
 
@@ -1931,7 +1826,6 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+X", "Close active session"),
         help_line("Ctrl+L", "Cycle focus (project / session / terminal)"),
         help_line("Ctrl+I", "Toggle info panel (width >= 120)"),
-        help_line("Ctrl+S", "Sync active session with remote"),
         help_line("?", "Show this help (list focus only)"),
         Line::from(""),
         Line::from(Span::styled(
