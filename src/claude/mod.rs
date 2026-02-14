@@ -1,4 +1,5 @@
+pub mod backend;
 pub mod input;
-pub mod pty_session;
+pub mod tmux;
 
-pub use pty_session::PtySession;
+pub use backend::{Session, SessionBackend};

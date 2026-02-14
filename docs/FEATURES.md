@@ -278,22 +278,28 @@ where `/` in branch names is replaced by `-`.
 
 ## Session Persistence
 
-Closing Thurbox with `Ctrl+Q` saves all active session metadata
-so they can be restored on the next launch.
+Sessions run inside a dedicated tmux server (`tmux -L thurbox`)
+and survive thurbox crashes, restarts, and even multiple
+concurrent thurbox instances.
 
 ### How it works
 
+- Sessions spawn as tmux windows in the `thurbox` session.
+  The tmux pane keeps running regardless of thurbox's lifecycle.
 - On every session spawn, Thurbox assigns a `claude_session_id`
   (UUID v4) via the Claude CLI's `--session-id` flag. This tells
   Claude to use a stable conversation ID from the start.
-- On shutdown (`Ctrl+Q`), all session metadata is written to
-  `$XDG_DATA_HOME/thurbox/state.toml`
-  (default: `~/.local/share/thurbox/state.toml`).
-- On next startup, Thurbox detects the state file and resumes
-  each session using `--resume <session-id>`, restoring the
-  exact Claude conversations.
-- The state file is cleared after successful restore to prevent
-  stale state from accumulating.
+- On shutdown (`Ctrl+Q`), session metadata (including backend
+  IDs) is written to `$XDG_DATA_HOME/thurbox/state.toml`
+  (default: `~/.local/share/thurbox/state.toml`). Thurbox detaches
+  from each session without killing it.
+- On next startup, Thurbox discovers existing sessions from tmux,
+  matches them to persisted metadata by `backend_id`, and adopts
+  them — reconnecting to the live tmux panes with terminal content
+  intact. Unmatched persisted sessions fall back to
+  `--resume <session-id>` to create new tmux panes.
+- External recovery is always possible via
+  `tmux -L thurbox attach`.
 
 ### State file format
 
@@ -304,11 +310,15 @@ session_counter = 3
 name = "Session 1"
 claude_session_id = "abc-123-def-456"
 cwd = "/home/user/repos/app"
+backend_id = "%1"
+backend_type = "local-tmux"
 
 [[sessions]]
 name = "Session 2"
 claude_session_id = "ghi-789-jkl-012"
 cwd = "/home/user/repos/app/.git/thurbox-worktrees/feat-login"
+backend_id = "%2"
+backend_type = "local-tmux"
 
 [sessions.worktree]
 repo_path = "/home/user/repos/app"
@@ -326,11 +336,19 @@ reconstructed on restore.
 
 ### Explicit close vs quit
 
-- **`Ctrl+Q` (Quit)**: Saves all sessions, preserves worktrees.
-  Sessions resume on next launch.
-- **`Ctrl+X` (Close)**: Permanently closes the active session.
+- **`Ctrl+Q` (Quit)**: Detaches from all sessions (tmux panes
+  keep running), saves metadata. Sessions resume on next launch
+  with terminal content preserved.
+- **`Ctrl+X` (Close)**: Permanently kills the tmux pane.
   Its worktree (if any) is removed immediately.
   Closed sessions are not saved and will not be restored.
+
+### Multi-instance support
+
+Multiple thurbox instances can view the same tmux sessions.
+The primary instance (first to connect) uses `pipe-pane` for
+real-time output streaming. Input can be sent from any instance
+via the pane TTY.
 
 ---
 

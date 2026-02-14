@@ -334,6 +334,8 @@ repos = ["/home/user/repos/other"]
                     cwd: Some(PathBuf::from("/tmp/repo")),
                     worktree: None,
                     role: "developer".to_string(),
+                    backend_id: String::new(),
+                    backend_type: String::new(),
                 },
                 PersistedSession {
                     name: "Session 2".to_string(),
@@ -345,6 +347,8 @@ repos = ["/home/user/repos/other"]
                         branch: "feat".to_string(),
                     }),
                     role: "reviewer".to_string(),
+                    backend_id: String::new(),
+                    backend_type: String::new(),
                 },
             ],
             session_counter: 2,
@@ -382,6 +386,8 @@ repos = ["/home/user/repos/other"]
                 cwd: None,
                 worktree: None,
                 role: "developer".to_string(),
+                backend_id: String::new(),
+                backend_type: String::new(),
             }],
             session_counter: 1,
         };
