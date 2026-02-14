@@ -137,6 +137,14 @@ pub trait SessionBackend: Send + Sync {
     fn detach(&self, backend_id: &str) -> Result<()>;
 }
 
+/// Internal bundle of I/O handles for `wire_io`.
+struct SessionIo {
+    output: Box<dyn Read + Send>,
+    input: Box<dyn Write + Send>,
+    initial_screen: Vec<u8>,
+    backend_id: String,
+}
+
 /// A running session connected to a backend.
 pub struct Session {
     pub info: SessionInfo,
@@ -169,33 +177,6 @@ impl Session {
             cols,
         )?;
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
-
-        // Seed the parser with any output produced before streaming started.
-        if !spawned.initial_screen.is_empty() {
-            if let Ok(mut p) = parser.lock() {
-                p.process(&spawned.initial_screen);
-            }
-        }
-
-        let exited = Arc::new(AtomicBool::new(false));
-        let last_output_at = Arc::new(AtomicU64::new(now_millis()));
-
-        let (input_tx, input_rx) = mpsc::unbounded_channel();
-        tokio::spawn(Self::writer_loop(spawned.input, input_rx));
-
-        let parser_clone = Arc::clone(&parser);
-        let exited_clone = Arc::clone(&exited);
-        let last_output_clone = Arc::clone(&last_output_at);
-        tokio::task::spawn_blocking(move || {
-            Self::reader_loop(
-                spawned.output,
-                parser_clone,
-                exited_clone,
-                last_output_clone,
-            );
-        });
-
         let mut info = SessionInfo::new(name);
         info.claude_session_id = config.claude_session_id.clone();
         info.cwd = config.cwd.clone();
@@ -205,15 +186,18 @@ impl Session {
         info.backend_id = Some(spawned.backend_id.clone());
         debug!(session_id = %info.id, backend_id = %spawned.backend_id, "Spawned session via backend");
 
-        Ok(Self {
+        Ok(Self::wire_io(
             info,
-            parser,
-            input_tx,
-            backend_id: spawned.backend_id,
-            backend: Arc::clone(backend),
-            exited,
-            last_output_at,
-        })
+            rows,
+            cols,
+            SessionIo {
+                output: spawned.output,
+                input: spawned.input,
+                initial_screen: spawned.initial_screen,
+                backend_id: spawned.backend_id,
+            },
+            backend,
+        ))
     }
 
     /// Reconnect to an existing backend session.
@@ -226,9 +210,6 @@ impl Session {
     ) -> Result<Self> {
         let adopted = backend.adopt(backend_id, rows, cols)?;
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
-
-        // Seed the parser with the captured screen content.
         debug!(
             backend_id = %backend_id,
             initial_screen_bytes = adopted.initial_screen.len(),
@@ -236,9 +217,38 @@ impl Session {
             parser_cols = cols,
             "Adopting session with initial screen"
         );
-        if !adopted.initial_screen.is_empty() {
+
+        let mut info = SessionInfo::new(name);
+        info.backend_id = Some(backend_id.to_string());
+        debug!(session_id = %info.id, backend_id = %backend_id, "Adopted session via backend");
+
+        Ok(Self::wire_io(
+            info,
+            rows,
+            cols,
+            SessionIo {
+                output: adopted.output,
+                input: adopted.input,
+                initial_screen: adopted.initial_screen,
+                backend_id: backend_id.to_string(),
+            },
+            backend,
+        ))
+    }
+
+    /// Wire up parser, reader loop, and writer loop for a session.
+    fn wire_io(
+        info: SessionInfo,
+        rows: u16,
+        cols: u16,
+        io: SessionIo,
+        backend: &Arc<dyn SessionBackend>,
+    ) -> Self {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
+
+        if !io.initial_screen.is_empty() {
             if let Ok(mut p) = parser.lock() {
-                p.process(&adopted.initial_screen);
+                p.process(&io.initial_screen);
             }
         }
 
@@ -246,33 +256,24 @@ impl Session {
         let last_output_at = Arc::new(AtomicU64::new(now_millis()));
 
         let (input_tx, input_rx) = mpsc::unbounded_channel();
-        tokio::spawn(Self::writer_loop(adopted.input, input_rx));
+        tokio::spawn(Self::writer_loop(io.input, input_rx));
 
         let parser_clone = Arc::clone(&parser);
         let exited_clone = Arc::clone(&exited);
         let last_output_clone = Arc::clone(&last_output_at);
         tokio::task::spawn_blocking(move || {
-            Self::reader_loop(
-                adopted.output,
-                parser_clone,
-                exited_clone,
-                last_output_clone,
-            );
+            Self::reader_loop(io.output, parser_clone, exited_clone, last_output_clone);
         });
 
-        let mut info = SessionInfo::new(name);
-        info.backend_id = Some(backend_id.to_string());
-        debug!(session_id = %info.id, backend_id = %backend_id, "Adopted session via backend");
-
-        Ok(Self {
+        Self {
             info,
             parser,
             input_tx,
-            backend_id: backend_id.to_string(),
+            backend_id: io.backend_id,
             backend: Arc::clone(backend),
             exited,
             last_output_at,
-        })
+        }
     }
 
     fn reader_loop(
@@ -508,6 +509,13 @@ mod tests {
                 "Be careful"
             ]
         );
+    }
+
+    #[test]
+    fn now_millis_returns_reasonable_value() {
+        let ms = now_millis();
+        // Should be after 2024-01-01 (1704067200000 ms since epoch).
+        assert!(ms > 1_704_067_200_000);
     }
 
     #[test]

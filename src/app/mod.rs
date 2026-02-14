@@ -26,7 +26,7 @@ use crate::ui::{
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
-/// If no PTY output for this many milliseconds, consider session "Waiting".
+/// If no output for this many milliseconds, consider session "Waiting".
 const ACTIVITY_TIMEOUT_MS: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1611,40 +1611,33 @@ impl App {
                     .find(|d| d.name == expected_name && d.is_alive)
             };
 
-            if let Some(disc) = matching_discovered {
-                // Adopt the existing backend session — reconnect without re-spawning.
+            // Try to adopt the existing backend session.
+            let adopted = matching_discovered.and_then(|disc| {
                 let (rows, cols) = self.content_area_size();
                 match Session::adopt(name.clone(), rows, cols, &disc.backend_id, &self.backend) {
-                    Ok(mut session) => {
-                        session.info.claude_session_id = Some(persisted.claude_session_id.clone());
-                        session.info.cwd = persisted.cwd;
-                        session.info.role = role;
-                        session.info.worktree = worktree;
-                        let session_id = session.info.id;
-                        self.sessions.push(session);
-                        self.active_index = self.sessions.len() - 1;
-                        self.focus = InputFocus::Terminal;
-
-                        if let Some(project) = self.projects.get_mut(self.active_project_index) {
-                            project.session_ids.push(session_id);
-                        }
-                    }
+                    Ok(session) => Some(session),
                     Err(e) => {
                         error!("Failed to adopt session '{name}': {e}");
-                        // Fall back to spawning a new session with --resume.
-                        let permissions = self.resolve_role_permissions(&role);
-                        let config = SessionConfig {
-                            resume_session_id: Some(persisted.claude_session_id.clone()),
-                            claude_session_id: Some(persisted.claude_session_id),
-                            cwd: persisted.cwd,
-                            role,
-                            permissions,
-                        };
-                        self.do_spawn_session(name, &config, worktree);
+                        None
                     }
                 }
+            });
+
+            if let Some(mut session) = adopted {
+                session.info.claude_session_id = Some(persisted.claude_session_id.clone());
+                session.info.cwd = persisted.cwd;
+                session.info.role = role;
+                session.info.worktree = worktree;
+                let session_id = session.info.id;
+                self.sessions.push(session);
+                self.active_index = self.sessions.len() - 1;
+                self.focus = InputFocus::Terminal;
+
+                if let Some(project) = self.projects.get_mut(self.active_project_index) {
+                    project.session_ids.push(session_id);
+                }
             } else {
-                // No matching backend session — spawn new with --resume.
+                // No matching backend session or adopt failed — spawn new with --resume.
                 let permissions = self.resolve_role_permissions(&role);
                 let config = SessionConfig {
                     resume_session_id: Some(persisted.claude_session_id.clone()),
@@ -1759,7 +1752,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Shift+\u{2191}/\u{2193}", "Scroll up/down 1 line"),
         help_line("Shift+PgUp/PgDn", "Scroll up/down half page"),
         help_line("Mouse wheel", "Scroll up/down 3 lines"),
-        help_line("*", "All other keys forwarded to PTY"),
+        help_line("*", "All other keys forwarded to session"),
         Line::from(""),
         Line::from(Span::styled(
             "Press Esc to close",
