@@ -4,9 +4,7 @@
 [advisories]
 # Deny crates with security vulnerabilities
 version = 2
-ignore = [
-    "RUSTSEC-2024-0384", # instant crate unmaintained, transitive from notify
-]
+ignore = []
 
 [licenses]
 # License policy — version 2 denies all licenses not explicitly allowed
@@ -18,7 +16,6 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "CC0-1.0",
     "ISC",
     "Unicode-3.0",
     "Unicode-DFS-2016",
