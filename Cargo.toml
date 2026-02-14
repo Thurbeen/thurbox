@@ -15,12 +15,13 @@ ratatui = "0.30"
 crossterm = "0.29"
 tui-term = "0.3"
 
-# Terminal emulation
+# PTY & terminal emulation
+portable-pty = "0.9"
 vt100 = "0.16"
 bytes = "1"
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 # Session management
 uuid = { version = "1", features = ["v4"] }
