@@ -80,9 +80,12 @@ pub fn centered_fixed_height_rect(percent_x: u16, height: u16, area: Rect) -> Re
         .split(vertical[1])[1]
 }
 
-/// Render a labeled text input field with cursor visualization.
+/// Render a labeled text input field with cursor visualization and horizontal
+/// viewport scrolling.
 ///
 /// When `focused` is true, a block cursor is shown at the current position.
+/// If the text exceeds the visible width, the viewport scrolls to keep the
+/// cursor visible and overflow indicators (`◀` / `▶`) are shown at the edges.
 /// When unfocused, the value is displayed as plain text with a dimmed border.
 pub fn render_text_field(
     frame: &mut Frame,
@@ -100,39 +103,96 @@ pub fn render_text_field(
         .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
+    let width = inner.width as usize;
 
-    let display = if focused {
-        let chars: Vec<char> = value.chars().collect();
-        let (before, after) = if cursor <= chars.len() {
-            let before: String = chars[..cursor].iter().collect();
-            let after: String = chars[cursor..].iter().collect();
-            (before, after)
+    let chars: Vec<char> = value.chars().collect();
+    let cursor = cursor.min(chars.len());
+
+    let display = if focused && width > 0 {
+        let has_left_overflow;
+        let has_right_overflow;
+
+        // Compute viewport start so cursor is always visible.
+        let viewport_start = if chars.len() < width {
+            // Everything fits (including cursor-at-end space).
+            has_left_overflow = false;
+            has_right_overflow = false;
+            0
         } else {
-            (value.to_string(), String::new())
+            // Need scrolling. Reserve space for indicators.
+            let usable = width.saturating_sub(1); // at least 1 for right indicator
+            let start = if cursor < usable {
+                0
+            } else {
+                cursor - usable + 1
+            };
+            has_left_overflow = start > 0;
+            has_right_overflow = start + width < chars.len() + 1;
+            start
         };
 
-        let cursor_char = if after.is_empty() {
-            " ".to_string()
+        let content_start = if has_left_overflow {
+            viewport_start + 1
         } else {
-            after.chars().next().unwrap().to_string()
+            viewport_start
         };
+        let content_width =
+            width - if has_left_overflow { 1 } else { 0 } - if has_right_overflow { 1 } else { 0 };
 
-        let rest = if after.len() > cursor_char.len() {
-            &after[cursor_char.len()..]
-        } else {
-            ""
-        };
+        // Build the visible portion around the cursor.
+        let mut spans = Vec::new();
 
-        Line::from(vec![
-            Span::styled(before, Style::default().fg(Color::White)),
-            Span::styled(
+        if has_left_overflow {
+            spans.push(Span::styled("◀", Style::default().fg(Color::DarkGray)));
+        }
+
+        let visible_end = (content_start + content_width).min(chars.len());
+
+        if cursor >= content_start && cursor <= visible_end {
+            // Cursor is in the visible range.
+            let before: String = chars[content_start..cursor].iter().collect();
+            let cursor_char = if cursor < chars.len() {
+                chars[cursor].to_string()
+            } else {
+                " ".to_string()
+            };
+            let after_start = (cursor + 1).min(chars.len());
+            let after_end = visible_end.min(chars.len());
+            let after: String = chars[after_start..after_end].iter().collect();
+
+            if !before.is_empty() {
+                spans.push(Span::styled(before, Style::default().fg(Color::White)));
+            }
+            spans.push(Span::styled(
                 cursor_char,
                 Style::default().fg(Color::Black).bg(Color::White),
-            ),
-            Span::styled(rest.to_string(), Style::default().fg(Color::White)),
-        ])
+            ));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, Style::default().fg(Color::White)));
+            }
+        } else {
+            let visible: String = chars[content_start..visible_end].iter().collect();
+            spans.push(Span::styled(visible, Style::default().fg(Color::White)));
+        }
+
+        if has_right_overflow {
+            spans.push(Span::styled("▶", Style::default().fg(Color::DarkGray)));
+        }
+
+        Line::from(spans)
+    } else if width > 0 {
+        // Unfocused: show with ellipsis if too long.
+        if chars.len() > width {
+            let truncated: String = chars[..width - 1].iter().collect();
+            Line::from(vec![
+                Span::styled(truncated, Style::default().fg(Color::White)),
+                Span::styled("…", Style::default().fg(Color::DarkGray)),
+            ])
+        } else {
+            Line::from(Span::styled(value, Style::default().fg(Color::White)))
+        }
     } else {
-        Line::from(Span::styled(value, Style::default().fg(Color::White)))
+        Line::from("")
     };
 
     frame.render_widget(block, area);
