@@ -100,6 +100,22 @@ pub fn render_info_panel(
             Span::styled(&wt.branch, Style::default().fg(Color::Green)),
         ]));
         lines.push(Line::from(vec![
+            Span::styled("Sync:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{} {}", info.sync_status.icon(), info.sync_status),
+                Style::default()
+                    .fg(super::sync_status_color(info.sync_status))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        if let Some(last) = info.last_sync {
+            let ago = format_elapsed(last.elapsed());
+            lines.push(Line::from(Span::styled(
+                format!("        (last sync {ago})"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::from(vec![
             Span::styled("Path: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 wt.worktree_path.display().to_string(),
@@ -110,4 +126,57 @@ pub fn render_info_panel(
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn format_elapsed(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else {
+        format!("{}h ago", secs / 3600)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_elapsed_just_now() {
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(0)),
+            "just now"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(59)),
+            "just now"
+        );
+    }
+
+    #[test]
+    fn format_elapsed_minutes() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(60)), "1m ago");
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(300)),
+            "5m ago"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(3599)),
+            "59m ago"
+        );
+    }
+
+    #[test]
+    fn format_elapsed_hours() {
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(3600)),
+            "1h ago"
+        );
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_secs(7200)),
+            "2h ago"
+        );
+    }
 }

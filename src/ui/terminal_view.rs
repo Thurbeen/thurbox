@@ -29,8 +29,12 @@ pub fn render_terminal(
     let title = {
         let base = if let Some(wt) = &info.worktree {
             format!(
-                " {} ({}) [{}] [{}] ",
-                info.name, info.role, wt.branch, info.status
+                " {} ({}) [{}] {} [{}] ",
+                info.name,
+                info.role,
+                wt.branch,
+                info.sync_status.icon(),
+                info.status
             )
         } else {
             format!(" {} ({}) [{}] ", info.name, info.role, info.status)

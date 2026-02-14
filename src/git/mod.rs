@@ -3,6 +3,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 
+use crate::session::{SyncErrorKind, SyncStatus};
+
 /// List local branch names for a repo.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
     let output = Command::new("git")
@@ -110,6 +112,122 @@ fn default_branch_from_remote(repo_path: &Path) -> Option<String> {
 
     let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
     full_ref.strip_prefix("origin/").map(|s| s.to_string())
+}
+
+/// Fetch from a remote repository.
+pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<(), SyncErrorKind> {
+    let output = Command::new("git")
+        .args(["fetch", remote])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|_| SyncErrorKind::Network)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Could not resolve host") || stderr.contains("unable to access") {
+            return Err(SyncErrorKind::Network);
+        }
+        return Err(SyncErrorKind::Fetch);
+    }
+
+    Ok(())
+}
+
+/// Check the sync status of a branch relative to its remote tracking branch.
+pub fn sync_status(repo_path: &Path, branch: &str) -> Result<SyncStatus, SyncErrorKind> {
+    let remote_ref = format!("origin/{branch}");
+
+    // Check if the remote tracking branch exists
+    let check = Command::new("git")
+        .args(["rev-parse", "--verify", &remote_ref])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|_| SyncErrorKind::Unknown)?;
+
+    if !check.status.success() {
+        // No remote tracking branch — nothing to compare against
+        return Ok(SyncStatus::Unknown);
+    }
+
+    // Count commits ahead: local has but remote doesn't
+    let ahead_output = Command::new("git")
+        .args(["rev-list", "--count", &format!("{remote_ref}..HEAD")])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|_| SyncErrorKind::Unknown)?;
+
+    let ahead: usize = String::from_utf8_lossy(&ahead_output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+
+    // Count commits behind: remote has but local doesn't
+    let behind_output = Command::new("git")
+        .args(["rev-list", "--count", &format!("HEAD..{remote_ref}")])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|_| SyncErrorKind::Unknown)?;
+
+    let behind: usize = String::from_utf8_lossy(&behind_output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+
+    Ok(match (ahead, behind) {
+        (0, 0) => SyncStatus::UpToDate,
+        (0, b) => SyncStatus::Behind(b),
+        (a, 0) => SyncStatus::Ahead(a),
+        (a, b) => SyncStatus::Diverged {
+            ahead: a,
+            behind: b,
+        },
+    })
+}
+
+/// Pull the latest changes for a branch. Fails if there are local changes.
+pub fn pull_branch(repo_path: &Path, branch: &str) -> Result<(), SyncErrorKind> {
+    // Check for uncommitted changes first
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|_| SyncErrorKind::Unknown)?;
+
+    let status_text = String::from_utf8_lossy(&status.stdout);
+    if !status_text.trim().is_empty() {
+        return Err(SyncErrorKind::LocalChanges);
+    }
+
+    let output = Command::new("git")
+        .args(["pull", "origin", branch])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|_| SyncErrorKind::Network)?;
+
+    if !output.status.success() {
+        return Err(SyncErrorKind::Pull);
+    }
+
+    Ok(())
+}
+
+/// Push the current branch to the remote.
+pub fn push_branch(repo_path: &Path, branch: &str) -> Result<(), SyncErrorKind> {
+    let output = Command::new("git")
+        .args(["push", "origin", branch])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|_| SyncErrorKind::Network)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Could not resolve host") || stderr.contains("unable to access") {
+            return Err(SyncErrorKind::Network);
+        }
+        return Err(SyncErrorKind::Unknown);
+    }
+
+    Ok(())
 }
 
 /// Deterministic worktree directory path for a repo + branch.
