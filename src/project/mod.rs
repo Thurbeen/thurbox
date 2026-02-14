@@ -112,10 +112,19 @@ pub fn save_project_configs(projects: &[ProjectConfig]) -> std::io::Result<()> {
     let contents = toml::to_string_pretty(&config)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    std::fs::write(&path, contents)
+    atomic_write(&path, &contents)
 }
 
-fn config_path() -> Option<PathBuf> {
+/// Write contents to a file atomically by writing to a temporary file first,
+/// then renaming. This prevents readers from seeing partial content.
+fn atomic_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+pub fn config_path() -> Option<PathBuf> {
     // Prefer $XDG_CONFIG_HOME, fall back to $HOME/.config
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         let mut p = PathBuf::from(xdg);
@@ -133,7 +142,7 @@ fn config_path() -> Option<PathBuf> {
     })
 }
 
-fn data_dir() -> Option<PathBuf> {
+pub fn data_dir() -> Option<PathBuf> {
     // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
         let mut p = PathBuf::from(xdg);
@@ -150,7 +159,7 @@ fn data_dir() -> Option<PathBuf> {
     })
 }
 
-fn state_path() -> Option<PathBuf> {
+pub fn state_path() -> Option<PathBuf> {
     data_dir().map(|mut p| {
         p.push("state.toml");
         p
@@ -194,7 +203,7 @@ pub fn save_session_state(state: &PersistedState) -> std::io::Result<()> {
     let contents = toml::to_string_pretty(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    std::fs::write(&path, contents)
+    atomic_write(&path, &contents)
 }
 
 /// Remove the persisted state file after successful restore.
@@ -348,6 +357,7 @@ repos = ["/home/user/repos/other"]
                 },
             ],
             session_counter: 2,
+            ..PersistedState::default()
         };
 
         let serialized = toml::to_string_pretty(&state).unwrap();
@@ -384,6 +394,7 @@ repos = ["/home/user/repos/other"]
                 role: "developer".to_string(),
             }],
             session_counter: 1,
+            ..PersistedState::default()
         };
 
         let serialized = toml::to_string_pretty(&state).unwrap();
