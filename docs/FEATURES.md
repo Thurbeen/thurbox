@@ -97,6 +97,7 @@ keys (intercepted for scrollback navigation).
 | `Ctrl+K` | Global | Previous session within active project |
 | `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal |
 | `Ctrl+I` | Global | Toggle info panel (width >= 120) |
+| `Ctrl+S` | Global | Sync active session with remote (worktree sessions only) |
 | `j` / `Down` | Project list | Next project |
 | `k` / `Up` | Project list | Previous project |
 | `r` | Project list | Open role editor |
@@ -439,6 +440,70 @@ overridden per-role via the config file
 | `Tab` / `Shift+Tab` | Cycle fields |
 | `Enter` | Save role |
 | `Esc` | Discard changes |
+
+---
+
+## Git Auto-Sync
+
+Worktree-backed sessions automatically sync their branch state
+with the remote, so users always see whether they are ahead,
+behind, or diverged without manually running `git fetch`.
+
+### How it works
+
+1. Every ~30 seconds, Thurbox runs `git fetch origin` followed
+   by `git rev-list --count` for each worktree session.
+2. The result is displayed as a `SyncStatus` in the UI:
+   - **Up to date** (`⟳`): Local matches remote.
+   - **Behind N** (`⟲`): Remote has commits not yet pulled.
+   - **Ahead N** (`⟶`): Local has unpushed commits.
+   - **Diverged** (`⇄`): Both sides have unique commits.
+   - **Syncing** (`⊙`): Fetch is in progress.
+   - **Error** (`✗`): Fetch or status check failed.
+3. Sync operations run in background `spawn_blocking` tasks
+   to avoid blocking the TUI event loop.
+
+### Manual sync
+
+Press `Ctrl+S` (any focus) to immediately sync the active
+session. This is useful after pushing or pulling outside
+Thurbox. The status briefly shows "Syncing..." while
+the fetch runs.
+
+### UI indicators
+
+- **Terminal title**: Shows sync icon after the branch name:
+  `Session 1 [feature/foo ⟳] [Running]`.
+- **Session list**: Sync icon appears after the branch badge.
+- **Info panel**: Full sync status line with elapsed time
+  since last sync.
+
+### Keybindings
+
+| Key | Context | Action |
+|-----|---------|--------|
+| `Ctrl+S` | Any focus | Sync active session now |
+
+### Design decisions
+
+**Why fetch-only, not auto-pull?**
+
+Auto-pull modifies the working tree, which could disrupt
+a running Claude session mid-task. Showing status is safe;
+acting on it should be explicit.
+
+**Why 30-second interval?**
+
+Balances freshness against network traffic. Most remote
+changes are not urgent — a 30-second delay is acceptable
+for status-only information. Manual `Ctrl+S` covers
+the "I just pushed" case.
+
+**Why per-session, not global?**
+
+Different sessions may use different repos or branches.
+Per-session tracking avoids showing stale status
+for unrelated worktrees.
 
 ---
 
