@@ -25,31 +25,25 @@ when multiple PTY sessions are producing concurrent output.
 
 ---
 
-## ADR-2: Session pipeline — SessionBackend + vt100 + tui-term
+## ADR-2: PTY pipeline — portable-pty + vt100 + tui-term
 
-**Choice**: A `SessionBackend` trait abstracts session lifecycle
-(spawn, adopt, resize, kill, detach, discover). The default
-backend is `LocalTmuxBackend` (`tmux -L thurbox`).
+**Choice**: `portable-pty` spawns the `claude` CLI,
 `vt100::Parser` interprets escape sequences,
 `tui_term::PseudoTerminal` renders the parsed screen into ratatui.
 
-**Why**: The trait-based design allows plugging in different
-transports (local tmux, SSH+tmux, Docker, cloud VM) without
-changing the app layer. tmux provides truly persistent sessions
-that survive thurbox crashes/restarts, multiple thurbox instances
-share the same running sessions, and external recovery is
-possible via `tmux -L thurbox attach`.
-
-**Previous design**: `portable-pty` spawned the `claude` CLI
-directly. Sessions died when thurbox exited, terminal content was
-lost on restart, and multiple instances had no coordination.
+**Why**: Each crate handles exactly one concern. `portable-pty`
+abstracts platform differences (Linux, macOS). `vt100` gives us a
+full in-memory terminal state we can query without scraping.
+`tui_term` bridges that state to ratatui widgets
+with zero custom rendering code.
 
 **Rejected**:
 
-- *`portable-pty` (previous)* — no session persistence,
-  no multi-instance sharing, terminal content lost on restart.
+- *`nix::pty` directly* — Linux-only;
+  would require a separate Windows/macOS backend.
 - *`alacritty_terminal`* — full terminal emulator,
   far heavier than needed.
+  We don't need font rendering or GPU acceleration.
 - *Parsing raw ANSI ourselves* — error-prone,
   massive surface area, already solved by `vt100`.
 
@@ -229,105 +223,3 @@ and disappears on restart once user projects exist.
   ownership changes mid-session.
 - *Persist default to disk* — pollutes the config file with
   auto-generated entries the user didn't create.
-
----
-
-## ADR-11: Trait-based session backends
-
-**Choice**: Session lifecycle is abstracted behind a
-`SessionBackend` trait (`src/claude/backend.rs`). The `Session`
-struct wraps the trait and manages reader/writer loops once,
-regardless of which backend is active.
-
-**Why**: Thurbox needs to support multiple deployment targets:
-local tmux today, SSH+tmux, Docker, and cloud VMs in the future.
-A trait boundary keeps the app layer completely backend-agnostic.
-Adding a new backend is a matter of implementing `SessionBackend`
-without touching `App`, `Session`, or any UI code.
-
-**Trait methods**: `check_available`, `ensure_ready`, `spawn`,
-`adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`.
-
-**Key design decisions**:
-
-- `spawn()` returns `(backend_id, output_reader, input_writer)`.
-  The `Session` struct owns the reader/writer loops.
-- `adopt()` reconnects to an existing session and returns initial
-  screen content for parser seeding.
-- `discover()` lists existing sessions for restore-on-startup.
-- `detach()` stops streaming without killing the session.
-- `kill()` permanently destroys the session.
-
-**Rejected**:
-
-- *Async trait methods* — added complexity for no benefit since
-  all current backends use synchronous `Command::new("tmux")`.
-  Can be added via `async-trait` if a future backend needs it.
-- *Backend per session* — over-engineering; all sessions in a
-  thurbox instance share the same backend.
-
----
-
-## ADR-12: Local tmux as default backend
-
-**Choice**: The first `SessionBackend` implementation is
-`LocalTmuxBackend`, using a dedicated tmux server
-(`tmux -L thurbox`) with session name `thurbox`. All I/O goes
-through tmux control mode (`-C`).
-
-**Why**: tmux provides session persistence (survives crashes),
-multi-instance sharing (multiple thurbox processes see the same
-sessions), and external recovery (`tmux -L thurbox attach`).
-It handles terminal capability queries (DA1/DA2) natively via
-`extended-keys on`, eliminating the need for thurbox to intercept
-and respond to these sequences.
-
-Control mode (`-C`) provides a single multiplexed stdio
-connection with built-in flow control. Output arrives as
-`%output` notifications (octal-encoded), input is sent via
-`send-keys -H` (hex-encoded). This eliminates the previous
-`pipe-pane` + FIFO approach which suffered from tmux data-loss
-bugs (#641, #2989), required 3 external deps in the data path
-(`mkfifo`, `stdbuf`, `cat`), and had no flow control.
-
-**Configuration on init**:
-
-- `remain-on-exit on` — keeps panes alive after process exit
-- `status off` — no tmux status bar (thurbox renders its own)
-- `default-terminal xterm-256color` — standard terminal type
-- `history-limit 5000` — reasonable scrollback
-- `extended-keys on` — enhanced key reporting
-- `window-size manual` — windows size independently
-- `pause-after 5` — flow control (auto-resumed by reader)
-
-**Window naming**: `tb-<session-name>` prefix for discovery.
-
-**Output streaming**: `%output` notifications from control mode,
-demultiplexed by pane ID into per-pane mpsc channels. Each
-channel feeds a `ControlModeReader` (implements `Read`) consumed
-by the existing `Session::reader_loop`.
-
-**Input**: `send-keys -H <hex>` through the shared control mode
-stdin, wrapped in a `ControlModeWriter` (implements `Write`).
-
-**Command synchronization**: All commands that precede a
-`send_command` (waited) call must themselves be waited. A
-fire-and-forget (`send_command_nowait`) leaves an unclaimed
-`%begin`/`%end` response in the stream that can steal the next
-waiter. `send_command_nowait` is only safe when nothing follows
-(e.g., `detach`) or when issued from the reader thread itself
-(e.g., pause resume).
-
-**Session restore**: On reconnect, `capture-pane -p -e -S -`
-provides a quick initial approximation of the screen content
-(text + colors, but not full escape sequences). A forced resize
-then triggers SIGWINCH, causing the TUI application to repaint
-its full screen through the normal `%output` stream — this
-delivers pixel-perfect rendering with all original formatting.
-
-**Rejected**:
-
-- *`pipe-pane` + FIFO (previous)* — intermittent data loss from
-  tmux bugs #641/#2989, required `mkfifo`/`stdbuf`/`cat` in the
-  data path, no flow control, timing race on initial capture.
-- *Screen/dtach* — less widely available, fewer features.

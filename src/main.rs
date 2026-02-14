@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -8,8 +7,6 @@ use crossterm::event::{
 use crossterm::execute;
 
 use thurbox::app::{App, AppMessage};
-use thurbox::claude::tmux::LocalTmuxBackend;
-use thurbox::claude::SessionBackend;
 use thurbox::project;
 
 #[tokio::main]
@@ -33,18 +30,13 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    // Initialize the session backend (local tmux).
-    let backend: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
-    backend.check_available()?;
-    backend.ensure_ready()?;
-
     let project_configs = project::load_project_configs();
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let size = terminal.size()?;
 
-    let mut app = App::new(size.height, size.width, project_configs, backend);
+    let mut app = App::new(size.height, size.width, project_configs);
 
     let state = project::load_session_state();
     if state.sessions.is_empty() {

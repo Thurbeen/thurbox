@@ -92,7 +92,6 @@ pub struct SessionInfo {
     pub worktree: Option<WorktreeInfo>,
     pub claude_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
-    pub backend_id: Option<String>,
 }
 
 impl SessionInfo {
@@ -105,7 +104,6 @@ impl SessionInfo {
             worktree: None,
             claude_session_id: None,
             cwd: None,
-            backend_id: None,
         }
     }
 }
@@ -127,10 +125,6 @@ pub struct PersistedSession {
     pub worktree: Option<PersistedWorktree>,
     #[serde(default)]
     pub role: String,
-    #[serde(default)]
-    pub backend_id: String,
-    #[serde(default)]
-    pub backend_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,12 +201,6 @@ mod tests {
     fn session_info_new_has_no_cwd() {
         let info = SessionInfo::new("Test".to_string());
         assert!(info.cwd.is_none());
-    }
-
-    #[test]
-    fn session_info_new_has_no_backend_id() {
-        let info = SessionInfo::new("Test".to_string());
-        assert!(info.backend_id.is_none());
     }
 
     #[test]
