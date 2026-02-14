@@ -112,14 +112,3 @@ fn project_isolation() {
         format_violations("project", &violations)
     );
 }
-
-#[test]
-fn sync_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sync");
-    let violations = check_no_imports(&module_dir, &["claude", "ui", "git", "app"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("sync", &violations)
-    );
-}

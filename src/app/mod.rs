@@ -8,16 +8,15 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
-use tracing::{debug, error, info};
+use tracing::error;
 
 use crate::claude::{input, PtySession};
 use crate::git;
 use crate::project::{self, ProjectConfig, ProjectInfo};
 use crate::session::{
-    PersistedInstance, PersistedSession, PersistedState, PersistedWorktree, RoleConfig,
-    RolePermissions, SessionConfig, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
+    PersistedSession, PersistedState, PersistedWorktree, RoleConfig, RolePermissions,
+    SessionConfig, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
-use crate::sync::{FileWatcher, SyncEvent};
 use crate::ui::{
     add_project_modal, branch_selector_modal, info_panel, layout, project_list,
     repo_selector_modal, role_editor_modal, role_selector_modal, session_mode_modal, status_bar,
@@ -197,7 +196,6 @@ pub enum AppMessage {
     MouseScrollUp,
     MouseScrollDown,
     Resize(u16, u16),
-    Sync(SyncEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,17 +249,10 @@ pub struct App {
     role_editor_disallowed_tools: ToolListState,
     role_editor_system_prompt: TextInput,
     role_editor_editing_index: Option<usize>,
-    file_watcher: Option<FileWatcher>,
-    instance_id: String,
 }
 
 impl App {
-    pub fn new(
-        rows: u16,
-        cols: u16,
-        project_configs: Vec<ProjectConfig>,
-        file_watcher: Option<FileWatcher>,
-    ) -> Self {
+    pub fn new(rows: u16, cols: u16, project_configs: Vec<ProjectConfig>) -> Self {
         let projects: Vec<ProjectInfo> = if project_configs.is_empty() {
             vec![ProjectInfo::new_default(project::create_default_project())]
         } else {
@@ -312,8 +303,6 @@ impl App {
             role_editor_disallowed_tools: ToolListState::new(),
             role_editor_system_prompt: TextInput::new(),
             role_editor_editing_index: None,
-            file_watcher,
-            instance_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -413,8 +402,6 @@ impl App {
         } else if self.active_index >= self.sessions.len() {
             self.active_index = self.sessions.len() - 1;
         }
-
-        self.save_state_live();
     }
 
     /// Get sessions belonging to the active project.
@@ -443,14 +430,6 @@ impl App {
             AppMessage::MouseScrollUp => self.scroll_terminal_up(MOUSE_SCROLL_LINES),
             AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
-            AppMessage::Sync(event) => self.handle_sync(event),
-        }
-    }
-
-    fn handle_sync(&mut self, event: SyncEvent) {
-        match event {
-            SyncEvent::ProjectConfigChanged => self.reload_project_configs(),
-            SyncEvent::SessionStateChanged => self.reload_session_state(),
         }
     }
 
@@ -1230,8 +1209,6 @@ impl App {
                 if let Some(project) = self.projects.get_mut(self.active_project_index) {
                     project.session_ids.push(session_id);
                 }
-
-                self.save_state_live();
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
@@ -1545,124 +1522,21 @@ impl App {
         }
     }
 
-    // --- Cross-instance live sync ---
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
 
-    fn reload_project_configs(&mut self) {
-        let new_configs = project::load_project_configs();
-        info!(
-            "Reloading project configs from disk ({} projects)",
-            new_configs.len()
-        );
-
-        // Phase 1: collect role renames and new configs per project
-        let mut all_renames: Vec<(Vec<_>, Vec<_>)> = Vec::new();
-        for new_cfg in &new_configs {
-            if let Some(existing) = self.projects.iter().find(|p| p.config.name == new_cfg.name) {
-                let renames = Self::detect_role_changes(&existing.config.roles, &new_cfg.roles);
-                let session_ids: Vec<_> = self
-                    .sessions
-                    .iter()
-                    .filter(|s| {
-                        self.projects
-                            .get(self.active_project_index)
-                            .is_some_and(|p| p.config.name == new_cfg.name)
-                            && s.info
-                                .cwd
-                                .as_ref()
-                                .map_or(true, |cwd| new_cfg.repos.iter().any(|r| r == cwd))
-                    })
-                    .map(|s| s.info.id)
-                    .collect();
-                all_renames.push((session_ids, renames));
-            } else {
-                all_renames.push((Vec::new(), Vec::new()));
-            }
-        }
-
-        // Phase 2: apply role renames to sessions
-        for (session_ids, renames) in &all_renames {
-            for (old_name, new_name) in renames {
-                for session in &mut self.sessions {
-                    if session_ids.contains(&session.info.id) && session.info.role == *old_name {
-                        debug!(
-                            "Renaming role '{}' -> '{}' on session {}",
-                            old_name, new_name, session.info.name
-                        );
-                        session.info.role = new_name.clone();
-                    }
-                }
-            }
-        }
-
-        // Phase 3: update existing project configs
-        for new_cfg in &new_configs {
-            if let Some(existing) = self
-                .projects
-                .iter_mut()
-                .find(|p| p.config.name == new_cfg.name)
-            {
-                existing.config = new_cfg.clone();
-            }
-        }
-
-        // Phase 4: remove projects that no longer exist
-        self.projects
-            .retain(|p| p.is_default || new_configs.iter().any(|c| c.name == p.config.name));
-
-        // Phase 5: add new projects
-        for new_cfg in new_configs {
-            if !self.projects.iter().any(|p| p.config.name == new_cfg.name) {
-                self.projects.push(ProjectInfo::new(new_cfg));
-            }
-        }
-
-        // Clamp active index
-        if self.active_project_index >= self.projects.len() {
-            self.active_project_index = self.projects.len().saturating_sub(1);
+    pub fn shutdown(self) {
+        self.save_state();
+        // Do NOT remove worktrees — they persist for resume
+        for session in self.sessions {
+            session.shutdown();
         }
     }
 
-    fn detect_role_changes(
-        old_roles: &[RoleConfig],
-        new_roles: &[RoleConfig],
-    ) -> Vec<(String, String)> {
-        let mut renames = Vec::new();
-        for (i, old) in old_roles.iter().enumerate() {
-            if let Some(new) = new_roles.get(i) {
-                if old.name != new.name {
-                    renames.push((old.name.clone(), new.name.clone()));
-                }
-            }
-        }
-        renames
-    }
-
-    fn reload_session_state(&mut self) {
-        let state = project::load_session_state();
-        let others = state.other_instances_sessions(&self.instance_id);
-        if !others.is_empty() {
-            debug!("Detected {} sessions from other instances", others.len());
-        }
-    }
-
-    fn save_state_live(&self) {
-        let sessions = self.build_persisted_sessions();
-        let mut state = project::load_session_state();
-        state.upsert_instance(PersistedInstance {
-            instance_id: self.instance_id.clone(),
-            session_counter: self.session_counter,
-            sessions,
-        });
-        if let Some(ref watcher) = self.file_watcher {
-            watcher.mark_state_write();
-        }
-        if let Err(e) = project::save_session_state(&state) {
-            error!("Failed to save live state: {e}");
-        }
-    }
-
-    fn build_persisted_sessions(&self) -> Vec<PersistedSession> {
-        self.sessions
+    fn save_state(&self) {
+        let sessions: Vec<PersistedSession> = self
+            .sessions
             .iter()
             .filter_map(|s| {
                 let claude_session_id = s.info.claude_session_id.as_ref()?;
@@ -1678,54 +1552,22 @@ impl App {
                     role: s.info.role.clone(),
                 })
             })
-            .collect()
-    }
+            .collect();
 
-    pub fn should_quit(&self) -> bool {
-        self.should_quit
-    }
-
-    pub fn shutdown(self) {
-        self.save_state();
-        // Do NOT remove worktrees — they persist for resume
-        for session in self.sessions {
-            session.shutdown();
-        }
-    }
-
-    fn save_state(&self) {
-        let sessions = self.build_persisted_sessions();
-        let mut state = project::load_session_state();
-        state.upsert_instance(PersistedInstance {
-            instance_id: self.instance_id.clone(),
-            session_counter: self.session_counter,
+        let state = PersistedState {
             sessions,
-        });
-        if let Some(ref watcher) = self.file_watcher {
-            watcher.mark_state_write();
-        }
+            session_counter: self.session_counter,
+        };
+
         if let Err(e) = project::save_session_state(&state) {
             error!("Failed to save session state: {e}");
         }
     }
 
-    pub fn restore_sessions(&mut self, mut state: PersistedState) {
-        // Migrate legacy format if needed
-        state.migrate_legacy(&self.instance_id);
+    pub fn restore_sessions(&mut self, state: PersistedState) {
+        self.session_counter = state.session_counter;
 
-        let (counter, sessions) = if let Some(inst) = state
-            .instances
-            .iter()
-            .find(|i| i.instance_id == self.instance_id)
-        {
-            (inst.session_counter, inst.sessions.clone())
-        } else {
-            // Fallback to top-level legacy sessions
-            (state.session_counter, state.sessions.clone())
-        };
-        self.session_counter = counter;
-
-        for persisted in sessions {
+        for persisted in state.sessions {
             let name = persisted.name;
 
             let role = if persisted.role.is_empty() {
@@ -1751,13 +1593,8 @@ impl App {
             self.do_spawn_session(name, &config, worktree);
         }
 
-        // Remove our instance from persisted state after restoring
-        state.remove_instance(&self.instance_id);
-        if let Some(ref watcher) = self.file_watcher {
-            watcher.mark_state_write();
-        }
-        if let Err(e) = project::save_session_state(&state) {
-            error!("Failed to update session state after restore: {e}");
+        if let Err(e) = project::clear_session_state() {
+            error!("Failed to clear session state after restore: {e}");
         }
     }
 
@@ -2074,7 +1911,7 @@ mod tests {
 
     /// Create an App with N stub sessions bound to the default project.
     fn app_with_sessions(count: usize) -> App {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         for i in 0..count {
             let session = PtySession::stub(&format!("Session {}", i + 1));
             let session_id = session.info.id;
@@ -2198,14 +2035,14 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(50, 100, vec![], None);
+        let app = App::new(50, 100, vec![]);
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(6, 80, vec![], None);
+        let app = App::new(6, 80, vec![]);
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -2219,13 +2056,13 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(24, 80, vec![], None);
+        let mut app = App::new(24, 80, vec![]);
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(24, 80, vec![], None);
+        let mut app = App::new(24, 80, vec![]);
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -2233,7 +2070,7 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(24, 80, vec![], None);
+        let mut app = App::new(24, 80, vec![]);
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
@@ -2242,7 +2079,7 @@ mod tests {
 
     #[test]
     fn open_role_editor_starts_empty_for_no_custom_roles() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         assert!(app.show_role_editor);
         assert!(app.role_editor_roles.is_empty());
@@ -2261,7 +2098,7 @@ mod tests {
                 permissions: RolePermissions::default(),
             }],
         };
-        let mut app = App::new(24, 120, vec![config], None);
+        let mut app = App::new(24, 120, vec![config]);
         app.open_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
         assert_eq!(app.role_editor_roles[0].name, "ops");
@@ -2269,7 +2106,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
@@ -2289,7 +2126,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
@@ -2331,7 +2168,7 @@ mod tests {
                 },
             ],
         };
-        let mut app = App::new(24, 120, vec![config], None);
+        let mut app = App::new(24, 120, vec![config]);
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, None);
         assert!(app.show_role_selector);
@@ -2344,14 +2181,14 @@ mod tests {
             repos: vec![],
             roles: vec![],
         };
-        let app = App::new(24, 120, vec![config], None);
+        let app = App::new(24, 120, vec![config]);
         // With no roles, the selector should never be set
         assert!(!app.show_role_selector);
     }
 
     #[test]
     fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
@@ -2382,7 +2219,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         // Add first role
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -2423,7 +2260,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config], None);
+        let mut app = App::new(24, 120, vec![config]);
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2445,7 +2282,7 @@ mod tests {
 
     #[test]
     fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
@@ -2474,7 +2311,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config], None);
+        let mut app = App::new(24, 120, vec![config]);
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2494,7 +2331,7 @@ mod tests {
     #[test]
     fn role_editor_tab_cycles_fields_forward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2514,7 +2351,7 @@ mod tests {
     #[test]
     fn role_editor_backtab_cycles_fields_backward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2533,7 +2370,7 @@ mod tests {
 
     #[test]
     fn role_editor_esc_discards_and_returns_to_list() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -2561,7 +2398,7 @@ mod tests {
                 },
             ],
         };
-        let mut app = App::new(24, 120, vec![config], None);
+        let mut app = App::new(24, 120, vec![config]);
         app.open_role_editor();
         // Select the last role
         app.role_editor_list_index = 1;
@@ -2573,7 +2410,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2693,7 +2530,7 @@ mod tests {
     #[test]
     fn tool_browse_add_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2726,7 +2563,7 @@ mod tests {
     #[test]
     fn tool_browse_delete_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::AllowedTools;
@@ -2743,7 +2580,7 @@ mod tests {
     #[test]
     fn tool_adding_esc_cancels() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::DisallowedTools;
@@ -2775,7 +2612,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config], None);
+        let mut app = App::new(24, 120, vec![config]);
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2794,7 +2631,7 @@ mod tests {
 
     #[test]
     fn system_prompt_empty_saves_as_none() {
-        let mut app = App::new(24, 120, vec![], None);
+        let mut app = App::new(24, 120, vec![]);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("test");
@@ -2822,7 +2659,7 @@ mod tests {
                 },
             }],
         };
-        let app = App::new(24, 120, vec![config], None);
+        let app = App::new(24, 120, vec![config]);
         // With exactly 1 role, prepare_spawn should not show selector
         // (it would try to spawn, which needs a runtime — just verify no selector)
         assert!(!app.show_role_selector);

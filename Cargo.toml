@@ -35,9 +35,6 @@ tracing-appender = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
-# File watching
-notify = "7"
-
 # Error handling
 anyhow = "1.0"
 
