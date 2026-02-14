@@ -5,9 +5,12 @@ use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
 };
 use crossterm::execute;
+use tokio::sync::mpsc;
+use tracing::warn;
 
 use thurbox::app::{App, AppMessage};
 use thurbox::project;
+use thurbox::sync::{FileWatcher, SyncEvent};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,11 +35,20 @@ async fn main() -> Result<()> {
 
     let project_configs = project::load_project_configs();
 
+    // Start file watcher for cross-instance sync
+    let (file_watcher, sync_rx) = match FileWatcher::new() {
+        Ok(pair) => (Some(pair.0), Some(pair.1)),
+        Err(e) => {
+            warn!("Failed to start file watcher, sync disabled: {e}");
+            (None, None)
+        }
+    };
+
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let size = terminal.size()?;
 
-    let mut app = App::new(size.height, size.width, project_configs);
+    let mut app = App::new(size.height, size.width, project_configs, file_watcher);
 
     let state = project::load_session_state();
     if state.sessions.is_empty() {
@@ -45,7 +57,7 @@ async fn main() -> Result<()> {
         app.restore_sessions(state);
     }
 
-    let res = run_loop(&mut terminal, &mut app).await;
+    let res = run_loop(&mut terminal, &mut app, sync_rx).await;
 
     app.shutdown();
     execute!(std::io::stdout(), DisableMouseCapture)?;
@@ -54,7 +66,11 @@ async fn main() -> Result<()> {
     res
 }
 
-async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
+async fn run_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    mut sync_rx: Option<mpsc::UnboundedReceiver<SyncEvent>>,
+) -> Result<()> {
     loop {
         terminal.draw(|f| app.view(f))?;
 
@@ -73,6 +89,13 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
             };
             if let Some(msg) = msg {
                 app.update(msg);
+            }
+        }
+
+        // Poll for file-system sync events from other instances.
+        if let Some(ref mut rx) = sync_rx {
+            while let Ok(sync_event) = rx.try_recv() {
+                app.update(AppMessage::Sync(sync_event));
             }
         }
 

@@ -68,6 +68,7 @@ The app follows **The Elm Architecture**:
 session  ← pure data types, no project-local imports
 project  ← pure data types + config loading, imports session only
 claude   ← imports session only (NEVER ui, git, or project)
+sync     ← imports session and project only (NEVER claude, ui, git, or app)
 ui       ← imports session and project only (NEVER claude or git)
 app      ← coordinator, imports all modules
 ```
@@ -87,6 +88,9 @@ app      ← coordinator, imports all modules
 - **`project/`** — Plain data + config loading: `ProjectId`,
   `ProjectConfig`, `ProjectInfo`. Loads project list from
   `~/.config/thurbox/config.toml`. Imports `session` only.
+- **`sync/`** — Cross-instance live sync. `FileWatcher` uses
+  the `notify` crate to watch config/state files and emits
+  `SyncEvent` via tokio mpsc. Imports `project` only.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (two-section
