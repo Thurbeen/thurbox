@@ -6,8 +6,9 @@ when working with code in this repository.
 ## Project
 
 Thurbox is a multi-session Claude Code TUI orchestrator built
-with Rust. It runs multiple `claude` CLI instances inside PTYs,
-rendered as terminal panels via ratatui + tui-term.
+with Rust. It runs multiple `claude` CLI instances inside
+persistent tmux sessions, rendered as terminal panels via
+ratatui + tui-term. Sessions survive crashes/restarts.
 
 ## Build & Development Commands
 
@@ -77,8 +78,9 @@ app      ← coordinator, imports all modules
 - **`app/`** — Model (`App` struct) + Update
   (`AppMessage` enum + `handle_key/resize`) + View.
   Owns all state, coordinates side effects.
-- **`claude/`** — Side-effect layer. `PtySession` spawns `claude`
-  CLI in PTY via `portable-pty`, reads output into
+- **`claude/`** — Side-effect layer. `Session` wraps a
+  `SessionBackend` trait (default: `LocalTmuxBackend` using
+  `tmux -L thurbox`). Reads output into
   `Arc<Mutex<vt100::Parser>>`, writes input via mpsc channel.
   `input.rs` translates crossterm `KeyCode` → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
@@ -95,11 +97,11 @@ app      ← coordinator, imports all modules
 ### Event Loop (main.rs)
 
 ```text
-tokio::main → load project config → init terminal
-→ spawn initial session → loop {
+tokio::main → init backend (tmux) → load project config
+→ init terminal → spawn/restore sessions → loop {
     draw frame → poll crossterm events (10ms)
     → convert to AppMessage → app.update() → app.tick()
-} → app.shutdown() → restore terminal
+} → app.shutdown() (detach sessions) → restore terminal
 ```
 
 - Logging goes to `~/.local/share/thurbox/thurbox.log`
@@ -120,14 +122,16 @@ framework). Install with `prek install`. Stages:
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- PTY reader runs in `tokio::task::spawn_blocking` (blocking I/O),
-  writer in `tokio::spawn` (async)
+- Session backend: `tmux -L thurbox` (dedicated server)
+- Output reader runs in `tokio::task::spawn_blocking`
+  (blocking I/O), writer in `tokio::spawn` (async)
 - Terminal state parsed by `vt100::Parser`,
   rendered by `tui_term::PseudoTerminal`
-- `Ctrl+Q` is the quit key
-  (only key not forwarded to PTY when terminal is focused)
+- Sessions persist across restarts (tmux keeps them alive)
+- `Ctrl+Q` is the quit key (detaches, does not kill sessions)
 - Config file: `~/.config/thurbox/config.toml`
   (XDG_CONFIG_HOME respected)
+- Requires tmux >= 3.2
 
 ## Design Documentation
 
