@@ -27,6 +27,11 @@ const PANE_CHANNEL_CAPACITY: usize = 4096;
 /// Timeout for waiting for a control mode command response.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Type alias for pane sender broadcast map.
+/// Maps pane IDs to vectors of sync senders for multi-instance output broadcast.
+type PaneSendersMap = HashMap<String, Vec<SyncSender<Vec<u8>>>>;
+type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
+
 /// Local tmux backend — sessions persist in `tmux -L thurbox`.
 ///
 /// Uses tmux control mode (`-C`) for all I/O after `ensure_ready()`.
@@ -51,7 +56,7 @@ impl Default for LocalTmuxBackend {
 /// command number).
 struct ControlMode {
     stdin: Arc<Mutex<ChildStdin>>,
-    pane_senders: Arc<Mutex<HashMap<String, SyncSender<Vec<u8>>>>>,
+    pane_senders: PaneSendersMapShared,
     /// FIFO queue of response channels — one per `send_command()` call, in order.
     response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
@@ -178,8 +183,7 @@ impl ControlMode {
             .context("Failed to get control mode stdout")?;
 
         let stdin = Arc::new(Mutex::new(stdin));
-        let pane_senders: Arc<Mutex<HashMap<String, SyncSender<Vec<u8>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pane_senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
         let response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
 
@@ -225,7 +229,7 @@ impl ControlMode {
     fn reader_thread(
         stdout: std::process::ChildStdout,
         stdin: Arc<Mutex<ChildStdin>>,
-        pane_senders: Arc<Mutex<HashMap<String, SyncSender<Vec<u8>>>>>,
+        pane_senders: PaneSendersMapShared,
         response_queue: Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
     ) {
         let mut reader = BufReader::new(stdout);
@@ -256,20 +260,22 @@ impl ControlMode {
             match parse_notification(&line) {
                 Notification::Output { pane_id, data } => {
                     if let Ok(senders) = pane_senders.lock() {
-                        if let Some(tx) = senders.get(&pane_id) {
-                            match tx.try_send(data) {
-                                Ok(()) => {}
-                                Err(std::sync::mpsc::TrySendError::Full(dropped)) => {
-                                    // Channel full — drop this chunk rather than blocking.
-                                    // The reader thread MUST stay unblocked to handle
-                                    // %pause notifications and avoid deadlock.
-                                    debug!(
-                                        pane_id = %pane_id,
-                                        dropped_bytes = dropped.len(),
-                                        "Pane output channel full, dropping chunk"
-                                    );
+                        if let Some(tx_vec) = senders.get(&pane_id) {
+                            // Broadcast output to all registered instances
+                            for tx in tx_vec {
+                                match tx.try_send(data.clone()) {
+                                    Ok(()) => {}
+                                    Err(std::sync::mpsc::TrySendError::Full(_dropped)) => {
+                                        // Channel full — drop this chunk rather than blocking.
+                                        // The reader thread MUST stay unblocked to handle
+                                        // %pause notifications and avoid deadlock.
+                                        debug!(
+                                            pane_id = %pane_id,
+                                            "Pane output channel full, dropping chunk"
+                                        );
+                                    }
+                                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
                                 }
-                                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
                             }
                         }
                     }
@@ -489,6 +495,7 @@ impl LocalTmuxBackend {
     }
 
     /// Register a pane sender and return the corresponding reader.
+    /// Multiple instances can register the same pane; output will be broadcast to all.
     fn register_pane(&self, pane_id: &str) -> Result<ControlModeReader> {
         let guard = self.control()?;
         let ctrl = guard.as_ref().unwrap();
@@ -498,12 +505,17 @@ impl LocalTmuxBackend {
                 .pane_senders
                 .lock()
                 .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?;
-            senders.insert(pane_id.to_string(), tx);
+            senders
+                .entry(pane_id.to_string())
+                .or_insert_with(Vec::new)
+                .push(tx);
         }
         Ok(ControlModeReader::new(rx))
     }
 
     /// Unregister a pane sender (causes the reader to get EOF).
+    /// Note: Currently removes all senders for this pane. For true instance-specific
+    /// unregistration, we would need to track which sender belongs to which instance.
     fn unregister_pane(&self, pane_id: &str) -> Result<()> {
         let guard = self.control()?;
         let ctrl = guard.as_ref().unwrap();
@@ -511,6 +523,7 @@ impl LocalTmuxBackend {
             .pane_senders
             .lock()
             .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?;
+        // Remove all senders for this pane (all instances lose the pane)
         senders.remove(pane_id);
         Ok(())
     }

@@ -13,11 +13,12 @@ use tracing::error;
 
 use crate::claude::{input, Session, SessionBackend};
 use crate::git;
-use crate::project::{self, ProjectConfig, ProjectInfo};
+use crate::project::{self, ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
     PersistedSession, PersistedState, PersistedWorktree, RoleConfig, RolePermissions,
-    SessionConfig, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
+    SessionConfig, SessionId, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
+use crate::sync::{self, StateDelta, SyncState};
 use crate::ui::{
     add_project_modal, branch_selector_modal, info_panel, layout, project_list,
     repo_selector_modal, role_editor_modal, role_selector_modal, session_mode_modal, status_bar,
@@ -197,6 +198,7 @@ pub enum AppMessage {
     MouseScrollUp,
     MouseScrollDown,
     Resize(u16, u16),
+    ExternalStateChange(StateDelta),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,6 +253,50 @@ pub struct App {
     role_editor_disallowed_tools: ToolListState,
     role_editor_system_prompt: TextInput,
     role_editor_editing_index: Option<usize>,
+    sync_state: SyncState,
+}
+
+/// Convert a SharedProject to ProjectInfo, preserving the shared state ID.
+fn shared_project_to_info(sp: sync::SharedProject) -> ProjectInfo {
+    let config = ProjectConfig {
+        name: sp.name,
+        repos: sp.repos,
+        roles: Vec::new(),
+    };
+    let mut info = ProjectInfo::new(config);
+    info.id = sp.id;
+    info
+}
+
+/// Load and merge projects from shared state and config.
+/// Shared state is the source of truth; config provides roles.
+fn load_and_merge_projects(
+    sync_state_path: &std::path::Path,
+    project_configs: Vec<ProjectConfig>,
+) -> Vec<ProjectInfo> {
+    let shared_projects = sync::file_store::load_shared_state(sync_state_path)
+        .map(|state| state.projects)
+        .unwrap_or_default();
+
+    if !shared_projects.is_empty() {
+        let mut result: Vec<ProjectInfo> = shared_projects
+            .into_iter()
+            .map(shared_project_to_info)
+            .collect();
+
+        for config in &project_configs {
+            if let Some(project) = result.iter_mut().find(|p| p.config.name == config.name) {
+                project.config.roles = config.roles.clone();
+            } else {
+                result.push(ProjectInfo::new(config.clone()));
+            }
+        }
+        result
+    } else if !project_configs.is_empty() {
+        project_configs.into_iter().map(ProjectInfo::new).collect()
+    } else {
+        vec![ProjectInfo::new_default(project::create_default_project())]
+    }
 }
 
 impl App {
@@ -260,11 +306,25 @@ impl App {
         project_configs: Vec<ProjectConfig>,
         backend: Arc<dyn SessionBackend>,
     ) -> Self {
-        let projects: Vec<ProjectInfo> = if project_configs.is_empty() {
-            vec![ProjectInfo::new_default(project::create_default_project())]
-        } else {
-            project_configs.into_iter().map(ProjectInfo::new).collect()
-        };
+        // Initialize sync state first so we can load projects from it
+        let sync_state_path = sync::shared_state_path().unwrap_or_else(|_| {
+            let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            p.push(".local");
+            p.push("share");
+            p.push("thurbox");
+            p.push("shared_state.toml");
+            p
+        });
+
+        let mut projects = load_and_merge_projects(&sync_state_path, project_configs);
+
+        // Ensure projects is never empty (fallback to default if needed)
+        if projects.is_empty() {
+            projects = vec![ProjectInfo::new_default(project::create_default_project())];
+        }
+
+        // Create sync state using the path we determined above
+        let sync_state = SyncState::new(sync_state_path);
 
         Self {
             projects,
@@ -311,6 +371,37 @@ impl App {
             role_editor_disallowed_tools: ToolListState::new(),
             role_editor_system_prompt: TextInput::new(),
             role_editor_editing_index: None,
+            sync_state,
+        }
+    }
+
+    /// Load and merge projects from shared state at startup.
+    /// This ensures all projects synced by other instances are available locally.
+    pub fn merge_projects_from_shared_state(&mut self) {
+        let shared_state = match sync::file_store::load_shared_state(self.sync_state.path()) {
+            Ok(state) => state,
+            Err(_) => return, // No shared state file yet, that's fine
+        };
+
+        // Build map of existing projects by ID
+        let existing_ids: std::collections::HashMap<ProjectId, usize> = self
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id, i))
+            .collect();
+
+        // Add projects from shared state that aren't already loaded
+        for shared_project in shared_state.projects {
+            if !existing_ids.contains_key(&shared_project.id) {
+                let project = shared_project_to_info(shared_project.clone());
+                self.projects.push(project);
+
+                tracing::debug!(
+                    "Loaded project {} from shared state at startup",
+                    shared_project.id
+                );
+            }
         }
     }
 
@@ -412,6 +503,9 @@ impl App {
         } else if self.active_index >= self.sessions.len() {
             self.active_index = self.sessions.len() - 1;
         }
+
+        // Sync to shared state for other instances
+        self.save_shared_state();
     }
 
     /// Get sessions belonging to the active project.
@@ -434,12 +528,49 @@ impl App {
             .unwrap_or(0)
     }
 
+    /// Ensure a session is associated with a project.
+    /// Tries to add to the session's original project, falling back to the default project.
+    fn associate_session_with_project(&mut self, session_id: SessionId, project_id: ProjectId) {
+        let mut found_project = false;
+        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+            if !project.session_ids.contains(&session_id) {
+                project.session_ids.push(session_id);
+            }
+            found_project = true;
+        }
+
+        // If session's project doesn't exist in this instance, add to the default/first project
+        if !found_project
+            && !self.projects.is_empty()
+            && !self.projects[0].session_ids.contains(&session_id)
+        {
+            self.projects[0].session_ids.push(session_id);
+        }
+    }
+
+    /// Apply shared session metadata to a local session info.
+    /// Used when updating or adopting sessions from shared state.
+    fn apply_shared_session_metadata(session: &mut Session, shared: &sync::SharedSession) {
+        session.info.name = shared.name.clone();
+        session.info.role = shared.role.clone();
+        session.info.cwd = shared.cwd.clone();
+        session.info.claude_session_id = shared.claude_session_id.clone();
+        if let Some(wt) = &shared.worktree {
+            session.info.worktree = Some(WorktreeInfo {
+                repo_path: wt.repo_path.clone(),
+                worktree_path: wt.worktree_path.clone(),
+                branch: wt.branch.clone(),
+            });
+        }
+    }
+
     pub fn update(&mut self, msg: AppMessage) {
         match msg {
             AppMessage::KeyPress(code, mods) => self.handle_key(code, mods),
             AppMessage::MouseScrollUp => self.scroll_terminal_up(MOUSE_SCROLL_LINES),
             AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
+            AppMessage::ExternalStateChange(delta) => self.handle_external_state_change(delta),
         }
     }
 
@@ -1216,9 +1347,15 @@ impl App {
                 self.focus = InputFocus::Terminal;
                 self.error_message = None;
 
+                // Only add to project if not already there
                 if let Some(project) = self.projects.get_mut(self.active_project_index) {
-                    project.session_ids.push(session_id);
+                    if !project.session_ids.contains(&session_id) {
+                        project.session_ids.push(session_id);
+                    }
                 }
+
+                // Sync to shared state for other instances
+                self.save_shared_state();
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
@@ -1257,6 +1394,8 @@ impl App {
             self.error_message = Some(format!("Project added but failed to save config: {e}"));
         } else {
             self.error_message = None;
+            // Sync new project to shared state for multi-instance visibility
+            self.save_shared_state();
         }
 
         // Close modal and clear inputs
@@ -1320,6 +1459,133 @@ impl App {
             } else {
                 SessionStatus::Busy
             };
+        }
+
+        // Poll for external state changes from other thurbox instances
+        if let Ok(Some(delta)) = sync::poll_for_changes(&mut self.sync_state) {
+            self.handle_external_state_change(delta);
+        }
+    }
+
+    /// Handle external state changes detected from other instances.
+    fn handle_external_state_change(&mut self, delta: StateDelta) {
+        // Update session counter to avoid conflicts
+        self.session_counter = self.session_counter.max(delta.counter_increment);
+
+        // Handle removed projects (deleted by other instances)
+        for project_id in delta.removed_projects {
+            if let Some(pos) = self.projects.iter().position(|p| p.id == project_id) {
+                self.projects.remove(pos);
+                if self.active_project_index >= self.projects.len() && self.active_project_index > 0
+                {
+                    self.active_project_index -= 1;
+                }
+                tracing::debug!("Removed project {} from external state", project_id);
+            }
+        }
+
+        // Handle added projects from other instances
+        for shared_project in delta.added_projects {
+            // Skip if we already have this project
+            if self.projects.iter().any(|p| p.id == shared_project.id) {
+                continue;
+            }
+
+            // Create ProjectInfo from SharedProject
+            let project_name = shared_project.name.clone();
+            let project = shared_project_to_info(shared_project);
+
+            self.projects.push(project);
+            tracing::debug!("Adopted project {} from another instance", project_name);
+        }
+
+        // Handle updated projects (metadata changed by other instances)
+        for shared_project in delta.updated_projects {
+            if let Some(project) = self.projects.iter_mut().find(|p| p.id == shared_project.id) {
+                let project_name = shared_project.name.clone();
+                project.config.name = shared_project.name;
+                project.config.repos = shared_project.repos;
+                tracing::debug!("Updated project {} from external state", project_name);
+            }
+        }
+
+        // Handle removed sessions (deleted by other instances)
+        for session_id in delta.removed_sessions {
+            if let Some(pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
+                // Clean up worktree if present
+                if let Some(wt) = &self.sessions[pos].info.worktree {
+                    if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
+                        error!("Failed to remove worktree for deleted session: {e}");
+                    }
+                }
+                self.sessions.remove(pos);
+                if self.active_index >= self.sessions.len() && self.active_index > 0 {
+                    self.active_index -= 1;
+                }
+
+                // Remove session from all projects (cleanup project.session_ids)
+                for project in &mut self.projects {
+                    project.session_ids.retain(|id| *id != session_id);
+                }
+            }
+        }
+
+        // Handle updated sessions (metadata changed by other instances)
+        for shared_session in delta.updated_sessions {
+            if let Some(session) = self
+                .sessions
+                .iter_mut()
+                .find(|s| s.info.id == shared_session.id)
+            {
+                Self::apply_shared_session_metadata(session, &shared_session);
+            }
+        }
+
+        // Handle added sessions from other instances
+        // Try to adopt them from the backend using their backend_id
+        for shared_session in delta.added_sessions {
+            // Skip if we already have this session
+            if self.sessions.iter().any(|s| s.info.id == shared_session.id) {
+                continue;
+            }
+
+            // Try to adopt from backend
+            let (rows, cols) = self.content_area_size();
+            match Session::adopt(
+                shared_session.name.clone(),
+                rows,
+                cols,
+                &shared_session.backend_id,
+                &self.backend,
+            ) {
+                Ok(mut adopted_session) => {
+                    // Preserve the original session ID from shared state
+                    // (Session::adopt creates a new one, but we need the consistent ID)
+                    adopted_session.info.id = shared_session.id;
+
+                    // Update with metadata from shared state
+                    Self::apply_shared_session_metadata(&mut adopted_session, &shared_session);
+
+                    // Add to sessions
+                    let session_id = adopted_session.info.id;
+                    self.sessions.push(adopted_session);
+
+                    // Associate with project
+                    self.associate_session_with_project(session_id, shared_session.project_id);
+
+                    tracing::debug!(
+                        "Adopted session {} from another instance",
+                        shared_session.name
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "Failed to adopt session {} from backend: {}",
+                        shared_session.name,
+                        e
+                    );
+                }
+            }
         }
     }
 
@@ -1538,6 +1804,8 @@ impl App {
 
     pub fn shutdown(self) {
         self.save_state();
+        // Also save shared state for multi-instance sync
+        self.save_shared_state();
         // Do NOT remove worktrees — they persist for resume.
         // Detach from backend sessions without killing them — they persist in tmux.
         for session in self.sessions {
@@ -1551,7 +1819,14 @@ impl App {
             .iter()
             .filter_map(|s| {
                 let claude_session_id = s.info.claude_session_id.as_ref()?;
+                // Find which project this session belongs to
+                let project_id = self
+                    .projects
+                    .iter()
+                    .find(|p| p.session_ids.contains(&s.info.id))
+                    .map(|p| p.id.as_uuid()); // Extract UUID from ProjectId
                 Some(PersistedSession {
+                    id: Some(s.info.id),
                     name: s.info.name.clone(),
                     claude_session_id: claude_session_id.clone(),
                     cwd: s.info.cwd.clone(),
@@ -1563,6 +1838,7 @@ impl App {
                     role: s.info.role.clone(),
                     backend_id: s.backend_id().to_string(),
                     backend_type: s.backend_name().to_string(),
+                    project_id,
                 })
             })
             .collect();
@@ -1577,8 +1853,112 @@ impl App {
         }
     }
 
+    /// Save current sessions to the shared state file for multi-instance sync.
+    ///
+    /// Merges local sessions into the existing shared state instead of overwriting it.
+    /// This preserves sessions from other instances.
+    fn save_shared_state(&self) {
+        // Load existing shared state (or create new if it doesn't exist)
+        let mut shared_state = sync::file_store::load_shared_state(self.sync_state.path())
+            .unwrap_or_else(|_| sync::SharedState::new());
+
+        // Build map of our local sessions for quick lookup
+        let mut local_sessions = std::collections::HashMap::new();
+        for session in &self.sessions {
+            let shared_session = sync::SharedSession {
+                id: session.info.id,
+                name: session.info.name.clone(),
+                project_id: self
+                    .projects
+                    .iter()
+                    .find(|p| p.session_ids.contains(&session.info.id))
+                    .map(|p| p.id)
+                    .unwrap_or_default(),
+                role: session.info.role.clone(),
+                backend_id: session.backend_id().to_string(),
+                backend_type: session.backend_name().to_string(),
+                claude_session_id: session.info.claude_session_id.clone(),
+                cwd: session.info.cwd.clone(),
+                worktree: session
+                    .info
+                    .worktree
+                    .as_ref()
+                    .map(|wt| sync::SharedWorktree {
+                        repo_path: wt.repo_path.clone(),
+                        worktree_path: wt.worktree_path.clone(),
+                        branch: wt.branch.clone(),
+                    }),
+                tombstone: false,
+                tombstone_at: None,
+            };
+            local_sessions.insert(session.info.id, shared_session);
+        }
+
+        // Merge: update existing sessions or add new ones
+        let mut merged_sessions = Vec::new();
+        for mut existing in shared_state.sessions {
+            if let Some(updated) = local_sessions.remove(&existing.id) {
+                merged_sessions.push(updated);
+            } else if existing.tombstone {
+                merged_sessions.push(existing);
+            } else {
+                // Session was deleted locally. Mark as tombstone for propagation to other instances.
+                existing.tombstone = true;
+                existing.tombstone_at = Some(sync::current_time_millis());
+                merged_sessions.push(existing);
+            }
+        }
+
+        // Add new sessions (only in local state, not yet in shared state)
+        for (_session_id, session) in local_sessions {
+            merged_sessions.push(session);
+        }
+
+        // Sync projects: create SharedProject for each local project
+        let mut local_projects = std::collections::HashMap::new();
+        for project in &self.projects {
+            let shared_project = sync::SharedProject {
+                id: project.id,
+                name: project.config.name.clone(),
+                repos: project.config.repos.clone(),
+            };
+            local_projects.insert(project.id, shared_project);
+        }
+
+        // Merge projects: update existing or keep from shared state
+        let mut merged_projects = Vec::new();
+        for existing in shared_state.projects {
+            if let Some(updated) = local_projects.remove(&existing.id) {
+                merged_projects.push(updated);
+            } else {
+                // Keep projects from other instances
+                merged_projects.push(existing);
+            }
+        }
+
+        // Add new projects (only in local state, not yet in shared state)
+        for (_project_id, project) in local_projects {
+            merged_projects.push(project);
+        }
+
+        // Update state with merged sessions, projects and our counter
+        shared_state.sessions = merged_sessions;
+        shared_state.projects = merged_projects;
+        shared_state.session_counter = self.session_counter.max(shared_state.session_counter);
+        shared_state.last_modified = sync::current_time_millis();
+
+        if let Err(e) = sync::file_store::save_shared_state(self.sync_state.path(), &shared_state) {
+            error!("Failed to save shared state: {e}");
+        }
+    }
+
     pub fn restore_sessions(&mut self, state: PersistedState) {
         self.session_counter = state.session_counter;
+
+        // Load shared state to fill in missing project_id for backward compat
+        // (old persisted sessions don't have project_id field)
+        let shared_state = sync::file_store::load_shared_state(self.sync_state.path())
+            .unwrap_or_else(|_| sync::SharedState::default());
 
         // Discover existing sessions from the backend.
         let discovered = self.backend.discover().unwrap_or_default();
@@ -1624,6 +2004,11 @@ impl App {
             });
 
             if let Some(mut session) = adopted {
+                // Restore the persisted SessionId if available (preserves identity across restarts)
+                if let Some(persisted_id) = persisted.id {
+                    session.info.id = persisted_id;
+                }
+
                 session.info.claude_session_id = Some(persisted.claude_session_id.clone());
                 session.info.cwd = persisted.cwd;
                 session.info.role = role;
@@ -1633,8 +2018,58 @@ impl App {
                 self.active_index = self.sessions.len() - 1;
                 self.focus = InputFocus::Terminal;
 
-                if let Some(project) = self.projects.get_mut(self.active_project_index) {
-                    project.session_ids.push(session_id);
+                // Associate with the original project (restored sessions preserve their project)
+                // Use persisted project_id if available, otherwise look in shared state for backward compat
+                let project_id_to_lookup = if let Some(persisted_proj_id) = persisted.project_id {
+                    Some(persisted_proj_id)
+                } else {
+                    // No project_id in persisted session (old session), look in shared state
+                    shared_state
+                        .sessions
+                        .iter()
+                        .find(|s| s.id == session_id)
+                        .map(|s| s.project_id.as_uuid())
+                };
+
+                let target_project_index = if let Some(proj_uuid) = project_id_to_lookup {
+                    // Try to find the project by UUID
+                    let found_index = self
+                        .projects
+                        .iter()
+                        .position(|p| p.id.as_uuid() == proj_uuid);
+
+                    if let Some(idx) = found_index {
+                        tracing::debug!(
+                            session = %session_id,
+                            project_uuid = %proj_uuid,
+                            project_index = idx,
+                            project_name = %self.projects[idx].config.name,
+                            "Restored session to original project"
+                        );
+                        idx
+                    } else {
+                        tracing::warn!(
+                            session = %session_id,
+                            project_uuid = %proj_uuid,
+                            available_projects = ?self.projects.iter().map(|p| (p.id.as_uuid(), p.config.name.clone())).collect::<Vec<_>>(),
+                            fallback_index = self.active_project_index,
+                            "Session project_id not found, falling back to active project"
+                        );
+                        self.active_project_index
+                    }
+                } else {
+                    tracing::debug!(
+                        session = %session_id,
+                        "No project_id persisted or in shared state for session, using active project"
+                    );
+                    // Fallback to active project if no project_id found anywhere
+                    self.active_project_index
+                };
+
+                if let Some(project) = self.projects.get_mut(target_project_index) {
+                    if !project.session_ids.contains(&session_id) {
+                        project.session_ids.push(session_id);
+                    }
                 }
             } else {
                 // No matching backend session or adopt failed — spawn new with --resume.
@@ -1653,6 +2088,10 @@ impl App {
         if let Err(e) = project::clear_session_state() {
             error!("Failed to clear session state after restore: {e}");
         }
+
+        // Claim ownership of restored sessions in the shared state
+        // This ensures sessions stay visible to other instances and persist across restarts
+        self.save_shared_state();
     }
 
     /// Resolve a role name to its permissions using the active project's role config.
@@ -2775,5 +3214,236 @@ mod tests {
         // With exactly 1 role, prepare_spawn should not show selector
         // (it would try to spawn, which needs a runtime — just verify no selector)
         assert!(!app.show_role_selector);
+    }
+
+    // --- Project loading helper tests ---
+
+    #[test]
+    fn shared_project_to_info_preserves_id() {
+        let proj_config = ProjectConfig {
+            name: "Test Project".to_string(),
+            repos: vec![PathBuf::from("/path/to/repo")],
+            roles: Vec::new(),
+        };
+        let proj_id = proj_config.deterministic_id();
+
+        let shared_proj = sync::SharedProject {
+            id: proj_id,
+            name: "Test Project".to_string(),
+            repos: vec![PathBuf::from("/path/to/repo")],
+        };
+
+        let info = shared_project_to_info(shared_proj.clone());
+
+        assert_eq!(info.id, shared_proj.id);
+        assert_eq!(info.config.name, "Test Project");
+        assert_eq!(info.config.repos, vec![PathBuf::from("/path/to/repo")]);
+        assert!(info.config.roles.is_empty());
+    }
+
+    #[test]
+    fn shared_project_to_info_multiple_repos() {
+        let proj_config = ProjectConfig {
+            name: "Multi Repo".to_string(),
+            repos: vec![
+                PathBuf::from("/repo1"),
+                PathBuf::from("/repo2"),
+                PathBuf::from("/repo3"),
+            ],
+            roles: Vec::new(),
+        };
+        let proj_id = proj_config.deterministic_id();
+
+        let shared_proj = sync::SharedProject {
+            id: proj_id,
+            name: "Multi Repo".to_string(),
+            repos: vec![
+                PathBuf::from("/repo1"),
+                PathBuf::from("/repo2"),
+                PathBuf::from("/repo3"),
+            ],
+        };
+
+        let info = shared_project_to_info(shared_proj.clone());
+
+        assert_eq!(info.config.repos.len(), 3);
+        assert_eq!(info.config.repos[0], PathBuf::from("/repo1"));
+        assert_eq!(info.config.repos[1], PathBuf::from("/repo2"));
+        assert_eq!(info.config.repos[2], PathBuf::from("/repo3"));
+    }
+
+    #[test]
+    fn load_and_merge_projects_from_shared_state_only() {
+        // Create a temporary shared state file with one project
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_path = temp_dir.path().join("shared_state.toml");
+
+        let mut shared_state = sync::state::SharedState::new();
+        let proj_config = ProjectConfig {
+            name: "Shared Project".to_string(),
+            repos: vec![PathBuf::from("/shared/repo")],
+            roles: Vec::new(),
+        };
+        let proj_id = proj_config.deterministic_id();
+        shared_state.projects = vec![sync::SharedProject {
+            id: proj_id,
+            name: "Shared Project".to_string(),
+            repos: vec![PathBuf::from("/shared/repo")],
+        }];
+
+        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
+
+        let projects = load_and_merge_projects(&state_path, vec![]);
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].config.name, "Shared Project");
+        assert_eq!(projects[0].id, proj_id);
+    }
+
+    #[test]
+    fn load_and_merge_projects_from_config_only() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_path = temp_dir.path().join("nonexistent.toml");
+
+        let config = ProjectConfig {
+            name: "Config Project".to_string(),
+            repos: vec![PathBuf::from("/config/repo")],
+            roles: vec![],
+        };
+
+        let projects = load_and_merge_projects(&state_path, vec![config]);
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].config.name, "Config Project");
+    }
+
+    #[test]
+    fn load_and_merge_projects_shared_takes_precedence() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_path = temp_dir.path().join("shared_state.toml");
+
+        // Shared state has the project
+        let mut shared_state = sync::state::SharedState::new();
+        let proj_config = ProjectConfig {
+            name: "Test".to_string(),
+            repos: vec![PathBuf::from("/shared/repo")],
+            roles: Vec::new(),
+        };
+        let proj_id = proj_config.deterministic_id();
+        shared_state.projects = vec![sync::SharedProject {
+            id: proj_id,
+            name: "Test".to_string(),
+            repos: vec![PathBuf::from("/shared/repo")],
+        }];
+
+        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
+
+        // Config also has a project with same name
+        let config = ProjectConfig {
+            name: "Test".to_string(),
+            repos: vec![PathBuf::from("/config/repo")],
+            roles: vec![],
+        };
+
+        let projects = load_and_merge_projects(&state_path, vec![config]);
+
+        assert_eq!(projects.len(), 1);
+        // Shared state ID should be preserved
+        // ID should match the deterministic ID of the config name
+        let expected_id = ProjectConfig {
+            name: "Test".to_string(),
+            repos: vec![],
+            roles: Vec::new(),
+        }
+        .deterministic_id();
+        assert_eq!(projects[0].id, expected_id);
+        // Config repos should not override shared repos (only roles are merged)
+        assert_eq!(
+            projects[0].config.repos,
+            vec![PathBuf::from("/shared/repo")]
+        );
+    }
+
+    #[test]
+    fn load_and_merge_projects_merges_roles_from_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_path = temp_dir.path().join("shared_state.toml");
+
+        let mut shared_state = sync::state::SharedState::new();
+        let proj_config = ProjectConfig {
+            name: "Test".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: Vec::new(),
+        };
+        let proj_id = proj_config.deterministic_id();
+        shared_state.projects = vec![sync::SharedProject {
+            id: proj_id,
+            name: "Test".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+        }];
+
+        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
+
+        let role = crate::session::RoleConfig {
+            name: "reviewer".to_string(),
+            description: "Code reviewer".to_string(),
+            permissions: crate::session::RolePermissions::default(),
+        };
+
+        let config = ProjectConfig {
+            name: "Test".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: vec![role.clone()],
+        };
+
+        let projects = load_and_merge_projects(&state_path, vec![config]);
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].config.roles.len(), 1);
+        assert_eq!(projects[0].config.roles[0].name, "reviewer");
+    }
+
+    #[test]
+    fn load_and_merge_projects_empty_state_uses_default() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_path = temp_dir.path().join("nonexistent.toml");
+
+        let projects = load_and_merge_projects(&state_path, vec![]);
+
+        assert_eq!(projects.len(), 1);
+        assert!(projects[0].is_default);
+    }
+
+    #[test]
+    fn load_and_merge_projects_adds_config_only_projects() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state_path = temp_dir.path().join("shared_state.toml");
+
+        let mut shared_state = sync::state::SharedState::new();
+        let proj_config = ProjectConfig {
+            name: "Shared".to_string(),
+            repos: vec![PathBuf::from("/shared/repo")],
+            roles: Vec::new(),
+        };
+        let proj_id = proj_config.deterministic_id();
+        shared_state.projects = vec![sync::SharedProject {
+            id: proj_id,
+            name: "Shared".to_string(),
+            repos: vec![PathBuf::from("/shared/repo")],
+        }];
+
+        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
+
+        let config_only = ProjectConfig {
+            name: "ConfigOnly".to_string(),
+            repos: vec![PathBuf::from("/config/repo")],
+            roles: vec![],
+        };
+
+        let projects = load_and_merge_projects(&state_path, vec![config_only]);
+
+        assert_eq!(projects.len(), 2);
+        assert!(projects.iter().any(|p| p.config.name == "Shared"));
+        assert!(projects.iter().any(|p| p.config.name == "ConfigOnly"));
     }
 }

@@ -6,8 +6,22 @@ use uuid::Uuid;
 
 use crate::session::{PersistedState, RoleConfig, SessionId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Namespace UUID for deriving deterministic project IDs.
+/// This is the namespace used for v5 UUID generation from project configs.
+/// Value is SHA1(UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "thurbox:projects")
+const PROJECT_ID_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x6e, 0xb5, 0x79, 0xc4, 0xca, 0xee, 0x5c, 0xba, 0x8d, 0x4c, 0x23, 0x33, 0x26, 0x37, 0x78, 0xb9,
+]);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProjectId(Uuid);
+
+impl ProjectId {
+    /// Get the inner UUID representation.
+    pub fn as_uuid(&self) -> Uuid {
+        self.0
+    }
+}
 
 impl Default for ProjectId {
     fn default() -> Self {
@@ -29,6 +43,17 @@ pub struct ProjectConfig {
     pub roles: Vec<RoleConfig>,
 }
 
+impl ProjectConfig {
+    /// Derive a deterministic project ID from this config.
+    ///
+    /// Uses the project name as the basis for a v5 UUID, ensuring that
+    /// the same project name always produces the same ID across instances.
+    /// This is critical for multi-instance session synchronization.
+    pub fn deterministic_id(&self) -> ProjectId {
+        ProjectId(Uuid::new_v5(&PROJECT_ID_NAMESPACE, self.name.as_bytes()))
+    }
+}
+
 pub struct ProjectInfo {
     pub id: ProjectId,
     pub config: ProjectConfig,
@@ -38,8 +63,9 @@ pub struct ProjectInfo {
 
 impl ProjectInfo {
     pub fn new(config: ProjectConfig) -> Self {
+        let id = config.deterministic_id();
         Self {
-            id: ProjectId::default(),
+            id,
             config,
             session_ids: Vec::new(),
             is_default: false,
@@ -47,8 +73,9 @@ impl ProjectInfo {
     }
 
     pub fn new_default(config: ProjectConfig) -> Self {
+        let id = config.deterministic_id();
         Self {
-            id: ProjectId::default(),
+            id,
             config,
             session_ids: Vec::new(),
             is_default: true,
@@ -329,6 +356,7 @@ repos = ["/home/user/repos/other"]
         let state = PersistedState {
             sessions: vec![
                 PersistedSession {
+                    id: None,
                     name: "Session 1".to_string(),
                     claude_session_id: "abc-123".to_string(),
                     cwd: Some(PathBuf::from("/tmp/repo")),
@@ -336,8 +364,10 @@ repos = ["/home/user/repos/other"]
                     role: "developer".to_string(),
                     backend_id: String::new(),
                     backend_type: String::new(),
+                    project_id: None,
                 },
                 PersistedSession {
+                    id: None,
                     name: "Session 2".to_string(),
                     claude_session_id: "def-456".to_string(),
                     cwd: Some(PathBuf::from("/tmp/wt")),
@@ -349,6 +379,7 @@ repos = ["/home/user/repos/other"]
                     role: "reviewer".to_string(),
                     backend_id: String::new(),
                     backend_type: String::new(),
+                    project_id: None,
                 },
             ],
             session_counter: 2,
@@ -381,6 +412,7 @@ repos = ["/home/user/repos/other"]
 
         let state = PersistedState {
             sessions: vec![PersistedSession {
+                id: None,
                 name: "Session 1".to_string(),
                 claude_session_id: "abc-123".to_string(),
                 cwd: None,
@@ -388,6 +420,7 @@ repos = ["/home/user/repos/other"]
                 role: "developer".to_string(),
                 backend_id: String::new(),
                 backend_type: String::new(),
+                project_id: None,
             }],
             session_counter: 1,
         };
@@ -528,5 +561,72 @@ repos = ["/tmp/old"]
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
         assert_eq!(config.projects.len(), 1);
         assert!(config.projects[0].roles.is_empty());
+    }
+
+    #[test]
+    fn project_id_is_deterministic() {
+        let config = ProjectConfig {
+            name: "Test Project".to_string(),
+            repos: vec![PathBuf::from("/repo1"), PathBuf::from("/repo2")],
+            roles: Vec::new(),
+        };
+
+        let id1 = config.deterministic_id();
+        let id2 = config.deterministic_id();
+
+        // Same config should always produce the same ID
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn different_project_names_have_different_ids() {
+        let config1 = ProjectConfig {
+            name: "Project A".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: Vec::new(),
+        };
+        let config2 = ProjectConfig {
+            name: "Project B".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: Vec::new(),
+        };
+
+        let id1 = config1.deterministic_id();
+        let id2 = config2.deterministic_id();
+
+        // Different names should produce different IDs
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn project_info_uses_deterministic_id() {
+        let config = ProjectConfig {
+            name: "Test Project".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: Vec::new(),
+        };
+
+        let info = ProjectInfo::new(config.clone());
+        let expected_id = config.deterministic_id();
+
+        assert_eq!(info.id, expected_id);
+    }
+
+    #[test]
+    fn multiple_instances_derive_same_project_id() {
+        let config = ProjectConfig {
+            name: "Shared Project".to_string(),
+            repos: vec![PathBuf::from("/shared/repo")],
+            roles: Vec::new(),
+        };
+
+        // Simulate Instance A loading the config
+        let info_a = ProjectInfo::new(config.clone());
+
+        // Simulate Instance B loading the same config
+        let info_b = ProjectInfo::new(config.clone());
+
+        // Both instances should derive the same project ID
+        assert_eq!(info_a.id, info_b.id);
     }
 }

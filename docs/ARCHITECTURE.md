@@ -276,16 +276,18 @@ without touching `App`, `Session`, or any UI code.
 through tmux control mode (`-C`).
 
 **Why**: tmux provides session persistence (survives crashes),
-multi-instance sharing (multiple thurbox processes see the same
-sessions), and external recovery (`tmux -L thurbox attach`).
-It handles terminal capability queries (DA1/DA2) natively via
-`extended-keys on`, eliminating the need for thurbox to intercept
-and respond to these sequences.
+multi-instance support (multiple thurbox processes can independently
+interact with the same sessions), and external recovery
+(`tmux -L thurbox attach`). It handles terminal capability queries
+(DA1/DA2) natively via `extended-keys on`, eliminating the need for
+thurbox to intercept and respond to these sequences.
 
-Control mode (`-C`) provides a single multiplexed stdio
-connection with built-in flow control. Output arrives as
-`%output` notifications (octal-encoded), input is sent via
-`send-keys -H` (hex-encoded). This eliminates the previous
+Control mode (`-C`) supports multiple concurrent client connections,
+each receiving independent output streams. Each thurbox instance
+establishes its own control mode connection, allowing all instances
+to simultaneously monitor and interact with the same tmux sessions.
+Output arrives as `%output` notifications (octal-encoded), input is
+sent via `send-keys -H` (hex-encoded). This eliminates the previous
 `pipe-pane` + FIFO approach which suffered from tmux data-loss
 bugs (#641, #2989), required 3 external deps in the data path
 (`mkfifo`, `stdbuf`, `cat`), and had no flow control.
@@ -303,9 +305,12 @@ bugs (#641, #2989), required 3 external deps in the data path
 **Window naming**: `tb-<session-name>` prefix for discovery.
 
 **Output streaming**: `%output` notifications from control mode,
-demultiplexed by pane ID into per-pane mpsc channels. Each
-channel feeds a `ControlModeReader` (implements `Read`) consumed
-by the existing `Session::reader_loop`.
+demultiplexed by pane ID into per-pane broadcast channels. Multiple
+instances can simultaneously register the same pane; output is
+broadcast to all registered channels via `HashMap<String, Vec<SyncSender>>`.
+Each channel feeds a `ControlModeReader` (implements `Read`) consumed
+by the existing `Session::reader_loop`. This allows multiple instances
+to independently parse and render terminal state in real-time.
 
 **Input**: `send-keys -H <hex>` through the shared control mode
 stdin, wrapped in a `ControlModeWriter` (implements `Write`).
@@ -331,3 +336,77 @@ delivers pixel-perfect rendering with all original formatting.
   tmux bugs #641/#2989, required `mkfifo`/`stdbuf`/`cat` in the
   data path, no flow control, timing race on initial capture.
 - *Screen/dtach* — less widely available, fewer features.
+
+---
+
+## ADR-7: Multi-Instance Sync — File-based polling with mtime
+
+**Choice**: Multiple thurbox instances synchronize session metadata
+via a shared TOML file (`~/.local/share/thurbox/shared_state.toml`).
+Each instance periodically polls the file's modification time (mtime)
+and reads its content if changed. Writes are atomic (temp file + rename).
+Session counter is merged using `max()`, deletions use tombstones
+with a 60-second TTL.
+
+Session **I/O is NOT coordinated** via the shared file. Instead, each
+instance independently connects to tmux and adopts all visible sessions.
+Tmux natively handles concurrent clients: output is broadcast to all
+connected clients, and input commands are serialized. This enables true
+multi-instance collaboration without application-level locks or
+ownership restrictions.
+
+**Why**: This approach is:
+
+- **Simple**: POSIX file I/O for metadata, tmux I/O built-in for sessions
+- **Portable**: Works on Linux, macOS, any system with a filesystem
+- **Observable**: Users can inspect/edit `shared_state.toml` directly
+- **TEA-compatible**: External changes flow through the message pipeline
+- **Graceful**: Single instance has zero polling overhead
+- **Debuggable**: File format is human-readable TOML
+- **Collaborative**: All instances can interact with the same sessions
+  simultaneously (like tmux attach with multiple clients)
+
+The polling latency (~250ms average) is acceptable for session
+metadata sync — users rarely create/delete sessions faster than
+this, and terminal I/O (with millisecond response) dominates perception.
+
+**Multi-Instance I/O Model**: Rather than using an ownership model
+to prevent duplicate I/O, each instance maintains its own control mode
+connection to tmux. Tmux's architecture already supports this:
+
+- Each control mode client receives independent output streams
+- Output is duplicated by tmux to all connected clients
+- Input commands (`send-keys`) are serialized by tmux
+- No application-level coordination needed
+
+This design choice (post-ADR) was made to enable true collaboration while
+avoiding the complexity of application-level locks or message-passing for
+I/O coordination.
+
+**Trade-offs**:
+
+- **~250ms latency** vs <1ms for inotify: acceptable for metadata
+- **Eventual consistency**: brief windows where instances diverge;
+  last-write-wins resolves conflicts
+- **~4 stat() calls/sec** per instance: negligible disk overhead
+- **Independent terminal state**: Each instance maintains its own
+  `vt100::Parser`, so concurrent updates may briefly diverge. Instances
+  converge quickly as output is replayed.
+- **Concurrent input interleaving**: When multiple users type
+  simultaneously, characters arrive in order at tmux but may display
+  interleaved (same as `tmux attach` with multiple clients). This is
+  **expected behavior** for multi-user terminal sessions.
+
+**Rejected**:
+
+- *Event-based sync (inotify/kqueue)* — platform-specific, requires
+  different implementations for Linux/macOS/BSD, more complex error
+  handling (file deletion, permission issues), adds monitoring
+  overhead even for single-instance deployments.
+- *gRPC/REST daemon* — requires deploying and managing a persistent
+  service, adds operational complexity, increases failure surface area
+  (daemon crashes, socket issues), incompatible with offline usage.
+- *Git-based sync* — requires git repo for state, introduces gc/
+  rebase issues, incompatible with non-repo environments.
+- *SQLite shared DB* — adds database locking complexity, risk of
+  corruption from concurrent access, not human-readable.

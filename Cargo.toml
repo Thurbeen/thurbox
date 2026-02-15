@@ -23,7 +23,7 @@ bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 
 # Session management
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
 # Logging
 tracing = "0.1"
@@ -36,6 +36,9 @@ toml = "0.8"
 
 # Error handling
 anyhow = "1.0"
+
+[dev-dependencies]
+tempfile = "3"
 
 # Development tool requirements (install with `cargo binstall` or `cargo install`)
 [package.metadata.dev-tools]
