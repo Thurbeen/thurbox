@@ -25,7 +25,8 @@ jobs:
           fetch-depth: 0  # Full history for cocogitto
 
       - name: Check for releasable commits
-        uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
+        # Use latest main branch of cocogitto-action to get install-only feature
+        uses: cocogitto/cocogitto-action@fe8ace544dfe3291b84b665f242f79a4f206b2a2 # main
         id: check
         with:
           install-only: true
