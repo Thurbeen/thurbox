@@ -99,7 +99,7 @@ jobs:
       - name: Checkout code at tag
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: v${{ needs.check-release.outputs.version }}
+          ref: ${{ needs.check-release.outputs.version }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -147,7 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v6.0.0
         with:
           path: artifacts
 
@@ -181,7 +181,7 @@ jobs:
       - name: Checkout code at tag
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: v${{ needs.check-release.outputs.version }}
+          ref: ${{ needs.check-release.outputs.version }}
           fetch-depth: 0
 
       - name: Generate changelog for release
@@ -189,7 +189,7 @@ jobs:
         id: changelog
         with:
           command: changelog
-          args: --at v${{ needs.check-release.outputs.version }}
+          args: --at ${{ needs.check-release.outputs.version }}
 
   # Publish GitHub Release
   publish:
@@ -200,7 +200,7 @@ jobs:
       contents: write  # Required to create releases
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: artifacts
 
@@ -212,7 +212,7 @@ jobs:
           ls -lh release-assets/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@de2461bef585ea57e8ef2f742069330feba33f08 # v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ needs.check-release.outputs.version }}
           name: thurbox ${{ needs.check-release.outputs.version }}
