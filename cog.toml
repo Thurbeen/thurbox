@@ -9,19 +9,8 @@ ignore_merge_commits = true
 # List of valid commit scopes
 scopes = ["api", "cli", "ui", "git", "core", "docs", "deps", "config"]
 
-# Pre-bump hooks (run BEFORE creating version)
-pre_bump_hooks = [
-    "cargo test",
-    "cargo clippy -- -D warnings",
-    "cargo fmt --all --check",
-    "cargo set-version {{version}}",
-]
-
-# Post-bump hooks (run AFTER creating version)
-post_bump_hooks = [
-    "git push",
-    "git push origin {{version}}",
-]
+# Tag prefix for semantic versioning
+tag_prefix = "v"
 
 # Git hooks are managed by prek (see .pre-commit-config.yaml)
 # Install with: prek install

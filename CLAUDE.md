@@ -46,6 +46,55 @@ cargo deny check advisories                               # Advisories
 cargo deny check bans licenses sources                    # Dep policy
 ```
 
+## Release Process
+
+Releases are **fully automated** via GitHub Actions. No version commits
+are created - version is determined by git tags only.
+
+### How It Works
+
+Every push to `main` automatically triggers the release workflow:
+
+1. **Commit Analysis**: Analyzes all commits since last tag using cocogitto
+2. **Release Decision**:
+   - **If** commits include `feat`, `fix`, or `perf` → creates release
+   - **If** only docs/chore/ci commits → no release (workflow exits)
+3. **Automated Release** (if needed):
+   - Determines semantic version (feat→minor, fix/perf→patch)
+   - Creates lightweight git tag: `v{version}` (e.g., v0.1.0)
+   - Pushes tag to origin
+   - Builds binaries for 4 platforms (version passed via environment variable)
+   - Generates changelog from commits
+   - Publishes GitHub Release with binaries and release notes
+
+### Version Management
+
+- **Cargo.toml version**: Always `0.0.0-dev` (static development marker)
+- **Real version**: Determined by release workflow (v0.1.0, v0.2.0, etc.)
+- **Build-time injection**: `build.rs` uses `THURBOX_RELEASE_VERSION` environment
+  variable (set by workflow) to inject version into binary
+- **Development builds**: Show `0.0.0-dev` (when `THURBOX_RELEASE_VERSION` not set)
+- **Release builds**: Show actual version (e.g., `0.1.0`) via env variable from workflow
+
+### Release Artifacts
+
+Each release includes:
+
+- Binaries for 4 platforms:
+  - `thurbox-v{ver}-x86_64-unknown-linux-gnu.tar.gz`
+  - `thurbox-v{ver}-x86_64-unknown-linux-musl.tar.gz`
+  - `thurbox-v{ver}-x86_64-apple-darwin.tar.gz`
+  - `thurbox-v{ver}-aarch64-apple-darwin.tar.gz`
+- `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
+- Changelog with categorized commits
+
+### Commit Types and Versioning
+
+- **feat**: Minor version bump (0.x.0)
+- **fix, perf**: Patch version bump (0.0.x)
+- **docs, chore, ci, style, test**: No release (appear in next version)
+- **BREAKING CHANGE**: Major version bump (x.0.0) - use cautiously for 0.x
+
 ## Conventional Commits
 
 All commits must follow

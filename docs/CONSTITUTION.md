@@ -91,6 +91,29 @@ make the pass/fail decision.
 Changes to CI configuration require careful review
 because a broken pipeline affects every contributor.
 
+### 12. Tag-based versioning
+
+Version numbers are determined by git tags, not Cargo.toml.
+The release workflow analyzes conventional commits, creates tags automatically,
+and builds binaries with versions injected at build time.
+No version bump commits pollute the git history.
+
+**Why:** Automated version commits add noise without value. Tags are the
+natural place for release markers. Build-time version detection ensures
+binaries have correct versions while keeping the source tree clean.
+
+**Mechanism:**
+
+1. Release workflow (`release.yml`) analyzes commits via `cog bump --auto --dry-run`
+2. Workflow creates lightweight tag (v{version}) and passes version via environment variable
+3. `build.rs` reads `THURBOX_RELEASE_VERSION` and injects into binary
+4. Cargo.toml version remains `0.0.0-dev` (development marker only)
+
+**Result:**
+
+- Release builds: version from tag (e.g., 0.1.0)
+- Development builds: version from Cargo.toml (0.0.0-dev)
+
 ## Enforcement Map
 
 | Principle | Enforced by | Config file |
@@ -106,3 +129,4 @@ because a broken pipeline affects every contributor.
 | Logging off stdout | Code review | — |
 | TDD (Red/Green/Refactor) | `cargo-nextest` + code review | `.config/nextest.toml` |
 | Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
+| Tag-based versioning | `build.rs` + `release.yml` | `build.rs` + `.github/workflows/release.yml` |
