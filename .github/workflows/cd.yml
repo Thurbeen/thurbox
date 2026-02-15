@@ -28,18 +28,17 @@ jobs:
         uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
         id: check
         with:
-          command: bump
-          args: --auto --disable-bump-commit --dry-run
+          install-only: true
 
       - name: Parse release decision
         id: parse
         run: |
-          VERSION="${{ steps.check.outputs.version }}"
+          VERSION="$(cog bump --auto --disable-bump-commit --dry-run)"
           echo "Detected version: $VERSION"
           if [ -n "$VERSION" ]; then
             echo "should_release=true" >> $GITHUB_OUTPUT
             echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "✅ Release needed: v$VERSION"
+            echo "✅ Release needed: $VERSION"
           else
             echo "should_release=false" >> $GITHUB_OUTPUT
             echo "version=" >> $GITHUB_OUTPUT
@@ -66,11 +65,6 @@ jobs:
           args: --auto --disable-bump-commit
           git-user: 'github-actions[bot]'
           git-user-email: 'github-actions[bot]@users.noreply.github.com'
-
-      - name: Push tag to origin
-        run: |
-          git push origin v${{ needs.check-release.outputs.version }}
-          echo "✅ Created and pushed tag: v${{ needs.check-release.outputs.version }}"
 
   # Build binaries for all platforms (only if tag created)
   build:
