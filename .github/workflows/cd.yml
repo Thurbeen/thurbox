@@ -67,6 +67,12 @@ jobs:
           git-user: 'github-actions[bot]'
           git-user-email: 'github-actions[bot]@users.noreply.github.com'
 
+      - name: Push tag to repository
+        uses: ad-m/github-push-action@77c5b412c50b723d2a4fbc6d71fb5723bcd439aa # v1.0.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tags: true
+
   # Build binaries for all platforms (only if tag created)
   build:
     name: Build ${{ matrix.target }}
@@ -128,7 +134,7 @@ jobs:
           tar --append -zf "$ARCHIVE_NAME" LICENSE || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@65a9edc5881444af0b87c8c0d41acee75033bcf1 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: binary-${{ matrix.target }}
           path: thurbox-*.tar.gz
@@ -141,7 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@65a9edc5881444af0b87c8c0d41acee75033bcf1 # v4
+        uses: actions/download-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           path: artifacts
 
@@ -159,7 +165,7 @@ jobs:
           cat "thurbox-v${VERSION}-checksums.txt"
 
       - name: Upload checksums
-        uses: actions/upload-artifact@65a9edc5881444af0b87c8c0d41acee75033bcf1 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: checksums
           path: artifacts/thurbox-*-checksums.txt
