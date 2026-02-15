@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -15,43 +16,36 @@ jobs:
     name: Analyze commits for release
     runs-on: ubuntu-latest
     outputs:
-      should_release: ${{ steps.check.outputs.should_release }}
-      next_version: ${{ steps.check.outputs.next_version }}
+      should_release: ${{ steps.parse.outputs.should_release }}
+      version: ${{ steps.parse.outputs.version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Full history for cocogitto
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cocogitto
-        run: cargo install cocogitto --locked
-
-      - name: Determine next version
+      - name: Check for releasable commits
+        uses: cocogitto/cocogitto-action@v4
         id: check
+        with:
+          command: bump
+          args: --auto --disable-bump-commit --dry-run
+
+      - name: Parse release decision
+        id: parse
         run: |
-          # Get last tag (or empty if no tags)
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          STDOUT="${{ steps.check.outputs.stdout }}"
 
-          # Run cocogitto to determine next version
-          if cog bump --auto --dry-run > /tmp/cog-output.txt 2>&1; then
-            # Parse version from output
-            # cocogitto outputs: "Bumping version 0.1.0 -> 0.2.0"
-            NEXT_VERSION=$(grep -oP 'Bumping version .* -> \K[0-9.]+' /tmp/cog-output.txt || echo "")
-
-            if [ -n "$NEXT_VERSION" ]; then
-              echo "should_release=true" >> $GITHUB_OUTPUT
-              echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-              echo "✅ Release needed: v$NEXT_VERSION"
-            else
-              echo "should_release=false" >> $GITHUB_OUTPUT
-              echo "ℹ️  No releasable commits since last tag"
-            fi
+          # Check if cocogitto would bump version
+          if echo "$STDOUT" | grep -q "Bumping version"; then
+            VERSION=$(echo "$STDOUT" | grep -oP 'Bumping version .* -> \K[0-9.]+')
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "✅ Release needed: v$VERSION"
           else
             echo "should_release=false" >> $GITHUB_OUTPUT
-            echo "ℹ️  No version bump detected"
+            echo "version=" >> $GITHUB_OUTPUT
+            echo "ℹ️  No releasable commits detected"
           fi
 
   # Create git tag (only if release needed)
@@ -63,18 +57,22 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Create version tag
+        uses: cocogitto/cocogitto-action@v4
+        id: bump
+        with:
+          command: bump
+          args: --auto --disable-bump-commit
+          git-user: 'github-actions[bot]'
+          git-user-email: 'github-actions[bot]@users.noreply.github.com'
 
-      - name: Create and push tag
+      - name: Push tag to origin
         run: |
-          VERSION="${{ needs.check-release.outputs.next_version }}"
-          git tag "v$VERSION"
-          git push origin "v$VERSION"
-          echo "✅ Created tag: v$VERSION"
+          git push origin v${{ needs.check-release.outputs.version }}
+          echo "✅ Created and pushed tag: v${{ needs.check-release.outputs.version }}"
 
   # Build binaries for all platforms (only if tag created)
   build:
@@ -102,7 +100,7 @@ jobs:
       - name: Checkout code at tag
         uses: actions/checkout@v6
         with:
-          ref: v${{ needs.check-release.outputs.next_version }}
+          ref: v${{ needs.check-release.outputs.version }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -115,7 +113,7 @@ jobs:
 
       - name: Build release binary
         env:
-          THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.next_version }}
+          THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.version }}
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }}
@@ -125,7 +123,7 @@ jobs:
 
       - name: Create archive
         run: |
-          VERSION="${{ needs.check-release.outputs.next_version }}"
+          VERSION="${{ needs.check-release.outputs.version }}"
           TARGET="${{ matrix.target }}"
           ARCHIVE_NAME="thurbox-v${VERSION}-${TARGET}.tar.gz"
 
@@ -156,7 +154,7 @@ jobs:
 
       - name: Generate SHA256 checksums
         run: |
-          VERSION="${{ needs.check-release.outputs.next_version }}"
+          VERSION="${{ needs.check-release.outputs.version }}"
           cd artifacts
 
           # Flatten directory structure
@@ -178,43 +176,21 @@ jobs:
     name: Generate changelog
     needs: [check-release, create-tag]
     runs-on: ubuntu-latest
+    outputs:
+      changelog: ${{ steps.changelog.outputs.stdout }}
     steps:
       - name: Checkout code at tag
         uses: actions/checkout@v6
         with:
-          ref: v${{ needs.check-release.outputs.next_version }}
+          ref: v${{ needs.check-release.outputs.version }}
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cocogitto
-        run: cargo install cocogitto --locked
-
-      - name: Generate changelog for this version
-        run: |
-          VERSION="${{ needs.check-release.outputs.next_version }}"
-
-          # Get commits since last tag
-          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-
-          echo "# Release v${VERSION}" > /tmp/changelog.md
-          echo "" >> /tmp/changelog.md
-
-          # Use cocogitto to generate changelog
-          if [ -n "$LAST_TAG" ]; then
-            cog changelog "$LAST_TAG..v${VERSION}" >> /tmp/changelog.md 2>/dev/null || true
-          else
-            cog changelog >> /tmp/changelog.md 2>/dev/null || true
-          fi
-
-          cat /tmp/changelog.md
-
-      - name: Upload changelog
-        uses: actions/upload-artifact@v4
+      - name: Generate changelog for release
+        uses: cocogitto/cocogitto-action@v4
+        id: changelog
         with:
-          name: changelog
-          path: /tmp/changelog.md
+          command: changelog
+          args: --at v${{ needs.check-release.outputs.version }}
 
   # Publish GitHub Release
   publish:
@@ -231,17 +207,20 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          mkdir release-assets
-          find artifacts -name "*.tar.gz" -exec cp {} release-assets/ \;
-          find artifacts -name "*checksums.txt" -exec cp {} release-assets/ \;
+          mkdir -p release-assets
+          find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
+          find artifacts -type f -name "*checksums.txt" -exec cp {} release-assets/ \;
           ls -lh release-assets/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check-release.outputs.next_version }}
-          name: thurbox v${{ needs.check-release.outputs.next_version }}
-          body_path: artifacts/changelog/changelog.md
+          tag_name: v${{ needs.check-release.outputs.version }}
+          name: thurbox v${{ needs.check-release.outputs.version }}
+          body: |
+            ${{ needs.generate-changelog.outputs.changelog || '## Changes
+
+            See commit history for details.' }}
           files: release-assets/*
           draft: false
           prerelease: false
