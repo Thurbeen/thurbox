@@ -2459,6 +2459,14 @@ mod tests {
         Arc::new(StubBackend)
     }
 
+    /// Clear the test's shared state file to avoid stale projects from previous runs.
+    /// This is needed because load_and_merge_projects() prefers shared state over config.
+    fn clear_test_shared_state() {
+        if let Ok(path) = sync::shared_state_path() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     /// Create an App with N stub sessions bound to the default project.
     fn app_with_sessions(count: usize) -> App {
         let backend = stub_backend();
@@ -2640,6 +2648,7 @@ mod tests {
     #[test]
     fn open_role_editor_clones_existing_roles() {
         use crate::session::{RoleConfig, RolePermissions};
+        clear_test_shared_state();
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2700,6 +2709,7 @@ mod tests {
     #[test]
     fn spawn_with_two_roles_shows_selector() {
         use crate::session::{RoleConfig, RolePermissions};
+        clear_test_shared_state();
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2796,6 +2806,7 @@ mod tests {
     #[test]
     fn role_editor_edit_preserves_permission_mode_and_tools() {
         use crate::session::{RoleConfig, RolePermissions};
+        clear_test_shared_state();
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2848,6 +2859,7 @@ mod tests {
     #[test]
     fn open_role_for_editing_populates_fields() {
         use crate::session::{RoleConfig, RolePermissions};
+        clear_test_shared_state();
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2933,6 +2945,7 @@ mod tests {
     #[test]
     fn role_editor_delete_adjusts_list_index() {
         use crate::session::{RoleConfig, RolePermissions};
+        clear_test_shared_state();
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -3151,6 +3164,7 @@ mod tests {
     #[test]
     fn system_prompt_loaded_and_saved() {
         use crate::session::{RoleConfig, RolePermissions};
+        clear_test_shared_state();
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
