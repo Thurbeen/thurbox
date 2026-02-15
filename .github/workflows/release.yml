@@ -1,0 +1,249 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Prevent concurrent releases
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Analyze commits and determine if release is needed
+  check-release:
+    name: Analyze commits for release
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      next_version: ${{ steps.check.outputs.next_version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for cocogitto
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cocogitto
+        run: cargo install cocogitto --locked
+
+      - name: Determine next version
+        id: check
+        run: |
+          # Get last tag (or empty if no tags)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          # Run cocogitto to determine next version
+          if cog bump --auto --dry-run > /tmp/cog-output.txt 2>&1; then
+            # Parse version from output
+            # cocogitto outputs: "Bumping version 0.1.0 -> 0.2.0"
+            NEXT_VERSION=$(grep -oP 'Bumping version .* -> \K[0-9.]+' /tmp/cog-output.txt || echo "")
+
+            if [ -n "$NEXT_VERSION" ]; then
+              echo "should_release=true" >> $GITHUB_OUTPUT
+              echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+              echo "✅ Release needed: v$NEXT_VERSION"
+            else
+              echo "should_release=false" >> $GITHUB_OUTPUT
+              echo "ℹ️  No releasable commits since last tag"
+            fi
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No version bump detected"
+          fi
+
+  # Create git tag (only if release needed)
+  create-tag:
+    name: Create release tag
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push tag
+        run: |
+          VERSION="${{ needs.check-release.outputs.next_version }}"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          echo "✅ Created tag: v$VERSION"
+
+  # Build binaries for all platforms (only if tag created)
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [check-release, create-tag]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            use_cross: false
+
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.check-release.outputs.next_version }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Build release binary
+        env:
+          THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.next_version }}
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Create archive
+        run: |
+          VERSION="${{ needs.check-release.outputs.next_version }}"
+          TARGET="${{ matrix.target }}"
+          ARCHIVE_NAME="thurbox-v${VERSION}-${TARGET}.tar.gz"
+
+          cd target/$TARGET/release
+          tar czf "../../../$ARCHIVE_NAME" thurbox
+          cd ../../..
+
+          # Also package LICENSE
+          tar --append -zf "$ARCHIVE_NAME" LICENSE || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: thurbox-*.tar.gz
+          if-no-files-found: error
+
+  # Generate checksums for all binaries
+  checksums:
+    name: Generate checksums
+    needs: [check-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate SHA256 checksums
+        run: |
+          VERSION="${{ needs.check-release.outputs.next_version }}"
+          cd artifacts
+
+          # Flatten directory structure
+          find . -name "*.tar.gz" -exec mv {} . \;
+
+          # Generate checksums
+          sha256sum thurbox-*.tar.gz > "thurbox-v${VERSION}-checksums.txt"
+
+          cat "thurbox-v${VERSION}-checksums.txt"
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: artifacts/thurbox-*-checksums.txt
+
+  # Generate CHANGELOG from commits
+  generate-changelog:
+    name: Generate changelog
+    needs: [check-release, create-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.check-release.outputs.next_version }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cocogitto
+        run: cargo install cocogitto --locked
+
+      - name: Generate changelog for this version
+        run: |
+          VERSION="${{ needs.check-release.outputs.next_version }}"
+
+          # Get commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          echo "# Release v${VERSION}" > /tmp/changelog.md
+          echo "" >> /tmp/changelog.md
+
+          # Use cocogitto to generate changelog
+          if [ -n "$LAST_TAG" ]; then
+            cog changelog "$LAST_TAG..v${VERSION}" >> /tmp/changelog.md 2>/dev/null || true
+          else
+            cog changelog >> /tmp/changelog.md 2>/dev/null || true
+          fi
+
+          cat /tmp/changelog.md
+
+      - name: Upload changelog
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: /tmp/changelog.md
+
+  # Publish GitHub Release
+  publish:
+    name: Publish GitHub Release
+    needs: [check-release, create-tag, build, checksums, generate-changelog]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to create releases
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir release-assets
+          find artifacts -name "*.tar.gz" -exec cp {} release-assets/ \;
+          find artifacts -name "*checksums.txt" -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-release.outputs.next_version }}
+          name: thurbox v${{ needs.check-release.outputs.next_version }}
+          body_path: artifacts/changelog/changelog.md
+          files: release-assets/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
