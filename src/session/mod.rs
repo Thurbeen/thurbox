@@ -39,7 +39,7 @@ pub struct WorktreeInfo {
     pub branch: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(Uuid);
 
 impl Default for SessionId {
@@ -51,6 +51,14 @@ impl Default for SessionId {
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for SessionId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
     }
 }
 
@@ -121,6 +129,10 @@ pub struct SessionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedSession {
+    /// Unique session identifier (preserved across restarts).
+    /// Skipped during serialization if not set for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<SessionId>,
     pub name: String,
     pub claude_session_id: String,
     pub cwd: Option<PathBuf>,
@@ -131,6 +143,10 @@ pub struct PersistedSession {
     pub backend_id: String,
     #[serde(default)]
     pub backend_type: String,
+    /// Project this session belongs to (UUID, preserved across restarts).
+    /// Skipped during serialization if not set for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
