@@ -20,12 +20,12 @@ jobs:
       version: ${{ steps.parse.outputs.version }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0  # Full history for cocogitto
 
       - name: Check for releasable commits
-        uses: cocogitto/cocogitto-action@v4
+        uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
         id: check
         with:
           command: bump
@@ -34,11 +34,9 @@ jobs:
       - name: Parse release decision
         id: parse
         run: |
-          STDOUT="${{ steps.check.outputs.stdout }}"
-
-          # Check if cocogitto would bump version
-          if echo "$STDOUT" | grep -q "Bumping version"; then
-            VERSION=$(echo "$STDOUT" | grep -oP 'Bumping version .* -> \K[0-9.]+')
+          VERSION="${{ steps.check.outputs.version }}"
+          echo "Detected version: $VERSION"
+          if [ -n "$VERSION" ]; then
             echo "should_release=true" >> $GITHUB_OUTPUT
             echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "✅ Release needed: v$VERSION"
@@ -56,12 +54,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
       - name: Create version tag
-        uses: cocogitto/cocogitto-action@v4
+        uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
         id: bump
         with:
           command: bump
@@ -98,12 +96,12 @@ jobs:
 
     steps:
       - name: Checkout code at tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: v${{ needs.check-release.outputs.version }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -135,7 +133,7 @@ jobs:
           tar --append -zf "$ARCHIVE_NAME" LICENSE || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65a9edc5881444af0b87c8c0d41acee75033bcf1 # v4
         with:
           name: binary-${{ matrix.target }}
           path: thurbox-*.tar.gz
@@ -148,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@65a9edc5881444af0b87c8c0d41acee75033bcf1 # v4
         with:
           path: artifacts
 
@@ -166,7 +164,7 @@ jobs:
           cat "thurbox-v${VERSION}-checksums.txt"
 
       - name: Upload checksums
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65a9edc5881444af0b87c8c0d41acee75033bcf1 # v4
         with:
           name: checksums
           path: artifacts/thurbox-*-checksums.txt
@@ -180,13 +178,13 @@ jobs:
       changelog: ${{ steps.changelog.outputs.stdout }}
     steps:
       - name: Checkout code at tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: v${{ needs.check-release.outputs.version }}
           fetch-depth: 0
 
       - name: Generate changelog for release
-        uses: cocogitto/cocogitto-action@v4
+        uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
         id: changelog
         with:
           command: changelog
@@ -213,10 +211,10 @@ jobs:
           ls -lh release-assets/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@de2461bef585ea57e8ef2f742069330feba33f08 # v2
         with:
-          tag_name: v${{ needs.check-release.outputs.version }}
-          name: thurbox v${{ needs.check-release.outputs.version }}
+          tag_name: ${{ needs.check-release.outputs.version }}
+          name: thurbox ${{ needs.check-release.outputs.version }}
           body: |
             ${{ needs.generate-changelog.outputs.changelog || '## Changes
 
