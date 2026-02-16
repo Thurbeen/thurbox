@@ -1,15 +1,15 @@
-/// Integration tests for multi-instance session synchronization.
+/// Integration tests for multi-instance session synchronization via SQLite.
 ///
-/// These tests simulate two instances running concurrently and verify
-/// that session changes are properly shared between them.
-use std::collections::HashMap;
-use tempfile::TempDir;
-use thurbox::paths::TestPathGuard;
-use thurbox::project::ProjectId;
-use thurbox::session::SessionId;
-use thurbox::sync::{self, SharedSession, SharedState};
+/// These tests simulate two instances running concurrently against the same
+/// database file and verify that session changes are properly shared.
+use std::path::PathBuf;
 
-/// Helper to create a test session
+use thurbox::project::{ProjectConfig, ProjectId};
+use thurbox::session::SessionId;
+use thurbox::storage::Database;
+use thurbox::sync::{self, SharedSession, SharedState, SharedWorktree};
+
+/// Helper to create a test session.
 fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSession {
     SharedSession {
         id,
@@ -18,7 +18,7 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
-        claude_session_id: Some(format!("claude-{}", name)),
+        claude_session_id: Some(format!("claude-{name}")),
         cwd: None,
         worktree: None,
         tombstone: false,
@@ -26,77 +26,18 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
     }
 }
 
-#[test]
-fn instance_a_creates_session_visible_to_instance_b() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
-
-    let project_id = ProjectId::default();
-    let session_id = SessionId::default();
-
-    // Instance A: create a session and write to shared state
-    let mut state_a = SharedState::new();
-    state_a
-        .sessions
-        .push(make_session(session_id, "Session from A", project_id));
-    state_a.session_counter = 1;
-
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
-
-    // Instance B: load shared state and see instance A's session
-    let state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-
-    assert_eq!(state_b.sessions.len(), 1);
-    assert_eq!(state_b.sessions[0].name, "Session from A");
-    assert_eq!(state_b.sessions[0].id, session_id);
+fn test_project_id(name: &str) -> ProjectId {
+    let config = ProjectConfig {
+        name: name.to_string(),
+        repos: vec![],
+        roles: vec![],
+    };
+    config.deterministic_id()
 }
 
-#[test]
-fn instance_b_creates_session_without_erasing_instance_a() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
-
-    let project_id = ProjectId::default();
-    let session_a_id = SessionId::default();
-    let session_b_id = SessionId::default();
-
-    // Instance A: create session and write
-    let mut state_a = SharedState::new();
-    state_a
-        .sessions
-        .push(make_session(session_a_id, "Session A", project_id));
-    state_a.session_counter = 1;
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
-
-    // Instance B: load, add its own session, write (merging)
-    let mut state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    state_b
-        .sessions
-        .push(make_session(session_b_id, "Session B", project_id));
-    state_b.session_counter = 2;
-    state_b.last_modified += 1000;
-    sync::file_store::save_shared_state(&shared_path, &state_b).unwrap();
-
-    // Instance A: reload and verify both sessions are present
-    let state_a_reload = sync::file_store::load_shared_state(&shared_path).unwrap();
-
-    assert_eq!(
-        state_a_reload.sessions.len(),
-        2,
-        "Both sessions should be present"
-    );
-
-    let names: HashMap<SessionId, String> = state_a_reload
-        .sessions
-        .iter()
-        .map(|s| (s.id, s.name.clone()))
-        .collect();
-
-    assert_eq!(names.get(&session_a_id), Some(&"Session A".to_string()));
-    assert_eq!(names.get(&session_b_id), Some(&"Session B".to_string()));
-}
+// ============================================================================
+// Pure delta computation tests (no DB or file I/O)
+// ============================================================================
 
 #[test]
 fn delta_detects_new_session_from_other_instance() {
@@ -119,7 +60,6 @@ fn delta_detects_new_session_from_other_instance() {
         .sessions
         .push(make_session(session_b_id, "Session B", project_id));
 
-    // Compute delta
     let delta = sync::StateDelta::compute(&state_a, &state_shared);
 
     assert_eq!(
@@ -156,7 +96,6 @@ fn delta_detects_deleted_session() {
     session_b_tombstone.tombstone = true;
     state_shared.sessions.push(session_b_tombstone);
 
-    // Compute delta
     let delta = sync::StateDelta::compute(&state_a, &state_shared);
 
     assert_eq!(delta.added_sessions.len(), 0);
@@ -168,704 +107,384 @@ fn delta_detects_deleted_session() {
     assert_eq!(delta.removed_sessions[0], session_b_id);
 }
 
+// ============================================================================
+// SQLite-based multi-instance sync tests
+// ============================================================================
+
 #[test]
-fn session_counter_avoids_conflicts() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
+fn db_instance_a_creates_session_visible_to_instance_b() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
 
-    let project_id = ProjectId::default();
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
 
-    // Instance A: create 2 sessions (counter = 2)
-    let mut state_a = SharedState::new();
-    state_a.sessions.push(make_session(
-        SessionId::default(),
-        "A-Session-1",
-        project_id,
-    ));
-    state_a.sessions.push(make_session(
-        SessionId::default(),
-        "A-Session-2",
-        project_id,
-    ));
-    state_a.session_counter = 2;
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
+    let pid = test_project_id("test");
+    db_a.insert_project(pid, "test", &[], false).unwrap();
 
-    // Instance B: load A's state, add its own, write (merge)
-    let mut state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    state_b.sessions.push(make_session(
-        SessionId::default(),
-        "B-Session-1",
-        project_id,
-    ));
-    state_b.session_counter = 3; // B created its own session
-    state_b.last_modified += 1000;
-    sync::file_store::save_shared_state(&shared_path, &state_b).unwrap();
+    let session = make_session(SessionId::default(), "Session from A", pid);
+    let sid = session.id;
+    db_a.upsert_session(&session).unwrap();
 
-    // Verify final state has both A's and B's sessions with max counter
-    let final_state = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(
-        final_state.session_counter, 3,
-        "Counter should be max of both"
+    // Instance B queries DB — should see the session
+    let sessions = db_b.list_active_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].name, "Session from A");
+    assert_eq!(sessions[0].id, sid);
+}
+
+#[test]
+fn db_instance_b_creates_session_without_erasing_instance_a() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("test");
+    db_a.insert_project(pid, "test", &[], false).unwrap();
+
+    // Instance A creates session
+    let session_a = make_session(SessionId::default(), "Session A", pid);
+    let sid_a = session_a.id;
+    db_a.upsert_session(&session_a).unwrap();
+
+    // Instance B creates session
+    let session_b = make_session(SessionId::default(), "Session B", pid);
+    let sid_b = session_b.id;
+    db_b.upsert_session(&session_b).unwrap();
+
+    // Both instances should see both sessions
+    let sessions_from_a = db_a.list_active_sessions().unwrap();
+    assert_eq!(sessions_from_a.len(), 2);
+
+    let sessions_from_b = db_b.list_active_sessions().unwrap();
+    assert_eq!(sessions_from_b.len(), 2);
+
+    let ids: Vec<SessionId> = sessions_from_a.iter().map(|s| s.id).collect();
+    assert!(ids.contains(&sid_a));
+    assert!(ids.contains(&sid_b));
+}
+
+#[test]
+fn db_soft_delete_propagates_across_instances() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("test");
+    db_a.insert_project(pid, "test", &[], false).unwrap();
+
+    let session = make_session(SessionId::default(), "Session to Delete", pid);
+    let sid = session.id;
+    db_a.upsert_session(&session).unwrap();
+
+    // Verify session exists in both
+    assert_eq!(db_b.list_active_sessions().unwrap().len(), 1);
+
+    // Instance A soft-deletes
+    db_a.soft_delete_session(sid).unwrap();
+
+    // Instance B should no longer see it in active sessions
+    assert_eq!(db_b.list_active_sessions().unwrap().len(), 0);
+}
+
+#[test]
+fn db_change_detection_across_instances() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let mut db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    // Initialize change tracking
+    let _ = db_a.has_external_changes().unwrap();
+
+    let pid = test_project_id("test");
+    db_b.insert_project(pid, "test", &[], false).unwrap();
+
+    // Instance A should detect external change
+    assert!(db_a.has_external_changes().unwrap());
+
+    // No further changes — should return false
+    assert!(!db_a.has_external_changes().unwrap());
+}
+
+#[test]
+fn db_compute_delta_detects_added_session() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db = Database::open(path).unwrap();
+
+    let pid = test_project_id("test");
+    db.insert_project(pid, "test", &[], false).unwrap();
+
+    // Local snapshot is empty
+    let local = SharedState::new();
+
+    // Add session to DB
+    let session = make_session(SessionId::default(), "New Session", pid);
+    db.upsert_session(&session).unwrap();
+
+    let delta = db.compute_delta(&local).unwrap();
+    assert_eq!(delta.added_sessions.len(), 1);
+    assert_eq!(delta.added_sessions[0].name, "New Session");
+}
+
+#[test]
+fn db_compute_delta_detects_removed_session() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db = Database::open(path).unwrap();
+
+    let pid = test_project_id("test");
+    db.insert_project(pid, "test", &[], false).unwrap();
+
+    let session = make_session(SessionId::default(), "Session to Remove", pid);
+    let sid = session.id;
+    db.upsert_session(&session).unwrap();
+
+    // Local snapshot has the session
+    let local = db.load_shared_state().unwrap();
+
+    // Soft-delete it
+    db.soft_delete_session(sid).unwrap();
+
+    let delta = db.compute_delta(&local).unwrap();
+    assert_eq!(delta.removed_sessions.len(), 1);
+    assert_eq!(delta.removed_sessions[0], sid);
+}
+
+#[test]
+fn db_project_soft_delete_propagates() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("Shared Project");
+    db_a.insert_project(pid, "Shared Project", &[PathBuf::from("/repo")], false)
+        .unwrap();
+
+    // Both see the project
+    assert_eq!(db_b.list_active_projects().unwrap().len(), 1);
+
+    // Instance A deletes the project
+    db_a.soft_delete_project(pid).unwrap();
+
+    // Instance B should no longer see it
+    assert_eq!(db_b.list_active_projects().unwrap().len(), 0);
+}
+
+#[test]
+fn db_audit_trail_records_operations() {
+    let db = Database::open_in_memory().unwrap();
+
+    let pid = test_project_id("test");
+    db.insert_project(pid, "test", &[], false).unwrap();
+
+    let session = make_session(SessionId::default(), "Audited Session", pid);
+    db.upsert_session(&session).unwrap();
+
+    // Check audit log has entries
+    let log = db.get_audit_log(None, None, 100).unwrap();
+    assert!(
+        log.len() >= 2,
+        "Should have at least project + session audit entries"
     );
-    assert_eq!(
-        final_state.sessions.len(),
-        3,
-        "Should have 2 from A + 1 from B = 3 total"
-    );
 }
 
 #[test]
-fn two_instances_adopt_same_session_no_duplicates() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
+fn db_session_counter_synchronized() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
 
-    let project_id = ProjectId::default();
-    let session_id = SessionId::default();
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
 
-    // Instance A: Create a session and write to shared state
-    let mut state_a = SharedState::new();
-    state_a
-        .sessions
-        .push(make_session(session_id, "Shared Session", project_id));
-    state_a.session_counter = 1;
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
+    // Instance A sets counter
+    db_a.set_session_counter(5).unwrap();
 
-    // Instance B: Load state and see session A's session
-    let state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_b.sessions.len(), 1);
-    assert_eq!(state_b.sessions[0].id, session_id);
+    // Instance B should see the same counter
+    assert_eq!(db_b.get_session_counter().unwrap(), 5);
 
-    // Instance A: Now read again, should still have the same session
-    // (simulating that A adopts the session it created)
-    let state_a_reload = sync::file_store::load_shared_state(&shared_path).unwrap();
+    // Instance B increments
+    let new_val = db_b.increment_session_counter().unwrap();
+    assert_eq!(new_val, 6);
 
-    // Key test: When both instances see the same session, session IDs should not duplicate
-    // This would manifest as project.session_ids.len() > 1 for same session_id
-    assert_eq!(state_a_reload.sessions.len(), 1);
-    assert_eq!(state_a_reload.sessions[0].id, session_id);
+    // Instance A should see updated counter
+    assert_eq!(db_a.get_session_counter().unwrap(), 6);
 }
 
 #[test]
-fn removed_session_cleaned_from_all_projects() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
+fn db_worktree_persisted_with_session() {
+    let db = Database::open_in_memory().unwrap();
 
-    let project_id = ProjectId::default();
-    let session_id = SessionId::default();
+    let pid = test_project_id("test");
+    db.insert_project(pid, "test", &[], false).unwrap();
 
-    // Initial state: Session exists in project
-    let mut state = SharedState::new();
-    state
-        .sessions
-        .push(make_session(session_id, "Session", project_id));
-    state.session_counter = 1;
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state).unwrap();
+    let mut session = make_session(SessionId::default(), "WT Session", pid);
+    session.worktree = Some(SharedWorktree {
+        repo_path: PathBuf::from("/repo"),
+        worktree_path: PathBuf::from("/repo/.git/wt/feat"),
+        branch: "feat".to_string(),
+    });
+    db.upsert_session(&session).unwrap();
 
-    // Instance B loads it
-    let state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_b.sessions.len(), 1);
-
-    // Instance A deletes the session (tombstones it with old timestamp)
-    let mut state_a_delete = SharedState::new();
-    let mut tombstoned = make_session(session_id, "Session", project_id);
-    tombstoned.tombstone = true;
-    // Use an old timestamp so it will be purged (> 60 seconds old)
-    tombstoned.tombstone_at = Some(sync::current_time_millis() - 61_000);
-    state_a_delete.sessions.push(tombstoned);
-    state_a_delete.session_counter = 1;
-    state_a_delete.last_modified += 1000;
-    sync::file_store::save_shared_state(&shared_path, &state_a_delete).unwrap();
-
-    // Instance B reloads and purges old tombstones
-    let state_b_reload = sync::file_store::load_shared_state(&shared_path).unwrap();
-    // After load, file_store already calls purge_old_tombstones() internally
-    // Verify session is gone
-    assert_eq!(state_b_reload.sessions.len(), 0);
+    let wt = db.get_worktree(session.id).unwrap();
+    assert!(wt.is_some());
+    let wt = wt.unwrap();
+    assert_eq!(wt.branch, "feat");
+    assert_eq!(wt.repo_path, PathBuf::from("/repo"));
 }
 
 #[test]
-fn concurrent_adoption_preserves_session_metadata() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
+fn db_session_metadata_preserved_across_instances() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
 
-    let project_id = ProjectId::default();
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("test");
+    db_a.insert_project(pid, "test", &[], false).unwrap();
+
     let session_id = SessionId::default();
-
-    // Instance A: Create session with specific metadata
-    let mut state_a = SharedState::new();
-    state_a.sessions.push(SharedSession {
+    let session = SharedSession {
         id: session_id,
         name: "Dev Session".to_string(),
-        project_id,
+        project_id: pid,
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
         claude_session_id: Some("claude-123".to_string()),
-        cwd: Some(std::path::PathBuf::from("/home/dev")),
+        cwd: Some(PathBuf::from("/home/dev")),
         worktree: None,
         tombstone: false,
         tombstone_at: None,
-    });
-    state_a.session_counter = 1;
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
-
-    // Instance B: Load and verify all metadata preserved
-    let state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_b.sessions.len(), 1);
-    let session = &state_b.sessions[0];
-
-    assert_eq!(session.id, session_id);
-    assert_eq!(session.name, "Dev Session");
-    assert_eq!(session.role, "developer");
-    assert_eq!(session.backend_id, "thurbox:@0");
-    assert_eq!(session.claude_session_id, Some("claude-123".to_string()));
-    assert_eq!(session.cwd, Some(std::path::PathBuf::from("/home/dev")));
-
-    // Instance A: Now update the session metadata (rename)
-    let mut state_a_update = sync::file_store::load_shared_state(&shared_path).unwrap();
-    if let Some(session) = state_a_update.sessions.iter_mut().next() {
-        session.name = "Dev Session (Updated)".to_string();
-    }
-    state_a_update.last_modified += 1000;
-    sync::file_store::save_shared_state(&shared_path, &state_a_update).unwrap();
-
-    // Instance B: Reload and see the update
-    let state_b_reload = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_b_reload.sessions[0].name, "Dev Session (Updated)");
-}
-
-#[test]
-fn multiple_sessions_per_project_stay_synchronized() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
-
-    let project_id = ProjectId::default();
-    let session1_id = SessionId::default();
-    let session2_id = SessionId::default();
-    let session3_id = SessionId::default();
-
-    // Instance A: Create 2 sessions
-    let mut state_a = SharedState::new();
-    state_a
-        .sessions
-        .push(make_session(session1_id, "Session 1", project_id));
-    state_a
-        .sessions
-        .push(make_session(session2_id, "Session 2", project_id));
-    state_a.session_counter = 2;
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
-
-    // Instance B: Load A's sessions, add its own
-    let mut state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_b.sessions.len(), 2);
-    state_b
-        .sessions
-        .push(make_session(session3_id, "Session 3", project_id));
-    state_b.session_counter = 3;
-    state_b.last_modified += 1000;
-    sync::file_store::save_shared_state(&shared_path, &state_b).unwrap();
-
-    // Instance A: Reload and should see all 3
-    let state_a_reload = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_a_reload.sessions.len(), 3);
-
-    // Verify all session IDs are present
-    let ids: HashMap<SessionId, _> = state_a_reload
-        .sessions
-        .iter()
-        .map(|s| (s.id, s.name.clone()))
-        .collect();
-
-    assert!(ids.contains_key(&session1_id));
-    assert!(ids.contains_key(&session2_id));
-    assert!(ids.contains_key(&session3_id));
-
-    // Instance B: Delete session 2 with old tombstone time so it gets purged
-    let mut state_b_delete = sync::file_store::load_shared_state(&shared_path).unwrap();
-    state_b_delete.sessions.iter_mut().for_each(|s| {
-        if s.id == session2_id {
-            s.tombstone = true;
-            // Use old timestamp so it will be purged
-            s.tombstone_at = Some(sync::current_time_millis() - 61_000);
-        }
-    });
-    state_b_delete.last_modified += 2000;
-    sync::file_store::save_shared_state(&shared_path, &state_b_delete).unwrap();
-
-    // Instance A: Reload - file_store.load_shared_state() automatically purges old tombstones
-    let state_a_final = sync::file_store::load_shared_state(&shared_path).unwrap();
-    // Should have 2 sessions left (1 and 3), old tombstone is purged on load
-    assert_eq!(state_a_final.sessions.len(), 2);
-
-    // Verify sessions 1 and 3 remain, session 2 is gone
-    let final_ids: Vec<SessionId> = state_a_final.sessions.iter().map(|s| s.id).collect();
-
-    assert!(final_ids.contains(&session1_id));
-    assert!(!final_ids.contains(&session2_id));
-    assert!(final_ids.contains(&session3_id));
-}
-
-#[test]
-fn session_ids_not_duplicated_on_reload() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
-
-    let project_id = ProjectId::default();
-    let session_id = SessionId::default();
-
-    // Simulate Instance B creating a session
-    let mut state_b = SharedState::new();
-    state_b
-        .sessions
-        .push(make_session(session_id, "Session from B", project_id));
-    state_b.session_counter = 1;
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state_b).unwrap();
-
-    // Instance A loads for the first time
-    let mut state_a = sync::file_store::load_shared_state(&shared_path).unwrap();
-
-    // Simulate Instance A has a project with this session
-    // (normally this would happen via adoption and project association)
-    assert_eq!(state_a.sessions.len(), 1);
-    let session = &state_a.sessions[0];
-    assert_eq!(session.id, session_id);
-
-    // Instance A writes back (no changes, just reload)
-    state_a.last_modified += 1000;
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
-
-    // Instance A reloads (simulates restart)
-    let state_a_reload = sync::file_store::load_shared_state(&shared_path).unwrap();
-
-    // CRITICAL: Session count should still be 1, not 2
-    assert_eq!(state_a_reload.sessions.len(), 1);
-    assert_eq!(state_a_reload.sessions[0].id, session_id);
-}
-
-#[test]
-fn multiple_instances_can_adopt_same_session() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
-
-    // Setup: Create shared state with one session
-    let session_id = SessionId::default();
-    let project_id = ProjectId::default();
-    let mut state = SharedState::new();
-
-    state.sessions.push(SharedSession {
-        id: session_id,
-        name: "Shared Session".to_string(),
-        project_id,
-        role: "developer".to_string(),
-        backend_id: "thurbox:%42".to_string(),
-        backend_type: "tmux".to_string(),
-        claude_session_id: Some("claude-123".to_string()),
-        cwd: None,
-        worktree: None,
-        tombstone: false,
-        tombstone_at: None,
-    });
-
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state).unwrap();
-
-    // Simulate Instance A loading the shared state
-    let state_a = sync::file_store::load_shared_state(&shared_path).unwrap();
-    let sessions_a: Vec<_> = state_a.sessions.iter().filter(|s| !s.tombstone).collect();
-
-    assert_eq!(sessions_a.len(), 1);
-    assert_eq!(sessions_a[0].id, session_id);
-    assert_eq!(
-        sessions_a[0].claude_session_id,
-        Some("claude-123".to_string())
-    );
-
-    // Simulate Instance B loading the SAME shared state
-    let state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    let sessions_b: Vec<_> = state_b.sessions.iter().filter(|s| !s.tombstone).collect();
-
-    // Both instances should see the same session
-    assert_eq!(sessions_b.len(), 1);
-    assert_eq!(sessions_b[0].id, session_id);
-    assert_eq!(
-        sessions_b[0].claude_session_id,
-        Some("claude-123".to_string())
-    );
-
-    // No ownership field — both instances are free to adopt without restriction
-    // (Ownership was removed to enable true multi-instance collaboration)
-}
-
-#[test]
-fn multiple_instances_independent_adoption() {
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
-
-    let session_id = SessionId::default();
-    let project_id = ProjectId::default();
-
-    // Create initial shared state
-    let mut state = SharedState::new();
-    state.sessions.push(SharedSession {
-        id: session_id,
-        name: "Test Session".to_string(),
-        project_id,
-        role: "developer".to_string(),
-        backend_id: "thurbox:%42".to_string(),
-        backend_type: "tmux".to_string(),
-        claude_session_id: None,
-        cwd: None,
-        worktree: None,
-        tombstone: false,
-        tombstone_at: None,
-    });
-
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state).unwrap();
-
-    // Instance A loads and modifies
-    let mut state_a = sync::file_store::load_shared_state(&shared_path).unwrap();
-    if let Some(session) = state_a.sessions.iter_mut().next() {
-        session.claude_session_id = Some("claude-a-123".to_string());
-    }
-    state_a.last_modified = sync::current_time_millis();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
-
-    // Instance B loads (should see Instance A's changes)
-    let state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_b.sessions.len(), 1);
-    assert_eq!(
-        state_b.sessions[0].claude_session_id,
-        Some("claude-a-123".to_string())
-    );
-
-    // Instance B can now interact with the same session
-    // (Previously would be blocked by ownership check)
-}
-
-#[test]
-fn session_id_preserved_across_restart() {
-    use thurbox::session::PersistedSession;
-
-    // Simulate creating a session and persisting it
-    let original_session_id = SessionId::default();
-    let persisted = PersistedSession {
-        id: Some(original_session_id),
-        name: "Test Session".to_string(),
-        claude_session_id: "claude-123".to_string(),
-        cwd: None,
-        worktree: None,
-        role: "developer".to_string(),
-        backend_id: "thurbox:%42".to_string(),
-        backend_type: "tmux".to_string(),
-        project_id: None,
     };
+    db_a.upsert_session(&session).unwrap();
 
-    // Serialize and deserialize (simulating save/load)
-    let toml_str = toml::to_string(&persisted).unwrap();
-    let restored: PersistedSession = toml::from_str(&toml_str).unwrap();
-
-    // SessionId should be preserved
-    assert_eq!(restored.id, Some(original_session_id));
-    assert_eq!(restored.name, "Test Session");
-    assert_eq!(restored.claude_session_id, "claude-123");
+    // Instance B should see all metadata
+    let sessions = db_b.list_active_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    assert_eq!(s.id, session_id);
+    assert_eq!(s.name, "Dev Session");
+    assert_eq!(s.role, "developer");
+    assert_eq!(s.backend_id, "thurbox:@0");
+    assert_eq!(s.claude_session_id, Some("claude-123".to_string()));
+    assert_eq!(s.cwd, Some(PathBuf::from("/home/dev")));
 }
 
 #[test]
-fn session_without_id_handled_gracefully() {
-    use thurbox::session::PersistedSession;
+fn db_multiple_sessions_per_project() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
 
-    // Simulate an old persisted session without an ID (backward compatibility)
-    let persisted = PersistedSession {
-        id: None,
-        name: "Legacy Session".to_string(),
-        claude_session_id: "claude-456".to_string(),
-        cwd: None,
-        worktree: None,
-        role: "reviewer".to_string(),
-        backend_id: "thurbox:%43".to_string(),
-        backend_type: "tmux".to_string(),
-        project_id: None,
-    };
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
 
-    // Serialize and deserialize
-    let toml_str = toml::to_string(&persisted).unwrap();
-    assert!(toml_str.contains("name"));
-    assert!(toml_str.contains("claude_session_id"));
+    let pid = test_project_id("test");
+    db_a.insert_project(pid, "test", &[], false).unwrap();
 
-    // Should deserialize correctly with id as None
-    let restored: PersistedSession = toml::from_str(&toml_str).unwrap();
-    assert_eq!(restored.id, None);
-    assert_eq!(restored.name, "Legacy Session");
+    // Instance A creates 2 sessions
+    let s1 = make_session(SessionId::default(), "Session 1", pid);
+    let s2 = make_session(SessionId::default(), "Session 2", pid);
+    let sid1 = s1.id;
+    let sid2 = s2.id;
+    db_a.upsert_session(&s1).unwrap();
+    db_a.upsert_session(&s2).unwrap();
 
-    // When a session with Some(id) is serialized, it should include the id
-    let session_with_id = PersistedSession {
-        id: Some(SessionId::default()),
-        name: "Session With ID".to_string(),
-        claude_session_id: "claude-789".to_string(),
-        cwd: None,
-        worktree: None,
-        role: "developer".to_string(),
-        backend_id: "thurbox:%44".to_string(),
-        backend_type: "tmux".to_string(),
-        project_id: None,
-    };
+    // Instance B creates 1 session
+    let s3 = make_session(SessionId::default(), "Session 3", pid);
+    let sid3 = s3.id;
+    db_b.upsert_session(&s3).unwrap();
 
-    let toml_with_id = toml::to_string(&session_with_id).unwrap();
-    assert!(toml_with_id.contains("id"));
-    let restored_with_id: PersistedSession = toml::from_str(&toml_with_id).unwrap();
-    assert_eq!(restored_with_id.id, session_with_id.id);
+    // All instances should see 3 sessions
+    let sessions = db_a.list_active_sessions().unwrap();
+    assert_eq!(sessions.len(), 3);
+
+    let ids: Vec<SessionId> = sessions.iter().map(|s| s.id).collect();
+    assert!(ids.contains(&sid1));
+    assert!(ids.contains(&sid2));
+    assert!(ids.contains(&sid3));
+
+    // Soft-delete session 2
+    db_b.soft_delete_session(sid2).unwrap();
+
+    // Should now see 2 sessions
+    let remaining = db_a.list_active_sessions().unwrap();
+    assert_eq!(remaining.len(), 2);
+    let remaining_ids: Vec<SessionId> = remaining.iter().map(|s| s.id).collect();
+    assert!(remaining_ids.contains(&sid1));
+    assert!(!remaining_ids.contains(&sid2));
+    assert!(remaining_ids.contains(&sid3));
 }
 
-/// Merges local sessions into shared state, marking deleted sessions as tombstones.
-/// This simulates the merge logic in App::save_shared_state().
-fn merge_sessions_with_tombstones(
-    shared_sessions: Vec<thurbox::sync::SharedSession>,
-    local_sessions_map: std::collections::HashMap<SessionId, thurbox::sync::SharedSession>,
-) -> Vec<thurbox::sync::SharedSession> {
-    use thurbox::sync;
+// ============================================================================
+// poll_for_changes integration tests
+// ============================================================================
 
-    let mut local_sessions = local_sessions_map;
-    let mut merged_sessions = Vec::new();
+#[test]
+fn poll_for_changes_returns_none_when_no_external_changes() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
 
-    for mut existing in shared_sessions {
-        if let Some(updated) = local_sessions.remove(&existing.id) {
-            merged_sessions.push(updated);
-        } else if existing.tombstone {
-            merged_sessions.push(existing);
-        } else {
-            // Mark deleted session as tombstone for propagation to other instances
-            existing.tombstone = true;
-            existing.tombstone_at = Some(sync::current_time_millis());
-            merged_sessions.push(existing);
-        }
-    }
+    let mut db = Database::open(path).unwrap();
+    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_millis(0));
 
-    // Add new sessions (only in local state)
-    for (_session_id, session) in local_sessions {
-        merged_sessions.push(session);
-    }
+    // Initialize change tracking
+    let _ = db.has_external_changes().unwrap();
 
-    merged_sessions
+    // No external changes — should return None
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
+    assert!(result.is_none());
 }
 
 #[test]
-fn deleted_sessions_marked_as_tombstones() {
-    use thurbox::sync::{self, SharedSession, SharedState};
+fn poll_for_changes_detects_external_session_add() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
 
-    let temp_dir = TempDir::new().unwrap();
-    let _guard = TestPathGuard::new(temp_dir.path());
+    let mut db_poller = Database::open(path).unwrap();
+    let db_writer = Database::open(path).unwrap();
 
-    // Setup: Create shared state with two sessions
-    let session_a_id = SessionId::default();
-    let session_b_id = SessionId::default();
-    let project_id = ProjectId::default();
+    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_millis(0));
 
-    let mut state = SharedState::new();
-    state.sessions.push(SharedSession {
-        id: session_a_id,
-        name: "Session A".to_string(),
-        project_id,
-        role: "developer".to_string(),
-        backend_id: "thurbox:%40".to_string(),
-        backend_type: "tmux".to_string(),
-        claude_session_id: Some("claude-a".to_string()),
-        cwd: None,
-        worktree: None,
-        tombstone: false,
-        tombstone_at: None,
-    });
-    state.sessions.push(SharedSession {
-        id: session_b_id,
-        name: "Session B".to_string(),
-        project_id,
-        role: "developer".to_string(),
-        backend_id: "thurbox:%41".to_string(),
-        backend_type: "tmux".to_string(),
-        claude_session_id: Some("claude-b".to_string()),
-        cwd: None,
-        worktree: None,
-        tombstone: false,
-        tombstone_at: None,
-    });
+    // Initialize change tracking
+    let _ = db_poller.has_external_changes().unwrap();
 
-    let shared_path = thurbox::paths::shared_state_file().unwrap();
-    sync::file_store::save_shared_state(&shared_path, &state).unwrap();
+    // External writer adds a session
+    let pid = test_project_id("test");
+    db_writer.insert_project(pid, "test", &[], false).unwrap();
+    let session = make_session(SessionId::default(), "External Session", pid);
+    db_writer.upsert_session(&session).unwrap();
 
-    // Simulate Instance A: Load both sessions, then delete session B
-    let mut state_a = sync::file_store::load_shared_state(&shared_path).unwrap();
-    assert_eq!(state_a.sessions.len(), 2);
-
-    // Remove session B from local state (simulating deletion via Ctrl+X)
-    let mut local_sessions: std::collections::HashMap<SessionId, _> =
-        std::collections::HashMap::new();
-    local_sessions.insert(session_a_id, state_a.sessions[0].clone());
-    // Note: session_b_id is NOT in local_sessions (it was deleted)
-
-    // Merge using the helper function
-    let merged_sessions = merge_sessions_with_tombstones(state_a.sessions.clone(), local_sessions);
-
-    // Verify deletion is marked as tombstone
-    let deleted_session = merged_sessions
-        .iter()
-        .find(|s| s.id == session_b_id)
-        .unwrap();
-    assert!(deleted_session.tombstone);
-    assert!(deleted_session.tombstone_at.is_some());
-
-    // Update shared state
-    state_a.sessions = merged_sessions;
-    state_a.last_modified = sync::current_time_millis();
-    sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
-
-    // Instance B loads updated state
-    let state_b = sync::file_store::load_shared_state(&shared_path).unwrap();
-
-    // Instance B should see session B as tombstoned (not active, but present for TTL cleanup)
-    let session_b_in_b = state_b.sessions.iter().find(|s| s.id == session_b_id);
-    assert!(session_b_in_b.is_some());
-    assert!(session_b_in_b.unwrap().tombstone);
-
-    // Instance B should see session A as active (not tombstoned)
-    let session_a_in_b = state_b
-        .sessions
-        .iter()
-        .find(|s| s.id == session_a_id)
-        .unwrap();
-    assert!(!session_a_in_b.tombstone);
-
-    // When Instance B filters active sessions, it should exclude tombstoned ones
-    let active_sessions: Vec<_> = state_b.sessions.iter().filter(|s| !s.tombstone).collect();
-    assert_eq!(active_sessions.len(), 1);
-    assert_eq!(active_sessions[0].id, session_a_id);
+    // Poll should detect the change
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    let result = sync::poll_for_changes(&mut sync_state, &mut db_poller).unwrap();
+    assert!(result.is_some());
+    let delta = result.unwrap();
+    assert_eq!(delta.added_sessions.len(), 1);
+    assert_eq!(delta.added_sessions[0].name, "External Session");
 }
 
 #[test]
-fn merge_preserves_already_tombstoned_sessions() {
-    use thurbox::sync;
+fn poll_for_changes_respects_interval() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
 
-    let project_id = ProjectId::default();
-    let session_a_id = SessionId::default();
-    let session_b_id = SessionId::default();
-    let session_c_id = SessionId::default();
+    let mut db = Database::open(path).unwrap();
+    // Long interval — should not poll yet
+    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_secs(60));
 
-    // Shared state has: A (active), B (tombstoned), C (active)
-    let shared_sessions = vec![
-        make_session(session_a_id, "Session A", project_id),
-        SharedSession {
-            id: session_b_id,
-            name: "Session B (deleted)".to_string(),
-            project_id,
-            role: "developer".to_string(),
-            backend_id: "thurbox:%40".to_string(),
-            backend_type: "tmux".to_string(),
-            claude_session_id: Some("claude-b".to_string()),
-            cwd: None,
-            worktree: None,
-            tombstone: true,
-            tombstone_at: Some(sync::current_time_millis()),
-        },
-        make_session(session_c_id, "Session C", project_id),
-    ];
-
-    // Local state has: A (active), C (active) - both still exist locally
-    let mut local_sessions = std::collections::HashMap::new();
-    local_sessions.insert(
-        session_a_id,
-        make_session(session_a_id, "Session A", project_id),
-    );
-    local_sessions.insert(
-        session_c_id,
-        make_session(session_c_id, "Session C", project_id),
-    );
-
-    let merged = merge_sessions_with_tombstones(shared_sessions, local_sessions);
-
-    // Merged state should have A (local), B (tombstoned), C (local)
-    assert_eq!(merged.len(), 3);
-
-    let session_a = merged.iter().find(|s| s.id == session_a_id).unwrap();
-    assert!(!session_a.tombstone);
-
-    let session_b = merged.iter().find(|s| s.id == session_b_id).unwrap();
-    assert!(session_b.tombstone); // Remains tombstoned
-
-    let session_c = merged.iter().find(|s| s.id == session_c_id).unwrap();
-    assert!(!session_c.tombstone);
-}
-
-#[test]
-fn merge_adds_only_local_sessions() {
-    let project_id = ProjectId::default();
-    let session_a_id = SessionId::default();
-    let session_b_id = SessionId::default();
-    let session_c_id = SessionId::default();
-
-    // Shared state has: A, B
-    let shared_sessions = vec![
-        make_session(session_a_id, "Session A", project_id),
-        make_session(session_b_id, "Session B", project_id),
-    ];
-
-    // Local state has: A, B, C (C is new)
-    let mut local_sessions = std::collections::HashMap::new();
-    local_sessions.insert(
-        session_a_id,
-        make_session(session_a_id, "Session A", project_id),
-    );
-    local_sessions.insert(
-        session_b_id,
-        make_session(session_b_id, "Session B", project_id),
-    );
-    local_sessions.insert(
-        session_c_id,
-        make_session(session_c_id, "Session C", project_id),
-    );
-
-    let merged = merge_sessions_with_tombstones(shared_sessions, local_sessions);
-
-    // Merged state should have A, B (from shared), C (new from local)
-    assert_eq!(merged.len(), 3);
-    assert!(merged.iter().any(|s| s.id == session_a_id));
-    assert!(merged.iter().any(|s| s.id == session_b_id));
-    assert!(merged.iter().any(|s| s.id == session_c_id));
-
-    // C should not be tombstoned
-    let session_c = merged.iter().find(|s| s.id == session_c_id).unwrap();
-    assert!(!session_c.tombstone);
-}
-
-#[test]
-fn merge_handles_empty_local_sessions() {
-    let project_id = ProjectId::default();
-    let session_a_id = SessionId::default();
-    let session_b_id = SessionId::default();
-
-    // Shared state has: A, B (active)
-    let shared_sessions = vec![
-        make_session(session_a_id, "Session A", project_id),
-        make_session(session_b_id, "Session B", project_id),
-    ];
-
-    // Local state is empty (all sessions deleted)
-    let local_sessions = std::collections::HashMap::new();
-
-    let merged = merge_sessions_with_tombstones(shared_sessions, local_sessions);
-
-    // Merged state should have A and B both marked as tombstones
-    assert_eq!(merged.len(), 2);
-    for session in merged {
-        assert!(
-            session.tombstone,
-            "Session {} should be tombstoned",
-            session.name
-        );
-        assert!(session.tombstone_at.is_some());
-    }
+    let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
+    assert!(result.is_none());
 }

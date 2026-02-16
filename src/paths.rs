@@ -2,8 +2,7 @@
 //!
 //! This module provides a unified interface for resolving paths to:
 //! - Config files (`~/.config/thurbox/config.toml`)
-//! - State files (`~/.local/share/thurbox/state.toml`)
-//! - Shared state files (`~/.local/share/thurbox/shared_state.toml`)
+//! - SQLite database (`~/.local/share/thurbox/thurbox.db`)
 //! - Log directories (`~/.local/share/thurbox/`)
 //!
 //! ## Production Behavior
@@ -35,12 +34,10 @@ use std::path::{Path, PathBuf};
 pub enum PathKind {
     /// Config file: `~/.config/thurbox/config.toml`
     Config,
-    /// State file: `~/.local/share/thurbox/state.toml`
-    State,
-    /// Shared state file: `~/.local/share/thurbox/shared_state.toml`
-    SharedState,
     /// Log directory: `~/.local/share/thurbox/`
     LogDir,
+    /// SQLite database: `~/.local/share/thurbox/thurbox.db`
+    Database,
 }
 
 /// Path resolution strategy (thread-local).
@@ -92,16 +89,12 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
-        PathKind::State | PathKind::SharedState => {
+        PathKind::Database => {
             // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
             if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
                 let mut p = PathBuf::from(xdg);
                 p.push("thurbox");
-                match kind {
-                    PathKind::State => p.push("state.toml"),
-                    PathKind::SharedState => p.push("shared_state.toml"),
-                    _ => unreachable!(),
-                }
+                p.push("thurbox.db");
                 return Some(p);
             }
 
@@ -110,11 +103,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p.push(".local");
                 p.push("share");
                 p.push("thurbox");
-                match kind {
-                    PathKind::State => p.push("state.toml"),
-                    PathKind::SharedState => p.push("shared_state.toml"),
-                    _ => unreachable!(),
-                }
+                p.push("thurbox.db");
                 p
             })
         }
@@ -141,9 +130,8 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
 fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
     match kind {
         PathKind::Config => base.join("config.toml"),
-        PathKind::State => base.join("state.toml"),
-        PathKind::SharedState => base.join("shared_state.toml"),
         PathKind::LogDir => base.to_path_buf(),
+        PathKind::Database => base.join("thurbox.db"),
     }
 }
 
@@ -154,20 +142,6 @@ pub fn config_file() -> Option<PathBuf> {
     resolve(PathKind::Config)
 }
 
-/// Resolve the state file path.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/state.toml` or `$HOME/.local/share/thurbox/state.toml`
-pub fn state_file() -> Option<PathBuf> {
-    resolve(PathKind::State)
-}
-
-/// Resolve the shared state file path.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/shared_state.toml` or `$HOME/.local/share/thurbox/shared_state.toml`
-pub fn shared_state_file() -> Option<PathBuf> {
-    resolve(PathKind::SharedState)
-}
-
 /// Resolve the log directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/` or `$HOME/.local/share/thurbox/`
@@ -175,13 +149,19 @@ pub fn log_directory() -> Option<PathBuf> {
     resolve(PathKind::LogDir)
 }
 
+/// Resolve the database file path.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/thurbox.db` or `$HOME/.local/share/thurbox/thurbox.db`
+pub fn database_file() -> Option<PathBuf> {
+    resolve(PathKind::Database)
+}
+
 /// Override path resolution for all paths to use a custom base directory.
 ///
 /// This is primarily intended for testing. All paths will resolve under the given base:
 /// - `config_file()` → `base/config.toml`
-/// - `state_file()` → `base/state.toml`
-/// - `shared_state_file()` → `base/shared_state.toml`
 /// - `log_directory()` → `base/`
+/// - `database_file()` → `base/thurbox.db`
 ///
 /// # Note
 ///
@@ -253,9 +233,8 @@ mod tests {
         set_test_dir(&base);
 
         assert_eq!(config_file(), Some(base.join("config.toml")));
-        assert_eq!(state_file(), Some(base.join("state.toml")));
-        assert_eq!(shared_state_file(), Some(base.join("shared_state.toml")));
         assert_eq!(log_directory(), Some(base.clone()));
+        assert_eq!(database_file(), Some(base.join("thurbox.db")));
 
         reset_to_xdg();
     }
@@ -301,12 +280,8 @@ mod tests {
         set_test_dir(&base);
 
         assert_eq!(resolve(PathKind::Config), Some(base.join("config.toml")));
-        assert_eq!(resolve(PathKind::State), Some(base.join("state.toml")));
-        assert_eq!(
-            resolve(PathKind::SharedState),
-            Some(base.join("shared_state.toml"))
-        );
         assert_eq!(resolve(PathKind::LogDir), Some(base.clone()));
+        assert_eq!(resolve(PathKind::Database), Some(base.join("thurbox.db")));
 
         reset_to_xdg();
     }
@@ -323,34 +298,23 @@ mod tests {
     }
 
     #[test]
-    fn state_file_convenience() {
-        let base = PathBuf::from("/custom");
-        set_test_dir(&base);
-
-        let path = state_file().unwrap();
-        assert!(path.ends_with("state.toml"));
-
-        reset_to_xdg();
-    }
-
-    #[test]
-    fn shared_state_file_convenience() {
-        let base = PathBuf::from("/custom");
-        set_test_dir(&base);
-
-        let path = shared_state_file().unwrap();
-        assert!(path.ends_with("shared_state.toml"));
-
-        reset_to_xdg();
-    }
-
-    #[test]
     fn log_directory_convenience() {
         let base = PathBuf::from("/custom");
         set_test_dir(&base);
 
         let path = log_directory().unwrap();
         assert_eq!(path, base);
+
+        reset_to_xdg();
+    }
+
+    #[test]
+    fn database_file_convenience() {
+        let base = PathBuf::from("/custom");
+        set_test_dir(&base);
+
+        let path = database_file().unwrap();
+        assert!(path.ends_with("thurbox.db"));
 
         reset_to_xdg();
     }
@@ -419,16 +383,12 @@ mod tests {
             PathBuf::from("/data/config.toml")
         );
         assert_eq!(
-            resolve_override(base, PathKind::State),
-            PathBuf::from("/data/state.toml")
-        );
-        assert_eq!(
-            resolve_override(base, PathKind::SharedState),
-            PathBuf::from("/data/shared_state.toml")
-        );
-        assert_eq!(
             resolve_override(base, PathKind::LogDir),
             PathBuf::from("/data")
+        );
+        assert_eq!(
+            resolve_override(base, PathKind::Database),
+            PathBuf::from("/data/thurbox.db")
         );
     }
 }

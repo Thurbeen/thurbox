@@ -19,9 +19,10 @@ use crate::claude::{Session, SessionBackend};
 use crate::git;
 use crate::project::{self, ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
-    PersistedSession, PersistedState, PersistedWorktree, RoleConfig, RolePermissions,
-    SessionConfig, SessionId, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
+    RoleConfig, RolePermissions, SessionConfig, SessionId, SessionInfo, SessionStatus,
+    WorktreeInfo, DEFAULT_ROLE_NAME,
 };
+use crate::storage::Database;
 use crate::sync::{self, StateDelta, SyncState};
 use crate::ui::{
     add_project_modal, branch_selector_modal, delete_project_modal, info_panel, layout,
@@ -218,6 +219,7 @@ pub struct App {
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
     backend: Arc<dyn SessionBackend>,
+    pub(crate) db: Database,
     pub(crate) focus: InputFocus,
     pub(crate) should_quit: bool,
     pub(crate) error_message: Option<String>,
@@ -276,18 +278,14 @@ fn shared_project_to_info(sp: sync::SharedProject) -> ProjectInfo {
     info
 }
 
-/// Load and merge projects from shared state and config.
-/// Shared state is the source of truth; config provides roles.
-fn load_and_merge_projects(
-    sync_state_path: &std::path::Path,
-    project_configs: Vec<ProjectConfig>,
-) -> Vec<ProjectInfo> {
-    let shared_projects = sync::file_store::load_shared_state(sync_state_path)
-        .map(|state| state.projects)
-        .unwrap_or_default();
+/// Load and merge projects from DB and config.
+/// Priority: DB projects > config file.
+/// Config file provides roles (not stored in DB).
+fn load_and_merge_projects(project_configs: Vec<ProjectConfig>, db: &Database) -> Vec<ProjectInfo> {
+    let db_projects = db.list_active_projects().unwrap_or_default();
 
-    if !shared_projects.is_empty() {
-        let mut result: Vec<ProjectInfo> = shared_projects
+    if !db_projects.is_empty() {
+        let mut result: Vec<ProjectInfo> = db_projects
             .into_iter()
             .map(shared_project_to_info)
             .collect();
@@ -313,26 +311,35 @@ impl App {
         cols: u16,
         project_configs: Vec<ProjectConfig>,
         backend: Arc<dyn SessionBackend>,
+        db: Database,
     ) -> Self {
-        // Initialize sync state first so we can load projects from it
-        let sync_state_path = sync::shared_state_path().unwrap_or_else(|_| {
-            let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-            p.push(".local");
-            p.push("share");
-            p.push("thurbox");
-            p.push("shared_state.toml");
-            p
-        });
-
-        let mut projects = load_and_merge_projects(&sync_state_path, project_configs);
+        let mut projects = load_and_merge_projects(project_configs, &db);
 
         // Ensure projects is never empty (fallback to default if needed)
         if projects.is_empty() {
             projects = vec![ProjectInfo::new_default(project::create_default_project())];
         }
 
-        // Create sync state using the path we determined above
-        let sync_state = SyncState::new(sync_state_path);
+        // Sync initial projects to DB
+        for project in &projects {
+            if db
+                .insert_project(
+                    project.id,
+                    &project.config.name,
+                    &project.config.repos,
+                    project.is_default,
+                )
+                .is_err()
+            {
+                // Already exists, update instead
+                let _ = db.update_project(project.id, &project.config.name, &project.config.repos);
+            }
+        }
+
+        // Load session counter from DB
+        let session_counter = db.get_session_counter().unwrap_or(0);
+
+        let sync_state = SyncState::new();
 
         Self {
             projects,
@@ -340,12 +347,13 @@ impl App {
             sessions: Vec::new(),
             active_index: 0,
             backend,
+            db,
             focus: InputFocus::ProjectList,
             should_quit: false,
             error_message: None,
             terminal_rows: rows,
             terminal_cols: cols,
-            session_counter: 0,
+            session_counter,
             show_info_panel: false,
             show_help: false,
             show_add_project_modal: false,
@@ -387,15 +395,11 @@ impl App {
         }
     }
 
-    /// Load and merge projects from shared state at startup.
+    /// Load and merge projects from DB at startup.
     /// This ensures all projects synced by other instances are available locally.
-    pub fn merge_projects_from_shared_state(&mut self) {
-        let shared_state = match sync::file_store::load_shared_state(self.sync_state.path()) {
-            Ok(state) => state,
-            Err(_) => return, // No shared state file yet, that's fine
-        };
+    pub fn merge_projects_from_db(&mut self) {
+        let db_projects = self.db.list_active_projects().unwrap_or_default();
 
-        // Build map of existing projects by ID
         let existing_ids: std::collections::HashMap<ProjectId, usize> = self
             .projects
             .iter()
@@ -403,16 +407,11 @@ impl App {
             .map(|(i, p)| (p.id, i))
             .collect();
 
-        // Add projects from shared state that aren't already loaded
-        for shared_project in shared_state.projects {
+        for shared_project in &db_projects {
             if !existing_ids.contains_key(&shared_project.id) {
                 let project = shared_project_to_info(shared_project.clone());
                 self.projects.push(project);
-
-                tracing::debug!(
-                    "Loaded project {} from shared state at startup",
-                    shared_project.id
-                );
+                tracing::debug!("Loaded project {} from DB at startup", shared_project.id);
             }
         }
     }
@@ -514,6 +513,11 @@ impl App {
             }
         }
 
+        // Soft-delete in DB
+        if let Err(e) = self.db.soft_delete_session(session_id) {
+            error!("Failed to soft-delete session in DB: {e}");
+        }
+
         // Kill the backend session before removing from the list.
         if let Some(session) = self.sessions.get_mut(self.active_index) {
             session.kill();
@@ -532,7 +536,7 @@ impl App {
         }
 
         // Sync to shared state for other instances
-        self.save_shared_state();
+        self.save_state();
     }
 
     /// Get sessions belonging to the active project.
@@ -762,7 +766,7 @@ impl App {
                 }
 
                 // Sync to shared state for other instances
-                self.save_shared_state();
+                self.save_state();
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
@@ -802,7 +806,7 @@ impl App {
         } else {
             self.error_message = None;
             // Sync new project to shared state for multi-instance visibility
-            self.save_shared_state();
+            self.save_state();
         }
 
         // Close modal and clear inputs
@@ -842,7 +846,7 @@ impl App {
             return;
         }
 
-        // Get project session IDs and name before removal
+        // Get project session IDs, ID, and name before removal
         let Some(project) = self.active_project() else {
             self.show_delete_project_modal_flag = false;
             return;
@@ -850,11 +854,23 @@ impl App {
 
         let session_ids_to_close: Vec<_> = project.session_ids.clone();
         let project_name = project.config.name.clone();
+        let project_id = project.id;
+
+        // Soft-delete sessions in DB
+        for session_id in &session_ids_to_close {
+            if let Err(e) = self.db.soft_delete_session(*session_id) {
+                error!("Failed to soft-delete session in DB: {e}");
+            }
+        }
+
+        // Soft-delete project in DB
+        if let Err(e) = self.db.soft_delete_project(project_id) {
+            error!("Failed to soft-delete project in DB: {e}");
+        }
 
         // Close all sessions belonging to this project
         for session_id in session_ids_to_close {
             if let Some(session_pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
-                // Kill backend session
                 self.sessions[session_pos].kill();
                 self.sessions.remove(session_pos);
             }
@@ -872,7 +888,7 @@ impl App {
         self.save_project_configs_to_disk();
 
         // Sync deletion to other instances
-        self.save_shared_state();
+        self.save_state();
 
         // Close modal and show success
         self.show_delete_project_modal_flag = false;
@@ -936,8 +952,8 @@ impl App {
             };
         }
 
-        // Poll for external state changes from other thurbox instances
-        if let Ok(Some(delta)) = sync::poll_for_changes(&mut self.sync_state) {
+        // Poll for external state changes from other thurbox instances (DB-based)
+        if let Ok(Some(delta)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
             self.handle_external_state_change(delta);
         }
     }
@@ -1294,8 +1310,6 @@ impl App {
 
     pub fn shutdown(self) {
         self.save_state();
-        // Also save shared state for multi-instance sync
-        self.save_shared_state();
         // Do NOT remove worktrees — they persist for resume.
         // Detach from backend sessions without killing them — they persist in tmux.
         for session in self.sessions {
@@ -1303,176 +1317,131 @@ impl App {
         }
     }
 
+    /// Persist current state to the SQLite database.
     fn save_state(&self) {
-        let sessions: Vec<PersistedSession> = self
-            .sessions
-            .iter()
-            .filter_map(|s| {
-                let claude_session_id = s.info.claude_session_id.as_ref()?;
-                // Find which project this session belongs to
-                let project_id = self
-                    .projects
-                    .iter()
-                    .find(|p| p.session_ids.contains(&s.info.id))
-                    .map(|p| p.id.as_uuid()); // Extract UUID from ProjectId
-                Some(PersistedSession {
-                    id: Some(s.info.id),
-                    name: s.info.name.clone(),
-                    claude_session_id: claude_session_id.clone(),
-                    cwd: s.info.cwd.clone(),
-                    worktree: s.info.worktree.as_ref().map(|wt| PersistedWorktree {
-                        repo_path: wt.repo_path.clone(),
-                        worktree_path: wt.worktree_path.clone(),
-                        branch: wt.branch.clone(),
-                    }),
-                    role: s.info.role.clone(),
-                    backend_id: s.backend_id().to_string(),
-                    backend_type: s.backend_name().to_string(),
-                    project_id,
-                })
-            })
+        // Sync session counter
+        if let Err(e) = self.db.set_session_counter(self.session_counter) {
+            error!("Failed to save session counter to DB: {e}");
+        }
+
+        // Upsert all projects
+        for project in &self.projects {
+            if self.db.project_exists(project.id).unwrap_or(false) {
+                if let Err(e) =
+                    self.db
+                        .update_project(project.id, &project.config.name, &project.config.repos)
+                {
+                    error!("Failed to update project in DB: {e}");
+                }
+            } else if let Err(e) = self.db.insert_project(
+                project.id,
+                &project.config.name,
+                &project.config.repos,
+                project.is_default,
+            ) {
+                error!("Failed to insert project into DB: {e}");
+            }
+        }
+
+        // Upsert all sessions
+        for session in &self.sessions {
+            let shared_session = self.session_to_shared(session);
+            if let Err(e) = self.db.upsert_session(&shared_session) {
+                error!("Failed to upsert session to DB: {e}");
+            }
+        }
+    }
+
+    /// Build a SharedSession from a local Session.
+    fn session_to_shared(&self, session: &Session) -> sync::SharedSession {
+        sync::SharedSession {
+            id: session.info.id,
+            name: session.info.name.clone(),
+            project_id: self
+                .projects
+                .iter()
+                .find(|p| p.session_ids.contains(&session.info.id))
+                .map(|p| p.id)
+                .unwrap_or_default(),
+            role: session.info.role.clone(),
+            backend_id: session.backend_id().to_string(),
+            backend_type: session.backend_name().to_string(),
+            claude_session_id: session.info.claude_session_id.clone(),
+            cwd: session.info.cwd.clone(),
+            worktree: session
+                .info
+                .worktree
+                .as_ref()
+                .map(|wt| sync::SharedWorktree {
+                    repo_path: wt.repo_path.clone(),
+                    worktree_path: wt.worktree_path.clone(),
+                    branch: wt.branch.clone(),
+                }),
+            tombstone: false,
+            tombstone_at: None,
+        }
+    }
+
+    /// Load persisted session state from the database.
+    ///
+    /// Returns `Some(sessions, counter)` if there are active sessions in the DB,
+    /// or `None` if no sessions exist (indicating a fresh start or first run).
+    pub fn load_persisted_state_from_db(&self) -> Option<(Vec<sync::SharedSession>, usize)> {
+        let sessions = self.db.list_active_sessions().ok()?;
+        if sessions.is_empty() {
+            return None;
+        }
+
+        // Only restore sessions that have a claude_session_id (resumable)
+        let resumable: Vec<sync::SharedSession> = sessions
+            .into_iter()
+            .filter(|s| s.claude_session_id.is_some())
             .collect();
 
-        let state = PersistedState {
-            sessions,
-            session_counter: self.session_counter,
-        };
-
-        if let Err(e) = project::save_session_state(&state) {
-            error!("Failed to save session state: {e}");
+        if resumable.is_empty() {
+            return None;
         }
+
+        let counter = self.db.get_session_counter().unwrap_or(0);
+        Some((resumable, counter))
     }
 
-    /// Save current sessions to the shared state file for multi-instance sync.
+    /// Restore sessions from the database on startup.
     ///
-    /// Merges local sessions into the existing shared state instead of overwriting it.
-    /// This preserves sessions from other instances.
-    fn save_shared_state(&self) {
-        // Load existing shared state (or create new if it doesn't exist)
-        let mut shared_state = sync::file_store::load_shared_state(self.sync_state.path())
-            .unwrap_or_else(|_| sync::SharedState::new());
-
-        // Build map of our local sessions for quick lookup
-        let mut local_sessions = std::collections::HashMap::new();
-        for session in &self.sessions {
-            let shared_session = sync::SharedSession {
-                id: session.info.id,
-                name: session.info.name.clone(),
-                project_id: self
-                    .projects
-                    .iter()
-                    .find(|p| p.session_ids.contains(&session.info.id))
-                    .map(|p| p.id)
-                    .unwrap_or_default(),
-                role: session.info.role.clone(),
-                backend_id: session.backend_id().to_string(),
-                backend_type: session.backend_name().to_string(),
-                claude_session_id: session.info.claude_session_id.clone(),
-                cwd: session.info.cwd.clone(),
-                worktree: session
-                    .info
-                    .worktree
-                    .as_ref()
-                    .map(|wt| sync::SharedWorktree {
-                        repo_path: wt.repo_path.clone(),
-                        worktree_path: wt.worktree_path.clone(),
-                        branch: wt.branch.clone(),
-                    }),
-                tombstone: false,
-                tombstone_at: None,
-            };
-            local_sessions.insert(session.info.id, shared_session);
-        }
-
-        // Merge: update existing sessions or add new ones
-        let mut merged_sessions = Vec::new();
-        for mut existing in shared_state.sessions {
-            if let Some(updated) = local_sessions.remove(&existing.id) {
-                merged_sessions.push(updated);
-            } else if existing.tombstone {
-                merged_sessions.push(existing);
-            } else {
-                // Session was deleted locally. Mark as tombstone for propagation to other instances.
-                existing.tombstone = true;
-                existing.tombstone_at = Some(sync::current_time_millis());
-                merged_sessions.push(existing);
-            }
-        }
-
-        // Add new sessions (only in local state, not yet in shared state)
-        for (_session_id, session) in local_sessions {
-            merged_sessions.push(session);
-        }
-
-        // Sync projects: create SharedProject for each local project
-        let mut local_projects = std::collections::HashMap::new();
-        for project in &self.projects {
-            let shared_project = sync::SharedProject {
-                id: project.id,
-                name: project.config.name.clone(),
-                repos: project.config.repos.clone(),
-            };
-            local_projects.insert(project.id, shared_project);
-        }
-
-        // Merge projects: only include projects that exist in local state.
-        // Deleted projects are simply removed from shared state (not kept from other instances).
-        // This ensures deletions propagate across all instances.
-        let mut merged_projects = Vec::new();
-        for existing in shared_state.projects {
-            if let Some(updated) = local_projects.remove(&existing.id) {
-                merged_projects.push(updated);
-            }
-            // Projects not in local_projects are treated as deleted and omitted
-        }
-
-        // Add new projects (only in local state, not yet in shared state)
-        for (_project_id, project) in local_projects {
-            merged_projects.push(project);
-        }
-
-        // Update state with merged sessions, projects and our counter
-        shared_state.sessions = merged_sessions;
-        shared_state.projects = merged_projects;
-        shared_state.session_counter = self.session_counter.max(shared_state.session_counter);
-        shared_state.last_modified = sync::current_time_millis();
-
-        if let Err(e) = sync::file_store::save_shared_state(self.sync_state.path(), &shared_state) {
-            error!("Failed to save shared state: {e}");
-        }
-    }
-
-    pub fn restore_sessions(&mut self, state: PersistedState) {
-        self.session_counter = state.session_counter;
-
-        // Load shared state to fill in missing project_id for backward compat
-        // (old persisted sessions don't have project_id field)
-        let shared_state = sync::file_store::load_shared_state(self.sync_state.path())
-            .unwrap_or_else(|_| sync::SharedState::default());
+    /// Tries to adopt existing backend sessions (tmux windows) or spawns new
+    /// sessions with `--resume` to reconnect to the Claude session.
+    pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
+        self.session_counter = session_counter;
 
         // Discover existing sessions from the backend.
         let discovered = self.backend.discover().unwrap_or_default();
 
-        for persisted in state.sessions {
-            let name = persisted.name;
+        for shared in sessions {
+            let name = shared.name;
+            let session_id = shared.id;
 
-            let role = if persisted.role.is_empty() {
+            let role = if shared.role.is_empty() {
                 DEFAULT_ROLE_NAME.to_string()
             } else {
-                persisted.role
+                shared.role
             };
 
-            let worktree = persisted.worktree.map(|wt| WorktreeInfo {
+            let worktree = shared.worktree.map(|wt| WorktreeInfo {
                 repo_path: wt.repo_path,
                 worktree_path: wt.worktree_path,
                 branch: wt.branch,
             });
 
+            let claude_session_id = match shared.claude_session_id {
+                Some(id) => id,
+                None => continue, // Skip sessions without a claude session ID
+            };
+
             // Try to match a discovered backend session by backend_id.
-            let matching_discovered = if !persisted.backend_id.is_empty() {
+            let matching_discovered = if !shared.backend_id.is_empty() {
                 discovered
                     .iter()
-                    .find(|d| d.backend_id == persisted.backend_id && d.is_alive)
+                    .find(|d| d.backend_id == shared.backend_id && d.is_alive)
             } else {
                 // Fall back to matching by window name (tb-<name>).
                 let expected_name = format!("tb-{name}");
@@ -1494,82 +1463,44 @@ impl App {
             });
 
             if let Some(mut session) = adopted {
-                // Restore the persisted SessionId if available (preserves identity across restarts)
-                if let Some(persisted_id) = persisted.id {
-                    session.info.id = persisted_id;
-                }
-
-                session.info.claude_session_id = Some(persisted.claude_session_id.clone());
-                session.info.cwd = persisted.cwd;
+                session.info.id = session_id;
+                session.info.claude_session_id = Some(claude_session_id.clone());
+                session.info.cwd = shared.cwd;
                 session.info.role = role;
                 session.info.worktree = worktree;
-                let session_id = session.info.id;
+                let sid = session.info.id;
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
                 self.focus = InputFocus::Terminal;
 
-                // Associate with the original project (restored sessions preserve their project)
-                // Use persisted project_id if available, otherwise look in shared state for backward compat
-                let project_id_to_lookup = if let Some(persisted_proj_id) = persisted.project_id {
-                    Some(persisted_proj_id)
-                } else {
-                    // No project_id in persisted session (old session), look in shared state
-                    shared_state
-                        .sessions
-                        .iter()
-                        .find(|s| s.id == session_id)
-                        .map(|s| s.project_id.as_uuid())
-                };
-
-                let target_project_index = if let Some(proj_uuid) = project_id_to_lookup {
-                    // Try to find the project by UUID
-                    let found_index = self
-                        .projects
-                        .iter()
-                        .position(|p| p.id.as_uuid() == proj_uuid);
-
-                    if let Some(idx) = found_index {
-                        if let Some(proj) = self.projects.get(idx) {
-                            tracing::debug!(
-                                session = %session_id,
-                                project_uuid = %proj_uuid,
-                                project_index = idx,
-                                project_name = %proj.config.name,
-                                "Restored session to original project"
-                            );
-                        }
-                        idx
-                    } else {
+                // Associate with the original project
+                let proj_uuid = shared.project_id.as_uuid();
+                let target_project_index = self
+                    .projects
+                    .iter()
+                    .position(|p| p.id.as_uuid() == proj_uuid)
+                    .unwrap_or_else(|| {
                         tracing::warn!(
-                            session = %session_id,
+                            session = %sid,
                             project_uuid = %proj_uuid,
-                            available_projects = ?self.projects.iter().map(|p| (p.id.as_uuid(), p.config.name.clone())).collect::<Vec<_>>(),
                             fallback_index = self.active_project_index,
-                            "Session project_id not found, falling back to active project"
+                            "Session project not found, falling back to active project"
                         );
                         self.active_project_index
-                    }
-                } else {
-                    tracing::debug!(
-                        session = %session_id,
-                        "No project_id persisted or in shared state for session, using active project"
-                    );
-                    // Fallback to active project if no project_id found anywhere
-                    self.active_project_index
-                };
+                    });
 
                 if let Some(project) = self.projects.get_mut(target_project_index) {
-                    if !project.session_ids.contains(&session_id) {
-                        project.session_ids.push(session_id);
+                    if !project.session_ids.contains(&sid) {
+                        project.session_ids.push(sid);
                     }
                 }
             } else {
                 // No matching backend session or adopt failed — spawn new with --resume.
                 let permissions = self.resolve_role_permissions(&role);
                 let config = SessionConfig {
-                    resume_session_id: Some(persisted.claude_session_id.clone()),
-                    claude_session_id: Some(persisted.claude_session_id),
-                    cwd: persisted.cwd,
+                    resume_session_id: Some(claude_session_id.clone()),
+                    claude_session_id: Some(claude_session_id),
+                    cwd: shared.cwd,
                     role,
                     permissions,
                 };
@@ -1577,13 +1508,8 @@ impl App {
             }
         }
 
-        if let Err(e) = project::clear_session_state() {
-            error!("Failed to clear session state after restore: {e}");
-        }
-
         // Claim ownership of restored sessions in the shared state
-        // This ensures sessions stay visible to other instances and persist across restarts
-        self.save_shared_state();
+        self.save_state();
     }
 
     /// Resolve a role name to its permissions using the active project's role config.
@@ -1951,18 +1877,14 @@ mod tests {
         Arc::new(StubBackend)
     }
 
-    /// Clear the test's shared state file to avoid stale projects from previous runs.
-    /// This is needed because load_and_merge_projects() prefers shared state over config.
-    fn clear_test_shared_state() {
-        if let Ok(path) = sync::shared_state_path() {
-            let _ = std::fs::remove_file(path);
-        }
+    fn test_db() -> Database {
+        Database::open_in_memory().unwrap()
     }
 
     /// Create an App with N stub sessions bound to the default project.
     fn app_with_sessions(count: usize) -> App {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, vec![], backend.clone());
+        let mut app = App::new(24, 120, vec![], backend.clone(), test_db());
         for i in 0..count {
             let session = Session::stub(&format!("Session {}", i + 1), &backend);
             let session_id = session.info.id;
@@ -2086,14 +2008,14 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(50, 100, vec![], stub_backend());
+        let app = App::new(50, 100, vec![], stub_backend(), test_db());
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(6, 80, vec![], stub_backend());
+        let app = App::new(6, 80, vec![], stub_backend(), test_db());
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -2107,13 +2029,13 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(24, 80, vec![], stub_backend());
+        let mut app = App::new(24, 80, vec![], stub_backend(), test_db());
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(24, 80, vec![], stub_backend());
+        let mut app = App::new(24, 80, vec![], stub_backend(), test_db());
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -2121,7 +2043,7 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(24, 80, vec![], stub_backend());
+        let mut app = App::new(24, 80, vec![], stub_backend(), test_db());
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
@@ -2130,7 +2052,7 @@ mod tests {
 
     #[test]
     fn open_role_editor_starts_empty_for_no_custom_roles() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         assert!(app.show_role_editor);
         assert!(app.role_editor_roles.is_empty());
@@ -2140,7 +2062,7 @@ mod tests {
     #[test]
     fn open_role_editor_clones_existing_roles() {
         use crate::session::{RoleConfig, RolePermissions};
-        clear_test_shared_state();
+
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2150,7 +2072,7 @@ mod tests {
                 permissions: RolePermissions::default(),
             }],
         };
-        let mut app = App::new(24, 120, vec![config], stub_backend());
+        let mut app = App::new(24, 120, vec![config], stub_backend(), test_db());
         app.open_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
         assert_eq!(app.role_editor_roles[0].name, "ops");
@@ -2158,7 +2080,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
@@ -2178,7 +2100,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
@@ -2201,7 +2123,7 @@ mod tests {
     #[test]
     fn spawn_with_two_roles_shows_selector() {
         use crate::session::{RoleConfig, RolePermissions};
-        clear_test_shared_state();
+
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2221,7 +2143,7 @@ mod tests {
                 },
             ],
         };
-        let mut app = App::new(24, 120, vec![config], stub_backend());
+        let mut app = App::new(24, 120, vec![config], stub_backend(), test_db());
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, None);
         assert!(app.show_role_selector);
@@ -2234,14 +2156,14 @@ mod tests {
             repos: vec![],
             roles: vec![],
         };
-        let app = App::new(24, 120, vec![config], stub_backend());
+        let app = App::new(24, 120, vec![config], stub_backend(), test_db());
         // With no roles, the selector should never be set
         assert!(!app.show_role_selector);
     }
 
     #[test]
     fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
@@ -2272,7 +2194,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         // Add first role
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -2298,7 +2220,7 @@ mod tests {
     #[test]
     fn role_editor_edit_preserves_permission_mode_and_tools() {
         use crate::session::{RoleConfig, RolePermissions};
-        clear_test_shared_state();
+
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2314,7 +2236,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config], stub_backend());
+        let mut app = App::new(24, 120, vec![config], stub_backend(), test_db());
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2336,7 +2258,7 @@ mod tests {
 
     #[test]
     fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
@@ -2351,7 +2273,7 @@ mod tests {
     #[test]
     fn open_role_for_editing_populates_fields() {
         use crate::session::{RoleConfig, RolePermissions};
-        clear_test_shared_state();
+
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2366,7 +2288,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config], stub_backend());
+        let mut app = App::new(24, 120, vec![config], stub_backend(), test_db());
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2386,7 +2308,7 @@ mod tests {
     #[test]
     fn role_editor_tab_cycles_fields_forward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2406,7 +2328,7 @@ mod tests {
     #[test]
     fn role_editor_backtab_cycles_fields_backward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2425,7 +2347,7 @@ mod tests {
 
     #[test]
     fn role_editor_esc_discards_and_returns_to_list() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -2437,7 +2359,7 @@ mod tests {
     #[test]
     fn role_editor_delete_adjusts_list_index() {
         use crate::session::{RoleConfig, RolePermissions};
-        clear_test_shared_state();
+
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2454,7 +2376,7 @@ mod tests {
                 },
             ],
         };
-        let mut app = App::new(24, 120, vec![config], stub_backend());
+        let mut app = App::new(24, 120, vec![config], stub_backend(), test_db());
         app.open_role_editor();
         // Select the last role
         app.role_editor_list_index = 1;
@@ -2466,7 +2388,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2586,7 +2508,7 @@ mod tests {
     #[test]
     fn tool_browse_add_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -2619,7 +2541,7 @@ mod tests {
     #[test]
     fn tool_browse_delete_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::AllowedTools;
@@ -2636,7 +2558,7 @@ mod tests {
     #[test]
     fn tool_adding_esc_cancels() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::DisallowedTools;
@@ -2656,7 +2578,7 @@ mod tests {
     #[test]
     fn system_prompt_loaded_and_saved() {
         use crate::session::{RoleConfig, RolePermissions};
-        clear_test_shared_state();
+
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![],
@@ -2669,7 +2591,7 @@ mod tests {
                 },
             }],
         };
-        let mut app = App::new(24, 120, vec![config], stub_backend());
+        let mut app = App::new(24, 120, vec![config], stub_backend(), test_db());
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -2688,7 +2610,7 @@ mod tests {
 
     #[test]
     fn system_prompt_empty_saves_as_none() {
-        let mut app = App::new(24, 120, vec![], stub_backend());
+        let mut app = App::new(24, 120, vec![], stub_backend(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("test");
@@ -2716,7 +2638,7 @@ mod tests {
                 },
             }],
         };
-        let app = App::new(24, 120, vec![config], stub_backend());
+        let app = App::new(24, 120, vec![config], stub_backend(), test_db());
         // With exactly 1 role, prepare_spawn should not show selector
         // (it would try to spawn, which needs a runtime — just verify no selector)
         assert!(!app.show_role_selector);
@@ -2779,83 +2701,61 @@ mod tests {
     }
 
     #[test]
-    fn load_and_merge_projects_from_shared_state_only() {
-        // Create a temporary shared state file with one project
-        let temp_dir = tempfile::tempdir().unwrap();
-        let state_path = temp_dir.path().join("shared_state.toml");
-
-        let mut shared_state = sync::state::SharedState::new();
+    fn load_and_merge_projects_from_db_only() {
+        let db = test_db();
         let proj_config = ProjectConfig {
-            name: "Shared Project".to_string(),
-            repos: vec![PathBuf::from("/shared/repo")],
+            name: "DB Project".to_string(),
+            repos: vec![PathBuf::from("/db/repo")],
             roles: Vec::new(),
         };
         let proj_id = proj_config.deterministic_id();
-        shared_state.projects = vec![sync::SharedProject {
-            id: proj_id,
-            name: "Shared Project".to_string(),
-            repos: vec![PathBuf::from("/shared/repo")],
-        }];
+        db.insert_project(proj_id, "DB Project", &[PathBuf::from("/db/repo")], false)
+            .unwrap();
 
-        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
-
-        let projects = load_and_merge_projects(&state_path, vec![]);
+        let projects = load_and_merge_projects(vec![], &db);
 
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].config.name, "Shared Project");
+        assert_eq!(projects[0].config.name, "DB Project");
         assert_eq!(projects[0].id, proj_id);
     }
 
     #[test]
     fn load_and_merge_projects_from_config_only() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let state_path = temp_dir.path().join("nonexistent.toml");
-
+        let db = test_db();
         let config = ProjectConfig {
             name: "Config Project".to_string(),
             repos: vec![PathBuf::from("/config/repo")],
             roles: vec![],
         };
 
-        let projects = load_and_merge_projects(&state_path, vec![config]);
+        let projects = load_and_merge_projects(vec![config], &db);
 
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].config.name, "Config Project");
     }
 
     #[test]
-    fn load_and_merge_projects_shared_takes_precedence() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let state_path = temp_dir.path().join("shared_state.toml");
-
-        // Shared state has the project
-        let mut shared_state = sync::state::SharedState::new();
+    fn load_and_merge_projects_db_takes_precedence() {
+        let db = test_db();
         let proj_config = ProjectConfig {
             name: "Test".to_string(),
-            repos: vec![PathBuf::from("/shared/repo")],
+            repos: vec![PathBuf::from("/db/repo")],
             roles: Vec::new(),
         };
         let proj_id = proj_config.deterministic_id();
-        shared_state.projects = vec![sync::SharedProject {
-            id: proj_id,
-            name: "Test".to_string(),
-            repos: vec![PathBuf::from("/shared/repo")],
-        }];
+        db.insert_project(proj_id, "Test", &[PathBuf::from("/db/repo")], false)
+            .unwrap();
 
-        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
-
-        // Config also has a project with same name
+        // Config also has a project with same name but different repos
         let config = ProjectConfig {
             name: "Test".to_string(),
             repos: vec![PathBuf::from("/config/repo")],
             roles: vec![],
         };
 
-        let projects = load_and_merge_projects(&state_path, vec![config]);
+        let projects = load_and_merge_projects(vec![config], &db);
 
         assert_eq!(projects.len(), 1);
-        // Shared state ID should be preserved
-        // ID should match the deterministic ID of the config name
         let expected_id = ProjectConfig {
             name: "Test".to_string(),
             repos: vec![],
@@ -2863,32 +2763,21 @@ mod tests {
         }
         .deterministic_id();
         assert_eq!(projects[0].id, expected_id);
-        // Config repos should not override shared repos (only roles are merged)
-        assert_eq!(
-            projects[0].config.repos,
-            vec![PathBuf::from("/shared/repo")]
-        );
+        // DB repos should be preserved (config only merges roles)
+        assert_eq!(projects[0].config.repos, vec![PathBuf::from("/db/repo")]);
     }
 
     #[test]
     fn load_and_merge_projects_merges_roles_from_config() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let state_path = temp_dir.path().join("shared_state.toml");
-
-        let mut shared_state = sync::state::SharedState::new();
+        let db = test_db();
         let proj_config = ProjectConfig {
             name: "Test".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
         };
         let proj_id = proj_config.deterministic_id();
-        shared_state.projects = vec![sync::SharedProject {
-            id: proj_id,
-            name: "Test".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-        }];
-
-        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
+        db.insert_project(proj_id, "Test", &[PathBuf::from("/repo")], false)
+            .unwrap();
 
         let role = crate::session::RoleConfig {
             name: "reviewer".to_string(),
@@ -2902,7 +2791,7 @@ mod tests {
             roles: vec![role.clone()],
         };
 
-        let projects = load_and_merge_projects(&state_path, vec![config]);
+        let projects = load_and_merge_projects(vec![config], &db);
 
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].config.roles.len(), 1);
@@ -2911,10 +2800,9 @@ mod tests {
 
     #[test]
     fn load_and_merge_projects_empty_state_uses_default() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let state_path = temp_dir.path().join("nonexistent.toml");
+        let db = test_db();
 
-        let projects = load_and_merge_projects(&state_path, vec![]);
+        let projects = load_and_merge_projects(vec![], &db);
 
         assert_eq!(projects.len(), 1);
         assert!(projects[0].is_default);
@@ -2922,23 +2810,15 @@ mod tests {
 
     #[test]
     fn load_and_merge_projects_adds_config_only_projects() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let state_path = temp_dir.path().join("shared_state.toml");
-
-        let mut shared_state = sync::state::SharedState::new();
+        let db = test_db();
         let proj_config = ProjectConfig {
-            name: "Shared".to_string(),
-            repos: vec![PathBuf::from("/shared/repo")],
+            name: "DB".to_string(),
+            repos: vec![PathBuf::from("/db/repo")],
             roles: Vec::new(),
         };
         let proj_id = proj_config.deterministic_id();
-        shared_state.projects = vec![sync::SharedProject {
-            id: proj_id,
-            name: "Shared".to_string(),
-            repos: vec![PathBuf::from("/shared/repo")],
-        }];
-
-        sync::file_store::save_shared_state(&state_path, &shared_state).unwrap();
+        db.insert_project(proj_id, "DB", &[PathBuf::from("/db/repo")], false)
+            .unwrap();
 
         let config_only = ProjectConfig {
             name: "ConfigOnly".to_string(),
@@ -2946,10 +2826,10 @@ mod tests {
             roles: vec![],
         };
 
-        let projects = load_and_merge_projects(&state_path, vec![config_only]);
+        let projects = load_and_merge_projects(vec![config_only], &db);
 
         assert_eq!(projects.len(), 2);
-        assert!(projects.iter().any(|p| p.config.name == "Shared"));
+        assert!(projects.iter().any(|p| p.config.name == "DB"));
         assert!(projects.iter().any(|p| p.config.name == "ConfigOnly"));
     }
 
@@ -3071,5 +2951,178 @@ mod tests {
         assert_eq!(app.focus, InputFocus::Terminal);
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(app.focus, InputFocus::ProjectList);
+    }
+
+    // --- DB persistence tests ---
+
+    #[test]
+    fn load_persisted_state_empty_db_returns_none() {
+        let app = App::new(24, 80, vec![], stub_backend(), test_db());
+        assert!(app.load_persisted_state_from_db().is_none());
+    }
+
+    #[test]
+    fn load_persisted_state_sessions_without_claude_id_returns_none() {
+        let db = test_db();
+        let proj_config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: Vec::new(),
+        };
+        let pid = proj_config.deterministic_id();
+        db.insert_project(pid, "test", &[], false).unwrap();
+
+        // Session without claude_session_id — not resumable
+        let session = sync::SharedSession {
+            id: SessionId::default(),
+            name: "1".to_string(),
+            project_id: pid,
+            role: "developer".to_string(),
+            backend_id: "thurbox:@0".to_string(),
+            backend_type: "tmux".to_string(),
+            claude_session_id: None,
+            cwd: None,
+            worktree: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&session).unwrap();
+
+        let app = App::new(24, 80, vec![], stub_backend(), db);
+        assert!(app.load_persisted_state_from_db().is_none());
+    }
+
+    #[test]
+    fn load_persisted_state_filters_to_resumable_only() {
+        let db = test_db();
+        let proj_config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: Vec::new(),
+        };
+        let pid = proj_config.deterministic_id();
+        db.insert_project(pid, "test", &[], false).unwrap();
+
+        // Non-resumable session
+        let s1 = sync::SharedSession {
+            id: SessionId::default(),
+            name: "1".to_string(),
+            project_id: pid,
+            role: "developer".to_string(),
+            backend_id: "thurbox:@0".to_string(),
+            backend_type: "tmux".to_string(),
+            claude_session_id: None,
+            cwd: None,
+            worktree: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&s1).unwrap();
+
+        // Resumable session
+        let s2 = sync::SharedSession {
+            id: SessionId::default(),
+            name: "2".to_string(),
+            project_id: pid,
+            role: "developer".to_string(),
+            backend_id: "thurbox:@1".to_string(),
+            backend_type: "tmux".to_string(),
+            claude_session_id: Some("claude-abc".to_string()),
+            cwd: None,
+            worktree: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&s2).unwrap();
+        db.set_session_counter(7).unwrap();
+
+        let app = App::new(24, 80, vec![], stub_backend(), db);
+        let (sessions, counter) = app.load_persisted_state_from_db().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "2");
+        assert_eq!(counter, 7);
+    }
+
+    #[test]
+    fn save_state_roundtrips_projects_and_sessions() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, vec![], backend.clone(), test_db());
+
+        // Add a session
+        let session = Session::stub("Session 1", &backend);
+        let sid = session.info.id;
+        app.sessions.push(session);
+        app.projects[0].session_ids.push(sid);
+
+        // Save to DB
+        app.save_state();
+
+        // Verify project in DB
+        let projects = app.db.list_active_projects().unwrap();
+        assert!(!projects.is_empty());
+
+        // Verify session in DB
+        let sessions = app.db.list_active_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "Session 1");
+    }
+
+    #[test]
+    fn save_state_persists_session_counter() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, vec![], backend.clone(), test_db());
+        app.session_counter = 42;
+
+        app.save_state();
+
+        let counter = app.db.get_session_counter().unwrap();
+        assert_eq!(counter, 42);
+    }
+
+    #[test]
+    fn session_to_shared_converts_correctly() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, vec![], backend.clone(), test_db());
+
+        let mut session = Session::stub("TestSession", &backend);
+        session.info.role = "reviewer".to_string();
+        session.info.cwd = Some(PathBuf::from("/home/user"));
+        session.info.claude_session_id = Some("claude-xyz".to_string());
+
+        let sid = session.info.id;
+        app.sessions.push(session);
+        app.projects[0].session_ids.push(sid);
+
+        let shared = app.session_to_shared(&app.sessions[0]);
+        assert_eq!(shared.id, sid);
+        assert_eq!(shared.name, "TestSession");
+        assert_eq!(shared.role, "reviewer");
+        assert_eq!(shared.cwd, Some(PathBuf::from("/home/user")));
+        assert_eq!(shared.claude_session_id, Some("claude-xyz".to_string()));
+        assert!(!shared.tombstone);
+        assert!(shared.tombstone_at.is_none());
+    }
+
+    #[test]
+    fn session_to_shared_maps_worktree() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, vec![], backend.clone(), test_db());
+
+        let mut session = Session::stub("WTSession", &backend);
+        session.info.worktree = Some(WorktreeInfo {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.git/wt/feat"),
+            branch: "feat".to_string(),
+        });
+
+        let sid = session.info.id;
+        app.sessions.push(session);
+        app.projects[0].session_ids.push(sid);
+
+        let shared = app.session_to_shared(&app.sessions[0]);
+        assert!(shared.worktree.is_some());
+        let wt = shared.worktree.unwrap();
+        assert_eq!(wt.branch, "feat");
+        assert_eq!(wt.repo_path, PathBuf::from("/repo"));
     }
 }

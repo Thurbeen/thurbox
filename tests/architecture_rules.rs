@@ -125,6 +125,17 @@ fn sync_module_isolation() {
 }
 
 #[test]
+fn storage_module_isolation() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/storage");
+    let violations = check_no_imports(&module_dir, &["claude", "ui", "git", "app"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("storage", &violations)
+    );
+}
+
+#[test]
 fn app_module_structure() {
     // Verify that app/ module can be split into multiple files
     // Each file should maintain proper module organization
