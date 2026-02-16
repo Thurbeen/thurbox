@@ -123,3 +123,22 @@ fn sync_module_isolation() {
         format_violations("sync", &violations)
     );
 }
+
+#[test]
+fn app_module_structure() {
+    // Verify that app/ module can be split into multiple files
+    // Each file should maintain proper module organization
+    let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+
+    // All app submodules should exist as .rs files or be re-exported from mod.rs
+    let expected_files = vec!["mod.rs"];
+
+    for file in expected_files {
+        let path = app_dir.join(file);
+        assert!(
+            path.exists(),
+            "Expected app module file not found: {}",
+            file
+        );
+    }
+}

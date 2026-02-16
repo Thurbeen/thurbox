@@ -1,3 +1,6 @@
+mod modals;
+mod state;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -209,10 +212,10 @@ pub enum InputFocus {
 }
 
 pub struct App {
-    projects: Vec<ProjectInfo>,
-    active_project_index: usize,
-    sessions: Vec<Session>,
-    active_index: usize,
+    pub(crate) projects: Vec<ProjectInfo>,
+    pub(crate) active_project_index: usize,
+    pub(crate) sessions: Vec<Session>,
+    pub(crate) active_index: usize,
     backend: Arc<dyn SessionBackend>,
     focus: InputFocus,
     should_quit: bool,
