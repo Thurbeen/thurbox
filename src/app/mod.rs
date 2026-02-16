@@ -1476,9 +1476,9 @@ impl App {
         for project_id in delta.removed_projects {
             if let Some(pos) = self.projects.iter().position(|p| p.id == project_id) {
                 self.projects.remove(pos);
-                if self.active_project_index >= self.projects.len() && self.active_project_index > 0
-                {
-                    self.active_project_index -= 1;
+                // Adjust active_project_index if it's out of bounds
+                if self.active_project_index >= self.projects.len() {
+                    self.active_project_index = self.projects.len().saturating_sub(1);
                 }
                 tracing::debug!("Removed project {} from external state", project_id);
             }
