@@ -68,6 +68,12 @@ impl App {
             return;
         }
 
+        // Delete-project modal captures all input
+        if self.show_delete_project_modal_flag {
+            self.handle_delete_project_key(code);
+            return;
+        }
+
         // Global keybindings (always active)
         if mods.contains(KeyModifiers::CONTROL) {
             match code {
@@ -140,6 +146,9 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.open_role_editor();
+            }
+            KeyCode::Char('d') => {
+                self.show_delete_project_modal();
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -249,6 +258,44 @@ impl App {
             }
             KeyCode::Char(c) => {
                 field.insert(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_delete_project_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => {
+                self.delete_active_project();
+            }
+            KeyCode::Esc => {
+                self.show_delete_project_modal_flag = false;
+                self.delete_project_confirmation.clear();
+                self.delete_project_error = None;
+            }
+            KeyCode::Char(c) => {
+                self.delete_project_confirmation.insert(c);
+                self.delete_project_error = None; // Clear error on new input
+            }
+            KeyCode::Backspace => {
+                self.delete_project_confirmation.backspace();
+                self.delete_project_error = None;
+            }
+            KeyCode::Delete => {
+                self.delete_project_confirmation.delete();
+                self.delete_project_error = None;
+            }
+            KeyCode::Left => {
+                self.delete_project_confirmation.move_left();
+            }
+            KeyCode::Right => {
+                self.delete_project_confirmation.move_right();
+            }
+            KeyCode::Home => {
+                self.delete_project_confirmation.home();
+            }
+            KeyCode::End => {
+                self.delete_project_confirmation.end();
             }
             _ => {}
         }

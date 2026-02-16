@@ -158,6 +158,13 @@ pub struct RoleSelectorModal {
     pub pending_spawn_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DeleteProjectModal {
+    pub project_name: String,
+    pub confirmation: TextInput,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleEditorView {
     List,
@@ -310,6 +317,7 @@ pub enum Modal {
     None,
     Help,
     AddProject(AddProjectModal),
+    DeleteProject(DeleteProjectModal),
     RepoSelector(RepoSelectorModal),
     SessionMode(SessionModeModal),
     BranchSelector(BranchSelectorModal),

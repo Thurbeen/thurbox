@@ -1,5 +1,6 @@
 pub mod add_project_modal;
 pub mod branch_selector_modal;
+pub mod delete_project_modal;
 pub mod info_panel;
 pub mod layout;
 pub mod project_list;

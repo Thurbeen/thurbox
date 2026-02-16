@@ -24,9 +24,9 @@ use crate::session::{
 };
 use crate::sync::{self, StateDelta, SyncState};
 use crate::ui::{
-    add_project_modal, branch_selector_modal, info_panel, layout, project_list,
-    repo_selector_modal, role_editor_modal, role_selector_modal, session_mode_modal, status_bar,
-    terminal_view, worktree_name_modal,
+    add_project_modal, branch_selector_modal, delete_project_modal, info_panel, layout,
+    project_list, repo_selector_modal, role_editor_modal, role_selector_modal, session_mode_modal,
+    status_bar, terminal_view, worktree_name_modal,
 };
 
 const MOUSE_SCROLL_LINES: usize = 3;
@@ -230,6 +230,10 @@ pub struct App {
     pub(crate) add_project_name: TextInput,
     pub(crate) add_project_path: TextInput,
     pub(crate) add_project_field: AddProjectField,
+    pub(crate) show_delete_project_modal_flag: bool,
+    pub(crate) delete_project_name: String,
+    pub(crate) delete_project_confirmation: TextInput,
+    pub(crate) delete_project_error: Option<String>,
     pub(crate) show_repo_selector: bool,
     pub(crate) repo_selector_index: usize,
     pub(crate) show_session_mode_modal: bool,
@@ -348,6 +352,10 @@ impl App {
             add_project_name: TextInput::new(),
             add_project_path: TextInput::new(),
             add_project_field: AddProjectField::Name,
+            show_delete_project_modal_flag: false,
+            delete_project_name: String::new(),
+            delete_project_confirmation: TextInput::new(),
+            delete_project_error: None,
             show_repo_selector: false,
             repo_selector_index: 0,
             show_session_mode_modal: false,
@@ -803,6 +811,74 @@ impl App {
         self.add_project_path.clear();
     }
 
+    pub(crate) fn show_delete_project_modal(&mut self) {
+        let Some(project) = self.active_project() else {
+            return;
+        };
+
+        // Safety checks
+        if project.is_default {
+            self.error_message = Some("Cannot delete default project".into());
+            return;
+        }
+        if self.projects.len() <= 1 {
+            self.error_message = Some("Cannot delete last project".into());
+            return;
+        }
+
+        // Copy project name before borrowing self
+        let project_name = project.config.name.clone();
+
+        self.show_delete_project_modal_flag = true;
+        self.delete_project_name = project_name;
+        self.delete_project_confirmation = TextInput::new();
+        self.delete_project_error = None;
+    }
+
+    pub(crate) fn delete_active_project(&mut self) {
+        // Validate confirmation
+        if self.delete_project_confirmation.value() != self.delete_project_name {
+            self.delete_project_error = Some("Project name doesn't match".to_string());
+            return;
+        }
+
+        // Get project session IDs and name before removal
+        let Some(project) = self.active_project() else {
+            self.show_delete_project_modal_flag = false;
+            return;
+        };
+
+        let session_ids_to_close: Vec<_> = project.session_ids.clone();
+        let project_name = project.config.name.clone();
+
+        // Close all sessions belonging to this project
+        for session_id in session_ids_to_close {
+            if let Some(session_pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
+                // Kill backend session
+                self.sessions[session_pos].kill();
+                self.sessions.remove(session_pos);
+            }
+        }
+
+        // Remove project from list
+        self.projects.remove(self.active_project_index);
+
+        // Adjust active index
+        if self.active_project_index >= self.projects.len() {
+            self.active_project_index = self.projects.len().saturating_sub(1);
+        }
+
+        // Persist changes
+        self.save_project_configs_to_disk();
+
+        // Sync deletion to other instances
+        self.save_shared_state();
+
+        // Close modal and show success
+        self.show_delete_project_modal_flag = false;
+        self.error_message = Some(format!("Deleted project '{}'", project_name));
+    }
+
     /// When switching projects, select the first session of the new project.
     pub(crate) fn sync_active_session_to_project(&mut self) {
         let project_sessions = self.active_project_sessions();
@@ -1093,6 +1169,19 @@ impl App {
             );
         }
 
+        // Delete-project modal
+        if self.show_delete_project_modal_flag {
+            delete_project_modal::render_delete_project_modal(
+                frame,
+                &delete_project_modal::DeleteProjectModalState {
+                    project_name: &self.delete_project_name,
+                    confirmation: self.delete_project_confirmation.value(),
+                    confirmation_cursor: self.delete_project_confirmation.cursor_pos(),
+                    error: self.delete_project_error.as_deref(),
+                },
+            );
+        }
+
         // Repo selector modal
         if self.show_repo_selector {
             if let Some(active_project) = self.active_project() {
@@ -1326,15 +1415,15 @@ impl App {
             local_projects.insert(project.id, shared_project);
         }
 
-        // Merge projects: update existing or keep from shared state
+        // Merge projects: only include projects that exist in local state.
+        // Deleted projects are simply removed from shared state (not kept from other instances).
+        // This ensures deletions propagate across all instances.
         let mut merged_projects = Vec::new();
         for existing in shared_state.projects {
             if let Some(updated) = local_projects.remove(&existing.id) {
                 merged_projects.push(updated);
-            } else {
-                // Keep projects from other instances
-                merged_projects.push(existing);
             }
+            // Projects not in local_projects are treated as deleted and omitted
         }
 
         // Add new projects (only in local state, not yet in shared state)
@@ -1574,6 +1663,7 @@ fn render_help_overlay(frame: &mut Frame) {
         )),
         help_line("j / Down", "Next project"),
         help_line("k / Up", "Previous project"),
+        help_line("d", "Delete selected project"),
         help_line("r", "Edit project roles"),
         help_line("Enter", "Focus session list"),
         Line::from(""),
