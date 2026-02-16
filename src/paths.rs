@@ -213,6 +213,98 @@ impl Drop for TestPathGuard {
     }
 }
 
+/// Find the longest common prefix among a slice of strings.
+fn longest_common_prefix(strings: &[String]) -> String {
+    if strings.is_empty() {
+        return String::new();
+    }
+    let first = &strings[0];
+    let mut prefix_len = first.len();
+    for s in &strings[1..] {
+        prefix_len = prefix_len.min(s.len());
+        for (i, (a, b)) in first.bytes().zip(s.bytes()).enumerate() {
+            if a != b {
+                prefix_len = prefix_len.min(i);
+                break;
+            }
+        }
+    }
+    first[..prefix_len].to_string()
+}
+
+/// Fish-style directory path completion.
+///
+/// Given a partial path input, returns the suffix to complete it.
+/// Only considers directories. Hidden entries (starting with `.`) are
+/// included only when the user's prefix starts with `.`.
+///
+/// # Examples
+///
+/// - Input `"/home/us"` with `/home/user/` existing → `Some("er/")`
+/// - Input `"/home/user/"` → suggests first common prefix of children
+/// - Input `"/nonexistent"` → `None`
+pub fn complete_directory_path(input: &str) -> Option<String> {
+    if input.is_empty() {
+        return None;
+    }
+
+    let path = Path::new(input);
+
+    // Determine parent directory and the prefix the user is typing
+    let (parent, prefix) = if input.ends_with('/') {
+        // User typed a trailing slash — list contents of this directory
+        (path.to_path_buf(), String::new())
+    } else {
+        // Split into parent + partial filename
+        let parent = path.parent()?.to_path_buf();
+        let file_name = path.file_name()?.to_str()?;
+        (parent, file_name.to_string())
+    };
+
+    let entries = std::fs::read_dir(&parent).ok()?;
+
+    let show_hidden = prefix.starts_with('.');
+
+    let matches: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            if !show_hidden && name.starts_with('.') {
+                return None;
+            }
+            if name.starts_with(&prefix) {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if matches.is_empty() {
+        return None;
+    }
+
+    let common = longest_common_prefix(&matches);
+    let beyond_typed = &common[prefix.len()..];
+    if beyond_typed.is_empty() && matches.len() > 1 {
+        return None;
+    }
+
+    let completed = parent.join(&common);
+    let suffix = if completed.is_dir() {
+        format!("{beyond_typed}/")
+    } else {
+        beyond_typed.to_string()
+    };
+
+    if suffix.is_empty() {
+        None
+    } else {
+        Some(suffix)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +481,165 @@ mod tests {
         assert_eq!(
             resolve_override(base, PathKind::Database),
             PathBuf::from("/data/thurbox.db")
+        );
+    }
+
+    #[test]
+    fn longest_common_prefix_empty() {
+        assert_eq!(longest_common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn longest_common_prefix_single() {
+        assert_eq!(longest_common_prefix(&["hello".to_string()]), "hello");
+    }
+
+    #[test]
+    fn longest_common_prefix_multiple() {
+        assert_eq!(
+            longest_common_prefix(&[
+                "foobar".to_string(),
+                "foobaz".to_string(),
+                "fooqux".to_string(),
+            ]),
+            "foo"
+        );
+    }
+
+    #[test]
+    fn longest_common_prefix_identical() {
+        assert_eq!(
+            longest_common_prefix(&["abc".to_string(), "abc".to_string()]),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn longest_common_prefix_no_common() {
+        assert_eq!(
+            longest_common_prefix(&["abc".to_string(), "xyz".to_string()]),
+            ""
+        );
+    }
+
+    #[test]
+    fn complete_directory_path_empty_input() {
+        assert_eq!(complete_directory_path(""), None);
+    }
+
+    #[test]
+    fn complete_directory_path_nonexistent() {
+        assert_eq!(complete_directory_path("/nonexistent_dir_xyz_123"), None);
+    }
+
+    #[test]
+    fn complete_directory_path_with_real_dir() {
+        // /tmp should exist on all Unix systems
+        let result = complete_directory_path("/tm");
+        assert_eq!(result, Some("p/".to_string()));
+    }
+
+    #[test]
+    fn complete_directory_path_trailing_slash() {
+        // /tmp/ should list children — result depends on system, but shouldn't panic
+        let result = complete_directory_path("/tmp/");
+        // Either Some (has child dirs) or None (empty /tmp/)
+        assert!(result.is_some() || result.is_none());
+    }
+
+    #[test]
+    fn complete_directory_path_exact_match() {
+        // /tmp already exists and is a directory
+        let result = complete_directory_path("/tmp");
+        assert_eq!(result, Some("/".to_string()));
+    }
+
+    #[test]
+    fn complete_directory_path_root() {
+        // "/" is a valid directory — shouldn't panic
+        let result = complete_directory_path("/");
+        // Root has children, so we expect Some or None depending on common prefix
+        assert!(result.is_some() || result.is_none());
+    }
+
+    #[test]
+    fn complete_directory_path_with_tempdir() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let base = temp.path();
+
+        // Create two subdirectories with a common prefix
+        std::fs::create_dir(base.join("project_alpha")).unwrap();
+        std::fs::create_dir(base.join("project_beta")).unwrap();
+        std::fs::create_dir(base.join("other")).unwrap();
+
+        // Completing "project_" should find common prefix "project_"
+        let input = format!("{}/project_", base.display());
+        let result = complete_directory_path(&input);
+        // Two matches: project_alpha, project_beta — common prefix beyond typed is empty
+        assert_eq!(result, None);
+
+        // Completing "project_a" should complete to "project_alpha/"
+        let input = format!("{}/project_a", base.display());
+        let result = complete_directory_path(&input);
+        assert_eq!(result, Some("lpha/".to_string()));
+
+        // Completing "oth" should complete to "other/"
+        let input = format!("{}/oth", base.display());
+        let result = complete_directory_path(&input);
+        assert_eq!(result, Some("er/".to_string()));
+    }
+
+    #[test]
+    fn complete_directory_path_skips_hidden_by_default() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let base = temp.path();
+
+        std::fs::create_dir(base.join(".hidden")).unwrap();
+        std::fs::create_dir(base.join("visible")).unwrap();
+
+        // Without dot prefix, hidden dirs are skipped
+        let input = format!("{}/", base.display());
+        let result = complete_directory_path(&input);
+        assert_eq!(result, Some("visible/".to_string()));
+    }
+
+    #[test]
+    fn complete_directory_path_shows_hidden_with_dot_prefix() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let base = temp.path();
+
+        std::fs::create_dir(base.join(".hidden")).unwrap();
+        std::fs::create_dir(base.join("visible")).unwrap();
+
+        // With dot prefix, hidden dirs are included
+        let input = format!("{}/.hid", base.display());
+        let result = complete_directory_path(&input);
+        assert_eq!(result, Some("den/".to_string()));
+    }
+
+    #[test]
+    fn complete_directory_path_ignores_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let base = temp.path();
+
+        std::fs::write(base.join("readme.md"), "content").unwrap();
+        std::fs::create_dir(base.join("src")).unwrap();
+
+        // Only directories should match, not files
+        let input = format!("{}/rea", base.display());
+        let result = complete_directory_path(&input);
+        assert_eq!(result, None);
+
+        let input = format!("{}/sr", base.display());
+        let result = complete_directory_path(&input);
+        assert_eq!(result, Some("c/".to_string()));
+    }
+
+    #[test]
+    fn longest_common_prefix_different_lengths() {
+        assert_eq!(
+            longest_common_prefix(&["ab".to_string(), "abcdef".to_string()]),
+            "ab"
         );
     }
 }

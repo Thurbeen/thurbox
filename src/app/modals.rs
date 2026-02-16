@@ -97,6 +97,7 @@ impl TextInput {
 pub enum AddProjectField {
     Name,
     Path,
+    RepoList,
 }
 
 // ── Modal State Structs ────────────────────────────────────────────────────
@@ -106,6 +107,9 @@ pub struct AddProjectModal {
     pub name: TextInput,
     pub path: TextInput,
     pub field: AddProjectField,
+    pub repos: Vec<PathBuf>,
+    pub repo_index: usize,
+    pub path_suggestion: Option<String>,
 }
 
 impl Default for AddProjectModal {
@@ -114,6 +118,9 @@ impl Default for AddProjectModal {
             name: TextInput::default(),
             path: TextInput::default(),
             field: AddProjectField::Name,
+            repos: Vec::new(),
+            repo_index: 0,
+            path_suggestion: None,
         }
     }
 }
@@ -606,6 +613,29 @@ mod tests {
         assert_eq!(modal.name.value(), "");
         assert_eq!(modal.path.value(), "");
         assert_eq!(modal.field, AddProjectField::Name);
+        assert!(modal.repos.is_empty());
+        assert_eq!(modal.repo_index, 0);
+        assert!(modal.path_suggestion.is_none());
+    }
+
+    #[test]
+    fn test_add_project_field_has_repo_list_variant() {
+        let field = AddProjectField::RepoList;
+        assert_ne!(field, AddProjectField::Name);
+        assert_ne!(field, AddProjectField::Path);
+    }
+
+    #[test]
+    fn test_add_project_modal_with_repos() {
+        let mut modal = AddProjectModal::default();
+        modal.repos.push(PathBuf::from("/path/to/repo1"));
+        modal.repos.push(PathBuf::from("/path/to/repo2"));
+        modal.repo_index = 1;
+        modal.path_suggestion = Some("er/".to_string());
+
+        assert_eq!(modal.repos.len(), 2);
+        assert_eq!(modal.repo_index, 1);
+        assert_eq!(modal.path_suggestion.as_deref(), Some("er/"));
     }
 
     #[test]

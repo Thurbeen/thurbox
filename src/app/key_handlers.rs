@@ -5,8 +5,11 @@
 //! - Focus-based handlers (ProjectList, SessionList, Terminal)
 //! - Modal handlers (AddProject, RepoSelector, BranchSelector, etc.)
 
+use std::path::PathBuf;
+
 use super::{AddProjectField, App, InputFocus, RoleEditorView};
 use crate::claude::input;
+use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
 use tracing::error;
 
@@ -233,49 +236,142 @@ impl App {
     }
 
     fn handle_add_project_key(&mut self, code: KeyCode) {
-        let field = match self.add_project_field {
-            AddProjectField::Name => &mut self.add_project_name,
-            AddProjectField::Path => &mut self.add_project_path,
-        };
+        match self.add_project_field {
+            AddProjectField::Name => self.handle_add_project_name_key(code),
+            AddProjectField::Path => self.handle_add_project_path_key(code),
+            AddProjectField::RepoList => self.handle_add_project_repo_list_key(code),
+        }
+    }
 
+    fn handle_add_project_name_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Esc => {
-                self.show_add_project_modal = false;
-                self.add_project_name.clear();
-                self.add_project_path.clear();
+            KeyCode::Esc => self.close_add_project_modal(),
+            KeyCode::Tab => {
+                self.add_project_field = AddProjectField::Path;
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.add_project_field = match self.add_project_field {
-                    AddProjectField::Name => AddProjectField::Path,
-                    AddProjectField::Path => AddProjectField::Name,
-                };
+            KeyCode::BackTab => {
+                if !self.add_project_repos.is_empty() {
+                    self.add_project_field = AddProjectField::RepoList;
+                } else {
+                    self.add_project_field = AddProjectField::Path;
+                }
             }
-            KeyCode::Enter => {
-                self.submit_add_project();
-            }
-            KeyCode::Backspace => {
-                field.backspace();
-            }
-            KeyCode::Delete => {
-                field.delete();
-            }
-            KeyCode::Left => {
-                field.move_left();
-            }
-            KeyCode::Right => {
-                field.move_right();
-            }
-            KeyCode::Home => {
-                field.home();
-            }
-            KeyCode::End => {
-                field.end();
-            }
-            KeyCode::Char(c) => {
-                field.insert(c);
-            }
+            KeyCode::Enter => self.submit_add_project(),
+            KeyCode::Backspace => self.add_project_name.backspace(),
+            KeyCode::Delete => self.add_project_name.delete(),
+            KeyCode::Left => self.add_project_name.move_left(),
+            KeyCode::Right => self.add_project_name.move_right(),
+            KeyCode::Home => self.add_project_name.home(),
+            KeyCode::End => self.add_project_name.end(),
+            KeyCode::Char(c) => self.add_project_name.insert(c),
             _ => {}
         }
+    }
+
+    fn handle_add_project_path_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.close_add_project_modal();
+                return;
+            }
+            KeyCode::Tab => {
+                if let Some(suggestion) = self.add_project_path_suggestion.take() {
+                    for c in suggestion.chars() {
+                        self.add_project_path.insert(c);
+                    }
+                } else if !self.add_project_repos.is_empty() {
+                    self.add_project_field = AddProjectField::RepoList;
+                    self.add_project_path_suggestion = None;
+                    return;
+                } else {
+                    self.add_project_field = AddProjectField::Name;
+                    self.add_project_path_suggestion = None;
+                    return;
+                }
+            }
+            KeyCode::BackTab => {
+                self.add_project_field = AddProjectField::Name;
+                self.add_project_path_suggestion = None;
+                return;
+            }
+            KeyCode::Enter => {
+                let path = self.add_project_path.value().trim().to_string();
+                if !path.is_empty() {
+                    self.add_project_repos.push(PathBuf::from(path));
+                    self.add_project_repo_index = self.add_project_repos.len().saturating_sub(1);
+                    self.add_project_path.clear();
+                    self.add_project_path_suggestion = None;
+                }
+                return;
+            }
+            KeyCode::Backspace => self.add_project_path.backspace(),
+            KeyCode::Delete => self.add_project_path.delete(),
+            KeyCode::Left => self.add_project_path.move_left(),
+            KeyCode::Right => self.add_project_path.move_right(),
+            KeyCode::Home => self.add_project_path.home(),
+            KeyCode::End => self.add_project_path.end(),
+            KeyCode::Char(c) => self.add_project_path.insert(c),
+            _ => return,
+        }
+        self.update_path_suggestion();
+    }
+
+    fn handle_add_project_repo_list_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.close_add_project_modal(),
+            KeyCode::Tab => {
+                self.add_project_field = AddProjectField::Name;
+            }
+            KeyCode::BackTab => {
+                self.add_project_field = AddProjectField::Path;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.add_project_repo_index + 1 < self.add_project_repos.len() {
+                    self.add_project_repo_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.add_project_repo_index = self.add_project_repo_index.saturating_sub(1);
+            }
+            KeyCode::Char('d') => {
+                if !self.add_project_repos.is_empty() {
+                    self.add_project_repos.remove(self.add_project_repo_index);
+                    if self.add_project_repo_index >= self.add_project_repos.len()
+                        && self.add_project_repo_index > 0
+                    {
+                        self.add_project_repo_index -= 1;
+                    }
+                    // If list becomes empty, switch to Path field
+                    if self.add_project_repos.is_empty() {
+                        self.add_project_field = AddProjectField::Path;
+                    }
+                }
+            }
+            KeyCode::Enter => self.submit_add_project(),
+            _ => {}
+        }
+    }
+
+    /// Recompute path suggestion (fish-style: only when cursor is at end).
+    fn update_path_suggestion(&mut self) {
+        let value = self.add_project_path.value();
+        let at_end = self.add_project_path.cursor_pos() == value.chars().count();
+        if at_end && !value.is_empty() {
+            self.add_project_path_suggestion = paths::complete_directory_path(value);
+        } else {
+            self.add_project_path_suggestion = None;
+        }
+    }
+
+    /// Close the add-project modal and clear all related state.
+    pub(crate) fn close_add_project_modal(&mut self) {
+        self.show_add_project_modal = false;
+        self.add_project_name.clear();
+        self.add_project_path.clear();
+        self.add_project_field = AddProjectField::Name;
+        self.add_project_repos.clear();
+        self.add_project_repo_index = 0;
+        self.add_project_path_suggestion = None;
     }
 
     fn handle_delete_project_key(&mut self, code: KeyCode) {

@@ -96,6 +96,23 @@ pub fn render_text_field(
     cursor: usize,
     focused: bool,
 ) {
+    render_text_field_with_suggestion(frame, area, label, value, cursor, focused, None);
+}
+
+/// Render a text field with an optional inline suggestion (fish-style).
+///
+/// When `focused`, cursor at end, and `suggestion` is `Some`, the suggestion
+/// text is rendered in dark gray after the cursor block. Pass `None` for a
+/// plain text field (identical to [`render_text_field`]).
+pub fn render_text_field_with_suggestion(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    cursor: usize,
+    focused: bool,
+    suggestion: Option<&str>,
+) {
     let border_color = if focused { Color::Cyan } else { Color::Gray };
 
     let block = Block::default()
@@ -110,18 +127,18 @@ pub fn render_text_field(
     let cursor = cursor.min(chars.len());
 
     let display = if focused && width > 0 {
+        let at_end = cursor == chars.len();
+        let suggestion_text = if at_end { suggestion.unwrap_or("") } else { "" };
+
         let has_left_overflow;
         let has_right_overflow;
 
-        // Compute viewport start so cursor is always visible.
         let viewport_start = if chars.len() < width {
-            // Everything fits (including cursor-at-end space).
             has_left_overflow = false;
             has_right_overflow = false;
             0
         } else {
-            // Need scrolling. Reserve space for indicators.
-            let usable = width.saturating_sub(1); // at least 1 for right indicator
+            let usable = width.saturating_sub(1);
             let start = if cursor < usable {
                 0
             } else {
@@ -140,7 +157,6 @@ pub fn render_text_field(
         let content_width =
             width - if has_left_overflow { 1 } else { 0 } - if has_right_overflow { 1 } else { 0 };
 
-        // Build the visible portion around the cursor.
         let mut spans = Vec::new();
 
         if has_left_overflow {
@@ -150,7 +166,6 @@ pub fn render_text_field(
         let visible_end = (content_start + content_width).min(chars.len());
 
         if cursor >= content_start && cursor <= visible_end {
-            // Cursor is in the visible range.
             let before: String = chars[content_start..cursor].iter().collect();
             let cursor_char = if cursor < chars.len() {
                 chars[cursor].to_string()
@@ -160,6 +175,7 @@ pub fn render_text_field(
             let after_start = (cursor + 1).min(chars.len());
             let after_end = visible_end.min(chars.len());
             let after: String = chars[after_start..after_end].iter().collect();
+            let after_len = after.len();
 
             if !before.is_empty() {
                 spans.push(Span::styled(before, Style::default().fg(Color::White)));
@@ -170,6 +186,20 @@ pub fn render_text_field(
             ));
             if !after.is_empty() {
                 spans.push(Span::styled(after, Style::default().fg(Color::White)));
+            }
+
+            if !suggestion_text.is_empty() {
+                let used = if has_left_overflow { 1 } else { 0 }
+                    + (cursor - content_start)
+                    + 1 // cursor block
+                    + after_len;
+                let remaining = content_width.saturating_sub(used);
+                if remaining > 0 {
+                    let sug: String = suggestion_text.chars().take(remaining).collect();
+                    if !sug.is_empty() {
+                        spans.push(Span::styled(sug, Style::default().fg(Color::DarkGray)));
+                    }
+                }
             }
         } else {
             let visible: String = chars[content_start..visible_end].iter().collect();
@@ -182,7 +212,6 @@ pub fn render_text_field(
 
         Line::from(spans)
     } else if width > 0 {
-        // Unfocused: show with ellipsis if too long.
         if chars.len() > width {
             let truncated: String = chars[..width - 1].iter().collect();
             Line::from(vec![
