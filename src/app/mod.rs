@@ -1,3 +1,4 @@
+mod key_handlers;
 mod modals;
 mod state;
 
@@ -14,7 +15,7 @@ use ratatui::{
 };
 use tracing::error;
 
-use crate::claude::{input, Session, SessionBackend};
+use crate::claude::{Session, SessionBackend};
 use crate::git;
 use crate::project::{self, ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
@@ -46,11 +47,11 @@ pub enum AddProjectField {
 }
 
 /// State for an editable list of tool names (allowed or disallowed).
-struct ToolListState {
-    items: Vec<String>,
-    selected: usize,
-    mode: role_editor_modal::ToolListMode,
-    input: TextInput,
+pub(crate) struct ToolListState {
+    pub(crate) items: Vec<String>,
+    pub(crate) selected: usize,
+    pub(crate) mode: role_editor_modal::ToolListMode,
+    pub(crate) input: TextInput,
 }
 
 impl ToolListState {
@@ -115,9 +116,9 @@ impl ToolListState {
     }
 }
 
-struct TextInput {
-    buffer: String,
-    cursor: usize,
+pub(crate) struct TextInput {
+    pub(crate) buffer: String,
+    pub(crate) cursor: usize,
 }
 
 impl TextInput {
@@ -217,45 +218,45 @@ pub struct App {
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
     backend: Arc<dyn SessionBackend>,
-    focus: InputFocus,
-    should_quit: bool,
-    error_message: Option<String>,
+    pub(crate) focus: InputFocus,
+    pub(crate) should_quit: bool,
+    pub(crate) error_message: Option<String>,
     terminal_rows: u16,
-    terminal_cols: u16,
+    pub(crate) terminal_cols: u16,
     session_counter: usize,
-    show_info_panel: bool,
-    show_help: bool,
-    show_add_project_modal: bool,
-    add_project_name: TextInput,
-    add_project_path: TextInput,
-    add_project_field: AddProjectField,
-    show_repo_selector: bool,
-    repo_selector_index: usize,
-    show_session_mode_modal: bool,
-    session_mode_index: usize,
-    show_branch_selector: bool,
-    branch_selector_index: usize,
-    available_branches: Vec<String>,
-    pending_repo_path: Option<PathBuf>,
-    show_worktree_name_modal: bool,
-    worktree_name_input: TextInput,
-    pending_base_branch: Option<String>,
-    show_role_selector: bool,
-    role_selector_index: usize,
-    pending_spawn_config: Option<SessionConfig>,
-    pending_spawn_worktree: Option<WorktreeInfo>,
-    pending_spawn_name: Option<String>,
-    show_role_editor: bool,
-    role_editor_view: RoleEditorView,
-    role_editor_list_index: usize,
-    role_editor_roles: Vec<RoleConfig>,
-    role_editor_field: role_editor_modal::RoleEditorField,
-    role_editor_name: TextInput,
-    role_editor_description: TextInput,
-    role_editor_allowed_tools: ToolListState,
-    role_editor_disallowed_tools: ToolListState,
-    role_editor_system_prompt: TextInput,
-    role_editor_editing_index: Option<usize>,
+    pub(crate) show_info_panel: bool,
+    pub(crate) show_help: bool,
+    pub(crate) show_add_project_modal: bool,
+    pub(crate) add_project_name: TextInput,
+    pub(crate) add_project_path: TextInput,
+    pub(crate) add_project_field: AddProjectField,
+    pub(crate) show_repo_selector: bool,
+    pub(crate) repo_selector_index: usize,
+    pub(crate) show_session_mode_modal: bool,
+    pub(crate) session_mode_index: usize,
+    pub(crate) show_branch_selector: bool,
+    pub(crate) branch_selector_index: usize,
+    pub(crate) available_branches: Vec<String>,
+    pub(crate) pending_repo_path: Option<PathBuf>,
+    pub(crate) show_worktree_name_modal: bool,
+    pub(crate) worktree_name_input: TextInput,
+    pub(crate) pending_base_branch: Option<String>,
+    pub(crate) show_role_selector: bool,
+    pub(crate) role_selector_index: usize,
+    pub(crate) pending_spawn_config: Option<SessionConfig>,
+    pub(crate) pending_spawn_worktree: Option<WorktreeInfo>,
+    pub(crate) pending_spawn_name: Option<String>,
+    pub(crate) show_role_editor: bool,
+    pub(crate) role_editor_view: RoleEditorView,
+    pub(crate) role_editor_list_index: usize,
+    pub(crate) role_editor_roles: Vec<RoleConfig>,
+    pub(crate) role_editor_field: role_editor_modal::RoleEditorField,
+    pub(crate) role_editor_name: TextInput,
+    pub(crate) role_editor_description: TextInput,
+    pub(crate) role_editor_allowed_tools: ToolListState,
+    pub(crate) role_editor_disallowed_tools: ToolListState,
+    pub(crate) role_editor_system_prompt: TextInput,
+    pub(crate) role_editor_editing_index: Option<usize>,
     sync_state: SyncState,
 }
 
@@ -433,7 +434,7 @@ impl App {
         }
     }
 
-    fn spawn_session_in_repo(&mut self, repo_path: PathBuf) {
+    pub(crate) fn spawn_session_in_repo(&mut self, repo_path: PathBuf) {
         let config = SessionConfig {
             cwd: Some(repo_path),
             ..SessionConfig::default()
@@ -446,7 +447,7 @@ impl App {
         self.session_counter.to_string()
     }
 
-    fn spawn_session_with_config(&mut self, config: &SessionConfig) {
+    pub(crate) fn spawn_session_with_config(&mut self, config: &SessionConfig) {
         self.prepare_spawn(config.clone(), None);
     }
 
@@ -454,7 +455,11 @@ impl App {
     ///
     /// Assigns a session name, then spawns immediately if no roles or exactly
     /// one role is configured, or shows the role selector modal for 2+ roles.
-    fn prepare_spawn(&mut self, mut config: SessionConfig, worktree: Option<WorktreeInfo>) {
+    pub(crate) fn prepare_spawn(
+        &mut self,
+        mut config: SessionConfig,
+        worktree: Option<WorktreeInfo>,
+    ) {
         let name = self.next_session_name();
         let Some(project) = self.active_project() else {
             return;
@@ -488,17 +493,23 @@ impl App {
             return;
         }
 
-        let session_id = self.sessions[self.active_index].info.id;
+        let Some(session) = self.sessions.get(self.active_index) else {
+            return;
+        };
+
+        let session_id = session.info.id;
 
         // Clean up worktree if present
-        if let Some(wt) = &self.sessions[self.active_index].info.worktree {
+        if let Some(wt) = &session.info.worktree {
             if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
                 error!("Failed to remove worktree: {e}");
             }
         }
 
         // Kill the backend session before removing from the list.
-        self.sessions[self.active_index].kill();
+        if let Some(session) = self.sessions.get_mut(self.active_index) {
+            session.kill();
+        }
         self.sessions.remove(self.active_index);
 
         // Remove session from its project
@@ -517,7 +528,7 @@ impl App {
     }
 
     /// Get sessions belonging to the active project.
-    fn active_project_sessions(&self) -> Vec<usize> {
+    pub(crate) fn active_project_sessions(&self) -> Vec<usize> {
         match self.active_project() {
             Some(project) => self
                 .sessions
@@ -531,7 +542,7 @@ impl App {
     }
 
     /// Get the active session's index within the active project's session list.
-    fn active_session_in_project(&self) -> usize {
+    pub(crate) fn active_session_in_project(&self) -> usize {
         let project_sessions = self.active_project_sessions();
         project_sessions
             .iter()
@@ -586,198 +597,7 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        // Dismiss help overlay with Esc
-        if self.show_help {
-            if code == KeyCode::Esc {
-                self.show_help = false;
-            }
-            return;
-        }
-
-        // Repo selector modal captures all input
-        if self.show_repo_selector {
-            self.handle_repo_selector_key(code);
-            return;
-        }
-
-        // Session mode modal captures all input
-        if self.show_session_mode_modal {
-            self.handle_session_mode_key(code);
-            return;
-        }
-
-        // Branch selector modal captures all input
-        if self.show_branch_selector {
-            self.handle_branch_selector_key(code);
-            return;
-        }
-
-        // Worktree name modal captures all input
-        if self.show_worktree_name_modal {
-            self.handle_worktree_name_key(code);
-            return;
-        }
-
-        // Role editor modal captures all input
-        if self.show_role_editor {
-            self.handle_role_editor_key(code);
-            return;
-        }
-
-        // Role selector modal captures all input
-        if self.show_role_selector {
-            self.handle_role_selector_key(code);
-            return;
-        }
-
-        // Add-project modal captures all input
-        if self.show_add_project_modal {
-            self.handle_add_project_key(code);
-            return;
-        }
-
-        // Global keybindings (always active)
-        if mods.contains(KeyModifiers::CONTROL) {
-            match code {
-                KeyCode::Char('q') => {
-                    self.should_quit = true;
-                    return;
-                }
-                KeyCode::Char('n') => {
-                    if self.focus == InputFocus::ProjectList {
-                        self.show_add_project_modal = true;
-                        self.add_project_field = AddProjectField::Name;
-                    } else {
-                        self.spawn_session();
-                    }
-                    return;
-                }
-                KeyCode::Char('x') => {
-                    self.close_active_session();
-                    return;
-                }
-                KeyCode::Char('j') => {
-                    self.switch_session_forward();
-                    return;
-                }
-                KeyCode::Char('k') => {
-                    self.switch_session_backward();
-                    return;
-                }
-                KeyCode::Char('l') => {
-                    self.focus = match self.focus {
-                        InputFocus::ProjectList => InputFocus::SessionList,
-                        InputFocus::SessionList => InputFocus::Terminal,
-                        InputFocus::Terminal => InputFocus::ProjectList,
-                    };
-                    return;
-                }
-                KeyCode::Char('i') => {
-                    if self.terminal_cols >= 120 {
-                        self.show_info_panel = !self.show_info_panel;
-                    }
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        match self.focus {
-            InputFocus::ProjectList => self.handle_project_list_key(code),
-            InputFocus::SessionList => self.handle_session_list_key(code),
-            InputFocus::Terminal => self.handle_terminal_key(code, mods),
-        }
-    }
-
-    fn handle_project_list_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.active_project_index + 1 < self.projects.len() {
-                    self.active_project_index += 1;
-                    self.sync_active_session_to_project();
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.active_project_index > 0 {
-                    self.active_project_index -= 1;
-                    self.sync_active_session_to_project();
-                }
-            }
-            KeyCode::Enter => {
-                self.focus = InputFocus::SessionList;
-            }
-            KeyCode::Char('r') => {
-                self.open_role_editor();
-            }
-            KeyCode::Char('?') => {
-                self.show_help = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_session_list_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('?') => {
-                self.show_help = true;
-            }
-            KeyCode::Enter => {
-                self.focus = InputFocus::Terminal;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.switch_session_forward();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.switch_session_backward();
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_terminal_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        // Scroll keybindings (Shift + navigation keys)
-        if mods.contains(KeyModifiers::SHIFT) {
-            match code {
-                KeyCode::Up => {
-                    self.scroll_terminal_up(1);
-                    return;
-                }
-                KeyCode::Down => {
-                    self.scroll_terminal_down(1);
-                    return;
-                }
-                KeyCode::PageUp => {
-                    let amount = self.page_scroll_amount();
-                    self.scroll_terminal_up(amount);
-                    return;
-                }
-                KeyCode::PageDown => {
-                    let amount = self.page_scroll_amount();
-                    self.scroll_terminal_down(amount);
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Snap to bottom on any non-scroll key when scrolled up
-        self.with_active_parser(|parser| {
-            if parser.screen().scrollback() > 0 {
-                parser.screen_mut().set_scrollback(0);
-            }
-        });
-
-        if let Some(session) = self.sessions.get(self.active_index) {
-            if let Some(bytes) = input::key_to_bytes(code, mods) {
-                if let Err(e) = session.send_input(bytes) {
-                    error!("Failed to send input: {e}");
-                }
-            }
-        }
-    }
-
-    fn with_active_parser(&self, f: impl FnOnce(&mut vt100::Parser)) {
+    pub(crate) fn with_active_parser(&self, f: impl FnOnce(&mut vt100::Parser)) {
         if let Some(session) = self.sessions.get(self.active_index) {
             if let Ok(mut parser) = session.parser.lock() {
                 f(&mut parser);
@@ -785,14 +605,14 @@ impl App {
         }
     }
 
-    fn scroll_terminal_up(&self, lines: usize) {
+    pub(crate) fn scroll_terminal_up(&self, lines: usize) {
         self.with_active_parser(|parser| {
             let current = parser.screen().scrollback();
             parser.screen_mut().set_scrollback(current + lines);
         });
     }
 
-    fn scroll_terminal_down(&self, lines: usize) {
+    pub(crate) fn scroll_terminal_down(&self, lines: usize) {
         self.with_active_parser(|parser| {
             let current = parser.screen().scrollback();
             parser
@@ -801,462 +621,12 @@ impl App {
         });
     }
 
-    fn page_scroll_amount(&self) -> usize {
+    pub(crate) fn page_scroll_amount(&self) -> usize {
         let (rows, _) = self.content_area_size();
         (rows as usize) / 2
     }
 
-    fn handle_add_project_key(&mut self, code: KeyCode) {
-        let field = match self.add_project_field {
-            AddProjectField::Name => &mut self.add_project_name,
-            AddProjectField::Path => &mut self.add_project_path,
-        };
-
-        match code {
-            KeyCode::Esc => {
-                self.show_add_project_modal = false;
-                self.add_project_name.clear();
-                self.add_project_path.clear();
-            }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.add_project_field = match self.add_project_field {
-                    AddProjectField::Name => AddProjectField::Path,
-                    AddProjectField::Path => AddProjectField::Name,
-                };
-            }
-            KeyCode::Enter => {
-                self.submit_add_project();
-            }
-            KeyCode::Backspace => {
-                field.backspace();
-            }
-            KeyCode::Delete => {
-                field.delete();
-            }
-            KeyCode::Left => {
-                field.move_left();
-            }
-            KeyCode::Right => {
-                field.move_right();
-            }
-            KeyCode::Home => {
-                field.home();
-            }
-            KeyCode::End => {
-                field.end();
-            }
-            KeyCode::Char(c) => {
-                field.insert(c);
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_repo_selector_key(&mut self, code: KeyCode) {
-        let Some(project) = self.active_project() else {
-            return;
-        };
-        let repo_count = project.config.repos.len();
-        match code {
-            KeyCode::Esc => {
-                self.show_repo_selector = false;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.repo_selector_index + 1 < repo_count {
-                    self.repo_selector_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.repo_selector_index = self.repo_selector_index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                if let Some(path) = project.config.repos.get(self.repo_selector_index).cloned() {
-                    self.pending_repo_path = Some(path);
-                    self.show_repo_selector = false;
-                    self.session_mode_index = 0;
-                    self.show_session_mode_modal = true;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_session_mode_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.show_session_mode_modal = false;
-                self.pending_repo_path = None;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.session_mode_index == 0 {
-                    self.session_mode_index = 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.session_mode_index = 0;
-            }
-            KeyCode::Enter => {
-                self.show_session_mode_modal = false;
-                if self.session_mode_index == 0 {
-                    // Normal mode
-                    if let Some(path) = self.pending_repo_path.take() {
-                        self.spawn_session_in_repo(path);
-                    }
-                } else {
-                    // Worktree mode
-                    self.start_branch_selection();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn start_branch_selection(&mut self) {
-        let Some(repo_path) = self.pending_repo_path.as_ref() else {
-            return;
-        };
-        match git::list_branches(repo_path) {
-            Ok(branches) if branches.is_empty() => {
-                self.error_message = Some("No branches found in repository".to_string());
-                self.pending_repo_path = None;
-            }
-            Ok(mut branches) => {
-                // Move the default branch to front so it's pre-selected.
-                if let Some(default) = git::default_branch(repo_path, &branches) {
-                    if let Some(pos) = branches.iter().position(|b| b == &default) {
-                        let branch = branches.remove(pos);
-                        branches.insert(0, branch);
-                    }
-                }
-                self.available_branches = branches;
-                self.branch_selector_index = 0;
-                self.show_branch_selector = true;
-            }
-            Err(e) => {
-                error!("Failed to list branches: {e}");
-                self.error_message = Some(format!("Failed to list branches: {e:#}"));
-                self.pending_repo_path = None;
-            }
-        }
-    }
-
-    fn handle_branch_selector_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.show_branch_selector = false;
-                self.available_branches.clear();
-                self.pending_repo_path = None;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.branch_selector_index + 1 < self.available_branches.len() {
-                    self.branch_selector_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.branch_selector_index = self.branch_selector_index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                let base_branch = self.available_branches[self.branch_selector_index].clone();
-                self.show_branch_selector = false;
-                self.available_branches.clear();
-                self.worktree_name_input.clear();
-                self.pending_base_branch = Some(base_branch);
-                self.show_worktree_name_modal = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_worktree_name_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.show_worktree_name_modal = false;
-                self.worktree_name_input.clear();
-                self.pending_base_branch = None;
-                self.pending_repo_path = None;
-            }
-            KeyCode::Enter => {
-                let new_branch = self.worktree_name_input.value().trim().to_string();
-                if new_branch.is_empty() {
-                    self.error_message = Some("Branch name cannot be empty".to_string());
-                    return;
-                }
-                self.show_worktree_name_modal = false;
-                if let (Some(repo_path), Some(base_branch)) = (
-                    self.pending_repo_path.take(),
-                    self.pending_base_branch.take(),
-                ) {
-                    self.worktree_name_input.clear();
-                    self.spawn_worktree_session(repo_path, &new_branch, &base_branch);
-                }
-            }
-            KeyCode::Backspace => self.worktree_name_input.backspace(),
-            KeyCode::Delete => self.worktree_name_input.delete(),
-            KeyCode::Left => self.worktree_name_input.move_left(),
-            KeyCode::Right => self.worktree_name_input.move_right(),
-            KeyCode::Home => self.worktree_name_input.home(),
-            KeyCode::End => self.worktree_name_input.end(),
-            KeyCode::Char(c) => self.worktree_name_input.insert(c),
-            _ => {}
-        }
-    }
-
-    fn handle_role_selector_key(&mut self, code: KeyCode) {
-        let role_count = self
-            .active_project()
-            .map(|p| p.config.roles.len())
-            .unwrap_or(0);
-        match code {
-            KeyCode::Esc => {
-                self.show_role_selector = false;
-                self.pending_spawn_config = None;
-                self.pending_spawn_worktree = None;
-                self.pending_spawn_name = None;
-                // Undo the counter increment from prepare_spawn()
-                self.session_counter = self.session_counter.saturating_sub(1);
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.role_selector_index + 1 < role_count {
-                    self.role_selector_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.role_selector_index = self.role_selector_index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                self.show_role_selector = false;
-                let role_index = self.role_selector_index;
-                if let (Some(mut config), Some(name)) = (
-                    self.pending_spawn_config.take(),
-                    self.pending_spawn_name.take(),
-                ) {
-                    if let Some(project) = self.active_project() {
-                        if let Some(role) = project.config.roles.get(role_index) {
-                            config.role = role.name.clone();
-                            config.permissions = role.permissions.clone();
-                            let worktree = self.pending_spawn_worktree.take();
-                            self.do_spawn_session(name, &config, worktree);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn open_role_editor(&mut self) {
-        let Some(project) = self.active_project() else {
-            return;
-        };
-        self.role_editor_roles = project.config.roles.clone();
-        self.role_editor_list_index = 0;
-        self.role_editor_view = RoleEditorView::List;
-        self.show_role_editor = true;
-    }
-
-    fn handle_role_editor_key(&mut self, code: KeyCode) {
-        match self.role_editor_view {
-            RoleEditorView::List => self.handle_role_editor_list_key(code),
-            RoleEditorView::Editor => self.handle_role_editor_editor_key(code),
-        }
-    }
-
-    fn handle_role_editor_list_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                // Save & close
-                let roles_to_save = self.role_editor_roles.clone();
-                if let Some(project) = self.active_project_mut() {
-                    project.config.roles = roles_to_save;
-                }
-                self.save_project_configs_to_disk();
-                self.show_role_editor = false;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.role_editor_roles.is_empty()
-                    && self.role_editor_list_index + 1 < self.role_editor_roles.len()
-                {
-                    self.role_editor_list_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
-            }
-            KeyCode::Char('a') => {
-                self.role_editor_editing_index = None;
-                self.role_editor_name.clear();
-                self.role_editor_description.clear();
-                self.role_editor_allowed_tools.reset();
-                self.role_editor_disallowed_tools.reset();
-                self.role_editor_system_prompt.clear();
-                self.role_editor_field = role_editor_modal::RoleEditorField::Name;
-                self.role_editor_view = RoleEditorView::Editor;
-            }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.role_editor_roles.is_empty() {
-                    let idx = self.role_editor_list_index;
-                    self.open_role_for_editing(idx);
-                }
-            }
-            KeyCode::Char('d') => {
-                if !self.role_editor_roles.is_empty() {
-                    self.role_editor_roles.remove(self.role_editor_list_index);
-                    if self.role_editor_list_index >= self.role_editor_roles.len()
-                        && self.role_editor_list_index > 0
-                    {
-                        self.role_editor_list_index -= 1;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn open_role_for_editing(&mut self, index: usize) {
-        let role = &self.role_editor_roles[index];
-        self.role_editor_editing_index = Some(index);
-        self.role_editor_name.set(&role.name);
-        self.role_editor_description.set(&role.description);
-        self.role_editor_allowed_tools
-            .load(&role.permissions.allowed_tools);
-        self.role_editor_disallowed_tools
-            .load(&role.permissions.disallowed_tools);
-        self.role_editor_system_prompt.set(
-            role.permissions
-                .append_system_prompt
-                .as_deref()
-                .unwrap_or(""),
-        );
-        self.role_editor_field = role_editor_modal::RoleEditorField::Name;
-        self.role_editor_view = RoleEditorView::Editor;
-    }
-
-    fn handle_role_editor_editor_key(&mut self, code: KeyCode) {
-        use role_editor_modal::{RoleEditorField, ToolListMode};
-
-        match self.role_editor_field {
-            RoleEditorField::AllowedTools | RoleEditorField::DisallowedTools => {
-                if self.active_tool_list_mut().mode == ToolListMode::Adding {
-                    self.handle_tool_adding_key(code);
-                } else {
-                    self.handle_tool_browse_key(code);
-                }
-                return;
-            }
-            _ => {}
-        }
-
-        // Text field handling (Name, Description, SystemPrompt).
-        match code {
-            KeyCode::Esc => {
-                self.role_editor_view = RoleEditorView::List;
-            }
-            KeyCode::Tab => {
-                self.role_editor_field = Self::next_editor_field(self.role_editor_field);
-            }
-            KeyCode::BackTab => {
-                self.role_editor_field = Self::prev_editor_field(self.role_editor_field);
-            }
-            KeyCode::Enter => {
-                self.submit_role_editor();
-            }
-            _ => {
-                let input = match self.role_editor_field {
-                    RoleEditorField::Name => &mut self.role_editor_name,
-                    RoleEditorField::Description => &mut self.role_editor_description,
-                    RoleEditorField::SystemPrompt => &mut self.role_editor_system_prompt,
-                    _ => return,
-                };
-                match code {
-                    KeyCode::Backspace => input.backspace(),
-                    KeyCode::Delete => input.delete(),
-                    KeyCode::Left => input.move_left(),
-                    KeyCode::Right => input.move_right(),
-                    KeyCode::Home => input.home(),
-                    KeyCode::End => input.end(),
-                    KeyCode::Char(c) => input.insert(c),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn next_editor_field(
-        field: role_editor_modal::RoleEditorField,
-    ) -> role_editor_modal::RoleEditorField {
-        use role_editor_modal::RoleEditorField;
-        match field {
-            RoleEditorField::Name => RoleEditorField::Description,
-            RoleEditorField::Description => RoleEditorField::AllowedTools,
-            RoleEditorField::AllowedTools => RoleEditorField::DisallowedTools,
-            RoleEditorField::DisallowedTools => RoleEditorField::SystemPrompt,
-            RoleEditorField::SystemPrompt => RoleEditorField::Name,
-        }
-    }
-
-    fn prev_editor_field(
-        field: role_editor_modal::RoleEditorField,
-    ) -> role_editor_modal::RoleEditorField {
-        use role_editor_modal::RoleEditorField;
-        match field {
-            RoleEditorField::Name => RoleEditorField::SystemPrompt,
-            RoleEditorField::Description => RoleEditorField::Name,
-            RoleEditorField::AllowedTools => RoleEditorField::Description,
-            RoleEditorField::DisallowedTools => RoleEditorField::AllowedTools,
-            RoleEditorField::SystemPrompt => RoleEditorField::DisallowedTools,
-        }
-    }
-
-    fn active_tool_list_mut(&mut self) -> &mut ToolListState {
-        match self.role_editor_field {
-            role_editor_modal::RoleEditorField::AllowedTools => &mut self.role_editor_allowed_tools,
-            _ => &mut self.role_editor_disallowed_tools,
-        }
-    }
-
-    fn handle_tool_browse_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.role_editor_view = RoleEditorView::List;
-            }
-            KeyCode::Tab => {
-                self.role_editor_field = Self::next_editor_field(self.role_editor_field);
-            }
-            KeyCode::BackTab => {
-                self.role_editor_field = Self::prev_editor_field(self.role_editor_field);
-            }
-            KeyCode::Enter => {
-                self.submit_role_editor();
-            }
-            KeyCode::Char('a') => self.active_tool_list_mut().start_adding(),
-            KeyCode::Char('d') => self.active_tool_list_mut().delete_selected(),
-            KeyCode::Char('j') | KeyCode::Down => self.active_tool_list_mut().move_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.active_tool_list_mut().move_up(),
-            _ => {}
-        }
-    }
-
-    fn handle_tool_adding_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => self.active_tool_list_mut().cancel_add(),
-            KeyCode::Enter => self.active_tool_list_mut().confirm_add(),
-            _ => {
-                let input = &mut self.active_tool_list_mut().input;
-                match code {
-                    KeyCode::Backspace => input.backspace(),
-                    KeyCode::Delete => input.delete(),
-                    KeyCode::Left => input.move_left(),
-                    KeyCode::Right => input.move_right(),
-                    KeyCode::Home => input.home(),
-                    KeyCode::End => input.end(),
-                    KeyCode::Char(c) => input.insert(c),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn submit_role_editor(&mut self) {
+    pub(crate) fn submit_role_editor(&mut self) {
         let name = self.role_editor_name.value().trim().to_string();
         if name.is_empty() {
             self.error_message = Some("Role name cannot be empty".to_string());
@@ -1316,7 +686,7 @@ impl App {
         self.role_editor_view = RoleEditorView::List;
     }
 
-    fn save_project_configs_to_disk(&self) {
+    pub(crate) fn save_project_configs_to_disk(&self) {
         let configs: Vec<ProjectConfig> = self
             .projects
             .iter()
@@ -1328,7 +698,12 @@ impl App {
         }
     }
 
-    fn spawn_worktree_session(&mut self, repo_path: PathBuf, new_branch: &str, base_branch: &str) {
+    pub(crate) fn spawn_worktree_session(
+        &mut self,
+        repo_path: PathBuf,
+        new_branch: &str,
+        base_branch: &str,
+    ) {
         match git::create_worktree(&repo_path, new_branch, base_branch) {
             Ok(worktree_path) => {
                 let worktree_info = WorktreeInfo {
@@ -1349,7 +724,7 @@ impl App {
         }
     }
 
-    fn do_spawn_session(
+    pub(crate) fn do_spawn_session(
         &mut self,
         name: String,
         config: &SessionConfig,
@@ -1388,7 +763,7 @@ impl App {
         }
     }
 
-    fn submit_add_project(&mut self) {
+    pub(crate) fn submit_add_project(&mut self) {
         let name = self.add_project_name.value().trim().to_string();
         let path = self.add_project_path.value().trim().to_string();
 
@@ -1429,7 +804,7 @@ impl App {
     }
 
     /// When switching projects, select the first session of the new project.
-    fn sync_active_session_to_project(&mut self) {
+    pub(crate) fn sync_active_session_to_project(&mut self) {
         let project_sessions = self.active_project_sessions();
         if let Some(&first) = project_sessions.first() {
             self.active_index = first;
@@ -1437,12 +812,12 @@ impl App {
     }
 
     /// Switch to the next session within the active project.
-    fn switch_session_forward(&mut self) {
+    pub(crate) fn switch_session_forward(&mut self) {
         self.switch_session_by_offset(1);
     }
 
     /// Switch to the previous session within the active project.
-    fn switch_session_backward(&mut self) {
+    pub(crate) fn switch_session_backward(&mut self) {
         self.switch_session_by_offset(-1);
     }
 
@@ -2136,7 +1511,7 @@ impl App {
             .unwrap_or_default()
     }
 
-    fn content_area_size(&self) -> (u16, u16) {
+    pub(crate) fn content_area_size(&self) -> (u16, u16) {
         // Header: 1 line, Footer: 1 line, Borders: 2 lines top+bottom
         let rows = self.terminal_rows.saturating_sub(4);
 
