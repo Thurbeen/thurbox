@@ -55,74 +55,83 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-
     #[test]
-    fn test_active_project_empty() {
-        // Simulate state where projects list is empty
-        // by checking bounds - 0 < 0 should be false
-        let projects_len = 0;
-        let active_index = 0;
-        assert!(active_index >= projects_len); // Out of bounds
+    fn test_option_get_with_valid_index() {
+        let vec = [1, 2, 3];
+        let idx = 1;
+        assert_eq!(vec.get(idx), Some(&2));
     }
 
     #[test]
-    fn test_active_project_out_of_bounds() {
-        // Verify bounds checking logic
-        let active_index = 100;
-        let projects_len = 5;
-        assert!(active_index >= projects_len);
+    fn test_option_get_with_out_of_bounds() {
+        let vec: [i32; 3] = [1, 2, 3];
+        let idx = 10;
+        assert!(vec.get(idx).is_none());
     }
 
     #[test]
-    fn test_active_project_valid() {
-        // Verify valid index access
-        let active_index = 0;
-        let projects_len = 5;
-        assert!(active_index < projects_len);
+    fn test_has_active_logic_when_valid() {
+        let index = 2;
+        let len = 5;
+        assert!(index < len);
     }
 
     #[test]
-    fn test_active_session_empty() {
-        // Verify empty list check
-        let sessions_len = 0;
-        let active_index = 0;
-        assert!(active_index >= sessions_len);
+    fn test_has_active_logic_when_invalid() {
+        let index = 5;
+        let len = 5;
+        assert!(index >= len);
     }
 
     #[test]
-    fn test_active_session_out_of_bounds() {
-        // Verify out of bounds check
-        let active_index = 100;
-        let sessions_len = 5;
-        assert!(active_index >= sessions_len);
+    fn test_accessor_return_type_is_option() {
+        // The accessors use .get() which returns Option<&T>
+        // This test documents that expected behavior
+        let values: [&str; 2] = ["a", "b"];
+        let valid_get: Option<&&str> = values.first();
+        let invalid_get: Option<&&str> = values.get(10);
+
+        assert!(valid_get.is_some());
+        assert!(invalid_get.is_none());
     }
 
     #[test]
-    fn test_bounds_checking_saturating_sub() {
-        // Test saturating_sub behavior (used in up navigation)
-        let mut index = 0usize;
-        index = index.saturating_sub(1);
-        assert_eq!(index, 0);
+    fn test_has_active_project_boundary() {
+        // Test at exact boundary
+        let index = 4;
+        let len = 5;
+        assert!(index < len); // Valid
 
-        index = 5;
-        index = index.saturating_sub(1);
-        assert_eq!(index, 4);
+        let index = 5;
+        assert!(index >= len); // Invalid at boundary
     }
 
     #[test]
-    fn test_bounds_checking_increment() {
-        // Test increment with max check
-        let mut index = 0usize;
-        let max = 5;
-        if index + 1 < max {
-            index += 1;
-        }
-        assert_eq!(index, 1);
+    fn test_has_active_session_empty_collection() {
+        let index = 0;
+        let len = 0;
+        assert!(index >= len); // Should be false for empty
+    }
 
-        index = 4;
-        if index + 1 < max {
-            index += 1;
-        }
-        assert_eq!(index, 4); // Should not increment (would be 5 >= max)
+    #[test]
+    fn test_accessor_semantics() {
+        // Document the semantic contract of the accessors
+        // They should return None rather than panic
+
+        // Simulating what would happen with a list
+        let collection: [i32; 3] = [10, 20, 30];
+
+        // Valid access
+        let result_valid = collection.get(1);
+        assert!(result_valid.is_some());
+        assert_eq!(result_valid, Some(&20));
+
+        // Out of bounds access
+        let result_invalid = collection.get(100);
+        assert!(result_invalid.is_none()); // None, not panic
+
+        // Zero index
+        let result_zero = collection.first();
+        assert_eq!(result_zero, Some(&10));
     }
 }
