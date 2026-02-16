@@ -216,10 +216,31 @@ framework). Install with `prek install`. Stages:
 - Terminal state parsed by `vt100::Parser`,
   rendered by `tui_term::PseudoTerminal`
 - Sessions persist across restarts (tmux keeps them alive)
-- `Ctrl+Q` is the quit key (detaches, does not kill sessions)
 - Config file: `~/.config/thurbox/config.toml`
   (XDG_CONFIG_HOME respected)
 - Requires tmux >= 3.2
+
+## Keybindings (Vim-Inspired)
+
+Global keys use `Ctrl` + semantic Vim conventions:
+
+| Key | Action | Mnemonic |
+|-----|--------|----------|
+| `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
+| `Ctrl+N` | New project/session | **N**ew |
+| `Ctrl+C` | Close active session | **C**lose |
+| `Ctrl+H` | Focus project list | Vim: **h** = left |
+| `Ctrl+J` | Next session | Vim: **j** = down |
+| `Ctrl+K` | Previous session | Vim: **k** = up |
+| `Ctrl+L` | Cycle focus | Vim: **l** = right |
+| `Ctrl+D` | Delete session/project | Vim: **d** = delete |
+| `Ctrl+R` | Role editor | **R**ole |
+| `F1` | Help overlay | Universal |
+| `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
+
+List contexts use plain `j`/`k`/`Enter` for navigation.
+Terminal forwards all non-Ctrl keys to the PTY.
+`Shift+arrows/PageUp/PageDown` for scrollback.
 
 ## Design Documentation
 

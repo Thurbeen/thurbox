@@ -87,44 +87,51 @@ keys (intercepted for scrollback navigation).
 
 ### Keybinding Table
 
-| Key | Context | Action |
-|-----|---------|--------|
-| `Ctrl+Q` | Global | Quit Thurbox |
-| `Ctrl+N` | Project list | Add new project |
-| `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) |
-| `Ctrl+X` | Global | Close active session |
-| `Ctrl+J` | Global | Next session within active project |
-| `Ctrl+K` | Global | Previous session within active project |
-| `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal |
-| `Ctrl+I` | Global | Toggle info panel (width >= 120) |
-| `j` / `Down` | Project list | Next project |
-| `k` / `Up` | Project list | Previous project |
-| `r` | Project list | Open role editor |
-| `Enter` | Project list | Focus session list |
-| `j` / `Down` | Session list | Next session |
-| `k` / `Up` | Session list | Previous session |
-| `Enter` | Session list | Focus terminal |
-| `?` | Project/session list | Show help overlay |
-| `j` / `Down` | Repo selector | Next repo |
-| `k` / `Up` | Repo selector | Previous repo |
-| `Enter` | Repo selector | Select repo and spawn session |
-| `Esc` | Repo selector | Cancel selection |
-| `j` / `Down` | Session mode modal | Next mode |
-| `k` / `Up` | Session mode modal | Previous mode |
-| `Enter` | Session mode modal | Select mode |
-| `Esc` | Session mode modal | Cancel |
-| `j` / `Down` | Base branch selector | Next branch |
-| `k` / `Up` | Base branch selector | Previous branch |
-| `Enter` | Base branch selector | Select base and open name prompt |
-| `Esc` | Base branch selector | Cancel |
-| `Enter` | New branch prompt | Confirm name, create branch and worktree |
-| `Esc` | New branch prompt | Cancel |
-| `Shift+Up` | Focused terminal | Scroll up 1 line |
-| `Shift+Down` | Focused terminal | Scroll down 1 line |
-| `Shift+PageUp` | Focused terminal | Scroll up half page |
-| `Shift+PageDown` | Focused terminal | Scroll down half page |
-| Mouse wheel | Focused terminal | Scroll up/down 3 lines |
-| All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) |
+All global keybindings use `Ctrl` and follow Vim conventions
+where applicable: `h/j/k/l` for navigation, semantic letters
+for actions (`C`=close, `D`=delete, `N`=new, `R`=role, `Q`=quit).
+
+| Key | Context | Action | Mnemonic |
+|-----|---------|--------|----------|
+| `Ctrl+Q` | Global | Quit Thurbox | **Q**uit |
+| `Ctrl+N` | Project list | Add new project | **N**ew |
+| `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) | **N**ew |
+| `Ctrl+C` | Global | Close active session | **C**lose |
+| `Ctrl+H` | Global | Focus project list | Vim: **h** = left |
+| `Ctrl+J` | Global | Next session within active project | Vim: **j** = down |
+| `Ctrl+K` | Global | Previous session within active project | Vim: **k** = up |
+| `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal | Vim: **l** = right |
+| `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
+| `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
+| `Ctrl+R` | Global | Open role editor | **R**ole |
+| `F1` | Global | Show help overlay | Universal help |
+| `F2` | Global | Toggle info panel | Next to F1 |
+| `j` / `Down` | Project list | Next project | |
+| `k` / `Up` | Project list | Previous project | |
+| `Enter` | Project list | Focus session list | |
+| `j` / `Down` | Session list | Next session | |
+| `k` / `Up` | Session list | Previous session | |
+| `Enter` | Session list | Focus terminal | |
+| `j` / `Down` | Repo selector | Next repo | |
+| `k` / `Up` | Repo selector | Previous repo | |
+| `Enter` | Repo selector | Select repo and spawn session | |
+| `Esc` | Repo selector | Cancel selection | |
+| `j` / `Down` | Session mode modal | Next mode | |
+| `k` / `Up` | Session mode modal | Previous mode | |
+| `Enter` | Session mode modal | Select mode | |
+| `Esc` | Session mode modal | Cancel | |
+| `j` / `Down` | Base branch selector | Next branch | |
+| `k` / `Up` | Base branch selector | Previous branch | |
+| `Enter` | Base branch selector | Select base and open name prompt | |
+| `Esc` | Base branch selector | Cancel | |
+| `Enter` | New branch prompt | Confirm name, create branch and worktree | |
+| `Esc` | New branch prompt | Cancel | |
+| `Shift+Up` | Focused terminal | Scroll up 1 line | |
+| `Shift+Down` | Focused terminal | Scroll down 1 line | |
+| `Shift+PageUp` | Focused terminal | Scroll up half page | |
+| `Shift+PageDown` | Focused terminal | Scroll down half page | |
+| Mouse wheel | Focused terminal | Scroll up/down 3 lines | |
+| All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) | |
 
 ---
 
@@ -232,7 +239,7 @@ where `/` in branch names is replaced by `-`.
 
 ### Cleanup behavior
 
-- Closing a worktree session (`Ctrl+X`) automatically removes
+- Closing a worktree session (`Ctrl+C`) automatically removes
   the worktree via `git worktree remove --force`.
 - Quitting Thurbox (`Ctrl+Q`) preserves worktrees on disk
   so they can be resumed on next launch
@@ -339,7 +346,7 @@ reconstructed on restore.
 - **`Ctrl+Q` (Quit)**: Detaches from all sessions (tmux panes
   keep running), saves metadata. Sessions resume on next launch
   with terminal content preserved.
-- **`Ctrl+X` (Close)**: Permanently kills the tmux pane.
+- **`Ctrl+C` (Close)**: Permanently kills the tmux pane.
   Its worktree (if any) is removed immediately.
   Closed sessions are not saved and will not be restored.
 
@@ -394,7 +401,7 @@ noise in historical output.
 ## Role Editor
 
 Roles can be managed from the TUI via a two-view modal
-accessed with `r` when the project list is focused.
+accessed with `Ctrl+R` from any context.
 
 Projects start with no roles. Users add roles explicitly.
 When no roles are defined, sessions spawn with default

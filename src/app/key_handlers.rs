@@ -90,8 +90,28 @@ impl App {
                     }
                     return;
                 }
-                KeyCode::Char('x') => {
+                KeyCode::Char('c') => {
                     self.close_active_session();
+                    return;
+                }
+                KeyCode::Char('d') => match self.focus {
+                    InputFocus::SessionList => {
+                        self.close_active_session();
+                        return;
+                    }
+                    InputFocus::ProjectList => {
+                        self.show_delete_project_modal();
+                        return;
+                    }
+                    InputFocus::Terminal => {} // forward to PTY
+                },
+                KeyCode::Char('r') => {
+                    self.open_role_editor();
+                    return;
+                }
+                // Vim navigation: h=left, j=down, k=up, l=cycle-right
+                KeyCode::Char('h') => {
+                    self.focus = InputFocus::ProjectList;
                     return;
                 }
                 KeyCode::Char('j') => {
@@ -110,14 +130,21 @@ impl App {
                     };
                     return;
                 }
-                KeyCode::Char('i') => {
-                    if self.terminal_cols >= 120 {
-                        self.show_info_panel = !self.show_info_panel;
-                    }
-                    return;
-                }
                 _ => {}
             }
+        }
+
+        // Function keys (work reliably in all terminals)
+        match code {
+            KeyCode::F(1) => {
+                self.show_help = true;
+                return;
+            }
+            KeyCode::F(2) => {
+                self.show_info_panel = !self.show_info_panel;
+                return;
+            }
+            _ => {}
         }
 
         match self.focus {
@@ -144,32 +171,20 @@ impl App {
             KeyCode::Enter => {
                 self.focus = InputFocus::SessionList;
             }
-            KeyCode::Char('r') => {
-                self.open_role_editor();
-            }
-            KeyCode::Char('d') => {
-                self.show_delete_project_modal();
-            }
-            KeyCode::Char('?') => {
-                self.show_help = true;
-            }
             _ => {}
         }
     }
 
     fn handle_session_list_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('?') => {
-                self.show_help = true;
-            }
-            KeyCode::Enter => {
-                self.focus = InputFocus::Terminal;
-            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.switch_session_forward();
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.switch_session_backward();
+            }
+            KeyCode::Enter => {
+                self.focus = InputFocus::Terminal;
             }
             _ => {}
         }
