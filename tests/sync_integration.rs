@@ -3,8 +3,8 @@
 /// These tests simulate two instances running concurrently and verify
 /// that session changes are properly shared between them.
 use std::collections::HashMap;
-use std::path::PathBuf;
 use tempfile::TempDir;
+use thurbox::paths::TestPathGuard;
 use thurbox::project::ProjectId;
 use thurbox::session::SessionId;
 use thurbox::sync::{self, SharedSession, SharedState};
@@ -29,7 +29,7 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
 #[test]
 fn instance_a_creates_session_visible_to_instance_b() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_dir.path().join("shared_state.toml");
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
     let session_id = SessionId::default();
@@ -41,6 +41,7 @@ fn instance_a_creates_session_visible_to_instance_b() {
         .push(make_session(session_id, "Session from A", project_id));
     state_a.session_counter = 1;
 
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
 
     // Instance B: load shared state and see instance A's session
@@ -54,7 +55,7 @@ fn instance_a_creates_session_visible_to_instance_b() {
 #[test]
 fn instance_b_creates_session_without_erasing_instance_a() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_path(temp_dir.path());
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
     let session_a_id = SessionId::default();
@@ -66,6 +67,7 @@ fn instance_b_creates_session_without_erasing_instance_a() {
         .sessions
         .push(make_session(session_a_id, "Session A", project_id));
     state_a.session_counter = 1;
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
 
     // Instance B: load, add its own session, write (merging)
@@ -169,7 +171,7 @@ fn delta_detects_deleted_session() {
 #[test]
 fn session_counter_avoids_conflicts() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_dir.path().join("shared_state.toml");
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
 
@@ -186,6 +188,7 @@ fn session_counter_avoids_conflicts() {
         project_id,
     ));
     state_a.session_counter = 2;
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
 
     // Instance B: load A's state, add its own, write (merge)
@@ -212,14 +215,10 @@ fn session_counter_avoids_conflicts() {
     );
 }
 
-fn temp_path(temp_dir: &std::path::Path) -> PathBuf {
-    temp_dir.join("shared_state.toml")
-}
-
 #[test]
 fn two_instances_adopt_same_session_no_duplicates() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_path(temp_dir.path());
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
     let session_id = SessionId::default();
@@ -230,6 +229,7 @@ fn two_instances_adopt_same_session_no_duplicates() {
         .sessions
         .push(make_session(session_id, "Shared Session", project_id));
     state_a.session_counter = 1;
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
 
     // Instance B: Load state and see session A's session
@@ -250,7 +250,7 @@ fn two_instances_adopt_same_session_no_duplicates() {
 #[test]
 fn removed_session_cleaned_from_all_projects() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_path(temp_dir.path());
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
     let session_id = SessionId::default();
@@ -261,6 +261,7 @@ fn removed_session_cleaned_from_all_projects() {
         .sessions
         .push(make_session(session_id, "Session", project_id));
     state.session_counter = 1;
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state).unwrap();
 
     // Instance B loads it
@@ -288,7 +289,7 @@ fn removed_session_cleaned_from_all_projects() {
 #[test]
 fn concurrent_adoption_preserves_session_metadata() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_path(temp_dir.path());
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
     let session_id = SessionId::default();
@@ -309,6 +310,7 @@ fn concurrent_adoption_preserves_session_metadata() {
         tombstone_at: None,
     });
     state_a.session_counter = 1;
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
 
     // Instance B: Load and verify all metadata preserved
@@ -339,7 +341,7 @@ fn concurrent_adoption_preserves_session_metadata() {
 #[test]
 fn multiple_sessions_per_project_stay_synchronized() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_path(temp_dir.path());
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
     let session1_id = SessionId::default();
@@ -355,6 +357,7 @@ fn multiple_sessions_per_project_stay_synchronized() {
         .sessions
         .push(make_session(session2_id, "Session 2", project_id));
     state_a.session_counter = 2;
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state_a).unwrap();
 
     // Instance B: Load A's sessions, add its own
@@ -410,7 +413,7 @@ fn multiple_sessions_per_project_stay_synchronized() {
 #[test]
 fn session_ids_not_duplicated_on_reload() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_path(temp_dir.path());
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let project_id = ProjectId::default();
     let session_id = SessionId::default();
@@ -421,6 +424,7 @@ fn session_ids_not_duplicated_on_reload() {
         .sessions
         .push(make_session(session_id, "Session from B", project_id));
     state_b.session_counter = 1;
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state_b).unwrap();
 
     // Instance A loads for the first time
@@ -447,7 +451,7 @@ fn session_ids_not_duplicated_on_reload() {
 #[test]
 fn multiple_instances_can_adopt_same_session() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_dir.path().join("shared_state.toml");
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     // Setup: Create shared state with one session
     let session_id = SessionId::default();
@@ -468,6 +472,7 @@ fn multiple_instances_can_adopt_same_session() {
         tombstone_at: None,
     });
 
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state).unwrap();
 
     // Simulate Instance A loading the shared state
@@ -500,7 +505,7 @@ fn multiple_instances_can_adopt_same_session() {
 #[test]
 fn multiple_instances_independent_adoption() {
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_dir.path().join("shared_state.toml");
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     let session_id = SessionId::default();
     let project_id = ProjectId::default();
@@ -521,6 +526,7 @@ fn multiple_instances_independent_adoption() {
         tombstone_at: None,
     });
 
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state).unwrap();
 
     // Instance A loads and modifies
@@ -654,7 +660,7 @@ fn deleted_sessions_marked_as_tombstones() {
     use thurbox::sync::{self, SharedSession, SharedState};
 
     let temp_dir = TempDir::new().unwrap();
-    let shared_path = temp_dir.path().join("shared_state.toml");
+    let _guard = TestPathGuard::new(temp_dir.path());
 
     // Setup: Create shared state with two sessions
     let session_a_id = SessionId::default();
@@ -689,6 +695,7 @@ fn deleted_sessions_marked_as_tombstones() {
         tombstone_at: None,
     });
 
+    let shared_path = thurbox::paths::shared_state_file().unwrap();
     sync::file_store::save_shared_state(&shared_path, &state).unwrap();
 
     // Simulate Instance A: Load both sessions, then delete session B

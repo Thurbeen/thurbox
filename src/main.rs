@@ -22,7 +22,8 @@ async fn main() -> Result<()> {
     }));
 
     // File-based logging (stdout is owned by the TUI)
-    let log_dir = log_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let log_dir = thurbox::paths::log_directory().unwrap_or_else(|| std::path::PathBuf::from("."));
+    std::fs::create_dir_all(&log_dir).ok();
     let file_appender = tracing_appender::rolling::daily(log_dir, "thurbox.log");
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -92,16 +93,4 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
     }
 
     Ok(())
-}
-
-/// Return the data-local directory for log files.
-fn log_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|h| {
-        let mut p = std::path::PathBuf::from(h);
-        p.push(".local");
-        p.push("share");
-        p.push("thurbox");
-        std::fs::create_dir_all(&p).ok();
-        p
-    })
 }

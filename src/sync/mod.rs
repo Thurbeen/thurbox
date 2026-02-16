@@ -177,26 +177,12 @@ pub fn poll_for_changes(sync_state: &mut SyncState) -> std::io::Result<Option<St
 
 /// Create the path to the shared state file.
 pub fn shared_state_path() -> std::io::Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        let mut p = PathBuf::from(xdg);
-        p.push("thurbox");
-        p.push("shared_state.toml");
-        return Ok(p);
-    }
-
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".local");
-        p.push("share");
-        p.push("thurbox");
-        p.push("shared_state.toml");
-        return Ok(p);
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        "Could not determine shared state path (HOME not set)",
-    ))
+    crate::paths::shared_state_file().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not determine shared state path (HOME not set)",
+        )
+    })
 }
 
 #[cfg(test)]
