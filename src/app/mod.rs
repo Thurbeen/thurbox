@@ -409,7 +409,10 @@ impl App {
     }
 
     pub fn spawn_session(&mut self) {
-        let repos = &self.projects[self.active_project_index].config.repos;
+        let Some(project) = self.active_project() else {
+            return;
+        };
+        let repos = &project.config.repos;
         match repos.len() {
             0 => {
                 let mut config = SessionConfig::default();
@@ -453,7 +456,9 @@ impl App {
     /// one role is configured, or shows the role selector modal for 2+ roles.
     fn prepare_spawn(&mut self, mut config: SessionConfig, worktree: Option<WorktreeInfo>) {
         let name = self.next_session_name();
-        let project = &self.projects[self.active_project_index];
+        let Some(project) = self.active_project() else {
+            return;
+        };
         let roles = &project.config.roles;
 
         match roles.len() {
@@ -513,13 +518,16 @@ impl App {
 
     /// Get sessions belonging to the active project.
     fn active_project_sessions(&self) -> Vec<usize> {
-        let project = &self.projects[self.active_project_index];
-        self.sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| project.session_ids.contains(&s.info.id))
-            .map(|(i, _)| i)
-            .collect()
+        match self.active_project() {
+            Some(project) => self
+                .sessions
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| project.session_ids.contains(&s.info.id))
+                .map(|(i, _)| i)
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     /// Get the active session's index within the active project's session list.
@@ -543,11 +551,12 @@ impl App {
         }
 
         // If session's project doesn't exist in this instance, add to the default/first project
-        if !found_project
-            && !self.projects.is_empty()
-            && !self.projects[0].session_ids.contains(&session_id)
-        {
-            self.projects[0].session_ids.push(session_id);
+        if !found_project {
+            if let Some(project) = self.projects.first_mut() {
+                if !project.session_ids.contains(&session_id) {
+                    project.session_ids.push(session_id);
+                }
+            }
         }
     }
 
@@ -844,7 +853,10 @@ impl App {
     }
 
     fn handle_repo_selector_key(&mut self, code: KeyCode) {
-        let repo_count = self.projects[self.active_project_index].config.repos.len();
+        let Some(project) = self.active_project() else {
+            return;
+        };
+        let repo_count = project.config.repos.len();
         match code {
             KeyCode::Esc => {
                 self.show_repo_selector = false;
@@ -858,13 +870,12 @@ impl App {
                 self.repo_selector_index = self.repo_selector_index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                let path = self.projects[self.active_project_index].config.repos
-                    [self.repo_selector_index]
-                    .clone();
-                self.show_repo_selector = false;
-                self.pending_repo_path = Some(path);
-                self.session_mode_index = 0;
-                self.show_session_mode_modal = true;
+                if let Some(path) = project.config.repos.get(self.repo_selector_index).cloned() {
+                    self.pending_repo_path = Some(path);
+                    self.show_repo_selector = false;
+                    self.session_mode_index = 0;
+                    self.show_session_mode_modal = true;
+                }
             }
             _ => {}
         }
@@ -991,7 +1002,10 @@ impl App {
     }
 
     fn handle_role_selector_key(&mut self, code: KeyCode) {
-        let role_count = self.projects[self.active_project_index].config.roles.len();
+        let role_count = self
+            .active_project()
+            .map(|p| p.config.roles.len())
+            .unwrap_or(0);
         match code {
             KeyCode::Esc => {
                 self.show_role_selector = false;
@@ -1016,11 +1030,14 @@ impl App {
                     self.pending_spawn_config.take(),
                     self.pending_spawn_name.take(),
                 ) {
-                    let role = &self.projects[self.active_project_index].config.roles[role_index];
-                    config.role = role.name.clone();
-                    config.permissions = role.permissions.clone();
-                    let worktree = self.pending_spawn_worktree.take();
-                    self.do_spawn_session(name, &config, worktree);
+                    if let Some(project) = self.active_project() {
+                        if let Some(role) = project.config.roles.get(role_index) {
+                            config.role = role.name.clone();
+                            config.permissions = role.permissions.clone();
+                            let worktree = self.pending_spawn_worktree.take();
+                            self.do_spawn_session(name, &config, worktree);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1028,7 +1045,9 @@ impl App {
     }
 
     fn open_role_editor(&mut self) {
-        let project = &self.projects[self.active_project_index];
+        let Some(project) = self.active_project() else {
+            return;
+        };
         self.role_editor_roles = project.config.roles.clone();
         self.role_editor_list_index = 0;
         self.role_editor_view = RoleEditorView::List;
@@ -1046,8 +1065,10 @@ impl App {
         match code {
             KeyCode::Esc => {
                 // Save & close
-                self.projects[self.active_project_index].config.roles =
-                    self.role_editor_roles.clone();
+                let roles_to_save = self.role_editor_roles.clone();
+                if let Some(project) = self.active_project_mut() {
+                    project.config.roles = roles_to_save;
+                }
                 self.save_project_configs_to_disk();
                 self.show_role_editor = false;
             }
@@ -1699,14 +1720,15 @@ impl App {
 
         // Repo selector modal
         if self.show_repo_selector {
-            let active_project = &self.projects[self.active_project_index];
-            repo_selector_modal::render_repo_selector_modal(
-                frame,
-                &repo_selector_modal::RepoSelectorState {
-                    repos: &active_project.config.repos,
-                    selected_index: self.repo_selector_index,
-                },
-            );
+            if let Some(active_project) = self.active_project() {
+                repo_selector_modal::render_repo_selector_modal(
+                    frame,
+                    &repo_selector_modal::RepoSelectorState {
+                        repos: &active_project.config.repos,
+                        selected_index: self.repo_selector_index,
+                    },
+                );
+            }
         }
 
         // Session mode modal
@@ -1745,14 +1767,15 @@ impl App {
 
         // Role selector modal
         if self.show_role_selector {
-            let project = &self.projects[self.active_project_index];
-            role_selector_modal::render_role_selector_modal(
-                frame,
-                &role_selector_modal::RoleSelectorState {
-                    roles: &project.config.roles,
-                    selected_index: self.role_selector_index,
-                },
-            );
+            if let Some(project) = self.active_project() {
+                role_selector_modal::render_role_selector_modal(
+                    frame,
+                    &role_selector_modal::RoleSelectorState {
+                        roles: &project.config.roles,
+                        selected_index: self.role_selector_index,
+                    },
+                );
+            }
         }
 
         // Role editor modal
@@ -2042,13 +2065,15 @@ impl App {
                         .position(|p| p.id.as_uuid() == proj_uuid);
 
                     if let Some(idx) = found_index {
-                        tracing::debug!(
-                            session = %session_id,
-                            project_uuid = %proj_uuid,
-                            project_index = idx,
-                            project_name = %self.projects[idx].config.name,
-                            "Restored session to original project"
-                        );
+                        if let Some(proj) = self.projects.get(idx) {
+                            tracing::debug!(
+                                session = %session_id,
+                                project_uuid = %proj_uuid,
+                                project_index = idx,
+                                project_name = %proj.config.name,
+                                "Restored session to original project"
+                            );
+                        }
                         idx
                     } else {
                         tracing::warn!(
@@ -2099,13 +2124,15 @@ impl App {
 
     /// Resolve a role name to its permissions using the active project's role config.
     fn resolve_role_permissions(&self, role_name: &str) -> RolePermissions {
-        let project = &self.projects[self.active_project_index];
-        project
-            .config
-            .roles
-            .iter()
-            .find(|r| r.name == role_name)
-            .map(|r| r.permissions.clone())
+        self.active_project()
+            .and_then(|project| {
+                project
+                    .config
+                    .roles
+                    .iter()
+                    .find(|r| r.name == role_name)
+                    .map(|r| r.permissions.clone())
+            })
             .unwrap_or_default()
     }
 
