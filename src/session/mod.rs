@@ -200,43 +200,6 @@ pub struct SessionConfig {
     pub permissions: RolePermissions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedSession {
-    /// Unique session identifier (preserved across restarts).
-    /// Skipped during serialization if not set for backward compatibility.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<SessionId>,
-    pub name: String,
-    pub claude_session_id: String,
-    pub cwd: Option<PathBuf>,
-    pub worktree: Option<PersistedWorktree>,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub backend_id: String,
-    #[serde(default)]
-    pub backend_type: String,
-    /// Project this session belongs to (UUID, preserved across restarts).
-    /// Skipped during serialization if not set for backward compatibility.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedWorktree {
-    pub repo_path: PathBuf,
-    pub worktree_path: PathBuf,
-    pub branch: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PersistedState {
-    #[serde(default)]
-    pub sessions: Vec<PersistedSession>,
-    #[serde(default)]
-    pub session_counter: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,28 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn persisted_session_with_role() {
-        let toml_str = r#"
-name = "Session 1"
-claude_session_id = "abc-123"
-role = "reviewer"
-"#;
-        let session: PersistedSession = toml::from_str(toml_str).unwrap();
-        assert_eq!(session.role, "reviewer");
-    }
-
-    #[test]
-    fn persisted_session_backward_compat_no_role() {
-        let toml_str = r#"
-name = "Session 1"
-claude_session_id = "abc-123"
-"#;
-        let session: PersistedSession = toml::from_str(toml_str).unwrap();
-        assert_eq!(session.name, "Session 1");
-        assert_eq!(session.role, "");
-    }
-
-    #[test]
     fn worktree_info_stores_fields() {
         let wt = WorktreeInfo {
             repo_path: PathBuf::from("/repo"),
@@ -496,29 +437,5 @@ claude_session_id = "abc-123"
             PathBuf::from("/repo/.git/thurbox-worktrees/feat")
         );
         assert_eq!(wt.branch, "feat");
-    }
-
-    #[test]
-    fn persisted_session_with_backend_fields() {
-        let toml_str = r#"
-name = "Session 1"
-claude_session_id = "abc-123"
-backend_id = "%42"
-backend_type = "local-tmux"
-"#;
-        let session: PersistedSession = toml::from_str(toml_str).unwrap();
-        assert_eq!(session.backend_id, "%42");
-        assert_eq!(session.backend_type, "local-tmux");
-    }
-
-    #[test]
-    fn persisted_session_backward_compat_no_backend_fields() {
-        let toml_str = r#"
-name = "Session 1"
-claude_session_id = "abc-123"
-"#;
-        let session: PersistedSession = toml::from_str(toml_str).unwrap();
-        assert_eq!(session.backend_id, "");
-        assert_eq!(session.backend_type, "");
     }
 }

@@ -1,51 +1,41 @@
 //! Multi-instance real-time data synchronization for Thurbox.
 //!
 //! This module enables multiple thurbox instances to see each other's changes
-//! in real-time through file-based shared state with mtime-based polling.
+//! in real-time through SQLite-based shared state with `PRAGMA data_version` polling.
 //!
 //! # Design
 //!
-//! - **Shared state file**: `~/.local/share/thurbox/shared_state.toml`
+//! - **Shared state**: SQLite database at `~/.local/share/thurbox/thurbox.db`
 //! - **Polling interval**: 250ms (configurable)
-//! - **Change detection**: mtime check + content hash
-//! - **Write protocol**: atomic (temp file + rename)
-//! - **Conflict resolution**: last-write-wins with timestamps
+//! - **Change detection**: SQLite `PRAGMA data_version` (increments on external writes in WAL mode)
+//! - **Write protocol**: SQLite WAL mode handles concurrency automatically
+//! - **Conflict resolution**: SQLite serializes writes via WAL
 //!
 //! # Usage
 //!
 //! The sync module is integrated into the app event loop:
-//! 1. Each tick, check if shared state file has changed (mtime check)
-//! 2. If changed, compute delta between local and shared state
-//! 3. Emit `AppMessage::ExternalStateChange(delta)` to update local view
-//! 4. When local state changes (spawn/kill), write to shared state
+//! 1. Each tick, check if database has changed (`PRAGMA data_version`)
+//! 2. If changed, compute delta between local and DB state
+//! 3. Apply delta to update local view
+//! 4. When local state changes (spawn/kill), write to database
 
 pub mod delta;
-pub mod file_store;
 pub mod state;
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub use delta::StateDelta;
 pub use state::{current_time_millis, SharedProject, SharedSession, SharedState, SharedWorktree};
 
-/// Polls for external state changes from other thurbox instances.
+/// Tracks polling state for external change detection.
 ///
-/// Tracks the last known modification time and content of the shared state file.
-/// Returns a delta if changes were detected, or None if no changes.
+/// Uses a time-based polling interval to avoid checking the database
+/// on every tick. The local state snapshot is used to compute deltas
+/// when changes are detected.
 #[derive(Debug)]
 pub struct SyncState {
-    /// Path to the shared state file.
-    shared_state_path: PathBuf,
-
-    /// Last known modification time of the shared state file.
-    last_known_mtime: Option<SystemTime>,
-
-    /// Last known timestamp (from state.last_modified) when we successfully read.
-    last_known_timestamp: u64,
-
     /// Snapshot of the shared state as we know it.
     local_state_snapshot: SharedState,
 
@@ -60,12 +50,9 @@ pub struct SyncState {
 }
 
 impl SyncState {
-    /// Create a new sync state for the given shared state path.
-    pub fn new(shared_state_path: PathBuf) -> Self {
+    /// Create a new sync state with the default 250ms poll interval.
+    pub fn new() -> Self {
         Self {
-            shared_state_path,
-            last_known_mtime: None,
-            last_known_timestamp: 0,
             local_state_snapshot: SharedState::default(),
             last_poll_time: Instant::now(),
             poll_interval: Duration::from_millis(250),
@@ -74,11 +61,8 @@ impl SyncState {
     }
 
     /// Create sync state with a custom poll interval (for testing).
-    pub fn with_interval(shared_state_path: PathBuf, interval: Duration) -> Self {
+    pub fn with_interval(interval: Duration) -> Self {
         Self {
-            shared_state_path,
-            last_known_mtime: None,
-            last_known_timestamp: 0,
             local_state_snapshot: SharedState::default(),
             last_poll_time: Instant::now(),
             poll_interval: interval,
@@ -95,116 +79,68 @@ impl SyncState {
     fn should_poll(&self) -> bool {
         self.enabled && self.last_poll_time.elapsed() >= self.poll_interval
     }
+}
 
-    /// Path to the shared state file.
-    pub fn path(&self) -> &Path {
-        &self.shared_state_path
-    }
-
-    /// Get the local snapshot of the shared state.
-    pub fn snapshot(&self) -> &SharedState {
-        &self.local_state_snapshot
-    }
-
-    /// Update the local snapshot (called after writing local changes to disk).
-    pub fn update_snapshot(&mut self, state: SharedState) {
-        self.local_state_snapshot = state;
-        self.last_known_timestamp = self.local_state_snapshot.last_modified;
-        // Also update mtime tracking if the file exists
-        if let Ok(mtime) = file_store::get_mtime(&self.shared_state_path) {
-            self.last_known_mtime = Some(mtime);
-        }
+impl Default for SyncState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// Poll for external state changes from other instances.
+/// Poll for external state changes using the SQLite database.
 ///
-/// This function should be called periodically (e.g., in `App::tick()`).
-/// It returns a delta if changes were detected, None if no changes.
+/// Uses `PRAGMA data_version` for change detection, which increments
+/// whenever another connection modifies the database in WAL mode.
 ///
 /// # Returns
 ///
 /// - `Ok(Some(delta))` - Changes detected, apply delta to local state
 /// - `Ok(None)` - No changes detected or not time to poll yet
-/// - `Err(e)` - Error reading or parsing shared state (log and continue)
-pub fn poll_for_changes(sync_state: &mut SyncState) -> std::io::Result<Option<StateDelta>> {
+/// - `Err(e)` - Error querying database
+pub fn poll_for_changes(
+    sync_state: &mut SyncState,
+    db: &mut crate::storage::Database,
+) -> std::io::Result<Option<StateDelta>> {
     if !sync_state.should_poll() {
         return Ok(None);
     }
 
     sync_state.last_poll_time = Instant::now();
 
-    // Quick mtime check first (single stat syscall)
-    let current_mtime = file_store::get_mtime(&sync_state.shared_state_path)?;
-    if Some(current_mtime) == sync_state.last_known_mtime {
-        // File hasn't changed, no need to read
+    let changed = db
+        .has_external_changes()
+        .map_err(|e| std::io::Error::other(format!("DB check failed: {e}")))?;
+
+    if !changed {
         return Ok(None);
     }
 
-    debug!("Shared state mtime changed, reading file");
+    debug!("External DB change detected via PRAGMA data_version");
 
-    // mtime changed, read full file
-    let new_state = match file_store::load_shared_state(&sync_state.shared_state_path) {
-        Ok(state) => state,
-        Err(e) => {
-            warn!("Failed to load shared state: {}", e);
-            return Err(e);
-        }
-    };
+    let new_state = db
+        .load_shared_state()
+        .map_err(|e| std::io::Error::other(format!("Failed to load DB state: {e}")))?;
 
-    // Check timestamp to distinguish real changes from transient mtime updates
-    if new_state.last_modified <= sync_state.last_known_timestamp {
-        // mtime changed but content hasn't (false positive or concurrent write)
-        sync_state.last_known_mtime = Some(current_mtime);
-        return Ok(None);
-    }
-
-    debug!(
-        "External state change detected: timestamp {} -> {}",
-        sync_state.last_known_timestamp, new_state.last_modified
-    );
-
-    // Compute delta between what we knew and what's new
     let delta = StateDelta::compute(&sync_state.local_state_snapshot, &new_state);
 
-    // Update our snapshot and tracking state
     sync_state.local_state_snapshot = new_state;
-    sync_state.last_known_timestamp = sync_state.local_state_snapshot.last_modified;
-    sync_state.last_known_mtime = Some(current_mtime);
 
     Ok(if delta.is_empty() { None } else { Some(delta) })
-}
-
-/// Create the path to the shared state file.
-pub fn shared_state_path() -> std::io::Result<PathBuf> {
-    crate::paths::shared_state_file().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Could not determine shared state path (HOME not set)",
-        )
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
-    fn new_sync_state_is_disabled_by_default() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("shared_state.toml");
-
-        let sync = SyncState::new(path);
+    fn new_sync_state_is_enabled_by_default() {
+        let sync = SyncState::new();
         assert!(sync.enabled);
     }
 
     #[test]
     fn should_poll_respects_interval() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("shared_state.toml");
-
-        let mut sync = SyncState::with_interval(path, Duration::from_millis(100));
+        let mut sync = SyncState::with_interval(Duration::from_millis(100));
 
         // First check should not poll (too soon)
         assert!(!sync.should_poll());
@@ -223,46 +159,12 @@ mod tests {
     }
 
     #[test]
-    fn poll_returns_none_if_not_time() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("shared_state.toml");
+    fn disable_prevents_polling() {
+        let mut sync = SyncState::new();
+        sync.last_poll_time = Instant::now() - Duration::from_secs(10);
+        assert!(sync.should_poll());
 
-        let mut sync = SyncState::with_interval(path, Duration::from_secs(10));
-
-        let result = poll_for_changes(&mut sync).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    #[ignore] // Temporarily ignore: mtime precision issues on some filesystems
-    fn poll_detects_changes() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("shared_state.toml");
-
-        let mut sync = SyncState::with_interval(path.clone(), Duration::from_millis(1));
-
-        // Write initial state
-        let mut state = SharedState::new();
-        state.session_counter = 1;
-        let initial_modified = state.last_modified;
-        file_store::save_shared_state(&path, &state).unwrap();
-        sync.update_snapshot(state);
-
-        // Wait for poll interval (filesystem mtime is typically in seconds)
-        std::thread::sleep(Duration::from_secs(2));
-
-        // Modify shared state with explicitly newer timestamp
-        let mut state2 = SharedState::new();
-        state2.session_counter = 2;
-        // Ensure internal timestamp is newer (add 10 seconds worth)
-        state2.last_modified = initial_modified + 10000;
-        file_store::save_shared_state(&path, &state2).unwrap();
-
-        // Poll should detect change
-        let delta = poll_for_changes(&mut sync).unwrap();
-        assert!(delta.is_some(), "Expected delta to detect changes");
-        if let Some(delta) = delta {
-            assert_eq!(delta.counter_increment, 2);
-        }
+        sync.disable();
+        assert!(!sync.should_poll());
     }
 }

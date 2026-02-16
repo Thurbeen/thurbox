@@ -38,6 +38,9 @@ tracing-appender = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
+# Storage
+rusqlite = { version = "0.33", features = ["bundled"] }
+
 # Error handling
 anyhow = "1.0"
 
