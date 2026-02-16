@@ -102,7 +102,7 @@ struct ConfigFile {
 /// Load project configurations from `~/.config/thurbox/config.toml`.
 /// Returns an empty list if the file doesn't exist or can't be parsed.
 pub fn load_project_configs() -> Vec<ProjectConfig> {
-    let Some(path) = config_path() else {
+    let Some(path) = crate::paths::config_file() else {
         return Vec::new();
     };
 
@@ -122,7 +122,7 @@ pub fn load_project_configs() -> Vec<ProjectConfig> {
 
 /// Save project configurations to `~/.config/thurbox/config.toml`.
 pub fn save_project_configs(projects: &[ProjectConfig]) -> std::io::Result<()> {
-    let path = config_path().ok_or_else(|| {
+    let path = crate::paths::config_file().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "Could not determine config path",
@@ -142,52 +142,10 @@ pub fn save_project_configs(projects: &[ProjectConfig]) -> std::io::Result<()> {
     std::fs::write(&path, contents)
 }
 
-fn config_path() -> Option<PathBuf> {
-    // Prefer $XDG_CONFIG_HOME, fall back to $HOME/.config
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        let mut p = PathBuf::from(xdg);
-        p.push("thurbox");
-        p.push("config.toml");
-        return Some(p);
-    }
-
-    std::env::var_os("HOME").map(|h| {
-        let mut p = PathBuf::from(h);
-        p.push(".config");
-        p.push("thurbox");
-        p.push("config.toml");
-        p
-    })
-}
-
-fn data_dir() -> Option<PathBuf> {
-    // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        let mut p = PathBuf::from(xdg);
-        p.push("thurbox");
-        return Some(p);
-    }
-
-    std::env::var_os("HOME").map(|h| {
-        let mut p = PathBuf::from(h);
-        p.push(".local");
-        p.push("share");
-        p.push("thurbox");
-        p
-    })
-}
-
-fn state_path() -> Option<PathBuf> {
-    data_dir().map(|mut p| {
-        p.push("state.toml");
-        p
-    })
-}
-
 /// Load persisted session state from `$XDG_DATA_HOME/thurbox/state.toml`.
 /// Returns default (empty) state if the file doesn't exist or can't be parsed.
 pub fn load_session_state() -> PersistedState {
-    let Some(path) = state_path() else {
+    let Some(path) = crate::paths::state_file() else {
         return PersistedState::default();
     };
 
@@ -207,7 +165,7 @@ pub fn load_session_state() -> PersistedState {
 
 /// Save persisted session state to `$XDG_DATA_HOME/thurbox/state.toml`.
 pub fn save_session_state(state: &PersistedState) -> std::io::Result<()> {
-    let path = state_path().ok_or_else(|| {
+    let path = crate::paths::state_file().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "Could not determine state path",
@@ -226,7 +184,7 @@ pub fn save_session_state(state: &PersistedState) -> std::io::Result<()> {
 
 /// Remove the persisted state file after successful restore.
 pub fn clear_session_state() -> std::io::Result<()> {
-    let Some(path) = state_path() else {
+    let Some(path) = crate::paths::state_file() else {
         return Ok(());
     };
     match std::fs::remove_file(&path) {
