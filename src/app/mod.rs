@@ -45,6 +45,7 @@ pub enum RoleEditorView {
 pub enum AddProjectField {
     Name,
     Path,
+    RepoList,
 }
 
 /// State for an editable list of tool names (allowed or disallowed).
@@ -232,6 +233,9 @@ pub struct App {
     pub(crate) add_project_name: TextInput,
     pub(crate) add_project_path: TextInput,
     pub(crate) add_project_field: AddProjectField,
+    pub(crate) add_project_repos: Vec<PathBuf>,
+    pub(crate) add_project_repo_index: usize,
+    pub(crate) add_project_path_suggestion: Option<String>,
     pub(crate) show_delete_project_modal_flag: bool,
     pub(crate) delete_project_name: String,
     pub(crate) delete_project_confirmation: TextInput,
@@ -360,6 +364,9 @@ impl App {
             add_project_name: TextInput::new(),
             add_project_path: TextInput::new(),
             add_project_field: AddProjectField::Name,
+            add_project_repos: Vec::new(),
+            add_project_repo_index: 0,
+            add_project_path_suggestion: None,
             show_delete_project_modal_flag: false,
             delete_project_name: String::new(),
             delete_project_confirmation: TextInput::new(),
@@ -777,16 +784,22 @@ impl App {
 
     pub(crate) fn submit_add_project(&mut self) {
         let name = self.add_project_name.value().trim().to_string();
-        let path = self.add_project_path.value().trim().to_string();
 
-        if name.is_empty() || path.is_empty() {
-            self.error_message = Some("Project name and path cannot be empty".to_string());
+        // If the path field has content, treat it as an un-added repo
+        let pending_path = self.add_project_path.value().trim().to_string();
+        if !pending_path.is_empty() {
+            self.add_project_repos.push(PathBuf::from(pending_path));
+        }
+
+        if name.is_empty() || self.add_project_repos.is_empty() {
+            self.error_message =
+                Some("Project name and at least one repo are required".to_string());
             return;
         }
 
         let config = ProjectConfig {
             name,
-            repos: vec![PathBuf::from(path)],
+            repos: self.add_project_repos.clone(),
             roles: Vec::new(),
         };
         let info = ProjectInfo::new(config);
@@ -810,9 +823,7 @@ impl App {
         }
 
         // Close modal and clear inputs
-        self.show_add_project_modal = false;
-        self.add_project_name.clear();
-        self.add_project_path.clear();
+        self.close_add_project_modal();
     }
 
     pub(crate) fn show_delete_project_modal(&mut self) {
@@ -1180,6 +1191,9 @@ impl App {
                     name_cursor: self.add_project_name.cursor_pos(),
                     path: self.add_project_path.value(),
                     path_cursor: self.add_project_path.cursor_pos(),
+                    path_suggestion: self.add_project_path_suggestion.as_deref(),
+                    repos: &self.add_project_repos,
+                    repo_index: self.add_project_repo_index,
                     focused_field: self.add_project_field,
                 },
             );
