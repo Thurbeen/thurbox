@@ -7,6 +7,79 @@ use uuid::Uuid;
 /// Default role name assigned when no explicit role is configured.
 pub const DEFAULT_ROLE_NAME: &str = "developer";
 
+/// Validated role name type that prevents invalid states.
+/// Role names must be non-empty and at most 64 characters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RoleName(String);
+
+impl RoleName {
+    /// Create a new role name with validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RoleNameError` if:
+    /// - The name is empty or only whitespace
+    /// - The name exceeds 64 characters
+    pub fn new(name: impl Into<String>) -> Result<Self, RoleNameError> {
+        let name = name.into();
+        let trimmed = name.trim();
+
+        if trimmed.is_empty() {
+            return Err(RoleNameError::Empty);
+        }
+
+        if trimmed.len() > 64 {
+            return Err(RoleNameError::TooLong);
+        }
+
+        Ok(Self(trimmed.to_string()))
+    }
+
+    /// Get the role name as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the RoleName and return the inner String.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for RoleName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for RoleName {
+    type Err = RoleNameError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+/// Error type for invalid role names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleNameError {
+    /// Role name is empty or only whitespace.
+    Empty,
+    /// Role name exceeds 64 characters.
+    TooLong,
+}
+
+impl fmt::Display for RoleNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "Role name cannot be empty"),
+            Self::TooLong => write!(f, "Role name cannot exceed 64 characters"),
+        }
+    }
+}
+
+impl std::error::Error for RoleNameError {}
+
 /// Permission flags passed to the Claude CLI when spawning a session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RolePermissions {
@@ -167,6 +240,73 @@ pub struct PersistedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn role_name_valid() {
+        let name = RoleName::new("developer").unwrap();
+        assert_eq!(name.as_str(), "developer");
+    }
+
+    #[test]
+    fn role_name_with_spaces_trimmed() {
+        let name = RoleName::new("  admin  ").unwrap();
+        assert_eq!(name.as_str(), "admin");
+    }
+
+    #[test]
+    fn role_name_empty_rejected() {
+        assert_eq!(RoleName::new(""), Err(RoleNameError::Empty));
+        assert_eq!(RoleName::new("   "), Err(RoleNameError::Empty));
+    }
+
+    #[test]
+    fn role_name_too_long_rejected() {
+        let long_name = "a".repeat(65);
+        assert_eq!(RoleName::new(long_name), Err(RoleNameError::TooLong));
+    }
+
+    #[test]
+    fn role_name_max_length_accepted() {
+        let max_name = "a".repeat(64);
+        let name = RoleName::new(max_name.clone()).unwrap();
+        assert_eq!(name.as_str(), max_name);
+    }
+
+    #[test]
+    fn role_name_display() {
+        let name = RoleName::new("test_role").unwrap();
+        assert_eq!(name.to_string(), "test_role");
+    }
+
+    #[test]
+    fn role_name_from_str() {
+        let name = RoleName::from_str("editor").unwrap();
+        assert_eq!(name.as_str(), "editor");
+
+        let err = RoleName::from_str("");
+        assert_eq!(err, Err(RoleNameError::Empty));
+    }
+
+    #[test]
+    fn role_name_into_string() {
+        let name = RoleName::new("maintainer").unwrap();
+        let owned = name.into_string();
+        assert_eq!(owned, "maintainer");
+    }
+
+    #[test]
+    fn role_name_hash() {
+        use std::collections::HashSet;
+        let name1 = RoleName::new("reviewer").unwrap();
+        let name2 = RoleName::new("reviewer").unwrap();
+
+        let mut set = HashSet::new();
+        set.insert(name1);
+        // Same value should not increase size due to hash equality
+        set.insert(name2);
+        assert_eq!(set.len(), 1);
+    }
 
     #[test]
     fn session_id_display_is_uuid_format() {
