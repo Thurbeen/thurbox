@@ -55,7 +55,7 @@ pub fn render_footer(
             focus_badge,
             Span::styled(counts, Style::default().fg(Color::Gray)),
             Span::styled(
-                " Ctrl+N: New  Ctrl+X: Close  Ctrl+J/K: Switch  Ctrl+L: Focus  Ctrl+Q: Quit ",
+                " ^N New  ^C Close  ^D Delete  ^R Role  ^H/J/K/L Nav  F1 Help  F2 Info  ^Q Quit ",
                 Style::default().fg(Color::DarkGray),
             ),
         ])

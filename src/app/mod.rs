@@ -1638,51 +1638,39 @@ fn render_help_overlay(frame: &mut Frame) {
         .border_style(Style::default().fg(Color::Cyan));
 
     let help_lines = vec![
-        Line::from(Span::styled(
-            "Global",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
-        help_line("Ctrl+Q", "Quit"),
-        help_line(
-            "Ctrl+N",
-            "New project (project focus) / session (normal or worktree)",
-        ),
-        help_line("Ctrl+J / Ctrl+K", "Next / previous session"),
-        help_line("Ctrl+X", "Close active session"),
-        help_line("Ctrl+L", "Cycle focus (project / session / terminal)"),
-        help_line("Ctrl+I", "Toggle info panel (width >= 120)"),
-        help_line("?", "Show this help (list focus only)"),
+        help_section("Navigation (Vim: h/j/k/l)"),
+        help_line("Ctrl+H", "Focus project list (h = left)"),
+        help_line("Ctrl+J", "Next session (j = down)"),
+        help_line("Ctrl+K", "Previous session (k = up)"),
+        help_line("Ctrl+L", "Cycle focus (l = right/forward)"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Project List (when focused)",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
+        help_section("Session Management"),
+        help_line("Ctrl+N", "New project (project focus) / session"),
+        help_line("Ctrl+C", "Close active session"),
+        Line::from(""),
+        help_section("Project Management"),
+        help_line(
+            "Ctrl+D",
+            "Delete session (session list) / project (project list)",
+        ),
+        help_line("Ctrl+R", "Edit project roles"),
+        Line::from(""),
+        help_section("UI"),
+        help_line("Ctrl+Q", "Quit Thurbox"),
+        help_line("F1", "Show this help"),
+        help_line("F2", "Toggle info panel"),
+        Line::from(""),
+        help_section("Project List (when focused)"),
         help_line("j / Down", "Next project"),
         help_line("k / Up", "Previous project"),
-        help_line("d", "Delete selected project"),
-        help_line("r", "Edit project roles"),
         help_line("Enter", "Focus session list"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Session List (when focused)",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
+        help_section("Session List (when focused)"),
         help_line("j / Down", "Next session"),
         help_line("k / Up", "Previous session"),
         help_line("Enter", "Focus terminal"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Terminal (when focused)",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
+        help_section("Terminal (when focused)"),
         help_line("Shift+\u{2191}/\u{2193}", "Scroll up/down 1 line"),
         help_line("Shift+PgUp/PgDn", "Scroll up/down half page"),
         help_line("Mouse wheel", "Scroll up/down 3 lines"),
@@ -1696,6 +1684,15 @@ fn render_help_overlay(frame: &mut Frame) {
 
     let paragraph = Paragraph::new(help_lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn help_section(title: &str) -> Line<'_> {
+    Line::from(Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
@@ -2954,5 +2951,125 @@ mod tests {
         assert_eq!(projects.len(), 2);
         assert!(projects.iter().any(|p| p.config.name == "Shared"));
         assert!(projects.iter().any(|p| p.config.name == "ConfigOnly"));
+    }
+
+    // --- Global keybinding tests ---
+
+    #[test]
+    fn ctrl_h_focuses_project_list_from_terminal() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::Terminal;
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::ProjectList);
+    }
+
+    #[test]
+    fn ctrl_h_focuses_project_list_from_session_list() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::ProjectList);
+    }
+
+    #[test]
+    fn ctrl_c_closes_active_session() {
+        let mut app = app_with_sessions(2);
+        app.active_index = 0;
+        let initial_count = app.sessions.len();
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.sessions.len() < initial_count);
+    }
+
+    #[test]
+    fn ctrl_d_deletes_session_from_session_list() {
+        let mut app = app_with_sessions(2);
+        app.focus = InputFocus::SessionList;
+        let initial_count = app.sessions.len();
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(app.sessions.len() < initial_count);
+    }
+
+    #[test]
+    fn ctrl_d_shows_delete_project_modal_from_project_list() {
+        let mut app = app_with_sessions(0);
+        // Need at least 2 projects (can't delete if only 1),
+        // and the active project must not be the default.
+        app.projects.push(ProjectInfo {
+            id: ProjectId::default(),
+            config: ProjectConfig {
+                name: "Extra".into(),
+                repos: vec![],
+                roles: vec![],
+            },
+            session_ids: vec![],
+            is_default: false,
+        });
+        app.active_project_index = 1; // Select the non-default project
+        app.focus = InputFocus::ProjectList;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(app.show_delete_project_modal_flag);
+    }
+
+    #[test]
+    fn ctrl_d_forwards_to_pty_from_terminal() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::Terminal;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        // Should NOT show delete modal — Ctrl+D is forwarded to PTY
+        assert!(!app.show_delete_project_modal_flag);
+        assert_eq!(app.sessions.len(), 1); // session not closed either
+    }
+
+    #[test]
+    fn ctrl_r_opens_role_editor() {
+        let mut app = app_with_sessions(0);
+        app.focus = InputFocus::Terminal;
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(app.show_role_editor);
+    }
+
+    #[test]
+    fn f1_shows_help_from_any_context() {
+        let mut app = app_with_sessions(0);
+        for focus in [
+            InputFocus::ProjectList,
+            InputFocus::SessionList,
+            InputFocus::Terminal,
+        ] {
+            app.show_help = false;
+            app.focus = focus;
+            app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+            assert!(app.show_help, "F1 should show help from {focus:?}");
+        }
+    }
+
+    #[test]
+    fn f1_does_not_activate_during_modal() {
+        let mut app = app_with_sessions(0);
+        app.show_repo_selector = true;
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn f2_toggles_info_panel() {
+        let mut app = app_with_sessions(0);
+        assert!(!app.show_info_panel);
+        app.handle_key(KeyCode::F(2), KeyModifiers::NONE);
+        assert!(app.show_info_panel);
+        app.handle_key(KeyCode::F(2), KeyModifiers::NONE);
+        assert!(!app.show_info_panel);
+    }
+
+    #[test]
+    fn ctrl_l_cycles_focus() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::ProjectList;
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Terminal);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::ProjectList);
     }
 }
