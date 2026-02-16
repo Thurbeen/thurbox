@@ -17,10 +17,37 @@ and git worktree management.
 
 ## Installation
 
+### From Binary (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
+This installs the latest release to `~/.local/bin`. The script automatically:
+
+- Fetches the latest version from GitHub (with API rate limit fallback)
+- Detects your platform (Linux/macOS, x86_64/aarch64)
+- Verifies checksums for security
+- Extracts and installs the binary
+
+**Custom installation directory:**
+
+```bash
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
+**Specific version:**
+
+```bash
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
 ### Prerequisites
 
-- Rust 1.75 or later
+- Rust 1.75 or later (for building from source)
 - Git 2.30 or later
+- tmux 3.2 or later
+- claude CLI (<https://github.com/anthropics/claude-code>)
 
 ### From Source
 
