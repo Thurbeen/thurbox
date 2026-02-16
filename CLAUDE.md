@@ -26,7 +26,46 @@ cargo nextest run --all              # Run all tests (preferred runner)
 cargo nextest run -E 'test(name)'    # Run a single test by name
 cargo nextest run --all --profile ci # Run with CI profile
 cargo test test_name                 # Run single test via cargo test
+bats scripts/install.bats            # Test install script (requires bats-core)
 ```
+
+## Installation Script
+
+**Location:** `scripts/install.sh`
+
+One-liner installation for end users:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
+**Features:**
+
+- Platform detection (Linux/macOS, x86_64/aarch64)
+- Automatic version fetching with API rate limit fallback (scrapes releases page)
+- SHA256 checksum verification
+- Creates `~/.local/bin` if needed
+- Post-install instructions
+- Graceful error handling with helpful messages
+
+**Environment variables:**
+
+- `VERSION=v0.1.0` - Install specific version (default: latest from GitHub API)
+- `INSTALL_DIR=/path` - Custom install directory (default: `~/.local/bin`)
+
+**Testing:**
+
+- Comprehensive test suite in `scripts/install.bats` using bats-core framework
+- 36 tests covering platform detection, checksum verification, binary extraction, and error handling
+- Run tests locally: `bats scripts/install.bats`
+- CI runs tests automatically on every commit
+
+**Implementation notes:**
+
+- POSIX shell (`#!/usr/bin/env sh`) for maximum compatibility
+- No external dependencies beyond standard tools (curl/wget, tar, sha256sum/shasum)
+- Non-interactive for safe pipe-to-shell execution
+- Proper error handling and cleanup via trap
 
 ## Linting & Formatting
 

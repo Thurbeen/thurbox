@@ -75,6 +75,13 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: bash-install-tests
+        name: Bash install script tests
+        entry: bash -c "~/.local/bin/bats scripts/install.bats"
+        language: system
+        files: scripts/install\.(sh|bats)
+        pass_filenames: false
+
       - id: rumdl-check
         name: Markdown lint check
         entry: rumdl check .

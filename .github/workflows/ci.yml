@@ -111,6 +111,16 @@ jobs:
         with:
           report-type: annotations
 
+  install-script:
+    name: Install Script Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: Run install script tests
+        run: bats scripts/install.bats
+
   all-checks:
     name: All Checks
     if: always()
@@ -124,6 +134,7 @@ jobs:
       - docs
       - conventional-commits
       - markdown-lint
+      - install-script
     runs-on: ubuntu-latest
     steps:
       - name: Verify all checks passed
