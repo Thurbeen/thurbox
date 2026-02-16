@@ -82,10 +82,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-linux-gnu
             os: ubuntu-latest
             use_cross: false
-          - target: x86_64-unknown-linux-musl
+          - target: x86_64-linux-musl
             os: ubuntu-latest
             use_cross: true
           - target: aarch64-apple-darwin
@@ -121,7 +121,7 @@ jobs:
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
           TARGET="${{ matrix.target }}"
-          ARCHIVE_NAME="thurbox-v${VERSION}-${TARGET}.tar.gz"
+          ARCHIVE_NAME="thurbox-${VERSION}-${TARGET}.tar.gz"
 
           cd target/$TARGET/release
           tar czf "../../../$ARCHIVE_NAME" thurbox
@@ -157,9 +157,9 @@ jobs:
           find . -name "*.tar.gz" -exec mv {} . \;
 
           # Generate checksums
-          sha256sum thurbox-*.tar.gz > "thurbox-v${VERSION}-checksums.txt"
+          sha256sum thurbox-*.tar.gz > "thurbox-${VERSION}-checksums.txt"
 
-          cat "thurbox-v${VERSION}-checksums.txt"
+          cat "thurbox-${VERSION}-checksums.txt"
 
       - name: Upload checksums
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
