@@ -54,6 +54,7 @@ impl ProjectConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct ProjectInfo {
     pub id: ProjectId,
     pub config: ProjectConfig,
