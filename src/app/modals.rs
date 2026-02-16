@@ -12,7 +12,7 @@ use crate::ui::role_editor_modal;
 // ── TextInput Helper ────────────────────────────────────────────────────────
 
 /// Simple text input state with cursor tracking.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
     buffer: String,
     cursor: usize,
@@ -20,10 +20,7 @@ pub struct TextInput {
 
 impl TextInput {
     pub fn new() -> Self {
-        Self {
-            buffer: String::new(),
-            cursor: 0,
-        }
+        Self::default()
     }
 
     pub fn insert(&mut self, c: char) {
@@ -94,12 +91,6 @@ impl TextInput {
     }
 }
 
-impl Default for TextInput {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // ── AddProjectField ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,57 +108,27 @@ pub struct AddProjectModal {
     pub field: AddProjectField,
 }
 
-impl AddProjectModal {
-    pub fn new() -> Self {
+impl Default for AddProjectModal {
+    fn default() -> Self {
         Self {
-            name: TextInput::new(),
-            path: TextInput::new(),
+            name: TextInput::default(),
+            path: TextInput::default(),
             field: AddProjectField::Name,
         }
     }
 }
 
-impl Default for AddProjectModal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RepoSelectorModal {
     pub index: usize,
 }
 
-impl RepoSelectorModal {
-    pub fn new() -> Self {
-        Self { index: 0 }
-    }
-}
-
-impl Default for RepoSelectorModal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionModeModal {
     pub index: usize,
 }
 
-impl SessionModeModal {
-    pub fn new() -> Self {
-        Self { index: 0 }
-    }
-}
-
-impl Default for SessionModeModal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BranchSelectorModal {
     pub index: usize,
     pub branches: Vec<String>,
@@ -175,73 +136,26 @@ pub struct BranchSelectorModal {
 }
 
 impl BranchSelectorModal {
-    pub fn new() -> Self {
-        Self {
-            index: 0,
-            branches: Vec::new(),
-            pending_repo_path: None,
-        }
-    }
-
     pub fn with_branches(branches: Vec<String>) -> Self {
         Self {
-            index: 0,
             branches,
-            pending_repo_path: None,
+            ..Default::default()
         }
     }
 }
 
-impl Default for BranchSelectorModal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WorktreeNameModal {
     pub name: TextInput,
     pub pending_base_branch: Option<String>,
 }
 
-impl WorktreeNameModal {
-    pub fn new() -> Self {
-        Self {
-            name: TextInput::new(),
-            pending_base_branch: None,
-        }
-    }
-}
-
-impl Default for WorktreeNameModal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RoleSelectorModal {
     pub index: usize,
     pub pending_spawn_config: Option<SessionConfig>,
     pub pending_spawn_worktree: Option<WorktreeInfo>,
     pub pending_spawn_name: Option<String>,
-}
-
-impl RoleSelectorModal {
-    pub fn new() -> Self {
-        Self {
-            index: 0,
-            pending_spawn_config: None,
-            pending_spawn_worktree: None,
-            pending_spawn_name: None,
-        }
-    }
-}
-
-impl Default for RoleSelectorModal {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,38 +179,25 @@ pub struct RoleEditorModal {
 }
 
 impl RoleEditorModal {
-    pub fn new() -> Self {
-        Self {
-            view: RoleEditorView::List,
-            list_index: 0,
-            roles: Vec::new(),
-            field: role_editor_modal::RoleEditorField::Name,
-            name: TextInput::new(),
-            description: TextInput::new(),
-            allowed_tools: ToolListState::new(),
-            disallowed_tools: ToolListState::new(),
-            system_prompt: TextInput::new(),
-            editing_index: None,
-        }
-    }
-
     pub fn reset(&mut self) {
-        self.view = RoleEditorView::List;
-        self.list_index = 0;
-        self.roles.clear();
-        self.field = role_editor_modal::RoleEditorField::Name;
-        self.name.clear();
-        self.description.clear();
-        self.allowed_tools.reset();
-        self.disallowed_tools.reset();
-        self.system_prompt.clear();
-        self.editing_index = None;
+        *self = Self::default();
     }
 }
 
 impl Default for RoleEditorModal {
     fn default() -> Self {
-        Self::new()
+        Self {
+            view: RoleEditorView::List,
+            list_index: 0,
+            roles: Vec::new(),
+            field: role_editor_modal::RoleEditorField::Name,
+            name: TextInput::default(),
+            description: TextInput::default(),
+            allowed_tools: ToolListState::default(),
+            disallowed_tools: ToolListState::default(),
+            system_prompt: TextInput::default(),
+            editing_index: None,
+        }
     }
 }
 
@@ -311,14 +212,20 @@ pub struct ToolListState {
     input: TextInput,
 }
 
-impl ToolListState {
-    pub fn new() -> Self {
+impl Default for ToolListState {
+    fn default() -> Self {
         Self {
             items: Vec::new(),
             selected: 0,
             mode: role_editor_modal::ToolListMode::Browse,
-            input: TextInput::new(),
+            input: TextInput::default(),
         }
+    }
+}
+
+impl ToolListState {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn reset(&mut self) {
@@ -390,12 +297,6 @@ impl ToolListState {
 
     pub fn input(&self) -> &TextInput {
         &self.input
-    }
-}
-
-impl Default for ToolListState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -571,5 +472,142 @@ mod tests {
 
         state.move_up();
         assert_eq!(state.selected(), 0);
+    }
+
+    #[test]
+    fn test_text_input_with_unicode() {
+        let mut input = TextInput::new();
+        // Test with multi-byte UTF-8 characters
+        input.insert('ñ');
+        input.insert('é');
+        assert_eq!(input.cursor_pos(), 2);
+        assert_eq!(input.value().len(), 4); // 2 bytes each for ñ and é
+    }
+
+    #[test]
+    fn test_text_input_delete_at_cursor() {
+        let mut input = TextInput::new();
+        input.set("hello");
+        input.move_left(); // Now at 'o'
+        input.delete();
+        assert_eq!(input.value(), "hell");
+    }
+
+    #[test]
+    fn test_modal_state_transitions() {
+        // Test that only one modal can be active
+        let mut modal = Modal::None;
+        assert!(!modal.is_open());
+
+        modal = Modal::Help;
+        assert!(modal.is_open());
+
+        modal = Modal::AddProject(AddProjectModal::default());
+        assert!(modal.is_open());
+
+        modal.close();
+        assert!(!modal.is_open());
+    }
+
+    #[test]
+    fn test_branch_selector_initial_state() {
+        let branch = BranchSelectorModal::default();
+        assert_eq!(branch.index, 0);
+        assert_eq!(branch.branches.len(), 0);
+        assert!(branch.pending_repo_path.is_none());
+    }
+
+    #[test]
+    fn test_branch_selector_with_branches_builder() {
+        let branches = vec!["main".to_string(), "develop".to_string()];
+        let selector = BranchSelectorModal::with_branches(branches.clone());
+        assert_eq!(selector.index, 0);
+        assert_eq!(selector.branches, branches);
+    }
+
+    #[test]
+    fn test_role_editor_modal_reset() {
+        let mut editor = RoleEditorModal {
+            list_index: 5,
+            ..Default::default()
+        };
+        editor.roles.push(RoleConfig {
+            name: "test".to_string(),
+            description: String::new(),
+            permissions: crate::session::RolePermissions::default(),
+        });
+        editor.editing_index = Some(2);
+
+        editor.reset();
+
+        assert_eq!(editor.list_index, 0);
+        assert_eq!(editor.roles.len(), 0);
+        assert!(editor.editing_index.is_none());
+        assert_eq!(editor.view, RoleEditorView::List);
+    }
+
+    #[test]
+    fn test_tool_list_state_add_tool() {
+        let mut state = ToolListState::new();
+        state.load(&["existing".to_string()]);
+
+        state.start_adding();
+        assert_eq!(state.mode(), role_editor_modal::ToolListMode::Adding);
+
+        state.input_mut().set("new_tool");
+        state.confirm_add();
+
+        assert_eq!(state.items().len(), 2);
+        assert!(state.items().contains(&"new_tool".to_string()));
+    }
+
+    #[test]
+    fn test_tool_list_state_delete() {
+        let mut state = ToolListState::new();
+        state.load(&[
+            "tool1".to_string(),
+            "tool2".to_string(),
+            "tool3".to_string(),
+        ]);
+        state.selected = 1;
+
+        state.delete_selected();
+
+        assert_eq!(state.items().len(), 2);
+        assert!(!state.items().contains(&"tool2".to_string()));
+    }
+
+    #[test]
+    fn test_navigate_list_boundary_conditions() {
+        // Test with list of size 1
+        let mut index = 0;
+        navigate_list(&mut index, Direction::Up, 1);
+        assert_eq!(index, 0);
+
+        navigate_list(&mut index, Direction::Down, 1);
+        assert_eq!(index, 0); // Can't move down from only item
+
+        // Test with empty list (max = 0)
+        navigate_list(&mut index, Direction::Down, 0);
+        assert_eq!(index, 0); // Should stay at 0 when max is 0
+    }
+
+    #[test]
+    fn test_add_project_modal_default_state() {
+        let modal = AddProjectModal::default();
+        assert_eq!(modal.name.value(), "");
+        assert_eq!(modal.path.value(), "");
+        assert_eq!(modal.field, AddProjectField::Name);
+    }
+
+    #[test]
+    fn test_text_input_equality() {
+        let input1 = TextInput::new();
+        let input2 = TextInput::default();
+        assert_eq!(input1, input2);
+
+        let mut input3 = TextInput::new();
+        input3.set("test");
+        assert_ne!(input1, input3);
     }
 }
