@@ -12,6 +12,7 @@ use crate::session::SessionInfo;
 pub struct ProjectEntry<'a> {
     pub name: &'a str,
     pub session_count: usize,
+    pub is_admin: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,19 +66,25 @@ fn render_project_section(
         .iter()
         .enumerate()
         .map(|(i, project)| {
-            let style = if i == active_index {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+            let base_color = if project.is_admin {
+                Color::Yellow
+            } else if i == active_index {
+                Color::Cyan
             } else {
-                Style::default().fg(Color::White)
+                Color::White
+            };
+            let style = if i == active_index {
+                Style::default().fg(base_color).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(base_color)
             };
 
             let indicator = if i == active_index { "▸" } else { " " };
+            let prefix = if project.is_admin { "⚙ " } else { "" };
 
             let line = Line::from(vec![
                 Span::styled(format!("{indicator} "), style),
-                Span::styled(project.name, style),
+                Span::styled(format!("{prefix}{}", project.name), style),
                 Span::styled(
                     format!(" ({})", project.session_count),
                     Style::default().fg(Color::DarkGray),

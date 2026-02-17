@@ -500,6 +500,52 @@ overridden per-role via the role editor.
 
 ---
 
+## Admin Session
+
+A global admin session provides conversational access to Thurbox
+management via Claude Code with the `thurbox-mcp` MCP server
+auto-configured.
+
+### How it works
+
+On startup, Thurbox creates:
+
+1. An admin directory at `~/.local/share/thurbox/admin/`
+   (or `thurbox-dev/admin/` for dev builds).
+2. A `.mcp.json` file in that directory pointing to the
+   `thurbox-mcp` binary. Claude Code auto-discovers this file.
+3. An "Admin" pseudo-project pinned at index 0 in the project
+   list, visually distinguished with a yellow `⚙` prefix.
+4. A single admin session with `cwd` set to the admin directory.
+
+The `.mcp.json` is rewritten on every startup to pick up binary
+path changes after upgrades.
+
+### Admin project restrictions
+
+- Cannot be edited (`Ctrl+E` shows an error message).
+- Cannot be deleted (`Ctrl+D` shows an error message).
+- Cannot have additional sessions created (`Ctrl+N` is a no-op
+  when sessions exist, or respawns if the session was closed).
+- The admin session cannot be closed (`Ctrl+C` shows an error).
+
+### Binary resolution
+
+The `thurbox-mcp` binary path is resolved by:
+
+1. Checking for a sibling of `current_exe()` (works for both
+   installed `~/.local/bin/` and dev `target/debug/` builds).
+2. Falling back to bare `"thurbox-mcp"` for `$PATH` lookup.
+
+### Persistence
+
+The admin project and session persist to the SQLite database
+like all other projects and sessions. On restart, the tmux
+pane is re-adopted; `ensure_admin_session` only ensures the
+project exists at index 0 and `.mcp.json` is up-to-date.
+
+---
+
 ## Planned Features
 
 Directional intent, not commitments.

@@ -171,6 +171,15 @@ cargo run --bin thurbox-mcp         # Run (stdin/stdout JSON-RPC)
 | `set_roles` | Replace all roles for a project |
 | `list_sessions` | List sessions (optional project filter) |
 
+### Admin Session (built-in MCP client)
+
+The TUI includes a global "Admin" session that auto-configures
+`thurbox-mcp` as an MCP server. On startup, Thurbox creates
+`~/.local/share/thurbox/admin/.mcp.json` and spawns an admin
+session there. Claude Code discovers the MCP config automatically,
+enabling conversational project/role/session management inside
+the TUI. See `docs/FEATURES.md` for details.
+
 ### Module Isolation
 
 ```text

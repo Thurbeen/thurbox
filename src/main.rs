@@ -57,10 +57,16 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(size.height, size.width, backend, db);
 
-    // Load session state from DB and restore, or spawn a fresh session
+    // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
         app.restore_sessions(sessions, counter);
-    } else {
+    }
+
+    // Ensure admin project + session exist (idempotent; rewrites .mcp.json on every startup)
+    app.ensure_admin_session();
+
+    // If no user sessions exist, spawn a fresh one
+    if app.user_session_count() == 0 {
         app.spawn_session();
     }
 
