@@ -53,9 +53,9 @@ impl App {
             return;
         }
 
-        // Role editor modal captures all input
+        // Role editor detail form captures all input
         if self.show_role_editor {
-            self.handle_role_editor_key(code);
+            self.handle_role_editor_editor_key(code);
             return;
         }
 
@@ -119,7 +119,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('r') => {
-                    self.open_role_editor();
+                    self.restart_active_session();
                     return;
                 }
                 // Vim navigation: h=left, j=down, k=up, l=cycle-right
@@ -500,7 +500,7 @@ impl App {
 
     fn handle_edit_project_roles_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Esc => self.close_edit_project_modal(),
+            KeyCode::Esc => self.submit_edit_project(),
             KeyCode::Tab => {
                 self.edit_project_field = EditProjectField::Name;
             }
@@ -511,12 +511,35 @@ impl App {
                     self.edit_project_field = EditProjectField::Path;
                 }
             }
-            KeyCode::Enter => {
-                // Save name+repo changes first, then open role editor
-                self.submit_edit_project();
-                // Only open role editor if submit succeeded (modal closed)
-                if !self.show_edit_project_modal {
-                    self.open_role_editor();
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.role_editor_roles.is_empty()
+                    && self.role_editor_list_index + 1 < self.role_editor_roles.len()
+                {
+                    self.role_editor_list_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
+            }
+            KeyCode::Char('a') => {
+                self.prepare_new_role_editor();
+                self.show_role_editor = true;
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if !self.role_editor_roles.is_empty() {
+                    let idx = self.role_editor_list_index;
+                    self.open_role_for_editing(idx);
+                    self.show_role_editor = true;
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.role_editor_roles.is_empty() {
+                    self.role_editor_roles.remove(self.role_editor_list_index);
+                    if self.role_editor_list_index >= self.role_editor_roles.len()
+                        && self.role_editor_list_index > 0
+                    {
+                        self.role_editor_list_index -= 1;
+                    }
                 }
             }
             _ => {}
@@ -735,13 +758,8 @@ impl App {
         }
     }
 
-    fn handle_role_editor_key(&mut self, code: KeyCode) {
-        match self.role_editor_view {
-            RoleEditorView::List => self.handle_role_editor_list_key(code),
-            RoleEditorView::Editor => self.handle_role_editor_editor_key(code),
-        }
-    }
-
+    /// Navigate the role list — used by tests to simulate inline role list actions.
+    #[cfg(test)]
     pub(crate) fn handle_role_editor_list_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
@@ -765,14 +783,7 @@ impl App {
                 self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
             }
             KeyCode::Char('a') => {
-                self.role_editor_editing_index = None;
-                self.role_editor_name.clear();
-                self.role_editor_description.clear();
-                self.role_editor_allowed_tools.reset();
-                self.role_editor_disallowed_tools.reset();
-                self.role_editor_system_prompt.clear();
-                self.role_editor_field = crate::ui::role_editor_modal::RoleEditorField::Name;
-                self.role_editor_view = RoleEditorView::Editor;
+                self.prepare_new_role_editor();
             }
             KeyCode::Char('e') | KeyCode::Enter => {
                 if !self.role_editor_roles.is_empty() {
@@ -812,7 +823,9 @@ impl App {
         // Text field handling (Name, Description, SystemPrompt).
         match code {
             KeyCode::Esc => {
-                self.role_editor_view = RoleEditorView::List;
+                // Return to edit-project modal (Roles field)
+                self.show_role_editor = false;
+                self.edit_project_field = EditProjectField::Roles;
             }
             KeyCode::Tab => {
                 self.role_editor_field = Self::next_editor_field(self.role_editor_field);
@@ -847,7 +860,9 @@ impl App {
     fn handle_tool_browse_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                self.role_editor_view = RoleEditorView::List;
+                // Return to edit-project modal (Roles field)
+                self.show_role_editor = false;
+                self.edit_project_field = EditProjectField::Roles;
             }
             KeyCode::Tab => {
                 self.role_editor_field = Self::next_editor_field(self.role_editor_field);
@@ -912,6 +927,8 @@ impl App {
         }
     }
 
+    /// Load roles from the active project into editor state — used by tests.
+    #[cfg(test)]
     pub(crate) fn open_role_editor(&mut self) {
         let Some(project) = self.active_project() else {
             return;
@@ -920,6 +937,18 @@ impl App {
         self.role_editor_list_index = 0;
         self.role_editor_view = RoleEditorView::List;
         self.show_role_editor = true;
+    }
+
+    /// Reset role editor fields to prepare for adding a new role.
+    fn prepare_new_role_editor(&mut self) {
+        self.role_editor_editing_index = None;
+        self.role_editor_name.clear();
+        self.role_editor_description.clear();
+        self.role_editor_allowed_tools.reset();
+        self.role_editor_disallowed_tools.reset();
+        self.role_editor_system_prompt.clear();
+        self.role_editor_field = crate::ui::role_editor_modal::RoleEditorField::Name;
+        self.role_editor_view = RoleEditorView::Editor;
     }
 
     pub(crate) fn open_role_for_editing(&mut self, index: usize) {

@@ -60,8 +60,8 @@ old `config.toml` is renamed to `config.toml.bak`.
 
 `Ctrl+E` opens a pre-populated modal for editing the active
 project's name, repositories, and roles. The modal mirrors the
-add-project flow (Name → Path → RepoList) with an additional
-Roles field that delegates to the role editor.
+add-project flow (Name → Path → RepoList) with an inline Roles
+list that supports j/k navigation, add/edit/delete operations.
 
 **Why not just delete and recreate?**
 
@@ -82,9 +82,13 @@ Roles field that delegates to the role editor.
 
 #### Roles field behavior
 
-- Pressing `Enter` on the Roles field saves name/repo changes
-  first, then opens the role editor. This ensures partial edits
-  are not lost if the user navigates away.
+- The Roles field shows an inline list of configured roles with
+  j/k navigation, `a` to add, `e`/`Enter` to edit, `d` to delete.
+- Editing or adding a role opens the role editor detail form as
+  an overlay. `Esc` from the role editor returns to the Roles
+  field in the edit-project modal.
+- `Esc` from the Roles field saves all changes (name, repos,
+  roles) and closes the modal.
 
 ---
 
@@ -112,7 +116,7 @@ keys (intercepted for scrollback navigation).
 
 All global keybindings use `Ctrl` and follow Vim conventions
 where applicable: `h/j/k/l` for navigation, semantic letters
-for actions (`C`=close, `D`=delete, `N`=new, `R`=role, `Q`=quit).
+for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 
 | Key | Context | Action | Mnemonic |
 |-----|---------|--------|----------|
@@ -127,7 +131,7 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=role, `Q`=quit).
 | `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
 | `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
 | `Ctrl+E` | Global | Edit active project (name, repos, roles) | **E**dit |
-| `Ctrl+R` | Global | Open role editor | **R**ole |
+| `Ctrl+R` | Global | Restart active session | **R**estart |
 | `F1` | Global | Show help overlay | Universal help |
 | `F2` | Global | Toggle info panel | Next to F1 |
 | `j` / `Down` | Project list | Next project | |
@@ -178,6 +182,23 @@ Create (UUID v4) → Running → Idle / Error
 - **Shutdown**: Triggered by the user closing a session or
   quitting the app. Sends `SIGHUP` to the PTY child process,
   then waits for clean exit before dropping resources.
+
+### Session Restart (`Ctrl+R`)
+
+Restarts the active session's tmux pane while preserving the
+conversation history. The session is killed and respawned with
+`--resume` plus freshly-resolved role permissions from the
+active project's current configuration.
+
+**Why restart instead of close + new?**
+
+- Closing destroys the Claude session ID. Restarting uses
+  `--resume` so the conversation context is preserved.
+- When a user edits role permissions via `Ctrl+E`, existing
+  sessions keep running with stale permissions. `Ctrl+R`
+  picks up the new permissions without losing context.
+- The session's `SessionInfo` (ID, name, project association)
+  stays intact — only the backend pane and I/O are replaced.
 
 ### Why UUID v4?
 
@@ -406,8 +427,9 @@ noise in historical output.
 
 ## Role Editor
 
-Roles can be managed from the TUI via a two-view modal
-accessed with `Ctrl+R` from any context.
+Roles can be managed from the TUI via the edit project modal
+(`Ctrl+E`). The Roles field provides an inline list with
+add/edit/delete capabilities; editing a role opens a detail form.
 
 Projects start with no roles. Users add roles explicitly.
 When no roles are defined, sessions spawn with default
@@ -462,13 +484,13 @@ overridden per-role via the role editor.
 | `d` | Delete selected role |
 | `Esc` | Save and close |
 
-### Keybindings (role editor)
+### Keybindings (role editor detail form)
 
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift+Tab` | Cycle fields |
-| `Enter` | Save role |
-| `Esc` | Discard changes |
+| `Enter` | Save role (return to Roles field) |
+| `Esc` | Discard changes (return to Roles field) |
 
 ---
 
