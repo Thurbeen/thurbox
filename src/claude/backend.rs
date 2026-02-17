@@ -137,12 +137,20 @@ pub trait SessionBackend: Send + Sync {
     fn detach(&self, backend_id: &str) -> Result<()>;
 }
 
-/// Internal bundle of I/O handles for `wire_io`.
+/// Internal bundle of I/O handles before wiring.
 struct SessionIo {
     output: Box<dyn Read + Send>,
     input: Box<dyn Write + Send>,
     initial_screen: Vec<u8>,
     backend_id: String,
+}
+
+/// Wired-up I/O state: parser, channels, and exit tracking.
+struct WiredState {
+    parser: Arc<Mutex<vt100::Parser>>,
+    input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
 }
 
 /// A running session connected to a backend.
@@ -236,14 +244,8 @@ impl Session {
         ))
     }
 
-    /// Wire up parser, reader loop, and writer loop for a session.
-    fn wire_io(
-        info: SessionInfo,
-        rows: u16,
-        cols: u16,
-        io: SessionIo,
-        backend: &Arc<dyn SessionBackend>,
-    ) -> Self {
+    /// Create parser, spawn reader/writer loops for the given I/O handles.
+    fn wire_up(rows: u16, cols: u16, io: SessionIo) -> (WiredState, String) {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
 
         if !io.initial_screen.is_empty() {
@@ -265,14 +267,32 @@ impl Session {
             Self::reader_loop(io.output, parser_clone, exited_clone, last_output_clone);
         });
 
-        Self {
-            info,
+        let state = WiredState {
             parser,
             input_tx,
-            backend_id: io.backend_id,
-            backend: Arc::clone(backend),
             exited,
             last_output_at,
+        };
+        (state, io.backend_id)
+    }
+
+    /// Wire up parser, reader loop, and writer loop for a new session.
+    fn wire_io(
+        info: SessionInfo,
+        rows: u16,
+        cols: u16,
+        io: SessionIo,
+        backend: &Arc<dyn SessionBackend>,
+    ) -> Self {
+        let (state, backend_id) = Self::wire_up(rows, cols, io);
+        Self {
+            info,
+            parser: state.parser,
+            input_tx: state.input_tx,
+            backend_id,
+            backend: Arc::clone(backend),
+            exited: state.exited,
+            last_output_at: state.last_output_at,
         }
     }
 
@@ -354,6 +374,49 @@ impl Session {
     /// Return the backend name.
     pub fn backend_name(&self) -> &str {
         self.backend.name()
+    }
+
+    /// Restart the session: kill the old pane, spawn a fresh one with new config.
+    ///
+    /// Uses `--resume` so Claude picks up the conversation while getting
+    /// freshly-resolved role permissions.
+    pub fn restart(&mut self, config: &SessionConfig, rows: u16, cols: u16) -> Result<()> {
+        self.backend.kill(&self.backend_id)?;
+
+        let args = build_claude_args(config);
+        let window_name = format!("tb-{}", self.info.name);
+        let spawned = self.backend.spawn(
+            &window_name,
+            "claude",
+            &args,
+            config.cwd.as_deref(),
+            rows,
+            cols,
+        )?;
+
+        let (state, backend_id) = Self::wire_up(
+            rows,
+            cols,
+            SessionIo {
+                output: spawned.output,
+                input: spawned.input,
+                initial_screen: spawned.initial_screen,
+                backend_id: spawned.backend_id,
+            },
+        );
+
+        self.backend_id = backend_id;
+        self.parser = state.parser;
+        self.input_tx = state.input_tx;
+        self.exited = state.exited;
+        self.last_output_at = state.last_output_at;
+        self.info.backend_id = Some(self.backend_id.clone());
+        if !config.role.is_empty() {
+            self.info.role = config.role.clone();
+        }
+
+        debug!(session_id = %self.info.id, backend_id = %self.backend_id, "Restarted session");
+        Ok(())
     }
 
     /// Kill/destroy the backend session (for Ctrl+X close).

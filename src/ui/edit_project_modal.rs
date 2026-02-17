@@ -2,14 +2,15 @@ use std::path::PathBuf;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
 use super::{centered_fixed_height_rect, render_text_field, render_text_field_with_suggestion};
 use crate::app::EditProjectField;
+use crate::session::RoleConfig;
 
 pub struct EditProjectModalState<'a> {
     pub name: &'a str,
@@ -19,19 +20,28 @@ pub struct EditProjectModalState<'a> {
     pub path_suggestion: Option<&'a str>,
     pub repos: &'a [PathBuf],
     pub repo_index: usize,
-    pub role_count: usize,
+    pub roles: &'a [RoleConfig],
+    pub role_index: usize,
     pub focused_field: EditProjectField,
 }
 
 pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalState<'_>) {
-    // Dynamic height: name(3) + path(3) + repo_list(max 6 items + 2 border) + roles(3) + footer(1) + outer border(2)
+    // Dynamic height: name(3) + path(3) + repo_list + roles_list + footer(1) + outer border(2)
     let repo_list_inner = if state.repos.is_empty() {
         1
     } else {
         state.repos.len().min(6)
     };
     let repo_list_height = repo_list_inner as u16 + 2; // +2 for borders
-    let total_height = 3 + 3 + repo_list_height + 3 + 1 + 2; // name + path + repos + roles + footer + outer
+
+    let roles_list_inner = if state.roles.is_empty() {
+        1
+    } else {
+        state.roles.len().min(6)
+    };
+    let roles_list_height = roles_list_inner as u16 + 2; // +2 for borders
+
+    let total_height = 3 + 3 + repo_list_height + roles_list_height + 1 + 2;
 
     let area = centered_fixed_height_rect(50, total_height, frame.area());
 
@@ -48,11 +58,11 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),                // Name field
-            Constraint::Length(3),                // Path field
-            Constraint::Length(repo_list_height), // Repo list
-            Constraint::Length(3),                // Roles field
-            Constraint::Min(1),                   // Footer
+            Constraint::Length(3),                 // Name field
+            Constraint::Length(3),                 // Path field
+            Constraint::Length(repo_list_height),  // Repo list
+            Constraint::Length(roles_list_height), // Roles list
+            Constraint::Min(1),                    // Footer
         ])
         .split(inner);
 
@@ -131,7 +141,7 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
         frame.render_widget(Paragraph::new(lines), list_inner);
     }
 
-    // Roles field
+    // Roles list (inline, with j/k/a/e/d navigation when focused)
     let roles_focused = state.focused_field == EditProjectField::Roles;
     let roles_border_color = if roles_focused {
         Color::Cyan
@@ -140,25 +150,52 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
     };
 
     let roles_block = Block::default()
-        .title(" Roles ")
+        .title(format!(" Roles ({}) ", state.roles.len()))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(roles_border_color));
 
     let roles_inner = roles_block.inner(chunks[3]);
     frame.render_widget(roles_block, chunks[3]);
 
-    let roles_text = match state.role_count {
-        0 => "No roles configured  Enter to add...".to_string(),
-        1 => "1 role configured  Enter to edit...".to_string(),
-        n => format!("{n} roles configured  Enter to edit..."),
-    };
-    let roles_color = if roles_focused {
-        Color::White
+    if state.roles.is_empty() {
+        let placeholder = Paragraph::new(Line::from(Span::styled(
+            "  No roles defined",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(placeholder, roles_inner);
     } else {
-        Color::Gray
-    };
-    let roles_line = Line::from(Span::styled(roles_text, Style::default().fg(roles_color)));
-    frame.render_widget(Paragraph::new(roles_line), roles_inner);
+        let visible_count = roles_inner.height as usize;
+        let scroll_offset = if state.role_index >= visible_count {
+            state.role_index - visible_count + 1
+        } else {
+            0
+        };
+
+        let items: Vec<ListItem<'_>> = state
+            .roles
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(visible_count)
+            .map(|(i, role)| {
+                let is_selected = i == state.role_index && roles_focused;
+                let style = if is_selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let prefix = if is_selected { "▸ " } else { "  " };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{prefix}{}", role.name),
+                    style,
+                )))
+            })
+            .collect();
+
+        frame.render_widget(List::new(items), roles_inner);
+    }
 
     // Context-sensitive footer
     let footer = match state.focused_field {
@@ -196,12 +233,16 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
             Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
         ]),
         EditProjectField::Roles => Line::from(vec![
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" edit roles  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("j/k", Style::default().fg(Color::Yellow)),
+            Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("a", Style::default().fg(Color::Yellow)),
+            Span::styled(" add  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("e", Style::default().fg(Color::Yellow)),
+            Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled(" save", Style::default().fg(Color::DarkGray)),
         ]),
     };
     frame.render_widget(Paragraph::new(footer), chunks[4]);
