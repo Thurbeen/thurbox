@@ -87,6 +87,28 @@ pub fn render_info_panel(
         Span::styled(info.id.to_string(), Style::default().fg(Color::DarkGray)),
     ]));
 
+    if !info.additional_dirs.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Directories",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if let Some(cwd) = &info.cwd {
+            lines.push(Line::from(Span::styled(
+                format!("  {} (cwd)", cwd.display()),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        for dir in &info.additional_dirs {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", dir.display()),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
     if let Some(wt) = &info.worktree {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(

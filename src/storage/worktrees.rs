@@ -134,6 +134,7 @@ mod tests {
             backend_type: "tmux".to_string(),
             claude_session_id: None,
             cwd: None,
+            additional_dirs: Vec::new(),
             worktree: None,
             tombstone: false,
             tombstone_at: None,

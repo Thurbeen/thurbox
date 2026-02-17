@@ -173,6 +173,7 @@ pub struct SessionInfo {
     pub worktree: Option<WorktreeInfo>,
     pub claude_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub additional_dirs: Vec<PathBuf>,
     pub backend_id: Option<String>,
 }
 
@@ -186,6 +187,7 @@ impl SessionInfo {
             worktree: None,
             claude_session_id: None,
             cwd: None,
+            additional_dirs: Vec::new(),
             backend_id: None,
         }
     }
@@ -196,6 +198,7 @@ pub struct SessionConfig {
     pub resume_session_id: Option<String>,
     pub claude_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub additional_dirs: Vec<PathBuf>,
     pub role: String,
     pub permissions: RolePermissions,
 }
@@ -329,6 +332,12 @@ mod tests {
     }
 
     #[test]
+    fn session_info_new_has_no_additional_dirs() {
+        let info = SessionInfo::new("Test".to_string());
+        assert!(info.additional_dirs.is_empty());
+    }
+
+    #[test]
     fn session_info_new_has_no_backend_id() {
         let info = SessionInfo::new("Test".to_string());
         assert!(info.backend_id.is_none());
@@ -351,6 +360,7 @@ mod tests {
         assert!(config.resume_session_id.is_none());
         assert!(config.claude_session_id.is_none());
         assert!(config.cwd.is_none());
+        assert!(config.additional_dirs.is_empty());
         assert_eq!(config.role, "");
         assert_eq!(config.permissions, RolePermissions::default());
     }

@@ -35,8 +35,11 @@ on bottom (60%). This replaces the previous session-only sidebar.
 Each session is bound to the project that was active when
 it was created. Sessions spawn in the project's repo directory.
 If the project has a single repo, the session uses it directly.
-If the project has multiple repos, a selector modal lets the
-user choose which repo to use as the working directory.
+If the project has multiple repos, all repos are used
+simultaneously: the first repo becomes the working directory
+and the rest are passed via `--add-dir` so the Claude instance
+has access to all project directories. No repo selector
+is shown for multi-repo projects.
 If no repos are configured, the session falls back to `$HOME`.
 When switching projects, only that project's sessions
 are shown in the session list.
@@ -264,9 +267,12 @@ mode selector modal asks "Normal" or "Worktree".
 ### Flow
 
 1. `Ctrl+N` triggers session creation.
-2. If the project has 2+ repos, a repo selector appears first.
-3. A session mode modal offers "Normal" (spawn in repo root)
-   or "Worktree" (spawn in an isolated worktree).
+2. If the project has 2+ repos, a session spawns immediately
+   using all repos (first as cwd, rest via `--add-dir`).
+   No repo selector or session mode modal is shown.
+3. If the project has 1 repo, a session mode modal offers
+   "Normal" (spawn in repo root) or "Worktree" (spawn in
+   an isolated worktree).
 4. Choosing "Worktree" opens a base branch selector listing
    local branches from the selected repo.
 5. Selecting a base branch opens a prompt for the new branch

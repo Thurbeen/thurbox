@@ -61,6 +61,11 @@ pub fn build_claude_args(config: &SessionConfig) -> Vec<String> {
         args.push(prompt.clone());
     }
 
+    for dir in &config.additional_dirs {
+        args.push("--add-dir".to_string());
+        args.push(dir.display().to_string());
+    }
+
     args
 }
 
@@ -188,6 +193,7 @@ impl Session {
         let mut info = SessionInfo::new(name);
         info.claude_session_id = config.claude_session_id.clone();
         info.cwd = config.cwd.clone();
+        info.additional_dirs = config.additional_dirs.clone();
         if !config.role.is_empty() {
             info.role = config.role.clone();
         }
@@ -453,6 +459,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::session::RolePermissions;
 
@@ -582,9 +590,33 @@ mod tests {
     }
 
     #[test]
+    fn build_args_with_additional_dirs() {
+        let config = SessionConfig {
+            additional_dirs: vec![
+                PathBuf::from("/home/user/repo2"),
+                PathBuf::from("/home/user/repo3"),
+            ],
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec![
+                "--permission-mode",
+                "default",
+                "--add-dir",
+                "/home/user/repo2",
+                "--add-dir",
+                "/home/user/repo3",
+            ]
+        );
+    }
+
+    #[test]
     fn build_args_all_fields() {
         let config = SessionConfig {
             claude_session_id: Some("id-1".to_string()),
+            additional_dirs: vec![PathBuf::from("/extra")],
             permissions: RolePermissions {
                 permission_mode: Some("plan".to_string()),
                 allowed_tools: vec!["Read".to_string()],
@@ -610,6 +642,8 @@ mod tests {
                 "default",
                 "--append-system-prompt",
                 "Focus",
+                "--add-dir",
+                "/extra",
             ]
         );
     }
