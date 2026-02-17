@@ -1,0 +1,2 @@
+[build.env]
+passthrough = ["THURBOX_RELEASE_VERSION"]
