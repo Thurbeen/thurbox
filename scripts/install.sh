@@ -11,7 +11,7 @@ TEMP_DIR=""
 
 # Cleanup
 cleanup() {
-  [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+  [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR" || true
 }
 trap cleanup EXIT INT TERM
 
@@ -153,7 +153,7 @@ do_install() {
   mkdir -p "$dir"
   tar -xzf "$tarball" -C "$dir"
   chmod +x "$dir/thurbox"
-  chmod +x "$dir/thurbox-mcp"
+  if [ -f "$dir/thurbox-mcp" ]; then chmod +x "$dir/thurbox-mcp"; fi
 }
 
 # Show success message
@@ -196,4 +196,4 @@ main() {
   success "Installation complete!"
 }
 
-[ -z "$TEST_TMPDIR" ] && main "$@"
+if [ -z "$TEST_TMPDIR" ]; then main "$@"; fi
