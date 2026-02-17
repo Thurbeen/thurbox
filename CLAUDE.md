@@ -142,9 +142,41 @@ Enforced by cocogitto via pre-commit hooks.
 
 - **Types**: feat, fix, perf, refactor, docs, style, test,
   chore, ci, build, revert
-- **Scopes**: api, cli, ui, git, core, docs, deps, config
+- **Scopes**: api, cli, ui, git, core, docs, deps, config, mcp
 - Use `cog commit feat "message"`
   or `cog commit fix "message" scope`
+
+## MCP Server
+
+A separate binary (`thurbox-mcp`) exposes Thurbox configuration
+over the Model Context Protocol via stdio transport. It shares
+the same SQLite database as the TUI — changes appear in the TUI
+automatically via `PRAGMA data_version` polling.
+
+```bash
+cargo build --bin thurbox-mcp       # Build MCP server
+cargo run --bin thurbox-mcp         # Run (stdin/stdout JSON-RPC)
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_projects` | List all active projects |
+| `get_project` | Get a project by name or UUID |
+| `create_project` | Create a new project |
+| `update_project` | Update project name/repos |
+| `delete_project` | Soft-delete a project |
+| `list_roles` | List roles for a project |
+| `set_roles` | Replace all roles for a project |
+| `list_sessions` | List sessions (optional project filter) |
+
+### Module Isolation
+
+```text
+mcp → storage, session, project, sync, paths
+      (NEVER app, claude, ui, git)
+```
 
 ## Architecture (TEA Pattern)
 
@@ -158,6 +190,7 @@ session  ← pure data types, no project-local imports
 project  ← pure data types + config loading, imports session only
 claude   ← imports session only (NEVER ui, git, or project)
 ui       ← imports session and project only (NEVER claude or git)
+mcp      ← imports storage, session, project, sync, paths only
 app      ← coordinator, imports all modules
 ```
 
@@ -180,6 +213,9 @@ app      ← coordinator, imports all modules
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (two-section
   left panel), `terminal_view`, `info_panel`, `status_bar`.
+- **`mcp/`** — MCP server (`thurbox-mcp` binary). Exposes
+  project/role/session CRUD over stdio JSON-RPC. Shares the
+  same SQLite database as the TUI.
 
 ### Event Loop (main.rs)
 

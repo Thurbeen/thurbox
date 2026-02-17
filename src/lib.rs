@@ -3,6 +3,7 @@
 pub mod app;
 pub mod claude;
 pub mod git;
+pub mod mcp;
 pub mod paths;
 pub mod project;
 pub mod session;

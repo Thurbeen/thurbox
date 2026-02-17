@@ -124,7 +124,7 @@ jobs:
           ARCHIVE_NAME="thurbox-${VERSION}-${TARGET}.tar.gz"
 
           cd target/$TARGET/release
-          tar czf "../../../$ARCHIVE_NAME" thurbox
+          tar czf "../../../$ARCHIVE_NAME" thurbox thurbox-mcp
           cd ../../..
 
           # Also package LICENSE

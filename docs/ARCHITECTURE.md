@@ -409,3 +409,33 @@ I/O coordination.
   multiple instances write concurrently; no atomic multi-key updates;
   split source of truth between config.toml (roles) and state files
   (sessions) caused sync bugs.
+
+---
+
+## ADR-13: MCP Server as Separate Binary
+
+**Choice**: The MCP (Model Context Protocol) server is a separate
+binary (`thurbox-mcp`) that shares the same SQLite database as the
+TUI. It exposes project, role, and session management over stdio
+JSON-RPC transport using the `rmcp` crate.
+
+**Why**: A separate binary avoids coupling the MCP protocol stack
+to the TUI's event loop. The TUI already polls `PRAGMA data_version`
+every 250ms (ADR-7b), so changes made by the MCP server appear
+automatically — no new synchronization mechanism is needed.
+
+The `mcp` module follows the same isolation rules as other modules:
+it imports `storage`, `session`, `project`, `sync`, and `paths`,
+but never `app`, `claude`, `ui`, or `git`. This ensures the MCP
+server can operate without a terminal or tmux.
+
+**Rejected**:
+
+- *Embedded in the TUI binary* — would add MCP protocol dependencies
+  to the main binary, increase startup time, and require managing
+  a second I/O channel alongside the TUI's crossterm event loop.
+- *REST/gRPC server* — requires a listening port, adds networking
+  complexity, and MCP's stdio transport is the standard for CLI
+  tool integration with AI agents.
+- *Shared library with thin binary wrapper* — over-engineering;
+  the `thurbox` crate already exposes the needed types as `pub mod`.
