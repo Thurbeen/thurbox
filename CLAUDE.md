@@ -174,9 +174,8 @@ app      ← coordinator, imports all modules
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
   `SessionInfo`, `SessionConfig` (with optional `cwd`).
   No logic beyond Display/Default impls.
-- **`project/`** — Plain data + config loading: `ProjectId`,
-  `ProjectConfig`, `ProjectInfo`. Loads project list from
-  `~/.config/thurbox/config.toml`. Imports `session` only.
+- **`project/`** — Plain data: `ProjectId`,
+  `ProjectConfig`, `ProjectInfo`. Imports `session` only.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (two-section
@@ -185,7 +184,7 @@ app      ← coordinator, imports all modules
 ### Event Loop (main.rs)
 
 ```text
-tokio::main → init backend (tmux) → load project config
+tokio::main → init backend (tmux) → open SQLite DB
 → init terminal → spawn/restore sessions → loop {
     draw frame → poll crossterm events (10ms)
     → convert to AppMessage → app.update() → app.tick()
@@ -216,8 +215,8 @@ framework). Install with `prek install`. Stages:
 - Terminal state parsed by `vt100::Parser`,
   rendered by `tui_term::PseudoTerminal`
 - Sessions persist across restarts (tmux keeps them alive)
-- Config file: `~/.config/thurbox/config.toml`
-  (XDG_CONFIG_HOME respected)
+- All state (projects, sessions, roles) in SQLite:
+  `~/.local/share/thurbox/thurbox.db` (XDG_DATA_HOME respected)
 - Requires tmux >= 3.2
 
 ## Keybindings (Vim-Inspired)
@@ -234,6 +233,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+K` | Previous session | Vim: **k** = up |
 | `Ctrl+L` | Cycle focus | Vim: **l** = right |
 | `Ctrl+D` | Delete session/project | Vim: **d** = delete |
+| `Ctrl+E` | Edit active project | **E**dit |
 | `Ctrl+R` | Role editor | **R**ole |
 | `F1` | Help overlay | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |

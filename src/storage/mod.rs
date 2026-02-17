@@ -13,6 +13,7 @@
 
 pub mod audit;
 mod projects;
+mod roles;
 mod schema;
 mod sessions;
 pub mod sync;
@@ -48,6 +49,11 @@ impl Database {
             instance_id: Uuid::new_v4().to_string(),
             last_data_version,
         })
+    }
+
+    /// Get a reference to the underlying connection (for metadata queries).
+    pub fn conn_ref(&self) -> &Connection {
+        &self.conn
     }
 
     /// Open an in-memory database (for testing).

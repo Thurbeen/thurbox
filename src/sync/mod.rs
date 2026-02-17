@@ -70,6 +70,14 @@ impl SyncState {
         }
     }
 
+    /// Set the initial snapshot from the current DB state.
+    ///
+    /// Must be called at startup so the first `poll_for_changes()` doesn't
+    /// produce a massive false delta treating all existing data as "added".
+    pub fn set_initial_snapshot(&mut self, state: SharedState) {
+        self.local_state_snapshot = state;
+    }
+
     /// Disable sync (useful for single-instance deployments or testing).
     pub fn disable(&mut self) {
         self.enabled = false;
@@ -166,5 +174,28 @@ mod tests {
 
         sync.disable();
         assert!(!sync.should_poll());
+    }
+
+    #[test]
+    fn set_initial_snapshot_replaces_default() {
+        let mut sync = SyncState::new();
+        assert!(sync.local_state_snapshot.sessions.is_empty());
+        assert!(sync.local_state_snapshot.projects.is_empty());
+
+        let state = SharedState {
+            session_counter: 42,
+            projects: vec![SharedProject {
+                id: crate::project::ProjectId::default(),
+                name: "Test".to_string(),
+                repos: vec![],
+                roles: vec![],
+            }],
+            ..Default::default()
+        };
+
+        sync.set_initial_snapshot(state);
+
+        assert_eq!(sync.local_state_snapshot.session_counter, 42);
+        assert_eq!(sync.local_state_snapshot.projects.len(), 1);
     }
 }

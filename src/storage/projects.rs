@@ -175,7 +175,14 @@ impl Database {
                 })?
                 .collect::<Result<_, _>>()?;
 
-            projects.push(SharedProject { id, name, repos });
+            let roles = self.list_roles(id)?;
+
+            projects.push(SharedProject {
+                id,
+                name,
+                repos,
+                roles,
+            });
         }
 
         Ok(projects)
@@ -203,6 +210,7 @@ mod tests {
             name: name.to_string(),
             repos: vec![],
             roles: vec![],
+            id: None,
         };
         config.deterministic_id()
     }

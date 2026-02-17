@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::project::ProjectId;
-use crate::session::SessionId;
+use crate::session::{RoleConfig, SessionId};
 
 /// Current shared state format version.
 const SHARED_STATE_VERSION: u32 = 1;
@@ -98,6 +98,9 @@ pub struct SharedProject {
 
     /// Repository paths associated with this project.
     pub repos: Vec<PathBuf>,
+
+    /// Role definitions for this project.
+    pub roles: Vec<RoleConfig>,
 }
 
 /// Worktree information embedded in shared session.

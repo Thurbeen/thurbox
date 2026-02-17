@@ -59,6 +59,7 @@ mod tests {
             name: name.to_string(),
             repos: vec![],
             roles: vec![],
+            id: None,
         };
         config.deterministic_id()
     }
