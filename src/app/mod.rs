@@ -1259,6 +1259,22 @@ impl App {
         }
     }
 
+    /// Switch to the next project and sync the active session.
+    pub(crate) fn switch_project_forward(&mut self) {
+        if self.active_project_index + 1 < self.projects.len() {
+            self.active_project_index += 1;
+            self.sync_active_session_to_project();
+        }
+    }
+
+    /// Switch to the previous project and sync the active session.
+    pub(crate) fn switch_project_backward(&mut self) {
+        if self.active_project_index > 0 {
+            self.active_project_index -= 1;
+            self.sync_active_session_to_project();
+        }
+    }
+
     /// Switch to the next session within the active project.
     pub(crate) fn switch_session_forward(&mut self) {
         self.switch_session_by_offset(1);
@@ -1989,8 +2005,8 @@ fn render_help_overlay(frame: &mut Frame) {
     let help_lines = vec![
         help_section("Navigation (Vim: h/j/k/l)"),
         help_line("Ctrl+H", "Focus project list (h = left)"),
-        help_line("Ctrl+J", "Next session (j = down)"),
-        help_line("Ctrl+K", "Previous session (k = up)"),
+        help_line("Ctrl+J", "Next project (project focus) / session"),
+        help_line("Ctrl+K", "Previous project (project focus) / session"),
         help_line("Ctrl+L", "Cycle focus (l = right/forward)"),
         Line::from(""),
         help_section("Session Management"),
@@ -3431,6 +3447,83 @@ mod tests {
         assert_eq!(app.focus, InputFocus::Terminal);
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(app.focus, InputFocus::ProjectList);
+    }
+
+    // --- Context-sensitive Ctrl+J/K tests ---
+
+    fn app_with_projects(count: usize) -> App {
+        let mut app = app_with_sessions(0);
+        // app already has one default project at index 0
+        for i in 1..count {
+            app.projects.push(ProjectInfo {
+                id: ProjectId::default(),
+                config: ProjectConfig {
+                    name: format!("Project {}", i + 1),
+                    repos: vec![],
+                    roles: vec![],
+                    mcp_servers: vec![],
+                    id: None,
+                },
+                session_ids: vec![],
+                is_default: false,
+                is_admin: false,
+            });
+        }
+        app
+    }
+
+    #[test]
+    fn ctrl_j_moves_project_forward_when_project_list_focused() {
+        let mut app = app_with_projects(3);
+        app.focus = InputFocus::ProjectList;
+        app.active_project_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(app.active_project_index, 1);
+    }
+
+    #[test]
+    fn ctrl_k_moves_project_backward_when_project_list_focused() {
+        let mut app = app_with_projects(3);
+        app.focus = InputFocus::ProjectList;
+        app.active_project_index = 2;
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(app.active_project_index, 1);
+    }
+
+    #[test]
+    fn ctrl_j_switches_session_when_session_list_focused() {
+        let mut app = app_with_sessions(3);
+        app.focus = InputFocus::SessionList;
+        app.active_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(app.active_index, 1);
+    }
+
+    #[test]
+    fn ctrl_j_switches_session_when_terminal_focused() {
+        let mut app = app_with_sessions(3);
+        app.focus = InputFocus::Terminal;
+        app.active_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(app.active_index, 1);
+    }
+
+    #[test]
+    fn ctrl_j_at_last_project_is_noop() {
+        let mut app = app_with_projects(3);
+        app.focus = InputFocus::ProjectList;
+        app.active_project_index = 2;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(app.active_project_index, 2);
+    }
+
+    #[test]
+    fn ctrl_k_at_first_project_is_noop() {
+        let mut app = app_with_projects(3);
+        app.focus = InputFocus::ProjectList;
+        app.active_project_index = 0;
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(app.active_project_index, 0);
     }
 
     // --- DB persistence tests ---

@@ -135,11 +135,19 @@ impl App {
                     return;
                 }
                 KeyCode::Char('j') => {
-                    self.switch_session_forward();
+                    if self.focus == InputFocus::ProjectList {
+                        self.switch_project_forward();
+                    } else {
+                        self.switch_session_forward();
+                    }
                     return;
                 }
                 KeyCode::Char('k') => {
-                    self.switch_session_backward();
+                    if self.focus == InputFocus::ProjectList {
+                        self.switch_project_backward();
+                    } else {
+                        self.switch_session_backward();
+                    }
                     return;
                 }
                 KeyCode::Char('l') => {
@@ -177,16 +185,10 @@ impl App {
     fn handle_project_list_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.active_project_index + 1 < self.projects.len() {
-                    self.active_project_index += 1;
-                    self.sync_active_session_to_project();
-                }
+                self.switch_project_forward();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.active_project_index > 0 {
-                    self.active_project_index -= 1;
-                    self.sync_active_session_to_project();
-                }
+                self.switch_project_backward();
             }
             KeyCode::Enter => {
                 self.focus = InputFocus::SessionList;

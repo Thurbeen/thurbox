@@ -281,8 +281,8 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+N` | New project/session | **N**ew |
 | `Ctrl+C` | Close active session | **C**lose |
 | `Ctrl+H` | Focus project list | Vim: **h** = left |
-| `Ctrl+J` | Next session | Vim: **j** = down |
-| `Ctrl+K` | Previous session | Vim: **k** = up |
+| `Ctrl+J` | Next project (project focus) / session | Vim: **j** = down |
+| `Ctrl+K` | Previous project (project focus) / session | Vim: **k** = up |
 | `Ctrl+L` | Cycle focus | Vim: **l** = right |
 | `Ctrl+D` | Delete session/project | Vim: **d** = delete |
 | `Ctrl+E` | Edit active project (name, repos, roles) | **E**dit |
