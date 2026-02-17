@@ -16,15 +16,14 @@ impl Database {
         id: ProjectId,
         name: &str,
         repos: &[PathBuf],
-        is_default: bool,
     ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
         self.conn.execute(
             "INSERT INTO projects (id, name, is_default, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id_str, name, is_default as i32, now, now],
+             VALUES (?1, ?2, 0, ?3, ?4)",
+            params![id_str, name, now, now],
         )?;
 
         for repo in repos {
@@ -223,7 +222,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = test_project_id("test");
 
-        db.insert_project(id, "test", &[PathBuf::from("/repo")], false)
+        db.insert_project(id, "test", &[PathBuf::from("/repo")])
             .unwrap();
 
         let projects = db.list_active_projects().unwrap();
@@ -237,7 +236,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = test_project_id("test");
 
-        db.insert_project(id, "test", &[PathBuf::from("/repo1")], false)
+        db.insert_project(id, "test", &[PathBuf::from("/repo1")])
             .unwrap();
         db.update_project(id, "renamed", &[PathBuf::from("/repo2")])
             .unwrap();
@@ -252,7 +251,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = test_project_id("test");
 
-        db.insert_project(id, "test", &[], false).unwrap();
+        db.insert_project(id, "test", &[]).unwrap();
         db.soft_delete_project(id).unwrap();
 
         let active = db.list_active_projects().unwrap();
@@ -267,7 +266,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = test_project_id("test");
 
-        db.insert_project(id, "test", &[], false).unwrap();
+        db.insert_project(id, "test", &[]).unwrap();
         db.soft_delete_project(id).unwrap();
         db.restore_project(id).unwrap();
 
@@ -282,7 +281,7 @@ mod tests {
 
         assert!(!db.project_exists(id).unwrap());
 
-        db.insert_project(id, "test", &[], false).unwrap();
+        db.insert_project(id, "test", &[]).unwrap();
         assert!(db.project_exists(id).unwrap());
 
         db.soft_delete_project(id).unwrap();
@@ -294,7 +293,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = test_project_id("test");
 
-        db.insert_project(id, "test", &[], false).unwrap();
+        db.insert_project(id, "test", &[]).unwrap();
 
         let entries = db.get_audit_log(None, None, 10).unwrap();
         assert_eq!(entries.len(), 1);
@@ -312,7 +311,7 @@ mod tests {
             PathBuf::from("/b"),
             PathBuf::from("/c"),
         ];
-        db.insert_project(id, "multi", &repos, false).unwrap();
+        db.insert_project(id, "multi", &repos).unwrap();
 
         let projects = db.list_active_projects().unwrap();
         assert_eq!(projects[0].repos.len(), 3);

@@ -280,7 +280,7 @@ mod tests {
     fn setup_db_with_project() -> (Database, ProjectId) {
         let db = Database::open_in_memory().unwrap();
         let pid = test_project_id("test");
-        db.insert_project(pid, "test", &[], false).unwrap();
+        db.insert_project(pid, "test", &[]).unwrap();
         (db, pid)
     }
 
@@ -346,8 +346,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let pid1 = test_project_id("proj1");
         let pid2 = test_project_id("proj2");
-        db.insert_project(pid1, "proj1", &[], false).unwrap();
-        db.insert_project(pid2, "proj2", &[], false).unwrap();
+        db.insert_project(pid1, "proj1", &[]).unwrap();
+        db.insert_project(pid2, "proj2", &[]).unwrap();
 
         let s1 = make_session("S1", pid1);
         let s2 = make_session("S2", pid2);

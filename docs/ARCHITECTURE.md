@@ -209,26 +209,25 @@ sessions) and works at all supported widths.
 
 ---
 
-## ADR-10: Default project — projects list is never empty
+## ADR-10: No default project — Admin guarantees non-empty list
 
-**Choice**: When no projects are configured, an ephemeral
-"Default" project is created using the current working directory.
-It is never persisted to disk. This guarantees
-`projects.len() > 0` at all times.
+**Choice**: There is no auto-created "Default" project. The
+built-in Admin project (always present) guarantees
+`projects.len() > 0`. On first launch with an empty DB, users
+see only the Admin project and create their first project via
+`Ctrl+N` or the Admin MCP session.
 
-**Why**: An always-non-empty project list eliminates
-orphaned-session edge cases, removes empty-state UI branches,
-and simplifies `active_project_sessions()` — no `Option` handling
-needed. The default project coexists with user-added projects
-and disappears on restart once user projects exist.
+**Why**: The original default project (created from CWD) was
+confusing — it couldn't be edited or deleted, and its CWD-based
+repo was often wrong. The Admin project already satisfies the
+non-empty invariant, so the default project added no value.
+Removing it simplifies the codebase (no `is_default` checks)
+and gives users full control over their project list.
 
-**Rejected**:
-
-- *Replace default on first user project* — would reassign
-  sessions created under the default, causing confusing
-  ownership changes mid-session.
-- *Persist default to disk* — pollutes the config file with
-  auto-generated entries the user didn't create.
+**Previous design**: An ephemeral "Default" project was
+auto-created from CWD when no projects existed. It was
+non-editable, non-deletable, and persisted to the DB for FK
+constraints. Superseded when the Admin project was introduced.
 
 ---
 
