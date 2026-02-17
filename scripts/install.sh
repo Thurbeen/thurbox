@@ -153,6 +153,7 @@ do_install() {
   mkdir -p "$dir"
   tar -xzf "$tarball" -C "$dir"
   chmod +x "$dir/thurbox"
+  chmod +x "$dir/thurbox-mcp"
 }
 
 # Show success message
@@ -163,11 +164,11 @@ show_success() {
     echo "⚠ Add to PATH: export PATH=\"$1:\$PATH\""
   fi
 
-  echo ""
   echo "Setup:"
   echo "  • Install tmux >= 3.2"
   echo "  • Install claude CLI"
   echo "  • Run: thurbox"
+  echo "  • MCP server: thurbox-mcp (stdio transport)"
 }
 
 # Main

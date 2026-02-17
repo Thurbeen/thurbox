@@ -44,6 +44,14 @@ rusqlite = { version = "0.33", features = ["bundled"] }
 # Error handling
 anyhow = "1.0"
 
+# MCP server
+rmcp = { version = "0.15", features = ["server", "transport-io", "schemars"] }
+serde_json = "1"
+
+[[bin]]
+name = "thurbox-mcp"
+path = "src/bin/thurbox-mcp.rs"
+
 [dev-dependencies]
 tempfile = "3"
 
