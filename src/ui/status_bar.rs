@@ -59,7 +59,7 @@ pub fn render_footer(
             focus_badge,
             Span::styled(counts, Style::default().fg(Color::Gray)),
             Span::styled(
-                " ^N New  ^C Close  ^D Delete  ^R Role  ^H/J/K/L Nav  F1 Help  F2 Info  ^Q Quit ",
+                " ^N New  ^C Close  ^D Delete  ^E Edit  ^R Restart  ^H/J/K/L Nav  F1 Help  F2 Info  ^Q Quit ",
                 Style::default().fg(Color::DarkGray),
             ),
         ])
