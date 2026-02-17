@@ -143,7 +143,10 @@ fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
 
 /// Check if a project's key metadata changed.
 fn project_changed(old: &SharedProject, new: &SharedProject) -> bool {
-    old.name != new.name || old.repos != new.repos || old.roles != new.roles
+    old.name != new.name
+        || old.repos != new.repos
+        || old.roles != new.roles
+        || old.mcp_servers != new.mcp_servers
 }
 
 #[cfg(test)]
@@ -736,5 +739,40 @@ mod tests {
 
         assert!(!delta.is_empty());
         assert_eq!(delta.updated_sessions.len(), 1);
+    }
+
+    #[test]
+    fn project_changed_detects_mcp_servers_change() {
+        use crate::session::McpServerConfig;
+
+        let pid = ProjectId::default();
+
+        let mut old_state = SharedState::new();
+        old_state.projects.push(SharedProject {
+            id: pid,
+            name: "proj".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: vec![],
+            mcp_servers: vec![],
+        });
+
+        let mut new_state = SharedState::new();
+        new_state.projects.push(SharedProject {
+            id: pid,
+            name: "proj".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: vec![],
+            mcp_servers: vec![McpServerConfig {
+                name: "fs".to_string(),
+                command: "npx".to_string(),
+                args: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+        });
+
+        let delta = StateDelta::compute(&old_state, &new_state);
+
+        assert!(!delta.is_empty());
+        assert_eq!(delta.updated_projects.len(), 1);
     }
 }

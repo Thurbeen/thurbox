@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::session::{RoleConfig, SessionId};
+use crate::session::{McpServerConfig, RoleConfig, SessionId};
 
 // Keep serde on ProjectId for backward compat (used in session/mod.rs serialization)
 
@@ -47,6 +47,7 @@ pub struct ProjectConfig {
     pub name: String,
     pub repos: Vec<PathBuf>,
     pub roles: Vec<RoleConfig>,
+    pub mcp_servers: Vec<McpServerConfig>,
     /// Stable project ID preserved across renames. When present, this takes
     /// precedence over the name-derived deterministic ID.
     pub id: Option<String>,
@@ -127,6 +128,7 @@ pub fn create_default_project() -> ProjectConfig {
         name: "Default".to_string(),
         repos: vec![cwd],
         roles: Vec::new(),
+        mcp_servers: Vec::new(),
         id: None,
     }
 }
@@ -156,6 +158,7 @@ mod tests {
             name: "test".to_string(),
             repos: vec![PathBuf::from("/tmp/test")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let info = ProjectInfo::new(config);
@@ -181,6 +184,7 @@ mod tests {
             name: "Admin".to_string(),
             repos: vec![PathBuf::from("/admin")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let info = ProjectInfo::new_admin(config);
@@ -196,6 +200,7 @@ mod tests {
             name: "Test Project".to_string(),
             repos: vec![PathBuf::from("/repo1"), PathBuf::from("/repo2")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
 
@@ -211,12 +216,14 @@ mod tests {
             name: "Project A".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let config2 = ProjectConfig {
             name: "Project B".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
 
@@ -229,6 +236,7 @@ mod tests {
             name: "Test Project".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
 
@@ -242,6 +250,7 @@ mod tests {
             name: "Shared Project".to_string(),
             repos: vec![PathBuf::from("/shared/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
 
@@ -257,6 +266,7 @@ mod tests {
             name: "Test".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         assert_eq!(config.effective_id(), config.deterministic_id());
@@ -268,6 +278,7 @@ mod tests {
             name: "OldName".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let original_id = original_config.deterministic_id();
@@ -276,6 +287,7 @@ mod tests {
             name: "NewName".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: Some(original_id.to_string()),
         };
 

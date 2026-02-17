@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use super::mcp_editor_modal::McpEditorField;
 use super::{AddProjectField, App, EditProjectField, InputFocus, RoleEditorView};
 use crate::claude::input;
 use crate::paths;
@@ -50,6 +51,12 @@ impl App {
         // Worktree name modal captures all input
         if self.show_worktree_name_modal {
             self.handle_worktree_name_key(code);
+            return;
+        }
+
+        // MCP editor detail form captures all input
+        if self.show_mcp_editor {
+            self.handle_mcp_editor_key(code);
             return;
         }
 
@@ -390,6 +397,7 @@ impl App {
             EditProjectField::Path => self.handle_edit_project_path_key(code),
             EditProjectField::RepoList => self.handle_edit_project_repo_list_key(code),
             EditProjectField::Roles => self.handle_edit_project_roles_key(code),
+            EditProjectField::McpServers => self.handle_edit_project_mcp_servers_key(code),
         }
     }
 
@@ -400,7 +408,7 @@ impl App {
                 self.edit_project_field = EditProjectField::Path;
             }
             KeyCode::BackTab => {
-                self.edit_project_field = EditProjectField::Roles;
+                self.edit_project_field = EditProjectField::McpServers;
             }
             KeyCode::Enter => self.submit_edit_project(),
             KeyCode::Backspace => self.edit_project_name.backspace(),
@@ -502,7 +510,7 @@ impl App {
         match code {
             KeyCode::Esc => self.submit_edit_project(),
             KeyCode::Tab => {
-                self.edit_project_field = EditProjectField::Name;
+                self.edit_project_field = EditProjectField::McpServers;
             }
             KeyCode::BackTab => {
                 if !self.edit_project_repos.is_empty() {
@@ -882,23 +890,7 @@ impl App {
     }
 
     fn handle_tool_adding_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => self.active_tool_list_mut().cancel_add(),
-            KeyCode::Enter => self.active_tool_list_mut().confirm_add(),
-            _ => {
-                let input = &mut self.active_tool_list_mut().input;
-                match code {
-                    KeyCode::Backspace => input.backspace(),
-                    KeyCode::Delete => input.delete(),
-                    KeyCode::Left => input.move_left(),
-                    KeyCode::Right => input.move_right(),
-                    KeyCode::Home => input.home(),
-                    KeyCode::End => input.end(),
-                    KeyCode::Char(c) => input.insert(c),
-                    _ => {}
-                }
-            }
-        }
+        handle_tool_list_adding_key(self.active_tool_list_mut(), code);
     }
 
     fn next_editor_field(
@@ -979,6 +971,159 @@ impl App {
         }
     }
 
+    fn handle_edit_project_mcp_servers_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.submit_edit_project(),
+            KeyCode::Tab => {
+                self.edit_project_field = EditProjectField::Name;
+            }
+            KeyCode::BackTab => {
+                self.edit_project_field = EditProjectField::Roles;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.edit_project_mcp_servers.is_empty()
+                    && self.edit_project_mcp_server_index + 1 < self.edit_project_mcp_servers.len()
+                {
+                    self.edit_project_mcp_server_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.edit_project_mcp_server_index =
+                    self.edit_project_mcp_server_index.saturating_sub(1);
+            }
+            KeyCode::Char('a') => {
+                self.prepare_new_mcp_editor();
+                self.show_mcp_editor = true;
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if !self.edit_project_mcp_servers.is_empty() {
+                    let idx = self.edit_project_mcp_server_index;
+                    self.open_mcp_server_for_editing(idx);
+                    self.show_mcp_editor = true;
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.edit_project_mcp_servers.is_empty() {
+                    self.edit_project_mcp_servers
+                        .remove(self.edit_project_mcp_server_index);
+                    if self.edit_project_mcp_server_index >= self.edit_project_mcp_servers.len()
+                        && self.edit_project_mcp_server_index > 0
+                    {
+                        self.edit_project_mcp_server_index -= 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn handle_mcp_editor_key(&mut self, code: KeyCode) {
+        use crate::ui::role_editor_modal::ToolListMode;
+
+        match self.mcp_editor_field {
+            McpEditorField::Args | McpEditorField::Env => {
+                let tool_list = match self.mcp_editor_field {
+                    McpEditorField::Args => &self.mcp_editor_args,
+                    _ => &self.mcp_editor_env,
+                };
+                if tool_list.mode == ToolListMode::Adding {
+                    self.handle_mcp_tool_adding_key(code);
+                } else {
+                    self.handle_mcp_tool_browse_key(code);
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // Text field handling (Name, Command).
+        match code {
+            KeyCode::Esc => {
+                // Discard and close
+                self.show_mcp_editor = false;
+                self.mcp_editor_field = McpEditorField::Name;
+            }
+            KeyCode::Tab => {
+                self.mcp_editor_field = Self::next_mcp_editor_field(self.mcp_editor_field);
+            }
+            KeyCode::BackTab => {
+                self.mcp_editor_field = Self::prev_mcp_editor_field(self.mcp_editor_field);
+            }
+            KeyCode::Enter => {
+                self.submit_mcp_editor();
+            }
+            _ => {
+                let input = match self.mcp_editor_field {
+                    McpEditorField::Name => &mut self.mcp_editor_name,
+                    McpEditorField::Command => &mut self.mcp_editor_command,
+                    _ => return,
+                };
+                match code {
+                    KeyCode::Backspace => input.backspace(),
+                    KeyCode::Delete => input.delete(),
+                    KeyCode::Left => input.move_left(),
+                    KeyCode::Right => input.move_right(),
+                    KeyCode::Home => input.home(),
+                    KeyCode::End => input.end(),
+                    KeyCode::Char(c) => input.insert(c),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn handle_mcp_tool_browse_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.show_mcp_editor = false;
+                self.mcp_editor_field = McpEditorField::Name;
+            }
+            KeyCode::Tab => {
+                self.mcp_editor_field = Self::next_mcp_editor_field(self.mcp_editor_field);
+            }
+            KeyCode::BackTab => {
+                self.mcp_editor_field = Self::prev_mcp_editor_field(self.mcp_editor_field);
+            }
+            KeyCode::Enter => {
+                self.submit_mcp_editor();
+            }
+            KeyCode::Char('a') => self.active_mcp_tool_list_mut().start_adding(),
+            KeyCode::Char('d') => self.active_mcp_tool_list_mut().delete_selected(),
+            KeyCode::Char('j') | KeyCode::Down => self.active_mcp_tool_list_mut().move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.active_mcp_tool_list_mut().move_up(),
+            _ => {}
+        }
+    }
+
+    fn handle_mcp_tool_adding_key(&mut self, code: KeyCode) {
+        handle_tool_list_adding_key(self.active_mcp_tool_list_mut(), code);
+    }
+
+    fn active_mcp_tool_list_mut(&mut self) -> &mut super::ToolListState {
+        match self.mcp_editor_field {
+            McpEditorField::Args => &mut self.mcp_editor_args,
+            _ => &mut self.mcp_editor_env,
+        }
+    }
+
+    fn next_mcp_editor_field(field: McpEditorField) -> McpEditorField {
+        match field {
+            McpEditorField::Name => McpEditorField::Command,
+            McpEditorField::Command => McpEditorField::Args,
+            McpEditorField::Args => McpEditorField::Env,
+            McpEditorField::Env => McpEditorField::Name,
+        }
+    }
+
+    fn prev_mcp_editor_field(field: McpEditorField) -> McpEditorField {
+        match field {
+            McpEditorField::Name => McpEditorField::Env,
+            McpEditorField::Command => McpEditorField::Name,
+            McpEditorField::Args => McpEditorField::Command,
+            McpEditorField::Env => McpEditorField::Args,
+        }
+    }
+
     pub(crate) fn start_branch_selection(&mut self) {
         let Some(repo_path) = self.pending_repo_path.as_ref() else {
             return;
@@ -1004,6 +1149,29 @@ impl App {
                 error!("Failed to list branches: {e}");
                 self.error_message = Some(format!("Failed to list branches: {e:#}"));
                 self.pending_repo_path = None;
+            }
+        }
+    }
+}
+
+/// Handle key input when a [`ToolListState`] is in Adding mode.
+///
+/// Shared between role editor and MCP editor tool list fields.
+fn handle_tool_list_adding_key(list: &mut super::ToolListState, code: KeyCode) {
+    match code {
+        KeyCode::Esc => list.cancel_add(),
+        KeyCode::Enter => list.confirm_add(),
+        _ => {
+            let input = &mut list.input;
+            match code {
+                KeyCode::Backspace => input.backspace(),
+                KeyCode::Delete => input.delete(),
+                KeyCode::Left => input.move_left(),
+                KeyCode::Right => input.move_right(),
+                KeyCode::Home => input.home(),
+                KeyCode::End => input.end(),
+                KeyCode::Char(c) => input.insert(c),
+                _ => {}
             }
         }
     }

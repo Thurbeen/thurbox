@@ -189,6 +189,7 @@ mod tests {
                 name: "Test".to_string(),
                 repos: vec![],
                 roles: vec![],
+                mcp_servers: vec![],
             }],
             ..Default::default()
         };

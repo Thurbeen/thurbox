@@ -1,5 +1,6 @@
 //! Request parameter and response types for MCP tool handlers.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rmcp::schemars;
@@ -100,6 +101,34 @@ pub struct ListSessionsParams {
     pub project: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListMcpServersParams {
+    #[schemars(description = "Project name or UUID")]
+    pub project: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct McpServerInput {
+    #[schemars(description = "Server name (unique within project)")]
+    pub name: String,
+    #[schemars(description = "Command to run the MCP server")]
+    pub command: String,
+    #[serde(default)]
+    #[schemars(description = "Command-line arguments")]
+    pub args: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Environment variables (key-value pairs)")]
+    pub env: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetMcpServersParams {
+    #[schemars(description = "Project name or UUID")]
+    pub project: String,
+    #[schemars(description = "List of MCP server definitions (replaces all existing)")]
+    pub servers: Vec<McpServerInput>,
+}
+
 // ── Response Types ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -108,6 +137,8 @@ pub struct ProjectResponse {
     pub name: String,
     pub repos: Vec<PathBuf>,
     pub roles: Vec<RoleResponse>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServerResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -124,6 +155,16 @@ pub struct RoleResponse {
     pub tools: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct McpServerResponse {
+    pub name: String,
+    pub command: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]

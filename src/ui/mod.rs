@@ -4,6 +4,7 @@ pub mod delete_project_modal;
 pub mod edit_project_modal;
 pub mod info_panel;
 pub mod layout;
+pub mod mcp_editor_modal;
 pub mod project_list;
 pub mod repo_selector_modal;
 pub mod role_editor_modal;

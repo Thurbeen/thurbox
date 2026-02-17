@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::project::ProjectId;
-use crate::session::{RoleConfig, SessionId};
+use crate::session::{McpServerConfig, RoleConfig, SessionId};
 
 /// Current shared state format version.
 const SHARED_STATE_VERSION: u32 = 1;
@@ -104,6 +104,9 @@ pub struct SharedProject {
 
     /// Role definitions for this project.
     pub roles: Vec<RoleConfig>,
+
+    /// MCP server configurations for this project.
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 /// Worktree information embedded in shared session.

@@ -187,7 +187,7 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
 
 /// Compute the height needed for a tool list section.
 /// 2 (border) + max(items, 1 empty) + optional 1 for input row.
-fn tool_list_height(tools: &[String], mode: ToolListMode, focused: bool) -> u16 {
+pub fn tool_list_height(tools: &[String], mode: ToolListMode, focused: bool) -> u16 {
     let item_rows = if tools.is_empty() {
         1
     } else {
@@ -203,7 +203,7 @@ fn tool_list_height(tools: &[String], mode: ToolListMode, focused: bool) -> u16 
 
 /// Render a bordered tool list with optional inline add-input.
 #[allow(clippy::too_many_arguments)]
-fn render_tool_list(
+pub fn render_tool_list(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
     label: &str,

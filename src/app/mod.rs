@@ -1,4 +1,5 @@
 mod key_handlers;
+pub(crate) mod mcp_editor_modal;
 mod modals;
 mod state;
 
@@ -54,6 +55,7 @@ pub enum EditProjectField {
     Path,
     RepoList,
     Roles,
+    McpServers,
 }
 
 /// State for an editable list of tool names (allowed or disallowed).
@@ -283,6 +285,15 @@ pub struct App {
     pub(crate) role_editor_disallowed_tools: ToolListState,
     pub(crate) role_editor_system_prompt: TextInput,
     pub(crate) role_editor_editing_index: Option<usize>,
+    pub(crate) edit_project_mcp_servers: Vec<crate::session::McpServerConfig>,
+    pub(crate) edit_project_mcp_server_index: usize,
+    pub(crate) show_mcp_editor: bool,
+    pub(crate) mcp_editor_field: mcp_editor_modal::McpEditorField,
+    pub(crate) mcp_editor_name: TextInput,
+    pub(crate) mcp_editor_command: TextInput,
+    pub(crate) mcp_editor_args: ToolListState,
+    pub(crate) mcp_editor_env: ToolListState,
+    pub(crate) mcp_editor_editing_index: Option<usize>,
     sync_state: SyncState,
 }
 
@@ -292,6 +303,7 @@ fn shared_project_to_info(sp: sync::SharedProject) -> ProjectInfo {
         name: sp.name,
         repos: sp.repos,
         roles: sp.roles,
+        mcp_servers: sp.mcp_servers,
         id: Some(sp.id.to_string()),
     };
     let mut info = ProjectInfo::new(config);
@@ -373,6 +385,7 @@ fn migrate_config_toml_roles(db: &Database) {
                 name: lp.name.clone(),
                 repos: lp.repos.clone(),
                 roles: Vec::new(),
+                mcp_servers: Vec::new(),
                 id: None,
             };
             c.deterministic_id()
@@ -516,6 +529,15 @@ impl App {
             role_editor_disallowed_tools: ToolListState::new(),
             role_editor_system_prompt: TextInput::new(),
             role_editor_editing_index: None,
+            edit_project_mcp_servers: Vec::new(),
+            edit_project_mcp_server_index: 0,
+            show_mcp_editor: false,
+            mcp_editor_field: mcp_editor_modal::McpEditorField::Name,
+            mcp_editor_name: TextInput::new(),
+            mcp_editor_command: TextInput::new(),
+            mcp_editor_args: ToolListState::new(),
+            mcp_editor_env: ToolListState::new(),
+            mcp_editor_editing_index: None,
             sync_state,
         }
     }
@@ -571,6 +593,7 @@ impl App {
             name: "Admin".to_string(),
             repos: vec![admin_dir.to_path_buf()],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let admin_id = admin_config.effective_id();
@@ -1047,6 +1070,7 @@ impl App {
             name,
             repos: self.add_project_repos.clone(),
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let info = ProjectInfo::new(config);
@@ -1076,6 +1100,7 @@ impl App {
         let name = project.config.name.clone();
         let repos = project.config.repos.clone();
         let roles = project.config.roles.clone();
+        let mcp_servers = project.config.mcp_servers.clone();
         let id = project.id;
 
         self.edit_project_name.set(&name);
@@ -1087,6 +1112,8 @@ impl App {
         self.edit_project_original_id = Some(id);
         self.role_editor_roles = roles;
         self.role_editor_list_index = 0;
+        self.edit_project_mcp_servers = mcp_servers;
+        self.edit_project_mcp_server_index = 0;
         self.show_edit_project_modal = true;
     }
 
@@ -1119,6 +1146,7 @@ impl App {
         project.config.name = name;
         project.config.repos = self.edit_project_repos.clone();
         project.config.roles = self.role_editor_roles.clone();
+        project.config.mcp_servers = self.edit_project_mcp_servers.clone();
 
         // Persist project to DB at point of change
         let project_clone = project.clone();
@@ -1131,6 +1159,7 @@ impl App {
     pub(crate) fn close_edit_project_modal(&mut self) {
         self.show_edit_project_modal = false;
         self.show_role_editor = false;
+        self.show_mcp_editor = false;
         self.edit_project_name.clear();
         self.edit_project_path.clear();
         self.edit_project_field = EditProjectField::Name;
@@ -1140,6 +1169,8 @@ impl App {
         self.edit_project_original_id = None;
         self.role_editor_roles.clear();
         self.role_editor_list_index = 0;
+        self.edit_project_mcp_servers.clear();
+        self.edit_project_mcp_server_index = 0;
     }
 
     pub(crate) fn show_delete_project_modal(&mut self) {
@@ -1326,6 +1357,7 @@ impl App {
                 project.config.name = shared_project.name;
                 project.config.repos = shared_project.repos;
                 project.config.roles = shared_project.roles;
+                project.config.mcp_servers = shared_project.mcp_servers;
                 tracing::debug!("Updated project {} from external state", project_name);
             }
         }
@@ -1531,6 +1563,8 @@ impl App {
                     repo_index: self.edit_project_repo_index,
                     roles: &self.role_editor_roles,
                     role_index: self.role_editor_list_index,
+                    mcp_servers: &self.edit_project_mcp_servers,
+                    mcp_server_index: self.edit_project_mcp_server_index,
                     focused_field: self.edit_project_field,
                 },
             );
@@ -1637,6 +1671,30 @@ impl App {
                 },
             );
         }
+
+        // MCP editor modal (detail form, overlays edit-project modal)
+        if self.show_mcp_editor {
+            crate::ui::mcp_editor_modal::render_mcp_editor_modal(
+                frame,
+                &crate::ui::mcp_editor_modal::McpEditorState {
+                    name: self.mcp_editor_name.value(),
+                    name_cursor: self.mcp_editor_name.cursor_pos(),
+                    command: self.mcp_editor_command.value(),
+                    command_cursor: self.mcp_editor_command.cursor_pos(),
+                    args: &self.mcp_editor_args.items,
+                    args_index: self.mcp_editor_args.selected,
+                    args_mode: self.mcp_editor_args.mode,
+                    args_input: self.mcp_editor_args.input.value(),
+                    args_input_cursor: self.mcp_editor_args.input.cursor_pos(),
+                    env: &self.mcp_editor_env.items,
+                    env_index: self.mcp_editor_env.selected,
+                    env_mode: self.mcp_editor_env.mode,
+                    env_input: self.mcp_editor_env.input.value(),
+                    env_input_cursor: self.mcp_editor_env.input.cursor_pos(),
+                    focused_field: self.mcp_editor_field,
+                },
+            );
+        }
     }
 
     pub fn should_quit(&self) -> bool {
@@ -1702,6 +1760,10 @@ impl App {
 
         if let Err(e) = self.db.replace_roles(id, &project.config.roles) {
             error!("Failed to save project roles to DB: {e}");
+        }
+
+        if let Err(e) = self.db.replace_mcp_servers(id, &project.config.mcp_servers) {
+            error!("Failed to save project MCP servers to DB: {e}");
         }
     }
 
@@ -2445,6 +2507,7 @@ mod tests {
                 description: "Operations".to_string(),
                 permissions: RolePermissions::default(),
             }],
+            mcp_servers: vec![],
             id: None,
         };
         let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -2517,6 +2580,7 @@ mod tests {
                     },
                 },
             ],
+            mcp_servers: vec![],
             id: None,
         };
         let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -2531,6 +2595,7 @@ mod tests {
             name: "test".to_string(),
             repos: vec![],
             roles: vec![],
+            mcp_servers: vec![],
             id: None,
         };
         let app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -2612,6 +2677,7 @@ mod tests {
                     append_system_prompt: Some("Be careful".to_string()),
                 },
             }],
+            mcp_servers: vec![],
             id: None,
         };
         let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -2665,6 +2731,7 @@ mod tests {
                     ..RolePermissions::default()
                 },
             }],
+            mcp_servers: vec![],
             id: None,
         };
         let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -2756,6 +2823,7 @@ mod tests {
                     permissions: RolePermissions::default(),
                 },
             ],
+            mcp_servers: vec![],
             id: None,
         };
         let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -2972,6 +3040,7 @@ mod tests {
                     ..RolePermissions::default()
                 },
             }],
+            mcp_servers: vec![],
             id: None,
         };
         let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -3020,6 +3089,7 @@ mod tests {
                     ..RolePermissions::default()
                 },
             }],
+            mcp_servers: vec![],
             id: None,
         };
         let app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
@@ -3036,6 +3106,7 @@ mod tests {
             name: "Test Project".to_string(),
             repos: vec![PathBuf::from("/path/to/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let proj_id = proj_config.deterministic_id();
@@ -3045,6 +3116,7 @@ mod tests {
             name: "Test Project".to_string(),
             repos: vec![PathBuf::from("/path/to/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
         };
 
         let info = shared_project_to_info(shared_proj.clone());
@@ -3065,6 +3137,7 @@ mod tests {
                 PathBuf::from("/repo3"),
             ],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let proj_id = proj_config.deterministic_id();
@@ -3078,6 +3151,7 @@ mod tests {
                 PathBuf::from("/repo3"),
             ],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
         };
 
         let info = shared_project_to_info(shared_proj.clone());
@@ -3095,6 +3169,7 @@ mod tests {
             name: "DB Project".to_string(),
             repos: vec![PathBuf::from("/db/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let proj_id = proj_config.deterministic_id();
@@ -3140,6 +3215,7 @@ mod tests {
             name: "Test".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let proj_id = proj_config.deterministic_id();
@@ -3168,12 +3244,14 @@ mod tests {
             name: "ProjectA".to_string(),
             repos: vec![PathBuf::from("/a")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let config_b = ProjectConfig {
             name: "ProjectB".to_string(),
             repos: vec![PathBuf::from("/b")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         db.insert_project(
@@ -3206,6 +3284,7 @@ mod tests {
             name: "TestProject".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let id = config.deterministic_id();
@@ -3277,6 +3356,7 @@ mod tests {
                 name: "Extra".into(),
                 repos: vec![],
                 roles: vec![],
+                mcp_servers: vec![],
                 id: None,
             },
             session_ids: vec![],
@@ -3368,6 +3448,7 @@ mod tests {
             name: "test".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let pid = proj_config.deterministic_id();
@@ -3401,6 +3482,7 @@ mod tests {
             name: "test".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let pid = proj_config.deterministic_id();
@@ -3512,6 +3594,7 @@ mod tests {
             name: name.to_string(),
             repos,
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         App::new(24, 120, stub_backend(), test_db_with_project(&config))
@@ -3623,7 +3706,11 @@ mod tests {
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.edit_project_field, EditProjectField::Roles);
 
-        // Roles -> Name
+        // Roles -> McpServers
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.edit_project_field, EditProjectField::McpServers);
+
+        // McpServers -> Name
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.edit_project_field, EditProjectField::Name);
     }
@@ -3700,6 +3787,7 @@ mod tests {
             name: "old-name".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let det_id = old_config.deterministic_id();
@@ -3739,6 +3827,7 @@ mod tests {
             name: "TestA".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let original_id = config.deterministic_id();
@@ -3832,6 +3921,7 @@ mod tests {
             name: "TestA".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let original_id = original_config.deterministic_id();
@@ -3861,6 +3951,7 @@ mod tests {
             name: "TestA".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let original_id = original_config.deterministic_id();
@@ -3931,6 +4022,7 @@ mod tests {
             name: "test".to_string(),
             repos: vec![PathBuf::from("/repo")],
             roles,
+            mcp_servers: vec![],
             id: None,
         };
         App::new(24, 120, stub_backend(), test_db_with_project(&config))
@@ -4123,6 +4215,7 @@ mod tests {
             name: "Admin".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let mut admin_project = ProjectInfo::new_admin(admin_config);
@@ -4146,6 +4239,7 @@ mod tests {
             name: "Admin".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         });
         app.projects.push(admin_project);
@@ -4169,6 +4263,7 @@ mod tests {
             name: "Admin".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         });
         app.projects.push(admin_project);
@@ -4192,6 +4287,7 @@ mod tests {
             name: "Admin".to_string(),
             repos: vec![],
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         });
         let session = Session::stub("admin", &backend);
