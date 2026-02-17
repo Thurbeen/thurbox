@@ -7,6 +7,8 @@ and git worktree management.
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+![Thurbox Demo](./docs/media/thurbox-demo.gif)
+
 ## Features
 
 - **Multi-Instance Orchestration**: Manage multiple Claude Code sessions simultaneously
