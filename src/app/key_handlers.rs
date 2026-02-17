@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use super::{AddProjectField, App, InputFocus, RoleEditorView};
+use super::{AddProjectField, App, EditProjectField, InputFocus, RoleEditorView};
 use crate::claude::input;
 use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -71,6 +71,12 @@ impl App {
             return;
         }
 
+        // Edit-project modal captures all input
+        if self.show_edit_project_modal {
+            self.handle_edit_project_key(code);
+            return;
+        }
+
         // Delete-project modal captures all input
         if self.show_delete_project_modal_flag {
             self.handle_delete_project_key(code);
@@ -108,6 +114,10 @@ impl App {
                     }
                     InputFocus::Terminal => {} // forward to PTY
                 },
+                KeyCode::Char('e') => {
+                    self.open_edit_project_modal();
+                    return;
+                }
                 KeyCode::Char('r') => {
                     self.open_role_editor();
                     return;
@@ -374,6 +384,156 @@ impl App {
         self.add_project_path_suggestion = None;
     }
 
+    fn handle_edit_project_key(&mut self, code: KeyCode) {
+        match self.edit_project_field {
+            EditProjectField::Name => self.handle_edit_project_name_key(code),
+            EditProjectField::Path => self.handle_edit_project_path_key(code),
+            EditProjectField::RepoList => self.handle_edit_project_repo_list_key(code),
+            EditProjectField::Roles => self.handle_edit_project_roles_key(code),
+        }
+    }
+
+    fn handle_edit_project_name_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.close_edit_project_modal(),
+            KeyCode::Tab => {
+                self.edit_project_field = EditProjectField::Path;
+            }
+            KeyCode::BackTab => {
+                self.edit_project_field = EditProjectField::Roles;
+            }
+            KeyCode::Enter => self.submit_edit_project(),
+            KeyCode::Backspace => self.edit_project_name.backspace(),
+            KeyCode::Delete => self.edit_project_name.delete(),
+            KeyCode::Left => self.edit_project_name.move_left(),
+            KeyCode::Right => self.edit_project_name.move_right(),
+            KeyCode::Home => self.edit_project_name.home(),
+            KeyCode::End => self.edit_project_name.end(),
+            KeyCode::Char(c) => self.edit_project_name.insert(c),
+            _ => {}
+        }
+    }
+
+    fn handle_edit_project_path_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.close_edit_project_modal();
+                return;
+            }
+            KeyCode::Tab => {
+                if let Some(suggestion) = self.edit_project_path_suggestion.take() {
+                    for c in suggestion.chars() {
+                        self.edit_project_path.insert(c);
+                    }
+                } else if !self.edit_project_repos.is_empty() {
+                    self.edit_project_field = EditProjectField::RepoList;
+                    self.edit_project_path_suggestion = None;
+                    return;
+                } else {
+                    self.edit_project_field = EditProjectField::Roles;
+                    self.edit_project_path_suggestion = None;
+                    return;
+                }
+            }
+            KeyCode::BackTab => {
+                self.edit_project_field = EditProjectField::Name;
+                self.edit_project_path_suggestion = None;
+                return;
+            }
+            KeyCode::Enter => {
+                let path = self.edit_project_path.value().trim().to_string();
+                if !path.is_empty() {
+                    self.edit_project_repos.push(PathBuf::from(path));
+                    self.edit_project_repo_index = self.edit_project_repos.len().saturating_sub(1);
+                    self.edit_project_path.clear();
+                    self.edit_project_path_suggestion = None;
+                }
+                return;
+            }
+            KeyCode::Backspace => self.edit_project_path.backspace(),
+            KeyCode::Delete => self.edit_project_path.delete(),
+            KeyCode::Left => self.edit_project_path.move_left(),
+            KeyCode::Right => self.edit_project_path.move_right(),
+            KeyCode::Home => self.edit_project_path.home(),
+            KeyCode::End => self.edit_project_path.end(),
+            KeyCode::Char(c) => self.edit_project_path.insert(c),
+            _ => return,
+        }
+        self.update_edit_path_suggestion();
+    }
+
+    fn handle_edit_project_repo_list_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.close_edit_project_modal(),
+            KeyCode::Tab => {
+                self.edit_project_field = EditProjectField::Roles;
+            }
+            KeyCode::BackTab => {
+                self.edit_project_field = EditProjectField::Path;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.edit_project_repo_index + 1 < self.edit_project_repos.len() {
+                    self.edit_project_repo_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.edit_project_repo_index = self.edit_project_repo_index.saturating_sub(1);
+            }
+            KeyCode::Char('d') => {
+                if !self.edit_project_repos.is_empty() {
+                    self.edit_project_repos.remove(self.edit_project_repo_index);
+                    if self.edit_project_repo_index >= self.edit_project_repos.len()
+                        && self.edit_project_repo_index > 0
+                    {
+                        self.edit_project_repo_index -= 1;
+                    }
+                    // If list becomes empty, switch to Path field
+                    if self.edit_project_repos.is_empty() {
+                        self.edit_project_field = EditProjectField::Path;
+                    }
+                }
+            }
+            KeyCode::Enter => self.submit_edit_project(),
+            _ => {}
+        }
+    }
+
+    fn handle_edit_project_roles_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.close_edit_project_modal(),
+            KeyCode::Tab => {
+                self.edit_project_field = EditProjectField::Name;
+            }
+            KeyCode::BackTab => {
+                if !self.edit_project_repos.is_empty() {
+                    self.edit_project_field = EditProjectField::RepoList;
+                } else {
+                    self.edit_project_field = EditProjectField::Path;
+                }
+            }
+            KeyCode::Enter => {
+                // Save name+repo changes first, then open role editor
+                self.submit_edit_project();
+                // Only open role editor if submit succeeded (modal closed)
+                if !self.show_edit_project_modal {
+                    self.open_role_editor();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Recompute path suggestion for edit-project modal.
+    fn update_edit_path_suggestion(&mut self) {
+        let value = self.edit_project_path.value();
+        let at_end = self.edit_project_path.cursor_pos() == value.chars().count();
+        if at_end && !value.is_empty() {
+            self.edit_project_path_suggestion = paths::complete_directory_path(value);
+        } else {
+            self.edit_project_path_suggestion = None;
+        }
+    }
+
     fn handle_delete_project_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Enter => {
@@ -589,8 +749,9 @@ impl App {
                 let roles_to_save = self.role_editor_roles.clone();
                 if let Some(project) = self.active_project_mut() {
                     project.config.roles = roles_to_save;
+                    let project_clone = project.clone();
+                    self.save_project_to_db(&project_clone);
                 }
-                self.save_project_configs_to_disk();
                 self.show_role_editor = false;
             }
             KeyCode::Char('j') | KeyCode::Down => {

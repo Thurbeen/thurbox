@@ -142,7 +142,7 @@ fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
 
 /// Check if a project's key metadata changed.
 fn project_changed(old: &SharedProject, new: &SharedProject) -> bool {
-    old.name != new.name || old.repos != new.repos
+    old.name != new.name || old.repos != new.repos || old.roles != new.roles
 }
 
 #[cfg(test)]

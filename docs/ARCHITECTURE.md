@@ -339,16 +339,20 @@ delivers pixel-perfect rendering with all original formatting.
 
 ---
 
-## ADR-7: Multi-Instance Sync — File-based polling with mtime
+## ADR-7: Multi-Instance Sync — SQLite with PRAGMA data_version
 
-**Choice**: Multiple thurbox instances synchronize session metadata
-via a shared TOML file (`~/.local/share/thurbox/shared_state.toml`).
-Each instance periodically polls the file's modification time (mtime)
-and reads its content if changed. Writes are atomic (temp file + rename).
-Session counter is merged using `max()`, deletions use tombstones
-with a 60-second TTL.
+**Choice**: Multiple thurbox instances synchronize all state
+(projects, sessions, roles, worktrees) via a shared SQLite database
+(`~/.local/share/thurbox/thurbox.db`). Each instance polls
+`PRAGMA data_version` to detect external changes. SQLite's WAL mode
+handles concurrent access safely. Deletions use soft delete
+(`deleted_at` column).
 
-Session **I/O is NOT coordinated** via the shared file. Instead, each
+*This supersedes the original TOML file-based approach. The migration
+to SQLite resolved race conditions where concurrent `save_state()` calls
+could overwrite each other's project renames.*
+
+Session **I/O is NOT coordinated** via the database. Instead, each
 instance independently connects to tmux and adopts all visible sessions.
 Tmux natively handles concurrent clients: output is broadcast to all
 connected clients, and input commands are serialized. This enables true
@@ -357,18 +361,13 @@ ownership restrictions.
 
 **Why**: This approach is:
 
-- **Simple**: POSIX file I/O for metadata, tmux I/O built-in for sessions
+- **Atomic**: SQLite transactions prevent torn writes and race conditions
 - **Portable**: Works on Linux, macOS, any system with a filesystem
-- **Observable**: Users can inspect/edit `shared_state.toml` directly
 - **TEA-compatible**: External changes flow through the message pipeline
 - **Graceful**: Single instance has zero polling overhead
-- **Debuggable**: File format is human-readable TOML
 - **Collaborative**: All instances can interact with the same sessions
   simultaneously (like tmux attach with multiple clients)
-
-The polling latency (~250ms average) is acceptable for session
-metadata sync — users rarely create/delete sessions faster than
-this, and terminal I/O (with millisecond response) dominates perception.
+- **Single source of truth**: No split-brain between config.toml and DB
 
 **Multi-Instance I/O Model**: Rather than using an ownership model
 to prevent duplicate I/O, each instance maintains its own control mode
@@ -385,10 +384,8 @@ I/O coordination.
 
 **Trade-offs**:
 
-- **~250ms latency** vs <1ms for inotify: acceptable for metadata
-- **Eventual consistency**: brief windows where instances diverge;
-  last-write-wins resolves conflicts
-- **~4 stat() calls/sec** per instance: negligible disk overhead
+- **Not human-readable**: Unlike TOML, users cannot directly edit state.
+  The TUI provides all editing UI (add/edit/delete projects, role editor).
 - **Independent terminal state**: Each instance maintains its own
   `vt100::Parser`, so concurrent updates may briefly diverge. Instances
   converge quickly as output is replayed.
@@ -408,5 +405,7 @@ I/O coordination.
   (daemon crashes, socket issues), incompatible with offline usage.
 - *Git-based sync* — requires git repo for state, introduces gc/
   rebase issues, incompatible with non-repo environments.
-- *SQLite shared DB* — adds database locking complexity, risk of
-  corruption from concurrent access, not human-readable.
+- *TOML file-based sync (previous approach)* — race conditions when
+  multiple instances write concurrently; no atomic multi-key updates;
+  split source of truth between config.toml (roles) and state files
+  (sessions) caused sync bugs.

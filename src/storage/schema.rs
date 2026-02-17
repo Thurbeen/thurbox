@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -75,6 +75,20 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON sessions(id) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_projects_active
             ON projects(id) WHERE deleted_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS project_roles (
+            project_id          TEXT NOT NULL REFERENCES projects(id),
+            role_name           TEXT NOT NULL,
+            description         TEXT NOT NULL DEFAULT '',
+            permission_mode     TEXT,
+            allowed_tools       TEXT NOT NULL DEFAULT '',
+            disallowed_tools    TEXT NOT NULL DEFAULT '',
+            tools               TEXT,
+            append_system_prompt TEXT,
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            PRIMARY KEY (project_id, role_name)
+        );
         ",
     )?;
 
@@ -111,6 +125,7 @@ mod tests {
         assert!(tables.contains(&"metadata".to_string()));
         assert!(tables.contains(&"projects".to_string()));
         assert!(tables.contains(&"project_repos".to_string()));
+        assert!(tables.contains(&"project_roles".to_string()));
         assert!(tables.contains(&"sessions".to_string()));
         assert!(tables.contains(&"worktrees".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));

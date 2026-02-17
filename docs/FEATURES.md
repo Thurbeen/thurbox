@@ -41,27 +41,50 @@ If no repos are configured, the session falls back to `$HOME`.
 When switching projects, only that project's sessions
 are shown in the session list.
 
-### Config file format
+### Project storage
 
-Projects are loaded from `~/.config/thurbox/config.toml`
-(`$XDG_CONFIG_HOME` respected):
+Projects (name, repos, roles) are stored in the SQLite database
+at `~/.local/share/thurbox/thurbox.db` (`$XDG_DATA_HOME` respected).
+Projects are created and edited via the TUI (add-project modal
+with `Ctrl+N`, edit with `Ctrl+E`).
 
-```toml
-[[projects]]
-name = "my-app"
-repos = [
-    "/home/user/repositories/app-frontend",
-    "/home/user/repositories/app-backend",
-]
+If the database is empty on first launch, Thurbox creates an
+ephemeral Default project using the current working directory.
+The Default project is not persisted to the database.
 
-[[projects]]
-name = "infra"
-repos = ["/home/user/repositories/infra"]
-```
+On upgrade from a version that used `config.toml`, roles are
+automatically migrated to the database on first launch. The
+old `config.toml` is renamed to `config.toml.bak`.
 
-If the file doesn't exist, Thurbox creates an ephemeral
-Default project using the current working directory.
-The Default project is never persisted to disk.
+### Edit project modal
+
+`Ctrl+E` opens a pre-populated modal for editing the active
+project's name, repositories, and roles. The modal mirrors the
+add-project flow (Name → Path → RepoList) with an additional
+Roles field that delegates to the role editor.
+
+**Why not just delete and recreate?**
+
+- Deleting a project kills all its sessions. Editing preserves
+  them because the `ProjectId` stays stable across renames — it
+  is not regenerated from the new name.
+- The stable ID is persisted in the SQLite database so it
+  survives application restarts. The `ProjectId` assigned at
+  creation time never changes, even when the project is renamed.
+- Users can fix typos or add repos without losing active work.
+
+**Why a separate modal from add-project?**
+
+- The edit modal needs pre-populated fields and a Roles section.
+  Overloading the add modal with "mode" logic would complicate
+  both the state machine and the key handlers.
+- Separate modals keep each flow simple and independently testable.
+
+#### Roles field behavior
+
+- Pressing `Enter` on the Roles field saves name/repo changes
+  first, then opens the role editor. This ensures partial edits
+  are not lost if the user navigates away.
 
 ---
 
@@ -103,6 +126,7 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=role, `Q`=quit).
 | `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal | Vim: **l** = right |
 | `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
 | `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
+| `Ctrl+E` | Global | Edit active project (name, repos, roles) | **E**dit |
 | `Ctrl+R` | Global | Open role editor | **R**ole |
 | `F1` | Global | Show help overlay | Universal help |
 | `F2` | Global | Toggle info panel | Next to F1 |
@@ -297,8 +321,8 @@ concurrent thurbox instances.
   (UUID v4) via the Claude CLI's `--session-id` flag. This tells
   Claude to use a stable conversation ID from the start.
 - On shutdown (`Ctrl+Q`), session metadata (including backend
-  IDs) is written to `$XDG_DATA_HOME/thurbox/state.toml`
-  (default: `~/.local/share/thurbox/state.toml`). Thurbox detaches
+  IDs) is written to the SQLite database at
+  `$XDG_DATA_HOME/thurbox/thurbox.db`. Thurbox detaches
   from each session without killing it.
 - On next startup, Thurbox discovers existing sessions from tmux,
   matches them to persisted metadata by `backend_id`, and adopts
@@ -308,37 +332,19 @@ concurrent thurbox instances.
 - External recovery is always possible via
   `tmux -L thurbox attach`.
 
-### State file format
+### State storage
 
-```toml
-session_counter = 3
-
-[[sessions]]
-name = "Session 1"
-claude_session_id = "abc-123-def-456"
-cwd = "/home/user/repos/app"
-backend_id = "%1"
-backend_type = "local-tmux"
-
-[[sessions]]
-name = "Session 2"
-claude_session_id = "ghi-789-jkl-012"
-cwd = "/home/user/repos/app/.git/thurbox-worktrees/feat-login"
-backend_id = "%2"
-backend_type = "local-tmux"
-
-[sessions.worktree]
-repo_path = "/home/user/repos/app"
-worktree_path = "/home/user/repos/app/.git/thurbox-worktrees/feat-login"
-branch = "feat-login"
-```
+All session state is stored in the SQLite database
+(`thurbox.db`). Tables include `sessions`, `worktrees`,
+and `metadata` (for the session counter). The database uses
+WAL mode for concurrent multi-instance access.
 
 ### Worktree preservation
 
 Worktrees are **not** removed on `Ctrl+Q` shutdown — they
 persist on disk so the resumed session can continue working
 in the same branch checkout. Worktree metadata (repo path,
-worktree path, branch name) is saved in the state file and
+worktree path, branch name) is saved in the database and
 reconstructed on restore.
 
 ### Explicit close vs quit
@@ -411,12 +417,12 @@ When no roles are defined, sessions spawn with default
 
 Each role maps to Claude CLI flags:
 
-| Concept | CLI Flag | In TOML |
-|---------|----------|---------|
-| Allow (auto-approve) | `--allowed-tools "Read Bash(git:*)"` | `allowed_tools = ["Read", "Bash(git:*)"]` |
-| Deny (blocked) | `--disallowed-tools "Edit"` | `disallowed_tools = ["Edit"]` |
-| Ask (prompt user) | *(default for unlisted tools)* | *(omitted from both lists)* |
-| Permission mode | `--permission-mode plan` | `permission_mode = "plan"` |
+| Concept | CLI Flag |
+|---------|----------|
+| Allow (auto-approve) | `--allowed-tools "Read Bash(git:*)"` |
+| Deny (blocked) | `--disallowed-tools "Edit"` |
+| Ask (prompt user) | *(default for unlisted tools)* |
+| Permission mode | `--permission-mode plan` |
 
 Bash scope patterns like `Bash(git:*)` and `Bash(cargo:*)`
 are supported in both allowed and disallowed tool lists.
@@ -425,7 +431,7 @@ are supported in both allowed and disallowed tool lists.
 
 Shows all roles for the active project. Supports
 add (`a`), edit (`e` / `Enter`), and delete (`d`).
-Pressing `Esc` saves changes to the config file and
+Pressing `Esc` saves changes to the database and
 closes the modal.
 
 ### Role Editor View
@@ -440,8 +446,7 @@ Edits a single role with four text fields:
   (blocked)
 
 Permission mode defaults to `dontAsk` and can be
-overridden per-role via the config file
-(`permission_mode = "plan"` in the role's TOML block).
+overridden per-role via the role editor.
 
 `Tab` / `Shift+Tab` cycles between fields.
 `Enter` saves the role, `Esc` discards changes.

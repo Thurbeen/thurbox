@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 /// Categories of application paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathKind {
-    /// Config file: `~/.config/thurbox/config.toml`
+    /// Config file: `~/.config/thurbox/config.toml` (legacy, used for migration only)
     Config,
     /// Log directory: `~/.local/share/thurbox/`
     LogDir,

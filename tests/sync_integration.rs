@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use thurbox::project::{ProjectConfig, ProjectId};
-use thurbox::session::SessionId;
+use thurbox::session::{RoleConfig, RolePermissions, SessionId};
 use thurbox::storage::Database;
 use thurbox::sync::{self, SharedSession, SharedState, SharedWorktree};
 
@@ -31,6 +31,7 @@ fn test_project_id(name: &str) -> ProjectId {
         name: name.to_string(),
         repos: vec![],
         roles: vec![],
+        id: None,
     };
     config.deterministic_id()
 }
@@ -487,4 +488,157 @@ fn poll_for_changes_respects_interval() {
 
     let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
     assert!(result.is_none());
+}
+
+// ============================================================================
+// Multi-instance project rename and role sync tests
+// ============================================================================
+
+#[test]
+fn db_project_rename_propagates_across_instances() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("OriginalName");
+    db_a.insert_project(pid, "OriginalName", &[PathBuf::from("/repo")], false)
+        .unwrap();
+
+    // Instance A renames the project
+    db_a.update_project(pid, "RenamedProject", &[PathBuf::from("/repo")])
+        .unwrap();
+
+    // Instance B should see the renamed project with same ID
+    let projects = db_b.list_active_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id, pid);
+    assert_eq!(projects[0].name, "RenamedProject");
+}
+
+#[test]
+fn db_project_rename_does_not_affect_sessions() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("TestProject");
+    db_a.insert_project(pid, "TestProject", &[PathBuf::from("/repo")], false)
+        .unwrap();
+
+    // Create a session tied to the project
+    let session = make_session(SessionId::default(), "MySession", pid);
+    let sid = session.id;
+    db_a.upsert_session(&session).unwrap();
+
+    // Instance A renames the project
+    db_a.update_project(pid, "NewName", &[PathBuf::from("/repo")])
+        .unwrap();
+
+    // Instance B should see the session still tied to the same project ID
+    let sessions = db_b.list_active_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, sid);
+    assert_eq!(sessions[0].project_id, pid);
+}
+
+#[test]
+fn db_role_sync_across_instances() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("RoleProject");
+    db_a.insert_project(pid, "RoleProject", &[], false).unwrap();
+
+    // Instance A adds roles
+    let roles = vec![
+        RoleConfig {
+            name: "developer".to_string(),
+            description: "Full access".to_string(),
+            permissions: RolePermissions::default(),
+        },
+        RoleConfig {
+            name: "reviewer".to_string(),
+            description: "Read only".to_string(),
+            permissions: RolePermissions::default(),
+        },
+    ];
+    db_a.replace_roles(pid, &roles).unwrap();
+
+    // Instance B should see the roles via list_active_projects
+    let projects = db_b.list_active_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].roles.len(), 2);
+    assert!(projects[0].roles.iter().any(|r| r.name == "developer"));
+    assert!(projects[0].roles.iter().any(|r| r.name == "reviewer"));
+}
+
+#[test]
+fn db_delta_detects_role_change() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db = Database::open(path).unwrap();
+
+    let pid = test_project_id("DeltaRoleProject");
+    db.insert_project(pid, "DeltaRoleProject", &[], false)
+        .unwrap();
+
+    // Take initial snapshot (no roles)
+    let initial = db.load_shared_state().unwrap();
+    assert_eq!(initial.projects.len(), 1);
+    assert_eq!(initial.projects[0].roles.len(), 0);
+
+    // Add a role
+    db.replace_roles(
+        pid,
+        &[RoleConfig {
+            name: "admin".to_string(),
+            description: "Admin role".to_string(),
+            permissions: RolePermissions::default(),
+        }],
+    )
+    .unwrap();
+
+    // Delta should detect the project as updated
+    let delta = db.compute_delta(&initial).unwrap();
+    assert_eq!(
+        delta.updated_projects.len(),
+        1,
+        "Should detect role change as project update"
+    );
+    assert_eq!(delta.updated_projects[0].roles.len(), 1);
+    assert_eq!(delta.updated_projects[0].roles[0].name, "admin");
+}
+
+#[test]
+fn db_delta_detects_project_rename() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db = Database::open(path).unwrap();
+
+    let pid = test_project_id("BeforeRename");
+    db.insert_project(pid, "BeforeRename", &[PathBuf::from("/repo")], false)
+        .unwrap();
+
+    // Take snapshot
+    let before = db.load_shared_state().unwrap();
+    assert_eq!(before.projects[0].name, "BeforeRename");
+
+    // Rename
+    db.update_project(pid, "AfterRename", &[PathBuf::from("/repo")])
+        .unwrap();
+
+    // Delta should detect the rename
+    let delta = db.compute_delta(&before).unwrap();
+    assert_eq!(delta.updated_projects.len(), 1);
+    assert_eq!(delta.updated_projects[0].name, "AfterRename");
+    assert_eq!(delta.updated_projects[0].id, pid);
 }

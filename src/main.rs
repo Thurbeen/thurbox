@@ -10,7 +10,6 @@ use crossterm::execute;
 use thurbox::app::{App, AppMessage};
 use thurbox::claude::tmux::LocalTmuxBackend;
 use thurbox::claude::SessionBackend;
-use thurbox::project;
 use thurbox::storage::Database;
 
 #[tokio::main]
@@ -40,8 +39,6 @@ async fn main() -> Result<()> {
     backend.check_available()?;
     backend.ensure_ready()?;
 
-    let project_configs = project::load_project_configs();
-
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
         let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
@@ -54,7 +51,7 @@ async fn main() -> Result<()> {
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let size = terminal.size()?;
 
-    let mut app = App::new(size.height, size.width, project_configs, backend, db);
+    let mut app = App::new(size.height, size.width, backend, db);
 
     // Load session state from DB and restore, or spawn a fresh session
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
