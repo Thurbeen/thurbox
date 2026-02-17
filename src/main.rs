@@ -42,7 +42,11 @@ async fn main() -> Result<()> {
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
         let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        p.push(".local/share/thurbox/thurbox.db");
+        p.push(if cfg!(dev_build) {
+            ".local/share/thurbox-dev/thurbox.db"
+        } else {
+            ".local/share/thurbox/thurbox.db"
+        });
         p
     });
     let db = Database::open(&db_path).expect("Failed to open database");

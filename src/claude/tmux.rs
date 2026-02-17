@@ -12,10 +12,20 @@ use tracing::{debug, warn};
 use crate::claude::backend::{AdoptedSession, DiscoveredSession, SessionBackend, SpawnedSession};
 
 /// Dedicated tmux socket name — isolates thurbox sessions from the user's tmux.
-const TMUX_SOCKET: &str = "thurbox";
+/// Dev builds use "thurbox-dev" to avoid interfering with an installed release binary.
+const TMUX_SOCKET: &str = if cfg!(dev_build) {
+    "thurbox-dev"
+} else {
+    "thurbox"
+};
 
 /// tmux session name used to group all thurbox windows.
-const TMUX_SESSION: &str = "thurbox";
+/// Dev builds use "thurbox-dev" to avoid interfering with an installed release binary.
+const TMUX_SESSION: &str = if cfg!(dev_build) {
+    "thurbox-dev"
+} else {
+    "thurbox"
+};
 
 /// Minimum tmux version required.
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);

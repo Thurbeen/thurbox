@@ -1,9 +1,12 @@
 //! Centralized path resolution for application data files.
 //!
 //! This module provides a unified interface for resolving paths to:
-//! - Config files (`~/.config/thurbox/config.toml`)
-//! - SQLite database (`~/.local/share/thurbox/thurbox.db`)
-//! - Log directories (`~/.local/share/thurbox/`)
+//! - Config files (`~/.config/thurbox[-dev]/config.toml`)
+//! - SQLite database (`~/.local/share/thurbox[-dev]/thurbox.db`)
+//! - Log directories (`~/.local/share/thurbox[-dev]/`)
+//!
+//! Dev builds (`0.0.0-dev`) use `thurbox-dev` subdirectories to avoid
+//! interfering with an installed release binary.
 //!
 //! ## Production Behavior
 //!
@@ -28,6 +31,15 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+
+/// Returns "thurbox-dev" for dev builds, "thurbox" for release builds.
+fn app_dir_name() -> &'static str {
+    if cfg!(dev_build) {
+        "thurbox-dev"
+    } else {
+        "thurbox"
+    }
+}
 
 /// Categories of application paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +88,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
             // Prefer $XDG_CONFIG_HOME, fall back to $HOME/.config
             if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
                 let mut p = PathBuf::from(xdg);
-                p.push("thurbox");
+                p.push(app_dir_name());
                 p.push("config.toml");
                 return Some(p);
             }
@@ -84,7 +96,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
             std::env::var_os("HOME").map(|h| {
                 let mut p = PathBuf::from(h);
                 p.push(".config");
-                p.push("thurbox");
+                p.push(app_dir_name());
                 p.push("config.toml");
                 p
             })
@@ -93,7 +105,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
             // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
             if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
                 let mut p = PathBuf::from(xdg);
-                p.push("thurbox");
+                p.push(app_dir_name());
                 p.push("thurbox.db");
                 return Some(p);
             }
@@ -102,7 +114,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 let mut p = PathBuf::from(h);
                 p.push(".local");
                 p.push("share");
-                p.push("thurbox");
+                p.push(app_dir_name());
                 p.push("thurbox.db");
                 p
             })
@@ -111,7 +123,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
             // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
             if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
                 let mut p = PathBuf::from(xdg);
-                p.push("thurbox");
+                p.push(app_dir_name());
                 return Some(p);
             }
 
@@ -119,7 +131,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 let mut p = PathBuf::from(h);
                 p.push(".local");
                 p.push("share");
-                p.push("thurbox");
+                p.push(app_dir_name());
                 p
             })
         }

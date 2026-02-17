@@ -1,6 +1,13 @@
 fn main() {
     let version = get_version();
     println!("cargo:rustc-env=THURBOX_VERSION={}", version);
+
+    // Declare dev_build as a valid cfg so the compiler doesn't warn about it.
+    println!("cargo:rustc-check-cfg=cfg(dev_build)");
+
+    if version.contains("-dev") {
+        println!("cargo:rustc-cfg=dev_build");
+    }
 }
 
 fn get_version() -> String {
