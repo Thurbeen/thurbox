@@ -437,6 +437,9 @@ Roles can be managed from the TUI via the edit project modal
 (`Ctrl+E`). The Roles field provides an inline list with
 add/edit/delete capabilities; editing a role opens a detail form.
 
+For programmatic role management via the MCP server, see
+[MCP_ROLES.md](MCP_ROLES.md).
+
 Projects start with no roles. Users add roles explicitly.
 When no roles are defined, sessions spawn with default
 (empty) permissions and no role selector is shown.

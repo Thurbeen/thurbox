@@ -202,7 +202,9 @@ impl ThurboxMcp {
         }
     }
 
-    #[tool(description = "List roles for a project")]
+    #[tool(
+        description = "List all roles configured for a project. Returns a JSON array of role objects with name, description, permission_mode, allowed_tools, disallowed_tools, tools, and append_system_prompt fields. See docs/MCP_ROLES.md for field details."
+    )]
     fn list_roles(&self, Parameters(params): Parameters<ListRolesParams>) -> String {
         let db = self.db.lock().unwrap();
         let (projects, idx) = match require_project(&db, &params.project) {
@@ -219,7 +221,9 @@ impl ThurboxMcp {
         }
     }
 
-    #[tool(description = "Set roles for a project (atomically replaces all existing roles)")]
+    #[tool(
+        description = "Atomically replace all roles for a project. Deletes existing roles and inserts the provided list in a single transaction. To add a role, include all existing roles plus the new one. To clear all roles, pass an empty array. Each role has: name (1-64 chars, unique), description, permission_mode (default/plan/acceptEdits/dontAsk/bypassPermissions), allowed_tools, disallowed_tools, tools, append_system_prompt. See docs/MCP_ROLES.md for the complete guide."
+    )]
     fn set_roles(&self, Parameters(params): Parameters<SetRolesParams>) -> String {
         let db = self.db.lock().unwrap();
         let (projects, idx) = match require_project(&db, &params.project) {
@@ -557,6 +561,154 @@ mod tests {
         assert_eq!(roles[1]["allowed_tools"][0], "Read");
         assert_eq!(roles[1]["disallowed_tools"][0], "Edit");
         assert_eq!(roles[1]["append_system_prompt"], "Be careful");
+    }
+
+    #[test]
+    fn set_roles_for_nonexistent_project() {
+        let server = test_server();
+        let result = server.set_roles(Parameters(SetRolesParams {
+            project: "ghost".to_string(),
+            roles: vec![RoleInput {
+                name: "dev".to_string(),
+                description: "Dev".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+            }],
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("Project not found"));
+    }
+
+    #[test]
+    fn set_roles_empty_clears_all() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "cleartest".to_string(),
+            repos: vec![],
+        }));
+
+        // Set one role.
+        server.set_roles(Parameters(SetRolesParams {
+            project: "cleartest".to_string(),
+            roles: vec![RoleInput {
+                name: "dev".to_string(),
+                description: "Dev".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+            }],
+        }));
+
+        // Clear all roles with empty array.
+        let result = server.set_roles(Parameters(SetRolesParams {
+            project: "cleartest".to_string(),
+            roles: vec![],
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v, serde_json::json!([]));
+
+        // Verify list_roles also returns empty.
+        let list_result = server.list_roles(Parameters(ListRolesParams {
+            project: "cleartest".to_string(),
+        }));
+        let roles = parse_json(&list_result);
+        assert_eq!(roles, serde_json::json!([]));
+    }
+
+    #[test]
+    fn set_roles_replaces_existing() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "replacetest".to_string(),
+            repos: vec![],
+        }));
+
+        // Set initial roles.
+        server.set_roles(Parameters(SetRolesParams {
+            project: "replacetest".to_string(),
+            roles: vec![
+                RoleInput {
+                    name: "alpha".to_string(),
+                    description: "First".to_string(),
+                    permission_mode: None,
+                    allowed_tools: vec![],
+                    disallowed_tools: vec![],
+                    tools: None,
+                    append_system_prompt: None,
+                },
+                RoleInput {
+                    name: "beta".to_string(),
+                    description: "Second".to_string(),
+                    permission_mode: None,
+                    allowed_tools: vec![],
+                    disallowed_tools: vec![],
+                    tools: None,
+                    append_system_prompt: None,
+                },
+            ],
+        }));
+
+        // Replace with a single different role.
+        let result = server.set_roles(Parameters(SetRolesParams {
+            project: "replacetest".to_string(),
+            roles: vec![RoleInput {
+                name: "gamma".to_string(),
+                description: "Replacement".to_string(),
+                permission_mode: Some("plan".to_string()),
+                allowed_tools: vec!["Read".to_string()],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+            }],
+        }));
+        let roles = parse_json(&result);
+        assert_eq!(roles.as_array().unwrap().len(), 1);
+        assert_eq!(roles[0]["name"], "gamma");
+        assert_eq!(roles[0]["permission_mode"], "plan");
+    }
+
+    #[test]
+    fn set_roles_with_tools_field() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "toolstest".to_string(),
+            repos: vec![],
+        }));
+
+        let result = server.set_roles(Parameters(SetRolesParams {
+            project: "toolstest".to_string(),
+            roles: vec![RoleInput {
+                name: "limited".to_string(),
+                description: "Limited tools".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: Some("default".to_string()),
+                append_system_prompt: None,
+            }],
+        }));
+        let roles = parse_json(&result);
+        assert_eq!(roles[0]["tools"], "default");
+    }
+
+    #[test]
+    fn list_roles_empty_project() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "noroles".to_string(),
+            repos: vec![],
+        }));
+
+        let result = server.list_roles(Parameters(ListRolesParams {
+            project: "noroles".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v, serde_json::json!([]));
     }
 
     #[test]

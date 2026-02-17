@@ -439,3 +439,6 @@ server can operate without a terminal or tmux.
   tool integration with AI agents.
 - *Shared library with thin binary wrapper* — over-engineering;
   the `thurbox` crate already exposes the needed types as `pub mod`.
+
+**See also**: [MCP_ROLES.md](MCP_ROLES.md) for role configuration
+via the MCP server (permission modes, tool patterns, examples).

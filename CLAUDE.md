@@ -164,12 +164,19 @@ cargo run --bin thurbox-mcp         # Run (stdin/stdout JSON-RPC)
 |------|-------------|
 | `list_projects` | List all active projects |
 | `get_project` | Get a project by name or UUID |
-| `create_project` | Create a new project |
-| `update_project` | Update project name/repos |
-| `delete_project` | Soft-delete a project |
-| `list_roles` | List roles for a project |
-| `set_roles` | Replace all roles for a project |
-| `list_sessions` | List sessions (optional project filter) |
+| `create_project` | Create a new project with name and repo paths |
+| `update_project` | Update project name and/or repos (partial update) |
+| `delete_project` | Soft-delete a project (preserves for undo) |
+| `list_roles` | List all roles for a project (by name or UUID) |
+| `set_roles` | Atomically replace all roles for a project |
+| `list_sessions` | List sessions, optionally filtered by project |
+
+**Role Management**: `set_roles` performs an atomic replacement —
+all existing roles are deleted and replaced in a single transaction.
+To add a role, include all existing roles plus the new one.
+See [`docs/MCP_ROLES.md`](docs/MCP_ROLES.md) for the complete
+role configuration guide including permission modes, tool name
+format, and example role patterns.
 
 ### Admin Session (built-in MCP client)
 
@@ -294,6 +301,7 @@ For rationale behind decisions, see `docs/`:
 - `docs/CONSTITUTION.md` — Core principles and non-negotiable rules
 - `docs/ARCHITECTURE.md` — Architectural decisions with rationale
 - `docs/FEATURES.md` — Feature-level design choices
+- `docs/MCP_ROLES.md` — MCP role configuration guide (permissions, tool patterns, examples)
 
 **Rule**: If a code change invalidates or extends a documented
 decision, update the relevant doc in the same PR.
