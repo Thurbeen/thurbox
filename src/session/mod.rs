@@ -81,16 +81,34 @@ impl fmt::Display for RoleNameError {
 impl std::error::Error for RoleNameError {}
 
 /// Permission flags passed to the Claude CLI when spawning a session.
+///
+/// Maps directly to Claude Code CLI flags:
+/// - `permission_mode` → `--permission-mode` (default, plan, acceptEdits, dontAsk, bypassPermissions)
+/// - `allowed_tools` → `--allowed-tools` (tools that auto-approve without prompting)
+/// - `disallowed_tools` → `--disallowed-tools` (tools blocked entirely)
+/// - `tools` → `--tools` (restrict available tool set)
+/// - `append_system_prompt` → `--append-system-prompt` (extra instructions)
+///
+/// Tools not in either allowed or disallowed lists follow the `permission_mode` behavior.
+/// If a tool appears in both lists, deny takes precedence.
+///
+/// See `docs/MCP_ROLES.md` for the complete configuration guide.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RolePermissions {
+    /// Base permission behavior. Valid values: `default`, `plan`, `acceptEdits`,
+    /// `dontAsk`, `bypassPermissions`. When `None`, Claude uses its default mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// Tools that auto-approve without user prompt (e.g. `["Read", "Bash(git:*)"]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    /// Tools that are blocked entirely — Claude cannot invoke them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
+    /// Restrict available tool set. `"default"` = all, `""` = none, or comma-separated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<String>,
+    /// Text appended to Claude's system prompt for sessions using this role.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
 }
