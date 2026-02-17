@@ -3453,7 +3453,6 @@ mod tests {
                     id: None,
                 },
                 session_ids: vec![],
-                is_default: false,
                 is_admin: false,
             });
         }
