@@ -89,3 +89,30 @@
 @test "script supports INSTALL_DIR env var" {
   grep -q "INSTALL_DIR" "${BATS_TEST_DIRNAME}/install.sh"
 }
+
+@test "do_install succeeds without thurbox-mcp in tarball" {
+  tmpdir=$(mktemp -d)
+  mkdir -p "$tmpdir/src" "$tmpdir/dest"
+  printf '#!/bin/sh\n' > "$tmpdir/src/thurbox"
+  tar -czf "$tmpdir/archive.tar.gz" -C "$tmpdir/src" thurbox
+  TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; do_install '$tmpdir/archive.tar.gz' '$tmpdir/dest'"
+  [ -x "$tmpdir/dest/thurbox" ]
+  [ ! -f "$tmpdir/dest/thurbox-mcp" ]
+  rm -rf "$tmpdir"
+}
+
+@test "do_install chmods both binaries when thurbox-mcp is present" {
+  tmpdir=$(mktemp -d)
+  mkdir -p "$tmpdir/src" "$tmpdir/dest"
+  printf '#!/bin/sh\n' > "$tmpdir/src/thurbox"
+  printf '#!/bin/sh\n' > "$tmpdir/src/thurbox-mcp"
+  tar -czf "$tmpdir/archive.tar.gz" -C "$tmpdir/src" thurbox thurbox-mcp
+  TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; do_install '$tmpdir/archive.tar.gz' '$tmpdir/dest'"
+  [ -x "$tmpdir/dest/thurbox" ]
+  [ -x "$tmpdir/dest/thurbox-mcp" ]
+  rm -rf "$tmpdir"
+}
+
+@test "script conditionally chmods thurbox-mcp" {
+  grep -q 'thurbox-mcp.*chmod' "${BATS_TEST_DIRNAME}/install.sh"
+}
