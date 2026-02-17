@@ -19,6 +19,10 @@ pub fn render_header(frame: &mut Frame, area: Rect) {
             " Multi-Session Claude Code Orchestrator",
             Style::default().fg(Color::Gray),
         ),
+        Span::styled(
+            concat!("  v", env!("THURBOX_VERSION")),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
     frame.render_widget(header, area);
 }
