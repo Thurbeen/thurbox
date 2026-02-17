@@ -12,6 +12,7 @@
 //! ```
 
 pub mod audit;
+mod mcp_servers;
 mod projects;
 mod roles;
 mod schema;

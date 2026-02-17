@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -121,6 +122,17 @@ pub struct RoleConfig {
     pub description: String,
     #[serde(flatten)]
     pub permissions: RolePermissions,
+}
+
+/// MCP server configuration matching Claude Code's `mcpServers` format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +462,35 @@ mod tests {
         let serialized = toml::to_string_pretty(&role).unwrap();
         assert!(serialized.contains("permission_mode"));
         assert!(serialized.contains("plan"));
+    }
+
+    #[test]
+    fn mcp_server_config_serde_roundtrip() {
+        let config = McpServerConfig {
+            name: "test-server".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "@example/mcp-server".to_string()],
+            env: HashMap::from([
+                ("API_KEY".to_string(), "secret".to_string()),
+                ("DEBUG".to_string(), "1".to_string()),
+            ]),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: McpServerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(config, deserialized);
+    }
+
+    #[test]
+    fn mcp_server_config_empty_fields_omitted() {
+        let config = McpServerConfig {
+            name: "minimal".to_string(),
+            command: "server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("args"));
+        assert!(!json.contains("env"));
     }
 
     #[test]

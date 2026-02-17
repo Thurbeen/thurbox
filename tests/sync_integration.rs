@@ -32,6 +32,7 @@ fn test_project_id(name: &str) -> ProjectId {
         name: name.to_string(),
         repos: vec![],
         roles: vec![],
+        mcp_servers: vec![],
         id: None,
     };
     config.deterministic_id()

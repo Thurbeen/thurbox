@@ -6,14 +6,14 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 
 use crate::project::{ProjectConfig, ProjectId};
-use crate::session::{RoleConfig, RolePermissions};
+use crate::session::{McpServerConfig, RoleConfig, RolePermissions};
 use crate::storage::Database;
 use crate::sync::SharedProject;
 
 use super::types::{
-    CreateProjectParams, DeleteProjectParams, GetProjectParams, ListRolesParams,
-    ListSessionsParams, ProjectResponse, RoleResponse, SessionResponse, SetRolesParams,
-    UpdateProjectParams, WorktreeResponse,
+    CreateProjectParams, DeleteProjectParams, GetProjectParams, ListMcpServersParams,
+    ListRolesParams, ListSessionsParams, McpServerResponse, ProjectResponse, RoleResponse,
+    SessionResponse, SetMcpServersParams, SetRolesParams, UpdateProjectParams, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -53,6 +53,16 @@ fn project_to_response(p: &SharedProject) -> ProjectResponse {
         name: p.name.clone(),
         repos: p.repos.clone(),
         roles: p.roles.iter().map(role_to_response).collect(),
+        mcp_servers: p.mcp_servers.iter().map(mcp_server_to_response).collect(),
+    }
+}
+
+fn mcp_server_to_response(s: &McpServerConfig) -> McpServerResponse {
+    McpServerResponse {
+        name: s.name.clone(),
+        command: s.command.clone(),
+        args: s.args.clone(),
+        env: s.env.clone(),
     }
 }
 
@@ -125,6 +135,7 @@ impl ThurboxMcp {
             name: params.name.clone(),
             repos: repos.clone(),
             roles: Vec::new(),
+            mcp_servers: Vec::new(),
             id: None,
         };
         let id = config.deterministic_id();
@@ -143,6 +154,7 @@ impl ThurboxMcp {
                     name: params.name,
                     repos,
                     roles: vec![],
+                    mcp_servers: vec![],
                 }),
             },
             Err(_) => json_text(&ProjectResponse {
@@ -150,6 +162,7 @@ impl ThurboxMcp {
                 name: params.name,
                 repos,
                 roles: vec![],
+                mcp_servers: vec![],
             }),
         }
     }
@@ -256,6 +269,55 @@ impl ThurboxMcp {
         }
     }
 
+    #[tool(description = "List MCP servers for a project")]
+    fn list_mcp_servers(&self, Parameters(params): Parameters<ListMcpServersParams>) -> String {
+        let db = self.db.lock().unwrap();
+        let (projects, idx) = match require_project(&db, &params.project) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        match db.list_mcp_servers(projects[idx].id) {
+            Ok(servers) => {
+                let resp: Vec<McpServerResponse> =
+                    servers.iter().map(mcp_server_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Set MCP servers for a project (atomically replaces all existing servers)"
+    )]
+    fn set_mcp_servers(&self, Parameters(params): Parameters<SetMcpServersParams>) -> String {
+        let db = self.db.lock().unwrap();
+        let (projects, idx) = match require_project(&db, &params.project) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let servers: Vec<McpServerConfig> = params
+            .servers
+            .into_iter()
+            .map(|s| McpServerConfig {
+                name: s.name,
+                command: s.command,
+                args: s.args,
+                env: s.env,
+            })
+            .collect();
+
+        match db.replace_mcp_servers(projects[idx].id, &servers) {
+            Ok(()) => {
+                let resp: Vec<McpServerResponse> =
+                    servers.iter().map(mcp_server_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
     #[tool(description = "List active sessions, optionally filtered by project name or UUID")]
     fn list_sessions(&self, Parameters(params): Parameters<ListSessionsParams>) -> String {
         let db = self.db.lock().unwrap();
@@ -286,9 +348,10 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::mcp::types::RoleInput;
+    use crate::mcp::types::{McpServerInput, RoleInput};
     use crate::session::RoleConfig;
     use crate::storage::Database;
+    use std::collections::HashMap;
 
     fn test_server() -> ThurboxMcp {
         let db = Database::open_in_memory().unwrap();
@@ -303,6 +366,7 @@ mod tests {
             name: name.to_string(),
             repos: vec![],
             roles: vec![],
+            mcp_servers: vec![],
             id: None,
         };
         config.deterministic_id()
@@ -321,6 +385,7 @@ mod tests {
             name: "MyProject".to_string(),
             repos: vec![],
             roles: vec![],
+            mcp_servers: vec![],
         }];
         assert!(resolve_project(&projects, "myproject").is_some());
         assert!(resolve_project(&projects, "MYPROJECT").is_some());
@@ -335,6 +400,7 @@ mod tests {
             name: "test".to_string(),
             repos: vec![],
             roles: vec![],
+            mcp_servers: vec![],
         }];
         assert!(resolve_project(&projects, &pid.to_string()).is_some());
     }
@@ -346,6 +412,7 @@ mod tests {
             name: "test".to_string(),
             repos: vec![],
             roles: vec![],
+            mcp_servers: vec![],
         }];
         assert!(resolve_project(&projects, "nonexistent").is_none());
     }
@@ -788,5 +855,88 @@ mod tests {
         let v = parse_json(&result);
         assert_eq!(v["roles"].as_array().unwrap().len(), 1);
         assert_eq!(v["roles"][0]["name"], "dev");
+    }
+
+    #[test]
+    fn set_and_list_mcp_servers() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "mcptest".to_string(),
+            repos: vec![],
+        }));
+
+        let result = server.set_mcp_servers(Parameters(SetMcpServersParams {
+            project: "mcptest".to_string(),
+            servers: vec![
+                McpServerInput {
+                    name: "filesystem".to_string(),
+                    command: "npx".to_string(),
+                    args: vec![
+                        "-y".to_string(),
+                        "@modelcontextprotocol/server-filesystem".to_string(),
+                    ],
+                    env: HashMap::new(),
+                },
+                McpServerInput {
+                    name: "github".to_string(),
+                    command: "gh-mcp".to_string(),
+                    args: vec![],
+                    env: HashMap::from([("GITHUB_TOKEN".to_string(), "tok-123".to_string())]),
+                },
+            ],
+        }));
+        let set_result = parse_json(&result);
+        assert_eq!(set_result.as_array().unwrap().len(), 2);
+
+        let result = server.list_mcp_servers(Parameters(ListMcpServersParams {
+            project: "mcptest".to_string(),
+        }));
+        let servers = parse_json(&result);
+        assert_eq!(servers.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn list_mcp_servers_nonexistent_project() {
+        let server = test_server();
+        let result = server.list_mcp_servers(Parameters(ListMcpServersParams {
+            project: "nope".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("Project not found"));
+    }
+
+    #[test]
+    fn get_project_includes_mcp_servers() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "with-mcp".to_string(),
+            repos: vec![],
+        }));
+
+        // Set MCP servers directly via DB to test the response includes them.
+        {
+            let db = server.db.lock().unwrap();
+            let pid = test_project_id("with-mcp");
+            db.replace_mcp_servers(
+                pid,
+                &[McpServerConfig {
+                    name: "test-server".to_string(),
+                    command: "test-cmd".to_string(),
+                    args: vec!["--flag".to_string()],
+                    env: HashMap::from([("KEY".to_string(), "VAL".to_string())]),
+                }],
+            )
+            .unwrap();
+        }
+
+        let result = server.get_project(Parameters(GetProjectParams {
+            project: "with-mcp".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["mcp_servers"].as_array().unwrap().len(), 1);
+        assert_eq!(v["mcp_servers"][0]["name"], "test-server");
+        assert_eq!(v["mcp_servers"][0]["command"], "test-cmd");
+        assert_eq!(v["mcp_servers"][0]["args"][0], "--flag");
+        assert_eq!(v["mcp_servers"][0]["env"]["KEY"], "VAL");
     }
 }

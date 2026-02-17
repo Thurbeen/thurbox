@@ -10,7 +10,7 @@ use ratatui::{
 
 use super::{centered_fixed_height_rect, render_text_field, render_text_field_with_suggestion};
 use crate::app::EditProjectField;
-use crate::session::RoleConfig;
+use crate::session::{McpServerConfig, RoleConfig};
 
 pub struct EditProjectModalState<'a> {
     pub name: &'a str,
@@ -22,6 +22,8 @@ pub struct EditProjectModalState<'a> {
     pub repo_index: usize,
     pub roles: &'a [RoleConfig],
     pub role_index: usize,
+    pub mcp_servers: &'a [McpServerConfig],
+    pub mcp_server_index: usize,
     pub focused_field: EditProjectField,
 }
 
@@ -41,7 +43,14 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
     };
     let roles_list_height = roles_list_inner as u16 + 2; // +2 for borders
 
-    let total_height = 3 + 3 + repo_list_height + roles_list_height + 1 + 2;
+    let mcp_list_inner = if state.mcp_servers.is_empty() {
+        1
+    } else {
+        state.mcp_servers.len().min(6)
+    };
+    let mcp_list_height = mcp_list_inner as u16 + 2; // +2 for borders
+
+    let total_height = 3 + 3 + repo_list_height + roles_list_height + mcp_list_height + 1 + 2;
 
     let area = centered_fixed_height_rect(50, total_height, frame.area());
 
@@ -62,6 +71,7 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
             Constraint::Length(3),                 // Path field
             Constraint::Length(repo_list_height),  // Repo list
             Constraint::Length(roles_list_height), // Roles list
+            Constraint::Length(mcp_list_height),   // MCP servers list
             Constraint::Min(1),                    // Footer
         ])
         .split(inner);
@@ -197,6 +207,62 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
         frame.render_widget(List::new(items), roles_inner);
     }
 
+    // MCP servers list
+    let mcp_focused = state.focused_field == EditProjectField::McpServers;
+    let mcp_border_color = if mcp_focused {
+        Color::Cyan
+    } else {
+        Color::Gray
+    };
+
+    let mcp_block = Block::default()
+        .title(format!(" MCP Servers ({}) ", state.mcp_servers.len()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(mcp_border_color));
+
+    let mcp_inner = mcp_block.inner(chunks[4]);
+    frame.render_widget(mcp_block, chunks[4]);
+
+    if state.mcp_servers.is_empty() {
+        let placeholder = Paragraph::new(Line::from(Span::styled(
+            "  No MCP servers defined",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(placeholder, mcp_inner);
+    } else {
+        let visible_count = mcp_inner.height as usize;
+        let scroll_offset = if state.mcp_server_index >= visible_count {
+            state.mcp_server_index - visible_count + 1
+        } else {
+            0
+        };
+
+        let items: Vec<ListItem<'_>> = state
+            .mcp_servers
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(visible_count)
+            .map(|(i, server)| {
+                let is_selected = i == state.mcp_server_index && mcp_focused;
+                let style = if is_selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let prefix = if is_selected { "▸ " } else { "  " };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{prefix}{}", server.name),
+                    style,
+                )))
+            })
+            .collect();
+
+        frame.render_widget(List::new(items), mcp_inner);
+    }
+
     // Context-sensitive footer
     let footer = match state.focused_field {
         EditProjectField::Name => Line::from(vec![
@@ -232,7 +298,7 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
         ]),
-        EditProjectField::Roles => Line::from(vec![
+        EditProjectField::Roles | EditProjectField::McpServers => Line::from(vec![
             Span::styled("j/k", Style::default().fg(Color::Yellow)),
             Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
             Span::styled("a", Style::default().fg(Color::Yellow)),
@@ -245,5 +311,5 @@ pub fn render_edit_project_modal(frame: &mut Frame, state: &EditProjectModalStat
             Span::styled(" save", Style::default().fg(Color::DarkGray)),
         ]),
     };
-    frame.render_widget(Paragraph::new(footer), chunks[4]);
+    frame.render_widget(Paragraph::new(footer), chunks[5]);
 }
