@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -39,6 +39,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             backend_type      TEXT NOT NULL DEFAULT 'tmux',
             claude_session_id TEXT,
             cwd               TEXT,
+            additional_dirs   TEXT NOT NULL DEFAULT '',
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -101,6 +102,36 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         "INSERT OR IGNORE INTO metadata (key, value) VALUES ('session_counter', '0')",
         [],
     )?;
+
+    migrate(conn)?;
+
+    Ok(())
+}
+
+/// Run schema migrations for existing databases.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let version: u32 = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
+            [],
+            |row| {
+                let val: String = row.get(0)?;
+                Ok(val.parse().unwrap_or(0))
+            },
+        )
+        .unwrap_or(0);
+
+    if version < 3 {
+        // v2 → v3: add additional_dirs column to sessions
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN additional_dirs TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        conn.execute(
+            "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+            [SCHEMA_VERSION.to_string()],
+        )?;
+    }
 
     Ok(())
 }

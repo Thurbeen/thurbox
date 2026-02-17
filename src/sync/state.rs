@@ -76,6 +76,9 @@ pub struct SharedSession {
     /// Working directory (if specified).
     pub cwd: Option<PathBuf>,
 
+    /// Additional directories the Claude CLI has access to via `--add-dir`.
+    pub additional_dirs: Vec<PathBuf>,
+
     /// Optional worktree information (if session is for a git worktree).
     pub worktree: Option<SharedWorktree>,
 

@@ -539,8 +539,12 @@ impl App {
                 self.show_session_mode_modal = true;
             }
             _ => {
-                self.repo_selector_index = 0;
-                self.show_repo_selector = true;
+                let config = SessionConfig {
+                    cwd: Some(repos[0].clone()),
+                    additional_dirs: repos[1..].to_vec(),
+                    ..SessionConfig::default()
+                };
+                self.spawn_session_with_config(&config);
             }
         }
     }
@@ -609,12 +613,14 @@ impl App {
 
         let role = session.info.role.clone();
         let cwd = session.info.cwd.clone();
+        let additional_dirs = session.info.additional_dirs.clone();
 
         let permissions = self.resolve_role_permissions(&role);
         let config = SessionConfig {
             resume_session_id: Some(claude_session_id.clone()),
             claude_session_id: Some(claude_session_id),
             cwd,
+            additional_dirs,
             role,
             permissions,
         };
@@ -726,6 +732,7 @@ impl App {
         session.info.name = shared.name.clone();
         session.info.role = shared.role.clone();
         session.info.cwd = shared.cwd.clone();
+        session.info.additional_dirs = shared.additional_dirs.clone();
         session.info.claude_session_id = shared.claude_session_id.clone();
         if let Some(wt) = &shared.worktree {
             session.info.worktree = Some(WorktreeInfo {
@@ -1591,6 +1598,7 @@ impl App {
             backend_type: session.backend_name().to_string(),
             claude_session_id: session.info.claude_session_id.clone(),
             cwd: session.info.cwd.clone(),
+            additional_dirs: session.info.additional_dirs.clone(),
             worktree: session
                 .info
                 .worktree
@@ -1689,6 +1697,7 @@ impl App {
                 session.info.id = session_id;
                 session.info.claude_session_id = Some(claude_session_id.clone());
                 session.info.cwd = shared.cwd;
+                session.info.additional_dirs = shared.additional_dirs;
                 session.info.role = role;
                 session.info.worktree = worktree;
                 let sid = session.info.id;
@@ -1729,6 +1738,7 @@ impl App {
                     resume_session_id: Some(claude_session_id.clone()),
                     claude_session_id: Some(claude_session_id),
                     cwd: shared.cwd,
+                    additional_dirs: shared.additional_dirs,
                     role,
                     permissions,
                 };
@@ -3249,6 +3259,7 @@ mod tests {
             backend_type: "tmux".to_string(),
             claude_session_id: None,
             cwd: None,
+            additional_dirs: Vec::new(),
             worktree: None,
             tombstone: false,
             tombstone_at: None,
@@ -3281,6 +3292,7 @@ mod tests {
             backend_type: "tmux".to_string(),
             claude_session_id: None,
             cwd: None,
+            additional_dirs: Vec::new(),
             worktree: None,
             tombstone: false,
             tombstone_at: None,
@@ -3297,6 +3309,7 @@ mod tests {
             backend_type: "tmux".to_string(),
             claude_session_id: Some("claude-abc".to_string()),
             cwd: None,
+            additional_dirs: Vec::new(),
             worktree: None,
             tombstone: false,
             tombstone_at: None,
@@ -3741,6 +3754,7 @@ mod tests {
             backend_type: "tmux".to_string(),
             claude_session_id: Some("claude-abc".to_string()),
             cwd: None,
+            additional_dirs: Vec::new(),
             worktree: None,
             tombstone: false,
             tombstone_at: None,
@@ -3945,5 +3959,23 @@ mod tests {
         app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
         // Should be a no-op (no error, no crash)
         assert!(app.error_message.is_none());
+    }
+
+    #[test]
+    fn session_to_shared_maps_additional_dirs() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend.clone(), test_db());
+
+        let mut session = Session::stub("MultiDir", &backend);
+        session.info.additional_dirs = vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")];
+
+        let sid = session.info.id;
+        app.sessions.push(session);
+        app.projects[0].session_ids.push(sid);
+
+        let shared = app.session_to_shared(&app.sessions[0]);
+        assert_eq!(shared.additional_dirs.len(), 2);
+        assert_eq!(shared.additional_dirs[0], PathBuf::from("/repo2"));
+        assert_eq!(shared.additional_dirs[1], PathBuf::from("/repo3"));
     }
 }
