@@ -1461,12 +1461,7 @@ impl App {
         if let Some(info_area) = areas.info_panel {
             let active_project = self.projects.get(self.active_project_index);
             if let Some(session) = self.sessions.get(self.active_index) {
-                info_panel::render_info_panel(
-                    frame,
-                    info_area,
-                    &session.info,
-                    active_project.map(|p| &p.config),
-                );
+                info_panel::render_info_panel(frame, info_area, &session.info, active_project);
             }
         }
 
