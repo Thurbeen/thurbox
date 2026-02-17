@@ -992,10 +992,10 @@ mod tests {
             "--resume".to_string(),
             "abc-123".to_string(),
             "--permission-mode".to_string(),
-            "dontAsk".to_string(),
+            "default".to_string(),
         ];
         let cmd = LocalTmuxBackend::build_shell_command("claude", &args);
-        assert_eq!(cmd, "claude --resume abc-123 --permission-mode dontAsk");
+        assert_eq!(cmd, "claude --resume abc-123 --permission-mode default");
     }
 
     #[test]

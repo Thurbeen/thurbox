@@ -445,7 +445,7 @@ Edits a single role with four text fields:
 - **Disallowed Tools** — space-separated tool names
   (blocked)
 
-Permission mode defaults to `dontAsk` and can be
+Permission mode defaults to `default` and can be
 overridden per-role via the role editor.
 
 `Tab` / `Shift+Tab` cycles between fields.

@@ -13,7 +13,7 @@ use tracing::{debug, error};
 use crate::session::{SessionConfig, SessionInfo};
 
 /// Default permission mode passed to the Claude CLI when no explicit mode is configured.
-const DEFAULT_PERMISSION_MODE: &str = "dontAsk";
+const DEFAULT_PERMISSION_MODE: &str = "default";
 
 pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
@@ -36,7 +36,7 @@ pub fn build_claude_args(config: &SessionConfig) -> Vec<String> {
         args.push(session_id.clone());
     }
 
-    // Role permission flags — default to "dontAsk" when no mode is configured.
+    // Role permission flags — default to "default" when no mode is configured.
     let mode = config
         .permissions
         .permission_mode
@@ -397,7 +397,7 @@ mod tests {
     fn build_args_empty_config() {
         let config = SessionConfig::default();
         let args = build_claude_args(&config);
-        assert_eq!(args, vec!["--permission-mode", "dontAsk"]);
+        assert_eq!(args, vec!["--permission-mode", "default"]);
     }
 
     #[test]
@@ -409,7 +409,7 @@ mod tests {
         let args = build_claude_args(&config);
         assert_eq!(
             args,
-            vec!["--session-id", "abc-123", "--permission-mode", "dontAsk"]
+            vec!["--session-id", "abc-123", "--permission-mode", "default"]
         );
     }
 
@@ -423,7 +423,7 @@ mod tests {
         let args = build_claude_args(&config);
         assert_eq!(
             args,
-            vec!["--resume", "resume-id", "--permission-mode", "dontAsk"]
+            vec!["--resume", "resume-id", "--permission-mode", "default"]
         );
     }
 
@@ -454,7 +454,7 @@ mod tests {
             args,
             vec![
                 "--permission-mode",
-                "dontAsk",
+                "default",
                 "--allowed-tools",
                 "Read Bash(git:*)"
             ]
@@ -473,7 +473,7 @@ mod tests {
         let args = build_claude_args(&config);
         assert_eq!(
             args,
-            vec!["--permission-mode", "dontAsk", "--disallowed-tools", "Edit"]
+            vec!["--permission-mode", "default", "--disallowed-tools", "Edit"]
         );
     }
 
@@ -487,7 +487,7 @@ mod tests {
             ..SessionConfig::default()
         };
         let args = build_claude_args(&config);
-        assert_eq!(args, vec!["--permission-mode", "dontAsk", "--tools", ""]);
+        assert_eq!(args, vec!["--permission-mode", "default", "--tools", ""]);
     }
 
     #[test]
@@ -504,7 +504,7 @@ mod tests {
             args,
             vec![
                 "--permission-mode",
-                "dontAsk",
+                "default",
                 "--append-system-prompt",
                 "Be careful"
             ]
