@@ -1,4 +1,6 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=THURBOX_RELEASE_VERSION");
+
     let version = get_version();
     println!("cargo:rustc-env=THURBOX_VERSION={}", version);
 
@@ -11,9 +13,9 @@ fn main() {
 }
 
 fn get_version() -> String {
-    // Use THURBOX_RELEASE_VERSION if set (from CI release workflow)
-    if let Ok(release_version) = std::env::var("THURBOX_RELEASE_VERSION") {
-        return release_version;
+    // CI sets THURBOX_RELEASE_VERSION (e.g. "v0.7.0"); strip the "v" prefix
+    if let Ok(v) = std::env::var("THURBOX_RELEASE_VERSION") {
+        return v.strip_prefix('v').unwrap_or(&v).to_string();
     }
 
     // Fallback to Cargo.toml version for local development
