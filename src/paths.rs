@@ -50,6 +50,8 @@ pub enum PathKind {
     LogDir,
     /// SQLite database: `~/.local/share/thurbox/thurbox.db`
     Database,
+    /// Admin session directory: `~/.local/share/thurbox/admin/`
+    AdminDir,
 }
 
 /// Path resolution strategy (thread-local).
@@ -135,6 +137,24 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
+        PathKind::AdminDir => {
+            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
+            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+                let mut p = PathBuf::from(xdg);
+                p.push(app_dir_name());
+                p.push("admin");
+                return Some(p);
+            }
+
+            std::env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".local");
+                p.push("share");
+                p.push(app_dir_name());
+                p.push("admin");
+                p
+            })
+        }
     }
 }
 
@@ -144,6 +164,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::Config => base.join("config.toml"),
         PathKind::LogDir => base.to_path_buf(),
         PathKind::Database => base.join("thurbox.db"),
+        PathKind::AdminDir => base.join("admin"),
     }
 }
 
@@ -166,6 +187,27 @@ pub fn log_directory() -> Option<PathBuf> {
 /// Returns: `$XDG_DATA_HOME/thurbox/thurbox.db` or `$HOME/.local/share/thurbox/thurbox.db`
 pub fn database_file() -> Option<PathBuf> {
     resolve(PathKind::Database)
+}
+
+/// Resolve the admin session directory path.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/admin/` or `$HOME/.local/share/thurbox/admin/`
+pub fn admin_directory() -> Option<PathBuf> {
+    resolve(PathKind::AdminDir)
+}
+
+/// Resolve the path to the `thurbox-mcp` binary.
+///
+/// Checks for a sibling of `current_exe()` first (works for both installed and dev builds),
+/// then falls back to bare `"thurbox-mcp"` for `$PATH` lookup.
+pub fn thurbox_mcp_binary() -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("thurbox-mcp");
+        if sibling.exists() {
+            return sibling.display().to_string();
+        }
+    }
+    "thurbox-mcp".to_string()
 }
 
 /// Override path resolution for all paths to use a custom base directory.
@@ -386,6 +428,7 @@ mod tests {
         assert_eq!(resolve(PathKind::Config), Some(base.join("config.toml")));
         assert_eq!(resolve(PathKind::LogDir), Some(base.clone()));
         assert_eq!(resolve(PathKind::Database), Some(base.join("thurbox.db")));
+        assert_eq!(resolve(PathKind::AdminDir), Some(base.join("admin")));
 
         reset_to_xdg();
     }
@@ -421,6 +464,24 @@ mod tests {
         assert!(path.ends_with("thurbox.db"));
 
         reset_to_xdg();
+    }
+
+    #[test]
+    fn admin_directory_convenience() {
+        let base = PathBuf::from("/custom");
+        set_test_dir(&base);
+
+        let path = admin_directory().unwrap();
+        assert!(path.ends_with("admin"));
+
+        reset_to_xdg();
+    }
+
+    #[test]
+    fn thurbox_mcp_binary_returns_string() {
+        // Without a sibling binary, falls back to bare name for $PATH lookup
+        let binary = thurbox_mcp_binary();
+        assert!(binary.contains("thurbox-mcp"));
     }
 
     #[test]
@@ -493,6 +554,10 @@ mod tests {
         assert_eq!(
             resolve_override(base, PathKind::Database),
             PathBuf::from("/data/thurbox.db")
+        );
+        assert_eq!(
+            resolve_override(base, PathKind::AdminDir),
+            PathBuf::from("/data/admin")
         );
     }
 

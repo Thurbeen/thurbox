@@ -82,6 +82,7 @@ pub struct ProjectInfo {
     pub config: ProjectConfig,
     pub session_ids: Vec<SessionId>,
     pub is_default: bool,
+    pub is_admin: bool,
 }
 
 impl ProjectInfo {
@@ -92,6 +93,7 @@ impl ProjectInfo {
             config,
             session_ids: Vec::new(),
             is_default: false,
+            is_admin: false,
         }
     }
 
@@ -102,6 +104,18 @@ impl ProjectInfo {
             config,
             session_ids: Vec::new(),
             is_default: true,
+            is_admin: false,
+        }
+    }
+
+    pub fn new_admin(config: ProjectConfig) -> Self {
+        let id = config.effective_id();
+        Self {
+            id,
+            config,
+            session_ids: Vec::new(),
+            is_default: false,
+            is_admin: true,
         }
     }
 }
@@ -148,6 +162,7 @@ mod tests {
         assert!(info.session_ids.is_empty());
         assert_eq!(info.config.name, "test");
         assert!(!info.is_default);
+        assert!(!info.is_admin);
     }
 
     #[test]
@@ -155,8 +170,24 @@ mod tests {
         let config = create_default_project();
         let info = ProjectInfo::new_default(config);
         assert!(info.is_default);
+        assert!(!info.is_admin);
         assert_eq!(info.config.name, "Default");
         assert!(!info.config.repos.is_empty());
+    }
+
+    #[test]
+    fn project_info_new_admin_sets_flag() {
+        let config = ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![PathBuf::from("/admin")],
+            roles: Vec::new(),
+            id: None,
+        };
+        let info = ProjectInfo::new_admin(config);
+        assert!(info.is_admin);
+        assert!(!info.is_default);
+        assert!(info.session_ids.is_empty());
+        assert_eq!(info.config.name, "Admin");
     }
 
     #[test]

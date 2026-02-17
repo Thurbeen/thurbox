@@ -520,10 +520,117 @@ impl App {
         }
     }
 
+    /// Ensure the global admin session and project exist.
+    ///
+    /// Creates a dedicated admin directory with a `.mcp.json` pointing to the
+    /// `thurbox-mcp` binary, an "Admin" pseudo-project pinned at index 0,
+    /// and spawns an admin session if one doesn't already exist.
+    /// The `.mcp.json` is rewritten on every startup to pick up binary path
+    /// changes after upgrades.
+    pub fn ensure_admin_session(&mut self) {
+        let Some(admin_dir) = crate::paths::admin_directory() else {
+            tracing::warn!("Could not resolve admin directory path");
+            return;
+        };
+
+        if let Err(e) = std::fs::create_dir_all(&admin_dir) {
+            tracing::warn!("Failed to create admin directory: {e}");
+            return;
+        }
+
+        self.write_mcp_json(&admin_dir);
+        self.ensure_admin_project(&admin_dir);
+
+        if self.projects[0].session_ids.is_empty() {
+            self.spawn_admin_session(admin_dir);
+        }
+    }
+
+    /// Write `.mcp.json` into the admin directory.
+    ///
+    /// Rewritten on every startup to pick up binary path changes after upgrades.
+    fn write_mcp_json(&self, admin_dir: &std::path::Path) {
+        let mcp_binary = crate::paths::thurbox_mcp_binary();
+        let mcp_json = serde_json::json!({
+            "mcpServers": {
+                "thurbox": {
+                    "command": mcp_binary,
+                    "args": []
+                }
+            }
+        })
+        .to_string();
+        if let Err(e) = std::fs::write(admin_dir.join(".mcp.json"), &mcp_json) {
+            tracing::warn!("Failed to write .mcp.json: {e}");
+        }
+    }
+
+    /// Ensure the Admin project exists at index 0.
+    fn ensure_admin_project(&mut self, admin_dir: &std::path::Path) {
+        let admin_config = ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![admin_dir.to_path_buf()],
+            roles: Vec::new(),
+            id: None,
+        };
+        let admin_id = admin_config.effective_id();
+
+        if let Some(pos) = self.projects.iter().position(|p| p.id == admin_id) {
+            // Mark existing project as admin and move to index 0
+            self.projects[pos].is_admin = true;
+            if pos != 0 {
+                let project = self.projects.remove(pos);
+                self.projects.insert(0, project);
+                if self.active_project_index == pos {
+                    self.active_project_index = 0;
+                } else if self.active_project_index < pos {
+                    self.active_project_index += 1;
+                }
+            }
+        } else {
+            let info = ProjectInfo::new_admin(admin_config);
+            self.projects.insert(0, info);
+            self.active_project_index += 1;
+            self.save_project_to_db(&self.projects[0].clone());
+        }
+    }
+
+    /// Spawn a single admin session in the admin directory.
+    fn spawn_admin_session(&mut self, admin_dir: PathBuf) {
+        let saved_project_index = self.active_project_index;
+        self.active_project_index = 0;
+        let config = SessionConfig {
+            cwd: Some(admin_dir),
+            ..SessionConfig::default()
+        };
+        self.do_spawn_session("admin".to_string(), &config, None);
+        self.active_project_index = saved_project_index;
+    }
+
+    /// Count sessions belonging to non-admin projects.
+    pub fn user_session_count(&self) -> usize {
+        self.projects
+            .iter()
+            .filter(|p| !p.is_admin)
+            .map(|p| p.session_ids.len())
+            .sum()
+    }
+
     pub fn spawn_session(&mut self) {
         let Some(project) = self.active_project() else {
             return;
         };
+
+        // Admin project: respawn if no sessions, otherwise no-op
+        if project.is_admin {
+            if project.session_ids.is_empty() {
+                if let Some(admin_dir) = crate::paths::admin_directory() {
+                    self.spawn_admin_session(admin_dir);
+                }
+            }
+            return;
+        }
+
         let repos = &project.config.repos;
         match repos.len() {
             0 => {
@@ -648,6 +755,18 @@ impl App {
         };
 
         let session_id = session.info.id;
+
+        // Prevent closing admin sessions
+        if let Some(project) = self
+            .projects
+            .iter()
+            .find(|p| p.session_ids.contains(&session_id))
+        {
+            if project.is_admin {
+                self.error_message = Some("Cannot close admin session".into());
+                return;
+            }
+        }
 
         // Clean up worktree if present
         if let Some(wt) = &session.info.worktree {
@@ -949,6 +1068,10 @@ impl App {
             self.error_message = Some("Cannot edit default project".into());
             return;
         }
+        if project.is_admin {
+            self.error_message = Some("Cannot edit admin project".into());
+            return;
+        }
 
         let name = project.config.name.clone();
         let repos = project.config.repos.clone();
@@ -1027,6 +1150,10 @@ impl App {
         // Safety checks
         if project.is_default {
             self.error_message = Some("Cannot delete default project".into());
+            return;
+        }
+        if project.is_admin {
+            self.error_message = Some("Cannot delete admin project".into());
             return;
         }
         if self.projects.len() <= 1 {
@@ -1299,6 +1426,7 @@ impl App {
                 .map(|p| project_list::ProjectEntry {
                     name: &p.config.name,
                     session_count: p.session_ids.len(),
+                    is_admin: p.is_admin,
                 })
                 .collect();
 
@@ -3158,6 +3286,7 @@ mod tests {
             },
             session_ids: vec![],
             is_default: false,
+            is_admin: false,
         });
         app.active_project_index = 1; // Select the non-default project
         app.focus = InputFocus::ProjectList;
@@ -3977,5 +4106,112 @@ mod tests {
         assert_eq!(shared.additional_dirs.len(), 2);
         assert_eq!(shared.additional_dirs[0], PathBuf::from("/repo2"));
         assert_eq!(shared.additional_dirs[1], PathBuf::from("/repo3"));
+    }
+
+    #[test]
+    fn user_session_count_excludes_admin_project() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend.clone(), test_db());
+
+        // Default project has no sessions
+        assert_eq!(app.user_session_count(), 0);
+
+        // Add a session to the default project
+        let session = Session::stub("user-1", &backend);
+        let sid = session.info.id;
+        app.sessions.push(session);
+        app.projects[0].session_ids.push(sid);
+        assert_eq!(app.user_session_count(), 1);
+
+        // Add an admin project with a session
+        let admin_config = ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![],
+            roles: Vec::new(),
+            id: None,
+        };
+        let mut admin_project = ProjectInfo::new_admin(admin_config);
+        let admin_session = Session::stub("admin", &backend);
+        let admin_sid = admin_session.info.id;
+        app.sessions.push(admin_session);
+        admin_project.session_ids.push(admin_sid);
+        app.projects.insert(0, admin_project);
+
+        // Admin sessions should not count
+        assert_eq!(app.user_session_count(), 1);
+    }
+
+    #[test]
+    fn cannot_edit_admin_project() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend, test_db());
+
+        // Add an admin project (not is_default) and select it
+        let admin_project = ProjectInfo::new_admin(ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![],
+            roles: Vec::new(),
+            id: None,
+        });
+        app.projects.push(admin_project);
+        app.active_project_index = app.projects.len() - 1;
+
+        app.open_edit_project_modal();
+        assert!(!app.show_edit_project_modal);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Cannot edit admin project")
+        );
+    }
+
+    #[test]
+    fn cannot_delete_admin_project() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend, test_db());
+
+        // Add an admin project (not is_default) and select it
+        let admin_project = ProjectInfo::new_admin(ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![],
+            roles: Vec::new(),
+            id: None,
+        });
+        app.projects.push(admin_project);
+        app.active_project_index = app.projects.len() - 1;
+
+        app.show_delete_project_modal();
+        assert!(!app.show_delete_project_modal_flag);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Cannot delete admin project")
+        );
+    }
+
+    #[test]
+    fn cannot_close_admin_session() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend.clone(), test_db());
+
+        // Add an admin project with a session and select it
+        let mut admin_project = ProjectInfo::new_admin(ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![],
+            roles: Vec::new(),
+            id: None,
+        });
+        let session = Session::stub("admin", &backend);
+        let sid = session.info.id;
+        app.sessions.push(session);
+        admin_project.session_ids.push(sid);
+        app.projects.push(admin_project);
+        app.active_project_index = app.projects.len() - 1;
+        app.active_index = 0;
+
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.sessions.len(), 1); // Session not closed
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Cannot close admin session")
+        );
     }
 }
