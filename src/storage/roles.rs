@@ -171,7 +171,7 @@ mod tests {
     fn setup_db_with_project(name: &str) -> (Database, ProjectId) {
         let db = Database::open_in_memory().unwrap();
         let pid = test_project_id(name);
-        db.insert_project(pid, name, &[PathBuf::from("/repo")], false)
+        db.insert_project(pid, name, &[PathBuf::from("/repo")])
             .unwrap();
         (db, pid)
     }
@@ -278,8 +278,8 @@ mod tests {
 
         let pid1 = test_project_id("proj1");
         let pid2 = test_project_id("proj2");
-        db.insert_project(pid1, "proj1", &[], false).unwrap();
-        db.insert_project(pid2, "proj2", &[], false).unwrap();
+        db.insert_project(pid1, "proj1", &[]).unwrap();
+        db.insert_project(pid2, "proj2", &[]).unwrap();
 
         db.replace_roles(
             pid1,
@@ -316,7 +316,7 @@ mod tests {
     fn list_all_roles_excludes_deleted_projects() {
         let db = Database::open_in_memory().unwrap();
         let pid = test_project_id("deleted");
-        db.insert_project(pid, "deleted", &[], false).unwrap();
+        db.insert_project(pid, "deleted", &[]).unwrap();
         db.replace_roles(
             pid,
             &[RoleConfig {

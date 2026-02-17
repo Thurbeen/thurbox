@@ -141,7 +141,7 @@ impl ThurboxMcp {
         let id = config.deterministic_id();
 
         let db = self.db.lock().unwrap();
-        if let Err(e) = db.insert_project(id, &params.name, &repos, false) {
+        if let Err(e) = db.insert_project(id, &params.name, &repos) {
             return error_json(&e.to_string());
         }
 

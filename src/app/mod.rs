@@ -18,7 +18,7 @@ use tracing::error;
 
 use crate::claude::{Session, SessionBackend};
 use crate::git;
-use crate::project::{self, ProjectConfig, ProjectId, ProjectInfo};
+use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
     RoleConfig, RolePermissions, SessionConfig, SessionId, SessionInfo, SessionStatus,
     WorktreeInfo, DEFAULT_ROLE_NAME,
@@ -426,28 +426,13 @@ fn migrate_config_toml_roles(db: &Database) {
 /// Load projects from the database.
 ///
 /// The DB is the single source of truth for all project data including roles.
-/// Returns the default project if the database is empty.
+/// Returns an empty vec if the database has no projects.
 fn load_projects_from_db(db: &Database) -> Vec<ProjectInfo> {
-    let db_projects = db.list_active_projects().unwrap_or_default();
-
-    if !db_projects.is_empty() {
-        db_projects
-            .into_iter()
-            .map(shared_project_to_info)
-            .collect()
-    } else {
-        let default_project = ProjectInfo::new_default(project::create_default_project());
-        // Persist the default project so sessions can reference it (FK constraint)
-        if let Err(e) = db.insert_project(
-            default_project.id,
-            &default_project.config.name,
-            &default_project.config.repos,
-            true,
-        ) {
-            error!("Failed to persist default project: {e}");
-        }
-        vec![default_project]
-    }
+    db.list_active_projects()
+        .unwrap_or_default()
+        .into_iter()
+        .map(shared_project_to_info)
+        .collect()
 }
 
 impl App {
@@ -611,9 +596,12 @@ impl App {
                 }
             }
         } else {
+            let had_projects = !self.projects.is_empty();
             let info = ProjectInfo::new_admin(admin_config);
             self.projects.insert(0, info);
-            self.active_project_index += 1;
+            if had_projects {
+                self.active_project_index += 1;
+            }
             self.save_project_to_db(&self.projects[0].clone());
         }
     }
@@ -848,7 +836,7 @@ impl App {
     }
 
     /// Ensure a session is associated with a project.
-    /// Tries to add to the session's original project, falling back to the default project.
+    /// Tries to add to the session's original project, falling back to the first project.
     fn associate_session_with_project(&mut self, session_id: SessionId, project_id: ProjectId) {
         let mut found_project = false;
         if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
@@ -858,7 +846,7 @@ impl App {
             found_project = true;
         }
 
-        // If session's project doesn't exist in this instance, add to the default/first project
+        // If session's project doesn't exist in this instance, add to the first project
         if !found_project {
             if let Some(project) = self.projects.first_mut() {
                 if !project.session_ids.contains(&session_id) {
@@ -1088,10 +1076,6 @@ impl App {
         let Some(project) = self.active_project() else {
             return;
         };
-        if project.is_default {
-            self.error_message = Some("Cannot edit default project".into());
-            return;
-        }
         if project.is_admin {
             self.error_message = Some("Cannot edit admin project".into());
             return;
@@ -1179,10 +1163,6 @@ impl App {
         };
 
         // Safety checks
-        if project.is_default {
-            self.error_message = Some("Cannot delete default project".into());
-            return;
-        }
         if project.is_admin {
             self.error_message = Some("Cannot delete admin project".into());
             return;
@@ -1759,11 +1739,7 @@ impl App {
             if let Err(e) = self.db.update_project(id, name, repos) {
                 error!("Failed to update project in DB: {e}");
             }
-        } else if self
-            .db
-            .insert_project(id, name, repos, project.is_default)
-            .is_err()
-        {
+        } else if self.db.insert_project(id, name, repos).is_err() {
             // PK conflict from a soft-deleted row — restore then update.
             if let Err(e) = self
                 .db
@@ -2321,22 +2297,37 @@ mod tests {
         Database::open_in_memory().unwrap()
     }
 
+    /// Create a basic test project config.
+    fn test_project_config() -> ProjectConfig {
+        ProjectConfig {
+            name: "Test".to_string(),
+            repos: vec![PathBuf::from("/test")],
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            id: None,
+        }
+    }
+
     /// Create a test DB with a project pre-inserted.
     fn test_db_with_project(config: &ProjectConfig) -> Database {
         let db = test_db();
         let id = config.effective_id();
-        db.insert_project(id, &config.name, &config.repos, false)
-            .unwrap();
+        db.insert_project(id, &config.name, &config.repos).unwrap();
         if !config.roles.is_empty() {
             db.replace_roles(id, &config.roles).unwrap();
         }
         db
     }
 
-    /// Create an App with N stub sessions bound to the default project.
+    /// Create an App with a test project and N stub sessions bound to it.
     fn app_with_sessions(count: usize) -> App {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let mut app = App::new(
+            24,
+            120,
+            backend.clone(),
+            test_db_with_project(&test_project_config()),
+        );
         for i in 0..count {
             let session = Session::stub(&format!("Session {}", i + 1), &backend);
             let session_id = session.info.id;
@@ -2504,7 +2495,12 @@ mod tests {
 
     #[test]
     fn open_role_editor_starts_empty_for_no_custom_roles() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            test_db_with_project(&test_project_config()),
+        );
         app.open_role_editor();
         assert!(app.show_role_editor);
         assert!(app.role_editor_roles.is_empty());
@@ -3189,7 +3185,7 @@ mod tests {
             id: None,
         };
         let proj_id = proj_config.deterministic_id();
-        db.insert_project(proj_id, "DB Project", &[PathBuf::from("/db/repo")], false)
+        db.insert_project(proj_id, "DB Project", &[PathBuf::from("/db/repo")])
             .unwrap();
 
         let projects = load_projects_from_db(&db);
@@ -3200,28 +3196,24 @@ mod tests {
     }
 
     #[test]
-    fn load_projects_from_db_empty_returns_default() {
+    fn load_projects_from_db_empty_returns_empty() {
         let db = test_db();
 
         let projects = load_projects_from_db(&db);
 
-        assert_eq!(projects.len(), 1);
-        assert!(projects[0].is_default);
+        assert!(projects.is_empty());
     }
 
     #[test]
-    fn load_projects_from_db_empty_persists_default_to_db() {
-        let db = test_db();
-
-        let projects = load_projects_from_db(&db);
-        let default_id = projects[0].id;
-
-        // The default project should now exist in the DB (FK constraint support)
-        assert!(db.project_exists(default_id).unwrap());
-
-        let db_projects = db.list_active_projects().unwrap();
-        assert_eq!(db_projects.len(), 1);
-        assert_eq!(db_projects[0].name, "Default");
+    fn empty_db_app_has_valid_active_project_index() {
+        let app = App::new(24, 120, stub_backend(), test_db());
+        // With an empty DB, the project list is empty, but the index should be valid
+        assert!(
+            app.projects.is_empty() || app.active_project_index < app.projects.len(),
+            "active_project_index {} is out of bounds for {} projects",
+            app.active_project_index,
+            app.projects.len()
+        );
     }
 
     #[test]
@@ -3235,7 +3227,7 @@ mod tests {
             id: None,
         };
         let proj_id = proj_config.deterministic_id();
-        db.insert_project(proj_id, "Test", &[PathBuf::from("/repo")], false)
+        db.insert_project(proj_id, "Test", &[PathBuf::from("/repo")])
             .unwrap();
 
         let role = crate::session::RoleConfig {
@@ -3274,14 +3266,12 @@ mod tests {
             config_a.deterministic_id(),
             "ProjectA",
             &[PathBuf::from("/a")],
-            false,
         )
         .unwrap();
         db.insert_project(
             config_b.deterministic_id(),
             "ProjectB",
             &[PathBuf::from("/b")],
-            false,
         )
         .unwrap();
 
@@ -3306,7 +3296,7 @@ mod tests {
         let id = config.deterministic_id();
 
         // Insert then soft-delete to create the PK conflict scenario
-        db.insert_project(id, "TestProject", &[PathBuf::from("/repo")], false)
+        db.insert_project(id, "TestProject", &[PathBuf::from("/repo")])
             .unwrap();
         db.soft_delete_project(id).unwrap();
         assert!(!db.project_exists(id).unwrap());
@@ -3364,8 +3354,7 @@ mod tests {
     #[test]
     fn ctrl_d_shows_delete_project_modal_from_project_list() {
         let mut app = app_with_sessions(0);
-        // Need at least 2 projects (can't delete if only 1),
-        // and the active project must not be the default.
+        // Need at least 2 projects (can't delete if only 1).
         app.projects.push(ProjectInfo {
             id: ProjectId::default(),
             config: ProjectConfig {
@@ -3376,10 +3365,9 @@ mod tests {
                 id: None,
             },
             session_ids: vec![],
-            is_default: false,
             is_admin: false,
         });
-        app.active_project_index = 1; // Select the non-default project
+        app.active_project_index = 1;
         app.focus = InputFocus::ProjectList;
         app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert!(app.show_delete_project_modal_flag);
@@ -3545,7 +3533,7 @@ mod tests {
             id: None,
         };
         let pid = proj_config.deterministic_id();
-        db.insert_project(pid, "test", &[], false).unwrap();
+        db.insert_project(pid, "test", &[]).unwrap();
 
         // Session without claude_session_id — not resumable
         let session = sync::SharedSession {
@@ -3579,7 +3567,7 @@ mod tests {
             id: None,
         };
         let pid = proj_config.deterministic_id();
-        db.insert_project(pid, "test", &[], false).unwrap();
+        db.insert_project(pid, "test", &[]).unwrap();
 
         // Non-resumable session
         let s1 = sync::SharedSession {
@@ -3626,7 +3614,12 @@ mod tests {
     #[test]
     fn save_state_roundtrips_sessions() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let mut app = App::new(
+            24,
+            120,
+            backend.clone(),
+            test_db_with_project(&test_project_config()),
+        );
 
         // Add a session
         let session = Session::stub("Session 1", &backend);
@@ -3658,7 +3651,12 @@ mod tests {
     #[test]
     fn session_to_shared_converts_correctly() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let mut app = App::new(
+            24,
+            120,
+            backend.clone(),
+            test_db_with_project(&test_project_config()),
+        );
 
         let mut session = Session::stub("TestSession", &backend);
         session.info.role = "reviewer".to_string();
@@ -3681,7 +3679,7 @@ mod tests {
 
     // --- Edit-project modal tests ---
 
-    /// Create an App with a single non-default project for edit-project tests.
+    /// Create an App with a single project for edit-project tests.
     fn app_with_project(name: &str, repos: Vec<PathBuf>) -> App {
         let config = ProjectConfig {
             name: name.to_string(),
@@ -3702,17 +3700,6 @@ mod tests {
         assert_eq!(app.edit_project_repos, vec![PathBuf::from("/repo/a")]);
         assert_eq!(app.edit_project_field, EditProjectField::Name);
         assert!(app.edit_project_original_id.is_some());
-    }
-
-    #[test]
-    fn open_edit_project_on_default_project_shows_error() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
-        // Default project is the fallback
-        assert!(app.projects[0].is_default);
-        app.open_edit_project_modal();
-        assert!(!app.show_edit_project_modal);
-        assert!(app.error_message.is_some());
-        assert!(app.error_message.as_ref().unwrap().contains("default"));
     }
 
     #[test]
@@ -3886,7 +3873,7 @@ mod tests {
         let det_id = old_config.deterministic_id();
 
         // Insert project with old name's ID but renamed
-        db.insert_project(det_id, "renamed-proj", &[PathBuf::from("/repo")], false)
+        db.insert_project(det_id, "renamed-proj", &[PathBuf::from("/repo")])
             .unwrap();
 
         // Store roles in DB
@@ -3925,15 +3912,13 @@ mod tests {
         };
         let original_id = config.deterministic_id();
         let id = config.effective_id();
-        db.insert_project(id, &config.name, &config.repos, false)
-            .unwrap();
+        db.insert_project(id, &config.name, &config.repos).unwrap();
         let mut app = App::new(24, 120, backend.clone(), db);
 
         // Verify initial state: 1 project named "TestA"
-        let non_default: Vec<_> = app.projects.iter().filter(|p| !p.is_default).collect();
-        assert_eq!(non_default.len(), 1);
-        assert_eq!(non_default[0].config.name, "TestA");
-        assert_eq!(non_default[0].id, original_id);
+        assert_eq!(app.projects.len(), 1);
+        assert_eq!(app.projects[0].config.name, "TestA");
+        assert_eq!(app.projects[0].id, original_id);
 
         // Step 2: Create a session for TestA
         app.active_project_index = app
@@ -3978,20 +3963,19 @@ mod tests {
         // Step 5: Simulate restart with the same DB (project already persisted from edit)
         let app2 = App::new(24, 120, backend.clone(), app.db);
 
-        // Verify: only 1 non-default project, named "TestB"
-        let non_default: Vec<_> = app2.projects.iter().filter(|p| !p.is_default).collect();
+        // Verify: only 1 project, named "TestB"
         assert_eq!(
-            non_default.len(),
+            app2.projects.len(),
             1,
-            "Expected 1 non-default project, got {}: {:?}",
-            non_default.len(),
-            non_default
+            "Expected 1 project, got {}: {:?}",
+            app2.projects.len(),
+            app2.projects
                 .iter()
                 .map(|p| &p.config.name)
                 .collect::<Vec<_>>()
         );
-        assert_eq!(non_default[0].config.name, "TestB");
-        assert_eq!(non_default[0].id, original_id);
+        assert_eq!(app2.projects[0].config.name, "TestB");
+        assert_eq!(app2.projects[0].id, original_id);
 
         // Step 6: Restore sessions
         if let Some((sessions, _counter)) = app2.load_persisted_state_from_db() {
@@ -4018,7 +4002,7 @@ mod tests {
             id: None,
         };
         let original_id = original_config.deterministic_id();
-        db.insert_project(original_id, "TestA", &[PathBuf::from("/repo")], false)
+        db.insert_project(original_id, "TestA", &[PathBuf::from("/repo")])
             .unwrap();
 
         // Rename in DB (as submit_edit_project does)
@@ -4048,7 +4032,7 @@ mod tests {
             id: None,
         };
         let original_id = original_config.deterministic_id();
-        db.insert_project(original_id, "TestA", &[PathBuf::from("/repo")], false)
+        db.insert_project(original_id, "TestA", &[PathBuf::from("/repo")])
             .unwrap();
 
         // Step 2: Create a session associated with "TestA"
@@ -4088,7 +4072,12 @@ mod tests {
     #[test]
     fn session_to_shared_maps_worktree() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let mut app = App::new(
+            24,
+            120,
+            backend.clone(),
+            test_db_with_project(&test_project_config()),
+        );
 
         let mut session = Session::stub("WTSession", &backend);
         session.info.worktree = Some(WorktreeInfo {
@@ -4273,7 +4262,12 @@ mod tests {
     #[test]
     fn session_to_shared_maps_additional_dirs() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let mut app = App::new(
+            24,
+            120,
+            backend.clone(),
+            test_db_with_project(&test_project_config()),
+        );
 
         let mut session = Session::stub("MultiDir", &backend);
         session.info.additional_dirs = vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")];
@@ -4291,12 +4285,19 @@ mod tests {
     #[test]
     fn user_session_count_excludes_admin_project() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let config = ProjectConfig {
+            name: "UserProj".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            id: None,
+        };
+        let mut app = App::new(24, 120, backend.clone(), test_db_with_project(&config));
 
-        // Default project has no sessions
+        // User project has no sessions
         assert_eq!(app.user_session_count(), 0);
 
-        // Add a session to the default project
+        // Add a session to the user project
         let session = Session::stub("user-1", &backend);
         let sid = session.info.id;
         app.sessions.push(session);
@@ -4327,7 +4328,7 @@ mod tests {
         let backend = stub_backend();
         let mut app = App::new(24, 120, backend, test_db());
 
-        // Add an admin project (not is_default) and select it
+        // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
             name: "Admin".to_string(),
             repos: vec![],
@@ -4351,7 +4352,7 @@ mod tests {
         let backend = stub_backend();
         let mut app = App::new(24, 120, backend, test_db());
 
-        // Add an admin project (not is_default) and select it
+        // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
             name: "Admin".to_string(),
             repos: vec![],

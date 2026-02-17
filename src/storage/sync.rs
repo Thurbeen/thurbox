@@ -86,7 +86,7 @@ mod tests {
     fn load_shared_state_from_db() {
         let db = Database::open_in_memory().unwrap();
         let pid = test_project_id("test");
-        db.insert_project(pid, "test", &[PathBuf::from("/repo")], false)
+        db.insert_project(pid, "test", &[PathBuf::from("/repo")])
             .unwrap();
 
         let session = make_session("S1", pid);
@@ -103,7 +103,7 @@ mod tests {
     fn compute_delta_detects_added_session() {
         let db = Database::open_in_memory().unwrap();
         let pid = test_project_id("test");
-        db.insert_project(pid, "test", &[], false).unwrap();
+        db.insert_project(pid, "test", &[]).unwrap();
 
         // Local state is empty
         let local = SharedState::new();
@@ -121,7 +121,7 @@ mod tests {
     fn compute_delta_detects_removed_session() {
         let db = Database::open_in_memory().unwrap();
         let pid = test_project_id("test");
-        db.insert_project(pid, "test", &[], false).unwrap();
+        db.insert_project(pid, "test", &[]).unwrap();
 
         // Local state has a session
         let session = make_session("S1", pid);
@@ -162,7 +162,7 @@ mod tests {
 
         // db2 makes a change
         let pid = test_project_id("test");
-        db2.insert_project(pid, "test", &[], false).unwrap();
+        db2.insert_project(pid, "test", &[]).unwrap();
 
         // db1 should detect the external change
         let changed = db1.has_external_changes().unwrap();

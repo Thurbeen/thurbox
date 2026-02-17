@@ -24,7 +24,7 @@ pub fn render_info_panel(
 
     // ── Project section ──
     if let Some(proj) = project {
-        let mut project_line = vec![
+        let project_line = vec![
             Span::styled("Project: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 &proj.config.name,
@@ -33,15 +33,6 @@ pub fn render_info_panel(
                     .add_modifier(Modifier::BOLD),
             ),
         ];
-        if proj.is_default {
-            project_line.push(Span::raw(" "));
-            project_line.push(Span::styled(
-                "[Default]",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
         lines.push(Line::from(project_line));
 
         if proj.config.repos.len() == 1 {

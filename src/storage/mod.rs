@@ -7,7 +7,7 @@
 //!
 //! ```ignore
 //! let db = Database::open(path)?;
-//! db.insert_project(id, "name", &repos, false)?;
+//! db.insert_project(id, "name", &repos)?;
 //! db.upsert_session(&session)?;
 //! ```
 

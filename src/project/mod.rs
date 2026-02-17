@@ -82,7 +82,6 @@ pub struct ProjectInfo {
     pub id: ProjectId,
     pub config: ProjectConfig,
     pub session_ids: Vec<SessionId>,
-    pub is_default: bool,
     pub is_admin: bool,
 }
 
@@ -93,18 +92,6 @@ impl ProjectInfo {
             id,
             config,
             session_ids: Vec::new(),
-            is_default: false,
-            is_admin: false,
-        }
-    }
-
-    pub fn new_default(config: ProjectConfig) -> Self {
-        let id = config.effective_id();
-        Self {
-            id,
-            config,
-            session_ids: Vec::new(),
-            is_default: true,
             is_admin: false,
         }
     }
@@ -115,21 +102,8 @@ impl ProjectInfo {
             id,
             config,
             session_ids: Vec::new(),
-            is_default: false,
             is_admin: true,
         }
-    }
-}
-
-/// Create a default project config using the current working directory.
-pub fn create_default_project() -> ProjectConfig {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    ProjectConfig {
-        name: "Default".to_string(),
-        repos: vec![cwd],
-        roles: Vec::new(),
-        mcp_servers: Vec::new(),
-        id: None,
     }
 }
 
@@ -164,18 +138,7 @@ mod tests {
         let info = ProjectInfo::new(config);
         assert!(info.session_ids.is_empty());
         assert_eq!(info.config.name, "test");
-        assert!(!info.is_default);
         assert!(!info.is_admin);
-    }
-
-    #[test]
-    fn project_info_new_default_sets_flag() {
-        let config = create_default_project();
-        let info = ProjectInfo::new_default(config);
-        assert!(info.is_default);
-        assert!(!info.is_admin);
-        assert_eq!(info.config.name, "Default");
-        assert!(!info.config.repos.is_empty());
     }
 
     #[test]
@@ -189,7 +152,6 @@ mod tests {
         };
         let info = ProjectInfo::new_admin(config);
         assert!(info.is_admin);
-        assert!(!info.is_default);
         assert!(info.session_ids.is_empty());
         assert_eq!(info.config.name, "Admin");
     }

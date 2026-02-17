@@ -124,7 +124,7 @@ mod tests {
     fn setup_db_with_session() -> (Database, SessionId) {
         let db = Database::open_in_memory().unwrap();
         let pid = test_project_id();
-        db.insert_project(pid, "test", &[], false).unwrap();
+        db.insert_project(pid, "test", &[]).unwrap();
 
         let session = SharedSession {
             id: SessionId::default(),
