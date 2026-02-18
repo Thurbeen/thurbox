@@ -763,7 +763,7 @@ impl App {
                             config.role = role.name.clone();
                             config.permissions = role.permissions.clone();
                             let worktree = self.pending_spawn_worktree.take();
-                            self.do_spawn_session(name, &config, worktree);
+                            self.do_spawn_session(name, &config, worktree, None);
                         }
                     }
                 }

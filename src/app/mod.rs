@@ -652,14 +652,11 @@ impl App {
 
     /// Spawn a single admin session in the admin directory.
     fn spawn_admin_session(&mut self, admin_dir: PathBuf) {
-        let saved_project_index = self.active_project_index;
-        self.active_project_index = 0;
         let config = SessionConfig {
             cwd: Some(admin_dir),
             ..SessionConfig::default()
         };
-        self.do_spawn_session("admin".to_string(), &config, None);
-        self.active_project_index = saved_project_index;
+        self.do_spawn_session("admin".to_string(), &config, None, Some(0));
     }
 
     /// Count sessions belonging to non-admin projects.
@@ -746,13 +743,13 @@ impl App {
         match roles.len() {
             0 => {
                 // No roles configured — spawn with default (empty) permissions.
-                self.do_spawn_session(name, &config, worktree);
+                self.do_spawn_session(name, &config, worktree, None);
             }
             1 => {
                 // Exactly one role — auto-assign it.
                 config.role = roles[0].name.clone();
                 config.permissions = roles[0].permissions.clone();
-                self.do_spawn_session(name, &config, worktree);
+                self.do_spawn_session(name, &config, worktree, None);
             }
             _ => {
                 // 2+ roles — show the role selector.
@@ -1049,6 +1046,7 @@ impl App {
         name: String,
         config: &SessionConfig,
         worktree: Option<WorktreeInfo>,
+        target_project_index: Option<usize>,
     ) {
         let (rows, cols) = self.content_area_size();
 
@@ -1067,7 +1065,8 @@ impl App {
                 self.status_message = None;
 
                 // Only add to project if not already there
-                if let Some(project) = self.projects.get_mut(self.active_project_index) {
+                let project_index = target_project_index.unwrap_or(self.active_project_index);
+                if let Some(project) = self.projects.get_mut(project_index) {
                     if !project.session_ids.contains(&session_id) {
                         project.session_ids.push(session_id);
                     }
@@ -2063,20 +2062,8 @@ impl App {
                 self.focus = InputFocus::Terminal;
 
                 // Associate with the original project
-                let proj_uuid = shared.project_id.as_uuid();
-                let target_project_index = self
-                    .projects
-                    .iter()
-                    .position(|p| p.id.as_uuid() == proj_uuid)
-                    .unwrap_or_else(|| {
-                        tracing::warn!(
-                            session = %sid,
-                            project_uuid = %proj_uuid,
-                            fallback_index = self.active_project_index,
-                            "Session project not found, falling back to active project"
-                        );
-                        self.active_project_index
-                    });
+                let target_project_index =
+                    self.find_project_index_for_session(sid, &shared.project_id);
 
                 if let Some(project) = self.projects.get_mut(target_project_index) {
                     if !project.session_ids.contains(&sid) {
@@ -2090,16 +2077,37 @@ impl App {
                     error!("Failed to soft-delete stale session {session_id}: {e}");
                 }
 
-                let permissions = self.resolve_role_permissions(&role);
+                // Look up the original project so we respawn into the correct one.
+                let target_project_index =
+                    self.find_project_index_for_session(session_id, &shared.project_id);
+
+                let is_admin = self
+                    .projects
+                    .get(target_project_index)
+                    .is_some_and(|p| p.config.name == "Admin");
+
+                let permissions =
+                    self.resolve_role_permissions_for_project(&role, target_project_index);
+
+                // Admin sessions start fresh — --resume would fail because the
+                // old Claude conversation no longer exists after a tmux restart.
                 let config = SessionConfig {
-                    resume_session_id: Some(claude_session_id.clone()),
-                    claude_session_id: Some(claude_session_id),
+                    resume_session_id: if is_admin {
+                        None
+                    } else {
+                        Some(claude_session_id.clone())
+                    },
+                    claude_session_id: if is_admin {
+                        None
+                    } else {
+                        Some(claude_session_id)
+                    },
                     cwd: shared.cwd,
                     additional_dirs: shared.additional_dirs,
                     role,
                     permissions,
                 };
-                self.do_spawn_session(name, &config, worktree);
+                self.do_spawn_session(name, &config, worktree, Some(target_project_index));
             }
         }
 
@@ -2107,9 +2115,35 @@ impl App {
         self.save_state();
     }
 
-    /// Resolve a role name to its permissions using the active project's role config.
-    fn resolve_role_permissions(&self, role_name: &str) -> RolePermissions {
-        self.active_project()
+    /// Find the project index that owns a session, falling back to `active_project_index`.
+    fn find_project_index_for_session(
+        &self,
+        session_id: SessionId,
+        project_id: &ProjectId,
+    ) -> usize {
+        let proj_uuid = project_id.as_uuid();
+        self.projects
+            .iter()
+            .position(|p| p.id.as_uuid() == proj_uuid)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    session = %session_id,
+                    project_uuid = %proj_uuid,
+                    fallback_index = self.active_project_index,
+                    "Session project not found, falling back to active project"
+                );
+                self.active_project_index
+            })
+    }
+
+    /// Resolve a role name to its permissions for a specific project.
+    fn resolve_role_permissions_for_project(
+        &self,
+        role_name: &str,
+        project_index: usize,
+    ) -> RolePermissions {
+        self.projects
+            .get(project_index)
             .and_then(|project| {
                 project
                     .config
@@ -2119,6 +2153,11 @@ impl App {
                     .map(|r| r.permissions.clone())
             })
             .unwrap_or_default()
+    }
+
+    /// Resolve a role name to its permissions using the active project's role config.
+    fn resolve_role_permissions(&self, role_name: &str) -> RolePermissions {
+        self.resolve_role_permissions_for_project(role_name, self.active_project_index)
     }
 
     pub(crate) fn content_area_size(&self) -> (u16, u16) {
@@ -4830,5 +4869,90 @@ mod tests {
         assert!(app.worktree_sync_in_progress);
         assert!(app.worktree_sync_rx.is_some());
         assert_eq!(app.worktree_sync_completed.len(), 1);
+    }
+
+    // --- find_project_index_for_session tests ---
+
+    #[test]
+    fn find_project_index_finds_matching_project() {
+        let backend = stub_backend();
+        let config_b = ProjectConfig {
+            name: "Other".to_string(),
+            repos: vec![PathBuf::from("/other")],
+            ..test_project_config()
+        };
+        let mut app = App::new(24, 120, backend, test_db());
+        app.projects.push(ProjectInfo::new(test_project_config()));
+        let project_b = ProjectInfo::new(config_b);
+        let id_b = project_b.id;
+        app.projects.push(project_b);
+        app.active_project_index = 0;
+
+        let index = app.find_project_index_for_session(SessionId::default(), &id_b);
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn find_project_index_falls_back_to_active_project() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend, test_db());
+        app.projects.push(ProjectInfo::new(test_project_config()));
+        app.active_project_index = 0;
+
+        let index = app.find_project_index_for_session(SessionId::default(), &ProjectId::default());
+        assert_eq!(index, 0);
+    }
+
+    // --- resolve_role_permissions_for_project tests ---
+
+    #[test]
+    fn resolve_role_permissions_for_specific_project() {
+        use crate::session::{RoleConfig, RolePermissions};
+        let backend = stub_backend();
+        let config_with_roles = ProjectConfig {
+            roles: vec![RoleConfig {
+                name: "reviewer".to_string(),
+                description: String::new(),
+                permissions: RolePermissions {
+                    permission_mode: Some("plan".to_string()),
+                    ..RolePermissions::default()
+                },
+            }],
+            ..test_project_config()
+        };
+        let mut app = App::new(24, 120, backend, test_db());
+        app.projects.push(ProjectInfo::new(test_project_config()));
+        app.projects.push(ProjectInfo::new(config_with_roles));
+        app.active_project_index = 0;
+
+        // Resolve from project at index 1 (not the active project)
+        let perms = app.resolve_role_permissions_for_project("reviewer", 1);
+        assert_eq!(perms.permission_mode, Some("plan".to_string()));
+
+        // Resolve from project at index 0 — role doesn't exist there
+        let perms = app.resolve_role_permissions_for_project("reviewer", 0);
+        assert_eq!(perms, RolePermissions::default());
+    }
+
+    #[test]
+    fn resolve_role_permissions_returns_default_for_missing_role() {
+        use crate::session::RolePermissions;
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend, test_db());
+        app.projects.push(ProjectInfo::new(test_project_config()));
+        app.active_project_index = 0;
+
+        let perms = app.resolve_role_permissions_for_project("nonexistent", 0);
+        assert_eq!(perms, RolePermissions::default());
+    }
+
+    #[test]
+    fn resolve_role_permissions_returns_default_for_invalid_index() {
+        use crate::session::RolePermissions;
+        let backend = stub_backend();
+        let app = App::new(24, 120, backend, test_db());
+
+        let perms = app.resolve_role_permissions_for_project("any-role", 999);
+        assert_eq!(perms, RolePermissions::default());
     }
 }
