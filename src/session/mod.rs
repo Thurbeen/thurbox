@@ -223,6 +223,15 @@ impl SessionInfo {
     }
 }
 
+/// A queued command for a session, inserted by MCP and processed by the TUI.
+#[derive(Debug, Clone)]
+pub struct SessionCommand {
+    pub id: i64,
+    pub session_id: SessionId,
+    pub command: String,
+    pub created_at: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
     pub resume_session_id: Option<String>,

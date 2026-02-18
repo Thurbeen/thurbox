@@ -20,8 +20,8 @@ use crate::claude::{Session, SessionBackend};
 use crate::git;
 use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
-    RoleConfig, RolePermissions, SessionConfig, SessionId, SessionInfo, SessionStatus,
-    WorktreeInfo, DEFAULT_ROLE_NAME,
+    RoleConfig, RolePermissions, SessionCommand, SessionConfig, SessionId, SessionInfo,
+    SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
 use crate::sync::{self, StateDelta, SyncState};
@@ -1393,6 +1393,9 @@ impl App {
         if let Ok(Some(delta)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
             self.handle_external_state_change(delta);
         }
+
+        // Process queued session commands from MCP
+        self.process_session_commands();
     }
 
     /// Send deferred inputs whose scheduled tick has arrived.
@@ -2191,6 +2194,84 @@ impl App {
     /// Resolve a role name to its permissions using the active project's role config.
     fn resolve_role_permissions(&self, role_name: &str) -> RolePermissions {
         self.resolve_role_permissions_for_project(role_name, self.active_project_index)
+    }
+
+    /// Process pending session commands from the MCP command queue.
+    fn process_session_commands(&mut self) {
+        let commands = match self.db.pending_session_commands() {
+            Ok(cmds) => cmds,
+            Err(e) => {
+                error!("Failed to fetch session commands: {e}");
+                return;
+            }
+        };
+
+        for cmd in commands {
+            match cmd.command.as_str() {
+                "restart" => self.handle_restart_command(&cmd),
+                other => error!("Unknown session command: {other}"),
+            }
+
+            if let Err(e) = self.db.mark_command_processed(cmd.id) {
+                error!("Failed to mark command {} as processed: {e}", cmd.id);
+            }
+        }
+    }
+
+    /// Handle a restart command from the session command queue.
+    fn handle_restart_command(&mut self, cmd: &SessionCommand) {
+        let Some(session_idx) = self
+            .sessions
+            .iter()
+            .position(|s| s.info.id == cmd.session_id)
+        else {
+            error!("Restart command for unknown session: {}", cmd.session_id);
+            return;
+        };
+
+        let session = &self.sessions[session_idx];
+        let Some(claude_session_id) = session.info.claude_session_id.clone() else {
+            error!(
+                "Cannot restart session {} without claude_session_id",
+                cmd.session_id
+            );
+            return;
+        };
+
+        let role = session.info.role.clone();
+        let cwd = session.info.cwd.clone();
+        let additional_dirs = session.info.additional_dirs.clone();
+
+        // Find the project that owns this session (may not be the active project)
+        let project_index = self
+            .projects
+            .iter()
+            .position(|p| p.session_ids.contains(&cmd.session_id))
+            .unwrap_or(self.active_project_index);
+        let permissions = self.resolve_role_permissions_for_project(&role, project_index);
+
+        let config = SessionConfig {
+            resume_session_id: Some(claude_session_id.clone()),
+            claude_session_id: Some(claude_session_id),
+            cwd,
+            additional_dirs,
+            role,
+            permissions,
+        };
+
+        let (rows, cols) = self.content_area_size();
+        let session = &mut self.sessions[session_idx];
+        match session.restart(&config, rows, cols) {
+            Ok(()) => {
+                self.save_state();
+            }
+            Err(e) => {
+                error!(
+                    "Failed to restart session {} via command: {e}",
+                    cmd.session_id
+                );
+            }
+        }
     }
 
     pub(crate) fn content_area_size(&self) -> (u16, u16) {

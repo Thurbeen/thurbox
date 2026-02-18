@@ -6,14 +6,15 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 
 use crate::project::{ProjectConfig, ProjectId};
-use crate::session::{McpServerConfig, RoleConfig, RolePermissions};
+use crate::session::{McpServerConfig, RoleConfig, RolePermissions, SessionId};
 use crate::storage::Database;
-use crate::sync::SharedProject;
+use crate::sync::{SharedProject, SharedSession};
 
 use super::types::{
-    CreateProjectParams, DeleteProjectParams, GetProjectParams, ListMcpServersParams,
-    ListRolesParams, ListSessionsParams, McpServerResponse, ProjectResponse, RoleResponse,
-    SessionResponse, SetMcpServersParams, SetRolesParams, UpdateProjectParams, WorktreeResponse,
+    CreateProjectParams, DeleteProjectParams, DeleteSessionParams, GetProjectParams,
+    GetSessionParams, ListMcpServersParams, ListRolesParams, ListSessionsParams, McpServerResponse,
+    ProjectResponse, RestartSessionParams, RoleResponse, SessionResponse, SetMcpServersParams,
+    SetRolesParams, UpdateProjectParams, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -47,6 +48,16 @@ fn require_project(db: &Database, identifier: &str) -> Result<(Vec<SharedProject
     Ok((projects, idx))
 }
 
+/// Resolve a session UUID against the database, returning the session or a JSON error.
+fn resolve_session(db: &Database, identifier: &str) -> Result<SharedSession, String> {
+    let session_id: SessionId = identifier
+        .parse()
+        .map_err(|_| error_json(&format!("Invalid session UUID: {identifier}")))?;
+    db.get_session_by_id(session_id)
+        .map_err(|e| error_json(&e.to_string()))?
+        .ok_or_else(|| error_json(&format!("Session not found: {identifier}")))
+}
+
 fn project_to_response(p: &SharedProject) -> ProjectResponse {
     ProjectResponse {
         id: p.id.to_string(),
@@ -78,7 +89,7 @@ fn role_to_response(r: &RoleConfig) -> RoleResponse {
     }
 }
 
-fn session_to_response(s: &crate::sync::SharedSession) -> SessionResponse {
+fn session_to_response(s: &SharedSession) -> SessionResponse {
     SessionResponse {
         id: s.id.to_string(),
         name: s.name.clone(),
@@ -338,6 +349,58 @@ impl ThurboxMcp {
                 let resp: Vec<SessionResponse> = sessions.iter().map(session_to_response).collect();
                 json_text(&resp)
             }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(description = "Get a session by its UUID")]
+    fn get_session(&self, Parameters(params): Parameters<GetSessionParams>) -> String {
+        let db = self.db.lock().unwrap();
+        match resolve_session(&db, &params.session) {
+            Ok(session) => json_text(&session_to_response(&session)),
+            Err(e) => e,
+        }
+    }
+
+    #[tool(
+        description = "Delete a session (soft delete). The TUI will detect the deletion and clean up the tmux pane and worktree."
+    )]
+    fn delete_session(&self, Parameters(params): Parameters<DeleteSessionParams>) -> String {
+        let db = self.db.lock().unwrap();
+        let session = match resolve_session(&db, &params.session) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+
+        match db.soft_delete_session(session.id) {
+            Ok(()) => serde_json::json!({
+                "deleted": true,
+                "id": session.id.to_string(),
+                "name": session.name,
+            })
+            .to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Restart a session by queuing a restart command. The TUI will process the command and restart the session with its existing Claude session ID."
+    )]
+    fn restart_session(&self, Parameters(params): Parameters<RestartSessionParams>) -> String {
+        let db = self.db.lock().unwrap();
+        let session = match resolve_session(&db, &params.session) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+
+        match db.enqueue_session_command(session.id, "restart") {
+            Ok(command_id) => serde_json::json!({
+                "queued": true,
+                "command_id": command_id,
+                "session_id": session.id.to_string(),
+                "session_name": session.name,
+            })
+            .to_string(),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -938,5 +1001,139 @@ mod tests {
         assert_eq!(v["mcp_servers"][0]["command"], "test-cmd");
         assert_eq!(v["mcp_servers"][0]["args"][0], "--flag");
         assert_eq!(v["mcp_servers"][0]["env"]["KEY"], "VAL");
+    }
+
+    // ── Session tool tests ─────────────────────────────────────
+
+    fn insert_test_session(server: &ThurboxMcp, project_name: &str) -> SessionId {
+        let db = server.db.lock().unwrap();
+        let pid = test_project_id(project_name);
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: "1".to_string(),
+            project_id: pid,
+            role: "developer".to_string(),
+            backend_id: "thurbox:@0".to_string(),
+            backend_type: "tmux".to_string(),
+            claude_session_id: Some("claude-abc".to_string()),
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktree: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        sid
+    }
+
+    #[test]
+    fn get_session_by_uuid() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "sesstest".to_string(),
+            repos: vec![],
+        }));
+        let sid = insert_test_session(&server, "sesstest");
+
+        let result = server.get_session(Parameters(GetSessionParams {
+            session: sid.to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["id"], sid.to_string());
+        assert_eq!(v["name"], "1");
+        assert_eq!(v["role"], "developer");
+    }
+
+    #[test]
+    fn get_session_not_found() {
+        let server = test_server();
+        let result = server.get_session(Parameters(GetSessionParams {
+            session: SessionId::default().to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("Session not found"));
+    }
+
+    #[test]
+    fn get_session_invalid_uuid() {
+        let server = test_server();
+        let result = server.get_session(Parameters(GetSessionParams {
+            session: "not-a-uuid".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid session UUID"));
+    }
+
+    #[test]
+    fn delete_session_soft() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "deltest".to_string(),
+            repos: vec![],
+        }));
+        let sid = insert_test_session(&server, "deltest");
+
+        let result = server.delete_session(Parameters(DeleteSessionParams {
+            session: sid.to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["deleted"], true);
+        assert_eq!(v["id"], sid.to_string());
+
+        // Should no longer be findable
+        let get_result = server.get_session(Parameters(GetSessionParams {
+            session: sid.to_string(),
+        }));
+        let v = parse_json(&get_result);
+        assert!(v["error"].as_str().unwrap().contains("Session not found"));
+    }
+
+    #[test]
+    fn delete_session_not_found() {
+        let server = test_server();
+        let result = server.delete_session(Parameters(DeleteSessionParams {
+            session: SessionId::default().to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("Session not found"));
+    }
+
+    #[test]
+    fn restart_session_not_found() {
+        let server = test_server();
+        let result = server.restart_session(Parameters(RestartSessionParams {
+            session: SessionId::default().to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("Session not found"));
+    }
+
+    #[test]
+    fn restart_session_queues_command() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "resttest".to_string(),
+            repos: vec![],
+        }));
+        let sid = insert_test_session(&server, "resttest");
+
+        let result = server.restart_session(Parameters(RestartSessionParams {
+            session: sid.to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["queued"], true);
+        assert_eq!(v["session_id"], sid.to_string());
+        assert!(v["command_id"].as_i64().unwrap() > 0);
+
+        // Verify command exists in DB
+        let db = server.db.lock().unwrap();
+        let cmds = db.pending_session_commands().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command, "restart");
+        assert_eq!(cmds[0].session_id, sid);
     }
 }

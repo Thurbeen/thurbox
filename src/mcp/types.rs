@@ -102,6 +102,24 @@ pub struct ListSessionsParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetSessionParams {
+    #[schemars(description = "Session UUID")]
+    pub session: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteSessionParams {
+    #[schemars(description = "Session UUID")]
+    pub session: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RestartSessionParams {
+    #[schemars(description = "Session UUID")]
+    pub session: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListMcpServersParams {
     #[schemars(description = "Project name or UUID")]
     pub project: String,
