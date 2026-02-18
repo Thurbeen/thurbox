@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -220,6 +220,11 @@ pub enum AppMessage {
     KeyPress(KeyCode, KeyModifiers),
     MouseScrollUp,
     MouseScrollDown,
+    MouseClick {
+        x: u16,
+        y: u16,
+        modifiers: KeyModifiers,
+    },
     Resize(u16, u16),
     ExternalStateChange(StateDelta),
 }
@@ -919,6 +924,7 @@ impl App {
             AppMessage::KeyPress(code, mods) => self.handle_key(code, mods),
             AppMessage::MouseScrollUp => self.scroll_terminal_up(MOUSE_SCROLL_LINES),
             AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
+            AppMessage::MouseClick { x, y, modifiers } => self.handle_mouse_click(x, y, modifiers),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
             AppMessage::ExternalStateChange(delta) => self.handle_external_state_change(delta),
         }
@@ -951,6 +957,33 @@ impl App {
     pub(crate) fn page_scroll_amount(&self) -> usize {
         let (rows, _) = self.content_area_size();
         (rows as usize) / 2
+    }
+
+    fn handle_mouse_click(&self, x: u16, y: u16, modifiers: KeyModifiers) {
+        use crate::ui::links;
+
+        if !modifiers.contains(KeyModifiers::CONTROL) {
+            return;
+        }
+
+        let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
+        let term_area = layout::compute_layout(area, self.show_info_panel).terminal;
+        let inner = Block::default().borders(Borders::ALL).inner(term_area);
+
+        if !inner.contains(Position::new(x, y)) {
+            return;
+        }
+
+        let screen_col = (x - inner.x) as usize;
+        let screen_row = (y - inner.y) as usize;
+
+        self.with_active_parser(|parser| {
+            let rows = links::extract_screen_rows(parser.screen());
+            let detected = links::detect_urls(&rows);
+            if let Some(url) = links::url_at_position(&detected, screen_row, screen_col) {
+                open_url(url);
+            }
+        });
     }
 
     pub(crate) fn submit_role_editor(&mut self) {
@@ -2288,6 +2321,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+fn open_url(url: &str) {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(cmd)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok();
 }
 
 #[cfg(test)]

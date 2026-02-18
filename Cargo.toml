@@ -23,6 +23,9 @@ tui-term = "0.3"
 vt100 = "0.16"
 bytes = "1"
 
+# URL detection
+regex = "1"
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 

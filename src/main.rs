@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 
@@ -91,6 +91,11 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
                 Event::Mouse(m) => match m.kind {
                     MouseEventKind::ScrollUp => Some(AppMessage::MouseScrollUp),
                     MouseEventKind::ScrollDown => Some(AppMessage::MouseScrollDown),
+                    MouseEventKind::Down(MouseButton::Left) => Some(AppMessage::MouseClick {
+                        x: m.column,
+                        y: m.row,
+                        modifiers: m.modifiers,
+                    }),
                     _ => None,
                 },
                 Event::Resize(cols, rows) => Some(AppMessage::Resize(cols, rows)),
