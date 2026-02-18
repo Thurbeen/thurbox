@@ -170,6 +170,9 @@ cargo run --bin thurbox-mcp         # Run (stdin/stdout JSON-RPC)
 | `list_roles` | List all roles for a project (by name or UUID) |
 | `set_roles` | Atomically replace all roles for a project |
 | `list_sessions` | List sessions, optionally filtered by project |
+| `get_session` | Get a session by UUID |
+| `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
+| `restart_session` | Queue a session restart (TUI processes the command) |
 
 **Role Management**: `set_roles` performs an atomic replacement —
 all existing roles are deleted and replaced in a single transaction.

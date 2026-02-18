@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -101,6 +101,16 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             updated_at  INTEGER NOT NULL,
             PRIMARY KEY (project_id, server_name)
         );
+
+        CREATE TABLE IF NOT EXISTS session_commands (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   TEXT NOT NULL,
+            command      TEXT NOT NULL,
+            created_at   INTEGER NOT NULL,
+            processed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_commands_pending
+            ON session_commands(id) WHERE processed_at IS NULL;
         ",
     )?;
 
@@ -156,6 +166,21 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 5 {
+        // v4 → v5: add session_commands table for MCP-driven session operations
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_commands (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL,
+                command      TEXT NOT NULL,
+                created_at   INTEGER NOT NULL,
+                processed_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_commands_pending
+                ON session_commands(id) WHERE processed_at IS NULL;",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -191,6 +216,7 @@ mod tests {
         assert!(tables.contains(&"sessions".to_string()));
         assert!(tables.contains(&"worktrees".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
+        assert!(tables.contains(&"session_commands".to_string()));
     }
 
     #[test]

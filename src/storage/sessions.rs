@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use rusqlite::params;
 
 use crate::project::ProjectId;
-use crate::session::SessionId;
+use crate::session::{SessionCommand, SessionId};
 use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
 
 use super::audit::{AuditAction, EntityType};
@@ -242,6 +242,57 @@ impl Database {
         self.set_session_counter(next)?;
         Ok(next)
     }
+
+    /// Get a single active (non-deleted) session by its ID.
+    pub fn get_session_by_id(&self, id: SessionId) -> rusqlite::Result<Option<SharedSession>> {
+        let sessions = self.query_sessions(&format!("s.deleted_at IS NULL AND s.id = '{id}'"))?;
+        Ok(sessions.into_iter().next())
+    }
+
+    /// Insert a command into the session command queue.
+    pub fn enqueue_session_command(
+        &self,
+        session_id: SessionId,
+        command: &str,
+    ) -> rusqlite::Result<i64> {
+        let now = current_time_millis() as i64;
+        self.conn.execute(
+            "INSERT INTO session_commands (session_id, command, created_at) VALUES (?1, ?2, ?3)",
+            params![session_id.to_string(), command, now],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Fetch all pending (unprocessed) session commands, ordered by ID.
+    pub fn pending_session_commands(&self) -> rusqlite::Result<Vec<SessionCommand>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, command, created_at \
+             FROM session_commands WHERE processed_at IS NULL ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let session_id_str: String = row.get(1)?;
+            let command: String = row.get(2)?;
+            let created_at: i64 = row.get(3)?;
+            Ok(SessionCommand {
+                id,
+                session_id: session_id_str.parse().unwrap_or_default(),
+                command,
+                created_at: created_at as u64,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Mark a session command as processed.
+    pub fn mark_command_processed(&self, command_id: i64) -> rusqlite::Result<()> {
+        let now = current_time_millis() as i64;
+        self.conn.execute(
+            "UPDATE session_commands SET processed_at = ?1 WHERE id = ?2",
+            params![now, command_id],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -455,6 +506,109 @@ mod tests {
         assert_eq!(sessions[0].additional_dirs.len(), 2);
         assert_eq!(sessions[0].additional_dirs[0], PathBuf::from("/repo2"));
         assert_eq!(sessions[0].additional_dirs[1], PathBuf::from("/repo3"));
+    }
+
+    #[test]
+    fn get_session_by_id_found() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let result = db.get_session_by_id(sid).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name, "Session 1");
+    }
+
+    #[test]
+    fn get_session_by_id_not_found() {
+        let (db, _pid) = setup_db_with_project();
+        let result = db.get_session_by_id(SessionId::default()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_session_by_id_excludes_deleted() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.soft_delete_session(sid).unwrap();
+
+        let result = db.get_session_by_id(sid).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn enqueue_and_fetch_commands() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let cmd_id = db.enqueue_session_command(sid, "restart").unwrap();
+        assert!(cmd_id > 0);
+
+        let pending = db.pending_session_commands().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, cmd_id);
+        assert_eq!(pending[0].session_id, sid);
+        assert_eq!(pending[0].command, "restart");
+    }
+
+    #[test]
+    fn mark_command_processed() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let cmd_id = db.enqueue_session_command(sid, "restart").unwrap();
+        db.mark_command_processed(cmd_id).unwrap();
+
+        let pending = db.pending_session_commands().unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn pending_commands_empty_when_none() {
+        let (db, _pid) = setup_db_with_project();
+        let pending = db.pending_session_commands().unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn multiple_commands_ordered_by_id() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let id1 = db.enqueue_session_command(sid, "restart").unwrap();
+        let id2 = db.enqueue_session_command(sid, "restart").unwrap();
+
+        let pending = db.pending_session_commands().unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending[0].id < pending[1].id);
+        assert_eq!(pending[0].id, id1);
+        assert_eq!(pending[1].id, id2);
+    }
+
+    #[test]
+    fn mark_one_command_leaves_others_pending() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let id1 = db.enqueue_session_command(sid, "restart").unwrap();
+        let _id2 = db.enqueue_session_command(sid, "restart").unwrap();
+
+        db.mark_command_processed(id1).unwrap();
+
+        let pending = db.pending_session_commands().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_ne!(pending[0].id, id1);
     }
 
     #[test]
