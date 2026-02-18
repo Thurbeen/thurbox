@@ -4,7 +4,7 @@ mod modals;
 mod state;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
@@ -35,6 +35,13 @@ const MOUSE_SCROLL_LINES: usize = 3;
 
 /// If no output for this many milliseconds, consider session "Waiting".
 const ACTIVITY_TIMEOUT_MS: u64 = 1000;
+
+/// Prompt sent to Claude sessions when a worktree rebase has conflicts.
+const SYNC_CONFLICT_PROMPT: &str = "Please sync this worktree with main. Run: git fetch origin && git rebase origin/main -- if there are conflicts, resolve them and continue the rebase with git rebase --continue.";
+
+/// Tick delay before sending Enter after pasting text into a session.
+/// At ~10ms per tick, 10 ticks ≈ 100ms — enough for the app to process the pasted text.
+const DEFERRED_INPUT_DELAY_TICKS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleEditorView {
@@ -218,6 +225,19 @@ pub enum AppMessage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusLevel {
+    Info,
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    pub level: StatusLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFocus {
     ProjectList,
     SessionList,
@@ -233,7 +253,7 @@ pub struct App {
     pub(crate) db: Database,
     pub(crate) focus: InputFocus,
     pub(crate) should_quit: bool,
-    pub(crate) error_message: Option<String>,
+    pub(crate) status_message: Option<StatusMessage>,
     terminal_rows: u16,
     pub(crate) terminal_cols: u16,
     session_counter: usize,
@@ -294,7 +314,17 @@ pub struct App {
     pub(crate) mcp_editor_args: ToolListState,
     pub(crate) mcp_editor_env: ToolListState,
     pub(crate) mcp_editor_editing_index: Option<usize>,
+    /// Inter-instance DB sync (polls for changes from other thurbox instances).
     sync_state: SyncState,
+    /// Worktree-to-main git sync (Ctrl+S).
+    worktree_sync_in_progress: bool,
+    worktree_sync_rx: Option<mpsc::Receiver<(SessionId, git::SyncResult)>>,
+    worktree_sync_pending: usize,
+    worktree_sync_completed: Vec<(SessionId, git::SyncResult)>,
+    tick_count: u64,
+    /// Deferred inputs: `(session_id, data, tick_at_which_to_send)`.
+    /// Used to introduce a small delay between pasting text and pressing Enter.
+    deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
 }
 
 /// Convert a SharedProject to ProjectInfo, preserving the shared state ID.
@@ -462,7 +492,7 @@ impl App {
             db,
             focus: InputFocus::ProjectList,
             should_quit: false,
-            error_message: None,
+            status_message: None,
             terminal_rows: rows,
             terminal_cols: cols,
             session_counter,
@@ -524,7 +554,21 @@ impl App {
             mcp_editor_env: ToolListState::new(),
             mcp_editor_editing_index: None,
             sync_state,
+            worktree_sync_in_progress: false,
+            worktree_sync_rx: None,
+            worktree_sync_pending: 0,
+            worktree_sync_completed: Vec::new(),
+            tick_count: 0,
+            deferred_inputs: Vec::new(),
         }
+    }
+
+    fn set_status(&mut self, level: StatusLevel, text: String) {
+        self.status_message = Some(StatusMessage { level, text });
+    }
+
+    fn set_error(&mut self, text: impl Into<String>) {
+        self.set_status(StatusLevel::Error, text.into());
     }
 
     /// Ensure the global admin session and project exist.
@@ -751,7 +795,7 @@ impl App {
             }
             Err(e) => {
                 error!("Failed to restart session: {e}");
-                self.error_message = Some(format!("Failed to restart session: {e:#}"));
+                self.set_error(format!("Failed to restart session: {e:#}"));
             }
         }
     }
@@ -774,7 +818,7 @@ impl App {
             .find(|p| p.session_ids.contains(&session_id))
         {
             if project.is_admin {
-                self.error_message = Some("Cannot close admin session".into());
+                self.set_error("Cannot close admin session");
                 return;
             }
         }
@@ -915,7 +959,7 @@ impl App {
     pub(crate) fn submit_role_editor(&mut self) {
         let name = self.role_editor_name.value().trim().to_string();
         if name.is_empty() {
-            self.error_message = Some("Role name cannot be empty".to_string());
+            self.set_error("Role name cannot be empty");
             return;
         }
 
@@ -926,7 +970,7 @@ impl App {
             .enumerate()
             .any(|(i, r)| r.name == name && Some(i) != self.role_editor_editing_index);
         if duplicate {
-            self.error_message = Some(format!("Role name '{name}' already exists"));
+            self.set_error(format!("Role name '{name}' already exists"));
             return;
         }
 
@@ -968,7 +1012,7 @@ impl App {
             }
         }
 
-        self.error_message = None;
+        self.status_message = None;
         // Return to edit-project modal (roles field) instead of role list
         self.show_role_editor = false;
         self.edit_project_field = EditProjectField::Roles;
@@ -995,7 +1039,7 @@ impl App {
             }
             Err(e) => {
                 error!("Failed to create worktree: {e}");
-                self.error_message = Some(format!("Failed to create worktree: {e:#}"));
+                self.set_error(format!("Failed to create worktree: {e:#}"));
             }
         }
     }
@@ -1020,7 +1064,7 @@ impl App {
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
                 self.focus = InputFocus::Terminal;
-                self.error_message = None;
+                self.status_message = None;
 
                 // Only add to project if not already there
                 if let Some(project) = self.projects.get_mut(self.active_project_index) {
@@ -1034,7 +1078,7 @@ impl App {
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
-                self.error_message = Some(format!("Failed to start claude: {e:#}"));
+                self.set_error(format!("Failed to start claude: {e:#}"));
             }
         }
     }
@@ -1049,8 +1093,7 @@ impl App {
         }
 
         if name.is_empty() || self.add_project_repos.is_empty() {
-            self.error_message =
-                Some("Project name and at least one repo are required".to_string());
+            self.set_error("Project name and at least one repo are required");
             return;
         }
 
@@ -1077,7 +1120,7 @@ impl App {
             return;
         };
         if project.is_admin {
-            self.error_message = Some("Cannot edit admin project".into());
+            self.set_error("Cannot edit admin project");
             return;
         }
 
@@ -1111,8 +1154,7 @@ impl App {
         }
 
         if name.is_empty() || self.edit_project_repos.is_empty() {
-            self.error_message =
-                Some("Project name and at least one repo are required".to_string());
+            self.set_error("Project name and at least one repo are required");
             return;
         }
 
@@ -1122,7 +1164,7 @@ impl App {
 
         // Find project by original ID (stable across renames)
         let Some(project) = self.projects.iter_mut().find(|p| p.id == original_id) else {
-            self.error_message = Some("Project not found".to_string());
+            self.set_error("Project not found");
             return;
         };
 
@@ -1135,7 +1177,7 @@ impl App {
         // Persist project to DB at point of change
         let project_clone = project.clone();
         self.save_project_to_db(&project_clone);
-        self.error_message = None;
+        self.status_message = None;
 
         self.close_edit_project_modal();
     }
@@ -1164,11 +1206,11 @@ impl App {
 
         // Safety checks
         if project.is_admin {
-            self.error_message = Some("Cannot delete admin project".into());
+            self.set_error("Cannot delete admin project");
             return;
         }
         if self.projects.len() <= 1 {
-            self.error_message = Some("Cannot delete last project".into());
+            self.set_error("Cannot delete last project");
             return;
         }
 
@@ -1228,7 +1270,10 @@ impl App {
 
         // Close modal and show success
         self.show_delete_project_modal_flag = false;
-        self.error_message = Some(format!("Deleted project '{}'", project_name));
+        self.set_status(
+            StatusLevel::Success,
+            format!("Deleted project '{project_name}'"),
+        );
     }
 
     /// When switching projects, select the first session of the new project.
@@ -1294,6 +1339,8 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.tick_count = self.tick_count.wrapping_add(1);
+
         for session in &mut self.sessions {
             session.info.status = if session.has_exited() {
                 SessionStatus::Idle
@@ -1304,10 +1351,139 @@ impl App {
             };
         }
 
+        // Poll for sync results from background worktree sync threads
+        self.poll_sync_results();
+
+        // Send deferred inputs whose delay has elapsed
+        self.drain_deferred_inputs();
+
         // Poll for external state changes from other thurbox instances (DB-based)
         if let Ok(Some(delta)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
             self.handle_external_state_change(delta);
         }
+    }
+
+    /// Send deferred inputs whose scheduled tick has arrived.
+    fn drain_deferred_inputs(&mut self) {
+        let tick = self.tick_count;
+        // Partition: send the ones that are ready, keep the rest.
+        let mut remaining = Vec::new();
+        for (session_id, data, send_at) in std::mem::take(&mut self.deferred_inputs) {
+            if tick >= send_at {
+                if let Some(session) = self.sessions.iter().find(|s| s.info.id == session_id) {
+                    if let Err(e) = session.send_input(data) {
+                        error!("Failed to send deferred input: {e}");
+                    }
+                }
+            } else {
+                remaining.push((session_id, data, send_at));
+            }
+        }
+        self.deferred_inputs = remaining;
+    }
+
+    /// Poll for completed worktree sync results and handle them.
+    fn poll_sync_results(&mut self) {
+        if let Some(rx) = &self.worktree_sync_rx {
+            while let Ok((session_id, result)) = rx.try_recv() {
+                self.worktree_sync_completed.push((session_id, result));
+            }
+
+            if self.worktree_sync_completed.len() >= self.worktree_sync_pending {
+                self.worktree_sync_in_progress = false;
+                self.worktree_sync_rx = None;
+                self.finish_sync();
+            }
+        }
+    }
+
+    /// Finalize sync: compose status message and send conflict prompts.
+    fn finish_sync(&mut self) {
+        let results = std::mem::take(&mut self.worktree_sync_completed);
+        let mut synced = 0usize;
+        let mut conflicts = 0usize;
+        let mut errors = Vec::new();
+
+        for (session_id, result) in results {
+            match result {
+                git::SyncResult::Synced => synced += 1,
+                git::SyncResult::Conflict(_) => {
+                    conflicts += 1;
+                    self.send_conflict_prompt(session_id);
+                }
+                git::SyncResult::Error(msg) => errors.push(msg),
+            }
+        }
+
+        if !errors.is_empty() {
+            self.set_error(format!("Sync failed: {}", errors.join(", ")));
+        } else if conflicts > 0 {
+            self.set_status(
+                StatusLevel::Info,
+                format!("{synced} synced, {conflicts} conflict(s) (sent to Claude)"),
+            );
+        } else {
+            self.set_status(StatusLevel::Success, format!("{synced} worktree(s) synced"));
+        }
+    }
+
+    /// Send a conflict resolution prompt to a session via bracketed paste,
+    /// with a deferred Enter so the app processes the text first.
+    fn send_conflict_prompt(&mut self, session_id: SessionId) {
+        if let Some(session) = self.sessions.iter().find(|s| s.info.id == session_id) {
+            let mut paste = b"\x1b[200~".to_vec();
+            paste.extend_from_slice(SYNC_CONFLICT_PROMPT.as_bytes());
+            paste.extend_from_slice(b"\x1b[201~");
+            if let Err(e) = session.send_input(paste) {
+                error!("Failed to send sync prompt to session: {e}");
+            } else {
+                self.deferred_inputs.push((
+                    session_id,
+                    b"\r".to_vec(),
+                    self.tick_count + DEFERRED_INPUT_DELAY_TICKS,
+                ));
+            }
+        }
+    }
+
+    /// Start syncing all worktree sessions with origin/main.
+    pub(crate) fn start_sync(&mut self) {
+        if self.worktree_sync_in_progress {
+            return;
+        }
+
+        let worktree_sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                s.info
+                    .worktree
+                    .as_ref()
+                    .map(|wt| (s.info.id, wt.worktree_path.clone()))
+            })
+            .collect();
+
+        if worktree_sessions.is_empty() {
+            self.set_status(StatusLevel::Info, "No worktrees to sync".into());
+            return;
+        }
+
+        let count = worktree_sessions.len();
+        let (tx, rx) = mpsc::channel();
+
+        for (session_id, worktree_path) in worktree_sessions {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let result = git::sync_worktree(&worktree_path);
+                let _ = tx.send((session_id, result));
+            });
+        }
+
+        self.worktree_sync_in_progress = true;
+        self.worktree_sync_rx = Some(rx);
+        self.worktree_sync_pending = count;
+        self.worktree_sync_completed.clear();
+        self.set_status(StatusLevel::Info, format!("Syncing {count} worktree(s)..."));
     }
 
     /// Handle external state changes detected from other instances.
@@ -1517,10 +1693,14 @@ impl App {
         status_bar::render_footer(
             frame,
             areas.footer,
-            self.sessions.len(),
-            self.projects.len(),
-            self.error_message.as_deref(),
-            focus_label,
+            &status_bar::FooterState {
+                session_count: self.sessions.len(),
+                project_count: self.projects.len(),
+                status: self.status_message.as_ref(),
+                focus_label,
+                sync_in_progress: self.worktree_sync_in_progress,
+                tick_count: self.tick_count,
+            },
         );
 
         // Help overlay (rendered last, on top of everything)
@@ -1989,6 +2169,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+N", "New project (project focus) / session"),
         help_line("Ctrl+C", "Close active session"),
         help_line("Ctrl+R", "Restart active session"),
+        help_line("Ctrl+S", "Sync all worktrees with main"),
         Line::from(""),
         help_section("Project Management"),
         help_line(
@@ -2622,7 +2803,7 @@ mod tests {
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
         app.submit_role_editor();
-        assert!(app.error_message.is_some());
+        assert!(app.status_message.is_some());
         // Should still be in editor view
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
     }
@@ -2660,11 +2841,12 @@ mod tests {
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("dev");
         app.submit_role_editor();
-        assert!(app.error_message.is_some());
+        assert!(app.status_message.is_some());
         assert!(app
-            .error_message
+            .status_message
             .as_ref()
             .unwrap()
+            .text
             .contains("already exists"));
         // Should still be in editor view, role count unchanged
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -2856,12 +3038,12 @@ mod tests {
 
         // Trigger an error by submitting with empty name
         app.submit_role_editor();
-        assert!(app.error_message.is_some());
+        assert!(app.status_message.is_some());
 
         // Now provide a valid name and submit again
         app.role_editor_name.set("valid-role");
         app.submit_role_editor();
-        assert!(app.error_message.is_none());
+        assert!(app.status_message.is_none());
         assert_eq!(app.role_editor_roles.len(), 1);
     }
 
@@ -3389,7 +3571,7 @@ mod tests {
         app.focus = InputFocus::Terminal;
         // Should not crash when there are no sessions
         app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
-        assert!(app.error_message.is_none());
+        assert!(app.status_message.is_none());
     }
 
     #[test]
@@ -3728,7 +3910,7 @@ mod tests {
 
         // Modal should still be open
         assert!(app.show_edit_project_modal);
-        assert!(app.error_message.is_some());
+        assert!(app.status_message.is_some());
     }
 
     #[test]
@@ -3739,7 +3921,7 @@ mod tests {
         app.submit_edit_project();
 
         assert!(app.show_edit_project_modal);
-        assert!(app.error_message.is_some());
+        assert!(app.status_message.is_some());
     }
 
     #[test]
@@ -4255,7 +4437,7 @@ mod tests {
         app.focus = InputFocus::Terminal;
         app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
         // Should be a no-op (no error, no crash)
-        assert!(app.error_message.is_none());
+        assert!(app.status_message.is_none());
     }
 
     #[test]
@@ -4341,7 +4523,7 @@ mod tests {
         app.open_edit_project_modal();
         assert!(!app.show_edit_project_modal);
         assert_eq!(
-            app.error_message.as_deref(),
+            app.status_message.as_ref().map(|m| m.text.as_str()),
             Some("Cannot edit admin project")
         );
     }
@@ -4365,7 +4547,7 @@ mod tests {
         app.show_delete_project_modal();
         assert!(!app.show_delete_project_modal_flag);
         assert_eq!(
-            app.error_message.as_deref(),
+            app.status_message.as_ref().map(|m| m.text.as_str()),
             Some("Cannot delete admin project")
         );
     }
@@ -4394,8 +4576,259 @@ mod tests {
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(app.sessions.len(), 1); // Session not closed
         assert_eq!(
-            app.error_message.as_deref(),
+            app.status_message.as_ref().map(|m| m.text.as_str()),
             Some("Cannot close admin session")
         );
+    }
+
+    // --- StatusMessage / set_error / set_status tests ---
+
+    #[test]
+    fn set_error_creates_error_status() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.set_error("something failed");
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert_eq!(msg.text, "something failed");
+    }
+
+    #[test]
+    fn set_status_creates_typed_status() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.set_status(StatusLevel::Success, "all good".into());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Success);
+        assert_eq!(msg.text, "all good");
+    }
+
+    #[test]
+    fn set_status_replaces_previous() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.set_error("old error");
+        app.set_status(StatusLevel::Info, "new info".into());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Info);
+        assert_eq!(msg.text, "new info");
+    }
+
+    // --- Worktree sync tests ---
+
+    #[test]
+    fn start_sync_with_no_worktrees_shows_info() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.start_sync();
+        assert!(!app.worktree_sync_in_progress);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Info);
+        assert_eq!(msg.text, "No worktrees to sync");
+    }
+
+    #[test]
+    fn start_sync_ignores_if_already_in_progress() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.worktree_sync_in_progress = true;
+        app.status_message = None;
+        app.start_sync();
+        // Should not set any new status message
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn ctrl_s_triggers_start_sync() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        // No worktrees → info message
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "No worktrees to sync");
+    }
+
+    #[test]
+    fn start_sync_with_worktree_sessions_sets_in_progress() {
+        let backend = stub_backend();
+        let config = test_project_config();
+        let mut app = App::new(24, 120, backend.clone(), test_db_with_project(&config));
+        let mut session = Session::stub("wt-session", &backend);
+        session.info.worktree = Some(WorktreeInfo {
+            repo_path: PathBuf::from("/tmp/nonexistent-repo"),
+            worktree_path: PathBuf::from("/tmp/nonexistent-wt"),
+            branch: "test-branch".to_string(),
+        });
+        let session_id = session.info.id;
+        app.sessions.push(session);
+        app.projects[0].session_ids.push(session_id);
+
+        app.start_sync();
+        assert!(app.worktree_sync_in_progress);
+        assert_eq!(app.worktree_sync_pending, 1);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Info);
+        assert!(msg.text.contains("Syncing 1 worktree"));
+    }
+
+    #[test]
+    fn tick_increments_tick_count() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        assert_eq!(app.tick_count, 0);
+        app.tick();
+        assert_eq!(app.tick_count, 1);
+        app.tick();
+        assert_eq!(app.tick_count, 2);
+    }
+
+    #[test]
+    fn finish_sync_all_synced_shows_success() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let id = SessionId::default();
+        app.worktree_sync_completed = vec![
+            (id, git::SyncResult::Synced),
+            (SessionId::default(), git::SyncResult::Synced),
+        ];
+        app.finish_sync();
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Success);
+        assert!(msg.text.contains("2 worktree(s) synced"));
+    }
+
+    #[test]
+    fn finish_sync_with_errors_shows_error() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.worktree_sync_completed = vec![(
+            SessionId::default(),
+            git::SyncResult::Error("fetch failed".into()),
+        )];
+        app.finish_sync();
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert!(msg.text.contains("Sync failed"));
+        assert!(msg.text.contains("fetch failed"));
+    }
+
+    #[test]
+    fn finish_sync_with_conflicts_shows_info() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.worktree_sync_completed = vec![
+            (SessionId::default(), git::SyncResult::Synced),
+            (
+                SessionId::default(),
+                git::SyncResult::Conflict("merge conflict".into()),
+            ),
+        ];
+        app.finish_sync();
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Info);
+        assert!(msg.text.contains("1 synced"));
+        assert!(msg.text.contains("1 conflict"));
+    }
+
+    #[test]
+    fn finish_sync_errors_take_priority_over_conflicts() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.worktree_sync_completed = vec![
+            (
+                SessionId::default(),
+                git::SyncResult::Conflict("merge conflict".into()),
+            ),
+            (
+                SessionId::default(),
+                git::SyncResult::Error("network error".into()),
+            ),
+        ];
+        app.finish_sync();
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert!(msg.text.contains("network error"));
+    }
+
+    #[test]
+    fn drain_deferred_inputs_sends_at_correct_tick() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let id = SessionId::default();
+        app.deferred_inputs.push((id, b"hello".to_vec(), 5));
+
+        // Before target tick: nothing drained
+        app.tick_count = 4;
+        app.drain_deferred_inputs();
+        assert_eq!(app.deferred_inputs.len(), 1);
+
+        // At target tick: drained (no matching session, but entry is removed)
+        app.tick_count = 5;
+        app.drain_deferred_inputs();
+        assert!(app.deferred_inputs.is_empty());
+    }
+
+    #[test]
+    fn drain_deferred_inputs_retains_future_items() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let id = SessionId::default();
+        app.deferred_inputs.push((id, b"early".to_vec(), 5));
+        app.deferred_inputs.push((id, b"late".to_vec(), 20));
+
+        app.tick_count = 5;
+        app.drain_deferred_inputs();
+        assert_eq!(app.deferred_inputs.len(), 1);
+        assert_eq!(app.deferred_inputs[0].2, 20);
+    }
+
+    #[test]
+    fn send_conflict_prompt_noop_for_unknown_session() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        app.send_conflict_prompt(SessionId::default());
+        assert!(app.deferred_inputs.is_empty());
+    }
+
+    #[test]
+    fn send_conflict_prompt_no_deferred_when_send_fails() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 80, backend.clone(), test_db());
+        let session = Session::stub("test", &backend);
+        let sid = session.info.id;
+        app.sessions.push(session);
+
+        // Stub's channel rx is dropped, so send_input fails.
+        // No deferred input should be created.
+        app.send_conflict_prompt(sid);
+        assert!(app.deferred_inputs.is_empty());
+    }
+
+    #[test]
+    fn poll_sync_results_triggers_finish_when_all_received() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let (tx, rx) = mpsc::channel();
+        let id = SessionId::default();
+
+        tx.send((id, git::SyncResult::Synced)).unwrap();
+        drop(tx);
+
+        app.worktree_sync_in_progress = true;
+        app.worktree_sync_rx = Some(rx);
+        app.worktree_sync_pending = 1;
+
+        app.poll_sync_results();
+
+        assert!(!app.worktree_sync_in_progress);
+        assert!(app.worktree_sync_rx.is_none());
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Success);
+    }
+
+    #[test]
+    fn poll_sync_results_waits_for_all_pending() {
+        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let (tx, rx) = mpsc::channel();
+
+        tx.send((SessionId::default(), git::SyncResult::Synced))
+            .unwrap();
+        // Don't drop tx — second result hasn't arrived yet
+
+        app.worktree_sync_in_progress = true;
+        app.worktree_sync_rx = Some(rx);
+        app.worktree_sync_pending = 2;
+
+        app.poll_sync_results();
+
+        // Still in progress — only 1 of 2 received
+        assert!(app.worktree_sync_in_progress);
+        assert!(app.worktree_sync_rx.is_some());
+        assert_eq!(app.worktree_sync_completed.len(), 1);
     }
 }

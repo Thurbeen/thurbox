@@ -129,6 +129,10 @@ impl App {
                     self.restart_active_session();
                     return;
                 }
+                KeyCode::Char('s') => {
+                    self.start_sync();
+                    return;
+                }
                 // Vim navigation: h=left, j=down, k=up, l=cycle-right
                 KeyCode::Char('h') => {
                     self.focus = InputFocus::ProjectList;
@@ -702,7 +706,7 @@ impl App {
             KeyCode::Enter => {
                 let new_branch = self.worktree_name_input.value().trim().to_string();
                 if new_branch.is_empty() {
-                    self.error_message = Some("Branch name cannot be empty".to_string());
+                    self.set_error("Branch name cannot be empty");
                     return;
                 }
                 self.show_worktree_name_modal = false;
@@ -1132,7 +1136,7 @@ impl App {
         };
         match crate::git::list_branches(repo_path) {
             Ok(branches) if branches.is_empty() => {
-                self.error_message = Some("No branches found in repository".to_string());
+                self.set_error("No branches found in repository");
                 self.pending_repo_path = None;
             }
             Ok(mut branches) => {
@@ -1149,7 +1153,7 @@ impl App {
             }
             Err(e) => {
                 error!("Failed to list branches: {e}");
-                self.error_message = Some(format!("Failed to list branches: {e:#}"));
+                self.set_error(format!("Failed to list branches: {e:#}"));
                 self.pending_repo_path = None;
             }
         }
