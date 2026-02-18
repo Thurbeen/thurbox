@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use crate::session::SessionConfig;
+
 use super::mcp_editor_modal::McpEditorField;
 use super::{AddProjectField, App, EditProjectField, InputFocus, RoleEditorView};
 use crate::claude::input;
@@ -643,6 +645,7 @@ impl App {
             KeyCode::Esc => {
                 self.show_session_mode_modal = false;
                 self.pending_repo_path = None;
+                self.pending_all_repos = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.session_mode_index == 0 {
@@ -656,7 +659,17 @@ impl App {
                 self.show_session_mode_modal = false;
                 if self.session_mode_index == 0 {
                     // Normal mode
-                    if let Some(path) = self.pending_repo_path.take() {
+                    if let Some(all_repos) = self.pending_all_repos.take() {
+                        // Multi-repo project: use first repo as CWD, rest as add-dir
+                        self.pending_repo_path = None;
+                        let config = SessionConfig {
+                            cwd: Some(all_repos[0].clone()),
+                            additional_dirs: all_repos[1..].to_vec(),
+                            ..SessionConfig::default()
+                        };
+                        self.spawn_session_with_config(&config);
+                    } else if let Some(path) = self.pending_repo_path.take() {
+                        // Single-repo project
                         self.spawn_session_in_repo(path);
                     }
                 } else {
@@ -674,6 +687,7 @@ impl App {
                 self.show_branch_selector = false;
                 self.available_branches.clear();
                 self.pending_repo_path = None;
+                self.pending_all_repos = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.branch_selector_index + 1 < self.available_branches.len() {
@@ -702,6 +716,7 @@ impl App {
                 self.worktree_name_input.clear();
                 self.pending_base_branch = None;
                 self.pending_repo_path = None;
+                self.pending_all_repos = None;
             }
             KeyCode::Enter => {
                 let new_branch = self.worktree_name_input.value().trim().to_string();
@@ -710,12 +725,18 @@ impl App {
                     return;
                 }
                 self.show_worktree_name_modal = false;
-                if let (Some(repo_path), Some(base_branch)) = (
-                    self.pending_repo_path.take(),
-                    self.pending_base_branch.take(),
-                ) {
+                if let Some(base_branch) = self.pending_base_branch.take() {
                     self.worktree_name_input.clear();
-                    self.spawn_worktree_session(repo_path, &new_branch, &base_branch);
+                    // Use all repos for multi-repo projects, single repo otherwise
+                    let repo_paths = if let Some(all_repos) = self.pending_all_repos.take() {
+                        self.pending_repo_path = None;
+                        all_repos
+                    } else if let Some(repo_path) = self.pending_repo_path.take() {
+                        vec![repo_path]
+                    } else {
+                        return;
+                    };
+                    self.spawn_worktree_session(&repo_paths, &new_branch, &base_branch);
                 }
             }
             KeyCode::Backspace => self.worktree_name_input.backspace(),
@@ -738,7 +759,7 @@ impl App {
             KeyCode::Esc => {
                 self.show_role_selector = false;
                 self.pending_spawn_config = None;
-                self.pending_spawn_worktree = None;
+                self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
                 // Undo the counter increment from prepare_spawn()
                 self.session_counter = self.session_counter.saturating_sub(1);
@@ -762,8 +783,8 @@ impl App {
                         if let Some(role) = project.config.roles.get(role_index) {
                             config.role = role.name.clone();
                             config.permissions = role.permissions.clone();
-                            let worktree = self.pending_spawn_worktree.take();
-                            self.do_spawn_session(name, &config, worktree, None);
+                            let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                            self.do_spawn_session(name, &config, worktrees, None);
                         }
                     }
                 }

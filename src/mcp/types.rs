@@ -196,8 +196,8 @@ pub struct SessionResponse {
     pub claude_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<WorktreeResponse>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<WorktreeResponse>,
 }
 
 #[derive(Debug, Serialize)]

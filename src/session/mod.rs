@@ -200,7 +200,7 @@ pub struct SessionInfo {
     pub name: String,
     pub status: SessionStatus,
     pub role: String,
-    pub worktree: Option<WorktreeInfo>,
+    pub worktrees: Vec<WorktreeInfo>,
     pub claude_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub additional_dirs: Vec<PathBuf>,
@@ -214,7 +214,7 @@ impl SessionInfo {
             name,
             status: SessionStatus::Busy,
             role: DEFAULT_ROLE_NAME.to_string(),
-            worktree: None,
+            worktrees: Vec::new(),
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn session_info_new_has_no_worktree() {
         let info = SessionInfo::new("Test".to_string());
-        assert!(info.worktree.is_none());
+        assert!(info.worktrees.is_empty());
     }
 
     #[test]

@@ -21,7 +21,7 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
         claude_session_id: Some(format!("claude-{name}")),
         cwd: None,
         additional_dirs: Vec::new(),
-        worktree: None,
+        worktrees: Vec::new(),
         tombstone: false,
         tombstone_at: None,
     }
@@ -332,18 +332,84 @@ fn db_worktree_persisted_with_session() {
     db.insert_project(pid, "test", &[]).unwrap();
 
     let mut session = make_session(SessionId::default(), "WT Session", pid);
-    session.worktree = Some(SharedWorktree {
+    session.worktrees = vec![SharedWorktree {
         repo_path: PathBuf::from("/repo"),
         worktree_path: PathBuf::from("/repo/.git/wt/feat"),
         branch: "feat".to_string(),
-    });
+    }];
     db.upsert_session(&session).unwrap();
 
-    let wt = db.get_worktree(session.id).unwrap();
-    assert!(wt.is_some());
-    let wt = wt.unwrap();
-    assert_eq!(wt.branch, "feat");
-    assert_eq!(wt.repo_path, PathBuf::from("/repo"));
+    let wts = db.get_worktrees(session.id).unwrap();
+    assert_eq!(wts.len(), 1);
+    assert_eq!(wts[0].branch, "feat");
+    assert_eq!(wts[0].repo_path, PathBuf::from("/repo"));
+}
+
+#[test]
+fn db_multi_worktree_persisted_and_loaded_via_sessions() {
+    let db = Database::open_in_memory().unwrap();
+
+    let pid = test_project_id("test");
+    db.insert_project(pid, "test", &[]).unwrap();
+
+    let mut session = make_session(SessionId::default(), "Multi-WT", pid);
+    session.worktrees = vec![
+        SharedWorktree {
+            repo_path: PathBuf::from("/repo1"),
+            worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
+            branch: "feat".to_string(),
+        },
+        SharedWorktree {
+            repo_path: PathBuf::from("/repo2"),
+            worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
+            branch: "feat".to_string(),
+        },
+    ];
+    db.upsert_session(&session).unwrap();
+
+    // Verify via list_active_sessions (exercises the LEFT JOIN row merging)
+    let sessions = db.list_active_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].worktrees.len(), 2);
+    assert_eq!(sessions[0].worktrees[0].repo_path, PathBuf::from("/repo1"));
+    assert_eq!(sessions[0].worktrees[1].repo_path, PathBuf::from("/repo2"));
+
+    // Verify via load_shared_state (exercises the sync path)
+    let state = db.load_shared_state().unwrap();
+    assert_eq!(state.sessions.len(), 1);
+    assert_eq!(state.sessions[0].worktrees.len(), 2);
+}
+
+#[test]
+fn db_multi_worktree_propagates_across_instances() {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let db_a = Database::open(path).unwrap();
+    let db_b = Database::open(path).unwrap();
+
+    let pid = test_project_id("test");
+    db_a.insert_project(pid, "test", &[]).unwrap();
+
+    let mut session = make_session(SessionId::default(), "Multi-WT", pid);
+    session.worktrees = vec![
+        SharedWorktree {
+            repo_path: PathBuf::from("/repo1"),
+            worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
+            branch: "feat".to_string(),
+        },
+        SharedWorktree {
+            repo_path: PathBuf::from("/repo2"),
+            worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
+            branch: "feat".to_string(),
+        },
+    ];
+    db_a.upsert_session(&session).unwrap();
+
+    // Instance B should see both worktrees
+    let sessions = db_b.list_active_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].worktrees.len(), 2);
 }
 
 #[test]
@@ -368,7 +434,7 @@ fn db_session_metadata_preserved_across_instances() {
         claude_session_id: Some("claude-123".to_string()),
         cwd: Some(PathBuf::from("/home/dev")),
         additional_dirs: Vec::new(),
-        worktree: None,
+        worktrees: Vec::new(),
         tombstone: false,
         tombstone_at: None,
     };

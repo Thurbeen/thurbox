@@ -76,7 +76,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         }

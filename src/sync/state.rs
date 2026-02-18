@@ -79,8 +79,8 @@ pub struct SharedSession {
     /// Additional directories the Claude CLI has access to via `--add-dir`.
     pub additional_dirs: Vec<PathBuf>,
 
-    /// Optional worktree information (if session is for a git worktree).
-    pub worktree: Option<SharedWorktree>,
+    /// Worktree information (if session uses git worktrees).
+    pub worktrees: Vec<SharedWorktree>,
 
     /// Tombstone flag: true if this session was soft-deleted.
     /// Soft-deleted sessions are excluded from active listings.
@@ -122,6 +122,26 @@ pub struct SharedWorktree {
     pub branch: String,
 }
 
+impl From<crate::session::WorktreeInfo> for SharedWorktree {
+    fn from(wt: crate::session::WorktreeInfo) -> Self {
+        Self {
+            repo_path: wt.repo_path,
+            worktree_path: wt.worktree_path,
+            branch: wt.branch,
+        }
+    }
+}
+
+impl From<SharedWorktree> for crate::session::WorktreeInfo {
+    fn from(wt: SharedWorktree) -> Self {
+        Self {
+            repo_path: wt.repo_path,
+            worktree_path: wt.worktree_path,
+            branch: wt.branch,
+        }
+    }
+}
+
 /// Get current time in milliseconds since Unix epoch.
 pub fn current_time_millis() -> u64 {
     std::time::SystemTime::now()
@@ -150,5 +170,33 @@ mod tests {
         let default_state = SharedState::default();
         assert_eq!(new_state.version, default_state.version);
         assert_eq!(new_state.session_counter, default_state.session_counter);
+    }
+
+    #[test]
+    fn worktree_info_to_shared_worktree() {
+        let wt = crate::session::WorktreeInfo {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.git/wt/feat"),
+            branch: "feat".to_string(),
+        };
+
+        let shared: SharedWorktree = wt.into();
+        assert_eq!(shared.repo_path, PathBuf::from("/repo"));
+        assert_eq!(shared.worktree_path, PathBuf::from("/repo/.git/wt/feat"));
+        assert_eq!(shared.branch, "feat");
+    }
+
+    #[test]
+    fn shared_worktree_to_worktree_info() {
+        let shared = SharedWorktree {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.git/wt/feat"),
+            branch: "feat".to_string(),
+        };
+
+        let wt: crate::session::WorktreeInfo = shared.into();
+        assert_eq!(wt.repo_path, PathBuf::from("/repo"));
+        assert_eq!(wt.worktree_path, PathBuf::from("/repo/.git/wt/feat"));
+        assert_eq!(wt.branch, "feat");
     }
 }

@@ -7,42 +7,54 @@ use super::audit::{AuditAction, EntityType};
 use super::Database;
 
 impl Database {
-    /// Insert or update a worktree for a session.
-    pub fn upsert_worktree(
+    /// Replace all worktrees for a session.
+    ///
+    /// Deletes existing active rows for the session, then inserts all new rows.
+    pub fn upsert_worktrees(
         &self,
         session_id: SessionId,
-        worktree: &SharedWorktree,
+        worktrees: &[SharedWorktree],
     ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let sid = session_id.to_string();
 
-        // Use INSERT OR REPLACE to handle both insert and update
+        // Delete existing active rows for this session
         self.conn.execute(
-            "INSERT OR REPLACE INTO worktrees (session_id, repo_path, worktree_path, branch, created_at, deleted_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-            params![
-                sid,
-                worktree.repo_path.display().to_string(),
-                worktree.worktree_path.display().to_string(),
-                worktree.branch,
-                now,
-            ],
+            "DELETE FROM worktrees WHERE session_id = ?1 AND deleted_at IS NULL",
+            params![sid],
         )?;
 
-        self.log_audit(
-            EntityType::Worktree,
-            &sid,
-            AuditAction::Created,
-            None,
-            None,
-            Some(&worktree.branch),
-        )?;
+        // Insert all new rows
+        for wt in worktrees {
+            self.conn.execute(
+                "INSERT INTO worktrees (session_id, repo_path, worktree_path, branch, created_at, deleted_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                params![
+                    sid,
+                    wt.repo_path.display().to_string(),
+                    wt.worktree_path.display().to_string(),
+                    wt.branch,
+                    now,
+                ],
+            )?;
+        }
+
+        if !worktrees.is_empty() {
+            self.log_audit(
+                EntityType::Worktree,
+                &sid,
+                AuditAction::Created,
+                None,
+                None,
+                Some(&worktrees[0].branch),
+            )?;
+        }
 
         Ok(())
     }
 
-    /// Soft-delete a worktree.
-    pub fn soft_delete_worktree(&self, session_id: SessionId) -> rusqlite::Result<()> {
+    /// Soft-delete all worktrees for a session.
+    pub fn soft_delete_worktrees(&self, session_id: SessionId) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let sid = session_id.to_string();
 
@@ -63,8 +75,8 @@ impl Database {
         Ok(())
     }
 
-    /// Permanently delete a worktree row.
-    pub fn hard_delete_worktree(&self, session_id: SessionId) -> rusqlite::Result<()> {
+    /// Permanently delete all worktree rows for a session.
+    pub fn hard_delete_worktrees(&self, session_id: SessionId) -> rusqlite::Result<()> {
         let sid = session_id.to_string();
 
         self.conn
@@ -73,31 +85,28 @@ impl Database {
         Ok(())
     }
 
-    /// Get a worktree for a session (active only).
-    pub fn get_worktree(&self, session_id: SessionId) -> rusqlite::Result<Option<SharedWorktree>> {
+    /// Get all active worktrees for a session.
+    pub fn get_worktrees(&self, session_id: SessionId) -> rusqlite::Result<Vec<SharedWorktree>> {
         let sid = session_id.to_string();
 
-        let result = self.conn.query_row(
+        let mut stmt = self.conn.prepare(
             "SELECT repo_path, worktree_path, branch FROM worktrees \
-             WHERE session_id = ?1 AND deleted_at IS NULL",
-            params![sid],
-            |row| {
-                let repo: String = row.get(0)?;
-                let wt_path: String = row.get(1)?;
-                let branch: String = row.get(2)?;
-                Ok(SharedWorktree {
-                    repo_path: std::path::PathBuf::from(repo),
-                    worktree_path: std::path::PathBuf::from(wt_path),
-                    branch,
-                })
-            },
-        );
+             WHERE session_id = ?1 AND deleted_at IS NULL \
+             ORDER BY created_at",
+        )?;
 
-        match result {
-            Ok(wt) => Ok(Some(wt)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
+        let rows = stmt.query_map(params![sid], |row| {
+            let repo: String = row.get(0)?;
+            let wt_path: String = row.get(1)?;
+            let branch: String = row.get(2)?;
+            Ok(SharedWorktree {
+                repo_path: std::path::PathBuf::from(repo),
+                worktree_path: std::path::PathBuf::from(wt_path),
+                branch,
+            })
+        })?;
+
+        rows.collect()
     }
 }
 
@@ -136,7 +145,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -146,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_and_get_worktree() {
+    fn upsert_and_get_worktrees() {
         let (db, sid) = setup_db_with_session();
         let wt = SharedWorktree {
             repo_path: PathBuf::from("/repo"),
@@ -154,17 +163,40 @@ mod tests {
             branch: "feat".to_string(),
         };
 
-        db.upsert_worktree(sid, &wt).unwrap();
+        db.upsert_worktrees(sid, &[wt]).unwrap();
 
-        let result = db.get_worktree(sid).unwrap();
-        assert!(result.is_some());
-        let got = result.unwrap();
-        assert_eq!(got.branch, "feat");
-        assert_eq!(got.repo_path, PathBuf::from("/repo"));
+        let result = db.get_worktrees(sid).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].branch, "feat");
+        assert_eq!(result[0].repo_path, PathBuf::from("/repo"));
     }
 
     #[test]
-    fn soft_delete_worktree() {
+    fn upsert_multiple_worktrees() {
+        let (db, sid) = setup_db_with_session();
+        let wts = vec![
+            SharedWorktree {
+                repo_path: PathBuf::from("/repo1"),
+                worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
+                branch: "feat".to_string(),
+            },
+            SharedWorktree {
+                repo_path: PathBuf::from("/repo2"),
+                worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
+                branch: "feat".to_string(),
+            },
+        ];
+
+        db.upsert_worktrees(sid, &wts).unwrap();
+
+        let result = db.get_worktrees(sid).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].repo_path, PathBuf::from("/repo1"));
+        assert_eq!(result[1].repo_path, PathBuf::from("/repo2"));
+    }
+
+    #[test]
+    fn soft_delete_worktrees() {
         let (db, sid) = setup_db_with_session();
         let wt = SharedWorktree {
             repo_path: PathBuf::from("/repo"),
@@ -172,14 +204,14 @@ mod tests {
             branch: "feat".to_string(),
         };
 
-        db.upsert_worktree(sid, &wt).unwrap();
-        db.soft_delete_worktree(sid).unwrap();
+        db.upsert_worktrees(sid, &[wt]).unwrap();
+        db.soft_delete_worktrees(sid).unwrap();
 
-        assert!(db.get_worktree(sid).unwrap().is_none());
+        assert!(db.get_worktrees(sid).unwrap().is_empty());
     }
 
     #[test]
-    fn hard_delete_worktree() {
+    fn hard_delete_worktrees() {
         let (db, sid) = setup_db_with_session();
         let wt = SharedWorktree {
             repo_path: PathBuf::from("/repo"),
@@ -187,21 +219,27 @@ mod tests {
             branch: "feat".to_string(),
         };
 
-        db.upsert_worktree(sid, &wt).unwrap();
-        db.hard_delete_worktree(sid).unwrap();
+        db.upsert_worktrees(sid, &[wt]).unwrap();
+        db.hard_delete_worktrees(sid).unwrap();
 
-        // Hard delete permanently removes the row
-        assert!(db.get_worktree(sid).unwrap().is_none());
+        assert!(db.get_worktrees(sid).unwrap().is_empty());
     }
 
     #[test]
-    fn no_worktree_returns_none() {
+    fn no_worktrees_returns_empty_vec() {
         let (db, sid) = setup_db_with_session();
-        assert!(db.get_worktree(sid).unwrap().is_none());
+        assert!(db.get_worktrees(sid).unwrap().is_empty());
     }
 
     #[test]
-    fn upsert_replaces_worktree() {
+    fn upsert_empty_worktrees_is_noop() {
+        let (db, sid) = setup_db_with_session();
+        db.upsert_worktrees(sid, &[]).unwrap();
+        assert!(db.get_worktrees(sid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn upsert_replaces_worktrees() {
         let (db, sid) = setup_db_with_session();
 
         let wt1 = SharedWorktree {
@@ -209,16 +247,17 @@ mod tests {
             worktree_path: PathBuf::from("/repo/.git/wt/old"),
             branch: "old".to_string(),
         };
-        db.upsert_worktree(sid, &wt1).unwrap();
+        db.upsert_worktrees(sid, &[wt1]).unwrap();
 
         let wt2 = SharedWorktree {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/new"),
             branch: "new".to_string(),
         };
-        db.upsert_worktree(sid, &wt2).unwrap();
+        db.upsert_worktrees(sid, &[wt2]).unwrap();
 
-        let got = db.get_worktree(sid).unwrap().unwrap();
-        assert_eq!(got.branch, "new");
+        let got = db.get_worktrees(sid).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].branch, "new");
     }
 }

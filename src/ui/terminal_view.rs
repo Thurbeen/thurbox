@@ -27,7 +27,7 @@ pub fn render_terminal(
     };
 
     let title = {
-        let base = if let Some(wt) = &info.worktree {
+        let base = if let Some(wt) = info.worktrees.first() {
             format!(
                 " {} ({}) [{}] [{}] ",
                 info.name, info.role, wt.branch, info.status

@@ -148,7 +148,7 @@ fn render_session_section(
                 Style::default().fg(Color::Magenta),
             ));
 
-            if let Some(wt) = &info.worktree {
+            if let Some(wt) = info.worktrees.first() {
                 spans.push(Span::styled(
                     format!(" [{}]", wt.branch),
                     Style::default().fg(Color::Green),
