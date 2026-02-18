@@ -1,6 +1,6 @@
 use ratatui::{
-    layout::{Margin, Rect},
-    style::{Color, Style},
+    layout::{Margin, Position, Rect},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
@@ -59,6 +59,8 @@ pub fn render_terminal(
 
     frame.render_widget(pseudo_term, area);
 
+    highlight_urls(frame, area, parser.screen());
+
     // Render scrollbar when there's scrollback content
     if total_scrollback > 0 {
         // Position scrollbar inside the block border
@@ -79,6 +81,36 @@ pub fn render_terminal(
             .viewport_content_length(rows as usize);
 
         frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
+}
+
+/// Post-process the frame buffer to underline and colorize detected URLs.
+fn highlight_urls(frame: &mut Frame, area: Rect, screen: &vt100::Screen) {
+    let screen_rows = super::links::extract_screen_rows(screen);
+    let links = super::links::detect_urls(&screen_rows);
+    if links.is_empty() {
+        return;
+    }
+
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let link_style = Style::default()
+        .fg(Color::Blue)
+        .add_modifier(Modifier::UNDERLINED);
+    let buf = frame.buffer_mut();
+
+    for link in &links {
+        if link.row >= inner.height as usize {
+            continue;
+        }
+        for col in link.start_col..link.end_col {
+            if col >= inner.width as usize {
+                break;
+            }
+            let pos = Position::new(inner.x + col as u16, inner.y + link.row as u16);
+            if let Some(cell) = buf.cell_mut(pos) {
+                cell.set_style(link_style);
+            }
+        }
     }
 }
 

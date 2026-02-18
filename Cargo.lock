@@ -1717,6 +1717,7 @@ dependencies = [
  "bytes",
  "crossterm",
  "ratatui",
+ "regex",
  "rmcp",
  "rusqlite",
  "serde",
