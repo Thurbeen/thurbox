@@ -90,9 +90,9 @@ impl Database {
             )?;
         }
 
-        // Upsert worktree if present
-        if let Some(wt) = &session.worktree {
-            self.upsert_worktree(session.id, wt)?;
+        // Upsert worktrees if present
+        if !session.worktrees.is_empty() {
+            self.upsert_worktrees(session.id, &session.worktrees)?;
         }
 
         Ok(())
@@ -166,7 +166,7 @@ impl Database {
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
              WHERE {condition} \
-             ORDER BY s.created_at"
+             ORDER BY s.created_at, w.created_at"
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
@@ -194,26 +194,50 @@ impl Database {
                 _ => None,
             };
 
-            Ok(SharedSession {
-                id: id_str.parse().unwrap_or_default(),
-                name: row.get(1)?,
-                project_id: project_id_str
-                    .parse::<uuid::Uuid>()
-                    .map(ProjectId::from_uuid)
-                    .unwrap_or_default(),
-                role: row.get(3)?,
-                backend_id: row.get(4)?,
-                backend_type: row.get(5)?,
-                claude_session_id: row.get(6)?,
-                cwd: cwd.map(PathBuf::from),
-                additional_dirs,
+            Ok((
+                SharedSession {
+                    id: id_str.parse().unwrap_or_default(),
+                    name: row.get(1)?,
+                    project_id: project_id_str
+                        .parse::<uuid::Uuid>()
+                        .map(ProjectId::from_uuid)
+                        .unwrap_or_default(),
+                    role: row.get(3)?,
+                    backend_id: row.get(4)?,
+                    backend_type: row.get(5)?,
+                    claude_session_id: row.get(6)?,
+                    cwd: cwd.map(PathBuf::from),
+                    additional_dirs,
+                    worktrees: Vec::new(),
+                    tombstone: false,
+                    tombstone_at: None,
+                },
                 worktree,
-                tombstone: false,
-                tombstone_at: None,
-            })
+            ))
         })?;
 
-        rows.collect()
+        // Collect rows, merging multiple worktree rows into the same session
+        let mut sessions: Vec<SharedSession> = Vec::new();
+        for row in rows {
+            let (session, worktree) = row?;
+            if let Some(last) = sessions.last_mut() {
+                if last.id == session.id {
+                    // Same session — just append the worktree
+                    if let Some(wt) = worktree {
+                        last.worktrees.push(wt);
+                    }
+                    continue;
+                }
+            }
+            // New session
+            let mut s = session;
+            if let Some(wt) = worktree {
+                s.worktrees.push(wt);
+            }
+            sessions.push(s);
+        }
+
+        Ok(sessions)
     }
 
     /// Get the session counter value.
@@ -322,7 +346,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         }
@@ -414,19 +438,45 @@ mod tests {
     fn session_with_worktree() {
         let (db, pid) = setup_db_with_project();
         let mut session = make_session("Session 1", pid);
-        session.worktree = Some(SharedWorktree {
+        session.worktrees = vec![SharedWorktree {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
-        });
+        }];
 
         db.upsert_session(&session).unwrap();
 
         let sessions = db.list_active_sessions().unwrap();
-        assert!(sessions[0].worktree.is_some());
-        let wt = sessions[0].worktree.as_ref().unwrap();
-        assert_eq!(wt.branch, "feat");
-        assert_eq!(wt.repo_path, PathBuf::from("/repo"));
+        assert_eq!(sessions[0].worktrees.len(), 1);
+        assert_eq!(sessions[0].worktrees[0].branch, "feat");
+        assert_eq!(sessions[0].worktrees[0].repo_path, PathBuf::from("/repo"));
+    }
+
+    #[test]
+    fn session_with_multiple_worktrees() {
+        let (db, pid) = setup_db_with_project();
+        let mut session = make_session("Session 1", pid);
+        session.worktrees = vec![
+            SharedWorktree {
+                repo_path: PathBuf::from("/repo1"),
+                worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
+                branch: "feat".to_string(),
+            },
+            SharedWorktree {
+                repo_path: PathBuf::from("/repo2"),
+                worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
+                branch: "feat".to_string(),
+            },
+        ];
+
+        db.upsert_session(&session).unwrap();
+
+        let sessions = db.list_active_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].worktrees.len(), 2);
+        assert_eq!(sessions[0].worktrees[0].repo_path, PathBuf::from("/repo1"));
+        assert_eq!(sessions[0].worktrees[1].repo_path, PathBuf::from("/repo2"));
+        assert_eq!(sessions[0].worktrees[0].branch, "feat");
     }
 
     #[test]

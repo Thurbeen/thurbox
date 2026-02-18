@@ -147,26 +147,33 @@ pub fn render_info_panel(
         }
     }
 
-    // ── Worktree section ──
-    if let Some(wt) = &info.worktree {
+    // ── Worktrees section ──
+    if !info.worktrees.is_empty() {
         lines.push(Line::from(""));
+        let header = if info.worktrees.len() == 1 {
+            "Worktree"
+        } else {
+            "Worktrees"
+        };
         lines.push(Line::from(Span::styled(
-            "Worktree",
+            header,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::from(vec![
-            Span::styled("Branch: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&wt.branch, Style::default().fg(Color::Green)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Path: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                wt.worktree_path.display().to_string(),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+        for wt in &info.worktrees {
+            lines.push(Line::from(vec![
+                Span::styled("Branch: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&wt.branch, Style::default().fg(Color::Green)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Path: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    wt.worktree_path.display().to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
     }
 
     // ── Role Details section ──

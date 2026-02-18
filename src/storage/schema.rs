@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -46,12 +46,13 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS worktrees (
-            session_id    TEXT PRIMARY KEY REFERENCES sessions(id),
+            session_id    TEXT NOT NULL REFERENCES sessions(id),
             repo_path     TEXT NOT NULL,
             worktree_path TEXT NOT NULL,
             branch        TEXT NOT NULL,
             created_at    INTEGER NOT NULL,
-            deleted_at    INTEGER
+            deleted_at    INTEGER,
+            PRIMARY KEY (session_id, repo_path)
         );
 
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -178,6 +179,27 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_session_commands_pending
                 ON session_commands(id) WHERE processed_at IS NULL;",
+        )?;
+    }
+
+    if version < 6 {
+        // v5 → v6: change worktrees PK from session_id to (session_id, repo_path)
+        // to support multiple worktrees per session (multi-repo projects).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS worktrees_new (
+                session_id    TEXT NOT NULL REFERENCES sessions(id),
+                repo_path     TEXT NOT NULL,
+                worktree_path TEXT NOT NULL,
+                branch        TEXT NOT NULL,
+                created_at    INTEGER NOT NULL,
+                deleted_at    INTEGER,
+                PRIMARY KEY (session_id, repo_path)
+            );
+            INSERT OR IGNORE INTO worktrees_new
+                SELECT session_id, repo_path, worktree_path, branch, created_at, deleted_at
+                FROM worktrees;
+            DROP TABLE IF EXISTS worktrees;
+            ALTER TABLE worktrees_new RENAME TO worktrees;",
         )?;
     }
 

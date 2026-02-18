@@ -98,11 +98,15 @@ fn session_to_response(s: &SharedSession) -> SessionResponse {
         backend_type: s.backend_type.clone(),
         claude_session_id: s.claude_session_id.clone(),
         cwd: s.cwd.clone(),
-        worktree: s.worktree.as_ref().map(|w| WorktreeResponse {
-            repo_path: w.repo_path.clone(),
-            worktree_path: w.worktree_path.clone(),
-            branch: w.branch.clone(),
-        }),
+        worktrees: s
+            .worktrees
+            .iter()
+            .map(|w| WorktreeResponse {
+                repo_path: w.repo_path.clone(),
+                worktree_path: w.worktree_path.clone(),
+                branch: w.branch.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -1018,7 +1022,7 @@ mod tests {
             claude_session_id: Some("claude-abc".to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };

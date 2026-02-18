@@ -138,7 +138,7 @@ fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
         || old.claude_session_id != new.claude_session_id
         || old.cwd != new.cwd
         || old.additional_dirs != new.additional_dirs
-        || old.worktree != new.worktree
+        || old.worktrees != new.worktrees
 }
 
 /// Check if a project's key metadata changed.
@@ -177,7 +177,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -205,7 +205,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -236,7 +236,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -253,7 +253,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -282,7 +282,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -299,7 +299,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: true, // Marked as deleted
             tombstone_at: Some(0),
         };
@@ -345,7 +345,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         });
@@ -359,7 +359,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         });
@@ -377,7 +377,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         });
@@ -392,7 +392,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: true,
             tombstone_at: Some(0),
         });
@@ -407,7 +407,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         });
@@ -436,7 +436,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -453,7 +453,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -483,7 +483,7 @@ mod tests {
             claude_session_id: Some("claude-v1".to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -500,7 +500,7 @@ mod tests {
             claude_session_id: Some("claude-v2".to_string()), // Changed
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -527,7 +527,7 @@ mod tests {
             claude_session_id: None,
             cwd: Some(PathBuf::from("/home/user")),
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -544,7 +544,7 @@ mod tests {
             claude_session_id: None,
             cwd: Some(PathBuf::from("/home/user/project")), // Changed
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -573,11 +573,11 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: Some(SharedWorktree {
+            worktrees: vec![SharedWorktree {
                 repo_path: PathBuf::from("/repo"),
                 worktree_path: PathBuf::from("/repo/.git/worktrees/old"),
                 branch: "old-branch".to_string(),
-            }),
+            }],
             tombstone: false,
             tombstone_at: None,
         };
@@ -594,11 +594,11 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: Some(SharedWorktree {
+            worktrees: vec![SharedWorktree {
                 repo_path: PathBuf::from("/repo"),
                 worktree_path: PathBuf::from("/repo/.git/worktrees/new"),
                 branch: "new-branch".to_string(),
-            }),
+            }],
             tombstone: false,
             tombstone_at: None,
         };
@@ -606,6 +606,64 @@ mod tests {
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
+        assert_eq!(delta.updated_sessions.len(), 1);
+    }
+
+    #[test]
+    fn session_changed_detects_worktree_count_change() {
+        use crate::sync::SharedWorktree;
+
+        let session_id = SessionId::default();
+        let project_id = ProjectId::default();
+
+        let mut old_state = SharedState::new();
+        old_state.sessions.push(SharedSession {
+            id: session_id,
+            name: "Session".to_string(),
+            project_id,
+            role: "developer".to_string(),
+            backend_id: "thurbox:@0".to_string(),
+            backend_type: "tmux".to_string(),
+            claude_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: vec![SharedWorktree {
+                repo_path: PathBuf::from("/repo1"),
+                worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
+                branch: "feat".to_string(),
+            }],
+            tombstone: false,
+            tombstone_at: None,
+        });
+
+        let mut new_state = SharedState::new();
+        new_state.sessions.push(SharedSession {
+            id: session_id,
+            name: "Session".to_string(),
+            project_id,
+            role: "developer".to_string(),
+            backend_id: "thurbox:@0".to_string(),
+            backend_type: "tmux".to_string(),
+            claude_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: vec![
+                SharedWorktree {
+                    repo_path: PathBuf::from("/repo1"),
+                    worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
+                    branch: "feat".to_string(),
+                },
+                SharedWorktree {
+                    repo_path: PathBuf::from("/repo2"),
+                    worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
+                    branch: "feat".to_string(),
+                },
+            ],
+            tombstone: false,
+            tombstone_at: None,
+        });
+
+        let delta = StateDelta::compute(&old_state, &new_state);
         assert_eq!(delta.updated_sessions.len(), 1);
     }
 
@@ -625,7 +683,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -642,7 +700,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -669,7 +727,7 @@ mod tests {
             claude_session_id: Some("claude-123".to_string()),
             cwd: Some(PathBuf::from("/home/user")),
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -686,7 +744,7 @@ mod tests {
             claude_session_id: Some("claude-123".to_string()),
             cwd: Some(PathBuf::from("/home/user")),
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -714,7 +772,7 @@ mod tests {
             claude_session_id: None,
             cwd: Some(PathBuf::from("/repo1")),
             additional_dirs: vec![PathBuf::from("/repo2")],
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         });
@@ -730,7 +788,7 @@ mod tests {
             claude_session_id: None,
             cwd: Some(PathBuf::from("/repo1")),
             additional_dirs: vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")],
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         });

@@ -291,13 +291,14 @@ pub struct App {
     pub(crate) branch_selector_index: usize,
     pub(crate) available_branches: Vec<String>,
     pub(crate) pending_repo_path: Option<PathBuf>,
+    pub(crate) pending_all_repos: Option<Vec<PathBuf>>,
     pub(crate) show_worktree_name_modal: bool,
     pub(crate) worktree_name_input: TextInput,
     pub(crate) pending_base_branch: Option<String>,
     pub(crate) show_role_selector: bool,
     pub(crate) role_selector_index: usize,
     pub(crate) pending_spawn_config: Option<SessionConfig>,
-    pub(crate) pending_spawn_worktree: Option<WorktreeInfo>,
+    pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
     pub(crate) pending_spawn_name: Option<String>,
     pub(crate) show_role_editor: bool,
     pub(crate) role_editor_view: RoleEditorView,
@@ -530,13 +531,14 @@ impl App {
             branch_selector_index: 0,
             available_branches: Vec::new(),
             pending_repo_path: None,
+            pending_all_repos: None,
             show_worktree_name_modal: false,
             worktree_name_input: TextInput::new(),
             pending_base_branch: None,
             show_role_selector: false,
             role_selector_index: 0,
             pending_spawn_config: None,
-            pending_spawn_worktree: None,
+            pending_spawn_worktrees: Vec::new(),
             pending_spawn_name: None,
             show_role_editor: false,
             role_editor_view: RoleEditorView::List,
@@ -661,7 +663,7 @@ impl App {
             cwd: Some(admin_dir),
             ..SessionConfig::default()
         };
-        self.do_spawn_session("admin".to_string(), &config, None, Some(0));
+        self.do_spawn_session("admin".to_string(), &config, Vec::new(), Some(0));
     }
 
     /// Count sessions belonging to non-admin projects.
@@ -688,7 +690,7 @@ impl App {
             return;
         }
 
-        let repos = &project.config.repos;
+        let repos = project.config.repos.clone();
         match repos.len() {
             0 => {
                 let mut config = SessionConfig::default();
@@ -697,18 +699,12 @@ impl App {
                 }
                 self.spawn_session_with_config(&config);
             }
-            1 => {
+            _ => {
+                // 1+ repos: show session mode modal (Normal vs Worktree)
                 self.pending_repo_path = Some(repos[0].clone());
+                self.pending_all_repos = if repos.len() > 1 { Some(repos) } else { None };
                 self.session_mode_index = 0;
                 self.show_session_mode_modal = true;
-            }
-            _ => {
-                let config = SessionConfig {
-                    cwd: Some(repos[0].clone()),
-                    additional_dirs: repos[1..].to_vec(),
-                    ..SessionConfig::default()
-                };
-                self.spawn_session_with_config(&config);
             }
         }
     }
@@ -727,7 +723,7 @@ impl App {
     }
 
     pub(crate) fn spawn_session_with_config(&mut self, config: &SessionConfig) {
-        self.prepare_spawn(config.clone(), None);
+        self.prepare_spawn(config.clone(), Vec::new());
     }
 
     /// Route session creation through role selection.
@@ -737,7 +733,7 @@ impl App {
     pub(crate) fn prepare_spawn(
         &mut self,
         mut config: SessionConfig,
-        worktree: Option<WorktreeInfo>,
+        worktrees: Vec<WorktreeInfo>,
     ) {
         let name = self.next_session_name();
         let Some(project) = self.active_project() else {
@@ -748,19 +744,19 @@ impl App {
         match roles.len() {
             0 => {
                 // No roles configured — spawn with default (empty) permissions.
-                self.do_spawn_session(name, &config, worktree, None);
+                self.do_spawn_session(name, &config, worktrees, None);
             }
             1 => {
                 // Exactly one role — auto-assign it.
                 config.role = roles[0].name.clone();
                 config.permissions = roles[0].permissions.clone();
-                self.do_spawn_session(name, &config, worktree, None);
+                self.do_spawn_session(name, &config, worktrees, None);
             }
             _ => {
                 // 2+ roles — show the role selector.
                 self.pending_spawn_name = Some(name);
                 self.pending_spawn_config = Some(config);
-                self.pending_spawn_worktree = worktree;
+                self.pending_spawn_worktrees = worktrees;
                 self.role_selector_index = 0;
                 self.show_role_selector = true;
             }
@@ -825,8 +821,8 @@ impl App {
             }
         }
 
-        // Clean up worktree if present
-        if let Some(wt) = &session.info.worktree {
+        // Clean up worktrees if present
+        for wt in &session.info.worktrees {
             if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
                 error!("Failed to remove worktree: {e}");
             }
@@ -910,13 +906,7 @@ impl App {
         session.info.cwd = shared.cwd.clone();
         session.info.additional_dirs = shared.additional_dirs.clone();
         session.info.claude_session_id = shared.claude_session_id.clone();
-        if let Some(wt) = &shared.worktree {
-            session.info.worktree = Some(WorktreeInfo {
-                repo_path: wt.repo_path.clone(),
-                worktree_path: wt.worktree_path.clone(),
-                branch: wt.branch.clone(),
-            });
-        }
+        session.info.worktrees = shared.worktrees.iter().cloned().map(Into::into).collect();
     }
 
     pub fn update(&mut self, msg: AppMessage) {
@@ -1050,35 +1040,51 @@ impl App {
 
     pub(crate) fn spawn_worktree_session(
         &mut self,
-        repo_path: PathBuf,
+        repo_paths: &[PathBuf],
         new_branch: &str,
         base_branch: &str,
     ) {
-        match git::create_worktree(&repo_path, new_branch, base_branch) {
-            Ok(worktree_path) => {
-                let worktree_info = WorktreeInfo {
-                    repo_path,
-                    worktree_path: worktree_path.clone(),
-                    branch: new_branch.to_string(),
-                };
-                let config = SessionConfig {
-                    cwd: Some(worktree_path),
-                    ..SessionConfig::default()
-                };
-                self.prepare_spawn(config, Some(worktree_info));
-            }
-            Err(e) => {
-                error!("Failed to create worktree: {e}");
-                self.set_error(format!("Failed to create worktree: {e:#}"));
+        let mut worktree_infos = Vec::new();
+        let mut worktree_paths = Vec::new();
+
+        for repo_path in repo_paths {
+            match git::create_worktree(repo_path, new_branch, base_branch) {
+                Ok(worktree_path) => {
+                    worktree_infos.push(WorktreeInfo {
+                        repo_path: repo_path.clone(),
+                        worktree_path: worktree_path.clone(),
+                        branch: new_branch.to_string(),
+                    });
+                    worktree_paths.push(worktree_path);
+                }
+                Err(e) => {
+                    // Roll back already-created worktrees
+                    for info in &worktree_infos {
+                        if let Err(re) = git::remove_worktree(&info.repo_path, &info.worktree_path)
+                        {
+                            error!("Failed to roll back worktree: {re}");
+                        }
+                    }
+                    error!("Failed to create worktree in {}: {e}", repo_path.display());
+                    self.set_error(format!("Failed to create worktree: {e:#}"));
+                    return;
+                }
             }
         }
+
+        let config = SessionConfig {
+            cwd: Some(worktree_paths[0].clone()),
+            additional_dirs: worktree_paths[1..].to_vec(),
+            ..SessionConfig::default()
+        };
+        self.prepare_spawn(config, worktree_infos);
     }
 
     pub(crate) fn do_spawn_session(
         &mut self,
         name: String,
         config: &SessionConfig,
-        worktree: Option<WorktreeInfo>,
+        worktrees: Vec<WorktreeInfo>,
         target_project_index: Option<usize>,
     ) {
         let (rows, cols) = self.content_area_size();
@@ -1090,7 +1096,7 @@ impl App {
 
         match Session::spawn(name, rows, cols, &config, &self.backend) {
             Ok(mut session) => {
-                session.info.worktree = worktree;
+                session.info.worktrees = worktrees;
                 let session_id = session.info.id;
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
@@ -1490,11 +1496,11 @@ impl App {
         let worktree_sessions: Vec<_> = self
             .sessions
             .iter()
-            .filter_map(|s| {
+            .flat_map(|s| {
                 s.info
-                    .worktree
-                    .as_ref()
-                    .map(|wt| (s.info.id, wt.worktree_path.clone()))
+                    .worktrees
+                    .iter()
+                    .map(move |wt| (s.info.id, wt.worktree_path.clone()))
             })
             .collect();
 
@@ -1575,8 +1581,8 @@ impl App {
         // Handle removed sessions (deleted by other instances)
         for session_id in delta.removed_sessions {
             if let Some(pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
-                // Clean up worktree if present
-                if let Some(wt) = &self.sessions[pos].info.worktree {
+                // Clean up worktrees if present
+                for wt in &self.sessions[pos].info.worktrees {
                     if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
                         error!("Failed to remove worktree for deleted session: {e}");
                     }
@@ -1991,15 +1997,13 @@ impl App {
             claude_session_id: session.info.claude_session_id.clone(),
             cwd: session.info.cwd.clone(),
             additional_dirs: session.info.additional_dirs.clone(),
-            worktree: session
+            worktrees: session
                 .info
-                .worktree
-                .as_ref()
-                .map(|wt| sync::SharedWorktree {
-                    repo_path: wt.repo_path.clone(),
-                    worktree_path: wt.worktree_path.clone(),
-                    branch: wt.branch.clone(),
-                }),
+                .worktrees
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
             tombstone: false,
             tombstone_at: None,
         }
@@ -2049,11 +2053,8 @@ impl App {
                 shared.role
             };
 
-            let worktree = shared.worktree.map(|wt| WorktreeInfo {
-                repo_path: wt.repo_path,
-                worktree_path: wt.worktree_path,
-                branch: wt.branch,
-            });
+            let worktrees: Vec<WorktreeInfo> =
+                shared.worktrees.into_iter().map(Into::into).collect();
 
             let claude_session_id = match shared.claude_session_id {
                 Some(id) => id,
@@ -2091,7 +2092,7 @@ impl App {
                 session.info.cwd = shared.cwd;
                 session.info.additional_dirs = shared.additional_dirs;
                 session.info.role = role;
-                session.info.worktree = worktree;
+                session.info.worktrees = worktrees.clone();
                 let sid = session.info.id;
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
@@ -2143,7 +2144,7 @@ impl App {
                     role,
                     permissions,
                 };
-                self.do_spawn_session(name, &config, worktree, Some(target_project_index));
+                self.do_spawn_session(name, &config, worktrees, Some(target_project_index));
             }
         }
 
@@ -2946,7 +2947,7 @@ mod tests {
         };
         let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
         let session_config = SessionConfig::default();
-        app.prepare_spawn(session_config, None);
+        app.prepare_spawn(session_config, Vec::new());
         assert!(app.show_role_selector);
     }
 
@@ -3895,7 +3896,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -3929,7 +3930,7 @@ mod tests {
             claude_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -3946,7 +3947,7 @@ mod tests {
             claude_session_id: Some("claude-abc".to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -4396,7 +4397,7 @@ mod tests {
             claude_session_id: Some("claude-abc".to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
-            worktree: None,
+            worktrees: Vec::new(),
             tombstone: false,
             tombstone_at: None,
         };
@@ -4429,19 +4430,19 @@ mod tests {
         );
 
         let mut session = Session::stub("WTSession", &backend);
-        session.info.worktree = Some(WorktreeInfo {
+        session.info.worktrees = vec![WorktreeInfo {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
             branch: "feat".to_string(),
-        });
+        }];
 
         let sid = session.info.id;
         app.sessions.push(session);
         app.projects[0].session_ids.push(sid);
 
         let shared = app.session_to_shared(&app.sessions[0]);
-        assert!(shared.worktree.is_some());
-        let wt = shared.worktree.unwrap();
+        assert_eq!(shared.worktrees.len(), 1);
+        let wt = &shared.worktrees[0];
         assert_eq!(wt.branch, "feat");
         assert_eq!(wt.repo_path, PathBuf::from("/repo"));
     }
@@ -4816,11 +4817,11 @@ mod tests {
         let config = test_project_config();
         let mut app = App::new(24, 120, backend.clone(), test_db_with_project(&config));
         let mut session = Session::stub("wt-session", &backend);
-        session.info.worktree = Some(WorktreeInfo {
+        session.info.worktrees = vec![WorktreeInfo {
             repo_path: PathBuf::from("/tmp/nonexistent-repo"),
             worktree_path: PathBuf::from("/tmp/nonexistent-wt"),
             branch: "test-branch".to_string(),
-        });
+        }];
         let session_id = session.info.id;
         app.sessions.push(session);
         app.projects[0].session_ids.push(session_id);
