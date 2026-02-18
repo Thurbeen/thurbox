@@ -121,6 +121,124 @@ fn worktree_path(repo_path: &Path, branch: &str) -> PathBuf {
         .join(sanitized)
 }
 
+/// Result of attempting to sync a worktree with origin/main.
+#[derive(Debug)]
+pub enum SyncResult {
+    /// Rebase succeeded (includes already-up-to-date).
+    Synced,
+    /// Rebase failed due to conflicts (aborted, stash restored).
+    Conflict(String),
+    /// Unexpected failure.
+    Error(String),
+}
+
+/// Stash uncommitted changes. Returns `true` if anything was stashed.
+fn git_stash(worktree_path: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["stash"])
+        .current_dir(worktree_path)
+        .output()
+        .context("failed to run git stash")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git stash failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // "No local changes to save" means nothing was stashed
+    Ok(!stdout.contains("No local changes to save"))
+}
+
+/// Fetch from origin.
+fn git_fetch(worktree_path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args(["fetch", "origin"])
+        .current_dir(worktree_path)
+        .output()
+        .context("failed to run git fetch")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git fetch failed: {stderr}");
+    }
+
+    Ok(())
+}
+
+/// Rebase current branch onto origin/main. Returns `Ok(())` on success,
+/// or an error if there are conflicts (rebase is aborted before returning).
+fn git_rebase_main(worktree_path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args(["rebase", "origin/main"])
+        .current_dir(worktree_path)
+        .output()
+        .context("failed to run git rebase")?;
+
+    if !output.status.success() {
+        // Abort the failed rebase
+        let _ = Command::new("git")
+            .args(["rebase", "--abort"])
+            .current_dir(worktree_path)
+            .output();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("rebase conflict: {stderr}");
+    }
+
+    Ok(())
+}
+
+/// Pop the most recent stash entry.
+fn git_stash_pop(worktree_path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args(["stash", "pop"])
+        .current_dir(worktree_path)
+        .output()
+        .context("failed to run git stash pop")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git stash pop failed: {stderr}");
+    }
+
+    Ok(())
+}
+
+/// High-level sync: stash, fetch, rebase origin/main, pop stash.
+///
+/// On conflict the rebase is aborted and any stash is restored.
+pub fn sync_worktree(worktree_path: &Path) -> SyncResult {
+    let stashed = match git_stash(worktree_path) {
+        Ok(s) => s,
+        Err(e) => return SyncResult::Error(format!("stash: {e:#}")),
+    };
+
+    let restore_stash = || {
+        if stashed {
+            let _ = git_stash_pop(worktree_path);
+        }
+    };
+
+    if let Err(e) = git_fetch(worktree_path) {
+        restore_stash();
+        return SyncResult::Error(format!("fetch: {e:#}"));
+    }
+
+    if let Err(e) = git_rebase_main(worktree_path) {
+        restore_stash();
+        return SyncResult::Conflict(format!("{e:#}"));
+    }
+
+    if stashed {
+        if let Err(e) = git_stash_pop(worktree_path) {
+            return SyncResult::Error(format!("stash pop: {e:#}"));
+        }
+    }
+
+    SyncResult::Synced
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
