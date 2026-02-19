@@ -22,6 +22,7 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
         cwd: None,
         additional_dirs: Vec::new(),
         worktrees: Vec::new(),
+        shell_backend_id: None,
         tombstone: false,
         tombstone_at: None,
     }
@@ -435,6 +436,7 @@ fn db_session_metadata_preserved_across_instances() {
         cwd: Some(PathBuf::from("/home/dev")),
         additional_dirs: Vec::new(),
         worktrees: Vec::new(),
+        shell_backend_id: None,
         tombstone: false,
         tombstone_at: None,
     };

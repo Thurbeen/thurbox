@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::session::SessionConfig;
 
 use super::mcp_editor_modal::McpEditorField;
-use super::{AddProjectField, App, EditProjectField, InputFocus, RoleEditorView};
+use super::{AddProjectField, App, EditProjectField, InputFocus, RoleEditorView, TerminalView};
 use crate::claude::input;
 use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -153,6 +153,10 @@ impl App {
                     self.start_sync();
                     return;
                 }
+                KeyCode::Char('t') => {
+                    self.toggle_shell_view();
+                    return;
+                }
                 // Vim navigation: h=left, j=down, k=up, l=cycle-right
                 KeyCode::Char('h') => {
                     self.focus = InputFocus::ProjectList;
@@ -271,7 +275,14 @@ impl App {
 
         if let Some(session) = self.sessions.get(self.active_index) {
             if let Some(bytes) = input::key_to_bytes(code, mods) {
-                if let Err(e) = session.send_input(bytes) {
+                let result = if let (TerminalView::Shell, Some(shell)) =
+                    (self.active_terminal_view(), &session.shell_pane)
+                {
+                    shell.send_input(bytes)
+                } else {
+                    session.send_input(bytes)
+                };
+                if let Err(e) = result {
                     error!("Failed to send input: {e}");
                 }
             }

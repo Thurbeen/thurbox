@@ -80,7 +80,7 @@ pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
             focus_badge,
             Span::styled(counts, Style::default().fg(Theme::TEXT_SECONDARY)),
             Span::styled(
-                " ^N New  ^C Close  ^D Delete  ^E Edit  ^R Restart  ^S Sync  ^H/J/K/L Nav  F1 Help  F2 Info  ^Q Quit ",
+                " ^N New  ^C Close  ^D Delete  ^E Edit  ^R Restart  ^S Sync  ^T Shell  ^H/J/K/L Nav  F1 Help  F2 Info  ^Q Quit ",
                 Style::default().fg(Theme::TEXT_MUTED),
             ),
         ])

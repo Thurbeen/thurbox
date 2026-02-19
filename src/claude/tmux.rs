@@ -774,7 +774,7 @@ impl SessionBackend for LocalTmuxBackend {
             }
 
             let window_name = parts[1];
-            // Only discover windows with our prefix.
+            // Only discover windows with our prefix (tb- for Claude, tbs- for shells).
             if !window_name.starts_with("tb-") {
                 continue;
             }

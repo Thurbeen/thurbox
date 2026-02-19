@@ -205,6 +205,7 @@ pub struct SessionInfo {
     pub cwd: Option<PathBuf>,
     pub additional_dirs: Vec<PathBuf>,
     pub backend_id: Option<String>,
+    pub shell_backend_id: Option<String>,
 }
 
 impl SessionInfo {
@@ -219,6 +220,7 @@ impl SessionInfo {
             cwd: None,
             additional_dirs: Vec::new(),
             backend_id: None,
+            shell_backend_id: None,
         }
     }
 }

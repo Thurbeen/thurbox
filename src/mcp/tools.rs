@@ -1023,6 +1023,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };

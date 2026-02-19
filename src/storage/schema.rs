@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -40,6 +40,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             claude_session_id TEXT,
             cwd               TEXT,
             additional_dirs   TEXT NOT NULL DEFAULT '',
+            shell_backend_id  TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -201,6 +202,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             DROP TABLE IF EXISTS worktrees;
             ALTER TABLE worktrees_new RENAME TO worktrees;",
         )?;
+    }
+
+    if version < 7 {
+        // v6 → v7: add shell_backend_id column to sessions
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN shell_backend_id TEXT", []);
     }
 
     if version < SCHEMA_VERSION {

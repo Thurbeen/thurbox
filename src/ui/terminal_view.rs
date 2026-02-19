@@ -18,6 +18,7 @@ pub fn render_terminal(
     info: &SessionInfo,
     level: FocusLevel,
     is_admin: bool,
+    is_shell: bool,
 ) {
     let scroll_offset = parser.screen().scrollback();
 
@@ -30,7 +31,9 @@ pub fn render_terminal(
     };
 
     let title = {
-        let base = if let Some(wt) = info.worktrees.first() {
+        let base = if is_shell {
+            format!(" {} (shell) ", info.name)
+        } else if let Some(wt) = info.worktrees.first() {
             format!(
                 " {} ({}) [{}] [{}] ",
                 info.name, info.role, wt.branch, info.status

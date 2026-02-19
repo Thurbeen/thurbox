@@ -3,6 +3,7 @@ pub(crate) mod mcp_editor_modal;
 mod modals;
 mod state;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
@@ -275,6 +276,13 @@ pub enum InputFocus {
     Terminal,
 }
 
+/// Which pane the terminal view is showing for a given session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalView {
+    Claude,
+    Shell,
+}
+
 pub struct App {
     pub(crate) projects: Vec<ProjectInfo>,
     pub(crate) active_project_index: usize,
@@ -363,6 +371,8 @@ pub struct App {
     /// Deferred inputs: `(session_id, data, tick_at_which_to_send)`.
     /// Used to introduce a small delay between pasting text and pressing Enter.
     deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
+    /// Per-session terminal view state (Claude vs Shell). Defaults to Claude.
+    session_terminal_views: HashMap<SessionId, TerminalView>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -608,6 +618,7 @@ impl App {
             worktree_sync_completed: Vec::new(),
             tick_count: 0,
             deferred_inputs: Vec::new(),
+            session_terminal_views: HashMap::new(),
         }
     }
 
@@ -861,11 +872,14 @@ impl App {
             error!("Failed to soft-delete session in DB: {e}");
         }
 
-        // Kill the backend session before removing from the list.
+        // Kill the backend session (and shell pane) before removing from the list.
         if let Some(session) = self.sessions.get_mut(self.active_index) {
             session.kill();
         }
         self.sessions.remove(self.active_index);
+
+        // Clean up terminal view state
+        self.session_terminal_views.remove(&session_id);
 
         // Remove session from its project
         for project in &mut self.projects {
@@ -948,10 +962,63 @@ impl App {
         }
     }
 
+    /// Get the current terminal view for the active session.
+    pub(crate) fn active_terminal_view(&self) -> TerminalView {
+        self.sessions
+            .get(self.active_index)
+            .and_then(|s| self.session_terminal_views.get(&s.info.id))
+            .copied()
+            .unwrap_or(TerminalView::Claude)
+    }
+
     pub(crate) fn with_active_parser(&self, f: impl FnOnce(&mut vt100::Parser)) {
         if let Some(session) = self.sessions.get(self.active_index) {
-            if let Ok(mut parser) = session.parser.lock() {
+            let parser_arc = if self.active_terminal_view() == TerminalView::Shell {
+                session.shell_pane.as_ref().map(|sp| &sp.parser)
+            } else {
+                None
+            }
+            .unwrap_or(&session.parser);
+            if let Ok(mut parser) = parser_arc.lock() {
                 f(&mut parser);
+            }
+        }
+    }
+
+    /// Toggle the terminal view between Claude and Shell for the active session.
+    /// Lazily spawns the shell pane on first toggle.
+    pub(crate) fn toggle_shell_view(&mut self) {
+        let Some(session) = self.sessions.get(self.active_index) else {
+            return;
+        };
+        let session_id = session.info.id;
+        let needs_shell = session.shell_pane.is_none();
+
+        let current = self
+            .session_terminal_views
+            .get(&session_id)
+            .copied()
+            .unwrap_or(TerminalView::Claude);
+
+        match current {
+            TerminalView::Claude => {
+                // Lazily create the shell pane if it doesn't exist
+                if needs_shell {
+                    let (rows, cols) = self.content_area_size();
+                    let session = &mut self.sessions[self.active_index];
+                    if let Err(e) = session.ensure_shell_pane(rows, cols) {
+                        error!("Failed to create shell pane: {e}");
+                        self.set_error(format!("Failed to create shell: {e:#}"));
+                        return;
+                    }
+                    self.save_state();
+                }
+                self.session_terminal_views
+                    .insert(session_id, TerminalView::Shell);
+            }
+            TerminalView::Shell => {
+                self.session_terminal_views
+                    .insert(session_id, TerminalView::Claude);
             }
         }
     }
@@ -1808,13 +1875,20 @@ impl App {
             InputFocus::SessionList => crate::ui::FocusLevel::Active,
             InputFocus::ProjectList => crate::ui::FocusLevel::Inactive,
         };
+        let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
         match self.sessions.get(self.active_index) {
             Some(session) => {
-                if let Ok(mut parser) = session.parser.lock() {
-                    let is_admin_project = self
-                        .projects
-                        .get(self.active_project_index)
-                        .is_some_and(|p| p.is_admin);
+                let is_admin_project = self
+                    .projects
+                    .get(self.active_project_index)
+                    .is_some_and(|p| p.is_admin);
+                let parser_arc = if is_shell_view {
+                    session.shell_pane.as_ref().map(|sp| &sp.parser)
+                } else {
+                    None
+                }
+                .unwrap_or(&session.parser);
+                if let Ok(mut parser) = parser_arc.lock() {
                     terminal_view::render_terminal(
                         frame,
                         areas.terminal,
@@ -1822,6 +1896,7 @@ impl App {
                         &session.info,
                         terminal_focus,
                         is_admin_project,
+                        is_shell_view,
                     );
                 }
             }
@@ -1831,6 +1906,7 @@ impl App {
         let focus_label = match self.focus {
             InputFocus::ProjectList => "Projects",
             InputFocus::SessionList => "Sessions",
+            InputFocus::Terminal if is_shell_view => "Shell",
             InputFocus::Terminal => "Terminal",
         };
         status_bar::render_footer(
@@ -2206,6 +2282,7 @@ impl App {
                 .cloned()
                 .map(Into::into)
                 .collect(),
+            shell_backend_id: session.info.shell_backend_id.clone(),
             tombstone: false,
             tombstone_at: None,
         }
@@ -2291,10 +2368,24 @@ impl App {
             if let Some(mut session) = adopted {
                 session.info.id = session_id;
                 session.info.claude_session_id = Some(claude_session_id.clone());
-                session.info.cwd = shared.cwd;
-                session.info.additional_dirs = shared.additional_dirs;
+                session.info.cwd = shared.cwd.clone();
+                session.info.additional_dirs = shared.additional_dirs.clone();
                 session.info.role = role;
                 session.info.worktrees = worktrees.clone();
+
+                // Re-adopt shell pane if one was persisted
+                if let Some(shell_bid) = &shared.shell_backend_id {
+                    if discovered
+                        .iter()
+                        .any(|d| d.backend_id == *shell_bid && d.is_alive)
+                    {
+                        let (rows, cols) = self.content_area_size();
+                        if let Err(e) = session.adopt_shell_pane(shell_bid, rows, cols) {
+                            tracing::warn!("Failed to re-adopt shell pane: {e}");
+                        }
+                    }
+                }
+
                 let sid = session.info.id;
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
@@ -2530,6 +2621,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+C", "Close active session"),
         help_line("Ctrl+R", "Restart active session"),
         help_line("Ctrl+S", "Sync all worktrees with main"),
+        help_line("Ctrl+T", "Toggle shell pane"),
         Line::from(""),
         help_section("Project Management"),
         help_line(
@@ -4096,6 +4188,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -4130,6 +4223,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -4147,6 +4241,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -4597,6 +4692,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };

@@ -82,6 +82,9 @@ pub struct SharedSession {
     /// Worktree information (if session uses git worktrees).
     pub worktrees: Vec<SharedWorktree>,
 
+    /// Backend ID of the companion shell pane (if spawned).
+    pub shell_backend_id: Option<String>,
+
     /// Tombstone flag: true if this session was soft-deleted.
     /// Soft-deleted sessions are excluded from active listings.
     pub tombstone: bool,

@@ -36,8 +36,9 @@ impl Database {
             self.conn.execute(
                 "UPDATE sessions SET name = ?1, project_id = ?2, role = ?3, \
                  backend_id = ?4, backend_type = ?5, claude_session_id = ?6, \
-                 cwd = ?7, additional_dirs = ?8, updated_at = ?9, deleted_at = NULL \
-                 WHERE id = ?10",
+                 cwd = ?7, additional_dirs = ?8, shell_backend_id = ?9, \
+                 updated_at = ?10, deleted_at = NULL \
+                 WHERE id = ?11",
                 params![
                     session.name,
                     project_id_str,
@@ -47,6 +48,7 @@ impl Database {
                     session.claude_session_id,
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
+                    session.shell_backend_id,
                     now,
                     id_str,
                 ],
@@ -63,8 +65,8 @@ impl Database {
         } else {
             self.conn.execute(
                 "INSERT INTO sessions (id, name, project_id, role, backend_id, backend_type, \
-                 claude_session_id, cwd, additional_dirs, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 claude_session_id, cwd, additional_dirs, shell_backend_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id_str,
                     session.name,
@@ -75,6 +77,7 @@ impl Database {
                     session.claude_session_id,
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
+                    session.shell_backend_id,
                     now,
                     now,
                 ],
@@ -161,7 +164,7 @@ impl Database {
     fn query_sessions(&self, condition: &str) -> rusqlite::Result<Vec<SharedSession>> {
         let sql = format!(
             "SELECT s.id, s.name, s.project_id, s.role, s.backend_id, s.backend_type, \
-             s.claude_session_id, s.cwd, s.additional_dirs, \
+             s.claude_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
@@ -175,9 +178,10 @@ impl Database {
             let project_id_str: String = row.get(2)?;
             let cwd: Option<String> = row.get(7)?;
             let dirs_str: String = row.get(8)?;
-            let wt_repo: Option<String> = row.get(9)?;
-            let wt_path: Option<String> = row.get(10)?;
-            let wt_branch: Option<String> = row.get(11)?;
+            let shell_backend_id: Option<String> = row.get(9)?;
+            let wt_repo: Option<String> = row.get(10)?;
+            let wt_path: Option<String> = row.get(11)?;
+            let wt_branch: Option<String> = row.get(12)?;
 
             let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
                 Vec::new()
@@ -209,6 +213,7 @@ impl Database {
                     cwd: cwd.map(PathBuf::from),
                     additional_dirs,
                     worktrees: Vec::new(),
+                    shell_backend_id,
                     tombstone: false,
                     tombstone_at: None,
                 },
@@ -347,6 +352,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         }
