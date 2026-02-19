@@ -158,6 +158,37 @@ struct WiredState {
     last_output_at: Arc<AtomicU64>,
 }
 
+/// A companion shell pane running alongside a Claude session.
+pub struct ShellPane {
+    pub parser: Arc<Mutex<vt100::Parser>>,
+    input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    backend_id: String,
+    /// Kept alive so the reader loop's Arc clone has a peer.
+    #[allow(dead_code)]
+    exited: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    last_output_at: Arc<AtomicU64>,
+}
+
+impl ShellPane {
+    pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
+        self.input_tx
+            .send(data)
+            .map_err(|_| anyhow::anyhow!("Shell input channel closed"))
+    }
+
+    /// Build a ShellPane from wired-up I/O state.
+    fn from_wired(state: WiredState, backend_id: String) -> Self {
+        Self {
+            parser: state.parser,
+            input_tx: state.input_tx,
+            backend_id,
+            exited: state.exited,
+            last_output_at: state.last_output_at,
+        }
+    }
+}
+
 /// A running session connected to a backend.
 pub struct Session {
     pub info: SessionInfo,
@@ -167,6 +198,7 @@ pub struct Session {
     backend: Arc<dyn SessionBackend>,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
+    pub shell_pane: Option<ShellPane>,
 }
 
 impl Session {
@@ -299,6 +331,7 @@ impl Session {
             backend: Arc::clone(backend),
             exited: state.exited,
             last_output_at: state.last_output_at,
+            shell_pane: None,
         }
     }
 
@@ -361,6 +394,15 @@ impl Session {
         }
         if let Ok(mut parser) = self.parser.lock() {
             parser.screen_mut().set_size(rows, cols);
+        }
+        if let Some(shell) = &self.shell_pane {
+            if let Err(e) = self.backend.resize(&shell.backend_id, rows, cols) {
+                tracing::warn!("Failed to resize shell pane: {e}");
+                return;
+            }
+            if let Ok(mut parser) = shell.parser.lock() {
+                parser.screen_mut().set_size(rows, cols);
+            }
         }
     }
 
@@ -427,6 +469,7 @@ impl Session {
 
     /// Kill/destroy the backend session (for Ctrl+X close).
     pub fn kill(&self) {
+        self.kill_shell_pane();
         if let Err(e) = self.backend.kill(&self.backend_id) {
             tracing::warn!("Failed to kill session: {e}");
         }
@@ -434,11 +477,86 @@ impl Session {
 
     /// Detach from the backend session without killing it (for Ctrl+Q quit).
     pub fn detach(self) {
+        if let Some(shell) = &self.shell_pane {
+            if let Err(e) = self.backend.detach(&shell.backend_id) {
+                tracing::warn!("Failed to detach shell pane: {e}");
+            }
+        }
         if let Err(e) = self.backend.detach(&self.backend_id) {
             tracing::warn!("Failed to detach session: {e}");
         }
         drop(self.input_tx);
         debug!("Session detached");
+    }
+
+    /// Lazily spawn a companion shell pane in the same cwd.
+    ///
+    /// Uses `$SHELL` (fallback `/bin/sh`) as the command.
+    /// The window name uses `tbs-` prefix to distinguish from Claude's `tb-` windows.
+    pub fn ensure_shell_pane(&mut self, rows: u16, cols: u16) -> Result<()> {
+        if self.shell_pane.is_some() {
+            return Ok(());
+        }
+
+        let shell_cmd = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let window_name = format!("tbs-{}", self.info.name);
+
+        let spawned = self.backend.spawn(
+            &window_name,
+            &shell_cmd,
+            &[],
+            self.info.cwd.as_deref(),
+            rows,
+            cols,
+        )?;
+
+        let (state, backend_id) = Self::wire_up(
+            rows,
+            cols,
+            SessionIo {
+                output: spawned.output,
+                input: spawned.input,
+                initial_screen: spawned.initial_screen,
+                backend_id: spawned.backend_id,
+            },
+        );
+
+        self.info.shell_backend_id = Some(backend_id.clone());
+        self.shell_pane = Some(ShellPane::from_wired(state, backend_id));
+
+        debug!(session_id = %self.info.id, "Spawned shell pane");
+        Ok(())
+    }
+
+    /// Re-adopt an existing shell pane from a backend_id (for restore on restart).
+    pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+        let adopted = self.backend.adopt(backend_id, rows, cols)?;
+
+        let (state, bid) = Self::wire_up(
+            rows,
+            cols,
+            SessionIo {
+                output: adopted.output,
+                input: adopted.input,
+                initial_screen: adopted.initial_screen,
+                backend_id: backend_id.to_string(),
+            },
+        );
+
+        self.info.shell_backend_id = Some(bid.clone());
+        self.shell_pane = Some(ShellPane::from_wired(state, bid));
+
+        debug!(session_id = %self.info.id, backend_id = %backend_id, "Adopted shell pane");
+        Ok(())
+    }
+
+    /// Kill the shell pane if it exists.
+    fn kill_shell_pane(&self) {
+        if let Some(shell) = &self.shell_pane {
+            if let Err(e) = self.backend.kill(&shell.backend_id) {
+                tracing::warn!("Failed to kill shell pane: {e}");
+            }
+        }
     }
 
     /// Create a lightweight stub for unit tests (no real backend process).
@@ -453,6 +571,7 @@ impl Session {
             backend: Arc::clone(backend),
             exited: Arc::new(AtomicBool::new(false)),
             last_output_at: Arc::new(AtomicU64::new(now_millis())),
+            shell_pane: None,
         }
     }
 }

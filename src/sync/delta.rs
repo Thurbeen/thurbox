@@ -178,6 +178,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -206,6 +207,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -237,6 +239,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -254,6 +257,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -283,6 +287,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -300,6 +305,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: true, // Marked as deleted
             tombstone_at: Some(0),
         };
@@ -346,6 +352,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
@@ -360,6 +367,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
@@ -378,6 +386,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
@@ -393,6 +402,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: true,
             tombstone_at: Some(0),
         });
@@ -408,6 +418,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
@@ -437,6 +448,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -454,6 +466,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -484,6 +497,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -501,6 +515,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -528,6 +543,7 @@ mod tests {
             cwd: Some(PathBuf::from("/home/user")),
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -545,6 +561,7 @@ mod tests {
             cwd: Some(PathBuf::from("/home/user/project")), // Changed
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -578,6 +595,7 @@ mod tests {
                 worktree_path: PathBuf::from("/repo/.git/worktrees/old"),
                 branch: "old-branch".to_string(),
             }],
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -599,6 +617,7 @@ mod tests {
                 worktree_path: PathBuf::from("/repo/.git/worktrees/new"),
                 branch: "new-branch".to_string(),
             }],
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -632,6 +651,7 @@ mod tests {
                 worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
                 branch: "feat".to_string(),
             }],
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
@@ -659,6 +679,7 @@ mod tests {
                     branch: "feat".to_string(),
                 },
             ],
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
@@ -684,6 +705,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -701,6 +723,7 @@ mod tests {
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -728,6 +751,7 @@ mod tests {
             cwd: Some(PathBuf::from("/home/user")),
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -745,6 +769,7 @@ mod tests {
             cwd: Some(PathBuf::from("/home/user")),
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -773,6 +798,7 @@ mod tests {
             cwd: Some(PathBuf::from("/repo1")),
             additional_dirs: vec![PathBuf::from("/repo2")],
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
@@ -789,6 +815,7 @@ mod tests {
             cwd: Some(PathBuf::from("/repo1")),
             additional_dirs: vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")],
             worktrees: Vec::new(),
+            shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
         });
