@@ -831,13 +831,6 @@ impl App {
             }
         }
 
-        // Clean up worktrees if present
-        for wt in &session.info.worktrees {
-            if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
-                error!("Failed to remove worktree: {e}");
-            }
-        }
-
         // Soft-delete in DB
         if let Err(e) = self.db.soft_delete_session(session_id) {
             error!("Failed to soft-delete session in DB: {e}");
@@ -1618,12 +1611,6 @@ impl App {
         // Handle removed sessions (deleted by other instances)
         for session_id in delta.removed_sessions {
             if let Some(pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
-                // Clean up worktrees if present
-                for wt in &self.sessions[pos].info.worktrees {
-                    if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
-                        error!("Failed to remove worktree for deleted session: {e}");
-                    }
-                }
                 self.sessions.remove(pos);
                 if self.active_index >= self.sessions.len() && self.active_index > 0 {
                     self.active_index -= 1;
