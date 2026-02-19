@@ -44,6 +44,30 @@ const SYNC_CONFLICT_PROMPT: &str = "Please sync this worktree with main. Run: gi
 /// At ~10ms per tick, 10 ticks ≈ 100ms — enough for the app to process the pasted text.
 const DEFERRED_INPUT_DELAY_TICKS: u64 = 10;
 
+/// MCP tool names auto-allowed in the admin session so Claude can manage
+/// Thurbox without repeated permission prompts.
+const ADMIN_MCP_TOOLS: &[&str] = &[
+    "mcp__thurbox__list_projects",
+    "mcp__thurbox__get_project",
+    "mcp__thurbox__create_project",
+    "mcp__thurbox__update_project",
+    "mcp__thurbox__delete_project",
+    "mcp__thurbox__list_roles",
+    "mcp__thurbox__set_roles",
+    "mcp__thurbox__list_sessions",
+    "mcp__thurbox__get_session",
+    "mcp__thurbox__delete_session",
+    "mcp__thurbox__restart_session",
+];
+
+/// Build `RolePermissions` with all admin MCP tools pre-allowed.
+fn admin_mcp_permissions() -> RolePermissions {
+    RolePermissions {
+        allowed_tools: ADMIN_MCP_TOOLS.iter().map(|s| s.to_string()).collect(),
+        ..RolePermissions::default()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleEditorView {
     List,
@@ -670,6 +694,7 @@ impl App {
     fn spawn_admin_session(&mut self, admin_dir: PathBuf) {
         let config = SessionConfig {
             cwd: Some(admin_dir),
+            permissions: admin_mcp_permissions(),
             ..SessionConfig::default()
         };
         self.do_spawn_session("admin".to_string(), &config, Vec::new(), Some(0));
@@ -2351,13 +2376,17 @@ impl App {
     }
 
     /// Resolve a role name to its permissions for a specific project.
+    /// Admin projects always get the hardcoded MCP tool permissions.
     fn resolve_role_permissions_for_project(
         &self,
         role_name: &str,
         project_index: usize,
     ) -> RolePermissions {
-        self.projects
-            .get(project_index)
+        let project = self.projects.get(project_index);
+        if project.is_some_and(|p| p.is_admin) {
+            return admin_mcp_permissions();
+        }
+        project
             .and_then(|project| {
                 project
                     .config
@@ -5254,5 +5283,34 @@ mod tests {
 
         let perms = app.resolve_role_permissions_for_project("any-role", 999);
         assert_eq!(perms, RolePermissions::default());
+    }
+
+    #[test]
+    fn admin_mcp_permissions_contains_all_tools() {
+        let perms = super::admin_mcp_permissions();
+        assert_eq!(perms.allowed_tools.len(), 11);
+        assert!(perms
+            .allowed_tools
+            .iter()
+            .all(|t| t.starts_with("mcp__thurbox__")));
+        assert!(perms.permission_mode.is_none());
+        assert!(perms.disallowed_tools.is_empty());
+    }
+
+    #[test]
+    fn resolve_role_permissions_returns_admin_tools_for_admin_project() {
+        let backend = stub_backend();
+        let mut app = App::new(24, 120, backend, test_db());
+        let admin_project = ProjectInfo::new_admin(ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        });
+        app.projects.push(admin_project);
+
+        let perms = app.resolve_role_permissions_for_project("developer", 0);
+        assert_eq!(perms, super::admin_mcp_permissions());
     }
 }
