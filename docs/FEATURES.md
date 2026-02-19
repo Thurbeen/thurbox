@@ -549,6 +549,121 @@ project exists at index 0 and `.mcp.json` is up-to-date.
 
 ---
 
+## Theme System
+
+All UI colors are centralized in `src/ui/theme.rs` via semantic
+constants on a `Theme` struct. Widget files reference `Theme::ACCENT`,
+`Theme::TEXT_PRIMARY`, etc. instead of hard-coded `Color::*` values.
+
+### Why centralized?
+
+- ~50 color references were scattered across 13+ widget files.
+  Changing the accent color required editing every file.
+- Semantic names (`ACCENT`, `STATUS_BUSY`, `BORDER_FOCUSED`)
+  make the intent clear at each call site.
+- A single file enables future theming support (dark/light/custom)
+  without touching widget code.
+
+### Color categories
+
+| Category | Constants | Purpose |
+|----------|-----------|---------|
+| Accent | `ACCENT` | Focused borders, selected items, highlights |
+| Status | `STATUS_BUSY/WAITING/IDLE/ERROR` | Session status indicators |
+| Text | `TEXT_PRIMARY/SECONDARY/MUTED` | Three-level text hierarchy |
+| Borders | `BORDER_FOCUSED/UNFOCUSED` | Panel border states |
+| Domain | `ROLE_NAME/ADMIN_BADGE/BRANCH_NAME` | Semantic domain colors |
+| Hints | `KEYBIND_HINT/TOOL_ALLOWED/TOOL_DISALLOWED` | Interactive hints |
+
+Composite style methods (`focused_title()`, `keybind()`, `cursor()`,
+etc.) combine colors with modifiers for common patterns.
+
+---
+
+## Focus Levels
+
+Panels use a tri-state focus system (`Focused`, `Active`, `Inactive`)
+for clear navigation feedback.
+
+| Level | Border | Title | Meaning |
+|-------|--------|-------|---------|
+| `Focused` | Thick cyan | Bold cyan | Receiving input |
+| `Active` | Plain cyan | Cyan text | Contextually relevant |
+| `Inactive` | Plain gray | Gray text | Background |
+
+### Focus mapping
+
+| `InputFocus` | Projects | Sessions | Terminal |
+|---|---|---|---|
+| `ProjectList` | Focused | Inactive | Inactive |
+| `SessionList` | Active | Focused | Inactive |
+| `Terminal` | Inactive | Active | Focused |
+
+---
+
+## Status Messages
+
+Status messages replace the previous `error_message: Option<String>`.
+Messages have a severity level and auto-dismiss after 5 seconds.
+
+| Level | Badge | Text color | Use case |
+|-------|-------|------------|----------|
+| `Error` | Red `ERROR` | Red | Validation failures, operation errors |
+| `Warning` | Yellow `WARN` | Yellow | Non-blocking issues |
+| `Info` | Cyan `INFO` | Gray | Success feedback ("Project saved") |
+
+Positive feedback is shown for: project create/edit/delete, role save,
+session start/restart.
+
+---
+
+## Modal Breadcrumbs
+
+Nested modals (up to 3 deep) show a breadcrumb trail at the top:
+
+```text
+ Edit "myproject" > Roles > "coder"
+ Edit "myproject" > MCP Servers > "thurbox-mcp"
+```
+
+This provides navigation context without consuming extra screen space.
+
+---
+
+## Unsaved Changes Guard
+
+When pressing `Esc` in the role or MCP editor with modified fields,
+a confirmation overlay asks "Discard changes? y/n". This prevents
+accidental loss of edits.
+
+Dirty detection uses snapshot comparison: field values are captured
+when the editor opens and compared on `Esc`. If unchanged, the editor
+closes immediately without prompting.
+
+---
+
+## Empty Terminal State
+
+When no sessions exist, the terminal panel shows a centered hint box:
+
+```text
+┌───────────────────────────────┐
+│ No active sessions            │
+│                               │
+│   Ctrl+N  New session         │
+│   F1      Help                │
+└───────────────────────────────┘
+```
+
+---
+
+## Info Panel Separators
+
+Section boundaries in the info panel use styled `──────` separator
+lines instead of blank lines, improving visual structure.
+
+---
+
 ## Planned Features
 
 Directional intent, not commitments.

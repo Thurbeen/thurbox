@@ -6,10 +6,11 @@ mod state;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
+use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
@@ -240,6 +241,7 @@ pub enum StatusLevel {
 pub struct StatusMessage {
     pub text: String,
     pub level: StatusLevel,
+    pub created_at: std::time::Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,6 +322,12 @@ pub struct App {
     pub(crate) mcp_editor_args: ToolListState,
     pub(crate) mcp_editor_env: ToolListState,
     pub(crate) mcp_editor_editing_index: Option<usize>,
+    /// Snapshot of role editor fields at open time for dirty detection.
+    pub(crate) role_editor_snapshot: Option<EditorSnapshot>,
+    /// Snapshot of MCP editor fields at open time for dirty detection.
+    pub(crate) mcp_editor_snapshot: Option<EditorSnapshot>,
+    /// Whether the "Discard unsaved changes?" confirmation is showing.
+    pub(crate) show_discard_confirmation: bool,
     /// Inter-instance DB sync (polls for changes from other thurbox instances).
     sync_state: SyncState,
     /// Worktree-to-main git sync (Ctrl+S).
@@ -331,6 +339,12 @@ pub struct App {
     /// Deferred inputs: `(session_id, data, tick_at_which_to_send)`.
     /// Used to introduce a small delay between pasting text and pressing Enter.
     deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
+}
+
+/// Snapshot of editor field values for dirty detection.
+#[derive(Clone, PartialEq)]
+pub(crate) struct EditorSnapshot {
+    pub fields: Vec<String>,
 }
 
 /// Convert a SharedProject to ProjectInfo, preserving the shared state ID.
@@ -560,6 +574,9 @@ impl App {
             mcp_editor_args: ToolListState::new(),
             mcp_editor_env: ToolListState::new(),
             mcp_editor_editing_index: None,
+            role_editor_snapshot: None,
+            mcp_editor_snapshot: None,
+            show_discard_confirmation: false,
             sync_state,
             worktree_sync_in_progress: false,
             worktree_sync_rx: None,
@@ -568,14 +585,6 @@ impl App {
             tick_count: 0,
             deferred_inputs: Vec::new(),
         }
-    }
-
-    fn set_status(&mut self, level: StatusLevel, text: String) {
-        self.status_message = Some(StatusMessage { level, text });
-    }
-
-    fn set_error(&mut self, text: impl Into<String>) {
-        self.set_status(StatusLevel::Error, text.into());
     }
 
     /// Ensure the global admin session and project exist.
@@ -790,6 +799,7 @@ impl App {
         match session.restart(&config, rows, cols) {
             Ok(()) => {
                 self.save_state();
+                self.set_status(StatusLevel::Info, "Session restarted");
             }
             Err(e) => {
                 error!("Failed to restart session: {e}");
@@ -1032,9 +1042,10 @@ impl App {
             }
         }
 
-        self.status_message = None;
+        self.set_status(StatusLevel::Success, "Role saved");
         // Return to edit-project modal (roles field) instead of role list
         self.show_role_editor = false;
+        self.role_editor_snapshot = None;
         self.edit_project_field = EditProjectField::Roles;
     }
 
@@ -1151,6 +1162,7 @@ impl App {
 
         // Close modal and clear inputs
         self.close_add_project_modal();
+        self.set_status(StatusLevel::Info, "Project created");
     }
 
     pub(crate) fn open_edit_project_modal(&mut self) {
@@ -1218,6 +1230,7 @@ impl App {
         self.status_message = None;
 
         self.close_edit_project_modal();
+        self.set_status(StatusLevel::Info, "Project saved");
     }
 
     pub(crate) fn close_edit_project_modal(&mut self) {
@@ -1505,7 +1518,7 @@ impl App {
             .collect();
 
         if worktree_sessions.is_empty() {
-            self.set_status(StatusLevel::Info, "No worktrees to sync".into());
+            self.set_status(StatusLevel::Info, "No worktrees to sync");
             return;
         }
 
@@ -1680,12 +1693,24 @@ impl App {
                 .iter()
                 .map(|&i| &self.sessions[i].info)
                 .collect();
+            let session_elapsed_ms: Vec<u64> = project_session_indices
+                .iter()
+                .map(|&i| self.sessions[i].millis_since_last_output())
+                .collect();
 
             let panel_focus = match self.focus {
                 InputFocus::ProjectList => project_list::LeftPanelFocus::Projects,
                 InputFocus::SessionList | InputFocus::Terminal => {
                     project_list::LeftPanelFocus::Sessions
                 }
+            };
+
+            // Compute tri-state focus levels for each sub-panel
+            use crate::ui::FocusLevel;
+            let (project_focus, session_focus) = match self.focus {
+                InputFocus::ProjectList => (FocusLevel::Focused, FocusLevel::Inactive),
+                InputFocus::SessionList => (FocusLevel::Active, FocusLevel::Focused),
+                InputFocus::Terminal => (FocusLevel::Inactive, FocusLevel::Active),
             };
 
             project_list::render_left_panel(
@@ -1696,8 +1721,11 @@ impl App {
                     active_project: self.active_project_index,
                     sessions: &project_sessions,
                     active_session: self.active_session_in_project(),
+                    session_elapsed_ms: &session_elapsed_ms,
                     focus: panel_focus,
                     panel_focused: self.focus != InputFocus::Terminal,
+                    project_focus,
+                    session_focus,
                 },
             );
         }
@@ -1711,6 +1739,11 @@ impl App {
         }
 
         // Terminal
+        let terminal_focus = match self.focus {
+            InputFocus::Terminal => crate::ui::FocusLevel::Focused,
+            InputFocus::SessionList => crate::ui::FocusLevel::Active,
+            InputFocus::ProjectList => crate::ui::FocusLevel::Inactive,
+        };
         match self.sessions.get(self.active_index) {
             Some(session) => {
                 if let Ok(mut parser) = session.parser.lock() {
@@ -1719,7 +1752,7 @@ impl App {
                         areas.terminal,
                         &mut parser,
                         &session.info,
-                        self.focus == InputFocus::Terminal,
+                        terminal_focus,
                     );
                 }
             }
@@ -1865,6 +1898,7 @@ impl App {
             role_editor_modal::render_role_editor_modal(
                 frame,
                 &role_editor_modal::RoleEditorState {
+                    project_name: self.edit_project_name.value(),
                     name: self.role_editor_name.value(),
                     name_cursor: self.role_editor_name.cursor_pos(),
                     description: self.role_editor_description.value(),
@@ -1894,6 +1928,7 @@ impl App {
             crate::ui::mcp_editor_modal::render_mcp_editor_modal(
                 frame,
                 &crate::ui::mcp_editor_modal::McpEditorState {
+                    project_name: self.edit_project_name.value(),
                     name: self.mcp_editor_name.value(),
                     name_cursor: self.mcp_editor_name.cursor_pos(),
                     command: self.mcp_editor_command.value(),
@@ -1912,6 +1947,34 @@ impl App {
                 },
             );
         }
+
+        // Discard confirmation overlay
+        if self.show_discard_confirmation {
+            let confirm_area = crate::ui::centered_fixed_height_rect(40, 5, frame.area());
+            frame.render_widget(Clear, confirm_area);
+            let block = Block::default()
+                .title(" Unsaved Changes ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Theme::STATUS_ERROR));
+            let inner = block.inner(confirm_area);
+            frame.render_widget(block, confirm_area);
+            let text = Line::from(vec![
+                Span::styled(
+                    " Discard changes? ",
+                    Style::default().fg(Theme::TEXT_PRIMARY),
+                ),
+                Span::styled("y", Theme::keybind()),
+                Span::styled("/", Style::default().fg(Theme::TEXT_MUTED)),
+                Span::styled("n", Theme::keybind()),
+            ]);
+            frame.render_widget(
+                Paragraph::new(text),
+                Rect {
+                    y: inner.y + inner.height / 2,
+                    ..inner
+                },
+            );
+        }
     }
 
     pub fn should_quit(&self) -> bool {
@@ -1925,6 +1988,76 @@ impl App {
         for session in self.sessions {
             session.detach();
         }
+    }
+
+    /// Set status bar message with the given severity level.
+    fn set_status(&mut self, level: StatusLevel, text: impl Into<String>) {
+        self.status_message = Some(StatusMessage {
+            text: text.into(),
+            level,
+            created_at: std::time::Instant::now(),
+        });
+    }
+
+    fn set_error(&mut self, text: impl Into<String>) {
+        self.set_status(StatusLevel::Error, text.into());
+    }
+
+    /// Capture current role editor field values as a snapshot for dirty detection.
+    fn capture_role_editor_snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot {
+            fields: vec![
+                self.role_editor_name.value().to_string(),
+                self.role_editor_description.value().to_string(),
+                self.role_editor_allowed_tools.items.join("\n"),
+                self.role_editor_disallowed_tools.items.join("\n"),
+                self.role_editor_system_prompt.value().to_string(),
+            ],
+        }
+    }
+
+    /// Capture current MCP editor field values as a snapshot for dirty detection.
+    fn capture_mcp_editor_snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot {
+            fields: vec![
+                self.mcp_editor_name.value().to_string(),
+                self.mcp_editor_command.value().to_string(),
+                self.mcp_editor_args.items.join("\n"),
+                self.mcp_editor_env.items.join("\n"),
+            ],
+        }
+    }
+
+    /// Check if the role editor has unsaved changes compared to its snapshot.
+    fn is_role_editor_dirty(&self) -> bool {
+        match &self.role_editor_snapshot {
+            Some(snapshot) => *snapshot != self.capture_role_editor_snapshot(),
+            None => false,
+        }
+    }
+
+    /// Check if the MCP editor has unsaved changes compared to its snapshot.
+    fn is_mcp_editor_dirty(&self) -> bool {
+        match &self.mcp_editor_snapshot {
+            Some(snapshot) => *snapshot != self.capture_mcp_editor_snapshot(),
+            None => false,
+        }
+    }
+
+    /// Close the role editor, clearing snapshot and confirmation state.
+    fn close_role_editor(&mut self) {
+        self.show_role_editor = false;
+        self.role_editor_snapshot = None;
+        self.show_discard_confirmation = false;
+        self.edit_project_field = EditProjectField::Roles;
+    }
+
+    /// Close the MCP editor, clearing snapshot and confirmation state.
+    fn close_mcp_editor(&mut self) {
+        self.show_mcp_editor = false;
+        self.mcp_editor_snapshot = None;
+        self.show_discard_confirmation = false;
+        self.mcp_editor_field = crate::app::mcp_editor_modal::McpEditorField::Name;
     }
 
     /// Persist session state to the SQLite database.
@@ -2310,7 +2443,7 @@ fn render_help_overlay(frame: &mut Frame) {
     let block = Block::default()
         .title(" Keybindings ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Theme::ACCENT));
 
     let help_lines = vec![
         help_section("Navigation (Vim: h/j/k/l)"),
@@ -2355,7 +2488,7 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from(""),
         Line::from(Span::styled(
             "Press Esc to close",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Theme::TEXT_MUTED),
         )),
     ];
 
@@ -2364,23 +2497,13 @@ fn render_help_overlay(frame: &mut Frame) {
 }
 
 fn help_section(title: &str) -> Line<'_> {
-    Line::from(Span::styled(
-        title,
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ))
+    Line::from(Span::styled(title, Theme::section_header()))
 }
 
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
     Line::from(vec![
-        Span::styled(
-            format!("  {key:<16}"),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(desc, Style::default().fg(Color::White)),
+        Span::styled(format!("  {key:<16}"), Theme::keybind()),
+        Span::styled(desc, Style::default().fg(Theme::TEXT_PRIMARY)),
     ])
 }
 
@@ -3212,7 +3335,10 @@ mod tests {
         // Now provide a valid name and submit again
         app.role_editor_name.set("valid-role");
         app.submit_role_editor();
-        assert!(app.status_message.is_none());
+        assert!(app
+            .status_message
+            .as_ref()
+            .map_or(true, |m| m.level != StatusLevel::Error));
         assert_eq!(app.role_editor_roles.len(), 1);
     }
 
@@ -4764,7 +4890,7 @@ mod tests {
     #[test]
     fn set_status_creates_typed_status() {
         let mut app = App::new(24, 80, stub_backend(), test_db());
-        app.set_status(StatusLevel::Success, "all good".into());
+        app.set_status(StatusLevel::Success, "all good");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Success);
         assert_eq!(msg.text, "all good");
@@ -4774,7 +4900,7 @@ mod tests {
     fn set_status_replaces_previous() {
         let mut app = App::new(24, 80, stub_backend(), test_db());
         app.set_error("old error");
-        app.set_status(StatusLevel::Info, "new info".into());
+        app.set_status(StatusLevel::Info, "new info");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Info);
         assert_eq!(msg.text, "new info");

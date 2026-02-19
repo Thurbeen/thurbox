@@ -13,54 +13,80 @@ pub mod role_selector_modal;
 pub mod session_mode_modal;
 pub mod status_bar;
 pub mod terminal_view;
+pub mod theme;
 pub mod worktree_name_modal;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
     Frame,
 };
 
 use crate::session::SessionStatus;
+use theme::Theme;
 
 pub fn status_color(status: SessionStatus) -> Color {
     match status {
-        SessionStatus::Busy => Color::Green,
-        SessionStatus::Waiting => Color::Yellow,
-        SessionStatus::Idle => Color::DarkGray,
-        SessionStatus::Error => Color::Red,
+        SessionStatus::Busy => Theme::STATUS_BUSY,
+        SessionStatus::Waiting => Theme::STATUS_WAITING,
+        SessionStatus::Idle => Theme::STATUS_IDLE,
+        SessionStatus::Error => Theme::STATUS_ERROR,
     }
 }
 
-/// Build a [`Block`] with focused or unfocused styling.
-///
-/// Focused: thick borders in cyan with a highlighted title badge.
-/// Unfocused: plain borders in gray with a dimmed title.
-pub fn focused_block(title_text: &str, focused: bool) -> Block<'_> {
-    if focused {
-        Block::default()
-            .title(Line::from(Span::styled(
-                title_text,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )))
+/// Tri-state focus level for panels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusLevel {
+    /// Receiving input: thick accent border + badge title.
+    Focused,
+    /// Contextually relevant: plain accent border + accent title text.
+    Active,
+    /// Background: plain dark-gray border + dark-gray title.
+    Inactive,
+}
+
+/// Build a [`Block`] with tri-state focus styling.
+pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
+    match level {
+        FocusLevel::Focused => Block::default()
+            .title(Line::from(Span::styled(title_text, Theme::focused_title())))
             .borders(Borders::ALL)
             .border_type(BorderType::Thick)
-            .border_style(Style::default().fg(Color::Cyan))
-    } else {
-        Block::default()
+            .border_style(Style::default().fg(Theme::BORDER_FOCUSED)),
+        FocusLevel::Active => Block::default()
             .title(Line::from(Span::styled(
                 title_text,
-                Style::default().fg(Color::Gray),
+                Style::default().fg(Theme::ACCENT),
             )))
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(Color::Gray))
+            .border_style(Style::default().fg(Theme::ACCENT)),
+        FocusLevel::Inactive => Block::default()
+            .title(Line::from(Span::styled(
+                title_text,
+                Theme::unfocused_title(),
+            )))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED)),
     }
+}
+
+/// Build a [`Block`] with focused or unfocused styling (backward compat).
+///
+/// Focused: thick borders in accent color with a highlighted title badge.
+/// Unfocused: plain borders in gray with a dimmed title.
+pub fn focused_block(title_text: &str, focused: bool) -> Block<'_> {
+    focus_block(
+        title_text,
+        if focused {
+            FocusLevel::Focused
+        } else {
+            FocusLevel::Inactive
+        },
+    )
 }
 
 /// Create a centered rectangle with a fixed width percentage and a fixed height in lines.
@@ -116,7 +142,11 @@ pub fn render_text_field_with_suggestion(
     focused: bool,
     suggestion: Option<&str>,
 ) {
-    let border_color = if focused { Color::Cyan } else { Color::Gray };
+    let border_color = if focused {
+        Theme::BORDER_FOCUSED
+    } else {
+        Theme::BORDER_UNFOCUSED
+    };
 
     let block = Block::default()
         .title(format!(" {label} "))
@@ -163,7 +193,7 @@ pub fn render_text_field_with_suggestion(
         let mut spans = Vec::new();
 
         if has_left_overflow {
-            spans.push(Span::styled("◀", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("◀", Style::default().fg(Theme::TEXT_MUTED)));
         }
 
         let visible_end = (content_start + content_width).min(chars.len());
@@ -181,14 +211,17 @@ pub fn render_text_field_with_suggestion(
             let after_len = after.len();
 
             if !before.is_empty() {
-                spans.push(Span::styled(before, Style::default().fg(Color::White)));
+                spans.push(Span::styled(
+                    before,
+                    Style::default().fg(Theme::TEXT_PRIMARY),
+                ));
             }
-            spans.push(Span::styled(
-                cursor_char,
-                Style::default().fg(Color::Black).bg(Color::White),
-            ));
+            spans.push(Span::styled(cursor_char, Theme::cursor()));
             if !after.is_empty() {
-                spans.push(Span::styled(after, Style::default().fg(Color::White)));
+                spans.push(Span::styled(
+                    after,
+                    Style::default().fg(Theme::TEXT_PRIMARY),
+                ));
             }
 
             if !suggestion_text.is_empty() {
@@ -200,17 +233,20 @@ pub fn render_text_field_with_suggestion(
                 if remaining > 0 {
                     let sug: String = suggestion_text.chars().take(remaining).collect();
                     if !sug.is_empty() {
-                        spans.push(Span::styled(sug, Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(sug, Style::default().fg(Theme::TEXT_MUTED)));
                     }
                 }
             }
         } else {
             let visible: String = chars[content_start..visible_end].iter().collect();
-            spans.push(Span::styled(visible, Style::default().fg(Color::White)));
+            spans.push(Span::styled(
+                visible,
+                Style::default().fg(Theme::TEXT_PRIMARY),
+            ));
         }
 
         if has_right_overflow {
-            spans.push(Span::styled("▶", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("▶", Style::default().fg(Theme::TEXT_MUTED)));
         }
 
         Line::from(spans)
@@ -218,11 +254,14 @@ pub fn render_text_field_with_suggestion(
         if chars.len() > width {
             let truncated: String = chars[..width - 1].iter().collect();
             Line::from(vec![
-                Span::styled(truncated, Style::default().fg(Color::White)),
-                Span::styled("…", Style::default().fg(Color::DarkGray)),
+                Span::styled(truncated, Style::default().fg(Theme::TEXT_PRIMARY)),
+                Span::styled("…", Style::default().fg(Theme::TEXT_MUTED)),
             ])
         } else {
-            Line::from(Span::styled(value, Style::default().fg(Color::White)))
+            Line::from(Span::styled(
+                value,
+                Style::default().fg(Theme::TEXT_PRIMARY),
+            ))
         }
     } else {
         Line::from("")

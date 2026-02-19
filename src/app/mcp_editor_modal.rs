@@ -24,6 +24,7 @@ impl App {
         self.mcp_editor_args.reset();
         self.mcp_editor_env.reset();
         self.mcp_editor_field = McpEditorField::Name;
+        self.mcp_editor_snapshot = Some(self.capture_mcp_editor_snapshot());
     }
 
     /// Populate the MCP editor from an existing server config.
@@ -41,6 +42,7 @@ impl App {
         self.mcp_editor_env.load(&env_strings);
 
         self.mcp_editor_field = McpEditorField::Name;
+        self.mcp_editor_snapshot = Some(self.capture_mcp_editor_snapshot());
     }
 
     /// Validate and save the MCP editor state to the working copy.
@@ -89,6 +91,7 @@ impl App {
         }
 
         self.show_mcp_editor = false;
+        self.mcp_editor_snapshot = None;
         self.mcp_editor_field = McpEditorField::Name;
     }
 }

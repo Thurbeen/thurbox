@@ -6,7 +6,9 @@ use ratatui::{
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
 
-use super::focused_block;
+use super::focus_block;
+use super::theme::Theme;
+use super::FocusLevel;
 use crate::session::SessionInfo;
 
 pub fn render_terminal(
@@ -14,7 +16,7 @@ pub fn render_terminal(
     area: Rect,
     parser: &mut vt100::Parser,
     info: &SessionInfo,
-    focused: bool,
+    level: FocusLevel,
 ) {
     let scroll_offset = parser.screen().scrollback();
 
@@ -44,11 +46,11 @@ pub fn render_terminal(
         }
     };
 
-    let block = focused_block(&title, focused);
+    let block = focus_block(&title, level);
 
     let mut pseudo_term = PseudoTerminal::new(parser.screen())
         .block(block)
-        .style(Style::default().fg(Color::White).bg(Color::Reset));
+        .style(Style::default().fg(Theme::TEXT_PRIMARY).bg(Color::Reset));
 
     // Hide cursor when scrolled up
     if scroll_offset > 0 {
@@ -70,8 +72,8 @@ pub fn render_terminal(
         });
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .thumb_style(Style::default().fg(Color::Cyan))
-            .track_style(Style::default().fg(Color::DarkGray));
+            .thumb_style(Style::default().fg(Theme::ACCENT))
+            .track_style(Style::default().fg(Theme::TEXT_MUTED));
 
         // Invert: offset 0 (bottom) → position at max, offset max (top) → position at 0
         let position = total_scrollback.saturating_sub(scroll_offset);
@@ -115,14 +117,62 @@ fn highlight_urls(frame: &mut Frame, area: Rect, screen: &vt100::Screen) {
 }
 
 pub fn render_empty_terminal(frame: &mut Frame, area: Rect) {
+    use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+    use ratatui::text::{Line, Span};
+
     let block = Block::default()
         .title(" No Session ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(Theme::TEXT_MUTED));
 
-    let text = Paragraph::new("Press Ctrl+N to create a new session")
-        .block(block)
-        .style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    frame.render_widget(text, area);
+    // Centered hint box
+    let box_width: u16 = 33;
+    let box_height: u16 = 6;
+
+    if inner.width >= box_width && inner.height >= box_height {
+        let vert = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(box_height),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+        let horiz = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(box_width),
+                Constraint::Min(0),
+            ])
+            .split(vert[1]);
+        let center = horiz[1];
+
+        let hint_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED));
+
+        let hint_inner = hint_block.inner(center);
+        frame.render_widget(hint_block, center);
+
+        let lines = vec![
+            Line::from(Span::styled(
+                "No active sessions",
+                Style::default().fg(Theme::TEXT_SECONDARY),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Ctrl+N", Theme::keybind()),
+                Span::styled("  New session", Style::default().fg(Theme::TEXT_MUTED)),
+            ]),
+            Line::from(vec![
+                Span::styled("  F1    ", Theme::keybind()),
+                Span::styled("  Help", Style::default().fg(Theme::TEXT_MUTED)),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines).alignment(Alignment::Left), hint_inner);
+    }
 }

@@ -1,11 +1,12 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
+use super::theme::Theme;
 use crate::project::ProjectInfo;
 use crate::session::{RoleConfig, SessionInfo};
 
@@ -18,18 +19,18 @@ pub fn render_info_panel(
     let block = Block::default()
         .title(" Info ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
+        .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED));
 
     let mut lines = Vec::new();
 
     // ── Project section ──
     if let Some(proj) = project {
         let project_line = vec![
-            Span::styled("Project: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Project: ", Theme::label()),
             Span::styled(
                 &proj.config.name,
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
         ];
@@ -37,30 +38,27 @@ pub fn render_info_panel(
 
         if proj.config.repos.len() == 1 {
             lines.push(Line::from(vec![
-                Span::styled("Repo: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Repo: ", Theme::label()),
                 Span::styled(
                     proj.config.repos[0].display().to_string(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Theme::TEXT_MUTED),
                 ),
             ]));
         } else {
-            lines.push(Line::from(Span::styled(
-                "Repos:",
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled("Repos:", Theme::label())));
             for repo in &proj.config.repos {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", repo.display()),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Theme::TEXT_MUTED),
                 )));
             }
         }
 
         lines.push(Line::from(vec![
-            Span::styled("Sessions: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Sessions: ", Theme::label()),
             Span::styled(
                 proj.session_ids.len().to_string(),
-                Style::default().fg(Color::White),
+                Style::default().fg(Theme::TEXT_PRIMARY),
             ),
         ]));
 
@@ -75,20 +73,20 @@ pub fn render_info_panel(
                 .join(", ")
         };
         lines.push(Line::from(vec![
-            Span::styled("Roles: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(roles_text, Style::default().fg(Color::White)),
+            Span::styled("Roles: ", Theme::label()),
+            Span::styled(roles_text, Style::default().fg(Theme::TEXT_PRIMARY)),
         ]));
 
-        lines.push(Line::from(""));
+        lines.push(separator());
     }
 
     // ── Session section ──
     lines.push(Line::from(vec![
-        Span::styled("Name: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&info.name, Style::default().fg(Color::White)),
+        Span::styled("Name: ", Theme::label()),
+        Span::styled(&info.name, Style::default().fg(Theme::TEXT_PRIMARY)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Status: ", Theme::label()),
         Span::styled(
             format!("{} {}", info.status.icon(), info.status),
             Style::default()
@@ -97,80 +95,73 @@ pub fn render_info_panel(
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("Role: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Role: ", Theme::label()),
         Span::styled(
             &info.role,
             Style::default()
-                .fg(Color::Magenta)
+                .fg(Theme::ROLE_NAME)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(info.id.to_string(), Style::default().fg(Color::DarkGray)),
+        Span::styled("ID: ", Theme::label()),
+        Span::styled(info.id.to_string(), Style::default().fg(Theme::TEXT_MUTED)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("Claude: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Claude: ", Theme::label()),
         Span::styled(
             info.claude_session_id.as_deref().unwrap_or("(none)"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Theme::TEXT_MUTED),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("Backend: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Backend: ", Theme::label()),
         Span::styled(
             info.backend_id.as_deref().unwrap_or("(none)"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Theme::TEXT_MUTED),
         ),
     ]));
 
     // ── Directories section ──
     if info.cwd.is_some() || !info.additional_dirs.is_empty() {
-        lines.push(Line::from(""));
+        lines.push(separator());
         lines.push(Line::from(Span::styled(
             "Directories",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Theme::section_header(),
         )));
         if let Some(cwd) = &info.cwd {
             lines.push(Line::from(Span::styled(
                 format!("  {} (cwd)", cwd.display()),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::TEXT_MUTED),
             )));
         }
         for dir in &info.additional_dirs {
             lines.push(Line::from(Span::styled(
                 format!("  {}", dir.display()),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::TEXT_MUTED),
             )));
         }
     }
 
     // ── Worktrees section ──
     if !info.worktrees.is_empty() {
-        lines.push(Line::from(""));
+        lines.push(separator());
         let header = if info.worktrees.len() == 1 {
             "Worktree"
         } else {
             "Worktrees"
         };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
+        lines.push(Line::from(Span::styled(header, Theme::section_header())));
         for wt in &info.worktrees {
             lines.push(Line::from(vec![
-                Span::styled("Branch: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&wt.branch, Style::default().fg(Color::Green)),
+                Span::styled("Branch: ", Theme::label()),
+                Span::styled(&wt.branch, Style::default().fg(Theme::BRANCH_NAME)),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("Path: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Path: ", Theme::label()),
                 Span::styled(
                     wt.worktree_path.display().to_string(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Theme::TEXT_MUTED),
                 ),
             ]));
         }
@@ -178,44 +169,45 @@ pub fn render_info_panel(
 
     // ── Role Details section ──
     if let Some(role_config) = project.and_then(|p| find_role(&p.config.roles, &info.role)) {
-        lines.push(Line::from(""));
+        lines.push(separator());
         lines.push(Line::from(Span::styled(
             "Role Details",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Theme::section_header(),
         )));
 
         if !role_config.description.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled("Desc: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&role_config.description, Style::default().fg(Color::White)),
+                Span::styled("Desc: ", Theme::label()),
+                Span::styled(
+                    &role_config.description,
+                    Style::default().fg(Theme::TEXT_PRIMARY),
+                ),
             ]));
         }
 
         if let Some(mode) = &role_config.permissions.permission_mode {
             lines.push(Line::from(vec![
-                Span::styled("Mode: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(mode, Style::default().fg(Color::Yellow)),
+                Span::styled("Mode: ", Theme::label()),
+                Span::styled(mode, Style::default().fg(Theme::KEYBIND_HINT)),
             ]));
         }
 
         if !role_config.permissions.allowed_tools.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled("Allowed: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Allowed: ", Theme::label()),
                 Span::styled(
                     role_config.permissions.allowed_tools.join(", "),
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(Theme::TOOL_ALLOWED),
                 ),
             ]));
         }
 
         if !role_config.permissions.disallowed_tools.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled("Disallowed: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Disallowed: ", Theme::label()),
                 Span::styled(
                     role_config.permissions.disallowed_tools.join(", "),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(Theme::TOOL_DISALLOWED),
                 ),
             ]));
         }
@@ -225,6 +217,13 @@ pub fn render_info_panel(
         .block(block)
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+fn separator<'a>() -> Line<'a> {
+    Line::from(Span::styled(
+        "──────────────────────",
+        Style::default().fg(Theme::BORDER_UNFOCUSED),
+    ))
 }
 
 fn find_role<'a>(roles: &'a [RoleConfig], name: &str) -> Option<&'a RoleConfig> {

@@ -441,3 +441,33 @@ server can operate without a terminal or tmux.
 
 **See also**: [MCP_ROLES.md](MCP_ROLES.md) for role configuration
 via the MCP server (permission modes, tool patterns, examples).
+
+---
+
+## ADR-14: Centralized Theme Module
+
+**Choice**: All UI colors are defined as associated constants on a
+`Theme` struct in `src/ui/theme.rs`. Widget files import `Theme::*`
+instead of using `Color::Cyan`, `Color::Gray`, etc. directly.
+
+**Why**: ~50 hard-coded color values were scattered across 13+ widget
+files. This made visual consistency difficult to maintain and made
+any color scheme change require editing every file. Semantic names
+(`ACCENT`, `STATUS_BUSY`, `TEXT_MUTED`) clarify intent at each call
+site and enable future theming (dark/light/custom) with a single
+module swap.
+
+**Design**: `Theme` uses `const` associated items rather than a
+global singleton or trait. This keeps it zero-cost (no runtime
+dispatch, no initialization), works in const contexts, and is
+trivially testable. Composite styles (e.g., `focused_title()`) are
+`const fn` methods that combine colors with modifiers.
+
+**Rejected**:
+
+- *Global singleton / `lazy_static`* — runtime overhead, mutex
+  contention in render path, unnecessary for static color values.
+- *Trait-based theming* — over-engineering for the current need.
+  Can be layered on top later if user-selectable themes are added.
+- *CSS-like stylesheets* — no Rust TUI framework supports this
+  natively; would require a custom parser and resolver.

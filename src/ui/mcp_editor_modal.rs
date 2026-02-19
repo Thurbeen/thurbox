@@ -1,16 +1,18 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
+use super::theme::Theme;
 use super::{centered_fixed_height_rect, render_text_field};
 use crate::app::mcp_editor_modal::McpEditorField;
 use crate::ui::role_editor_modal::ToolListMode;
 
 pub struct McpEditorState<'a> {
+    pub project_name: &'a str,
     pub name: &'a str,
     pub name_cursor: usize,
     pub command: &'a str,
@@ -40,7 +42,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
         state.focused_field == McpEditorField::Env,
     );
 
-    let content_height = 3 + 3 + args_rows + env_rows + 1;
+    let content_height = 1 + 3 + 3 + args_rows + env_rows + 1; // +1 breadcrumb
     let max_height = frame.area().height.saturating_sub(4);
     let height = (content_height + 2).min(max_height);
     let area = centered_fixed_height_rect(60, height, frame.area());
@@ -50,7 +52,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
     let block = Block::default()
         .title(" Edit MCP Server ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Theme::ACCENT));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -58,6 +60,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),         // Breadcrumb
             Constraint::Length(3),         // Name
             Constraint::Length(3),         // Command
             Constraint::Length(args_rows), // Args
@@ -66,9 +69,27 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
         ])
         .split(inner);
 
+    // Breadcrumb
+    let mcp_label = if state.name.is_empty() {
+        "New".to_string()
+    } else {
+        format!("\"{}\"", state.name)
+    };
+    let breadcrumb = Line::from(vec![
+        Span::styled(
+            format!(" Edit \"{}\"", state.project_name),
+            Style::default().fg(Theme::TEXT_MUTED),
+        ),
+        Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled("MCP Servers", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(mcp_label, Style::default().fg(Theme::ACCENT)),
+    ]);
+    frame.render_widget(Paragraph::new(breadcrumb), chunks[0]);
+
     render_text_field(
         frame,
-        chunks[0],
+        chunks[1],
         "Name",
         state.name,
         state.name_cursor,
@@ -77,7 +98,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
 
     render_text_field(
         frame,
-        chunks[1],
+        chunks[2],
         "Command",
         state.command,
         state.command_cursor,
@@ -86,7 +107,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
 
     super::role_editor_modal::render_tool_list(
         frame,
-        chunks[2],
+        chunks[3],
         "Args",
         state.args,
         state.args_index,
@@ -98,7 +119,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
 
     super::role_editor_modal::render_tool_list(
         frame,
-        chunks[3],
+        chunks[4],
         "Env (KEY=VALUE)",
         state.env,
         state.env_index,
@@ -121,33 +142,33 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
 
     let footer = if is_list_field && list_mode == ToolListMode::Adding {
         Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter", Theme::keybind()),
+            Span::styled(" confirm  ", Theme::keybind_desc()),
+            Span::styled("Esc", Theme::keybind()),
+            Span::styled(" cancel", Theme::keybind_desc()),
         ])
     } else if is_list_field {
         Line::from(vec![
-            Span::styled("a", Style::default().fg(Color::Yellow)),
-            Span::styled(" add  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("d", Style::default().fg(Color::Yellow)),
-            Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" discard", Style::default().fg(Color::DarkGray)),
+            Span::styled("a", Theme::keybind()),
+            Span::styled(" add  ", Theme::keybind_desc()),
+            Span::styled("d", Theme::keybind()),
+            Span::styled(" delete  ", Theme::keybind_desc()),
+            Span::styled("Tab", Theme::keybind()),
+            Span::styled(" next  ", Theme::keybind_desc()),
+            Span::styled("Enter", Theme::keybind()),
+            Span::styled(" save  ", Theme::keybind_desc()),
+            Span::styled("Esc", Theme::keybind()),
+            Span::styled(" discard", Theme::keybind_desc()),
         ])
     } else {
         Line::from(vec![
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" discard", Style::default().fg(Color::DarkGray)),
+            Span::styled("Tab", Theme::keybind()),
+            Span::styled(" next  ", Theme::keybind_desc()),
+            Span::styled("Enter", Theme::keybind()),
+            Span::styled(" save  ", Theme::keybind_desc()),
+            Span::styled("Esc", Theme::keybind()),
+            Span::styled(" discard", Theme::keybind_desc()),
         ])
     };
-    frame.render_widget(Paragraph::new(footer), chunks[4]);
+    frame.render_widget(Paragraph::new(footer), chunks[5]);
 }

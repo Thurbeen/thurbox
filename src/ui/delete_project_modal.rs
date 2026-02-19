@@ -1,12 +1,13 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::theme::Theme;
 
 pub struct DeleteProjectModalState<'a> {
     pub project_name: &'a str,
@@ -23,7 +24,7 @@ pub fn render_delete_project_modal(frame: &mut Frame, state: &DeleteProjectModal
     let block = Block::default()
         .title(" Delete Project ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(Theme::DANGER));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -44,7 +45,9 @@ pub fn render_delete_project_modal(frame: &mut Frame, state: &DeleteProjectModal
     let warning = Paragraph::new(vec![
         Line::from(Span::styled(
             "⚠ Delete Project",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Theme::DANGER)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
@@ -52,7 +55,7 @@ pub fn render_delete_project_modal(frame: &mut Frame, state: &DeleteProjectModal
             Span::styled(
                 state.project_name,
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" to confirm"),
@@ -67,16 +70,16 @@ pub fn render_delete_project_modal(frame: &mut Frame, state: &DeleteProjectModal
     // Error message
     if let Some(error) = state.error {
         let error_msg = Paragraph::new(error)
-            .style(Style::default().fg(Color::Red))
+            .style(Style::default().fg(Theme::DANGER))
             .alignment(Alignment::Left);
         frame.render_widget(error_msg, chunks[3]);
     }
 
     // Help text
     let help = Line::from(vec![
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Theme::keybind()),
         Span::raw(" confirm  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Theme::keybind()),
         Span::raw(" cancel"),
     ]);
     let help_paragraph = Paragraph::new(help).alignment(Alignment::Left);
@@ -87,7 +90,7 @@ fn render_confirmation_input(frame: &mut Frame, area: Rect, state: &DeleteProjec
     let block = Block::default()
         .title(" Confirmation ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White));
+        .border_style(Style::default().fg(Theme::TEXT_PRIMARY));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -102,7 +105,10 @@ fn render_confirmation_input(frame: &mut Frame, area: Rect, state: &DeleteProjec
         // Text before cursor
         if cursor > 0 {
             let before: String = chars[..cursor].iter().collect();
-            spans.push(Span::styled(before, Style::default().fg(Color::White)));
+            spans.push(Span::styled(
+                before,
+                Style::default().fg(Theme::TEXT_PRIMARY),
+            ));
         }
 
         // Cursor character or space
@@ -111,15 +117,15 @@ fn render_confirmation_input(frame: &mut Frame, area: Rect, state: &DeleteProjec
         } else {
             " ".to_string()
         };
-        spans.push(Span::styled(
-            cursor_char,
-            Style::default().fg(Color::Black).bg(Color::White),
-        ));
+        spans.push(Span::styled(cursor_char, Theme::cursor()));
 
         // Text after cursor
         if cursor + 1 < chars.len() {
             let after: String = chars[cursor + 1..].iter().collect();
-            spans.push(Span::styled(after, Style::default().fg(Color::White)));
+            spans.push(Span::styled(
+                after,
+                Style::default().fg(Theme::TEXT_PRIMARY),
+            ));
         }
     }
 

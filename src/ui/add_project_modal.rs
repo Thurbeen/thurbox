@@ -2,12 +2,13 @@ use std::path::PathBuf;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
+use super::theme::Theme;
 use super::{centered_fixed_height_rect, render_text_field, render_text_field_with_suggestion};
 use crate::app::AddProjectField;
 
@@ -39,7 +40,7 @@ pub fn render_add_project_modal(frame: &mut Frame, state: &AddProjectModalState<
     let block = Block::default()
         .title(" Add Project ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Theme::ACCENT));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -76,9 +77,9 @@ pub fn render_add_project_modal(frame: &mut Frame, state: &AddProjectModalState<
     // Repo list
     let list_focused = state.focused_field == AddProjectField::RepoList;
     let list_border_color = if list_focused {
-        Color::Cyan
+        Theme::BORDER_FOCUSED
     } else {
-        Color::Gray
+        Theme::BORDER_UNFOCUSED
     };
 
     let list_block = Block::default()
@@ -92,7 +93,7 @@ pub fn render_add_project_modal(frame: &mut Frame, state: &AddProjectModalState<
     if state.repos.is_empty() {
         let placeholder = Paragraph::new(Line::from(Span::styled(
             "(none — add via Path field above)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Theme::TEXT_MUTED),
         )));
         frame.render_widget(placeholder, list_inner);
     } else {
@@ -115,9 +116,9 @@ pub fn render_add_project_modal(frame: &mut Frame, state: &AddProjectModalState<
                 let marker = if selected { "▸ " } else { "  " };
                 let path_str = path.display().to_string();
                 let (marker_color, path_color) = if selected {
-                    (Color::Cyan, Color::White)
+                    (Theme::ACCENT, Theme::TEXT_PRIMARY)
                 } else {
-                    (Color::DarkGray, Color::Gray)
+                    (Theme::TEXT_MUTED, Theme::TEXT_SECONDARY)
                 };
                 Line::from(vec![
                     Span::styled(marker, Style::default().fg(marker_color)),
@@ -132,12 +133,12 @@ pub fn render_add_project_modal(frame: &mut Frame, state: &AddProjectModalState<
     // Context-sensitive footer
     let footer = match state.focused_field {
         AddProjectField::Name => Line::from(vec![
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" submit  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled("Tab", Theme::keybind()),
+            Span::styled(" next  ", Theme::keybind_desc()),
+            Span::styled("Enter", Theme::keybind()),
+            Span::styled(" submit  ", Theme::keybind_desc()),
+            Span::styled("Esc", Theme::keybind()),
+            Span::styled(" cancel", Theme::keybind_desc()),
         ]),
         AddProjectField::Path => {
             let tab_hint = if state.path_suggestion.is_some() {
@@ -146,23 +147,23 @@ pub fn render_add_project_modal(frame: &mut Frame, state: &AddProjectModalState<
                 " next  "
             };
             Line::from(vec![
-                Span::styled("Tab", Style::default().fg(Color::Yellow)),
-                Span::styled(tab_hint, Style::default().fg(Color::DarkGray)),
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::styled(" add repo  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                Span::styled("Tab", Theme::keybind()),
+                Span::styled(tab_hint, Theme::keybind_desc()),
+                Span::styled("Enter", Theme::keybind()),
+                Span::styled(" add repo  ", Theme::keybind_desc()),
+                Span::styled("Esc", Theme::keybind()),
+                Span::styled(" cancel", Theme::keybind_desc()),
             ])
         }
         AddProjectField::RepoList => Line::from(vec![
-            Span::styled("j/k", Style::default().fg(Color::Yellow)),
-            Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("d", Style::default().fg(Color::Yellow)),
-            Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" submit  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled("j/k", Theme::keybind()),
+            Span::styled(" navigate  ", Theme::keybind_desc()),
+            Span::styled("d", Theme::keybind()),
+            Span::styled(" delete  ", Theme::keybind_desc()),
+            Span::styled("Enter", Theme::keybind()),
+            Span::styled(" submit  ", Theme::keybind_desc()),
+            Span::styled("Esc", Theme::keybind()),
+            Span::styled(" cancel", Theme::keybind_desc()),
         ]),
     };
     frame.render_widget(Paragraph::new(footer), chunks[3]);
