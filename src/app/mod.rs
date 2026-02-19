@@ -1511,6 +1511,9 @@ impl App {
     }
 
     /// Start syncing all worktree sessions with origin/main.
+    ///
+    /// Worktrees sharing the same parent repo are synced sequentially (to avoid
+    /// concurrent `index.lock` contention), while different repos sync in parallel.
     pub(crate) fn start_sync(&mut self) {
         if self.worktree_sync_in_progress {
             return;
@@ -1523,7 +1526,7 @@ impl App {
                 s.info
                     .worktrees
                     .iter()
-                    .map(move |wt| (s.info.id, wt.worktree_path.clone()))
+                    .map(move |wt| (s.info.id, wt.worktree_path.clone(), wt.repo_path.clone()))
             })
             .collect();
 
@@ -1535,11 +1538,22 @@ impl App {
         let count = worktree_sessions.len();
         let (tx, rx) = mpsc::channel();
 
-        for (session_id, worktree_path) in worktree_sessions {
+        // Group worktrees by repo so those sharing a repo sync sequentially.
+        let mut by_repo = std::collections::HashMap::<PathBuf, Vec<(SessionId, PathBuf)>>::new();
+        for (session_id, worktree_path, repo_path) in worktree_sessions {
+            by_repo
+                .entry(repo_path)
+                .or_default()
+                .push((session_id, worktree_path));
+        }
+
+        for worktrees in by_repo.into_values() {
             let tx = tx.clone();
             std::thread::spawn(move || {
-                let result = git::sync_worktree(&worktree_path);
-                let _ = tx.send((session_id, result));
+                for (session_id, worktree_path) in worktrees {
+                    let result = git::sync_worktree(&worktree_path);
+                    let _ = tx.send((session_id, result));
+                }
             });
         }
 

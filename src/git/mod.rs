@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tracing::warn;
 
 /// List local branch names for a repo.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
@@ -205,11 +207,161 @@ fn git_stash_pop(worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Check whether a git error message indicates a transient index-lock failure.
+fn is_transient_error(msg: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "could not write index",
+        "Unable to write new index file",
+        "index.lock': File exists",
+        "Another git process seems to be running",
+    ];
+    PATTERNS.iter().any(|p| msg.contains(p))
+}
+
+/// Find the shared git directory for a worktree (handles linked worktrees).
+fn git_common_dir(worktree_path: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(worktree_path)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let path = Path::new(&dir);
+    // git may return a relative path; resolve it against the worktree
+    if path.is_absolute() {
+        Some(PathBuf::from(dir))
+    } else {
+        Some(worktree_path.join(dir))
+    }
+}
+
+/// Age threshold for mtime-based stale lock removal.
+const STALE_LOCK_AGE: Duration = Duration::from_secs(60);
+
+/// Remove a stale `index.lock` if we can confirm no live process holds it.
+///
+/// On Linux: reads the PID from the lock file content (if present) and checks `/proc/{pid}`.
+/// Fallback (all platforms): removes if the lock file's mtime exceeds [`STALE_LOCK_AGE`].
+fn cleanup_stale_index_lock(worktree_path: &Path) {
+    let Some(git_dir) = git_common_dir(worktree_path) else {
+        return;
+    };
+    let lock_path = git_dir.join("index.lock");
+    if !lock_path.exists() {
+        return;
+    }
+
+    #[cfg(target_os = "linux")]
+    if try_remove_by_pid(&lock_path) {
+        return;
+    }
+
+    try_remove_by_age(&lock_path);
+}
+
+/// Attempt to remove a lock file by checking if the owning PID is still alive.
+///
+/// Returns `true` if the PID was parseable (regardless of removal outcome),
+/// meaning the caller should not fall through to the mtime-based check.
+#[cfg(target_os = "linux")]
+fn try_remove_by_pid(lock_path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(lock_path) else {
+        return false;
+    };
+    let Some(pid_str) = content.split_whitespace().next() else {
+        return false;
+    };
+    let Ok(pid) = pid_str.parse::<u32>() else {
+        return false;
+    };
+
+    if Path::new(&format!("/proc/{pid}")).exists() {
+        return true; // process still alive
+    }
+
+    if std::fs::remove_file(lock_path).is_ok() {
+        warn!(
+            "Removed stale index.lock (dead PID {pid}) at {}",
+            lock_path.display()
+        );
+    }
+    true
+}
+
+/// Remove a lock file if its mtime exceeds [`STALE_LOCK_AGE`].
+fn try_remove_by_age(lock_path: &Path) {
+    let age = std::fs::metadata(lock_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok());
+
+    let Some(age) = age else { return };
+
+    if age > STALE_LOCK_AGE && std::fs::remove_file(lock_path).is_ok() {
+        warn!(
+            "Removed stale index.lock (age {:?}) at {}",
+            age,
+            lock_path.display()
+        );
+    }
+}
+
+/// Per-attempt delays for `stash_with_retry`. The first entry (zero) is the
+/// initial attempt; subsequent entries are the backoff delays before each retry.
+const STASH_ATTEMPT_DELAYS: &[Duration] = &[
+    Duration::ZERO,
+    Duration::from_millis(100),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+];
+
+/// Run `git stash` with retries on transient index-lock errors.
+///
+/// Returns `Ok(true)` if changes were stashed, `Ok(false)` if nothing to stash.
+fn stash_with_retry(worktree_path: &Path) -> Result<bool> {
+    let max_retries = STASH_ATTEMPT_DELAYS.len() - 1;
+    let mut last_err = String::new();
+
+    for (attempt, delay) in STASH_ATTEMPT_DELAYS.iter().enumerate() {
+        if attempt > 0 {
+            warn!(
+                "Retrying git stash (retry {}/{}) in {}",
+                attempt,
+                max_retries,
+                worktree_path.display()
+            );
+            std::thread::sleep(*delay);
+            cleanup_stale_index_lock(worktree_path);
+        }
+        match git_stash(worktree_path) {
+            Ok(stashed) => return Ok(stashed),
+            Err(e) => {
+                let msg = format!("{e:#}");
+                if !is_transient_error(&msg) {
+                    anyhow::bail!("{msg}");
+                }
+                last_err = msg;
+            }
+        }
+    }
+
+    anyhow::bail!("transient error persisted after retries: {last_err}")
+}
+
 /// High-level sync: stash, fetch, rebase origin/main, pop stash.
 ///
 /// On conflict the rebase is aborted and any stash is restored.
+/// Retries `git stash` on transient index-lock errors.
 pub fn sync_worktree(worktree_path: &Path) -> SyncResult {
-    let stashed = match git_stash(worktree_path) {
+    cleanup_stale_index_lock(worktree_path);
+
+    let stashed = match stash_with_retry(worktree_path) {
         Ok(s) => s,
         Err(e) => return SyncResult::Error(format!("stash: {e:#}")),
     };
@@ -333,5 +485,85 @@ mod tests {
     fn default_branch_returns_none_for_empty_branches() {
         let result = default_branch(Path::new("/nonexistent"), &[]);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn transient_error_detects_could_not_write_index() {
+        assert!(is_transient_error("error: could not write index"));
+    }
+
+    #[test]
+    fn transient_error_detects_unable_to_write_new_index() {
+        assert!(is_transient_error("fatal: Unable to write new index file"));
+    }
+
+    #[test]
+    fn transient_error_detects_index_lock_exists() {
+        assert!(is_transient_error(
+            "fatal: Unable to create '/repo/.git/index.lock': File exists."
+        ));
+    }
+
+    #[test]
+    fn transient_error_detects_another_git_process() {
+        assert!(is_transient_error(
+            "Another git process seems to be running in this repository"
+        ));
+    }
+
+    #[test]
+    fn transient_error_rejects_auth_failure() {
+        assert!(!is_transient_error(
+            "fatal: Authentication failed for 'https://github.com/repo.git'"
+        ));
+    }
+
+    #[test]
+    fn transient_error_rejects_merge_conflict() {
+        assert!(!is_transient_error(
+            "CONFLICT (content): Merge conflict in src/main.rs"
+        ));
+    }
+
+    #[test]
+    fn transient_error_rejects_empty_string() {
+        assert!(!is_transient_error(""));
+    }
+
+    #[test]
+    fn transient_error_matches_within_anyhow_chain() {
+        // is_transient_error is called with format!("{e:#}") which includes anyhow context
+        assert!(is_transient_error(
+            "git stash failed: could not write index"
+        ));
+        assert!(is_transient_error(
+            "git stash failed: fatal: Unable to create '/repo/.git/index.lock': File exists."
+        ));
+    }
+
+    #[test]
+    fn try_remove_by_age_removes_old_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+
+        // Backdate the file's mtime to exceed STALE_LOCK_AGE
+        let old_time = std::time::SystemTime::now() - Duration::from_secs(120);
+        let times = std::fs::FileTimes::new().set_modified(old_time);
+        let file = std::fs::File::options().write(true).open(&lock).unwrap();
+        file.set_times(times).unwrap();
+
+        try_remove_by_age(&lock);
+        assert!(!lock.exists(), "old lock should have been removed");
+    }
+
+    #[test]
+    fn try_remove_by_age_preserves_fresh_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+
+        try_remove_by_age(&lock);
+        assert!(lock.exists(), "fresh lock should be preserved");
     }
 }
