@@ -519,7 +519,9 @@ On startup, Thurbox creates:
    `thurbox-mcp` binary. Claude Code auto-discovers this file.
 3. An "Admin" pseudo-project pinned at index 0 in the project
    list, visually distinguished with a yellow `⚙` prefix.
-4. A single admin session with `cwd` set to the admin directory.
+4. A single admin session with `cwd` set to the admin directory
+   and all 11 `thurbox-mcp` tools pre-allowed (auto-approved
+   without user prompts).
 
 The `.mcp.json` is rewritten on every startup to pick up binary
 path changes after upgrades.
