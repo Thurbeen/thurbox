@@ -27,7 +27,7 @@ bytes = "1"
 regex = "1"
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "signal", "net"] }
 
 # Session management
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
@@ -48,8 +48,13 @@ rusqlite = { version = "0.33", features = ["bundled"] }
 anyhow = "1.0"
 
 # MCP server
-rmcp = { version = "0.15", features = ["server", "transport-io", "schemars"] }
+rmcp = { version = "0.15", features = ["server", "transport-io", "transport-streamable-http-server", "schemars"] }
 serde_json = "1"
+
+# MCP HTTP transport + CLI
+clap = { version = "4", features = ["derive"] }
+tokio-util = "0.7"
+axum = "0.8"
 
 [[bin]]
 name = "thurbox-mcp"
@@ -57,6 +62,7 @@ path = "src/bin/thurbox-mcp.rs"
 
 [dev-dependencies]
 tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # Development tool requirements (install with `cargo binstall` or `cargo install`)
 [package.metadata.dev-tools]
