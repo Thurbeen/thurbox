@@ -6,9 +6,9 @@ use ratatui::{
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
 
-use super::focus_block;
 use super::theme::Theme;
 use super::FocusLevel;
+use super::{admin_block, focus_block};
 use crate::session::SessionInfo;
 
 pub fn render_terminal(
@@ -17,6 +17,7 @@ pub fn render_terminal(
     parser: &mut vt100::Parser,
     info: &SessionInfo,
     level: FocusLevel,
+    is_admin: bool,
 ) {
     let scroll_offset = parser.screen().scrollback();
 
@@ -46,7 +47,11 @@ pub fn render_terminal(
         }
     };
 
-    let block = focus_block(&title, level);
+    let block = if is_admin {
+        admin_block(&title, level)
+    } else {
+        focus_block(&title, level)
+    };
 
     let mut pseudo_term = PseudoTerminal::new(parser.screen())
         .block(block)

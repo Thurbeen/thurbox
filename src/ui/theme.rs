@@ -42,6 +42,10 @@ impl Theme {
     pub const TOOL_ALLOWED: Color = Color::Green;
     pub const TOOL_DISALLOWED: Color = Color::Red;
 
+    // ── Admin ─────────────────────────────────────────────────────────────
+
+    pub const ADMIN_BORDER: Color = Color::Yellow;
+
     // ── Danger / destructive ────────────────────────────────────────────────
 
     pub const DANGER: Color = Color::Red;
@@ -97,6 +101,18 @@ impl Theme {
     /// Style for normal (unselected) list items.
     pub fn normal_item() -> Style {
         Style::default().fg(Self::TEXT_PRIMARY)
+    }
+
+    /// Style for admin section title: yellow bold.
+    pub fn admin_title() -> Style {
+        Style::default()
+            .fg(Self::ADMIN_BORDER)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Style for project metadata lines (repo info, role count).
+    pub fn project_meta() -> Style {
+        Style::default().fg(Self::TEXT_MUTED)
     }
 
     /// Style for the block cursor in text fields.

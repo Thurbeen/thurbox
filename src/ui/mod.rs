@@ -74,6 +74,34 @@ pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
     }
 }
 
+/// Build a [`Block`] with yellow admin styling (tri-state focus).
+///
+/// Focused/Active use `ADMIN_BORDER` (yellow); Inactive falls back to
+/// the standard unfocused gray, keeping the admin chrome unobtrusive
+/// when the panel is in the background.
+pub fn admin_block(title_text: &str, level: FocusLevel) -> Block<'_> {
+    match level {
+        FocusLevel::Focused => Block::default()
+            .title(Line::from(Span::styled(title_text, Theme::admin_title())))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Thick)
+            .border_style(Style::default().fg(Theme::ADMIN_BORDER)),
+        FocusLevel::Active => Block::default()
+            .title(Line::from(Span::styled(title_text, Theme::admin_title())))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(Theme::ADMIN_BORDER)),
+        FocusLevel::Inactive => Block::default()
+            .title(Line::from(Span::styled(
+                title_text,
+                Theme::unfocused_title(),
+            )))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED)),
+    }
+}
+
 /// Build a [`Block`] with focused or unfocused styling (backward compat).
 ///
 /// Focused: thick borders in accent color with a highlighted title badge.
@@ -328,5 +356,20 @@ mod tests {
         assert!(inner_focused.height < test_area.height);
         assert!(inner_unfocused.width < test_area.width);
         assert!(inner_unfocused.height < test_area.height);
+    }
+
+    #[test]
+    fn admin_block_returns_block_for_all_focus_levels() {
+        let test_area = area(40, 10);
+        for level in [
+            FocusLevel::Focused,
+            FocusLevel::Active,
+            FocusLevel::Inactive,
+        ] {
+            let block = admin_block(" Admin ", level);
+            let inner = block.inner(test_area);
+            assert!(inner.width < test_area.width);
+            assert!(inner.height < test_area.height);
+        }
     }
 }
