@@ -36,13 +36,13 @@ pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
     }
 
     if show_info_panel && area.width >= 120 {
-        // 3-panel mode: 15% left panel | 15% info | 70% terminal
+        // 3-panel mode: 18% left panel | 15% info | 67% terminal
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
+                Constraint::Percentage(18),
                 Constraint::Percentage(15),
-                Constraint::Percentage(15),
-                Constraint::Percentage(70),
+                Constraint::Percentage(67),
             ])
             .split(content);
 
@@ -54,10 +54,10 @@ pub fn compute_layout(area: Rect, show_info_panel: bool) -> PanelAreas {
             footer,
         }
     } else {
-        // 2-panel mode: 20% left panel | 80% terminal
+        // 2-panel mode: 25% left panel | 75% terminal
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
+            .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(content);
 
         PanelAreas {

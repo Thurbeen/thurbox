@@ -1335,20 +1335,30 @@ impl App {
         }
     }
 
-    /// Switch to the next project and sync the active session.
+    /// Switch to the next project (wraps around to first).
     pub(crate) fn switch_project_forward(&mut self) {
+        if self.projects.is_empty() {
+            return;
+        }
         if self.active_project_index + 1 < self.projects.len() {
             self.active_project_index += 1;
-            self.sync_active_session_to_project();
+        } else {
+            self.active_project_index = 0;
         }
+        self.sync_active_session_to_project();
     }
 
-    /// Switch to the previous project and sync the active session.
+    /// Switch to the previous project (wraps around to last).
     pub(crate) fn switch_project_backward(&mut self) {
+        if self.projects.is_empty() {
+            return;
+        }
         if self.active_project_index > 0 {
             self.active_project_index -= 1;
-            self.sync_active_session_to_project();
+        } else {
+            self.active_project_index = self.projects.len() - 1;
         }
+        self.sync_active_session_to_project();
     }
 
     /// Switch to the next session within the active project.
@@ -1681,10 +1691,38 @@ impl App {
             let project_entries: Vec<project_list::ProjectEntry<'_>> = self
                 .projects
                 .iter()
-                .map(|p| project_list::ProjectEntry {
-                    name: &p.config.name,
-                    session_count: p.session_ids.len(),
-                    is_admin: p.is_admin,
+                .map(|p| {
+                    let mut busy_count = 0usize;
+                    let mut waiting_count = 0usize;
+                    let mut error_count = 0usize;
+                    for sid in &p.session_ids {
+                        if let Some(s) = self.sessions.iter().find(|s| s.info.id == *sid) {
+                            match s.info.status {
+                                SessionStatus::Busy => busy_count += 1,
+                                SessionStatus::Waiting => waiting_count += 1,
+                                SessionStatus::Error => error_count += 1,
+                                SessionStatus::Idle => {}
+                            }
+                        }
+                    }
+
+                    let repo_count = p.config.repos.len();
+                    let repo_short = if repo_count == 1 {
+                        p.config.repos[0].file_name().and_then(|n| n.to_str())
+                    } else {
+                        None
+                    };
+
+                    project_list::ProjectEntry {
+                        name: &p.config.name,
+                        is_admin: p.is_admin,
+                        repo_count,
+                        repo_short,
+                        role_count: p.config.roles.len(),
+                        busy_count,
+                        waiting_count,
+                        error_count,
+                    }
                 })
                 .collect();
 
@@ -1747,12 +1785,17 @@ impl App {
         match self.sessions.get(self.active_index) {
             Some(session) => {
                 if let Ok(mut parser) = session.parser.lock() {
+                    let is_admin_project = self
+                        .projects
+                        .get(self.active_project_index)
+                        .is_some_and(|p| p.is_admin);
                     terminal_view::render_terminal(
                         frame,
                         areas.terminal,
                         &mut parser,
                         &session.info,
                         terminal_focus,
+                        is_admin_project,
                     );
                 }
             }
@@ -3973,21 +4016,21 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_j_at_last_project_is_noop() {
+    fn ctrl_j_at_last_project_wraps_to_first() {
         let mut app = app_with_projects(3);
         app.focus = InputFocus::ProjectList;
         app.active_project_index = 2;
         app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL);
-        assert_eq!(app.active_project_index, 2);
+        assert_eq!(app.active_project_index, 0);
     }
 
     #[test]
-    fn ctrl_k_at_first_project_is_noop() {
+    fn ctrl_k_at_first_project_wraps_to_last() {
         let mut app = app_with_projects(3);
         app.focus = InputFocus::ProjectList;
         app.active_project_index = 0;
         app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL);
-        assert_eq!(app.active_project_index, 0);
+        assert_eq!(app.active_project_index, 2);
     }
 
     // --- DB persistence tests ---
