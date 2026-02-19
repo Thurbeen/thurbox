@@ -56,6 +56,24 @@ impl App {
             return;
         }
 
+        // Discard confirmation overlay captures all input
+        if self.show_discard_confirmation {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if self.show_mcp_editor {
+                        self.close_mcp_editor();
+                    } else if self.show_role_editor {
+                        self.close_role_editor();
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.show_discard_confirmation = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // MCP editor detail form captures all input
         if self.show_mcp_editor {
             self.handle_mcp_editor_key(code);
@@ -858,9 +876,7 @@ impl App {
         // Text field handling (Name, Description, SystemPrompt).
         match code {
             KeyCode::Esc => {
-                // Return to edit-project modal (Roles field)
-                self.show_role_editor = false;
-                self.edit_project_field = EditProjectField::Roles;
+                self.try_discard_role_editor();
             }
             KeyCode::Tab => {
                 self.role_editor_field = Self::next_editor_field(self.role_editor_field);
@@ -895,9 +911,7 @@ impl App {
     fn handle_tool_browse_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                // Return to edit-project modal (Roles field)
-                self.show_role_editor = false;
-                self.edit_project_field = EditProjectField::Roles;
+                self.try_discard_role_editor();
             }
             KeyCode::Tab => {
                 self.role_editor_field = Self::next_editor_field(self.role_editor_field);
@@ -968,6 +982,7 @@ impl App {
         self.role_editor_system_prompt.clear();
         self.role_editor_field = crate::ui::role_editor_modal::RoleEditorField::Name;
         self.role_editor_view = RoleEditorView::Editor;
+        self.role_editor_snapshot = Some(self.capture_role_editor_snapshot());
     }
 
     pub(crate) fn open_role_for_editing(&mut self, index: usize) {
@@ -987,6 +1002,7 @@ impl App {
         );
         self.role_editor_field = crate::ui::role_editor_modal::RoleEditorField::Name;
         self.role_editor_view = RoleEditorView::Editor;
+        self.role_editor_snapshot = Some(self.capture_role_editor_snapshot());
     }
 
     pub(crate) fn active_tool_list_mut(&mut self) -> &mut super::ToolListState {
@@ -995,6 +1011,24 @@ impl App {
                 &mut self.role_editor_allowed_tools
             }
             _ => &mut self.role_editor_disallowed_tools,
+        }
+    }
+
+    /// Attempt to discard role editor — shows confirmation if dirty.
+    fn try_discard_role_editor(&mut self) {
+        if self.is_role_editor_dirty() {
+            self.show_discard_confirmation = true;
+        } else {
+            self.close_role_editor();
+        }
+    }
+
+    /// Attempt to discard MCP editor — shows confirmation if dirty.
+    fn try_discard_mcp_editor(&mut self) {
+        if self.is_mcp_editor_dirty() {
+            self.show_discard_confirmation = true;
+        } else {
+            self.close_mcp_editor();
         }
     }
 
@@ -1066,9 +1100,7 @@ impl App {
         // Text field handling (Name, Command).
         match code {
             KeyCode::Esc => {
-                // Discard and close
-                self.show_mcp_editor = false;
-                self.mcp_editor_field = McpEditorField::Name;
+                self.try_discard_mcp_editor();
             }
             KeyCode::Tab => {
                 self.mcp_editor_field = Self::next_mcp_editor_field(self.mcp_editor_field);
@@ -1102,8 +1134,7 @@ impl App {
     fn handle_mcp_tool_browse_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                self.show_mcp_editor = false;
-                self.mcp_editor_field = McpEditorField::Name;
+                self.try_discard_mcp_editor();
             }
             KeyCode::Tab => {
                 self.mcp_editor_field = Self::next_mcp_editor_field(self.mcp_editor_field);

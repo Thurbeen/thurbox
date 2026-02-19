@@ -2,13 +2,14 @@ use std::path::PathBuf;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::theme::Theme;
 
 pub struct RepoSelectorState<'a> {
     pub repos: &'a [PathBuf],
@@ -24,7 +25,7 @@ pub fn render_repo_selector_modal(frame: &mut Frame, state: &RepoSelectorState<'
     let block = Block::default()
         .title(" Select Repo ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Theme::ACCENT));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -44,11 +45,9 @@ pub fn render_repo_selector_modal(frame: &mut Frame, state: &RepoSelectorState<'
         .map(|(i, path)| {
             let display = path.display().to_string();
             let style = if i == state.selected_index {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                Theme::selected_item()
             } else {
-                Style::default().fg(Color::White)
+                Theme::normal_item()
             };
             let prefix = if i == state.selected_index {
                 "▸ "
@@ -66,12 +65,12 @@ pub fn render_repo_selector_modal(frame: &mut Frame, state: &RepoSelectorState<'
     frame.render_widget(list, chunks[0]);
 
     let footer = Line::from(vec![
-        Span::styled("j/k", Style::default().fg(Color::Yellow)),
-        Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
-        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("j/k", Theme::keybind()),
+        Span::styled(" navigate  ", Theme::keybind_desc()),
+        Span::styled("Enter", Theme::keybind()),
+        Span::styled(" select  ", Theme::keybind_desc()),
+        Span::styled("Esc", Theme::keybind()),
+        Span::styled(" cancel", Theme::keybind_desc()),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[1]);
 }
