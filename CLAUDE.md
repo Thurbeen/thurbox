@@ -290,6 +290,8 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+D` | Delete session/project | Vim: **d** = delete |
 | `Ctrl+E` | Edit active project (name, repos, roles) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
+| `Ctrl+Z` | Undo session delete | **Z** = undo |
+| `Ctrl+U` | Restore deleted session | **U**ndelete |
 | `F1` | Help overlay | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
 

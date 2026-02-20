@@ -13,8 +13,8 @@ use crate::sync::{SharedProject, SharedSession};
 use super::types::{
     CreateProjectParams, DeleteProjectParams, DeleteSessionParams, GetProjectParams,
     GetSessionParams, ListMcpServersParams, ListRolesParams, ListSessionsParams, McpServerResponse,
-    ProjectResponse, RestartSessionParams, RoleResponse, SessionResponse, SetMcpServersParams,
-    SetRolesParams, UpdateProjectParams, WorktreeResponse,
+    ProjectResponse, RestartSessionParams, RestoreSessionParams, RoleResponse, SessionResponse,
+    SetMcpServersParams, SetRolesParams, UpdateProjectParams, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -403,6 +403,35 @@ impl ThurboxMcp {
                 "command_id": command_id,
                 "session_id": session.id.to_string(),
                 "session_name": session.name,
+            })
+            .to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Restore a soft-deleted session. The TUI will detect the restored session via sync polling and spawn it with --resume if a Claude session ID exists."
+    )]
+    fn restore_session(&self, Parameters(params): Parameters<RestoreSessionParams>) -> String {
+        let db = self.db.lock().unwrap();
+        let session_id: SessionId = match params.session.parse() {
+            Ok(id) => id,
+            Err(_) => return error_json(&format!("Invalid session UUID: {}", params.session)),
+        };
+
+        let deleted = match db.get_deleted_session_by_id(session_id) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                return error_json(&format!("Deleted session not found: {}", params.session))
+            }
+            Err(e) => return error_json(&e.to_string()),
+        };
+
+        match db.restore_session(deleted.id) {
+            Ok(()) => serde_json::json!({
+                "restored": true,
+                "id": deleted.id.to_string(),
+                "name": deleted.name,
             })
             .to_string(),
             Err(e) => error_json(&e.to_string()),
@@ -1140,5 +1169,84 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].command, "restart");
         assert_eq!(cmds[0].session_id, sid);
+    }
+
+    // ── Restore session tests ────────────────────────────────────
+
+    #[test]
+    fn restore_session_success() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "restoretest".to_string(),
+            repos: vec![],
+        }));
+        let sid = insert_test_session(&server, "restoretest");
+
+        // Delete first
+        server.delete_session(Parameters(DeleteSessionParams {
+            session: sid.to_string(),
+        }));
+
+        // Restore
+        let result = server.restore_session(Parameters(RestoreSessionParams {
+            session: sid.to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["restored"], true);
+        assert_eq!(v["id"], sid.to_string());
+        assert_eq!(v["name"], "1");
+
+        // Session should be active again
+        let get_result = server.get_session(Parameters(GetSessionParams {
+            session: sid.to_string(),
+        }));
+        let v = parse_json(&get_result);
+        assert_eq!(v["name"], "1");
+    }
+
+    #[test]
+    fn restore_session_not_found() {
+        let server = test_server();
+        let result = server.restore_session(Parameters(RestoreSessionParams {
+            session: SessionId::default().to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("Deleted session not found"));
+    }
+
+    #[test]
+    fn restore_session_invalid_uuid() {
+        let server = test_server();
+        let result = server.restore_session(Parameters(RestoreSessionParams {
+            session: "not-a-uuid".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid session UUID"));
+    }
+
+    #[test]
+    fn restore_session_rejects_active_session() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "activetest".to_string(),
+            repos: vec![],
+        }));
+        let sid = insert_test_session(&server, "activetest");
+
+        // Try to restore an active (non-deleted) session
+        let result = server.restore_session(Parameters(RestoreSessionParams {
+            session: sid.to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("Deleted session not found"));
     }
 }
