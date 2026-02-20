@@ -2573,29 +2573,10 @@ impl App {
     }
 
     pub(crate) fn content_area_size(&self) -> (u16, u16) {
-        // Header: 1 line, Footer: 1 line, Borders: 2 lines top+bottom
-        let rows = self.terminal_rows.saturating_sub(4);
-
-        let three_panel = self.show_info_panel && self.terminal_cols >= 120;
-
-        let list_width = if self.terminal_cols >= 80 {
-            if three_panel {
-                self.terminal_cols * 15 / 100 // matches layout.rs 3-panel: 15%
-            } else {
-                self.terminal_cols * 20 / 100 // matches layout.rs 2-panel: 20%
-            }
-        } else {
-            0
-        };
-        let info_width = if three_panel {
-            self.terminal_cols * 15 / 100 // matches layout.rs 3-panel: 15%
-        } else {
-            0
-        };
-        let cols = self
-            .terminal_cols
-            .saturating_sub(list_width + info_width + 2);
-        (rows, cols)
+        let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
+        let terminal = layout::compute_layout(area, self.show_info_panel).terminal;
+        let inner = Block::default().borders(Borders::ALL).inner(terminal);
+        (inner.height, inner.width)
     }
 }
 
