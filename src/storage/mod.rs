@@ -17,6 +17,7 @@ mod projects;
 mod roles;
 mod schema;
 mod sessions;
+pub use sessions::DeletedSessionInfo;
 pub mod sync;
 mod worktrees;
 

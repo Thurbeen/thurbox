@@ -120,6 +120,12 @@ pub struct RestartSessionParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RestoreSessionParams {
+    #[schemars(description = "Session UUID of a soft-deleted session")]
+    pub session: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListMcpServersParams {
     #[schemars(description = "Project name or UUID")]
     pub project: String,

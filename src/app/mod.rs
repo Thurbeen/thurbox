@@ -26,14 +26,18 @@ use crate::session::{
     SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
-use crate::sync::{self, StateDelta, SyncState};
+use crate::storage::DeletedSessionInfo;
+use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::{
     add_project_modal, branch_selector_modal, delete_project_modal, edit_project_modal, info_panel,
-    layout, project_list, repo_selector_modal, role_editor_modal, role_selector_modal,
-    session_mode_modal, status_bar, terminal_view, worktree_name_modal,
+    layout, project_list, repo_selector_modal, restore_sessions_modal, role_editor_modal,
+    role_selector_modal, session_mode_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
 const MOUSE_SCROLL_LINES: usize = 3;
+
+/// How long the user has to press Ctrl+Z to undo a session delete.
+const UNDO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// If no output for this many milliseconds, consider session "Waiting".
 const ACTIVITY_TIMEOUT_MS: u64 = 1000;
@@ -283,6 +287,14 @@ pub(crate) enum TerminalView {
     Shell,
 }
 
+/// Holds a recently deleted session for undo (Ctrl+Z) support.
+struct PendingDelete {
+    session: Session,
+    session_id: SessionId,
+    project_id: ProjectId,
+    created_at: std::time::Instant,
+}
+
 pub struct App {
     pub(crate) projects: Vec<ProjectInfo>,
     pub(crate) active_project_index: usize,
@@ -373,6 +385,12 @@ pub struct App {
     deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
     /// Per-session terminal view state (Claude vs Shell). Defaults to Claude.
     session_terminal_views: HashMap<SessionId, TerminalView>,
+    /// Recently deleted session awaiting finalization or undo (Ctrl+Z).
+    pending_delete: Option<PendingDelete>,
+    /// Restore deleted sessions modal (Ctrl+U).
+    pub(crate) show_restore_sessions_modal: bool,
+    pub(crate) restore_sessions_list: Vec<DeletedSessionInfo>,
+    pub(crate) restore_sessions_index: usize,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -619,6 +637,10 @@ impl App {
             tick_count: 0,
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
+            pending_delete: None,
+            show_restore_sessions_modal: false,
+            restore_sessions_list: Vec::new(),
+            restore_sessions_index: 0,
         }
     }
 
@@ -867,16 +889,22 @@ impl App {
             }
         }
 
+        // Find the project this session belongs to
+        let project_id = self
+            .projects
+            .iter()
+            .find(|p| p.session_ids.contains(&session_id))
+            .map(|p| p.id)
+            .unwrap_or_default();
+
         // Soft-delete in DB
         if let Err(e) = self.db.soft_delete_session(session_id) {
             error!("Failed to soft-delete session in DB: {e}");
         }
 
-        // Kill the backend session (and shell pane) before removing from the list.
-        if let Some(session) = self.sessions.get_mut(self.active_index) {
-            session.kill();
-        }
-        self.sessions.remove(self.active_index);
+        // Remove from the session list (do NOT kill backend or remove worktrees yet)
+        let removed_session = self.sessions.remove(self.active_index);
+        let session_name = removed_session.info.name.clone();
 
         // Clean up terminal view state
         self.session_terminal_views.remove(&session_id);
@@ -892,8 +920,148 @@ impl App {
             self.active_index = self.sessions.len() - 1;
         }
 
+        // Finalize any existing pending delete before storing the new one
+        self.finalize_pending_delete();
+
+        self.pending_delete = Some(PendingDelete {
+            session: removed_session,
+            session_id,
+            project_id,
+            created_at: std::time::Instant::now(),
+        });
+
+        self.set_status(
+            StatusLevel::Info,
+            format!("Deleted '{session_name}'. Ctrl+Z to undo"),
+        );
+
         // Sync to shared state for other instances
         self.save_state();
+    }
+
+    /// Recreate git worktrees from shared worktree metadata.
+    ///
+    /// For each worktree whose branch still exists, runs `git worktree add`
+    /// to restore it. Returns the successfully recreated worktrees.
+    fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
+        let mut infos = Vec::new();
+        for wt in worktrees {
+            if git::branch_exists(&wt.repo_path, &wt.branch) {
+                match git::add_existing_worktree(&wt.repo_path, &wt.branch) {
+                    Ok(wt_path) => {
+                        infos.push(WorktreeInfo {
+                            repo_path: wt.repo_path.clone(),
+                            worktree_path: wt_path,
+                            branch: wt.branch.clone(),
+                        });
+                    }
+                    Err(e) => {
+                        error!("Failed to recreate worktree for {}: {e}", wt.branch);
+                    }
+                }
+            }
+        }
+        infos
+    }
+
+    /// Finalize a pending delete — kill backend and remove worktrees.
+    fn finalize_pending_delete(&mut self) {
+        if let Some(pending) = self.pending_delete.take() {
+            for wt in &pending.session.info.worktrees {
+                if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
+                    error!("Failed to remove worktree: {e}");
+                }
+            }
+            pending.session.kill();
+        }
+    }
+
+    /// Undo the most recent session delete (Ctrl+Z).
+    fn undo_delete(&mut self) {
+        let Some(pending) = self.pending_delete.take() else {
+            return;
+        };
+
+        if let Err(e) = self.db.restore_session(pending.session_id) {
+            error!("Failed to restore session in DB: {e}");
+            self.set_error("Failed to undo delete");
+            return;
+        }
+
+        let session_name = pending.session.info.name.clone();
+        self.sessions.push(pending.session);
+        self.active_index = self.sessions.len() - 1;
+        self.associate_session_with_project(pending.session_id, pending.project_id);
+        self.save_state();
+
+        self.set_status(StatusLevel::Success, format!("Restored '{session_name}'"));
+    }
+
+    /// Open the restore deleted sessions modal (Ctrl+U).
+    fn open_restore_sessions_modal(&mut self) {
+        let Some(project) = self.active_project() else {
+            return;
+        };
+        let project_id = project.id;
+        match self.db.list_deleted_sessions_for_project(project_id) {
+            Ok(list) => {
+                self.restore_sessions_list = list;
+                self.restore_sessions_index = 0;
+                self.show_restore_sessions_modal = true;
+            }
+            Err(e) => {
+                error!("Failed to list deleted sessions: {e}");
+                self.set_error("Failed to list deleted sessions");
+            }
+        }
+    }
+
+    /// Restore a soft-deleted session: un-delete in DB, recreate worktrees, and spawn.
+    fn restore_deleted_session(&mut self, deleted: DeletedSessionInfo) {
+        if let Err(e) = self.db.restore_session(deleted.id) {
+            error!("Failed to restore session in DB: {e}");
+            self.set_error("Failed to restore session");
+            return;
+        }
+
+        let worktree_infos = Self::recreate_worktrees(&deleted.worktrees);
+        let cwd = worktree_infos
+            .first()
+            .map(|wt| wt.worktree_path.clone())
+            .or(deleted.cwd.clone());
+
+        let permissions = self.resolve_role_permissions(&deleted.role);
+        let config = SessionConfig {
+            resume_session_id: deleted.claude_session_id.clone(),
+            claude_session_id: deleted.claude_session_id,
+            cwd,
+            additional_dirs: Vec::new(),
+            role: deleted.role,
+            permissions,
+        };
+
+        let session_name = deleted.name.clone();
+        let (rows, cols) = self.content_area_size();
+
+        match Session::spawn(session_name.clone(), rows, cols, &config, &self.backend) {
+            Ok(mut session) => {
+                session.info.id = deleted.id;
+                session.info.worktrees = worktree_infos;
+                let session_id = session.info.id;
+                self.sessions.push(session);
+                self.active_index = self.sessions.len() - 1;
+                self.focus = InputFocus::Terminal;
+
+                self.associate_session_with_project(session_id, deleted.project_id);
+                self.save_state();
+
+                self.set_status(StatusLevel::Success, format!("Restored '{session_name}'"));
+            }
+            Err(e) => {
+                error!("Failed to spawn restored session: {e}");
+                self.set_error(format!("Failed to restore session: {e:#}"));
+            }
+        }
     }
 
     /// Get sessions belonging to the active project.
@@ -1503,6 +1671,13 @@ impl App {
         // Send deferred inputs whose delay has elapsed
         self.drain_deferred_inputs();
 
+        // Finalize pending delete after undo timeout
+        if let Some(ref pending) = self.pending_delete {
+            if pending.created_at.elapsed() >= UNDO_TIMEOUT {
+                self.finalize_pending_delete();
+            }
+        }
+
         // Poll for external state changes from other thurbox instances (DB-based)
         if let Ok(Some(delta)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
             self.handle_external_state_change(delta);
@@ -1769,6 +1944,49 @@ impl App {
                         shared_session.name,
                         e
                     );
+
+                    // If adopt failed but session has a claude_session_id,
+                    // try spawning with --resume (e.g. restored via MCP).
+                    if let Some(ref claude_sid) = shared_session.claude_session_id {
+                        let worktree_infos = Self::recreate_worktrees(&shared_session.worktrees);
+                        let cwd = worktree_infos
+                            .first()
+                            .map(|wt| wt.worktree_path.clone())
+                            .or(shared_session.cwd.clone());
+
+                        let permissions = self.resolve_role_permissions(&shared_session.role);
+                        let config = SessionConfig {
+                            resume_session_id: Some(claude_sid.clone()),
+                            claude_session_id: Some(claude_sid.clone()),
+                            cwd,
+                            additional_dirs: shared_session.additional_dirs.clone(),
+                            role: shared_session.role.clone(),
+                            permissions,
+                        };
+
+                        let (rows, cols) = self.content_area_size();
+                        if let Ok(mut spawned) = Session::spawn(
+                            shared_session.name.clone(),
+                            rows,
+                            cols,
+                            &config,
+                            &self.backend,
+                        ) {
+                            spawned.info.id = shared_session.id;
+                            spawned.info.worktrees = worktree_infos;
+                            let session_id = spawned.info.id;
+                            self.sessions.push(spawned);
+                            self.associate_session_with_project(
+                                session_id,
+                                shared_session.project_id,
+                            );
+                            self.save_state();
+                            tracing::debug!(
+                                "Spawned restored session {} with --resume",
+                                shared_session.name
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -2093,6 +2311,27 @@ impl App {
             );
         }
 
+        // Restore sessions modal
+        if self.show_restore_sessions_modal {
+            let entries: Vec<restore_sessions_modal::DeletedSessionEntry> = self
+                .restore_sessions_list
+                .iter()
+                .map(|d| restore_sessions_modal::DeletedSessionEntry {
+                    name: d.name.clone(),
+                    role: d.role.clone(),
+                    deleted_ago: format_time_ago(d.deleted_at),
+                    has_worktrees: !d.worktrees.is_empty(),
+                })
+                .collect();
+            restore_sessions_modal::render_restore_sessions_modal(
+                frame,
+                &restore_sessions_modal::RestoreSessionsModalState {
+                    entries: &entries,
+                    selected_index: self.restore_sessions_index,
+                },
+            );
+        }
+
         // Discard confirmation overlay
         if self.show_discard_confirmation {
             let confirm_area = crate::ui::centered_fixed_height_rect(40, 5, frame.area());
@@ -2126,7 +2365,9 @@ impl App {
         self.should_quit
     }
 
-    pub fn shutdown(self) {
+    pub fn shutdown(mut self) {
+        // Finalize any pending delete before shutting down
+        self.finalize_pending_delete();
         self.save_state();
         // Do NOT remove worktrees — they persist for resume.
         // Detach from backend sessions without killing them — they persist in tmux.
@@ -2603,6 +2844,8 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+R", "Restart active session"),
         help_line("Ctrl+S", "Sync all worktrees with main"),
         help_line("Ctrl+T", "Toggle shell pane"),
+        help_line("Ctrl+Z", "Undo session delete"),
+        help_line("Ctrl+U", "Restore deleted session"),
         Line::from(""),
         help_section("Project Management"),
         help_line(
@@ -2672,6 +2915,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// Format a millisecond timestamp as a human-readable "time ago" string.
+fn format_time_ago(millis: u64) -> String {
+    let now = crate::sync::current_time_millis();
+    let elapsed_secs = now.saturating_sub(millis) / 1000;
+    if elapsed_secs < 60 {
+        format!("{elapsed_secs}s ago")
+    } else if elapsed_secs < 3600 {
+        format!("{}m ago", elapsed_secs / 60)
+    } else if elapsed_secs < 86400 {
+        format!("{}h ago", elapsed_secs / 3600)
+    } else {
+        format!("{}d ago", elapsed_secs / 86400)
+    }
 }
 
 fn open_url(url: &str) {
@@ -5389,5 +5647,42 @@ mod tests {
 
         let perms = app.resolve_role_permissions_for_project("developer", 0);
         assert_eq!(perms, super::admin_mcp_permissions());
+    }
+
+    // --- format_time_ago tests ---
+
+    #[test]
+    fn format_time_ago_seconds() {
+        let now = crate::sync::current_time_millis();
+        assert_eq!(super::format_time_ago(now - 5_000), "5s ago");
+        assert_eq!(super::format_time_ago(now - 30_000), "30s ago");
+    }
+
+    #[test]
+    fn format_time_ago_minutes() {
+        let now = crate::sync::current_time_millis();
+        assert_eq!(super::format_time_ago(now - 120_000), "2m ago");
+        assert_eq!(super::format_time_ago(now - 3_540_000), "59m ago");
+    }
+
+    #[test]
+    fn format_time_ago_hours() {
+        let now = crate::sync::current_time_millis();
+        assert_eq!(super::format_time_ago(now - 3_600_000), "1h ago");
+        assert_eq!(super::format_time_ago(now - 7_200_000), "2h ago");
+    }
+
+    #[test]
+    fn format_time_ago_days() {
+        let now = crate::sync::current_time_millis();
+        assert_eq!(super::format_time_ago(now - 86_400_000), "1d ago");
+        assert_eq!(super::format_time_ago(now - 259_200_000), "3d ago");
+    }
+
+    #[test]
+    fn format_time_ago_future_timestamp() {
+        let now = crate::sync::current_time_millis();
+        // Future timestamp should saturate to 0s
+        assert_eq!(super::format_time_ago(now + 10_000), "0s ago");
     }
 }

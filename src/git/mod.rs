@@ -114,6 +114,43 @@ fn default_branch_from_remote(repo_path: &Path) -> Option<String> {
     full_ref.strip_prefix("origin/").map(|s| s.to_string())
 }
 
+/// Add an existing branch as a worktree (no `-b` flag — branch must already exist).
+///
+/// Returns the worktree directory path. If the worktree path already exists on
+/// disk the function returns early with `Ok(path)`.
+pub fn add_existing_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> {
+    let wt_path = worktree_path(repo_path, branch);
+
+    if wt_path.exists() {
+        return Ok(wt_path);
+    }
+
+    let output = Command::new("git")
+        .args(["worktree", "add", &wt_path.display().to_string(), branch])
+        .current_dir(repo_path)
+        .output()
+        .context("failed to run git worktree add (existing branch)")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git worktree add (existing) failed: {stderr}");
+    }
+
+    Ok(wt_path)
+}
+
+/// Check whether a local branch exists in the repository.
+pub fn branch_exists(repo_path: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", branch])
+        .current_dir(repo_path)
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Deterministic worktree directory path for a repo + branch.
 fn worktree_path(repo_path: &Path, branch: &str) -> PathBuf {
     let sanitized = branch.replace('/', "-");

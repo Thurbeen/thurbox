@@ -32,6 +32,12 @@ impl App {
             return;
         }
 
+        // Restore sessions modal captures all input
+        if self.show_restore_sessions_modal {
+            self.handle_restore_sessions_key(code);
+            return;
+        }
+
         // Repo selector modal captures all input
         if self.show_repo_selector {
             self.handle_repo_selector_key(code);
@@ -155,6 +161,16 @@ impl App {
                 }
                 KeyCode::Char('t') => {
                     self.toggle_shell_view();
+                    return;
+                }
+                KeyCode::Char('z') => {
+                    if self.pending_delete.is_some() {
+                        self.undo_delete();
+                    }
+                    return;
+                }
+                KeyCode::Char('u') => {
+                    self.open_restore_sessions_modal();
                     return;
                 }
                 // Vim navigation: h=left, j=down, k=up, l=cycle-right
@@ -635,6 +651,42 @@ impl App {
             }
             KeyCode::End => {
                 self.delete_project_confirmation.end();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_restore_sessions_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.show_restore_sessions_modal = false;
+                self.restore_sessions_list.clear();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.restore_sessions_list.is_empty()
+                    && self.restore_sessions_index + 1 < self.restore_sessions_list.len()
+                {
+                    self.restore_sessions_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.restore_sessions_index = self.restore_sessions_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if self.restore_sessions_list.is_empty() {
+                    return;
+                }
+                let deleted = self
+                    .restore_sessions_list
+                    .remove(self.restore_sessions_index);
+                if self.restore_sessions_index >= self.restore_sessions_list.len()
+                    && self.restore_sessions_index > 0
+                {
+                    self.restore_sessions_index -= 1;
+                }
+                self.show_restore_sessions_modal = false;
+                self.restore_sessions_list.clear();
+                self.restore_deleted_session(deleted);
             }
             _ => {}
         }

@@ -9,6 +9,19 @@ use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
 use super::audit::{AuditAction, EntityType};
 use super::Database;
 
+/// Information about a soft-deleted session, including its worktrees.
+#[derive(Debug, Clone)]
+pub struct DeletedSessionInfo {
+    pub id: SessionId,
+    pub name: String,
+    pub project_id: ProjectId,
+    pub role: String,
+    pub claude_session_id: Option<String>,
+    pub cwd: Option<PathBuf>,
+    pub deleted_at: u64,
+    pub worktrees: Vec<SharedWorktree>,
+}
+
 impl Database {
     /// Insert or update a session.
     pub fn upsert_session(&self, session: &SharedSession) -> rusqlite::Result<()> {
@@ -276,6 +289,96 @@ impl Database {
     pub fn get_session_by_id(&self, id: SessionId) -> rusqlite::Result<Option<SharedSession>> {
         let sessions = self.query_sessions(&format!("s.deleted_at IS NULL AND s.id = '{id}'"))?;
         Ok(sessions.into_iter().next())
+    }
+
+    /// List soft-deleted sessions for a project, most recently deleted first.
+    pub fn list_deleted_sessions_for_project(
+        &self,
+        project_id: ProjectId,
+    ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        self.query_deleted_sessions(&format!(
+            "s.deleted_at IS NOT NULL AND s.project_id = '{}'",
+            project_id
+        ))
+    }
+
+    /// Get a single soft-deleted session by its ID.
+    pub fn get_deleted_session_by_id(
+        &self,
+        id: SessionId,
+    ) -> rusqlite::Result<Option<DeletedSessionInfo>> {
+        let sessions =
+            self.query_deleted_sessions(&format!("s.deleted_at IS NOT NULL AND s.id = '{id}'"))?;
+        Ok(sessions.into_iter().next())
+    }
+
+    fn query_deleted_sessions(&self, condition: &str) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        let sql = format!(
+            "SELECT s.id, s.name, s.project_id, s.role, s.claude_session_id, \
+             s.cwd, s.deleted_at, \
+             w.repo_path, w.worktree_path, w.branch \
+             FROM sessions s \
+             LEFT JOIN worktrees w ON s.id = w.session_id \
+             WHERE {condition} \
+             ORDER BY s.deleted_at DESC, w.created_at"
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            let id_str: String = row.get(0)?;
+            let project_id_str: String = row.get(2)?;
+            let cwd: Option<String> = row.get(5)?;
+            let deleted_at: i64 = row.get(6)?;
+            let wt_repo: Option<String> = row.get(7)?;
+            let wt_path: Option<String> = row.get(8)?;
+            let wt_branch: Option<String> = row.get(9)?;
+
+            let worktree = match (wt_repo, wt_path, wt_branch) {
+                (Some(repo), Some(path), Some(branch)) => Some(SharedWorktree {
+                    repo_path: PathBuf::from(repo),
+                    worktree_path: PathBuf::from(path),
+                    branch,
+                }),
+                _ => None,
+            };
+
+            Ok((
+                DeletedSessionInfo {
+                    id: id_str.parse().unwrap_or_default(),
+                    name: row.get(1)?,
+                    project_id: project_id_str
+                        .parse::<uuid::Uuid>()
+                        .map(ProjectId::from_uuid)
+                        .unwrap_or_default(),
+                    role: row.get(3)?,
+                    claude_session_id: row.get(4)?,
+                    cwd: cwd.map(PathBuf::from),
+                    deleted_at: deleted_at as u64,
+                    worktrees: Vec::new(),
+                },
+                worktree,
+            ))
+        })?;
+
+        let mut sessions: Vec<DeletedSessionInfo> = Vec::new();
+        for row in rows {
+            let (session, worktree) = row?;
+            if let Some(last) = sessions.last_mut() {
+                if last.id == session.id {
+                    if let Some(wt) = worktree {
+                        last.worktrees.push(wt);
+                    }
+                    continue;
+                }
+            }
+            let mut s = session;
+            if let Some(wt) = worktree {
+                s.worktrees.push(wt);
+            }
+            sessions.push(s);
+        }
+
+        Ok(sessions)
     }
 
     /// Insert a command into the session command queue.
@@ -680,5 +783,132 @@ mod tests {
             sessions[0].claude_session_id,
             Some("claude-abc-123".to_string())
         );
+    }
+
+    // --- Deleted session queries ---
+
+    #[test]
+    fn list_deleted_sessions_for_project_empty() {
+        let (db, pid) = setup_db_with_project();
+        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
+        assert!(deleted.is_empty());
+    }
+
+    #[test]
+    fn list_deleted_sessions_for_project_returns_deleted_only() {
+        let (db, pid) = setup_db_with_project();
+        let s1 = make_session("S1", pid);
+        let s2 = make_session("S2", pid);
+        let s1_id = s1.id;
+        db.upsert_session(&s1).unwrap();
+        db.upsert_session(&s2).unwrap();
+        db.soft_delete_session(s1_id).unwrap();
+
+        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].id, s1_id);
+        assert_eq!(deleted[0].name, "S1");
+        assert_eq!(deleted[0].project_id, pid);
+    }
+
+    #[test]
+    fn list_deleted_sessions_excludes_other_projects() {
+        let db = Database::open_in_memory().unwrap();
+        let pid1 = test_project_id("proj1");
+        let pid2 = test_project_id("proj2");
+        db.insert_project(pid1, "proj1", &[]).unwrap();
+        db.insert_project(pid2, "proj2", &[]).unwrap();
+
+        let s1 = make_session("S1", pid1);
+        let s2 = make_session("S2", pid2);
+        let s1_id = s1.id;
+        let s2_id = s2.id;
+        db.upsert_session(&s1).unwrap();
+        db.upsert_session(&s2).unwrap();
+        db.soft_delete_session(s1_id).unwrap();
+        db.soft_delete_session(s2_id).unwrap();
+
+        let deleted = db.list_deleted_sessions_for_project(pid1).unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].id, s1_id);
+    }
+
+    #[test]
+    fn list_deleted_sessions_includes_worktrees() {
+        let (db, pid) = setup_db_with_project();
+        let mut session = make_session("S1", pid);
+        session.worktrees = vec![SharedWorktree {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.git/wt/feat"),
+            branch: "feat".to_string(),
+        }];
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.soft_delete_session(sid).unwrap();
+
+        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].worktrees.len(), 1);
+        assert_eq!(deleted[0].worktrees[0].branch, "feat");
+    }
+
+    #[test]
+    fn list_deleted_sessions_preserves_claude_session_id() {
+        let (db, pid) = setup_db_with_project();
+        let mut session = make_session("S1", pid);
+        session.claude_session_id = Some("claude-xyz".to_string());
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.soft_delete_session(sid).unwrap();
+
+        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
+        assert_eq!(deleted[0].claude_session_id, Some("claude-xyz".to_string()));
+    }
+
+    #[test]
+    fn get_deleted_session_by_id_found() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("S1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.soft_delete_session(sid).unwrap();
+
+        let result = db.get_deleted_session_by_id(sid).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name, "S1");
+    }
+
+    #[test]
+    fn get_deleted_session_by_id_not_found() {
+        let (db, _pid) = setup_db_with_project();
+        let result = db.get_deleted_session_by_id(SessionId::default()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_deleted_session_by_id_excludes_active() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("S1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let result = db.get_deleted_session_by_id(sid).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn restore_clears_from_deleted_list() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("S1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.soft_delete_session(sid).unwrap();
+        db.restore_session(sid).unwrap();
+
+        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
+        assert!(deleted.is_empty());
+
+        let active = db.list_active_sessions().unwrap();
+        assert_eq!(active.len(), 1);
     }
 }
