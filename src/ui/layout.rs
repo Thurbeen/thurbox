@@ -118,4 +118,45 @@ mod tests {
         let areas = compute_layout(area(119, 24), true);
         assert!(areas.info_panel.is_none());
     }
+
+    /// Inner dimensions after removing the 1-cell border on all sides,
+    /// matching what `content_area_size()` computes for tmux/vt100 sizing.
+    fn terminal_inner(width: u16, height: u16, show_info: bool) -> (u16, u16) {
+        use ratatui::widgets::{Block, Borders};
+        let terminal = compute_layout(area(width, height), show_info).terminal;
+        let inner = Block::default().borders(Borders::ALL).inner(terminal);
+        (inner.height, inner.width)
+    }
+
+    #[test]
+    fn two_panel_terminal_width_at_160_cols() {
+        // 160 * 75% = 120 cols for terminal panel, minus 2 for borders = 118 inner
+        let (rows, cols) = terminal_inner(160, 40, false);
+        assert_eq!(cols, 118);
+        // 40 - header(1) - footer(1) - top/bottom border(2) = 36
+        assert_eq!(rows, 36);
+    }
+
+    #[test]
+    fn two_panel_terminal_width_at_80_cols() {
+        let (rows, cols) = terminal_inner(80, 24, false);
+        assert_eq!(cols, 58); // 80 * 75% = 60, minus 2 borders
+        assert_eq!(rows, 20); // 24 - 1 - 1 - 2
+    }
+
+    #[test]
+    fn three_panel_terminal_width_at_160_cols() {
+        let (rows, cols) = terminal_inner(160, 40, true);
+        // 160 * 67% = 107 cols for terminal, minus 2 borders = 105 inner
+        assert_eq!(cols, 105);
+        assert_eq!(rows, 36);
+    }
+
+    #[test]
+    fn narrow_terminal_uses_full_width() {
+        let (rows, cols) = terminal_inner(60, 24, false);
+        // No panels, full width minus 2 borders = 58
+        assert_eq!(cols, 58);
+        assert_eq!(rows, 20);
+    }
 }
