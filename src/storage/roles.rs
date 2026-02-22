@@ -14,7 +14,7 @@ impl Database {
         let id_str = project_id.to_string();
         let mut stmt = self.conn.prepare(
             "SELECT role_name, description, permission_mode, allowed_tools, \
-             disallowed_tools, tools, append_system_prompt \
+             disallowed_tools, tools, append_system_prompt, env \
              FROM project_roles WHERE project_id = ?1 ORDER BY role_name",
         )?;
 
@@ -27,6 +27,7 @@ impl Database {
                 let disallowed_csv: String = row.get(4)?;
                 let tools: Option<String> = row.get(5)?;
                 let append_system_prompt: Option<String> = row.get(6)?;
+                let env_json: String = row.get(7)?;
 
                 Ok(RoleConfig {
                     name,
@@ -37,6 +38,7 @@ impl Database {
                         disallowed_tools: csv_to_vec(&disallowed_csv),
                         tools,
                         append_system_prompt,
+                        env: json_to_env(&env_json),
                     },
                 })
             })?
@@ -49,7 +51,7 @@ impl Database {
     pub fn list_all_roles(&self) -> rusqlite::Result<HashMap<ProjectId, Vec<RoleConfig>>> {
         let mut stmt = self.conn.prepare(
             "SELECT pr.project_id, pr.role_name, pr.description, pr.permission_mode, \
-             pr.allowed_tools, pr.disallowed_tools, pr.tools, pr.append_system_prompt \
+             pr.allowed_tools, pr.disallowed_tools, pr.tools, pr.append_system_prompt, pr.env \
              FROM project_roles pr \
              INNER JOIN projects p ON p.id = pr.project_id AND p.deleted_at IS NULL \
              ORDER BY pr.project_id, pr.role_name",
@@ -66,6 +68,7 @@ impl Database {
             let disallowed_csv: String = row.get(5)?;
             let tools: Option<String> = row.get(6)?;
             let append_system_prompt: Option<String> = row.get(7)?;
+            let env_json: String = row.get(8)?;
 
             Ok((
                 pid_str,
@@ -78,6 +81,7 @@ impl Database {
                         disallowed_tools: csv_to_vec(&disallowed_csv),
                         tools,
                         append_system_prompt,
+                        env: json_to_env(&env_json),
                     },
                 },
             ))
@@ -113,9 +117,9 @@ impl Database {
             self.conn.execute(
                 "INSERT INTO project_roles \
                  (project_id, role_name, description, permission_mode, \
-                  allowed_tools, disallowed_tools, tools, append_system_prompt, \
+                  allowed_tools, disallowed_tools, tools, append_system_prompt, env, \
                   created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id_str,
                     role.name,
@@ -125,6 +129,7 @@ impl Database {
                     vec_to_csv(&role.permissions.disallowed_tools),
                     role.permissions.tools,
                     role.permissions.append_system_prompt,
+                    env_to_json(&role.permissions.env),
                     now,
                     now,
                 ],
@@ -147,6 +152,24 @@ fn csv_to_vec(csv: &str) -> Vec<String> {
 /// Convert a Vec<String> to a comma-separated string.
 fn vec_to_csv(v: &[String]) -> String {
     v.join(",")
+}
+
+/// Deserialize a JSON string to a HashMap of environment variables.
+fn json_to_env(json: &str) -> HashMap<String, String> {
+    if json.is_empty() {
+        HashMap::new()
+    } else {
+        serde_json::from_str(json).unwrap_or_default()
+    }
+}
+
+/// Serialize a HashMap of environment variables to a JSON string.
+fn env_to_json(env: &HashMap<String, String>) -> String {
+    if env.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(env).unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +225,7 @@ mod tests {
                     disallowed_tools: vec!["Edit".to_string()],
                     tools: Some("default".to_string()),
                     append_system_prompt: Some("Be careful".to_string()),
+                    env: HashMap::new(),
                 },
             },
         ];
@@ -331,6 +355,64 @@ mod tests {
 
         let all = db.list_all_roles().unwrap();
         assert!(all.is_empty());
+    }
+
+    #[test]
+    fn role_env_preserved() {
+        let (db, pid) = setup_db_with_project("envtest");
+
+        let env = HashMap::from([
+            ("API_KEY".to_string(), "sk-secret".to_string()),
+            ("DEBUG".to_string(), "1".to_string()),
+        ]);
+        let roles = vec![RoleConfig {
+            name: "with-env".to_string(),
+            description: "Has env vars".to_string(),
+            permissions: RolePermissions {
+                env: env.clone(),
+                ..RolePermissions::default()
+            },
+        }];
+
+        db.replace_roles(pid, &roles).unwrap();
+        let loaded = db.list_roles(pid).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].permissions.env, env);
+    }
+
+    #[test]
+    fn role_empty_env_preserved() {
+        let (db, pid) = setup_db_with_project("emptyenv");
+
+        let roles = vec![RoleConfig {
+            name: "no-env".to_string(),
+            description: String::new(),
+            permissions: RolePermissions::default(),
+        }];
+
+        db.replace_roles(pid, &roles).unwrap();
+        let loaded = db.list_roles(pid).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].permissions.env.is_empty());
+    }
+
+    #[test]
+    fn json_env_roundtrip() {
+        let env = HashMap::from([
+            ("KEY".to_string(), "value".to_string()),
+            ("EMPTY".to_string(), String::new()),
+        ]);
+        let json = env_to_json(&env);
+        let parsed = json_to_env(&json);
+        assert_eq!(parsed, env);
+    }
+
+    #[test]
+    fn json_env_empty_roundtrip() {
+        assert_eq!(env_to_json(&HashMap::new()), "");
+        assert!(json_to_env("").is_empty());
     }
 
     #[test]

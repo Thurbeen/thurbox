@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -88,6 +88,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             disallowed_tools    TEXT NOT NULL DEFAULT '',
             tools               TEXT,
             append_system_prompt TEXT,
+            env                 TEXT NOT NULL DEFAULT '',
             created_at          INTEGER NOT NULL,
             updated_at          INTEGER NOT NULL,
             PRIMARY KEY (project_id, role_name)
@@ -207,6 +208,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if version < 7 {
         // v6 → v7: add shell_backend_id column to sessions
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN shell_backend_id TEXT", []);
+    }
+
+    if version < 8 {
+        // v7 → v8: add env column to project_roles (JSON-encoded environment variables)
+        let _ = conn.execute(
+            "ALTER TABLE project_roles ADD COLUMN env TEXT NOT NULL DEFAULT ''",
+            [],
+        );
     }
 
     if version < SCHEMA_VERSION {

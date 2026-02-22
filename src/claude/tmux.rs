@@ -709,6 +709,7 @@ impl SessionBackend for LocalTmuxBackend {
         command: &str,
         args: &[String],
         cwd: Option<&Path>,
+        env: &HashMap<String, String>,
         rows: u16,
         cols: u16,
     ) -> Result<SpawnedSession> {
@@ -718,8 +719,12 @@ impl SessionBackend for LocalTmuxBackend {
             Some(dir) => format!(" -c {}", shell_escape(&dir.to_string_lossy())),
             None => String::new(),
         };
+        let env_part: String = env
+            .iter()
+            .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
+            .collect();
         let cmd = format!(
-            "new-window -t {TMUX_SESSION} -n {window_name} -P -F '#{{pane_id}}'{cwd_part} {shell_cmd}"
+            "new-window -t {TMUX_SESSION} -n {window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
         );
         let result = self.ctrl_command(&cmd)?;
         let pane_id = result.trim().to_string();
@@ -1327,6 +1332,30 @@ mod tests {
     fn shell_escape_allows_equals_comma() {
         // Equals and comma are safe characters.
         assert_eq!(shell_escape("key=val,other"), "key=val,other");
+    }
+
+    #[test]
+    fn env_flag_simple_value() {
+        // Simple key=value should not be quoted.
+        let env_part: String = [("RUST_LOG".to_string(), "debug".to_string())]
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>()
+            .iter()
+            .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
+            .collect();
+        assert_eq!(env_part, " -e RUST_LOG=debug");
+    }
+
+    #[test]
+    fn env_flag_value_with_spaces() {
+        // Values with spaces must be quoted as a single KEY=VALUE unit.
+        let env_part: String = [("MSG".to_string(), "hello world".to_string())]
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>()
+            .iter()
+            .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
+            .collect();
+        assert_eq!(env_part, " -e 'MSG=hello world'");
     }
 
     #[test]

@@ -23,6 +23,11 @@ claude --permission-mode <mode> \
        --append-system-prompt "<text>"
 ```
 
+Roles can also carry environment variables (`env`) that are
+injected into the session's tmux pane at spawn time via
+`tmux new-window -e KEY=VALUE`. This is useful for API keys,
+custom paths, or feature flags.
+
 Each project can have zero or more roles. Sessions select a role
 at creation time. If no roles are defined, sessions spawn with
 default (empty) permissions.
@@ -135,6 +140,7 @@ Tool lists are JSON arrays of strings:
 | `disallowed_tools` | string[] | no | `[]` | Tools that are blocked entirely. See [Tool Name Format](#tool-name-format). |
 | `tools` | string \| null | no | `null` | Restrict available tool set. `"default"` = all tools, `""` = none, or comma-separated list. |
 | `append_system_prompt` | string \| null | no | `null` | Text appended to Claude's system prompt for this role. |
+| `env` | object | no | `{}` | Environment variables passed to sessions using this role (key-value string pairs). |
 
 ### Validation rules
 
@@ -315,6 +321,23 @@ Atomically replace all roles for a project.
   "allowed_tools": ["Read", "Grep", "Glob", "WebFetch"],
   "disallowed_tools": ["Edit", "Write", "Bash", "NotebookEdit"],
   "append_system_prompt": "You are performing a security audit. Report findings but do not modify any files."
+}
+```
+
+### API Worker — with environment variables
+
+```json
+{
+  "name": "api-worker",
+  "description": "API development with custom environment",
+  "permission_mode": "acceptEdits",
+  "allowed_tools": ["Read", "Edit", "Bash(cargo:*)"],
+  "disallowed_tools": [],
+  "env": {
+    "API_KEY": "sk-test-123",
+    "DATABASE_URL": "postgres://localhost/dev",
+    "RUST_LOG": "debug"
+  }
 }
 ```
 

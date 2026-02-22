@@ -10,6 +10,8 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
+use std::collections::HashMap;
+
 use crate::session::{SessionConfig, SessionInfo};
 
 /// Default permission mode passed to the Claude CLI when no explicit mode is configured.
@@ -113,12 +115,14 @@ pub trait SessionBackend: Send + Sync {
     fn ensure_ready(&self) -> Result<()>;
 
     /// Spawn a new session running the given command.
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
         window_name: &str,
         command: &str,
         args: &[String],
         cwd: Option<&Path>,
+        env: &HashMap<String, String>,
         rows: u16,
         cols: u16,
     ) -> Result<SpawnedSession>;
@@ -199,6 +203,8 @@ pub struct Session {
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
     pub shell_pane: Option<ShellPane>,
+    /// Environment variables from the role, passed to shell pane spawns.
+    env: HashMap<String, String>,
 }
 
 impl Session {
@@ -218,6 +224,7 @@ impl Session {
             "claude",
             &args,
             config.cwd.as_deref(),
+            &config.permissions.env,
             rows,
             cols,
         )?;
@@ -243,6 +250,7 @@ impl Session {
                 backend_id: spawned.backend_id,
             },
             backend,
+            config.permissions.env.clone(),
         ))
     }
 
@@ -253,6 +261,7 @@ impl Session {
         cols: u16,
         backend_id: &str,
         backend: &Arc<dyn SessionBackend>,
+        env: HashMap<String, String>,
     ) -> Result<Self> {
         let adopted = backend.adopt(backend_id, rows, cols)?;
 
@@ -279,6 +288,7 @@ impl Session {
                 backend_id: backend_id.to_string(),
             },
             backend,
+            env,
         ))
     }
 
@@ -321,6 +331,7 @@ impl Session {
         cols: u16,
         io: SessionIo,
         backend: &Arc<dyn SessionBackend>,
+        env: HashMap<String, String>,
     ) -> Self {
         let (state, backend_id) = Self::wire_up(rows, cols, io);
         Self {
@@ -332,6 +343,7 @@ impl Session {
             exited: state.exited,
             last_output_at: state.last_output_at,
             shell_pane: None,
+            env,
         }
     }
 
@@ -438,6 +450,7 @@ impl Session {
             "claude",
             &args,
             config.cwd.as_deref(),
+            &config.permissions.env,
             rows,
             cols,
         )?;
@@ -458,6 +471,7 @@ impl Session {
         self.input_tx = state.input_tx;
         self.exited = state.exited;
         self.last_output_at = state.last_output_at;
+        self.env = config.permissions.env.clone();
         self.info.backend_id = Some(self.backend_id.clone());
         if !config.role.is_empty() {
             self.info.role = config.role.clone();
@@ -506,6 +520,7 @@ impl Session {
             &shell_cmd,
             &[],
             self.info.cwd.as_deref(),
+            &self.env,
             rows,
             cols,
         )?;
@@ -572,6 +587,7 @@ impl Session {
             exited: Arc::new(AtomicBool::new(false)),
             last_output_at: Arc::new(AtomicU64::new(now_millis())),
             shell_pane: None,
+            env: HashMap::new(),
         }
     }
 }
@@ -742,6 +758,7 @@ mod tests {
                 disallowed_tools: vec!["Edit".to_string()],
                 tools: Some("default".to_string()),
                 append_system_prompt: Some("Focus".to_string()),
+                env: HashMap::new(),
             },
             ..SessionConfig::default()
         };
