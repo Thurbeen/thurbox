@@ -251,7 +251,7 @@ impl ThurboxMcp {
     }
 
     #[tool(
-        description = "Atomically replace all roles for a project. Deletes existing roles and inserts the provided list in a single transaction. To add a role, include all existing roles plus the new one. To clear all roles, pass an empty array. Each role has: name (1-64 chars, unique), description, permission_mode (default/plan/acceptEdits/dontAsk/bypassPermissions), allowed_tools, disallowed_tools, tools, append_system_prompt. See docs/MCP_ROLES.md for the complete guide."
+        description = "Atomically replace all roles for a project. Deletes existing roles and inserts the provided list in a single transaction. To add a role, include all existing roles plus the new one. To clear all roles, pass an empty array. Each role has: name (1-64 chars, unique), description, permission_mode (default/plan/acceptEdits/dontAsk/bypassPermissions), allowed_tools, disallowed_tools, tools, append_system_prompt, env (object of key-value environment variables injected into sessions). See docs/MCP_ROLES.md for the complete guide."
     )]
     fn set_roles(&self, Parameters(params): Parameters<SetRolesParams>) -> String {
         let db = self.db.lock().unwrap();
