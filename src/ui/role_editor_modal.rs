@@ -18,6 +18,7 @@ pub enum RoleEditorField {
     AllowedTools,
     DisallowedTools,
     SystemPrompt,
+    Env,
 }
 
 /// Sub-state for a tool list field: either browsing items or typing a new one.
@@ -47,11 +48,16 @@ pub struct RoleEditorState<'a> {
     pub disallowed_tools_input_cursor: usize,
     pub system_prompt: &'a str,
     pub system_prompt_cursor: usize,
+    pub env: &'a [String],
+    pub env_index: usize,
+    pub env_mode: ToolListMode,
+    pub env_input: &'a str,
+    pub env_input_cursor: usize,
     pub focused_field: RoleEditorField,
 }
 
 pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) {
-    // Dynamic height: 2 (border) + 3 (name) + 3 (desc) + tool lists + 3 (prompt) + 1 (footer)
+    // Dynamic height: 2 (border) + 3 (name) + 3 (desc) + tool lists + 3 (prompt) + env list + 1 (footer)
     let allowed_rows = tool_list_height(
         state.allowed_tools,
         state.allowed_tools_mode,
@@ -62,8 +68,13 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
         state.disallowed_tools_mode,
         state.focused_field == RoleEditorField::DisallowedTools,
     );
+    let env_rows = tool_list_height(
+        state.env,
+        state.env_mode,
+        state.focused_field == RoleEditorField::Env,
+    );
     // Clamp total height so it doesn't exceed terminal.
-    let content_height = 1 + 3 + 3 + allowed_rows + disallowed_rows + 3 + 1; // +1 breadcrumb
+    let content_height = 1 + 3 + 3 + allowed_rows + disallowed_rows + 3 + env_rows + 1; // +1 breadcrumb
     let max_height = frame.area().height.saturating_sub(4);
     let height = (content_height + 2).min(max_height); // +2 for border
     let area = centered_fixed_height_rect(60, height, frame.area());
@@ -87,6 +98,7 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
             Constraint::Length(allowed_rows),    // Allowed Tools
             Constraint::Length(disallowed_rows), // Disallowed Tools
             Constraint::Length(3),               // System Prompt
+            Constraint::Length(env_rows),        // Environment Variables
             Constraint::Length(1),               // Footer
         ])
         .split(inner);
@@ -160,25 +172,38 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
         state.focused_field == RoleEditorField::SystemPrompt,
     );
 
+    render_tool_list(
+        frame,
+        chunks[6],
+        "Env (KEY=VALUE)",
+        state.env,
+        state.env_index,
+        state.env_mode,
+        state.env_input,
+        state.env_input_cursor,
+        state.focused_field == RoleEditorField::Env,
+    );
+
     // Footer — context-sensitive
-    let is_tool_field = matches!(
+    let is_list_field = matches!(
         state.focused_field,
-        RoleEditorField::AllowedTools | RoleEditorField::DisallowedTools
+        RoleEditorField::AllowedTools | RoleEditorField::DisallowedTools | RoleEditorField::Env
     );
     let tool_mode = match state.focused_field {
         RoleEditorField::AllowedTools => state.allowed_tools_mode,
         RoleEditorField::DisallowedTools => state.disallowed_tools_mode,
+        RoleEditorField::Env => state.env_mode,
         _ => ToolListMode::Browse,
     };
 
-    let footer = if is_tool_field && tool_mode == ToolListMode::Adding {
+    let footer = if is_list_field && tool_mode == ToolListMode::Adding {
         Line::from(vec![
             Span::styled("Enter", Theme::keybind()),
             Span::styled(" confirm  ", Theme::keybind_desc()),
             Span::styled("Esc", Theme::keybind()),
             Span::styled(" cancel", Theme::keybind_desc()),
         ])
-    } else if is_tool_field {
+    } else if is_list_field {
         Line::from(vec![
             Span::styled("a", Theme::keybind()),
             Span::styled(" add  ", Theme::keybind_desc()),
@@ -201,7 +226,7 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
             Span::styled(" discard", Theme::keybind_desc()),
         ])
     };
-    frame.render_widget(Paragraph::new(footer), chunks[6]);
+    frame.render_widget(Paragraph::new(footer), chunks[7]);
 }
 
 // ── Tool list helpers ───────────────────────────────────────────────────────

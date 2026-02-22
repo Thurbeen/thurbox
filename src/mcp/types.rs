@@ -77,6 +77,11 @@ pub struct RoleInput {
     pub tools: Option<String>,
     #[schemars(description = "Text appended to Claude's system prompt for this role")]
     pub append_system_prompt: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Environment variables passed to sessions using this role (e.g. {\"API_KEY\": \"sk-...\", \"PATH_EXTRA\": \"/opt/bin\"})"
+    )]
+    pub env: HashMap<String, String>,
 }
 
 /// Parameters for the `set_roles` tool.
@@ -179,6 +184,8 @@ pub struct RoleResponse {
     pub tools: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -356,6 +356,7 @@ pub struct App {
     pub(crate) role_editor_allowed_tools: ToolListState,
     pub(crate) role_editor_disallowed_tools: ToolListState,
     pub(crate) role_editor_system_prompt: TextInput,
+    pub(crate) role_editor_env: ToolListState,
     pub(crate) role_editor_editing_index: Option<usize>,
     pub(crate) edit_project_mcp_servers: Vec<crate::session::McpServerConfig>,
     pub(crate) edit_project_mcp_server_index: usize,
@@ -616,6 +617,7 @@ impl App {
             role_editor_allowed_tools: ToolListState::new(),
             role_editor_disallowed_tools: ToolListState::new(),
             role_editor_system_prompt: TextInput::new(),
+            role_editor_env: ToolListState::new(),
             role_editor_editing_index: None,
             edit_project_mcp_servers: Vec::new(),
             edit_project_mcp_server_index: 0,
@@ -1267,6 +1269,21 @@ impl App {
             Some(system_prompt)
         };
 
+        // Parse env KEY=VALUE items into a HashMap
+        let env: HashMap<String, String> = self
+            .role_editor_env
+            .items
+            .iter()
+            .filter_map(|item| {
+                let (k, v) = item.split_once('=')?;
+                let k = k.trim();
+                if k.is_empty() {
+                    return None;
+                }
+                Some((k.to_string(), v.to_string()))
+            })
+            .collect();
+
         // Preserve fields not exposed in the editor (permission_mode, tools)
         let base_permissions = self
             .role_editor_editing_index
@@ -1282,6 +1299,7 @@ impl App {
                 disallowed_tools,
                 tools: base_permissions.and_then(|p| p.tools.clone()),
                 append_system_prompt,
+                env,
             },
         };
 
@@ -1911,12 +1929,14 @@ impl App {
 
             // Try to adopt from backend
             let (rows, cols) = self.content_area_size();
+            let env = self.resolve_role_permissions(&shared_session.role).env;
             match Session::adopt(
                 shared_session.name.clone(),
                 rows,
                 cols,
                 &shared_session.backend_id,
                 &self.backend,
+                env,
             ) {
                 Ok(mut adopted_session) => {
                     // Preserve the original session ID from shared state
@@ -2281,6 +2301,11 @@ impl App {
                         .cursor_pos(),
                     system_prompt: self.role_editor_system_prompt.value(),
                     system_prompt_cursor: self.role_editor_system_prompt.cursor_pos(),
+                    env: &self.role_editor_env.items,
+                    env_index: self.role_editor_env.selected,
+                    env_mode: self.role_editor_env.mode,
+                    env_input: self.role_editor_env.input.value(),
+                    env_input_cursor: self.role_editor_env.input.cursor_pos(),
                     focused_field: self.role_editor_field,
                 },
             );
@@ -2398,6 +2423,7 @@ impl App {
                 self.role_editor_allowed_tools.items.join("\n"),
                 self.role_editor_disallowed_tools.items.join("\n"),
                 self.role_editor_system_prompt.value().to_string(),
+                self.role_editor_env.items.join("\n"),
             ],
         }
     }
@@ -2595,9 +2621,17 @@ impl App {
             };
 
             // Try to adopt the existing backend session.
+            let env = self.resolve_role_permissions(&role).env;
             let adopted = matching_discovered.and_then(|disc| {
                 let (rows, cols) = self.content_area_size();
-                match Session::adopt(name.clone(), rows, cols, &disc.backend_id, &self.backend) {
+                match Session::adopt(
+                    name.clone(),
+                    rows,
+                    cols,
+                    &disc.backend_id,
+                    &self.backend,
+                    env.clone(),
+                ) {
                     Ok(session) => Some(session),
                     Err(e) => {
                         error!("Failed to adopt session '{name}': {e}");
@@ -3136,6 +3170,7 @@ mod tests {
             _: &str,
             _: &[String],
             _: Option<&Path>,
+            _: &std::collections::HashMap<String, String>,
             _: u16,
             _: u16,
         ) -> anyhow::Result<crate::claude::backend::SpawnedSession> {
@@ -3565,6 +3600,7 @@ mod tests {
                     disallowed_tools: vec![],
                     tools: Some("default".to_string()),
                     append_system_prompt: Some("Be careful".to_string()),
+                    env: HashMap::new(),
                 },
             }],
             mcp_servers: vec![],
@@ -3658,6 +3694,8 @@ mod tests {
         app.handle_role_editor_editor_key(KeyCode::Tab);
         assert_eq!(app.role_editor_field, RoleEditorField::SystemPrompt);
         app.handle_role_editor_editor_key(KeyCode::Tab);
+        assert_eq!(app.role_editor_field, RoleEditorField::Env);
+        app.handle_role_editor_editor_key(KeyCode::Tab);
         assert_eq!(app.role_editor_field, RoleEditorField::Name);
     }
 
@@ -3669,6 +3707,8 @@ mod tests {
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
         assert_eq!(app.role_editor_field, RoleEditorField::Name);
+        app.handle_role_editor_editor_key(KeyCode::BackTab);
+        assert_eq!(app.role_editor_field, RoleEditorField::Env);
         app.handle_role_editor_editor_key(KeyCode::BackTab);
         assert_eq!(app.role_editor_field, RoleEditorField::SystemPrompt);
         app.handle_role_editor_editor_key(KeyCode::BackTab);

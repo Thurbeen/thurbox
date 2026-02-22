@@ -86,6 +86,7 @@ fn role_to_response(r: &RoleConfig) -> RoleResponse {
         disallowed_tools: r.permissions.disallowed_tools.clone(),
         tools: r.permissions.tools.clone(),
         append_system_prompt: r.permissions.append_system_prompt.clone(),
+        env: r.permissions.env.clone(),
     }
 }
 
@@ -271,6 +272,7 @@ impl ThurboxMcp {
                     disallowed_tools: r.disallowed_tools,
                     tools: r.tools,
                     append_system_prompt: r.append_system_prompt,
+                    env: r.env,
                 },
             })
             .collect();
@@ -698,6 +700,7 @@ mod tests {
                     disallowed_tools: vec![],
                     tools: None,
                     append_system_prompt: None,
+                    env: HashMap::new(),
                 },
                 RoleInput {
                     name: "reviewer".to_string(),
@@ -707,6 +710,7 @@ mod tests {
                     disallowed_tools: vec!["Edit".to_string()],
                     tools: None,
                     append_system_prompt: Some("Be careful".to_string()),
+                    env: HashMap::new(),
                 },
             ],
         }));
@@ -739,6 +743,7 @@ mod tests {
                 disallowed_tools: vec![],
                 tools: None,
                 append_system_prompt: None,
+                env: HashMap::new(),
             }],
         }));
         let v = parse_json(&result);
@@ -764,6 +769,7 @@ mod tests {
                 disallowed_tools: vec![],
                 tools: None,
                 append_system_prompt: None,
+                env: HashMap::new(),
             }],
         }));
 
@@ -803,6 +809,7 @@ mod tests {
                     disallowed_tools: vec![],
                     tools: None,
                     append_system_prompt: None,
+                    env: HashMap::new(),
                 },
                 RoleInput {
                     name: "beta".to_string(),
@@ -812,6 +819,7 @@ mod tests {
                     disallowed_tools: vec![],
                     tools: None,
                     append_system_prompt: None,
+                    env: HashMap::new(),
                 },
             ],
         }));
@@ -827,6 +835,7 @@ mod tests {
                 disallowed_tools: vec![],
                 tools: None,
                 append_system_prompt: None,
+                env: HashMap::new(),
             }],
         }));
         let roles = parse_json(&result);
@@ -853,10 +862,49 @@ mod tests {
                 disallowed_tools: vec![],
                 tools: Some("default".to_string()),
                 append_system_prompt: None,
+                env: HashMap::new(),
             }],
         }));
         let roles = parse_json(&result);
         assert_eq!(roles[0]["tools"], "default");
+    }
+
+    #[test]
+    fn set_roles_with_env() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "envtest".to_string(),
+            repos: vec![],
+        }));
+
+        let mut env = HashMap::new();
+        env.insert("API_KEY".to_string(), "sk-secret".to_string());
+        env.insert("DEBUG".to_string(), "1".to_string());
+
+        let result = server.set_roles(Parameters(SetRolesParams {
+            project: "envtest".to_string(),
+            roles: vec![RoleInput {
+                name: "with-env".to_string(),
+                description: "Has env vars".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+                env: env.clone(),
+            }],
+        }));
+        let roles = parse_json(&result);
+        assert_eq!(roles[0]["name"], "with-env");
+        assert_eq!(roles[0]["env"]["API_KEY"], "sk-secret");
+        assert_eq!(roles[0]["env"]["DEBUG"], "1");
+
+        // Verify persistence via list_roles
+        let list_result = server.list_roles(Parameters(ListRolesParams {
+            project: "envtest".to_string(),
+        }));
+        let listed = parse_json(&list_result);
+        assert_eq!(listed[0]["env"]["API_KEY"], "sk-secret");
     }
 
     #[test]

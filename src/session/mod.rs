@@ -112,6 +112,9 @@ pub struct RolePermissions {
     /// Text appended to Claude's system prompt for sessions using this role.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
+    /// Environment variables injected into the spawned session process.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
 }
 
 /// A named role definition.
@@ -414,6 +417,7 @@ mod tests {
         assert!(perms.disallowed_tools.is_empty());
         assert!(perms.tools.is_none());
         assert!(perms.append_system_prompt.is_none());
+        assert!(perms.env.is_empty());
     }
 
     #[test]
@@ -424,6 +428,7 @@ mod tests {
             disallowed_tools: vec![],
             tools: None,
             append_system_prompt: Some("Be careful".to_string()),
+            env: HashMap::new(),
         };
         let serialized = toml::to_string_pretty(&perms).unwrap();
         let deserialized: RolePermissions = toml::from_str(&serialized).unwrap();
@@ -438,6 +443,21 @@ mod tests {
             disallowed_tools: vec!["Edit".to_string()],
             tools: Some("default".to_string()),
             append_system_prompt: Some("Be careful".to_string()),
+            env: HashMap::new(),
+        };
+        let serialized = toml::to_string_pretty(&perms).unwrap();
+        let deserialized: RolePermissions = toml::from_str(&serialized).unwrap();
+        assert_eq!(perms, deserialized);
+    }
+
+    #[test]
+    fn role_permissions_env_serde_roundtrip() {
+        let perms = RolePermissions {
+            env: HashMap::from([
+                ("API_KEY".to_string(), "sk-secret".to_string()),
+                ("DEBUG".to_string(), "1".to_string()),
+            ]),
+            ..RolePermissions::default()
         };
         let serialized = toml::to_string_pretty(&perms).unwrap();
         let deserialized: RolePermissions = toml::from_str(&serialized).unwrap();

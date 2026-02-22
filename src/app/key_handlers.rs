@@ -925,7 +925,9 @@ impl App {
         use crate::ui::role_editor_modal::{RoleEditorField, ToolListMode};
 
         match self.role_editor_field {
-            RoleEditorField::AllowedTools | RoleEditorField::DisallowedTools => {
+            RoleEditorField::AllowedTools
+            | RoleEditorField::DisallowedTools
+            | RoleEditorField::Env => {
                 if self.active_tool_list_mut().mode == ToolListMode::Adding {
                     self.handle_tool_adding_key(code);
                 } else {
@@ -1006,7 +1008,8 @@ impl App {
             RoleEditorField::Description => RoleEditorField::AllowedTools,
             RoleEditorField::AllowedTools => RoleEditorField::DisallowedTools,
             RoleEditorField::DisallowedTools => RoleEditorField::SystemPrompt,
-            RoleEditorField::SystemPrompt => RoleEditorField::Name,
+            RoleEditorField::SystemPrompt => RoleEditorField::Env,
+            RoleEditorField::Env => RoleEditorField::Name,
         }
     }
 
@@ -1015,11 +1018,12 @@ impl App {
     ) -> crate::ui::role_editor_modal::RoleEditorField {
         use crate::ui::role_editor_modal::RoleEditorField;
         match field {
-            RoleEditorField::Name => RoleEditorField::SystemPrompt,
+            RoleEditorField::Name => RoleEditorField::Env,
             RoleEditorField::Description => RoleEditorField::Name,
             RoleEditorField::AllowedTools => RoleEditorField::Description,
             RoleEditorField::DisallowedTools => RoleEditorField::AllowedTools,
             RoleEditorField::SystemPrompt => RoleEditorField::DisallowedTools,
+            RoleEditorField::Env => RoleEditorField::SystemPrompt,
         }
     }
 
@@ -1043,6 +1047,7 @@ impl App {
         self.role_editor_allowed_tools.reset();
         self.role_editor_disallowed_tools.reset();
         self.role_editor_system_prompt.clear();
+        self.role_editor_env.reset();
         self.role_editor_field = crate::ui::role_editor_modal::RoleEditorField::Name;
         self.role_editor_view = RoleEditorView::Editor;
         self.role_editor_snapshot = Some(self.capture_role_editor_snapshot());
@@ -1063,6 +1068,14 @@ impl App {
                 .as_deref()
                 .unwrap_or(""),
         );
+        // Load env as KEY=VALUE strings for the list editor
+        let env_items: Vec<String> = role
+            .permissions
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        self.role_editor_env.load(&env_items);
         self.role_editor_field = crate::ui::role_editor_modal::RoleEditorField::Name;
         self.role_editor_view = RoleEditorView::Editor;
         self.role_editor_snapshot = Some(self.capture_role_editor_snapshot());
@@ -1073,6 +1086,7 @@ impl App {
             crate::ui::role_editor_modal::RoleEditorField::AllowedTools => {
                 &mut self.role_editor_allowed_tools
             }
+            crate::ui::role_editor_modal::RoleEditorField::Env => &mut self.role_editor_env,
             _ => &mut self.role_editor_disallowed_tools,
         }
     }
