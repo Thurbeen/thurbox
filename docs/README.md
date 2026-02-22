@@ -11,6 +11,7 @@ event loop), see [`CLAUDE.md`](../CLAUDE.md).
 | [CONSTITUTION.md](CONSTITUTION.md) | Core principles | Adding/removing an enforced invariant |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture decisions | Changing a technology or structural pattern |
 | [FEATURES.md](FEATURES.md) | Feature-level design | Altering keybindings, lifecycle, layout, or UX |
+| [MCP_ROLES.md](MCP_ROLES.md) | MCP role configuration | Adding/changing role config, permission modes, tool patterns |
 
 ## Keeping Docs Current
 

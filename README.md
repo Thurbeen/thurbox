@@ -18,8 +18,10 @@ own tmux pane. Sessions persist across crashes, restarts, and
 even multiple concurrent Thurbox instances — tmux keeps them
 alive in the background. Restart a session with `Ctrl+R` to
 pick up new role permissions while preserving conversation
-history via `--resume`. Recover sessions externally at any time
-with `tmux -L thurbox attach`.
+history via `--resume`. Each session displays elapsed time
+("Waiting 45s", "Idle 2m") and highlights clickable URLs in
+terminal output. Recover sessions externally at any time with
+`tmux -L thurbox attach`.
 
 ### Project Management
 
@@ -27,19 +29,24 @@ Organize work into projects, each with its own sessions and
 settings. The two-section left sidebar shows all projects on top
 and the active project's sessions below. Projects support
 multiple repositories — the first repo becomes the working
-directory and the rest are passed via `--add-dir`. Edit projects
-on the fly with `Ctrl+E` without losing running sessions.
-A built-in Admin project (pinned at index 0) provides
-conversational access to Thurbox management via MCP.
+directory and the rest are passed via `--add-dir`. Edit
+projects on the fly with `Ctrl+E` (name, repos, roles, MCP
+servers) without losing running sessions. Soft-deleted
+projects and sessions can be restored via the Admin session
+or MCP API. A built-in Admin project (pinned at index 0)
+provides conversational access to Thurbox management via MCP.
 
 ### Git Worktree Support
 
 Optionally spawn sessions inside git worktrees for branch
 isolation. When creating a session (`Ctrl+N`), choose "Worktree"
 mode to select a base branch and name a new branch — Thurbox
-creates the worktree and launches Claude inside it. Closing the
-session automatically removes the worktree. Worktree sessions
-show the branch name in the terminal title and session list.
+creates the worktree and launches Claude inside it. Press
+`Ctrl+S` to sync all worktree sessions with `origin/main` —
+on rebase conflicts, Thurbox automatically sends a resolution
+prompt to Claude. Closing the session automatically removes
+the worktree. Worktree sessions show the branch name in the
+terminal title and session list.
 
 ### Role System
 
@@ -129,9 +136,10 @@ The binary will be available at `target/release/thurbox`.
    Claude Code session. All keys are forwarded to the PTY.
 5. **Navigate** — `Ctrl+L` cycles focus (project list → session
    list → terminal). `Ctrl+H` jumps to the project list.
-   `Ctrl+J` / `Ctrl+K` switch sessions.
+   `Ctrl+J` / `Ctrl+K` switch projects or sessions.
 6. **Manage projects** — `Ctrl+E` edits the active project
-   (name, repos, roles). `Ctrl+D` deletes a session or project.
+   (name, repos, roles, MCP servers). `Ctrl+D` deletes a
+   session or project.
 7. **Restart a session** — `Ctrl+R` restarts with `--resume` to
    preserve conversation history while picking up new
    role permissions.
@@ -148,12 +156,15 @@ The binary will be available at `target/release/thurbox`.
 | `Ctrl+N` | New project or session | **N**ew |
 | `Ctrl+C` | Close active session | **C**lose |
 | `Ctrl+H` | Focus project list | Vim: **h** = left |
-| `Ctrl+J` | Next session | Vim: **j** = down |
-| `Ctrl+K` | Previous session | Vim: **k** = up |
+| `Ctrl+J` | Next project (project list) / session | Vim: **j** = down |
+| `Ctrl+K` | Previous project (project list) / session | Vim: **k** = up |
 | `Ctrl+L` | Cycle focus | Vim: **l** = right |
 | `Ctrl+D` | Delete session or project | Vim: **d** = delete |
 | `Ctrl+E` | Edit active project | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
+| `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
+| `Ctrl+Z` | Undo session/project delete | **Z** = undo |
+| `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `F1` | Help overlay | Universal |
 | `F2` | Toggle info panel | Next to F1 |
 

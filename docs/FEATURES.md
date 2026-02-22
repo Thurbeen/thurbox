@@ -51,13 +51,9 @@ at `~/.local/share/thurbox/thurbox.db` (`$XDG_DATA_HOME` respected).
 Projects are created and edited via the TUI (add-project modal
 with `Ctrl+N`, edit with `Ctrl+E`).
 
-If the database is empty on first launch, Thurbox creates an
-ephemeral Default project using the current working directory.
-The Default project is not persisted to the database.
-
-On upgrade from a version that used `config.toml`, roles are
-automatically migrated to the database on first launch. The
-old `config.toml` is renamed to `config.toml.bak`.
+If the database is empty on first launch, only the built-in
+Admin project is present. Users create their first project via
+`Ctrl+N` or through the Admin session.
 
 ### Edit project modal
 
@@ -128,13 +124,16 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) | **N**ew |
 | `Ctrl+C` | Global | Close active session | **C**lose |
 | `Ctrl+H` | Global | Focus project list | Vim: **h** = left |
-| `Ctrl+J` | Global | Next session within active project | Vim: **j** = down |
-| `Ctrl+K` | Global | Previous session within active project | Vim: **k** = up |
+| `Ctrl+J` | Global | Next project (project list focused) or session | Vim: **j** = down |
+| `Ctrl+K` | Global | Previous project (project list focused) or session | Vim: **k** = up |
 | `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal | Vim: **l** = right |
 | `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
 | `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
-| `Ctrl+E` | Global | Edit active project (name, repos, roles) | **E**dit |
+| `Ctrl+E` | Global | Edit active project (name, repos, roles, MCP servers) | **E**dit |
 | `Ctrl+R` | Global | Restart active session | **R**estart |
+| `Ctrl+S` | Global | Sync all worktree sessions with origin/main | **S**ync |
+| `Ctrl+Z` | Global | Undo session/project delete | **Z** = undo |
+| `Ctrl+U` | Global | Restore deleted sessions | **U**ndelete |
 | `F1` | Global | Show help overlay | Universal help |
 | `F2` | Global | Toggle info panel | Next to F1 |
 | `j` / `Down` | Project list | Next project | |
@@ -386,9 +385,9 @@ reconstructed on restore.
 ### Multi-instance support
 
 Multiple thurbox instances can view the same tmux sessions.
-The primary instance (first to connect) uses `pipe-pane` for
-real-time output streaming. Input can be sent from any instance
-via the pane TTY.
+Each instance independently connects to tmux in control mode
+(`-C`). Tmux broadcasts `%output` notifications to all connected
+clients — there is no primary/secondary distinction.
 
 ---
 

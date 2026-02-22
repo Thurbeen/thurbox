@@ -169,6 +169,8 @@ cargo run --bin thurbox-mcp         # Run (stdin/stdout JSON-RPC)
 | `delete_project` | Soft-delete a project (preserves for undo) |
 | `list_roles` | List all roles for a project (by name or UUID) |
 | `set_roles` | Atomically replace all roles for a project |
+| `list_mcp_servers` | List MCP servers for a project |
+| `set_mcp_servers` | Set MCP servers for a project |
 | `list_sessions` | List sessions, optionally filtered by project |
 | `get_session` | Get a session by UUID |
 | `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
@@ -288,10 +290,11 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+K` | Previous project (project focus) / session | Vim: **k** = up |
 | `Ctrl+L` | Cycle focus | Vim: **l** = right |
 | `Ctrl+D` | Delete session/project | Vim: **d** = delete |
-| `Ctrl+E` | Edit active project (name, repos, roles) | **E**dit |
+| `Ctrl+E` | Edit active project (name, repos, roles, MCP servers) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
-| `Ctrl+Z` | Undo session delete | **Z** = undo |
-| `Ctrl+U` | Restore deleted session | **U**ndelete |
+| `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
+| `Ctrl+Z` | Undo session/project delete | **Z** = undo |
+| `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `F1` | Help overlay | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
 

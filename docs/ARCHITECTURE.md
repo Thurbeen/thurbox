@@ -338,7 +338,7 @@ delivers pixel-perfect rendering with all original formatting.
 
 ---
 
-## ADR-7: Multi-Instance Sync — SQLite with PRAGMA data_version
+## ADR-7b: Multi-Instance Sync — SQLite with PRAGMA data_version
 
 **Choice**: Multiple thurbox instances synchronize all state
 (projects, sessions, roles, worktrees) via a shared SQLite database
