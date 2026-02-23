@@ -8,6 +8,24 @@ use uuid::Uuid;
 /// Default role name assigned when no explicit role is configured.
 pub const DEFAULT_ROLE_NAME: &str = "developer";
 
+/// Default permissions for the built-in "developer" role.
+/// Uses `acceptEdits` so Write/Edit tools are auto-approved.
+pub fn default_developer_permissions() -> RolePermissions {
+    RolePermissions {
+        permission_mode: Some("acceptEdits".to_string()),
+        ..RolePermissions::default()
+    }
+}
+
+/// Built-in "developer" role seeded into projects that have no roles.
+pub fn default_developer_role() -> RoleConfig {
+    RoleConfig {
+        name: DEFAULT_ROLE_NAME.to_string(),
+        description: String::new(),
+        permissions: default_developer_permissions(),
+    }
+}
+
 /// Validated role name type that prevents invalid states.
 /// Role names must be non-empty and at most 64 characters.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -501,6 +519,35 @@ mod tests {
     #[test]
     fn default_role_name_is_developer() {
         assert_eq!(DEFAULT_ROLE_NAME, "developer");
+    }
+
+    #[test]
+    fn default_developer_permissions_has_accept_edits() {
+        let perms = default_developer_permissions();
+        assert_eq!(perms.permission_mode, Some("acceptEdits".to_string()));
+    }
+
+    #[test]
+    fn default_developer_permissions_has_no_tool_restrictions() {
+        let perms = default_developer_permissions();
+        assert!(perms.allowed_tools.is_empty());
+        assert!(perms.disallowed_tools.is_empty());
+        assert!(perms.tools.is_none());
+        assert!(perms.append_system_prompt.is_none());
+        assert!(perms.env.is_empty());
+    }
+
+    #[test]
+    fn default_developer_role_has_correct_name_and_permissions() {
+        let role = default_developer_role();
+        assert_eq!(role.name, DEFAULT_ROLE_NAME);
+        assert_eq!(role.description, "");
+        assert_eq!(
+            role.permissions.permission_mode,
+            Some("acceptEdits".to_string())
+        );
+        assert!(role.permissions.allowed_tools.is_empty());
+        assert!(role.permissions.disallowed_tools.is_empty());
     }
 
     #[test]

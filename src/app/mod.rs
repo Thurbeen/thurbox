@@ -22,8 +22,9 @@ use crate::agent::{BackendRegistry, Session, SessionBackend};
 use crate::git;
 use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
-    RoleConfig, RolePermissions, SessionCommand, SessionConfig, SessionId, SessionInfo,
-    SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
+    default_developer_permissions, default_developer_role, RoleConfig, RolePermissions,
+    SessionCommand, SessionConfig, SessionId, SessionInfo, SessionStatus, WorktreeInfo,
+    DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
@@ -584,13 +585,26 @@ fn migrate_config_toml_roles(db: &Database) {
 /// Load projects from the database.
 ///
 /// The DB is the single source of truth for all project data including roles.
+/// Non-admin projects with no roles are seeded with the default developer role
+/// and persisted back, so the migration is transparent on subsequent loads.
 /// Returns an empty vec if the database has no projects.
 fn load_projects_from_db(db: &Database) -> Vec<ProjectInfo> {
-    db.list_active_projects()
+    let mut projects: Vec<ProjectInfo> = db
+        .list_active_projects()
         .unwrap_or_default()
         .into_iter()
         .map(shared_project_to_info)
-        .collect()
+        .collect();
+
+    // Seed existing projects that have no roles with the default developer role.
+    for project in &mut projects {
+        if !project.is_admin && project.config.roles.is_empty() {
+            project.config.roles = vec![default_developer_role()];
+            let _ = db.replace_roles(project.id, &project.config.roles);
+        }
+    }
+
+    projects
 }
 
 impl App {
@@ -886,7 +900,9 @@ impl App {
 
         match roles.len() {
             0 => {
-                // No roles configured — spawn with default (empty) permissions.
+                // No roles configured — spawn with default developer permissions.
+                config.role = DEFAULT_ROLE_NAME.to_string();
+                config.permissions = default_developer_permissions();
                 self.do_spawn_session(name, &config, worktrees, None);
             }
             1 => {
@@ -1807,7 +1823,7 @@ impl App {
         let config = ProjectConfig {
             name,
             repos: self.add_project_repos.clone(),
-            roles: Vec::new(),
+            roles: vec![default_developer_role()],
             mcp_servers: Vec::new(),
             id: None,
         };
@@ -3326,7 +3342,13 @@ impl App {
                     .find(|r| r.name == role_name)
                     .map(|r| r.permissions.clone())
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                if role_name == DEFAULT_ROLE_NAME {
+                    default_developer_permissions()
+                } else {
+                    RolePermissions::default()
+                }
+            })
     }
 
     /// Resolve a role name to its permissions using the active project's role config.
@@ -4059,7 +4081,7 @@ mod tests {
     // --- Role editor tests ---
 
     #[test]
-    fn open_role_editor_starts_empty_for_no_custom_roles() {
+    fn open_role_editor_has_seeded_developer_role() {
         let mut app = App::new(
             24,
             120,
@@ -4070,7 +4092,8 @@ mod tests {
         );
         app.open_role_editor();
         assert!(app.show_role_editor);
-        assert!(app.role_editor_roles.is_empty());
+        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(app.role_editor_roles[0].name, "developer");
         assert_eq!(app.role_editor_view, RoleEditorView::List);
     }
 
@@ -4874,6 +4897,65 @@ mod tests {
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].config.roles.len(), 1);
         assert_eq!(projects[0].config.roles[0].name, "reviewer");
+    }
+
+    #[test]
+    fn load_projects_from_db_seeds_developer_role_for_roleless_project() {
+        let db = test_db();
+        let proj_config = ProjectConfig {
+            name: "NoRoles".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            id: None,
+        };
+        let proj_id = proj_config.deterministic_id();
+        db.insert_project(proj_id, "NoRoles", &[PathBuf::from("/repo")])
+            .unwrap();
+
+        let projects = load_projects_from_db(&db);
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].config.roles.len(), 1);
+        assert_eq!(projects[0].config.roles[0].name, "developer");
+        assert_eq!(
+            projects[0].config.roles[0].permissions.permission_mode,
+            Some("acceptEdits".to_string())
+        );
+
+        // Verify the role was persisted to DB (subsequent load finds it).
+        let reloaded = load_projects_from_db(&db);
+        assert_eq!(reloaded[0].config.roles.len(), 1);
+        assert_eq!(reloaded[0].config.roles[0].name, "developer");
+    }
+
+    #[test]
+    fn load_projects_from_db_skips_seeding_project_with_existing_roles() {
+        let db = test_db();
+        let proj_config = ProjectConfig {
+            name: "HasRoles".to_string(),
+            repos: vec![PathBuf::from("/repo")],
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            id: None,
+        };
+        let proj_id = proj_config.deterministic_id();
+        db.insert_project(proj_id, "HasRoles", &[PathBuf::from("/repo")])
+            .unwrap();
+        db.replace_roles(
+            proj_id,
+            &[crate::session::RoleConfig {
+                name: "custom".to_string(),
+                description: String::new(),
+                permissions: crate::session::RolePermissions::default(),
+            }],
+        )
+        .unwrap();
+
+        let projects = load_projects_from_db(&db);
+
+        assert_eq!(projects[0].config.roles.len(), 1);
+        assert_eq!(projects[0].config.roles[0].name, "custom");
     }
 
     #[test]
@@ -5802,21 +5884,22 @@ mod tests {
         use crate::session::{RoleConfig, RolePermissions};
         let mut app = app_with_roles(vec![]);
         app.open_edit_project_modal();
-        // Add a role to the editor state
+        // Add a role to the editor state (developer role was seeded on load)
         app.role_editor_roles.push(RoleConfig {
             name: "new-role".to_string(),
             description: String::new(),
             permissions: RolePermissions::default(),
         });
         app.submit_edit_project();
-        // Verify the project now has the role
+        // Verify the project has both the seeded developer role and the new one
         let project = app
             .projects
             .iter()
             .find(|p| p.config.name == "test")
             .unwrap();
-        assert_eq!(project.config.roles.len(), 1);
-        assert_eq!(project.config.roles[0].name, "new-role");
+        assert_eq!(project.config.roles.len(), 2);
+        assert_eq!(project.config.roles[0].name, "developer");
+        assert_eq!(project.config.roles[1].name, "new-role");
     }
 
     #[test]
@@ -5903,7 +5986,7 @@ mod tests {
         let mut app = app_with_roles(vec![]);
         app.open_edit_project_modal();
         app.edit_project_field = EditProjectField::Roles;
-        // Add a role directly to the editor state
+        // Add a role directly to the editor state (developer role was seeded on load)
         app.role_editor_roles.push(RoleConfig {
             name: "added".to_string(),
             description: String::new(),
@@ -5917,8 +6000,9 @@ mod tests {
             .iter()
             .find(|p| p.config.name == "test")
             .unwrap();
-        assert_eq!(project.config.roles.len(), 1);
-        assert_eq!(project.config.roles[0].name, "added");
+        assert_eq!(project.config.roles.len(), 2);
+        assert_eq!(project.config.roles[0].name, "developer");
+        assert_eq!(project.config.roles[1].name, "added");
     }
 
     #[test]
