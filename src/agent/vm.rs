@@ -1687,6 +1687,22 @@ impl SessionBackend for QemuVmBackend {
     fn default_shell(&self) -> String {
         "/bin/bash".to_string()
     }
+
+    fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>> {
+        let (vm_id, pane_id) = Self::parse_backend_id(backend_id)?;
+        let result = self.ctrl_command(
+            vm_id,
+            &format!("display-message -t {pane_id} -p '#{{pane_pid}}'"),
+        )?;
+        let trimmed = result.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed.parse::<u32>() {
+            Ok(pid) => Ok(Some(pid)),
+            Err(_) => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
