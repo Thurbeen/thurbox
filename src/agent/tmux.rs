@@ -350,6 +350,11 @@ impl LocalTmuxBackend {
 
     /// Apply initial config to the tmux server.
     fn apply_config(&self) -> Result<()> {
+        // Use a non-login shell so that macOS path_helper (/etc/zprofile)
+        // doesn't clobber PATH additions from ~/.zshenv (e.g. cargo, asdf).
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        self.tmux_run(&["set-option", "-s", "default-command", &shell])?;
+
         // Server-wide options
         let server_opts = [
             ("default-terminal", "xterm-256color"),
