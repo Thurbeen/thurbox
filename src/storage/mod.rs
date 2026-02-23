@@ -19,6 +19,7 @@ mod schema;
 mod sessions;
 pub use sessions::DeletedSessionInfo;
 pub mod sync;
+pub mod vms;
 mod worktrees;
 
 use std::path::Path;

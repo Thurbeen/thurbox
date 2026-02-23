@@ -311,19 +311,31 @@ fn render_session_section(
                 Span::styled(status_text, status_style),
             ]);
 
-            // Line 2: indented role name + optional · branch
-            let mut line2_spans = vec![Span::styled(
-                format!("    {}", info.role),
-                Style::default().fg(Theme::ROLE_NAME),
-            )];
-            if let Some(wt) = info.worktrees.first() {
-                line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
-                line2_spans.push(Span::styled(
-                    &wt.branch,
-                    Style::default().fg(Theme::BRANCH_NAME),
-                ));
-            }
-            let line2 = Line::from(line2_spans);
+            // Line 2: provisioning step (if provisioning) or role · branch/VM
+            let line2 = if info.status == crate::session::SessionStatus::Provisioning {
+                let step_text = info.provisioning_step.as_deref().unwrap_or("Starting...");
+                Line::from(vec![
+                    Span::styled("    ⟳ ", Style::default().fg(Theme::ACCENT)),
+                    Span::styled(step_text, Style::default().fg(Theme::ACCENT)),
+                ])
+            } else {
+                let mut line2_spans = vec![Span::styled(
+                    format!("    {}", info.role),
+                    Style::default().fg(Theme::ROLE_NAME),
+                )];
+                if let Some(wt) = info.worktrees.first() {
+                    line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
+                    line2_spans.push(Span::styled(
+                        &wt.branch,
+                        Style::default().fg(Theme::BRANCH_NAME),
+                    ));
+                }
+                if info.vm_id.is_some() {
+                    line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
+                    line2_spans.push(Span::styled("VM", Style::default().fg(Theme::ACCENT)));
+                }
+                Line::from(line2_spans)
+            };
 
             ListItem::new(vec![line1, line2])
         })

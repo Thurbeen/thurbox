@@ -8,13 +8,23 @@ use ratatui::{
 
 use super::theme::Theme;
 use crate::project::ProjectInfo;
-use crate::session::{RoleConfig, SessionInfo};
+use crate::session::{RoleConfig, SessionInfo, SessionStatus};
+
+/// Rich VM details for the info panel, sourced from the database VM record.
+pub struct VmDetails {
+    pub state: String,
+    pub cpus: u32,
+    pub memory_mb: u32,
+    pub ssh_port: u16,
+    pub base_image: String,
+}
 
 pub fn render_info_panel(
     frame: &mut Frame,
     area: Rect,
     info: &SessionInfo,
     project: Option<&ProjectInfo>,
+    vm_details: Option<&VmDetails>,
 ) {
     let block = Block::default()
         .title(" Info ")
@@ -121,6 +131,67 @@ pub fn render_info_panel(
             Style::default().fg(Theme::TEXT_MUTED),
         ),
     ]));
+
+    // ── VM section (for sandboxed sessions) ──
+    if let Some(vm_id) = &info.vm_id {
+        lines.push(separator());
+        lines.push(Line::from(Span::styled(
+            "Sandbox VM",
+            Theme::section_header(),
+        )));
+
+        if let Some(vm) = vm_details {
+            lines.push(Line::from(vec![
+                Span::styled("State: ", Theme::label()),
+                Span::styled(&vm.state, Style::default().fg(Theme::TEXT_PRIMARY)),
+            ]));
+        }
+
+        // Show short VM ID (first 8 chars)
+        let short_id = if vm_id.len() > 8 { &vm_id[..8] } else { vm_id };
+        lines.push(Line::from(vec![
+            Span::styled("VM ID: ", Theme::label()),
+            Span::styled(short_id, Style::default().fg(Theme::TEXT_MUTED)),
+        ]));
+
+        if let Some(vm) = vm_details {
+            lines.push(Line::from(vec![
+                Span::styled("CPUs: ", Theme::label()),
+                Span::styled(
+                    vm.cpus.to_string(),
+                    Style::default().fg(Theme::TEXT_PRIMARY),
+                ),
+                Span::styled("  RAM: ", Theme::label()),
+                Span::styled(
+                    format!("{} MB", vm.memory_mb),
+                    Style::default().fg(Theme::TEXT_PRIMARY),
+                ),
+            ]));
+            if vm.ssh_port > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("SSH: ", Theme::label()),
+                    Span::styled(
+                        format!("localhost:{}", vm.ssh_port),
+                        Style::default().fg(Theme::TEXT_PRIMARY),
+                    ),
+                ]));
+            }
+            lines.push(Line::from(vec![
+                Span::styled("Image: ", Theme::label()),
+                Span::styled(&vm.base_image, Style::default().fg(Theme::TEXT_MUTED)),
+            ]));
+        }
+
+        // Show provisioning step when provisioning.
+        if info.status == SessionStatus::Provisioning {
+            if let Some(ref step) = info.provisioning_step {
+                lines.push(Line::from(vec![
+                    Span::styled("Step: ", Theme::label()),
+                    Span::styled(step, Style::default().fg(Theme::ACCENT)),
+                ]));
+            }
+        }
+    }
 
     // ── Directories section ──
     if info.cwd.is_some() || !info.additional_dirs.is_empty() {

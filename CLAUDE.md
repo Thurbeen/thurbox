@@ -223,12 +223,16 @@ app      ← coordinator, imports all modules
 - **`agent/`** — Side-effect layer. `AgentProvider` trait
   abstracts CLI command + arg construction (default:
   `ClaudeProvider`). `Session` wraps a `SessionBackend`
-  trait (default: `LocalTmuxBackend` using `tmux -L thurbox`).
-  Reads output into `Arc<Mutex<vt100::Parser>>`, writes input
-  via mpsc channel. `input.rs` translates crossterm `KeyCode`
-  → xterm ANSI bytes.
+  trait. `BackendRegistry` manages multiple backends
+  (default: `LocalTmuxBackend` using `tmux -L thurbox`,
+  optional: `QemuVmBackend` for sandboxed VM sessions).
+  `VmManager` handles QEMU/KVM VM lifecycle (create, start,
+  stop, destroy, restore). Reads output into
+  `Arc<Mutex<vt100::Parser>>`, writes input via mpsc channel.
+  `input.rs` translates crossterm `KeyCode` → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
-  `SessionInfo`, `SessionConfig` (with optional `cwd`).
+  `SessionInfo` (with optional `vm_id`), `SessionConfig`
+  (with optional `cwd` and `vm_id`), `VmState`, `VmConfig`.
   No logic beyond Display/Default impls.
 - **`project/`** — Plain data: `ProjectId`,
   `ProjectConfig`, `ProjectInfo`. Imports `session` only.
@@ -243,7 +247,8 @@ app      ← coordinator, imports all modules
 ### Event Loop (main.rs)
 
 ```text
-tokio::main → init backend (tmux) → open SQLite DB
+tokio::main → init backends (BackendRegistry: local-tmux
+  + optional qemu-vm) → open SQLite DB
 → init terminal → spawn/restore sessions → loop {
     draw frame → poll crossterm events (10ms)
     → convert to AppMessage → app.update() → app.tick()
@@ -268,7 +273,8 @@ framework). Install with `prek install`. Stages:
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- Session backend: `tmux -L thurbox` (dedicated server)
+- Session backends: `LocalTmuxBackend` (`tmux -L thurbox`)
+  and optional `QemuVmBackend` (tmux over SSH inside QEMU/KVM VMs)
 - Output reader runs in `tokio::task::spawn_blocking`
   (blocking I/O), writer in `tokio::spawn` (async)
 - Terminal state parsed by `vt100::Parser`,

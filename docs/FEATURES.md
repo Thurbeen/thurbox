@@ -666,6 +666,94 @@ lines instead of blank lines, improving visual structure.
 
 ---
 
+## Sandbox VM Sessions
+
+Sessions can run inside QEMU/KVM virtual machines for full OS-level
+isolation. This is opt-in: the session mode selector modal offers
+"Sandbox VM" alongside "Normal" and "Worktree".
+
+### VM specifications
+
+| Parameter | Value |
+|-----------|-------|
+| Base image | Debian 13 (Trixie) genericcloud amd64 qcow2 |
+| CPUs | 2 |
+| RAM | 2048 MB |
+| Disk | 10 GB qcow2 CoW overlay |
+| Networking | User-mode (SLIRP), SSH on ports 22200+ |
+| SSH user | `thurbox` (ed25519 ephemeral key) |
+| Packages | tmux, git, rsync, curl, Claude CLI |
+| Boot timeout | 120 seconds |
+
+Base images are cached at `~/.local/share/thurbox/images/`.
+Per-VM state (disk overlay, cloud-init ISO, SSH keys, PID file)
+lives under `~/.local/share/thurbox/vms/<vm-uuid>/`.
+
+### Host requirements
+
+- `qemu-system-x86_64` with `/dev/kvm` support
+- `genisoimage` or `mkisofs` (cloud-init ISO creation)
+- `ssh-keygen`, `rsync`
+
+### How it works
+
+1. `Ctrl+N` triggers session creation.
+2. The session mode modal offers "Normal", "Worktree", or
+   "Sandbox VM".
+3. Choosing "Sandbox VM" starts asynchronous VM provisioning:
+   - Downloads the Debian 13 base image (once, cached)
+   - Creates a qcow2 CoW overlay disk
+   - Generates cloud-init ISO (SSH key, user setup, packages)
+   - Launches QEMU with KVM acceleration (`-enable-kvm -cpu host`)
+   - Polls SSH readiness every 500ms (up to 120s timeout)
+4. Once the VM is ready, a tmux session is spawned inside the VM
+   over SSH, and the Claude Code CLI starts with `--resume`.
+
+### VM lifecycle
+
+VMs are managed by `VmManager` with a state machine:
+
+```text
+Creating → Starting → Ready → Stopping → Stopped
+                        ↓
+                      Error
+```
+
+- **Creating**: Disk overlay and cloud-init are being prepared.
+- **Starting**: QEMU process launched, waiting for SSH.
+- **Ready**: SSH is reachable, sessions can be spawned.
+- **Stopping/Stopped**: VM is shutting down or has been destroyed.
+- **Error**: VM failed to start or SSH probe failed.
+
+### Session restoration
+
+QEMU VMs survive Thurbox restarts (they are separate processes).
+On restart, Thurbox:
+
+1. Discovers sessions from all registered backends (local-tmux
+   and qemu-vm).
+2. For VM sessions, calls `VmManager::restore_vm()` to verify
+   the QEMU process is still running via SSH probe.
+3. Re-establishes the SSH control mode connection.
+4. Adopts the tmux pane inside the VM with terminal content intact.
+5. If the VM has died, falls through to re-provision a new VM
+   with `--resume` to preserve conversation history.
+
+### VM state persistence
+
+VM records are stored in the `vms` SQLite table with a foreign key
+to `sessions(id)`. Fields include VM ID, SSH port, state, config,
+and associated session ID.
+
+### UI indicators
+
+- **Session mode modal**: "Sandbox VM" option with description.
+- **Info panel**: Shows VM ID, SSH port, and provisioning status
+  for VM-backed sessions.
+- **Status bar**: Provisioning steps displayed during VM creation.
+
+---
+
 ## Planned Features
 
 Directional intent, not commitments.

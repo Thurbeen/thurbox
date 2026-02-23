@@ -114,6 +114,38 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_session_commands_pending
             ON session_commands(id) WHERE processed_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS vms (
+            id          TEXT PRIMARY KEY,
+            session_id  TEXT REFERENCES sessions(id),
+            project_id  TEXT REFERENCES projects(id),
+            state       TEXT NOT NULL DEFAULT 'stopped',
+            ssh_port    INTEGER NOT NULL,
+            base_image  TEXT NOT NULL,
+            cpus        INTEGER NOT NULL DEFAULT 2,
+            memory_mb   INTEGER NOT NULL DEFAULT 2048,
+            disk_gb     INTEGER NOT NULL DEFAULT 10,
+            qemu_pid    INTEGER,
+            error_msg   TEXT,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            deleted_at  INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS project_vm_config (
+            project_id   TEXT PRIMARY KEY REFERENCES projects(id),
+            base_image   TEXT,
+            cpus         INTEGER,
+            memory_mb    INTEGER,
+            disk_gb      INTEGER,
+            setup_script TEXT,
+            updated_at   INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vms_session
+            ON vms(session_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_vms_project
+            ON vms(project_id) WHERE deleted_at IS NULL;
         ",
     )?;
 
@@ -211,11 +243,45 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
 
     if version < 8 {
-        // v7 → v8: add env column to project_roles (JSON-encoded environment variables)
+        // v7 → v8: add env column to project_roles, add VM tables for sandboxed sessions
         let _ = conn.execute(
             "ALTER TABLE project_roles ADD COLUMN env TEXT NOT NULL DEFAULT ''",
             [],
         );
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS vms (
+                id          TEXT PRIMARY KEY,
+                session_id  TEXT REFERENCES sessions(id),
+                project_id  TEXT REFERENCES projects(id),
+                state       TEXT NOT NULL DEFAULT 'stopped',
+                ssh_port    INTEGER NOT NULL,
+                base_image  TEXT NOT NULL,
+                cpus        INTEGER NOT NULL DEFAULT 2,
+                memory_mb   INTEGER NOT NULL DEFAULT 2048,
+                disk_gb     INTEGER NOT NULL DEFAULT 10,
+                qemu_pid    INTEGER,
+                error_msg   TEXT,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                deleted_at  INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS project_vm_config (
+                project_id   TEXT PRIMARY KEY REFERENCES projects(id),
+                base_image   TEXT,
+                cpus         INTEGER,
+                memory_mb    INTEGER,
+                disk_gb      INTEGER,
+                setup_script TEXT,
+                updated_at   INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_vms_session
+                ON vms(session_id) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_vms_project
+                ON vms(project_id) WHERE deleted_at IS NULL;",
+        )?;
     }
 
     if version < 9 {

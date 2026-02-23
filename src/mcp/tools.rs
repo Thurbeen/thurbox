@@ -10,11 +10,15 @@ use crate::session::{McpServerConfig, RoleConfig, RolePermissions, SessionId};
 use crate::storage::Database;
 use crate::sync::{SharedProject, SharedSession};
 
+use crate::session::VmConfig;
+use crate::storage::vms::VmRecord;
+
 use super::types::{
-    CreateProjectParams, DeleteProjectParams, DeleteSessionParams, GetProjectParams,
-    GetSessionParams, ListMcpServersParams, ListRolesParams, ListSessionsParams, McpServerResponse,
-    ProjectResponse, RestartSessionParams, RestoreSessionParams, RoleResponse, SessionResponse,
-    SetMcpServersParams, SetRolesParams, UpdateProjectParams, WorktreeResponse,
+    ConfigureProjectVmParams, CreateProjectParams, DeleteProjectParams, DeleteSessionParams,
+    GetProjectParams, GetSessionParams, GetVmParams, ListMcpServersParams, ListRolesParams,
+    ListSessionsParams, ListVmsParams, McpServerResponse, ProjectResponse, ProjectVmConfigResponse,
+    RestartSessionParams, RestoreSessionParams, RoleResponse, SessionResponse, SetMcpServersParams,
+    SetRolesParams, UpdateProjectParams, VmResponse, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -108,6 +112,21 @@ fn session_to_response(s: &SharedSession) -> SessionResponse {
                 branch: w.branch.clone(),
             })
             .collect(),
+    }
+}
+
+fn vm_to_response(r: &VmRecord) -> VmResponse {
+    VmResponse {
+        id: r.id.clone(),
+        session_id: r.session_id.clone(),
+        project_id: r.project_id.clone(),
+        state: r.state.to_string(),
+        ssh_port: r.ssh_port,
+        base_image: r.base_image.clone(),
+        cpus: r.cpus,
+        memory_mb: r.memory_mb,
+        disk_gb: r.disk_gb,
+        error_msg: r.error_msg.clone(),
     }
 }
 
@@ -407,6 +426,83 @@ impl ThurboxMcp {
                 "session_name": session.name,
             })
             .to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(description = "List all active VMs, optionally filtered by project name or UUID")]
+    fn list_vms(&self, Parameters(params): Parameters<ListVmsParams>) -> String {
+        let db = self.db.lock().unwrap();
+
+        let project_id = match &params.project {
+            Some(filter) => {
+                let (projects, idx) = match require_project(&db, filter) {
+                    Ok(v) => v,
+                    Err(e) => return e,
+                };
+                Some(projects[idx].id.to_string())
+            }
+            None => None,
+        };
+
+        match db.list_vms(project_id.as_deref()) {
+            Ok(vms) => {
+                let resp: Vec<VmResponse> = vms.iter().map(vm_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(description = "Get a VM by its UUID")]
+    fn get_vm(&self, Parameters(params): Parameters<GetVmParams>) -> String {
+        let db = self.db.lock().unwrap();
+        match db.get_vm(&params.vm) {
+            Ok(Some(vm)) => json_text(&vm_to_response(&vm)),
+            Ok(None) => error_json(&format!("VM not found: {}", params.vm)),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Configure default VM settings for a project. These settings apply to new sandbox VM sessions created for the project."
+    )]
+    fn configure_project_vm(
+        &self,
+        Parameters(params): Parameters<ConfigureProjectVmParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+        let (projects, idx) = match require_project(&db, &params.project) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let project = &projects[idx];
+
+        let config = VmConfig {
+            base_image: params
+                .base_image
+                .unwrap_or_else(|| VmConfig::default().base_image),
+            cpus: params.cpus.unwrap_or(VmConfig::default().cpus),
+            memory_mb: params.memory_mb.unwrap_or(VmConfig::default().memory_mb),
+            disk_gb: params.disk_gb.unwrap_or(VmConfig::default().disk_gb),
+            setup_script: params.setup_script,
+        };
+
+        if let Err(e) = db.set_project_vm_config(&project.id.to_string(), &config) {
+            return error_json(&e.to_string());
+        }
+
+        // Read back the saved config
+        match db.get_project_vm_config(&project.id.to_string()) {
+            Ok(Some(cfg)) => json_text(&ProjectVmConfigResponse {
+                project_id: cfg.project_id,
+                base_image: cfg.base_image,
+                cpus: cfg.cpus,
+                memory_mb: cfg.memory_mb,
+                disk_gb: cfg.disk_gb,
+                setup_script: cfg.setup_script,
+            }),
+            Ok(None) => error_json("Config not found after save"),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1296,5 +1392,121 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Deleted session not found"));
+    }
+
+    // ── VM tool tests ───────────────────────────────────────────
+
+    #[test]
+    fn list_vms_empty() {
+        let server = test_server();
+        let result = server.list_vms(Parameters(ListVmsParams { project: None }));
+        let v = parse_json(&result);
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
+    fn list_vms_with_project_filter() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "vmproj".to_string(),
+            repos: vec![],
+        }));
+        let result = server.list_vms(Parameters(ListVmsParams {
+            project: Some("vmproj".to_string()),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
+    fn list_vms_nonexistent_project() {
+        let server = test_server();
+        let result = server.list_vms(Parameters(ListVmsParams {
+            project: Some("ghost".to_string()),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("Project not found"));
+    }
+
+    #[test]
+    fn get_vm_not_found() {
+        let server = test_server();
+        let result = server.get_vm(Parameters(GetVmParams {
+            vm: "nonexistent".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("VM not found"));
+    }
+
+    #[test]
+    fn get_vm_exists() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "vmtest".to_string(),
+            repos: vec![],
+        }));
+        let pid = test_project_id("vmtest").to_string();
+        let config = crate::session::VmConfig::default();
+
+        {
+            let db = server.db.lock().unwrap();
+            db.insert_vm(
+                "vm-1",
+                None,
+                Some(&pid),
+                &crate::session::VmState::Ready,
+                22200,
+                &config,
+            )
+            .unwrap();
+        }
+
+        let result = server.get_vm(Parameters(GetVmParams {
+            vm: "vm-1".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["id"], "vm-1");
+        assert_eq!(v["state"], "Ready");
+        assert_eq!(v["ssh_port"], 22200);
+        assert_eq!(v["cpus"], 2);
+    }
+
+    #[test]
+    fn configure_project_vm_creates_config() {
+        let server = test_server();
+        server.create_project(Parameters(CreateProjectParams {
+            name: "vmcfg".to_string(),
+            repos: vec![],
+        }));
+
+        let result = server.configure_project_vm(Parameters(ConfigureProjectVmParams {
+            project: "vmcfg".to_string(),
+            base_image: Some("custom.img".to_string()),
+            cpus: Some(4),
+            memory_mb: Some(8192),
+            disk_gb: None,
+            setup_script: Some("apt install nodejs".to_string()),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["base_image"], "custom.img");
+        assert_eq!(v["cpus"], 4);
+        assert_eq!(v["memory_mb"], 8192);
+        assert_eq!(v["disk_gb"], 10); // default
+        assert_eq!(v["setup_script"], "apt install nodejs");
+    }
+
+    #[test]
+    fn configure_project_vm_nonexistent_project() {
+        let server = test_server();
+        let result = server.configure_project_vm(Parameters(ConfigureProjectVmParams {
+            project: "ghost".to_string(),
+            base_image: None,
+            cpus: None,
+            memory_mb: None,
+            disk_gb: None,
+            setup_script: None,
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("Project not found"));
     }
 }

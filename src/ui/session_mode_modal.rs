@@ -9,14 +9,31 @@ use ratatui::{
 use super::centered_fixed_height_rect;
 use super::theme::Theme;
 
-const MODES: [&str; 2] = ["Normal", "Worktree"];
+const MODES_BASE: [&str; 2] = ["Normal", "Worktree"];
+const MODE_SANDBOX_VM: &str = "Sandbox VM";
 
 pub struct SessionModeState {
     pub selected_index: usize,
+    /// Whether the "Sandbox VM" option should be shown.
+    pub vm_available: bool,
+}
+
+impl SessionModeState {
+    /// Number of visible modes.
+    pub fn mode_count(&self) -> usize {
+        if self.vm_available {
+            MODES_BASE.len() + 1
+        } else {
+            MODES_BASE.len()
+        }
+    }
 }
 
 pub fn render_session_mode_modal(frame: &mut Frame, state: &SessionModeState) {
-    let area = centered_fixed_height_rect(50, 6, frame.area());
+    let mode_count = state.mode_count();
+    // Height = modes + 2 (border) + 1 (footer)
+    let height = mode_count as u16 + 3;
+    let area = centered_fixed_height_rect(50, height, frame.area());
 
     frame.render_widget(Clear, area);
 
@@ -36,7 +53,17 @@ pub fn render_session_mode_modal(frame: &mut Frame, state: &SessionModeState) {
         ])
         .split(inner);
 
-    let items: Vec<ListItem<'_>> = MODES
+    let modes: Vec<&str> = if state.vm_available {
+        MODES_BASE
+            .iter()
+            .copied()
+            .chain(std::iter::once(MODE_SANDBOX_VM))
+            .collect()
+    } else {
+        MODES_BASE.to_vec()
+    };
+
+    let items: Vec<ListItem<'_>> = modes
         .iter()
         .enumerate()
         .map(|(i, mode)| {

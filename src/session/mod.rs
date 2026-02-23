@@ -170,6 +170,7 @@ impl std::str::FromStr for SessionId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
+    Provisioning,
     Busy,
     Waiting,
     Idle,
@@ -179,6 +180,7 @@ pub enum SessionStatus {
 impl SessionStatus {
     pub fn icon(self) -> &'static str {
         match self {
+            Self::Provisioning => "⟳",
             Self::Busy => "●",
             Self::Waiting => "◉",
             Self::Idle => "○",
@@ -190,6 +192,7 @@ impl SessionStatus {
 impl fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Provisioning => write!(f, "Provisioning"),
             Self::Busy => write!(f, "Busy"),
             Self::Waiting => write!(f, "Waiting"),
             Self::Idle => write!(f, "Idle"),
@@ -209,6 +212,10 @@ pub struct SessionInfo {
     pub additional_dirs: Vec<PathBuf>,
     pub backend_id: Option<String>,
     pub shell_backend_id: Option<String>,
+    /// VM identifier when this session runs inside a sandboxed VM.
+    pub vm_id: Option<String>,
+    /// Current provisioning step description (shown while status is `Provisioning`).
+    pub provisioning_step: Option<String>,
 }
 
 impl SessionInfo {
@@ -224,6 +231,8 @@ impl SessionInfo {
             additional_dirs: Vec::new(),
             backend_id: None,
             shell_backend_id: None,
+            vm_id: None,
+            provisioning_step: None,
         }
     }
 }
@@ -245,6 +254,100 @@ pub struct SessionConfig {
     pub additional_dirs: Vec<PathBuf>,
     pub role: String,
     pub permissions: RolePermissions,
+    /// Target VM ID for VM-backed sessions.
+    ///
+    /// When set, the VM backend uses this to spawn the session on the specific VM
+    /// rather than picking arbitrarily. Ensures each session is tied to its own VM.
+    pub vm_id: Option<String>,
+}
+
+/// VM state machine for sandboxed sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VmState {
+    /// Overlay disk and cloud-init ISO are being created.
+    Provisioning,
+    /// QEMU process started, waiting for SSH readiness.
+    Starting,
+    /// SSH is reachable, VM is ready for sessions.
+    Ready,
+    /// Shutdown signal sent, waiting for QEMU to exit.
+    Stopping,
+    /// QEMU process has exited.
+    Stopped,
+    /// Something went wrong.
+    Failed(String),
+}
+
+impl fmt::Display for VmState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Provisioning => write!(f, "Provisioning"),
+            Self::Starting => write!(f, "Starting"),
+            Self::Ready => write!(f, "Ready"),
+            Self::Stopping => write!(f, "Stopping"),
+            Self::Stopped => write!(f, "Stopped"),
+            Self::Failed(msg) => write!(f, "Failed: {msg}"),
+        }
+    }
+}
+
+impl VmState {
+    /// Parse from database string representation.
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "provisioning" => Self::Provisioning,
+            "starting" => Self::Starting,
+            "ready" => Self::Ready,
+            "stopping" => Self::Stopping,
+            "stopped" => Self::Stopped,
+            other => {
+                if let Some(msg) = other.strip_prefix("failed:") {
+                    Self::Failed(msg.trim().to_string())
+                } else {
+                    Self::Stopped
+                }
+            }
+        }
+    }
+
+    /// Convert to database string representation.
+    pub fn to_db_str(&self) -> String {
+        match self {
+            Self::Provisioning => "provisioning".to_string(),
+            Self::Starting => "starting".to_string(),
+            Self::Ready => "ready".to_string(),
+            Self::Stopping => "stopping".to_string(),
+            Self::Stopped => "stopped".to_string(),
+            Self::Failed(msg) => format!("failed:{msg}"),
+        }
+    }
+}
+
+/// Configuration for a sandboxed VM instance.
+#[derive(Debug, Clone)]
+pub struct VmConfig {
+    /// Base cloud image filename (e.g., "debian-13-genericcloud-amd64.qcow2").
+    pub base_image: String,
+    /// Number of virtual CPUs.
+    pub cpus: u32,
+    /// RAM in megabytes.
+    pub memory_mb: u32,
+    /// Disk size in gigabytes (CoW overlay, grows on demand).
+    pub disk_gb: u32,
+    /// Optional setup script run during cloud-init.
+    pub setup_script: Option<String>,
+}
+
+impl Default for VmConfig {
+    fn default() -> Self {
+        Self {
+            base_image: "debian-13-genericcloud-amd64.qcow2".to_string(),
+            cpus: 2,
+            memory_mb: 2048,
+            disk_gb: 10,
+            setup_script: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -336,6 +439,7 @@ mod tests {
 
     #[test]
     fn session_status_display() {
+        assert_eq!(SessionStatus::Provisioning.to_string(), "Provisioning");
         assert_eq!(SessionStatus::Busy.to_string(), "Busy");
         assert_eq!(SessionStatus::Waiting.to_string(), "Waiting");
         assert_eq!(SessionStatus::Idle.to_string(), "Idle");
@@ -344,6 +448,7 @@ mod tests {
 
     #[test]
     fn session_status_icon() {
+        assert_eq!(SessionStatus::Provisioning.icon(), "⟳");
         assert_eq!(SessionStatus::Busy.icon(), "●");
         assert_eq!(SessionStatus::Waiting.icon(), "◉");
         assert_eq!(SessionStatus::Idle.icon(), "○");
@@ -407,6 +512,7 @@ mod tests {
         assert!(config.additional_dirs.is_empty());
         assert_eq!(config.role, "");
         assert_eq!(config.permissions, RolePermissions::default());
+        assert!(config.vm_id.is_none());
     }
 
     #[test]

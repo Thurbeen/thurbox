@@ -58,8 +58,10 @@ No ad-hoc event handlers, no component-local state, no callback chains.
 ### 8. Backend-first session model
 
 Claude Code sessions run via a pluggable `SessionBackend` trait.
-The default backend is local tmux (`tmux -L thurbox`), which
-provides truly persistent sessions that survive crashes/restarts.
+A `BackendRegistry` manages multiple backends: the default is
+local tmux (`tmux -L thurbox`), with optional QEMU/KVM VM
+support (`QemuVmBackend` via SSH-tunneled tmux). Both provide
+truly persistent sessions that survive crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
 The backend is the source of truth for session lifecycle.
 

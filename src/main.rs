@@ -9,7 +9,7 @@ use crossterm::execute;
 
 use thurbox::agent::claude::ClaudeProvider;
 use thurbox::agent::tmux::LocalTmuxBackend;
-use thurbox::agent::{AgentProvider, SessionBackend};
+use thurbox::agent::{AgentProvider, BackendRegistry, QemuVmBackend, SessionBackend, VmManager};
 use thurbox::app::{App, AppMessage};
 use thurbox::storage::Database;
 
@@ -35,11 +35,29 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    // Initialize the session backend (local tmux) and agent provider.
-    let backend: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
-    backend.check_available()?;
-    backend.ensure_ready()?;
+    // Initialize session backends and agent provider.
+    let local_tmux: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
+    local_tmux.check_available()?;
+    local_tmux.ensure_ready()?;
+    let mut backends = BackendRegistry::new(local_tmux);
     let provider: Arc<dyn AgentProvider> = Arc::new(ClaudeProvider);
+
+    // Register QEMU VM backend if available (optional — requires qemu-system-x86_64 + /dev/kvm).
+    let data_dir = thurbox::paths::log_directory().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let vm_manager = Arc::new(std::sync::Mutex::new(VmManager::new(&data_dir)));
+    let vm_backend: Arc<dyn SessionBackend> = Arc::new(QemuVmBackend::new(Arc::clone(&vm_manager)));
+    let mut vm_manager_for_app = None;
+    if vm_backend.check_available().is_ok() {
+        if let Err(e) = vm_backend.ensure_ready() {
+            tracing::warn!("QEMU VM backend available but setup failed: {e}");
+        } else {
+            tracing::info!("QEMU VM backend registered");
+            backends.register(vm_backend);
+            vm_manager_for_app = Some(vm_manager);
+        }
+    } else {
+        tracing::debug!("QEMU VM backend not available (qemu-system-x86_64 not found or /dev/kvm not accessible)");
+    }
 
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
@@ -57,7 +75,14 @@ async fn main() -> Result<()> {
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let size = terminal.size()?;
 
-    let mut app = App::new(size.height, size.width, backend, provider, db);
+    let mut app = App::new(
+        size.height,
+        size.width,
+        backends,
+        provider,
+        db,
+        vm_manager_for_app,
+    );
 
     // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {

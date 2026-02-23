@@ -158,6 +158,34 @@ pub struct SetMcpServersParams {
     pub servers: Vec<McpServerInput>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListVmsParams {
+    #[schemars(description = "Optional project name or UUID to filter VMs")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetVmParams {
+    #[schemars(description = "VM UUID")]
+    pub vm: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ConfigureProjectVmParams {
+    #[schemars(description = "Project name or UUID")]
+    pub project: String,
+    #[schemars(description = "Base cloud image filename")]
+    pub base_image: Option<String>,
+    #[schemars(description = "Number of virtual CPUs (default: 2)")]
+    pub cpus: Option<u32>,
+    #[schemars(description = "RAM in megabytes (default: 4096)")]
+    pub memory_mb: Option<u32>,
+    #[schemars(description = "Disk size in gigabytes (default: 20)")]
+    pub disk_gb: Option<u32>,
+    #[schemars(description = "Setup script to run during cloud-init provisioning")]
+    pub setup_script: Option<String>,
+}
+
 // ── Response Types ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -218,4 +246,36 @@ pub struct WorktreeResponse {
     pub repo_path: PathBuf,
     pub worktree_path: PathBuf,
     pub branch: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VmResponse {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub state: String,
+    pub ssh_port: u16,
+    pub base_image: String,
+    pub cpus: u32,
+    pub memory_mb: u32,
+    pub disk_gb: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_msg: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectVmConfigResponse {
+    pub project_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_gb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_script: Option<String>,
 }

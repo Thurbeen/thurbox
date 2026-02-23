@@ -262,8 +262,9 @@ without touching `App`, `Session`, or any UI code.
 - *Async trait methods* — added complexity for no benefit since
   all current backends use synchronous `Command::new("tmux")`.
   Can be added via `async-trait` if a future backend needs it.
-- *Backend per session* — over-engineering; all sessions in a
-  thurbox instance share the same backend.
+- *Backend per session* — initially rejected as over-engineering,
+  later revisited in ADR-15 when VM support required per-session
+  backend routing.
 
 ---
 
@@ -471,3 +472,63 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
   Can be layered on top later if user-selectable themes are added.
 - *CSS-like stylesheets* — no Rust TUI framework supports this
   natively; would require a custom parser and resolver.
+
+---
+
+## ADR-15: Multi-backend architecture and QEMU VM sessions
+
+**Choice**: Sessions select their backend at creation time via a
+`BackendRegistry`. Each session stores its `backend_type` (e.g.,
+`"local-tmux"` or `"qemu-vm"`) in the database. The registry routes
+spawn, adopt, discover, and other operations to the correct backend.
+
+**Why**: VM-sandboxed sessions need a fundamentally different
+transport (SSH into a QEMU/KVM guest) but share the same session
+lifecycle. Rather than forking the session logic, the existing
+`SessionBackend` trait is reused with a second implementation
+(`QemuVmBackend`) that tunnels tmux control mode over SSH.
+
+**Key components**:
+
+- `BackendRegistry` — maps backend names to `Arc<dyn SessionBackend>`.
+  Created at startup with `LocalTmuxBackend` as default, optionally
+  registers `QemuVmBackend`. `all_backends()` enables multi-backend
+  discovery during session restoration.
+- `QemuVmBackend` — implements `SessionBackend` by running tmux
+  commands over SSH (`ssh -o ControlPath=... tmux -L thurbox ...`).
+  Uses SSH control mode (`-C`) for multiplexed connections.
+  `prepare_vm()` establishes the SSH control master before any
+  session operations.
+- `VmManager` — owns QEMU/KVM VM lifecycle: create (Debian 13
+  Trixie base image, qcow2 CoW overlay, cloud-init ISO with
+  tmux/git/rsync/Claude CLI), start (`qemu-system-x86_64` with
+  `-enable-kvm -cpu host`, 2 CPUs, 2 GB RAM, 10 GB disk, user-mode
+  networking on ports 22200+), stop, destroy. Tracks `VmInstance`
+  state (`Creating`, `Starting`, `Ready`, `Stopping`, `Stopped`,
+  `Error`). `restore_vm()` re-hydrates a running VM from DB
+  records on restart.
+- `VM_ID_ENV_KEY` (`__THURBOX_VM_ID`) — internal env variable
+  injected by `Session::spawn()` / `restart()` / `ensure_shell_pane()`
+  so the backend can route to the correct VM instance.
+
+**Session restoration**: On restart, `restore_sessions()` discovers
+sessions from all registered backends (not just default). For VM
+sessions, it calls `VmManager::restore_vm()` to verify the QEMU
+process is still running via SSH probe, then re-establishes the
+SSH control mode connection before adopting the tmux pane inside
+the VM.
+
+**VM state persistence**: The `vms` table stores VM records with
+`session_id REFERENCES sessions(id)` (FK constraint). The
+`update_vm_session()` call must happen after `save_state()` to
+satisfy the FK constraint.
+
+**Rejected**:
+
+- *Single backend for all sessions (ADR-11 original)* — VM sessions
+  need SSH transport; can't share a single local-tmux backend.
+- *Separate session type for VMs* — duplicates lifecycle logic;
+  the trait abstraction handles the difference cleanly.
+- *Docker instead of QEMU* — QEMU provides full OS isolation with
+  KVM acceleration; Docker shares the host kernel and is less
+  suitable for untrusted code sandboxing.

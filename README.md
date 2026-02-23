@@ -48,6 +48,21 @@ prompt to Claude. Closing the session automatically removes
 the worktree. Worktree sessions show the branch name in the
 terminal title and session list.
 
+### Sandbox VM Sessions
+
+Run sessions inside QEMU/KVM virtual machines for full OS-level
+isolation. Choose "Sandbox VM" in the session mode selector —
+Thurbox provisions a Debian 13 (Trixie) VM with 2 CPUs, 2 GB
+RAM, and a 10 GB qcow2 overlay disk, bootstrapped via
+cloud-init with tmux, git, rsync, and the Claude CLI
+pre-installed. SSH readiness is polled over user-mode networking
+(ports 22200+), then the Claude session is spawned inside the
+VM over SSH-tunneled tmux. VMs survive Thurbox restarts and are
+automatically re-adopted on next launch. If a VM has died,
+Thurbox re-provisions a new one with `--resume` to preserve
+conversation history. Requires `qemu-system-x86_64`, `/dev/kvm`,
+and `genisoimage` (or `mkisofs`).
+
 ### Role System
 
 Define per-project permission profiles that control Claude's
@@ -121,6 +136,8 @@ The binary will be available at `target/release/thurbox`.
 - **tmux >= 3.2** — session backend
 - **claude CLI** — [github.com/anthropics/claude-code](https://github.com/anthropics/claude-code)
 - **git** — required for worktree features
+- **QEMU/KVM** — optional, for sandbox VM sessions
+  (`qemu-system-x86_64`, `/dev/kvm`, `genisoimage` or `mkisofs`)
 - **Rust 1.75+** — only needed for building from source
 
 ## Quick Start
@@ -130,8 +147,8 @@ The binary will be available at `target/release/thurbox`.
 2. **Create a project** — press `Ctrl+N` with the project list
    focused. Enter a name and one or more repository paths.
 3. **Create a session** — select your project, then press
-   `Ctrl+N` again. Choose a session mode (Normal or Worktree)
-   and optionally select a role.
+   `Ctrl+N` again. Choose a session mode (Normal, Worktree,
+   or Sandbox VM) and optionally select a role.
 4. **Work with Claude** — the terminal panel shows the live
    Claude Code session. All keys are forwarded to the PTY.
 5. **Navigate** — `Ctrl+L` cycles focus (project list → session
@@ -229,18 +246,20 @@ modes, tool name format, and example role patterns, see
 
 Thurbox follows **The Elm Architecture** (TEA):
 `Event → Message → update(model, msg) → view(model) → Frame`.
-All state lives in a single `App` model. Sessions run inside a
-dedicated tmux server (`tmux -L thurbox`), with terminal output
-parsed by `vt100::Parser` and rendered by `tui_term`. All
-persistent state (projects, sessions, roles) is stored in SQLite.
+All state lives in a single `App` model. Sessions run via a
+pluggable `SessionBackend` trait with a `BackendRegistry` that
+manages multiple backends: local tmux (`tmux -L thurbox`) and
+optional QEMU/KVM VMs (tmux over SSH). Terminal output is parsed
+by `vt100::Parser` and rendered by `tui_term`. All persistent
+state (projects, sessions, roles, VMs) is stored in SQLite.
 
 ### Module Dependency Rules
 
 ```text
 session  ← pure data types, no project-local imports
 project  ← imports session only
-claude   ← imports session only (NEVER ui, git, or project)
-ui       ← imports session and project only (NEVER claude or git)
+agent    ← imports session only (NEVER ui, git, or project)
+ui       ← imports session and project only (NEVER agent or git)
 mcp      ← imports storage, session, project, sync, paths only
 app      ← coordinator, imports all modules
 ```

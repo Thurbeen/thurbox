@@ -14,6 +14,12 @@ use tracing::{debug, error};
 use crate::agent::provider::AgentProvider;
 use crate::session::{SessionConfig, SessionInfo};
 
+/// Internal env key used to pass the target VM ID through `SessionBackend::spawn()`.
+///
+/// Injected by `Session::spawn/restart/ensure_shell_pane` when `SessionConfig.vm_id` is set;
+/// consumed by `QemuVmBackend::spawn()` to route the session to the correct VM.
+pub(crate) const VM_ID_ENV_KEY: &str = "__THURBOX_VM_ID";
+
 pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -94,6 +100,21 @@ pub trait SessionBackend: Send + Sync {
 
     /// Detach from a session without killing it (for Ctrl+Q quit).
     fn detach(&self, backend_id: &str) -> Result<()>;
+
+    /// Prepare a VM for session spawning (e.g., establish SSH control mode).
+    ///
+    /// No-op for non-VM backends. VM backends use this to set up the control
+    /// mode connection after provisioning completes.
+    fn prepare_vm(&self, _vm_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Default shell command for companion shell panes.
+    ///
+    /// Local backends use `$SHELL`; VM backends return the VM's default shell.
+    fn default_shell(&self) -> String {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
 }
 
 /// Internal bundle of I/O handles before wiring.
@@ -171,12 +192,18 @@ impl Session {
         let args = provider.build_args(config);
         let window_name = format!("tb-{name}");
 
+        // Build env map, injecting VM_ID_ENV_KEY if a VM target is specified.
+        let mut env = config.permissions.env.clone();
+        if let Some(ref vm_id) = config.vm_id {
+            env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
+        }
+
         let spawned = backend.spawn(
             &window_name,
             provider.command(),
             &args,
             config.cwd.as_deref(),
-            &config.permissions.env,
+            &env,
             rows,
             cols,
         )?;
@@ -402,12 +429,19 @@ impl Session {
 
         let args = self.provider.build_args(config);
         let window_name = format!("tb-{}", self.info.name);
+
+        // Inject __THURBOX_VM_ID for VM-backed sessions (same as Session::spawn).
+        let mut env = config.permissions.env.clone();
+        if let Some(ref vm_id) = config.vm_id {
+            env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
+        }
+
         let spawned = self.backend.spawn(
             &window_name,
             self.provider.command(),
             &args,
             config.cwd.as_deref(),
-            &config.permissions.env,
+            &env,
             rows,
             cols,
         )?;
@@ -469,15 +503,22 @@ impl Session {
             return Ok(());
         }
 
-        let shell_cmd = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell_cmd = self.backend.default_shell();
         let window_name = format!("tbs-{}", self.info.name);
+
+        // Inject __THURBOX_VM_ID for VM-backed sessions so the backend
+        // knows which VM to create the shell pane in.
+        let mut env = self.env.clone();
+        if let Some(ref vm_id) = self.info.vm_id {
+            env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
+        }
 
         let spawned = self.backend.spawn(
             &window_name,
             &shell_cmd,
             &[],
             self.info.cwd.as_deref(),
-            &self.env,
+            &env,
             rows,
             cols,
         )?;
@@ -563,5 +604,11 @@ mod tests {
         let ms = now_millis();
         // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
+    }
+
+    #[test]
+    fn vm_id_env_key_is_internal() {
+        // The key should start with __ to signal it's an internal implementation detail.
+        assert!(VM_ID_ENV_KEY.starts_with("__"));
     }
 }

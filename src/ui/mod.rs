@@ -30,6 +30,7 @@ use theme::Theme;
 
 pub fn status_color(status: SessionStatus) -> Color {
     match status {
+        SessionStatus::Provisioning => Theme::ACCENT,
         SessionStatus::Busy => Theme::STATUS_BUSY,
         SessionStatus::Waiting => Theme::STATUS_WAITING,
         SessionStatus::Idle => Theme::STATUS_IDLE,
@@ -338,6 +339,7 @@ mod tests {
 
     #[test]
     fn status_color_maps_all_variants() {
+        assert_eq!(status_color(SessionStatus::Provisioning), Color::Cyan);
         assert_eq!(status_color(SessionStatus::Busy), Color::Green);
         assert_eq!(status_color(SessionStatus::Waiting), Color::Yellow);
         assert_eq!(status_color(SessionStatus::Idle), Color::DarkGray);

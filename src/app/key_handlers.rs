@@ -722,6 +722,7 @@ impl App {
     }
 
     fn handle_session_mode_key(&mut self, code: KeyCode) {
+        let max_index = if self.backends.has("qemu-vm") { 2 } else { 1 };
         match code {
             KeyCode::Esc => {
                 self.show_session_mode_modal = false;
@@ -729,33 +730,61 @@ impl App {
                 self.pending_all_repos = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.session_mode_index == 0 {
-                    self.session_mode_index = 1;
+                if self.session_mode_index < max_index {
+                    self.session_mode_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.session_mode_index = 0;
+                self.session_mode_index = self.session_mode_index.saturating_sub(1);
             }
             KeyCode::Enter => {
                 self.show_session_mode_modal = false;
-                if self.session_mode_index == 0 {
-                    // Normal mode
-                    if let Some(all_repos) = self.pending_all_repos.take() {
-                        // Multi-repo project: use first repo as CWD, rest as add-dir
-                        self.pending_repo_path = None;
-                        let config = SessionConfig {
-                            cwd: Some(all_repos[0].clone()),
-                            additional_dirs: all_repos[1..].to_vec(),
-                            ..SessionConfig::default()
-                        };
-                        self.spawn_session_with_config(&config);
-                    } else if let Some(path) = self.pending_repo_path.take() {
-                        // Single-repo project
-                        self.spawn_session_in_repo(path);
+                match self.session_mode_index {
+                    0 => {
+                        // Normal mode
+                        if let Some(all_repos) = self.pending_all_repos.take() {
+                            // Multi-repo project: use first repo as CWD, rest as add-dir
+                            self.pending_repo_path = None;
+                            let config = SessionConfig {
+                                cwd: Some(all_repos[0].clone()),
+                                additional_dirs: all_repos[1..].to_vec(),
+                                ..SessionConfig::default()
+                            };
+                            self.spawn_session_with_config(&config);
+                        } else if let Some(path) = self.pending_repo_path.take() {
+                            // Single-repo project
+                            self.spawn_session_in_repo(path);
+                        }
                     }
-                } else {
-                    // Worktree mode
-                    self.start_branch_selection();
+                    1 => {
+                        // Worktree mode
+                        self.start_branch_selection();
+                    }
+                    2 => {
+                        // Sandbox VM mode — build config for role selection after
+                        // VM is ready, store MCP servers for writing into the VM.
+                        let config = if let Some(all_repos) = self.pending_all_repos.clone() {
+                            SessionConfig {
+                                cwd: Some(all_repos[0].clone()),
+                                additional_dirs: all_repos[1..].to_vec(),
+                                ..SessionConfig::default()
+                            }
+                        } else if let Some(ref path) = self.pending_repo_path {
+                            SessionConfig {
+                                cwd: Some(path.clone()),
+                                ..SessionConfig::default()
+                            }
+                        } else {
+                            SessionConfig::default()
+                        };
+                        self.pending_vm_config = Some(config);
+                        self.pending_vm_mcp_servers = self
+                            .active_project()
+                            .map(|p| p.config.mcp_servers.clone())
+                            .filter(|s| !s.is_empty());
+                        self.start_vm_provisioning();
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -842,6 +871,7 @@ impl App {
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
+                self.pending_vm_id = None;
                 // Undo the counter increment from prepare_spawn()
                 self.session_counter = self.session_counter.saturating_sub(1);
             }

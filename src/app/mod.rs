@@ -16,9 +16,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
-use tracing::error;
+use tracing::{error, info, warn};
 
-use crate::agent::{Session, SessionBackend};
+use crate::agent::{BackendRegistry, Session, SessionBackend};
 use crate::git;
 use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
@@ -281,6 +281,14 @@ pub enum AppMessage {
     },
     Resize(u16, u16),
     ExternalStateChange(StateDelta),
+    /// A VM has finished provisioning and is ready for a session.
+    VmReady {
+        vm_id: String,
+    },
+    /// VM provisioning failed.
+    VmFailed {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,7 +332,7 @@ pub struct App {
     pub(crate) active_project_index: usize,
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
-    backend: Arc<dyn SessionBackend>,
+    backends: BackendRegistry,
     provider: Arc<dyn crate::agent::AgentProvider>,
     pub(crate) db: Database,
     pub(crate) focus: InputFocus,
@@ -363,6 +371,8 @@ pub struct App {
     pub(crate) available_branches: Vec<String>,
     pub(crate) pending_repo_path: Option<PathBuf>,
     pub(crate) pending_all_repos: Option<Vec<PathBuf>>,
+    /// Repo paths collected for rsync into the VM (set during provisioning).
+    pub(crate) pending_vm_repo_paths: Option<Vec<PathBuf>>,
     pub(crate) show_worktree_name_modal: bool,
     pub(crate) worktree_name_input: TextInput,
     pub(crate) pending_base_branch: Option<String>,
@@ -417,6 +427,26 @@ pub struct App {
     pub(crate) show_restore_sessions_modal: bool,
     pub(crate) restore_sessions_list: Vec<DeletedSessionInfo>,
     pub(crate) restore_sessions_index: usize,
+    /// VM provisioning in progress — stores the pending session config.
+    vm_provisioning: bool,
+    /// VM ID currently being provisioned.
+    vm_provisioning_id: Option<String>,
+    /// VM lifecycle manager (shared with background provisioning thread).
+    vm_manager: Option<Arc<std::sync::Mutex<crate::agent::VmManager>>>,
+    /// Receiver for VM provisioning results from background thread.
+    vm_provision_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    /// Receiver for VM provisioning step updates (progress messages).
+    vm_provision_step_rx: Option<mpsc::Receiver<String>>,
+    /// Current VM provisioning step description shown in the status bar.
+    vm_provisioning_step: String,
+    /// Placeholder session shown in the session list during VM provisioning.
+    vm_placeholder: Option<SessionInfo>,
+    /// Session config preserved during VM provisioning for role selection after ready.
+    pending_vm_config: Option<SessionConfig>,
+    /// VM ID stored after provisioning completes, consumed by `do_spawn_session`.
+    pending_vm_id: Option<String>,
+    /// MCP servers to write into the VM working directory before spawning.
+    pending_vm_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -567,9 +597,10 @@ impl App {
     pub fn new(
         rows: u16,
         cols: u16,
-        backend: Arc<dyn SessionBackend>,
+        backends: BackendRegistry,
         provider: Arc<dyn crate::agent::AgentProvider>,
         db: Database,
+        vm_manager: Option<Arc<std::sync::Mutex<crate::agent::VmManager>>>,
     ) -> Self {
         // Migrate roles from config.toml on first run after upgrade
         migrate_config_toml_roles(&db);
@@ -592,7 +623,7 @@ impl App {
             active_project_index: 0,
             sessions: Vec::new(),
             active_index: 0,
-            backend,
+            backends,
             provider,
             db,
             focus: InputFocus::ProjectList,
@@ -631,6 +662,7 @@ impl App {
             available_branches: Vec::new(),
             pending_repo_path: None,
             pending_all_repos: None,
+            pending_vm_repo_paths: None,
             show_worktree_name_modal: false,
             worktree_name_input: TextInput::new(),
             pending_base_branch: None,
@@ -675,6 +707,16 @@ impl App {
             show_restore_sessions_modal: false,
             restore_sessions_list: Vec::new(),
             restore_sessions_index: 0,
+            vm_provisioning: false,
+            vm_provisioning_id: None,
+            vm_manager,
+            vm_provision_rx: None,
+            vm_provision_step_rx: None,
+            vm_provisioning_step: String::new(),
+            vm_placeholder: None,
+            pending_vm_config: None,
+            pending_vm_id: None,
+            pending_vm_mcp_servers: None,
         }
     }
 
@@ -884,6 +926,7 @@ impl App {
             additional_dirs,
             role,
             permissions,
+            vm_id: session.info.vm_id.clone(),
         };
 
         let (rows, cols) = self.content_area_size();
@@ -1072,6 +1115,7 @@ impl App {
             additional_dirs: Vec::new(),
             role: deleted.role,
             permissions,
+            vm_id: None,
         };
 
         let session_name = deleted.name.clone();
@@ -1082,7 +1126,7 @@ impl App {
             rows,
             cols,
             &config,
-            &self.backend,
+            self.backends.default_backend(),
             &self.provider,
         ) {
             Ok(mut session) => {
@@ -1168,6 +1212,8 @@ impl App {
             AppMessage::MouseClick { x, y, modifiers } => self.handle_mouse_click(x, y, modifiers),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
             AppMessage::ExternalStateChange(delta) => self.handle_external_state_change(delta),
+            AppMessage::VmReady { vm_id } => self.handle_vm_ready(&vm_id),
+            AppMessage::VmFailed { error } => self.handle_vm_failed(&error),
         }
     }
 
@@ -1415,10 +1461,69 @@ impl App {
             config.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
         }
 
-        match Session::spawn(name, rows, cols, &config, &self.backend, &self.provider) {
+        // When a VM was just provisioned, use the VM backend and take the
+        // placeholder's name instead of generating a new one.
+        let vm_id = self.pending_vm_id.take();
+        let placeholder = if vm_id.is_some() {
+            self.vm_placeholder.take()
+        } else {
+            None
+        };
+        let placeholder_id = placeholder.as_ref().map(|ph| ph.id);
+        // Tie the session to its specific VM.
+        if vm_id.is_some() {
+            config.vm_id = vm_id.clone();
+        }
+        let (backend, spawn_name): (Arc<dyn SessionBackend>, String) = if vm_id.is_some() {
+            let vm_name = placeholder
+                .as_ref()
+                .map(|ph| ph.name.clone())
+                .unwrap_or_else(|| name.clone());
+            match self.backends.get("qemu-vm") {
+                Some(b) => (Arc::clone(b), vm_name),
+                None => {
+                    self.set_error("QEMU VM backend disappeared".to_string());
+                    return;
+                }
+            }
+        } else {
+            (Arc::clone(self.backends.default_backend()), name)
+        };
+
+        match Session::spawn(spawn_name, rows, cols, &config, &backend, &self.provider) {
             Ok(mut session) => {
                 session.info.worktrees = worktrees;
                 let session_id = session.info.id;
+
+                if let Some(ref vid) = vm_id {
+                    session.info.vm_id = Some(vid.clone());
+
+                    // Replace the placeholder ID with the real session ID.
+                    if let Some(ph_id) = placeholder_id {
+                        if let Some(project) = self.projects.get_mut(self.active_project_index) {
+                            project.session_ids.retain(|id| *id != ph_id);
+                        }
+                    }
+
+                    // Persist SSH port (allocated during provisioning, stored as 0 initially).
+                    if let Some(ref mgr) = self.vm_manager {
+                        if let Ok(mgr) = mgr.lock() {
+                            if let Some(inst) = mgr.get_instance(vid) {
+                                if let Err(e) = self.db.update_vm_ssh_port(vid, inst.ssh_port) {
+                                    error!(vm_id = %vid, "Failed to persist VM SSH port: {e}");
+                                }
+                            }
+                        }
+                    }
+
+                    if let Err(e) =
+                        self.db
+                            .update_vm_state(vid, &crate::session::VmState::Ready, None, None)
+                    {
+                        error!(vm_id = %vid, "Failed to update VM state to Ready: {e}");
+                    }
+                }
+
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
                 self.focus = InputFocus::Terminal;
@@ -1432,13 +1537,256 @@ impl App {
                     }
                 }
 
-                // Sync to shared state for other instances
+                // Sync to shared state for other instances — this upserts
+                // the session into the DB (required before FK references).
                 self.save_state();
+
+                // Link the VM record to this session. This must happen AFTER
+                // save_state() because vms.session_id has a FK constraint
+                // referencing sessions(id), so the session row must exist first.
+                if let Some(ref vid) = vm_id {
+                    let sid_str = session_id.to_string();
+                    if let Err(e) = self.db.update_vm_session(vid, &sid_str) {
+                        error!(
+                            vm_id = %vid,
+                            session_id = %sid_str,
+                            "Failed to link VM record to session: {e}"
+                        );
+                    }
+                }
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
                 self.set_error(format!("Failed to start claude: {e:#}"));
             }
+        }
+    }
+
+    /// Start asynchronous VM provisioning for a sandbox session.
+    ///
+    /// Called when the user selects "Sandbox VM" from the session mode modal.
+    /// The VM boots in the background; `handle_vm_ready` spawns the actual session.
+    pub(crate) fn start_vm_provisioning(&mut self) {
+        if self.vm_provisioning {
+            self.set_info("VM is already being provisioned...".to_string());
+            return;
+        }
+
+        if self.backends.get("qemu-vm").is_none() {
+            self.set_error("QEMU VM backend not available".to_string());
+            return;
+        }
+
+        let manager = match self.vm_manager {
+            Some(ref m) => Arc::clone(m),
+            None => {
+                self.set_error("VM manager not initialized".to_string());
+                return;
+            }
+        };
+
+        let vm_id = uuid::Uuid::new_v4().to_string();
+        self.vm_provisioning = true;
+        self.vm_provisioning_id = Some(vm_id.clone());
+
+        // Create a placeholder session visible in the session list during provisioning.
+        let name = self.next_session_name();
+        let mut placeholder = SessionInfo::new(name);
+        placeholder.status = SessionStatus::Provisioning;
+        placeholder.vm_id = Some(vm_id.clone());
+        placeholder.provisioning_step = Some("Checking tools...".to_string());
+
+        // Add placeholder to the active project's session list so it renders.
+        if let Some(project) = self.projects.get_mut(self.active_project_index) {
+            project.session_ids.push(placeholder.id);
+        }
+        self.vm_placeholder = Some(placeholder);
+
+        self.set_info("Provisioning VM...".to_string());
+
+        // Collect repo paths for rsync into the VM.
+        // pending_repo_path and pending_all_repos are already set by spawn_session().
+        let repo_paths: Vec<PathBuf> = if let Some(ref all_repos) = self.pending_all_repos {
+            all_repos.clone()
+        } else if let Some(ref path) = self.pending_repo_path {
+            vec![path.clone()]
+        } else {
+            Vec::new()
+        };
+
+        let config = crate::session::VmConfig::default();
+        let project_id = self.active_project().map(|p| p.id.to_string());
+
+        // Record in DB
+        if let Err(e) = self.db.insert_vm(
+            &vm_id,
+            None,
+            project_id.as_deref(),
+            &crate::session::VmState::Provisioning,
+            0, // SSH port allocated later by VmManager
+            &config,
+        ) {
+            error!("Failed to insert VM record: {e}");
+            self.set_error(format!("Failed to create VM: {e}"));
+            self.vm_provisioning = false;
+            self.vm_provisioning_id = None;
+            return;
+        }
+
+        // Spawn background thread for VM provisioning (QEMU + cloud-init + SSH + rsync).
+        let (tx, rx) = mpsc::channel();
+        let (step_tx, step_rx) = mpsc::channel();
+        self.vm_provision_rx = Some(rx);
+        self.vm_provision_step_rx = Some(step_rx);
+        self.vm_provisioning_step = "Checking tools...".to_string();
+        let vm_id_thread = vm_id.clone();
+        let config_thread = config;
+        tracing::info!(vm_id = %vm_id, "VM provisioning started");
+
+        let spawn_result = std::thread::Builder::new()
+            .name(format!("vm-provision-{}", &vm_id[..8]))
+            .spawn(move || {
+                let mgr = manager.lock().unwrap();
+                let result = mgr.create_vm(&vm_id_thread, &config_thread, &repo_paths, &step_tx);
+                drop(mgr);
+                match result {
+                    Ok(()) => {
+                        let _ = tx.send(Ok(vm_id_thread));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("{e:#}")));
+                    }
+                }
+            });
+
+        if let Err(e) = spawn_result {
+            error!("Failed to spawn VM provisioning thread: {e}");
+            self.set_error(format!("Failed to start VM provisioning: {e}"));
+            self.vm_provisioning = false;
+            self.vm_provisioning_id = None;
+            self.vm_provision_rx = None;
+        }
+    }
+
+    /// Poll for VM provisioning results and step updates from the background thread.
+    fn poll_vm_provision(&mut self) {
+        // Drain step updates (keep the latest).
+        if let Some(ref rx) = self.vm_provision_step_rx {
+            while let Ok(step) = rx.try_recv() {
+                self.vm_provisioning_step = step.clone();
+                if let Some(ref mut ph) = self.vm_placeholder {
+                    ph.provisioning_step = Some(step);
+                }
+            }
+        }
+
+        let result = match self.vm_provision_rx {
+            Some(ref rx) => match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                    "VM provisioning thread terminated unexpectedly".to_string(),
+                )),
+            },
+            None => None,
+        };
+
+        if let Some(result) = result {
+            self.vm_provision_rx = None;
+            self.vm_provision_step_rx = None;
+            self.vm_provisioning_step.clear();
+            match result {
+                Ok(vm_id) => self.handle_vm_ready(&vm_id),
+                Err(error) => self.handle_vm_failed(&error),
+            }
+        }
+    }
+
+    /// Handle a successfully provisioned VM — route through role selection before
+    /// spawning. The actual spawn happens in `do_spawn_session` which checks
+    /// `pending_vm_id` to use the VM backend.
+    fn handle_vm_ready(&mut self, vm_id: &str) {
+        self.vm_provisioning = false;
+        self.vm_provisioning_id = None;
+        self.set_info("VM ready — starting session...".to_string());
+
+        let backend = match self.backends.get("qemu-vm") {
+            Some(b) => Arc::clone(b),
+            None => {
+                self.set_error("QEMU VM backend disappeared".to_string());
+                return;
+            }
+        };
+
+        // Establish SSH control mode connection for the newly provisioned VM.
+        if let Err(e) = backend.prepare_vm(vm_id) {
+            error!("Failed to establish VM control mode: {e}");
+            self.set_error(format!("VM ready but control mode failed: {e:#}"));
+            return;
+        }
+
+        // Take the pending config built during session mode selection, remap host
+        // paths to VM paths.
+        let mut config = self.pending_vm_config.take().unwrap_or_default();
+        if let Some(ref cwd) = config.cwd {
+            config.cwd = Some(crate::agent::host_to_vm_path(cwd));
+        }
+        config.additional_dirs = config
+            .additional_dirs
+            .iter()
+            .map(|p| crate::agent::host_to_vm_path(p))
+            .collect();
+        self.pending_repo_path = None;
+        self.pending_all_repos = None;
+        self.pending_vm_repo_paths = None;
+
+        // Write project MCP servers as .mcp.json into the VM working directory.
+        if let Some(mcp_servers) = self.pending_vm_mcp_servers.take() {
+            if let Some(ref cwd) = config.cwd {
+                if let Some(ref mgr) = self.vm_manager {
+                    let mgr = mgr.lock().unwrap();
+                    if let Some(instance) = mgr.get_instance(vm_id) {
+                        if let Err(e) = write_vm_mcp_json(&instance, cwd, &mcp_servers) {
+                            warn!("Failed to write .mcp.json into VM: {e:#}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Store VM ID so `do_spawn_session` uses the VM backend.
+        self.pending_vm_id = Some(vm_id.to_string());
+
+        // Route through role selection (prepare_spawn handles 0/1/2+ roles).
+        self.prepare_spawn(config, Vec::new());
+    }
+
+    /// Handle a failed VM provisioning attempt.
+    fn handle_vm_failed(&mut self, error: &str) {
+        self.vm_provisioning = false;
+        let vm_id = self.vm_provisioning_id.take();
+        self.set_error(format!("VM provisioning failed: {error}"));
+        self.pending_repo_path = None;
+        self.pending_all_repos = None;
+        self.pending_vm_repo_paths = None;
+        self.pending_vm_config = None;
+        self.pending_vm_id = None;
+        self.pending_vm_mcp_servers = None;
+
+        // Update placeholder to show error state (keep it visible).
+        if let Some(ref mut ph) = self.vm_placeholder {
+            ph.status = SessionStatus::Error;
+            ph.provisioning_step = Some(error.to_string());
+        }
+
+        // Update DB record
+        if let Some(id) = &vm_id {
+            let _ = self.db.update_vm_state(
+                id,
+                &crate::session::VmState::Failed(error.to_string()),
+                None,
+                Some(error),
+            );
         }
     }
 
@@ -1740,6 +2088,9 @@ impl App {
             self.handle_external_state_change(delta);
         }
 
+        // Poll for VM provisioning results from background thread
+        self.poll_vm_provision();
+
         // Process queued session commands from MCP
         self.process_session_commands();
     }
@@ -1974,7 +2325,7 @@ impl App {
                 rows,
                 cols,
                 &shared_session.backend_id,
-                &self.backend,
+                self.backends.default_backend(),
                 &self.provider,
                 env,
             ) {
@@ -2022,6 +2373,7 @@ impl App {
                             additional_dirs: shared_session.additional_dirs.clone(),
                             role: shared_session.role.clone(),
                             permissions,
+                            vm_id: None,
                         };
 
                         let (rows, cols) = self.content_area_size();
@@ -2030,7 +2382,7 @@ impl App {
                             rows,
                             cols,
                             &config,
-                            &self.backend,
+                            self.backends.default_backend(),
                             &self.provider,
                         ) {
                             spawned.info.id = shared_session.id;
@@ -2070,7 +2422,9 @@ impl App {
                     for sid in &p.session_ids {
                         if let Some(s) = self.sessions.iter().find(|s| s.info.id == *sid) {
                             match s.info.status {
-                                SessionStatus::Busy => busy_count += 1,
+                                SessionStatus::Busy | SessionStatus::Provisioning => {
+                                    busy_count += 1;
+                                }
                                 SessionStatus::Waiting => waiting_count += 1,
                                 SessionStatus::Error => error_count += 1,
                                 SessionStatus::Idle => {}
@@ -2099,14 +2453,24 @@ impl App {
                 .collect();
 
             let project_session_indices = self.active_project_sessions();
-            let project_sessions: Vec<&SessionInfo> = project_session_indices
+            let mut project_sessions: Vec<&SessionInfo> = project_session_indices
                 .iter()
                 .map(|&i| &self.sessions[i].info)
                 .collect();
-            let session_elapsed_ms: Vec<u64> = project_session_indices
+            let mut session_elapsed_ms: Vec<u64> = project_session_indices
                 .iter()
                 .map(|&i| self.sessions[i].millis_since_last_output())
                 .collect();
+
+            // Include VM placeholder in the session list if it belongs to this project.
+            if let Some(ref ph) = self.vm_placeholder {
+                if let Some(project) = self.projects.get(self.active_project_index) {
+                    if project.session_ids.contains(&ph.id) {
+                        project_sessions.push(ph);
+                        session_elapsed_ms.push(0);
+                    }
+                }
+            }
 
             let panel_focus = match self.focus {
                 InputFocus::ProjectList => project_list::LeftPanelFocus::Projects,
@@ -2143,8 +2507,35 @@ impl App {
         // Info panel
         if let Some(info_area) = areas.info_panel {
             let active_project = self.projects.get(self.active_project_index);
-            if let Some(session) = self.sessions.get(self.active_index) {
-                info_panel::render_info_panel(frame, info_area, &session.info, active_project);
+
+            // Determine the session info to display: real session or VM placeholder.
+            let info_session: Option<&SessionInfo> = self
+                .sessions
+                .get(self.active_index)
+                .map(|s| &s.info)
+                .or(self.vm_placeholder.as_ref());
+
+            if let Some(info) = info_session {
+                let vm_details = info.vm_id.as_deref().and_then(|vm_id| {
+                    self.db
+                        .get_vm(vm_id)
+                        .ok()
+                        .flatten()
+                        .map(|rec| info_panel::VmDetails {
+                            state: rec.state.to_string(),
+                            cpus: rec.cpus,
+                            memory_mb: rec.memory_mb,
+                            ssh_port: rec.ssh_port,
+                            base_image: rec.base_image,
+                        })
+                });
+                info_panel::render_info_panel(
+                    frame,
+                    info_area,
+                    info,
+                    active_project,
+                    vm_details.as_ref(),
+                );
             }
         }
 
@@ -2197,6 +2588,8 @@ impl App {
                 status: self.status_message.as_ref(),
                 focus_label,
                 sync_in_progress: self.worktree_sync_in_progress,
+                vm_provisioning: self.vm_provisioning,
+                vm_provisioning_step: &self.vm_provisioning_step,
                 tick_count: self.tick_count,
             },
         );
@@ -2276,6 +2669,7 @@ impl App {
                 frame,
                 &session_mode_modal::SessionModeState {
                     selected_index: self.session_mode_index,
+                    vm_available: self.backends.has("qemu-vm"),
                 },
             );
         }
@@ -2455,6 +2849,10 @@ impl App {
         self.set_status(StatusLevel::Error, text.into());
     }
 
+    fn set_info(&mut self, text: impl Into<String>) {
+        self.set_status(StatusLevel::Info, text.into());
+    }
+
     /// Capture current role editor field values as a snapshot for dirty detection.
     fn capture_role_editor_snapshot(&self) -> EditorSnapshot {
         EditorSnapshot {
@@ -2624,11 +3022,33 @@ impl App {
     ///
     /// Tries to adopt existing backend sessions (tmux windows) or spawns new
     /// sessions with `--resume` to reconnect to the agent session.
+    ///
+    /// For VM-backed sessions, this first restores the VM instance in `VmManager`
+    /// and establishes an SSH control mode connection before attempting adoption.
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
 
-        // Discover existing sessions from the backend.
-        let discovered = self.backend.discover().unwrap_or_default();
+        // Pre-flight: restore any VMs that sessions depend on, so that
+        // discover() on the VM backend can find their tmux panes.
+        for shared in &sessions {
+            if shared.backend_type == "qemu-vm" {
+                self.restore_vm_for_session(shared);
+            }
+        }
+
+        // Discover existing sessions from ALL backends, not just the default.
+        let mut discovered = Vec::new();
+        for backend in self.backends.all_backends() {
+            match backend.discover() {
+                Ok(disc) => discovered.extend(disc),
+                Err(e) => {
+                    warn!(
+                        backend = backend.name(),
+                        "Failed to discover sessions from backend: {e}"
+                    );
+                }
+            }
+        }
 
         for shared in sessions {
             let name = shared.name;
@@ -2661,6 +3081,13 @@ impl App {
                     .find(|d| d.name == expected_name && d.is_alive)
             };
 
+            // Select the correct backend based on the persisted backend_type.
+            let backend = self
+                .backends
+                .get(&shared.backend_type)
+                .cloned()
+                .unwrap_or_else(|| self.backends.default_backend().clone());
+
             // Try to adopt the existing backend session.
             let env = self.resolve_role_permissions(&role).env;
             let adopted = matching_discovered.and_then(|disc| {
@@ -2670,7 +3097,7 @@ impl App {
                     rows,
                     cols,
                     &disc.backend_id,
-                    &self.backend,
+                    &backend,
                     &self.provider,
                     env.clone(),
                 ) {
@@ -2689,6 +3116,14 @@ impl App {
                 session.info.additional_dirs = shared.additional_dirs.clone();
                 session.info.role = role;
                 session.info.worktrees = worktrees.clone();
+
+                // Restore vm_id on adopted VM sessions.
+                if shared.backend_type == "qemu-vm" {
+                    if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string())
+                    {
+                        session.info.vm_id = Some(vm_record.id);
+                    }
+                }
 
                 // Re-adopt shell pane if one was persisted
                 if let Some(shell_bid) = &shared.shell_backend_id {
@@ -2736,6 +3171,35 @@ impl App {
                 let permissions =
                     self.resolve_role_permissions_for_project(&role, target_project_index);
 
+                // For VM sessions where the VM died, trigger re-provisioning so
+                // do_spawn_session uses the VM backend instead of local-tmux.
+                if shared.backend_type == "qemu-vm" {
+                    if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string())
+                    {
+                        // Check if the VM was restored (it's in VmManager).
+                        let vm_alive = self.vm_manager.as_ref().is_some_and(|mgr| {
+                            mgr.lock()
+                                .ok()
+                                .and_then(|m| m.vm_state(&vm_record.id))
+                                .is_some_and(|s| s == crate::session::VmState::Ready)
+                        });
+                        if !vm_alive {
+                            warn!(
+                                session = %session_id,
+                                vm_id = %vm_record.id,
+                                "VM died — session will be re-spawned with --resume on local-tmux"
+                            );
+                            // Mark VM as stopped in DB.
+                            let _ = self.db.update_vm_state(
+                                &vm_record.id,
+                                &crate::session::VmState::Stopped,
+                                None,
+                                Some("VM not reachable after restart"),
+                            );
+                        }
+                    }
+                }
+
                 // Admin sessions start fresh — --resume would fail because the
                 // old Claude conversation no longer exists after a tmux restart.
                 let config = SessionConfig {
@@ -2753,6 +3217,7 @@ impl App {
                     additional_dirs: shared.additional_dirs,
                     role,
                     permissions,
+                    vm_id: None,
                 };
                 self.do_spawn_session(name, &config, worktrees, Some(target_project_index));
             }
@@ -2760,6 +3225,64 @@ impl App {
 
         // Claim ownership of restored sessions in the shared state
         self.save_state();
+    }
+
+    /// Restore a VM instance for a VM-backed session before discovery/adoption.
+    ///
+    /// Looks up the VM record from the DB, re-registers it in `VmManager` (verifying
+    /// SSH is reachable), then establishes the SSH control mode connection so
+    /// `discover()` can find its tmux panes.
+    fn restore_vm_for_session(&mut self, shared: &sync::SharedSession) {
+        let session_id_str = shared.id.to_string();
+        let vm_record = match self.db.get_vm_by_session(&session_id_str) {
+            Ok(Some(rec)) => rec,
+            Ok(None) => {
+                warn!(session = %shared.id, "No VM record found for VM session");
+                return;
+            }
+            Err(e) => {
+                warn!(session = %shared.id, "Failed to look up VM record: {e}");
+                return;
+            }
+        };
+
+        // Re-register the running VM in VmManager.
+        if let Some(ref mgr) = self.vm_manager {
+            match mgr.lock() {
+                Ok(mgr) => {
+                    if let Err(e) = mgr.restore_vm(&vm_record) {
+                        warn!(
+                            vm_id = %vm_record.id,
+                            "VM not reachable, will fall through to re-spawn: {e}"
+                        );
+                        return;
+                    }
+                }
+                Err(e) => {
+                    warn!("VmManager lock poisoned: {e}");
+                    return;
+                }
+            }
+        } else {
+            warn!("No VmManager available for VM session restore");
+            return;
+        }
+
+        // Establish SSH control mode connection so discover() works.
+        if let Some(vm_backend) = self.backends.get("qemu-vm") {
+            if let Err(e) = vm_backend.prepare_vm(&vm_record.id) {
+                warn!(
+                    vm_id = %vm_record.id,
+                    "Failed to establish SSH control mode: {e}"
+                );
+            } else {
+                info!(
+                    vm_id = %vm_record.id,
+                    session = %shared.id,
+                    "VM restored and control mode established"
+                );
+            }
+        }
     }
 
     /// Find the project index that owns a session, falling back to `active_project_index`.
@@ -2872,6 +3395,7 @@ impl App {
             additional_dirs,
             role,
             permissions,
+            vm_id: session.info.vm_id.clone(),
         };
 
         let (rows, cols) = self.content_area_size();
@@ -3023,11 +3547,87 @@ fn open_url(url: &str) {
         .ok();
 }
 
+/// Write a `.mcp.json` file into a VM directory via SSH so Claude Code discovers
+/// the project's MCP servers when running inside the sandbox.
+fn write_vm_mcp_json(
+    instance: &crate::agent::vm::VmInstance,
+    vm_cwd: &std::path::Path,
+    mcp_servers: &[crate::session::McpServerConfig],
+) -> anyhow::Result<()> {
+    if mcp_servers.is_empty() {
+        return Ok(());
+    }
+
+    // Build the .mcp.json structure Claude Code expects.
+    let mut servers = serde_json::Map::new();
+    for srv in mcp_servers {
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "command".to_string(),
+            serde_json::Value::String(srv.command.clone()),
+        );
+        if !srv.args.is_empty() {
+            entry.insert("args".to_string(), serde_json::json!(srv.args));
+        }
+        if !srv.env.is_empty() {
+            entry.insert("env".to_string(), serde_json::json!(srv.env));
+        }
+        servers.insert(srv.name.clone(), serde_json::Value::Object(entry));
+    }
+    let doc = serde_json::json!({ "mcpServers": servers });
+    let json_str = serde_json::to_string_pretty(&doc)?;
+
+    let key_path = instance.ssh_key_path();
+    let ssh_port = instance.ssh_port.to_string();
+    let user = instance.ssh_user();
+    let dest = vm_cwd.join(".mcp.json");
+
+    let shell_cmd = format!("cat > '{}'", dest.to_string_lossy().replace('\'', "'\\''"));
+    let output = std::process::Command::new("ssh")
+        .args([
+            "-i",
+            &key_path.to_string_lossy(),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "BatchMode=yes",
+            "-p",
+            &ssh_port,
+            &format!("{user}@localhost"),
+            &shell_cmd,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin.write_all(json_str.as_bytes())?;
+            }
+            child.wait_with_output()
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ssh write .mcp.json failed: {stderr}");
+    }
+
+    info!("Wrote .mcp.json into VM at {}", dest.display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
 
     use super::*;
+    use crate::agent::SessionBackend;
 
     // --- TextInput tests ---
 
@@ -3243,12 +3843,16 @@ mod tests {
         }
     }
 
-    fn stub_backend() -> Arc<dyn SessionBackend> {
+    fn stub_backend_arc() -> Arc<dyn SessionBackend> {
         Arc::new(StubBackend)
     }
 
     fn stub_provider() -> Arc<dyn crate::agent::AgentProvider> {
         Arc::new(crate::agent::claude::ClaudeProvider)
+    }
+
+    fn stub_backend() -> BackendRegistry {
+        BackendRegistry::new(stub_backend_arc())
     }
 
     fn test_db() -> Database {
@@ -3279,17 +3883,18 @@ mod tests {
 
     /// Create an App with a test project and N stub sessions bound to it.
     fn app_with_sessions(count: usize) -> App {
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
-            backend.clone(),
+            BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&test_project_config()),
+            None,
         );
-        for i in 0..count {
-            let session = Session::stub(&format!("Session {}", i + 1), &backend, &provider);
+        for _i in 0..count {
+            let session = Session::stub("test-session", &backend_arc, &provider);
             let session_id = session.info.id;
             app.sessions.push(session);
             app.projects[0].session_ids.push(session_id);
@@ -3411,14 +4016,14 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(50, 100, stub_backend(), stub_provider(), test_db());
+        let app = App::new(50, 100, stub_backend(), stub_provider(), test_db(), None);
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(6, 80, stub_backend(), stub_provider(), test_db());
+        let app = App::new(6, 80, stub_backend(), stub_provider(), test_db(), None);
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -3432,13 +4037,13 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -3446,7 +4051,7 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
@@ -3461,6 +4066,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&test_project_config()),
+            None,
         );
         app.open_role_editor();
         assert!(app.show_role_editor);
@@ -3489,6 +4095,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         app.open_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
@@ -3497,7 +4104,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
@@ -3517,7 +4124,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
@@ -3568,6 +4175,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, Vec::new());
@@ -3589,6 +4197,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         // With no roles, the selector should never be set
         assert!(!app.show_role_selector);
@@ -3596,7 +4205,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
@@ -3627,7 +4236,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         // Add first role
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -3679,6 +4288,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         app.open_role_editor();
         app.open_role_for_editing(0);
@@ -3701,7 +4311,7 @@ mod tests {
 
     #[test]
     fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
@@ -3739,6 +4349,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         app.open_role_editor();
         app.open_role_for_editing(0);
@@ -3759,7 +4370,7 @@ mod tests {
     #[test]
     fn role_editor_tab_cycles_fields_forward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -3781,7 +4392,7 @@ mod tests {
     #[test]
     fn role_editor_backtab_cycles_fields_backward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -3802,7 +4413,7 @@ mod tests {
 
     #[test]
     fn role_editor_esc_returns_to_edit_project() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -3841,6 +4452,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         app.open_role_editor();
         // Select the last role
@@ -3853,7 +4465,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -3976,7 +4588,7 @@ mod tests {
     #[test]
     fn tool_browse_add_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -4009,7 +4621,7 @@ mod tests {
     #[test]
     fn tool_browse_delete_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::AllowedTools;
@@ -4026,7 +4638,7 @@ mod tests {
     #[test]
     fn tool_adding_esc_cancels() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::DisallowedTools;
@@ -4067,6 +4679,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         app.open_role_editor();
         app.open_role_for_editing(0);
@@ -4086,7 +4699,7 @@ mod tests {
 
     #[test]
     fn system_prompt_empty_saves_as_none() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("test");
@@ -4122,6 +4735,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         );
         // With exactly 1 role, prepare_spawn should not show selector
         // (it would try to spawn, which needs a runtime — just verify no selector)
@@ -4224,7 +4838,7 @@ mod tests {
 
     #[test]
     fn empty_db_app_has_valid_active_project_index() {
-        let app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         // With an empty DB, the project list is empty, but the index should be valid
         assert!(
             app.projects.is_empty() || app.active_project_index < app.projects.len(),
@@ -4320,7 +4934,7 @@ mod tests {
         db.soft_delete_project(id).unwrap();
         assert!(!db.project_exists(id).unwrap());
 
-        let app = App::new(24, 120, backend, provider, db);
+        let app = App::new(24, 120, backend, provider, db, None);
 
         // Create a project with the same deterministic ID
         let project = ProjectInfo::new(config);
@@ -4536,7 +5150,7 @@ mod tests {
 
     #[test]
     fn load_persisted_state_empty_db_returns_none() {
-        let app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         assert!(app.load_persisted_state_from_db().is_none());
     }
 
@@ -4571,7 +5185,7 @@ mod tests {
         };
         db.upsert_session(&session).unwrap();
 
-        let app = App::new(24, 80, stub_backend(), stub_provider(), db);
+        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None);
         assert!(app.load_persisted_state_from_db().is_none());
     }
 
@@ -4625,7 +5239,7 @@ mod tests {
         db.upsert_session(&s2).unwrap();
         db.set_session_counter(7).unwrap();
 
-        let app = App::new(24, 80, stub_backend(), stub_provider(), db);
+        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None);
         let (sessions, counter) = app.load_persisted_state_from_db().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "2");
@@ -4634,18 +5248,19 @@ mod tests {
 
     #[test]
     fn save_state_roundtrips_sessions() {
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
-            backend.clone(),
+            BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&test_project_config()),
+            None,
         );
 
         // Add a session
-        let session = Session::stub("Session 1", &backend, &provider);
+        let session = Session::stub("test-session", &backend_arc, &provider);
         let sid = session.info.id;
         app.sessions.push(session);
         app.projects[0].session_ids.push(sid);
@@ -4656,14 +5271,12 @@ mod tests {
         // Verify session in DB
         let sessions = app.db.list_active_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "Session 1");
+        assert_eq!(sessions[0].name, "test-session");
     }
 
     #[test]
     fn save_state_persists_session_counter() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let mut app = App::new(24, 120, backend.clone(), provider.clone(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
         app.session_counter = 42;
 
         app.save_state();
@@ -4674,17 +5287,18 @@ mod tests {
 
     #[test]
     fn session_to_shared_converts_correctly() {
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
-            backend.clone(),
+            BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&test_project_config()),
+            None,
         );
 
-        let mut session = Session::stub("TestSession", &backend, &provider);
+        let mut session = Session::stub("test-session", &backend_arc, &provider);
         session.info.role = "reviewer".to_string();
         session.info.cwd = Some(PathBuf::from("/home/user"));
         session.info.agent_session_id = Some("claude-xyz".to_string());
@@ -4695,7 +5309,7 @@ mod tests {
 
         let shared = app.session_to_shared(&app.sessions[0]);
         assert_eq!(shared.id, sid);
-        assert_eq!(shared.name, "TestSession");
+        assert_eq!(shared.name, "test-session");
         assert_eq!(shared.role, "reviewer");
         assert_eq!(shared.cwd, Some(PathBuf::from("/home/user")));
         assert_eq!(shared.agent_session_id, Some("claude-xyz".to_string()));
@@ -4720,6 +5334,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         )
     }
 
@@ -4932,7 +5547,7 @@ mod tests {
         // Full lifecycle test: create app, rename project, shutdown, create new app (restart).
         // Verifies no duplicate projects and sessions stay associated.
         let db = test_db();
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
 
         // Step 1: Start app with project "TestA"
@@ -4946,7 +5561,14 @@ mod tests {
         let original_id = config.deterministic_id();
         let id = config.effective_id();
         db.insert_project(id, &config.name, &config.repos).unwrap();
-        let mut app = App::new(24, 120, backend.clone(), provider.clone(), db);
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(backend_arc.clone()),
+            provider.clone(),
+            db,
+            None,
+        );
 
         // Verify initial state: 1 project named "TestA"
         assert_eq!(app.projects.len(), 1);
@@ -4959,7 +5581,7 @@ mod tests {
             .iter()
             .position(|p| p.config.name == "TestA")
             .unwrap();
-        let session = Session::stub("Session1", &backend, &provider);
+        let session = Session::stub("1", &backend_arc, &provider);
         let session_id = session.info.id;
         app.sessions.push(session);
         app.projects[app.active_project_index]
@@ -4994,7 +5616,14 @@ mod tests {
         app.save_state();
 
         // Step 5: Simulate restart with the same DB (project already persisted from edit)
-        let app2 = App::new(24, 120, backend.clone(), provider.clone(), app.db);
+        let app2 = App::new(
+            24,
+            120,
+            BackendRegistry::new(backend_arc.clone()),
+            provider.clone(),
+            app.db,
+            None,
+        );
 
         // Verify: only 1 project, named "TestB"
         assert_eq!(
@@ -5105,17 +5734,18 @@ mod tests {
 
     #[test]
     fn session_to_shared_maps_worktree() {
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
-            backend.clone(),
+            BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&test_project_config()),
+            None,
         );
 
-        let mut session = Session::stub("WTSession", &backend, &provider);
+        let mut session = Session::stub("test-session", &backend_arc, &provider);
         session.info.worktrees = vec![WorktreeInfo {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
@@ -5149,6 +5779,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
         )
     }
 
@@ -5303,17 +5934,18 @@ mod tests {
 
     #[test]
     fn session_to_shared_maps_additional_dirs() {
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
-            backend.clone(),
+            BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&test_project_config()),
+            None,
         );
 
-        let mut session = Session::stub("MultiDir", &backend, &provider);
+        let mut session = Session::stub("test-session", &backend_arc, &provider);
         session.info.additional_dirs = vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")];
 
         let sid = session.info.id;
@@ -5328,7 +5960,7 @@ mod tests {
 
     #[test]
     fn user_session_count_excludes_admin_project() {
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let config = ProjectConfig {
             name: "UserProj".to_string(),
@@ -5340,16 +5972,17 @@ mod tests {
         let mut app = App::new(
             24,
             120,
-            backend.clone(),
+            BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&config),
+            None,
         );
 
         // User project has no sessions
         assert_eq!(app.user_session_count(), 0);
 
         // Add a session to the user project
-        let session = Session::stub("user-1", &backend, &provider);
+        let session = Session::stub("user-1", &backend_arc, &provider);
         let sid = session.info.id;
         app.sessions.push(session);
         app.projects[0].session_ids.push(sid);
@@ -5364,7 +5997,7 @@ mod tests {
             id: None,
         };
         let mut admin_project = ProjectInfo::new_admin(admin_config);
-        let admin_session = Session::stub("admin", &backend, &provider);
+        let admin_session = Session::stub("admin-1", &backend_arc, &provider);
         let admin_sid = admin_session.info.id;
         app.sessions.push(admin_session);
         admin_project.session_ids.push(admin_sid);
@@ -5376,9 +6009,7 @@ mod tests {
 
     #[test]
     fn cannot_edit_admin_project() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
 
         // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -5401,9 +6032,7 @@ mod tests {
 
     #[test]
     fn cannot_delete_admin_project() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
 
         // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -5426,9 +6055,16 @@ mod tests {
 
     #[test]
     fn cannot_close_admin_session() {
-        let backend = stub_backend();
+        let backend_arc = stub_backend_arc();
         let provider = stub_provider();
-        let mut app = App::new(24, 120, backend.clone(), provider.clone(), test_db());
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(backend_arc.clone()),
+            provider.clone(),
+            test_db(),
+            None,
+        );
 
         // Add an admin project with a session and select it
         let mut admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -5438,7 +6074,7 @@ mod tests {
             mcp_servers: Vec::new(),
             id: None,
         });
-        let session = Session::stub("admin", &backend, &provider);
+        let session = Session::stub("admin-1", &backend_arc, &provider);
         let sid = session.info.id;
         app.sessions.push(session);
         admin_project.session_ids.push(sid);
@@ -5458,7 +6094,7 @@ mod tests {
 
     #[test]
     fn set_error_creates_error_status() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.set_error("something failed");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
@@ -5467,7 +6103,7 @@ mod tests {
 
     #[test]
     fn set_status_creates_typed_status() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.set_status(StatusLevel::Success, "all good");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Success);
@@ -5476,7 +6112,7 @@ mod tests {
 
     #[test]
     fn set_status_replaces_previous() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.set_error("old error");
         app.set_status(StatusLevel::Info, "new info");
         let msg = app.status_message.as_ref().unwrap();
@@ -5488,7 +6124,7 @@ mod tests {
 
     #[test]
     fn start_sync_with_no_worktrees_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.start_sync();
         assert!(!app.worktree_sync_in_progress);
         let msg = app.status_message.as_ref().unwrap();
@@ -5498,7 +6134,7 @@ mod tests {
 
     #[test]
     fn start_sync_ignores_if_already_in_progress() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.worktree_sync_in_progress = true;
         app.status_message = None;
         app.start_sync();
@@ -5508,7 +6144,7 @@ mod tests {
 
     #[test]
     fn ctrl_s_triggers_start_sync() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
         // No worktrees → info message
         let msg = app.status_message.as_ref().unwrap();
@@ -5517,25 +6153,12 @@ mod tests {
 
     #[test]
     fn start_sync_with_worktree_sessions_sets_in_progress() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let config = test_project_config();
-        let mut app = App::new(
-            24,
-            120,
-            backend.clone(),
-            provider.clone(),
-            test_db_with_project(&config),
-        );
-        let mut session = Session::stub("wt-session", &backend, &provider);
-        session.info.worktrees = vec![WorktreeInfo {
+        let mut app = app_with_sessions(1);
+        app.sessions[0].info.worktrees = vec![WorktreeInfo {
             repo_path: PathBuf::from("/tmp/nonexistent-repo"),
             worktree_path: PathBuf::from("/tmp/nonexistent-wt"),
             branch: "test-branch".to_string(),
         }];
-        let session_id = session.info.id;
-        app.sessions.push(session);
-        app.projects[0].session_ids.push(session_id);
 
         app.start_sync();
         assert!(app.worktree_sync_in_progress);
@@ -5547,7 +6170,7 @@ mod tests {
 
     #[test]
     fn tick_increments_tick_count() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         assert_eq!(app.tick_count, 0);
         app.tick();
         assert_eq!(app.tick_count, 1);
@@ -5557,7 +6180,7 @@ mod tests {
 
     #[test]
     fn finish_sync_all_synced_shows_success() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         let id = SessionId::default();
         app.worktree_sync_completed = vec![
             (id, git::SyncResult::Synced),
@@ -5571,7 +6194,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_errors_shows_error() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.worktree_sync_completed = vec![(
             SessionId::default(),
             git::SyncResult::Error("fetch failed".into()),
@@ -5585,7 +6208,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_conflicts_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.worktree_sync_completed = vec![
             (SessionId::default(), git::SyncResult::Synced),
             (
@@ -5602,7 +6225,7 @@ mod tests {
 
     #[test]
     fn finish_sync_errors_take_priority_over_conflicts() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.worktree_sync_completed = vec![
             (
                 SessionId::default(),
@@ -5621,7 +6244,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_sends_at_correct_tick() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"hello".to_vec(), 5));
 
@@ -5638,7 +6261,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_retains_future_items() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"early".to_vec(), 5));
         app.deferred_inputs.push((id, b"late".to_vec(), 20));
@@ -5651,19 +6274,15 @@ mod tests {
 
     #[test]
     fn send_conflict_prompt_noop_for_unknown_session() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         app.send_conflict_prompt(SessionId::default());
         assert!(app.deferred_inputs.is_empty());
     }
 
     #[test]
     fn send_conflict_prompt_no_deferred_when_send_fails() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let mut app = App::new(24, 80, backend.clone(), provider.clone(), test_db());
-        let session = Session::stub("test", &backend, &provider);
-        let sid = session.info.id;
-        app.sessions.push(session);
+        let mut app = app_with_sessions(1);
+        let sid = app.sessions[0].info.id;
 
         // Stub's channel rx is dropped, so send_input fails.
         // No deferred input should be created.
@@ -5673,7 +6292,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_triggers_finish_when_all_received() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         let (tx, rx) = mpsc::channel();
         let id = SessionId::default();
 
@@ -5694,7 +6313,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_waits_for_all_pending() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
         let (tx, rx) = mpsc::channel();
 
         tx.send((SessionId::default(), git::SyncResult::Synced))
@@ -5724,7 +6343,7 @@ mod tests {
             repos: vec![PathBuf::from("/other")],
             ..test_project_config()
         };
-        let mut app = App::new(24, 120, backend, provider, test_db());
+        let mut app = App::new(24, 120, backend, provider, test_db(), None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         let project_b = ProjectInfo::new(config_b);
         let id_b = project_b.id;
@@ -5739,7 +6358,7 @@ mod tests {
     fn find_project_index_falls_back_to_active_project() {
         let backend = stub_backend();
         let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db());
+        let mut app = App::new(24, 120, backend, provider, test_db(), None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.active_project_index = 0;
 
@@ -5765,7 +6384,7 @@ mod tests {
             }],
             ..test_project_config()
         };
-        let mut app = App::new(24, 120, backend, provider, test_db());
+        let mut app = App::new(24, 120, backend, provider, test_db(), None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.projects.push(ProjectInfo::new(config_with_roles));
         app.active_project_index = 0;
@@ -5784,7 +6403,7 @@ mod tests {
         use crate::session::RolePermissions;
         let backend = stub_backend();
         let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db());
+        let mut app = App::new(24, 120, backend, provider, test_db(), None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.active_project_index = 0;
 
@@ -5797,7 +6416,7 @@ mod tests {
         use crate::session::RolePermissions;
         let backend = stub_backend();
         let provider = stub_provider();
-        let app = App::new(24, 120, backend, provider, test_db());
+        let app = App::new(24, 120, backend, provider, test_db(), None);
 
         let perms = app.resolve_role_permissions_for_project("any-role", 999);
         assert_eq!(perms, RolePermissions::default());
@@ -5819,7 +6438,7 @@ mod tests {
     #[test]
     fn resolve_role_permissions_returns_admin_tools_for_admin_project() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, stub_provider(), test_db());
+        let mut app = App::new(24, 120, backend, stub_provider(), test_db(), None);
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
             name: "Admin".to_string(),
             repos: vec![],
