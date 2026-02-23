@@ -115,6 +115,9 @@ pub trait SessionBackend: Send + Sync {
     fn default_shell(&self) -> String {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
     }
+
+    /// Return the PID of the process running in a backend pane.
+    fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>>;
 }
 
 /// Internal bundle of I/O handles before wiring.
@@ -418,6 +421,11 @@ impl Session {
     /// Return the backend name.
     pub fn backend_name(&self) -> &str {
         self.backend.name()
+    }
+
+    /// Return the PID of the process running in this session's backend pane.
+    pub fn pane_pid(&self) -> Result<Option<u32>> {
+        self.backend.pane_pid(&self.backend_id)
     }
 
     /// Restart the session: kill the old pane, spawn a fresh one with new config.

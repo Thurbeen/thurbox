@@ -417,6 +417,10 @@ pub struct App {
     worktree_sync_pending: usize,
     worktree_sync_completed: Vec<(SessionId, git::SyncResult)>,
     tick_count: u64,
+    /// System info collector for CPU/RAM metrics.
+    sys: sysinfo::System,
+    /// Cached system metrics for the info panel.
+    system_metrics: crate::ui::info_panel::SystemMetrics,
     /// Deferred inputs: `(session_id, data, tick_at_which_to_send)`.
     /// Used to introduce a small delay between pasting text and pressing Enter.
     deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
@@ -715,6 +719,13 @@ impl App {
             worktree_sync_pending: 0,
             worktree_sync_completed: Vec::new(),
             tick_count: 0,
+            sys: sysinfo::System::new(),
+            system_metrics: crate::ui::info_panel::SystemMetrics {
+                cpu_percent: 0.0,
+                memory_used: 0,
+                memory_total: 0,
+                per_session: Vec::new(),
+            },
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
             pending_delete: None,
@@ -2109,6 +2120,71 @@ impl App {
 
         // Process queued session commands from MCP
         self.process_session_commands();
+
+        // Refresh system metrics ~every second (100 ticks at 10ms polling)
+        if self.tick_count % 100 == 0 {
+            self.refresh_system_metrics();
+        }
+    }
+
+    /// Collect CPU/RAM metrics from sysinfo and per-session process trees.
+    fn refresh_system_metrics(&mut self) {
+        use sysinfo::{Pid, ProcessesToUpdate};
+
+        self.sys.refresh_cpu_all();
+        self.sys.refresh_memory();
+        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+
+        let cpu_percent = self.sys.global_cpu_usage();
+        let memory_used = self.sys.used_memory();
+        let memory_total = self.sys.total_memory();
+
+        let mut per_session = Vec::new();
+
+        // Collect PIDs for each active session in the current project
+        if let Some(project) = self.projects.get(self.active_project_index) {
+            for session in &self.sessions {
+                if !project.session_ids.contains(&session.info.id) {
+                    continue;
+                }
+                if let Ok(Some(root_pid)) = session.pane_pid() {
+                    let (cpu, mem) = Self::sum_process_tree(&self.sys, Pid::from_u32(root_pid));
+                    per_session.push(crate::ui::info_panel::SessionMetrics {
+                        name: session.info.name.clone(),
+                        cpu_percent: cpu,
+                        memory_bytes: mem,
+                    });
+                }
+            }
+        }
+
+        self.system_metrics = crate::ui::info_panel::SystemMetrics {
+            cpu_percent,
+            memory_used,
+            memory_total,
+            per_session,
+        };
+    }
+
+    /// Sum CPU% and memory for a process and all its descendants.
+    fn sum_process_tree(sys: &sysinfo::System, root: sysinfo::Pid) -> (f32, u64) {
+        let mut cpu = 0.0f32;
+        let mut mem = 0u64;
+        // Collect all PIDs in the tree via BFS
+        let mut queue = vec![root];
+        while let Some(pid) = queue.pop() {
+            if let Some(proc_) = sys.process(pid) {
+                cpu += proc_.cpu_usage();
+                mem += proc_.memory();
+                // Find children of this process
+                for (child_pid, child_proc) in sys.processes() {
+                    if child_proc.parent() == Some(pid) {
+                        queue.push(*child_pid);
+                    }
+                }
+            }
+        }
+        (cpu, mem)
     }
 
     /// Send deferred inputs whose scheduled tick has arrived.
@@ -2551,6 +2627,7 @@ impl App {
                     info,
                     active_project,
                     vm_details.as_ref(),
+                    Some(&self.system_metrics),
                 );
             }
         }
@@ -3862,6 +3939,9 @@ mod tests {
         }
         fn detach(&self, _: &str) -> anyhow::Result<()> {
             Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
         }
     }
 

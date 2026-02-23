@@ -19,12 +19,32 @@ pub struct VmDetails {
     pub base_image: String,
 }
 
+/// Per-session CPU/memory metrics.
+pub struct SessionMetrics {
+    pub name: String,
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
+}
+
+/// System-wide and per-session resource metrics.
+pub struct SystemMetrics {
+    /// Overall CPU usage 0-100.
+    pub cpu_percent: f32,
+    /// Total RAM used in bytes.
+    pub memory_used: u64,
+    /// Total RAM in bytes.
+    pub memory_total: u64,
+    /// Per-session resource usage.
+    pub per_session: Vec<SessionMetrics>,
+}
+
 pub fn render_info_panel(
     frame: &mut Frame,
     area: Rect,
     info: &SessionInfo,
     project: Option<&ProjectInfo>,
     vm_details: Option<&VmDetails>,
+    metrics: Option<&SystemMetrics>,
 ) {
     let block = Block::default()
         .title(" Info ")
@@ -32,6 +52,51 @@ pub fn render_info_panel(
         .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED));
 
     let mut lines = Vec::new();
+
+    // ── System metrics section ──
+    if let Some(m) = metrics {
+        lines.push(Line::from(Span::styled(
+            "System Resources",
+            Theme::section_header(),
+        )));
+        lines.push(render_gauge("CPU", m.cpu_percent, None));
+        lines.push(render_gauge(
+            "RAM",
+            if m.memory_total > 0 {
+                (m.memory_used as f64 / m.memory_total as f64 * 100.0) as f32
+            } else {
+                0.0
+            },
+            Some(format_bytes_pair(m.memory_used, m.memory_total)),
+        ));
+
+        if !m.per_session.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Session Resources",
+                Theme::section_header(),
+            )));
+            for sm in &m.per_session {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {:<14}", truncate_name(&sm.name, 14)),
+                        Style::default().fg(Theme::TEXT_PRIMARY),
+                    ),
+                    Span::styled(
+                        format!("{:>3}%", sm.cpu_percent as u32),
+                        Style::default().fg(Theme::ACCENT),
+                    ),
+                    Span::styled(" CPU  ", Style::default().fg(Theme::TEXT_MUTED)),
+                    Span::styled(
+                        format_bytes(sm.memory_bytes),
+                        Style::default().fg(Theme::ACCENT),
+                    ),
+                ]));
+            }
+        }
+
+        lines.push(separator());
+    }
 
     // ── Project section ──
     if let Some(proj) = project {
@@ -299,4 +364,74 @@ fn separator<'a>() -> Line<'a> {
 
 fn find_role<'a>(roles: &'a [RoleConfig], name: &str) -> Option<&'a RoleConfig> {
     roles.iter().find(|r| r.name == name)
+}
+
+/// Render a gauge bar like: `CPU [████████░░░░░░░░░░░░] 42%`
+fn render_gauge<'a>(label: &'a str, percent: f32, suffix: Option<String>) -> Line<'a> {
+    let bar_width = 20;
+    let clamped = percent.clamp(0.0, 100.0);
+    let filled = ((clamped / 100.0) * bar_width as f32).round() as usize;
+    let empty = bar_width - filled;
+
+    let filled_str: String = "█".repeat(filled);
+    let empty_str: String = "░".repeat(empty);
+
+    let right_text = match suffix {
+        Some(s) => s,
+        None => format!("{clamped:.0}%"),
+    };
+
+    Line::from(vec![
+        Span::styled(format!("{label} ["), Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(filled_str, Style::default().fg(Theme::ACCENT)),
+        Span::styled(empty_str, Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled("] ", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(right_text, Style::default().fg(Theme::TEXT_PRIMARY)),
+    ])
+}
+
+/// Format a used/total byte pair like "8.2/16.0 GB".
+fn format_bytes_pair(used: u64, total: u64) -> String {
+    let (total_val, unit) = human_bytes(total);
+    let used_val = used as f64 / unit_divisor(unit);
+    format!("{used_val:.1}/{total_val:.1} {unit}")
+}
+
+/// Format bytes as a human-readable string like "1.2 GB".
+fn format_bytes(bytes: u64) -> String {
+    let (val, unit) = human_bytes(bytes);
+    format!("{val:.1} {unit}")
+}
+
+fn human_bytes(bytes: u64) -> (f64, &'static str) {
+    const GB: u64 = 1_073_741_824;
+    const MB: u64 = 1_048_576;
+    const KB: u64 = 1_024;
+
+    if bytes >= GB {
+        (bytes as f64 / GB as f64, "GB")
+    } else if bytes >= MB {
+        (bytes as f64 / MB as f64, "MB")
+    } else {
+        (bytes as f64 / KB as f64, "KB")
+    }
+}
+
+fn unit_divisor(unit: &str) -> f64 {
+    match unit {
+        "GB" => 1_073_741_824.0,
+        "MB" => 1_048_576.0,
+        _ => 1_024.0,
+    }
+}
+
+/// Truncate a name to fit within `max_len` characters, appending "…" if truncated.
+fn truncate_name(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        name.to_string()
+    } else {
+        let mut s: String = name.chars().take(max_len - 1).collect();
+        s.push('…');
+        s
+    }
 }

@@ -735,6 +735,20 @@ impl SessionBackend for LocalTmuxBackend {
         let _ = self.unregister_pane(backend_id);
         Ok(())
     }
+
+    fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>> {
+        let result = self.ctrl_command(&format!(
+            "display-message -t {backend_id} -p '#{{pane_pid}}'"
+        ))?;
+        let trimmed = result.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed.parse::<u32>() {
+            Ok(pid) => Ok(Some(pid)),
+            Err(_) => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
