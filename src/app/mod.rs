@@ -59,16 +59,40 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__delete_project",
     "mcp__thurbox__list_roles",
     "mcp__thurbox__set_roles",
+    "mcp__thurbox__list_mcp_servers",
+    "mcp__thurbox__set_mcp_servers",
     "mcp__thurbox__list_sessions",
     "mcp__thurbox__get_session",
     "mcp__thurbox__delete_session",
     "mcp__thurbox__restart_session",
 ];
 
+/// System prompt appended to the admin session to give Claude context about its
+/// role as the Thurbox management assistant.
+const ADMIN_SYSTEM_PROMPT: &str = "\
+You are the Thurbox admin assistant. Thurbox is a multi-session Claude Code TUI \
+orchestrator. Your role is to help the user manage their Thurbox setup using the \
+thurbox MCP tools available to you.
+
+You can:
+- List, create, update, and delete projects (each project groups related sessions)
+- Configure roles for projects (named permission presets applied to sessions)
+- Configure MCP servers for projects
+- List, inspect, delete, and restart sessions
+
+When the user asks you to manage projects, roles, sessions, or MCP servers, use \
+the appropriate thurbox MCP tool. Always list existing resources before making \
+changes so you have current state.
+
+Important: delete operations are soft-deletes (recoverable via undo in the TUI). \
+Role changes via set_roles are atomic replacements — include all desired roles, \
+not just new ones.";
+
 /// Build `RolePermissions` with all admin MCP tools pre-allowed.
 fn admin_mcp_permissions() -> RolePermissions {
     RolePermissions {
         allowed_tools: ADMIN_MCP_TOOLS.iter().map(|s| s.to_string()).collect(),
+        append_system_prompt: Some(ADMIN_SYSTEM_PROMPT.to_string()),
         ..RolePermissions::default()
     }
 }
@@ -5782,13 +5806,14 @@ mod tests {
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 11);
+        assert_eq!(perms.allowed_tools.len(), 13);
         assert!(perms
             .allowed_tools
             .iter()
             .all(|t| t.starts_with("mcp__thurbox__")));
         assert!(perms.permission_mode.is_none());
         assert!(perms.disallowed_tools.is_empty());
+        assert!(perms.append_system_prompt.is_some());
     }
 
     #[test]
