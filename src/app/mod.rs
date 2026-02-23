@@ -50,6 +50,9 @@ const SYNC_CONFLICT_PROMPT: &str = "Please sync this worktree with main. Run: gi
 /// At ~10ms per tick, 10 ticks ≈ 100ms — enough for the app to process the pasted text.
 const DEFERRED_INPUT_DELAY_TICKS: u64 = 10;
 
+/// How often to refresh system metrics (in ticks). At ~10ms per tick, 100 ≈ 1 second.
+const METRICS_REFRESH_TICKS: u64 = 100;
+
 /// MCP tool names auto-allowed in the admin session so Claude can manage
 /// Thurbox without repeated permission prompts.
 const ADMIN_MCP_TOOLS: &[&str] = &[
@@ -720,7 +723,7 @@ impl App {
             worktree_sync_completed: Vec::new(),
             tick_count: 0,
             sys: sysinfo::System::new(),
-            system_metrics: crate::ui::info_panel::SystemMetrics {
+            system_metrics: info_panel::SystemMetrics {
                 cpu_percent: 0.0,
                 memory_used: 0,
                 memory_total: 0,
@@ -2121,15 +2124,15 @@ impl App {
         // Process queued session commands from MCP
         self.process_session_commands();
 
-        // Refresh system metrics ~every second (100 ticks at 10ms polling)
-        if self.tick_count % 100 == 0 {
+        // Refresh system metrics periodically
+        if self.tick_count % METRICS_REFRESH_TICKS == 0 {
             self.refresh_system_metrics();
         }
     }
 
     /// Collect CPU/RAM metrics from sysinfo and per-session process trees.
     fn refresh_system_metrics(&mut self) {
-        use sysinfo::{Pid, ProcessesToUpdate};
+        use sysinfo::ProcessesToUpdate;
 
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
@@ -2141,15 +2144,18 @@ impl App {
 
         let mut per_session = Vec::new();
 
-        // Collect PIDs for each active session in the current project
         if let Some(project) = self.projects.get(self.active_project_index) {
+            // Build parent→children map once for all session tree walks
+            let children_map = Self::build_children_map(&self.sys);
+
             for session in &self.sessions {
                 if !project.session_ids.contains(&session.info.id) {
                     continue;
                 }
                 if let Ok(Some(root_pid)) = session.pane_pid() {
-                    let (cpu, mem) = Self::sum_process_tree(&self.sys, Pid::from_u32(root_pid));
-                    per_session.push(crate::ui::info_panel::SessionMetrics {
+                    let root = sysinfo::Pid::from_u32(root_pid);
+                    let (cpu, mem) = Self::sum_process_tree(&self.sys, root, &children_map);
+                    per_session.push(info_panel::SessionMetrics {
                         name: session.info.name.clone(),
                         cpu_percent: cpu,
                         memory_bytes: mem,
@@ -2158,7 +2164,7 @@ impl App {
             }
         }
 
-        self.system_metrics = crate::ui::info_panel::SystemMetrics {
+        self.system_metrics = info_panel::SystemMetrics {
             cpu_percent,
             memory_used,
             memory_total,
@@ -2166,22 +2172,33 @@ impl App {
         };
     }
 
+    /// Build a parent→children index from the process table.
+    fn build_children_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+        let mut map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+        for (pid, proc_) in sys.processes() {
+            if let Some(parent) = proc_.parent() {
+                map.entry(parent).or_default().push(*pid);
+            }
+        }
+        map
+    }
+
     /// Sum CPU% and memory for a process and all its descendants.
-    fn sum_process_tree(sys: &sysinfo::System, root: sysinfo::Pid) -> (f32, u64) {
+    fn sum_process_tree(
+        sys: &sysinfo::System,
+        root: sysinfo::Pid,
+        children_map: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    ) -> (f32, u64) {
         let mut cpu = 0.0f32;
         let mut mem = 0u64;
-        // Collect all PIDs in the tree via BFS
-        let mut queue = vec![root];
-        while let Some(pid) = queue.pop() {
+        let mut stack = vec![root];
+        while let Some(pid) = stack.pop() {
             if let Some(proc_) = sys.process(pid) {
                 cpu += proc_.cpu_usage();
                 mem += proc_.memory();
-                // Find children of this process
-                for (child_pid, child_proc) in sys.processes() {
-                    if child_proc.parent() == Some(pid) {
-                        queue.push(*child_pid);
-                    }
-                }
+            }
+            if let Some(kids) = children_map.get(&pid) {
+                stack.extend(kids);
             }
         }
         (cpu, mem)

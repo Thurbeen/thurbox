@@ -120,12 +120,6 @@ mod tests {
         fn detach(&self, _: &str) -> Result<()> {
             Ok(())
         }
-        fn prepare_vm(&self, _vm_id: &str) -> Result<()> {
-            Ok(())
-        }
-        fn default_shell(&self) -> String {
-            "/bin/sh".to_string()
-        }
         fn pane_pid(&self, _: &str) -> Result<Option<u32>> {
             Ok(None)
         }

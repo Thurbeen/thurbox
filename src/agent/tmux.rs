@@ -740,14 +740,7 @@ impl SessionBackend for LocalTmuxBackend {
         let result = self.ctrl_command(&format!(
             "display-message -t {backend_id} -p '#{{pane_pid}}'"
         ))?;
-        let trimmed = result.trim();
-        if trimmed.is_empty() {
-            return Ok(None);
-        }
-        match trimmed.parse::<u32>() {
-            Ok(pid) => Ok(Some(pid)),
-            Err(_) => Ok(None),
-        }
+        Ok(result.trim().parse().ok())
     }
 }
 
