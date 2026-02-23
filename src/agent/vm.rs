@@ -1038,6 +1038,31 @@ local-hostname: thurbox-vm
             process: None, // Cannot clone the child process handle
         })
     }
+
+    /// Get the QEMU host process PID for a running VM.
+    ///
+    /// Tries the live `Child` handle first; falls back to reading the
+    /// `qemu.pid` file that QEMU writes via its `-pidfile` flag (needed
+    /// after thurbox restarts, when we no longer own the child handle).
+    pub fn qemu_pid(&self, vm_id: &str) -> Option<u32> {
+        let instances = self.instances.lock().unwrap();
+        let inst = instances.get(vm_id)?;
+
+        // Prefer the live process handle.
+        if let Some(pid) = inst.process.as_ref().map(|c| c.id()) {
+            return Some(pid);
+        }
+
+        // Fallback: read the pidfile written by QEMU.
+        let pidfile = inst.vm_dir.join("qemu.pid");
+        let content = std::fs::read_to_string(pidfile).ok()?;
+        let pid: u32 = content.trim().parse().ok()?;
+
+        // Verify the process is still alive.
+        std::fs::metadata(format!("/proc/{pid}"))
+            .is_ok()
+            .then_some(pid)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1936,5 +1961,67 @@ mod tests {
         let manager = VmManager::new(Path::new("/tmp/thurbox"));
         // No instances yet
         assert!(manager.get_instance("nonexistent").is_none());
+    }
+
+    #[test]
+    fn qemu_pid_unknown_vm_returns_none() {
+        let manager = VmManager::new(Path::new("/tmp/thurbox"));
+        assert!(manager.qemu_pid("nonexistent").is_none());
+    }
+
+    #[test]
+    fn qemu_pid_reads_pidfile_fallback() {
+        let tmp = std::env::temp_dir().join("thurbox-test-qemu-pid");
+        let vm_dir = tmp.join("vms").join("test-vm");
+        std::fs::create_dir_all(&vm_dir).unwrap();
+
+        // Write a pidfile pointing to PID 1 (init — always alive).
+        std::fs::write(vm_dir.join("qemu.pid"), "1\n").unwrap();
+
+        let manager = VmManager::new(&tmp);
+        // Insert an instance with process: None (simulates post-restart).
+        manager.instances.lock().unwrap().insert(
+            "test-vm".to_string(),
+            VmInstance {
+                id: "test-vm".to_string(),
+                state: VmState::Ready,
+                ssh_port: 22200,
+                config: VmConfig::default(),
+                vm_dir: vm_dir.clone(),
+                process: None,
+            },
+        );
+
+        assert_eq!(manager.qemu_pid("test-vm"), Some(1));
+
+        // Clean up.
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn qemu_pid_stale_pidfile_returns_none() {
+        let tmp = std::env::temp_dir().join("thurbox-test-stale-pid");
+        let vm_dir = tmp.join("vms").join("stale-vm");
+        std::fs::create_dir_all(&vm_dir).unwrap();
+
+        // Write a pidfile with a PID that almost certainly doesn't exist.
+        std::fs::write(vm_dir.join("qemu.pid"), "4294967295\n").unwrap();
+
+        let manager = VmManager::new(&tmp);
+        manager.instances.lock().unwrap().insert(
+            "stale-vm".to_string(),
+            VmInstance {
+                id: "stale-vm".to_string(),
+                state: VmState::Ready,
+                ssh_port: 22201,
+                config: VmConfig::default(),
+                vm_dir: vm_dir.clone(),
+                process: None,
+            },
+        );
+
+        assert_eq!(manager.qemu_pid("stale-vm"), None);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

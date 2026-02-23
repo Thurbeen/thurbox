@@ -92,6 +92,19 @@ Important: delete operations are soft-deletes (recoverable via undo in the TUI).
 Role changes via set_roles are atomic replacements — include all desired roles, \
 not just new ones.";
 
+/// Parse the PSS value (in bytes) from the contents of `smaps_rollup`.
+///
+/// Looks for a line like `Pss:             12345 kB` and returns the value in bytes.
+fn parse_pss_from_smaps(content: &str) -> Option<u64> {
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("Pss:") {
+            let kib: u64 = rest.trim().strip_suffix("kB")?.trim().parse().ok()?;
+            return Some(kib * 1024);
+        }
+    }
+    None
+}
+
 /// Build `RolePermissions` with all admin MCP tools pre-allowed.
 fn admin_mcp_permissions() -> RolePermissions {
     RolePermissions {
@@ -1535,21 +1548,28 @@ impl App {
                         }
                     }
 
-                    // Persist SSH port (allocated during provisioning, stored as 0 initially).
-                    if let Some(ref mgr) = self.vm_manager {
+                    // Persist SSH port and QEMU PID from the running VM instance.
+                    let qemu_pid = if let Some(ref mgr) = self.vm_manager {
                         if let Ok(mgr) = mgr.lock() {
                             if let Some(inst) = mgr.get_instance(vid) {
                                 if let Err(e) = self.db.update_vm_ssh_port(vid, inst.ssh_port) {
                                     error!(vm_id = %vid, "Failed to persist VM SSH port: {e}");
                                 }
                             }
+                            mgr.qemu_pid(vid)
+                        } else {
+                            None
                         }
-                    }
+                    } else {
+                        None
+                    };
 
-                    if let Err(e) =
-                        self.db
-                            .update_vm_state(vid, &crate::session::VmState::Ready, None, None)
-                    {
+                    if let Err(e) = self.db.update_vm_state(
+                        vid,
+                        &crate::session::VmState::Ready,
+                        qemu_pid,
+                        None,
+                    ) {
                         error!(vm_id = %vid, "Failed to update VM state to Ready: {e}");
                     }
                 }
@@ -2152,8 +2172,18 @@ impl App {
                 if !project.session_ids.contains(&session.info.id) {
                     continue;
                 }
-                if let Ok(Some(root_pid)) = session.pane_pid() {
-                    let root = sysinfo::Pid::from_u32(root_pid);
+
+                // VM sessions: use the QEMU host PID; local sessions: tmux pane PID.
+                let root_pid = self
+                    .db
+                    .get_vm_by_session(&session.info.id.to_string())
+                    .ok()
+                    .flatten()
+                    .and_then(|vm| vm.qemu_pid)
+                    .or_else(|| session.pane_pid().ok().flatten());
+
+                if let Some(pid) = root_pid {
+                    let root = sysinfo::Pid::from_u32(pid);
                     let (cpu, mem) = Self::sum_process_tree(&self.sys, root, &children_map);
                     per_session.push(info_panel::SessionMetrics {
                         name: session.info.name.clone(),
@@ -2183,7 +2213,22 @@ impl App {
         map
     }
 
+    /// Read PSS (Proportional Set Size) from `/proc/{pid}/smaps_rollup`.
+    ///
+    /// PSS divides shared pages proportionally among all processes mapping them,
+    /// avoiding the double-counting that RSS causes when summing across a process tree.
+    fn read_pss(pid: sysinfo::Pid) -> Option<u64> {
+        let path = format!("/proc/{}/smaps_rollup", pid.as_u32());
+        let content = std::fs::read_to_string(path).ok()?;
+        parse_pss_from_smaps(&content)
+    }
+
     /// Sum CPU% and memory for a process and all its descendants.
+    ///
+    /// Threads are skipped entirely: on Linux, `/proc/{tid}/stat` returns the
+    /// **aggregate** CPU time for the whole process (not per-thread), and
+    /// RSS/PSS is identical across all threads sharing an address space.
+    /// Counting threads would multiply both CPU and memory by the thread count.
     fn sum_process_tree(
         sys: &sysinfo::System,
         root: sysinfo::Pid,
@@ -2194,8 +2239,11 @@ impl App {
         let mut stack = vec![root];
         while let Some(pid) = stack.pop() {
             if let Some(proc_) = sys.process(pid) {
+                if proc_.thread_kind().is_some() {
+                    continue;
+                }
                 cpu += proc_.cpu_usage();
-                mem += proc_.memory();
+                mem += Self::read_pss(pid).unwrap_or_else(|| proc_.memory());
             }
             if let Some(kids) = children_map.get(&pid) {
                 stack.extend(kids);
@@ -3366,6 +3414,16 @@ impl App {
                             "VM not reachable, will fall through to re-spawn: {e}"
                         );
                         return;
+                    }
+
+                    // Persist the QEMU PID so metrics can find it.
+                    if let Some(pid) = mgr.qemu_pid(&vm_record.id) {
+                        let _ = self.db.update_vm_state(
+                            &vm_record.id,
+                            &crate::session::VmState::Ready,
+                            Some(pid),
+                            None,
+                        );
                     }
                 }
                 Err(e) => {
@@ -6668,5 +6726,50 @@ mod tests {
         let now = crate::sync::current_time_millis();
         // Future timestamp should saturate to 0s
         assert_eq!(super::format_time_ago(now + 10_000), "0s ago");
+    }
+
+    // --- PSS parsing tests ---
+
+    #[test]
+    fn parse_pss_from_smaps_typical() {
+        let content = "\
+00400000-7fff0000 ---p 00000000 00:00 0                          [rollup]
+Rss:               48000 kB
+Pss:               12345 kB
+Pss_Anon:           8000 kB
+Pss_File:           4345 kB
+Pss_Shmem:             0 kB
+";
+        assert_eq!(super::parse_pss_from_smaps(content), Some(12_345 * 1024));
+    }
+
+    #[test]
+    fn parse_pss_from_smaps_missing() {
+        let content = "\
+Rss:               48000 kB
+Shared_Clean:       1000 kB
+";
+        assert_eq!(super::parse_pss_from_smaps(content), None);
+    }
+
+    #[test]
+    fn parse_pss_from_smaps_empty() {
+        assert_eq!(super::parse_pss_from_smaps(""), None);
+    }
+
+    #[test]
+    fn parse_pss_from_smaps_zero() {
+        let content = "Pss:                   0 kB\n";
+        assert_eq!(super::parse_pss_from_smaps(content), Some(0));
+    }
+
+    #[test]
+    fn parse_pss_from_smaps_ignores_pss_anon() {
+        // Pss_Anon starts with "Pss" but not "Pss:" — must not match.
+        let content = "\
+Pss_Anon:           8000 kB
+Pss_File:           4345 kB
+";
+        assert_eq!(super::parse_pss_from_smaps(content), None);
     }
 }
