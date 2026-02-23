@@ -70,10 +70,11 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &LeftPanelState<'
         0
     };
 
-    let mut constraints = vec![Constraint::Length(regular_height)];
+    let mut constraints = vec![];
     if has_admin {
         constraints.push(Constraint::Length(admin_height));
     }
+    constraints.push(Constraint::Length(regular_height));
     constraints.push(Constraint::Min(4)); // sessions
 
     let chunks = Layout::default()
@@ -81,28 +82,30 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &LeftPanelState<'
         .constraints(constraints)
         .split(area);
 
+    let projects_chunk_idx = if has_admin {
+        // Render admin section first
+        render_admin_section(
+            frame,
+            chunks[0],
+            &admin,
+            state.active_project,
+            state.project_focus,
+        );
+        1
+    } else {
+        0
+    };
+
     // Render regular projects section
     render_project_section(
         frame,
-        chunks[0],
+        chunks[projects_chunk_idx],
         &regular,
         state.active_project,
         state.project_focus,
     );
 
-    let session_chunk_idx = if has_admin {
-        // Render admin section
-        render_admin_section(
-            frame,
-            chunks[1],
-            &admin,
-            state.active_project,
-            state.project_focus,
-        );
-        2
-    } else {
-        1
-    };
+    let session_chunk_idx = projects_chunk_idx + 1;
 
     render_session_section(
         frame,
