@@ -2151,6 +2151,7 @@ impl App {
     }
 
     /// Collect CPU/RAM metrics from sysinfo and per-session process trees.
+    /// Includes ALL sessions across ALL projects.
     fn refresh_system_metrics(&mut self) {
         use sysinfo::ProcessesToUpdate;
 
@@ -2162,35 +2163,46 @@ impl App {
         let memory_used = self.sys.used_memory();
         let memory_total = self.sys.total_memory();
 
+        // Build parent→children map once for all session tree walks
+        let children_map = Self::build_children_map(&self.sys);
+
+        // Build session_id → project_name lookup
+        let mut session_project: HashMap<SessionId, String> = HashMap::new();
+        for project in &self.projects {
+            for sid in &project.session_ids {
+                session_project.insert(*sid, project.config.name.clone());
+            }
+        }
+
         let mut per_session = Vec::new();
 
-        if let Some(project) = self.projects.get(self.active_project_index) {
-            // Build parent→children map once for all session tree walks
-            let children_map = Self::build_children_map(&self.sys);
+        for session in &self.sessions {
+            // VM sessions: use the QEMU host PID; local sessions: tmux pane PID.
+            let root_pid = self
+                .db
+                .get_vm_by_session(&session.info.id.to_string())
+                .ok()
+                .flatten()
+                .and_then(|vm| vm.qemu_pid)
+                .or_else(|| session.pane_pid().ok().flatten());
 
-            for session in &self.sessions {
-                if !project.session_ids.contains(&session.info.id) {
-                    continue;
-                }
-
-                // VM sessions: use the QEMU host PID; local sessions: tmux pane PID.
-                let root_pid = self
-                    .db
-                    .get_vm_by_session(&session.info.id.to_string())
-                    .ok()
-                    .flatten()
-                    .and_then(|vm| vm.qemu_pid)
-                    .or_else(|| session.pane_pid().ok().flatten());
-
-                if let Some(pid) = root_pid {
-                    let root = sysinfo::Pid::from_u32(pid);
-                    let (cpu, mem) = Self::sum_process_tree(&self.sys, root, &children_map);
-                    per_session.push(info_panel::SessionMetrics {
-                        name: session.info.name.clone(),
-                        cpu_percent: cpu,
-                        memory_bytes: mem,
-                    });
-                }
+            if let Some(pid) = root_pid {
+                let root = sysinfo::Pid::from_u32(pid);
+                let (cpu, mem) = Self::sum_process_tree(&self.sys, root, &children_map);
+                let project_name = session_project
+                    .get(&session.info.id)
+                    .cloned()
+                    .unwrap_or_default();
+                let worktree_branch = session.info.worktrees.first().map(|wt| wt.branch.clone());
+                let is_vm = session.info.vm_id.is_some();
+                per_session.push(info_panel::SessionMetrics {
+                    name: session.info.name.clone(),
+                    project_name,
+                    worktree_branch,
+                    is_vm,
+                    cpu_percent: cpu,
+                    memory_bytes: mem,
+                });
             }
         }
 
