@@ -97,7 +97,7 @@ fn session_to_response(s: &SharedSession) -> SessionResponse {
         project_id: s.project_id.to_string(),
         role: s.role.clone(),
         backend_type: s.backend_type.clone(),
-        claude_session_id: s.claude_session_id.clone(),
+        agent_session_id: s.agent_session_id.clone(),
         cwd: s.cwd.clone(),
         worktrees: s
             .worktrees
@@ -1096,7 +1096,7 @@ mod tests {
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
-            claude_session_id: Some("claude-abc".to_string()),
+            agent_session_id: Some("claude-abc".to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),

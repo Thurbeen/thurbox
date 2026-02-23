@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use anyhow::{bail, Context, Result};
 use tracing::{debug, warn};
 
-use crate::claude::backend::{AdoptedSession, DiscoveredSession, SessionBackend, SpawnedSession};
+use crate::agent::backend::{AdoptedSession, DiscoveredSession, SessionBackend, SpawnedSession};
 
 /// Dedicated tmux socket name — isolates thurbox sessions from the user's tmux.
 /// Dev builds use "thurbox-dev" to avoid interfering with an installed release binary.

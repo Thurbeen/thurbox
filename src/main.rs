@@ -7,9 +7,10 @@ use crossterm::event::{
 };
 use crossterm::execute;
 
+use thurbox::agent::claude::ClaudeProvider;
+use thurbox::agent::tmux::LocalTmuxBackend;
+use thurbox::agent::{AgentProvider, SessionBackend};
 use thurbox::app::{App, AppMessage};
-use thurbox::claude::tmux::LocalTmuxBackend;
-use thurbox::claude::SessionBackend;
 use thurbox::storage::Database;
 
 #[tokio::main]
@@ -34,10 +35,11 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    // Initialize the session backend (local tmux).
+    // Initialize the session backend (local tmux) and agent provider.
     let backend: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
     backend.check_available()?;
     backend.ensure_ready()?;
+    let provider: Arc<dyn AgentProvider> = Arc::new(ClaudeProvider);
 
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
@@ -55,7 +57,7 @@ async fn main() -> Result<()> {
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let size = terminal.size()?;
 
-    let mut app = App::new(size.height, size.width, backend, db);
+    let mut app = App::new(size.height, size.width, backend, provider, db);
 
     // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {

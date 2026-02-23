@@ -2,7 +2,7 @@
 // This module provides bounds-safe accessors to replace direct array indexing,
 // preventing panics from out-of-bounds access.
 
-use crate::claude::Session;
+use crate::agent::Session;
 use crate::project::ProjectInfo;
 
 use super::App;

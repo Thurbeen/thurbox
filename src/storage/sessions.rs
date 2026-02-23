@@ -16,7 +16,7 @@ pub struct DeletedSessionInfo {
     pub name: String,
     pub project_id: ProjectId,
     pub role: String,
-    pub claude_session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub deleted_at: u64,
     pub worktrees: Vec<SharedWorktree>,
@@ -48,7 +48,7 @@ impl Database {
         if existing.is_some() {
             self.conn.execute(
                 "UPDATE sessions SET name = ?1, project_id = ?2, role = ?3, \
-                 backend_id = ?4, backend_type = ?5, claude_session_id = ?6, \
+                 backend_id = ?4, backend_type = ?5, agent_session_id = ?6, \
                  cwd = ?7, additional_dirs = ?8, shell_backend_id = ?9, \
                  updated_at = ?10, deleted_at = NULL \
                  WHERE id = ?11",
@@ -58,7 +58,7 @@ impl Database {
                     session.role,
                     session.backend_id,
                     session.backend_type,
-                    session.claude_session_id,
+                    session.agent_session_id,
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
                     session.shell_backend_id,
@@ -78,7 +78,7 @@ impl Database {
         } else {
             self.conn.execute(
                 "INSERT INTO sessions (id, name, project_id, role, backend_id, backend_type, \
-                 claude_session_id, cwd, additional_dirs, shell_backend_id, created_at, updated_at) \
+                 agent_session_id, cwd, additional_dirs, shell_backend_id, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id_str,
@@ -87,7 +87,7 @@ impl Database {
                     session.role,
                     session.backend_id,
                     session.backend_type,
-                    session.claude_session_id,
+                    session.agent_session_id,
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
                     session.shell_backend_id,
@@ -177,7 +177,7 @@ impl Database {
     fn query_sessions(&self, condition: &str) -> rusqlite::Result<Vec<SharedSession>> {
         let sql = format!(
             "SELECT s.id, s.name, s.project_id, s.role, s.backend_id, s.backend_type, \
-             s.claude_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
+             s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
@@ -222,7 +222,7 @@ impl Database {
                     role: row.get(3)?,
                     backend_id: row.get(4)?,
                     backend_type: row.get(5)?,
-                    claude_session_id: row.get(6)?,
+                    agent_session_id: row.get(6)?,
                     cwd: cwd.map(PathBuf::from),
                     additional_dirs,
                     worktrees: Vec::new(),
@@ -314,7 +314,7 @@ impl Database {
 
     fn query_deleted_sessions(&self, condition: &str) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         let sql = format!(
-            "SELECT s.id, s.name, s.project_id, s.role, s.claude_session_id, \
+            "SELECT s.id, s.name, s.project_id, s.role, s.agent_session_id, \
              s.cwd, s.deleted_at, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
@@ -351,7 +351,7 @@ impl Database {
                         .map(ProjectId::from_uuid)
                         .unwrap_or_default(),
                     role: row.get(3)?,
-                    claude_session_id: row.get(4)?,
+                    agent_session_id: row.get(4)?,
                     cwd: cwd.map(PathBuf::from),
                     deleted_at: deleted_at as u64,
                     worktrees: Vec::new(),
@@ -451,7 +451,7 @@ mod tests {
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
-            claude_session_id: None,
+            agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
@@ -771,16 +771,16 @@ mod tests {
     }
 
     #[test]
-    fn session_claude_session_id_preserved() {
+    fn session_agent_session_id_preserved() {
         let (db, pid) = setup_db_with_project();
         let mut session = make_session("Session 1", pid);
-        session.claude_session_id = Some("claude-abc-123".to_string());
+        session.agent_session_id = Some("claude-abc-123".to_string());
 
         db.upsert_session(&session).unwrap();
 
         let sessions = db.list_active_sessions().unwrap();
         assert_eq!(
-            sessions[0].claude_session_id,
+            sessions[0].agent_session_id,
             Some("claude-abc-123".to_string())
         );
     }
@@ -853,16 +853,16 @@ mod tests {
     }
 
     #[test]
-    fn list_deleted_sessions_preserves_claude_session_id() {
+    fn list_deleted_sessions_preserves_agent_session_id() {
         let (db, pid) = setup_db_with_project();
         let mut session = make_session("S1", pid);
-        session.claude_session_id = Some("claude-xyz".to_string());
+        session.agent_session_id = Some("claude-xyz".to_string());
         let sid = session.id;
         db.upsert_session(&session).unwrap();
         db.soft_delete_session(sid).unwrap();
 
         let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
-        assert_eq!(deleted[0].claude_session_id, Some("claude-xyz".to_string()));
+        assert_eq!(deleted[0].agent_session_id, Some("claude-xyz".to_string()));
     }
 
     #[test]

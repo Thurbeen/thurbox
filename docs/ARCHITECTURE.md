@@ -234,7 +234,7 @@ constraints. Superseded when the Admin project was introduced.
 ## ADR-11: Trait-based session backends
 
 **Choice**: Session lifecycle is abstracted behind a
-`SessionBackend` trait (`src/claude/backend.rs`). The `Session`
+`SessionBackend` trait (`src/agent/backend.rs`). The `Session`
 struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
@@ -425,7 +425,7 @@ automatically — no new synchronization mechanism is needed.
 
 The `mcp` module follows the same isolation rules as other modules:
 it imports `storage`, `session`, `project`, `sync`, and `paths`,
-but never `app`, `claude`, `ui`, or `git`. This ensures the MCP
+but never `app`, `agent`, `ui`, or `git`. This ensures the MCP
 server can operate without a terminal or tmux.
 
 **Rejected**:

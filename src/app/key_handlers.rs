@@ -11,7 +11,7 @@ use crate::session::SessionConfig;
 
 use super::mcp_editor_modal::McpEditorField;
 use super::{AddProjectField, App, EditProjectField, InputFocus, RoleEditorView, TerminalView};
-use crate::claude::input;
+use crate::agent::input;
 use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
 use tracing::error;

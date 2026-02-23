@@ -18,7 +18,7 @@ use ratatui::{
 };
 use tracing::error;
 
-use crate::claude::{Session, SessionBackend};
+use crate::agent::{Session, SessionBackend};
 use crate::git;
 use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
@@ -301,6 +301,7 @@ pub struct App {
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
     backend: Arc<dyn SessionBackend>,
+    provider: Arc<dyn crate::agent::AgentProvider>,
     pub(crate) db: Database,
     pub(crate) focus: InputFocus,
     pub(crate) should_quit: bool,
@@ -539,7 +540,13 @@ fn load_projects_from_db(db: &Database) -> Vec<ProjectInfo> {
 }
 
 impl App {
-    pub fn new(rows: u16, cols: u16, backend: Arc<dyn SessionBackend>, db: Database) -> Self {
+    pub fn new(
+        rows: u16,
+        cols: u16,
+        backend: Arc<dyn SessionBackend>,
+        provider: Arc<dyn crate::agent::AgentProvider>,
+        db: Database,
+    ) -> Self {
         // Migrate roles from config.toml on first run after upgrade
         migrate_config_toml_roles(&db);
 
@@ -562,6 +569,7 @@ impl App {
             sessions: Vec::new(),
             active_index: 0,
             backend,
+            provider,
             db,
             focus: InputFocus::ProjectList,
             should_quit: false,
@@ -836,7 +844,7 @@ impl App {
         let Some(session) = self.sessions.get(self.active_index) else {
             return;
         };
-        let Some(claude_session_id) = session.info.claude_session_id.clone() else {
+        let Some(agent_session_id) = session.info.agent_session_id.clone() else {
             return;
         };
 
@@ -846,8 +854,8 @@ impl App {
 
         let permissions = self.resolve_role_permissions(&role);
         let config = SessionConfig {
-            resume_session_id: Some(claude_session_id.clone()),
-            claude_session_id: Some(claude_session_id),
+            resume_session_id: Some(agent_session_id.clone()),
+            agent_session_id: Some(agent_session_id),
             cwd,
             additional_dirs,
             role,
@@ -1034,8 +1042,8 @@ impl App {
 
         let permissions = self.resolve_role_permissions(&deleted.role);
         let config = SessionConfig {
-            resume_session_id: deleted.claude_session_id.clone(),
-            claude_session_id: deleted.claude_session_id,
+            resume_session_id: deleted.agent_session_id.clone(),
+            agent_session_id: deleted.agent_session_id,
             cwd,
             additional_dirs: Vec::new(),
             role: deleted.role,
@@ -1045,7 +1053,14 @@ impl App {
         let session_name = deleted.name.clone();
         let (rows, cols) = self.content_area_size();
 
-        match Session::spawn(session_name.clone(), rows, cols, &config, &self.backend) {
+        match Session::spawn(
+            session_name.clone(),
+            rows,
+            cols,
+            &config,
+            &self.backend,
+            &self.provider,
+        ) {
             Ok(mut session) => {
                 session.info.id = deleted.id;
                 session.info.worktrees = worktree_infos;
@@ -1117,7 +1132,7 @@ impl App {
         session.info.role = shared.role.clone();
         session.info.cwd = shared.cwd.clone();
         session.info.additional_dirs = shared.additional_dirs.clone();
-        session.info.claude_session_id = shared.claude_session_id.clone();
+        session.info.agent_session_id = shared.agent_session_id.clone();
         session.info.worktrees = shared.worktrees.iter().cloned().map(Into::into).collect();
     }
 
@@ -1372,11 +1387,11 @@ impl App {
         let (rows, cols) = self.content_area_size();
 
         let mut config = config.clone();
-        if config.claude_session_id.is_none() {
-            config.claude_session_id = Some(uuid::Uuid::new_v4().to_string());
+        if config.agent_session_id.is_none() {
+            config.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
         }
 
-        match Session::spawn(name, rows, cols, &config, &self.backend) {
+        match Session::spawn(name, rows, cols, &config, &self.backend, &self.provider) {
             Ok(mut session) => {
                 session.info.worktrees = worktrees;
                 let session_id = session.info.id;
@@ -1936,6 +1951,7 @@ impl App {
                 cols,
                 &shared_session.backend_id,
                 &self.backend,
+                &self.provider,
                 env,
             ) {
                 Ok(mut adopted_session) => {
@@ -1965,9 +1981,9 @@ impl App {
                         e
                     );
 
-                    // If adopt failed but session has a claude_session_id,
+                    // If adopt failed but session has an agent_session_id,
                     // try spawning with --resume (e.g. restored via MCP).
-                    if let Some(ref claude_sid) = shared_session.claude_session_id {
+                    if let Some(ref agent_sid) = shared_session.agent_session_id {
                         let worktree_infos = Self::recreate_worktrees(&shared_session.worktrees);
                         let cwd = worktree_infos
                             .first()
@@ -1976,8 +1992,8 @@ impl App {
 
                         let permissions = self.resolve_role_permissions(&shared_session.role);
                         let config = SessionConfig {
-                            resume_session_id: Some(claude_sid.clone()),
-                            claude_session_id: Some(claude_sid.clone()),
+                            resume_session_id: Some(agent_sid.clone()),
+                            agent_session_id: Some(agent_sid.clone()),
                             cwd,
                             additional_dirs: shared_session.additional_dirs.clone(),
                             role: shared_session.role.clone(),
@@ -1991,6 +2007,7 @@ impl App {
                             cols,
                             &config,
                             &self.backend,
+                            &self.provider,
                         ) {
                             spawned.info.id = shared_session.id;
                             spawned.info.worktrees = worktree_infos;
@@ -2539,7 +2556,7 @@ impl App {
             role: session.info.role.clone(),
             backend_id: session.backend_id().to_string(),
             backend_type: session.backend_name().to_string(),
-            claude_session_id: session.info.claude_session_id.clone(),
+            agent_session_id: session.info.agent_session_id.clone(),
             cwd: session.info.cwd.clone(),
             additional_dirs: session.info.additional_dirs.clone(),
             worktrees: session
@@ -2565,10 +2582,10 @@ impl App {
             return None;
         }
 
-        // Only restore sessions that have a claude_session_id (resumable)
+        // Only restore sessions that have a agent_session_id (resumable)
         let resumable: Vec<sync::SharedSession> = sessions
             .into_iter()
-            .filter(|s| s.claude_session_id.is_some())
+            .filter(|s| s.agent_session_id.is_some())
             .collect();
 
         if resumable.is_empty() {
@@ -2582,7 +2599,7 @@ impl App {
     /// Restore sessions from the database on startup.
     ///
     /// Tries to adopt existing backend sessions (tmux windows) or spawns new
-    /// sessions with `--resume` to reconnect to the Claude session.
+    /// sessions with `--resume` to reconnect to the agent session.
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
 
@@ -2602,7 +2619,7 @@ impl App {
             let worktrees: Vec<WorktreeInfo> =
                 shared.worktrees.into_iter().map(Into::into).collect();
 
-            let claude_session_id = match shared.claude_session_id {
+            let agent_session_id = match shared.agent_session_id {
                 Some(id) => id,
                 None => continue, // Skip sessions without a claude session ID
             };
@@ -2630,6 +2647,7 @@ impl App {
                     cols,
                     &disc.backend_id,
                     &self.backend,
+                    &self.provider,
                     env.clone(),
                 ) {
                     Ok(session) => Some(session),
@@ -2642,7 +2660,7 @@ impl App {
 
             if let Some(mut session) = adopted {
                 session.info.id = session_id;
-                session.info.claude_session_id = Some(claude_session_id.clone());
+                session.info.agent_session_id = Some(agent_session_id.clone());
                 session.info.cwd = shared.cwd.clone();
                 session.info.additional_dirs = shared.additional_dirs.clone();
                 session.info.role = role;
@@ -2700,12 +2718,12 @@ impl App {
                     resume_session_id: if is_admin {
                         None
                     } else {
-                        Some(claude_session_id.clone())
+                        Some(agent_session_id.clone())
                     },
-                    claude_session_id: if is_admin {
+                    agent_session_id: if is_admin {
                         None
                     } else {
-                        Some(claude_session_id)
+                        Some(agent_session_id)
                     },
                     cwd: shared.cwd,
                     additional_dirs: shared.additional_dirs,
@@ -2803,9 +2821,9 @@ impl App {
         };
 
         let session = &self.sessions[session_idx];
-        let Some(claude_session_id) = session.info.claude_session_id.clone() else {
+        let Some(agent_session_id) = session.info.agent_session_id.clone() else {
             error!(
-                "Cannot restart session {} without claude_session_id",
+                "Cannot restart session {} without agent_session_id",
                 cmd.session_id
             );
             return;
@@ -2824,8 +2842,8 @@ impl App {
         let permissions = self.resolve_role_permissions_for_project(&role, project_index);
 
         let config = SessionConfig {
-            resume_session_id: Some(claude_session_id.clone()),
-            claude_session_id: Some(claude_session_id),
+            resume_session_id: Some(agent_session_id.clone()),
+            agent_session_id: Some(agent_session_id),
             cwd,
             additional_dirs,
             role,
@@ -3173,7 +3191,7 @@ mod tests {
             _: &std::collections::HashMap<String, String>,
             _: u16,
             _: u16,
-        ) -> anyhow::Result<crate::claude::backend::SpawnedSession> {
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
             anyhow::bail!("stub backend does not spawn")
         }
         fn adopt(
@@ -3181,10 +3199,10 @@ mod tests {
             _: &str,
             _: u16,
             _: u16,
-        ) -> anyhow::Result<crate::claude::backend::AdoptedSession> {
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
             anyhow::bail!("stub backend does not adopt")
         }
-        fn discover(&self) -> anyhow::Result<Vec<crate::claude::backend::DiscoveredSession>> {
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
             Ok(vec![])
         }
         fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
@@ -3203,6 +3221,10 @@ mod tests {
 
     fn stub_backend() -> Arc<dyn SessionBackend> {
         Arc::new(StubBackend)
+    }
+
+    fn stub_provider() -> Arc<dyn crate::agent::AgentProvider> {
+        Arc::new(crate::agent::claude::ClaudeProvider)
     }
 
     fn test_db() -> Database {
@@ -3234,14 +3256,16 @@ mod tests {
     /// Create an App with a test project and N stub sessions bound to it.
     fn app_with_sessions(count: usize) -> App {
         let backend = stub_backend();
+        let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
             backend.clone(),
+            provider.clone(),
             test_db_with_project(&test_project_config()),
         );
         for i in 0..count {
-            let session = Session::stub(&format!("Session {}", i + 1), &backend);
+            let session = Session::stub(&format!("Session {}", i + 1), &backend, &provider);
             let session_id = session.info.id;
             app.sessions.push(session);
             app.projects[0].session_ids.push(session_id);
@@ -3363,14 +3387,14 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(50, 100, stub_backend(), test_db());
+        let app = App::new(50, 100, stub_backend(), stub_provider(), test_db());
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(6, 80, stub_backend(), test_db());
+        let app = App::new(6, 80, stub_backend(), stub_provider(), test_db());
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -3384,13 +3408,13 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -3398,7 +3422,7 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
@@ -3411,6 +3435,7 @@ mod tests {
             24,
             120,
             stub_backend(),
+            stub_provider(),
             test_db_with_project(&test_project_config()),
         );
         app.open_role_editor();
@@ -3434,7 +3459,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         app.open_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
         assert_eq!(app.role_editor_roles[0].name, "ops");
@@ -3442,7 +3473,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
@@ -3462,7 +3493,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
@@ -3507,7 +3538,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, Vec::new());
         assert!(app.show_role_selector);
@@ -3522,14 +3559,20 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         // With no roles, the selector should never be set
         assert!(!app.show_role_selector);
     }
 
     #[test]
     fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
@@ -3560,7 +3603,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         // Add first role
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -3606,7 +3649,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -3628,7 +3677,7 @@ mod tests {
 
     #[test]
     fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
@@ -3660,7 +3709,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -3680,7 +3735,7 @@ mod tests {
     #[test]
     fn role_editor_tab_cycles_fields_forward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -3702,7 +3757,7 @@ mod tests {
     #[test]
     fn role_editor_backtab_cycles_fields_backward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -3723,7 +3778,7 @@ mod tests {
 
     #[test]
     fn role_editor_esc_returns_to_edit_project() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -3756,7 +3811,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         app.open_role_editor();
         // Select the last role
         app.role_editor_list_index = 1;
@@ -3768,7 +3829,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -3891,7 +3952,7 @@ mod tests {
     #[test]
     fn tool_browse_add_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -3924,7 +3985,7 @@ mod tests {
     #[test]
     fn tool_browse_delete_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::AllowedTools;
@@ -3941,7 +4002,7 @@ mod tests {
     #[test]
     fn tool_adding_esc_cancels() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::DisallowedTools;
@@ -3976,7 +4037,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let mut app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -3995,7 +4062,7 @@ mod tests {
 
     #[test]
     fn system_prompt_empty_saves_as_none() {
-        let mut app = App::new(24, 120, stub_backend(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("test");
@@ -4025,7 +4092,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        let app = App::new(24, 120, stub_backend(), test_db_with_project(&config));
+        let app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        );
         // With exactly 1 role, prepare_spawn should not show selector
         // (it would try to spawn, which needs a runtime — just verify no selector)
         assert!(!app.show_role_selector);
@@ -4127,7 +4200,7 @@ mod tests {
 
     #[test]
     fn empty_db_app_has_valid_active_project_index() {
-        let app = App::new(24, 120, stub_backend(), test_db());
+        let app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         // With an empty DB, the project list is empty, but the index should be valid
         assert!(
             app.projects.is_empty() || app.active_project_index < app.projects.len(),
@@ -4206,6 +4279,7 @@ mod tests {
     #[test]
     fn save_project_to_db_restores_soft_deleted_project() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let db = test_db();
         let config = ProjectConfig {
             name: "TestProject".to_string(),
@@ -4222,7 +4296,7 @@ mod tests {
         db.soft_delete_project(id).unwrap();
         assert!(!db.project_exists(id).unwrap());
 
-        let app = App::new(24, 120, backend, db);
+        let app = App::new(24, 120, backend, provider, db);
 
         // Create a project with the same deterministic ID
         let project = ProjectInfo::new(config);
@@ -4438,7 +4512,7 @@ mod tests {
 
     #[test]
     fn load_persisted_state_empty_db_returns_none() {
-        let app = App::new(24, 80, stub_backend(), test_db());
+        let app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert!(app.load_persisted_state_from_db().is_none());
     }
 
@@ -4455,7 +4529,7 @@ mod tests {
         let pid = proj_config.deterministic_id();
         db.insert_project(pid, "test", &[]).unwrap();
 
-        // Session without claude_session_id — not resumable
+        // Session without agent_session_id — not resumable
         let session = sync::SharedSession {
             id: SessionId::default(),
             name: "1".to_string(),
@@ -4463,7 +4537,7 @@ mod tests {
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
-            claude_session_id: None,
+            agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
@@ -4473,7 +4547,7 @@ mod tests {
         };
         db.upsert_session(&session).unwrap();
 
-        let app = App::new(24, 80, stub_backend(), db);
+        let app = App::new(24, 80, stub_backend(), stub_provider(), db);
         assert!(app.load_persisted_state_from_db().is_none());
     }
 
@@ -4498,7 +4572,7 @@ mod tests {
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
-            claude_session_id: None,
+            agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
@@ -4516,7 +4590,7 @@ mod tests {
             role: "developer".to_string(),
             backend_id: "thurbox:@1".to_string(),
             backend_type: "tmux".to_string(),
-            claude_session_id: Some("claude-abc".to_string()),
+            agent_session_id: Some("claude-abc".to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
@@ -4527,7 +4601,7 @@ mod tests {
         db.upsert_session(&s2).unwrap();
         db.set_session_counter(7).unwrap();
 
-        let app = App::new(24, 80, stub_backend(), db);
+        let app = App::new(24, 80, stub_backend(), stub_provider(), db);
         let (sessions, counter) = app.load_persisted_state_from_db().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "2");
@@ -4537,15 +4611,17 @@ mod tests {
     #[test]
     fn save_state_roundtrips_sessions() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
             backend.clone(),
+            provider.clone(),
             test_db_with_project(&test_project_config()),
         );
 
         // Add a session
-        let session = Session::stub("Session 1", &backend);
+        let session = Session::stub("Session 1", &backend, &provider);
         let sid = session.info.id;
         app.sessions.push(session);
         app.projects[0].session_ids.push(sid);
@@ -4562,7 +4638,8 @@ mod tests {
     #[test]
     fn save_state_persists_session_counter() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let provider = stub_provider();
+        let mut app = App::new(24, 120, backend.clone(), provider.clone(), test_db());
         app.session_counter = 42;
 
         app.save_state();
@@ -4574,17 +4651,19 @@ mod tests {
     #[test]
     fn session_to_shared_converts_correctly() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
             backend.clone(),
+            provider.clone(),
             test_db_with_project(&test_project_config()),
         );
 
-        let mut session = Session::stub("TestSession", &backend);
+        let mut session = Session::stub("TestSession", &backend, &provider);
         session.info.role = "reviewer".to_string();
         session.info.cwd = Some(PathBuf::from("/home/user"));
-        session.info.claude_session_id = Some("claude-xyz".to_string());
+        session.info.agent_session_id = Some("claude-xyz".to_string());
 
         let sid = session.info.id;
         app.sessions.push(session);
@@ -4595,7 +4674,7 @@ mod tests {
         assert_eq!(shared.name, "TestSession");
         assert_eq!(shared.role, "reviewer");
         assert_eq!(shared.cwd, Some(PathBuf::from("/home/user")));
-        assert_eq!(shared.claude_session_id, Some("claude-xyz".to_string()));
+        assert_eq!(shared.agent_session_id, Some("claude-xyz".to_string()));
         assert!(!shared.tombstone);
         assert!(shared.tombstone_at.is_none());
     }
@@ -4611,7 +4690,13 @@ mod tests {
             mcp_servers: Vec::new(),
             id: None,
         };
-        App::new(24, 120, stub_backend(), test_db_with_project(&config))
+        App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        )
     }
 
     #[test]
@@ -4824,6 +4909,7 @@ mod tests {
         // Verifies no duplicate projects and sessions stay associated.
         let db = test_db();
         let backend = stub_backend();
+        let provider = stub_provider();
 
         // Step 1: Start app with project "TestA"
         let config = ProjectConfig {
@@ -4836,7 +4922,7 @@ mod tests {
         let original_id = config.deterministic_id();
         let id = config.effective_id();
         db.insert_project(id, &config.name, &config.repos).unwrap();
-        let mut app = App::new(24, 120, backend.clone(), db);
+        let mut app = App::new(24, 120, backend.clone(), provider.clone(), db);
 
         // Verify initial state: 1 project named "TestA"
         assert_eq!(app.projects.len(), 1);
@@ -4849,7 +4935,7 @@ mod tests {
             .iter()
             .position(|p| p.config.name == "TestA")
             .unwrap();
-        let session = Session::stub("Session1", &backend);
+        let session = Session::stub("Session1", &backend, &provider);
         let session_id = session.info.id;
         app.sessions.push(session);
         app.projects[app.active_project_index]
@@ -4884,7 +4970,7 @@ mod tests {
         app.save_state();
 
         // Step 5: Simulate restart with the same DB (project already persisted from edit)
-        let app2 = App::new(24, 120, backend.clone(), app.db);
+        let app2 = App::new(24, 120, backend.clone(), provider.clone(), app.db);
 
         // Verify: only 1 project, named "TestB"
         assert_eq!(
@@ -4967,7 +5053,7 @@ mod tests {
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
-            claude_session_id: Some("claude-abc".to_string()),
+            agent_session_id: Some("claude-abc".to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
@@ -4996,14 +5082,16 @@ mod tests {
     #[test]
     fn session_to_shared_maps_worktree() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
             backend.clone(),
+            provider.clone(),
             test_db_with_project(&test_project_config()),
         );
 
-        let mut session = Session::stub("WTSession", &backend);
+        let mut session = Session::stub("WTSession", &backend, &provider);
         session.info.worktrees = vec![WorktreeInfo {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
@@ -5031,7 +5119,13 @@ mod tests {
             mcp_servers: vec![],
             id: None,
         };
-        App::new(24, 120, stub_backend(), test_db_with_project(&config))
+        App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+        )
     }
 
     #[test]
@@ -5173,10 +5267,10 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_r_no_op_without_claude_session_id() {
+    fn ctrl_r_no_op_without_agent_session_id() {
         let mut app = app_with_sessions(1);
-        // Session exists but has no claude_session_id
-        app.sessions[0].info.claude_session_id = None;
+        // Session exists but has no agent_session_id
+        app.sessions[0].info.agent_session_id = None;
         app.focus = InputFocus::Terminal;
         app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
         // Should be a no-op (no error, no crash)
@@ -5186,14 +5280,16 @@ mod tests {
     #[test]
     fn session_to_shared_maps_additional_dirs() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let mut app = App::new(
             24,
             120,
             backend.clone(),
+            provider.clone(),
             test_db_with_project(&test_project_config()),
         );
 
-        let mut session = Session::stub("MultiDir", &backend);
+        let mut session = Session::stub("MultiDir", &backend, &provider);
         session.info.additional_dirs = vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")];
 
         let sid = session.info.id;
@@ -5209,6 +5305,7 @@ mod tests {
     #[test]
     fn user_session_count_excludes_admin_project() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let config = ProjectConfig {
             name: "UserProj".to_string(),
             repos: vec![PathBuf::from("/repo")],
@@ -5216,13 +5313,19 @@ mod tests {
             mcp_servers: Vec::new(),
             id: None,
         };
-        let mut app = App::new(24, 120, backend.clone(), test_db_with_project(&config));
+        let mut app = App::new(
+            24,
+            120,
+            backend.clone(),
+            provider.clone(),
+            test_db_with_project(&config),
+        );
 
         // User project has no sessions
         assert_eq!(app.user_session_count(), 0);
 
         // Add a session to the user project
-        let session = Session::stub("user-1", &backend);
+        let session = Session::stub("user-1", &backend, &provider);
         let sid = session.info.id;
         app.sessions.push(session);
         app.projects[0].session_ids.push(sid);
@@ -5237,7 +5340,7 @@ mod tests {
             id: None,
         };
         let mut admin_project = ProjectInfo::new_admin(admin_config);
-        let admin_session = Session::stub("admin", &backend);
+        let admin_session = Session::stub("admin", &backend, &provider);
         let admin_sid = admin_session.info.id;
         app.sessions.push(admin_session);
         admin_project.session_ids.push(admin_sid);
@@ -5250,7 +5353,8 @@ mod tests {
     #[test]
     fn cannot_edit_admin_project() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, test_db());
+        let provider = stub_provider();
+        let mut app = App::new(24, 120, backend, provider, test_db());
 
         // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -5274,7 +5378,8 @@ mod tests {
     #[test]
     fn cannot_delete_admin_project() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, test_db());
+        let provider = stub_provider();
+        let mut app = App::new(24, 120, backend, provider, test_db());
 
         // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -5298,7 +5403,8 @@ mod tests {
     #[test]
     fn cannot_close_admin_session() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend.clone(), test_db());
+        let provider = stub_provider();
+        let mut app = App::new(24, 120, backend.clone(), provider.clone(), test_db());
 
         // Add an admin project with a session and select it
         let mut admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -5308,7 +5414,7 @@ mod tests {
             mcp_servers: Vec::new(),
             id: None,
         });
-        let session = Session::stub("admin", &backend);
+        let session = Session::stub("admin", &backend, &provider);
         let sid = session.info.id;
         app.sessions.push(session);
         admin_project.session_ids.push(sid);
@@ -5328,7 +5434,7 @@ mod tests {
 
     #[test]
     fn set_error_creates_error_status() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.set_error("something failed");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
@@ -5337,7 +5443,7 @@ mod tests {
 
     #[test]
     fn set_status_creates_typed_status() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.set_status(StatusLevel::Success, "all good");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Success);
@@ -5346,7 +5452,7 @@ mod tests {
 
     #[test]
     fn set_status_replaces_previous() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.set_error("old error");
         app.set_status(StatusLevel::Info, "new info");
         let msg = app.status_message.as_ref().unwrap();
@@ -5358,7 +5464,7 @@ mod tests {
 
     #[test]
     fn start_sync_with_no_worktrees_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.start_sync();
         assert!(!app.worktree_sync_in_progress);
         let msg = app.status_message.as_ref().unwrap();
@@ -5368,7 +5474,7 @@ mod tests {
 
     #[test]
     fn start_sync_ignores_if_already_in_progress() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_in_progress = true;
         app.status_message = None;
         app.start_sync();
@@ -5378,7 +5484,7 @@ mod tests {
 
     #[test]
     fn ctrl_s_triggers_start_sync() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
         // No worktrees → info message
         let msg = app.status_message.as_ref().unwrap();
@@ -5388,9 +5494,16 @@ mod tests {
     #[test]
     fn start_sync_with_worktree_sessions_sets_in_progress() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let config = test_project_config();
-        let mut app = App::new(24, 120, backend.clone(), test_db_with_project(&config));
-        let mut session = Session::stub("wt-session", &backend);
+        let mut app = App::new(
+            24,
+            120,
+            backend.clone(),
+            provider.clone(),
+            test_db_with_project(&config),
+        );
+        let mut session = Session::stub("wt-session", &backend, &provider);
         session.info.worktrees = vec![WorktreeInfo {
             repo_path: PathBuf::from("/tmp/nonexistent-repo"),
             worktree_path: PathBuf::from("/tmp/nonexistent-wt"),
@@ -5410,7 +5523,7 @@ mod tests {
 
     #[test]
     fn tick_increments_tick_count() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert_eq!(app.tick_count, 0);
         app.tick();
         assert_eq!(app.tick_count, 1);
@@ -5420,7 +5533,7 @@ mod tests {
 
     #[test]
     fn finish_sync_all_synced_shows_success() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let id = SessionId::default();
         app.worktree_sync_completed = vec![
             (id, git::SyncResult::Synced),
@@ -5434,7 +5547,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_errors_shows_error() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_completed = vec![(
             SessionId::default(),
             git::SyncResult::Error("fetch failed".into()),
@@ -5448,7 +5561,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_conflicts_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_completed = vec![
             (SessionId::default(), git::SyncResult::Synced),
             (
@@ -5465,7 +5578,7 @@ mod tests {
 
     #[test]
     fn finish_sync_errors_take_priority_over_conflicts() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_completed = vec![
             (
                 SessionId::default(),
@@ -5484,7 +5597,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_sends_at_correct_tick() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"hello".to_vec(), 5));
 
@@ -5501,7 +5614,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_retains_future_items() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"early".to_vec(), 5));
         app.deferred_inputs.push((id, b"late".to_vec(), 20));
@@ -5514,7 +5627,7 @@ mod tests {
 
     #[test]
     fn send_conflict_prompt_noop_for_unknown_session() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.send_conflict_prompt(SessionId::default());
         assert!(app.deferred_inputs.is_empty());
     }
@@ -5522,8 +5635,9 @@ mod tests {
     #[test]
     fn send_conflict_prompt_no_deferred_when_send_fails() {
         let backend = stub_backend();
-        let mut app = App::new(24, 80, backend.clone(), test_db());
-        let session = Session::stub("test", &backend);
+        let provider = stub_provider();
+        let mut app = App::new(24, 80, backend.clone(), provider.clone(), test_db());
+        let session = Session::stub("test", &backend, &provider);
         let sid = session.info.id;
         app.sessions.push(session);
 
@@ -5535,7 +5649,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_triggers_finish_when_all_received() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let (tx, rx) = mpsc::channel();
         let id = SessionId::default();
 
@@ -5556,7 +5670,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_waits_for_all_pending() {
-        let mut app = App::new(24, 80, stub_backend(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let (tx, rx) = mpsc::channel();
 
         tx.send((SessionId::default(), git::SyncResult::Synced))
@@ -5580,12 +5694,13 @@ mod tests {
     #[test]
     fn find_project_index_finds_matching_project() {
         let backend = stub_backend();
+        let provider = stub_provider();
         let config_b = ProjectConfig {
             name: "Other".to_string(),
             repos: vec![PathBuf::from("/other")],
             ..test_project_config()
         };
-        let mut app = App::new(24, 120, backend, test_db());
+        let mut app = App::new(24, 120, backend, provider, test_db());
         app.projects.push(ProjectInfo::new(test_project_config()));
         let project_b = ProjectInfo::new(config_b);
         let id_b = project_b.id;
@@ -5599,7 +5714,8 @@ mod tests {
     #[test]
     fn find_project_index_falls_back_to_active_project() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, test_db());
+        let provider = stub_provider();
+        let mut app = App::new(24, 120, backend, provider, test_db());
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.active_project_index = 0;
 
@@ -5613,6 +5729,7 @@ mod tests {
     fn resolve_role_permissions_for_specific_project() {
         use crate::session::{RoleConfig, RolePermissions};
         let backend = stub_backend();
+        let provider = stub_provider();
         let config_with_roles = ProjectConfig {
             roles: vec![RoleConfig {
                 name: "reviewer".to_string(),
@@ -5624,7 +5741,7 @@ mod tests {
             }],
             ..test_project_config()
         };
-        let mut app = App::new(24, 120, backend, test_db());
+        let mut app = App::new(24, 120, backend, provider, test_db());
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.projects.push(ProjectInfo::new(config_with_roles));
         app.active_project_index = 0;
@@ -5642,7 +5759,8 @@ mod tests {
     fn resolve_role_permissions_returns_default_for_missing_role() {
         use crate::session::RolePermissions;
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, test_db());
+        let provider = stub_provider();
+        let mut app = App::new(24, 120, backend, provider, test_db());
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.active_project_index = 0;
 
@@ -5654,7 +5772,8 @@ mod tests {
     fn resolve_role_permissions_returns_default_for_invalid_index() {
         use crate::session::RolePermissions;
         let backend = stub_backend();
-        let app = App::new(24, 120, backend, test_db());
+        let provider = stub_provider();
+        let app = App::new(24, 120, backend, provider, test_db());
 
         let perms = app.resolve_role_permissions_for_project("any-role", 999);
         assert_eq!(perms, RolePermissions::default());
@@ -5675,7 +5794,7 @@ mod tests {
     #[test]
     fn resolve_role_permissions_returns_admin_tools_for_admin_project() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, test_db());
+        let mut app = App::new(24, 120, backend, stub_provider(), test_db());
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
             name: "Admin".to_string(),
             repos: vec![],

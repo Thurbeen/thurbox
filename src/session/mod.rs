@@ -204,7 +204,7 @@ pub struct SessionInfo {
     pub status: SessionStatus,
     pub role: String,
     pub worktrees: Vec<WorktreeInfo>,
-    pub claude_session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub additional_dirs: Vec<PathBuf>,
     pub backend_id: Option<String>,
@@ -219,7 +219,7 @@ impl SessionInfo {
             status: SessionStatus::Busy,
             role: DEFAULT_ROLE_NAME.to_string(),
             worktrees: Vec::new(),
-            claude_session_id: None,
+            agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
             backend_id: None,
@@ -240,7 +240,7 @@ pub struct SessionCommand {
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
     pub resume_session_id: Option<String>,
-    pub claude_session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub additional_dirs: Vec<PathBuf>,
     pub role: String,
@@ -364,9 +364,9 @@ mod tests {
     }
 
     #[test]
-    fn session_info_new_has_no_claude_session_id() {
+    fn session_info_new_has_no_agent_session_id() {
         let info = SessionInfo::new("Test".to_string());
-        assert!(info.claude_session_id.is_none());
+        assert!(info.agent_session_id.is_none());
     }
 
     #[test]
@@ -402,7 +402,7 @@ mod tests {
     fn session_config_default_has_all_none() {
         let config = SessionConfig::default();
         assert!(config.resume_session_id.is_none());
-        assert!(config.claude_session_id.is_none());
+        assert!(config.agent_session_id.is_none());
         assert!(config.cwd.is_none());
         assert!(config.additional_dirs.is_empty());
         assert_eq!(config.role, "");

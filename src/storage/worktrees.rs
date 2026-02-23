@@ -142,7 +142,7 @@ mod tests {
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
-            claude_session_id: None,
+            agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),

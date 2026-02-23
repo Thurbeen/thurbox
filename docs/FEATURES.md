@@ -343,9 +343,9 @@ concurrent thurbox instances.
 
 - Sessions spawn as tmux windows in the `thurbox` session.
   The tmux pane keeps running regardless of thurbox's lifecycle.
-- On every session spawn, Thurbox assigns a `claude_session_id`
-  (UUID v4) via the Claude CLI's `--session-id` flag. This tells
-  Claude to use a stable conversation ID from the start.
+- On every session spawn, Thurbox assigns an `agent_session_id`
+  (UUID v4) via the agent CLI's `--session-id` flag. This tells
+  the agent to use a stable conversation ID from the start.
 - On shutdown (`Ctrl+Q`), session metadata (including backend
   IDs) is written to the SQLite database at
   `$XDG_DATA_HOME/thurbox/thurbox.db`. Thurbox detaches

@@ -70,13 +70,13 @@ pub struct SharedSession {
     /// Backend type (e.g., "tmux").
     pub backend_type: String,
 
-    /// The underlying Claude session ID (if started).
-    pub claude_session_id: Option<String>,
+    /// The underlying agent session ID (if started).
+    pub agent_session_id: Option<String>,
 
     /// Working directory (if specified).
     pub cwd: Option<PathBuf>,
 
-    /// Additional directories the Claude CLI has access to via `--add-dir`.
+    /// Additional directories the agent CLI has access to via `--add-dir`.
     pub additional_dirs: Vec<PathBuf>,
 
     /// Worktree information (if session uses git worktrees).

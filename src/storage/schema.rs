@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -37,7 +37,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             role              TEXT NOT NULL DEFAULT 'developer',
             backend_id        TEXT NOT NULL DEFAULT '',
             backend_type      TEXT NOT NULL DEFAULT 'tmux',
-            claude_session_id TEXT,
+            agent_session_id  TEXT,
             cwd               TEXT,
             additional_dirs   TEXT NOT NULL DEFAULT '',
             shell_backend_id  TEXT,
@@ -214,6 +214,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         // v7 → v8: add env column to project_roles (JSON-encoded environment variables)
         let _ = conn.execute(
             "ALTER TABLE project_roles ADD COLUMN env TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+    }
+
+    if version < 9 {
+        // v8 → v9: rename claude_session_id → agent_session_id
+        let _ = conn.execute(
+            "ALTER TABLE sessions RENAME COLUMN claude_session_id TO agent_session_id",
             [],
         );
     }

@@ -205,8 +205,8 @@ pub struct SessionResponse {
     pub project_id: String,
     pub role: String,
     pub backend_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "claude_session_id")]
+    pub agent_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

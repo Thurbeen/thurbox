@@ -72,7 +72,7 @@ fn format_violations(module_name: &str, violations: &[Violation]) -> String {
 #[test]
 fn ui_layer_isolation() {
     let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
-    let violations = check_no_imports(&module_dir, &["claude", "git"]);
+    let violations = check_no_imports(&module_dir, &["agent", "git"]);
     assert!(
         violations.is_empty(),
         "{}",
@@ -92,20 +92,20 @@ fn git_module_independence() {
 }
 
 #[test]
-fn claude_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/claude");
+fn agent_module_isolation() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent");
     let violations = check_no_imports(&module_dir, &["ui", "git"]);
     assert!(
         violations.is_empty(),
         "{}",
-        format_violations("claude", &violations)
+        format_violations("agent", &violations)
     );
 }
 
 #[test]
 fn project_isolation() {
     let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project");
-    let violations = check_no_imports(&module_dir, &["claude", "ui", "git", "app"]);
+    let violations = check_no_imports(&module_dir, &["agent", "ui", "git", "app"]);
     assert!(
         violations.is_empty(),
         "{}",
@@ -116,7 +116,7 @@ fn project_isolation() {
 #[test]
 fn sync_module_isolation() {
     let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sync");
-    let violations = check_no_imports(&module_dir, &["claude", "ui", "git", "app"]);
+    let violations = check_no_imports(&module_dir, &["agent", "ui", "git", "app"]);
     assert!(
         violations.is_empty(),
         "{}",
@@ -127,7 +127,7 @@ fn sync_module_isolation() {
 #[test]
 fn storage_module_isolation() {
     let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/storage");
-    let violations = check_no_imports(&module_dir, &["claude", "ui", "git", "app"]);
+    let violations = check_no_imports(&module_dir, &["agent", "ui", "git", "app"]);
     assert!(
         violations.is_empty(),
         "{}",
@@ -138,7 +138,7 @@ fn storage_module_isolation() {
 #[test]
 fn mcp_module_isolation() {
     let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp");
-    let violations = check_no_imports(&module_dir, &["app", "claude", "ui", "git"]);
+    let violations = check_no_imports(&module_dir, &["app", "agent", "ui", "git"]);
     assert!(
         violations.is_empty(),
         "{}",

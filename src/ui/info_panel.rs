@@ -110,7 +110,7 @@ pub fn render_info_panel(
     lines.push(Line::from(vec![
         Span::styled("Claude: ", Theme::label()),
         Span::styled(
-            info.claude_session_id.as_deref().unwrap_or("(none)"),
+            info.agent_session_id.as_deref().unwrap_or("(none)"),
             Style::default().fg(Theme::TEXT_MUTED),
         ),
     ]));

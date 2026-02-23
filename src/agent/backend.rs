@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{
@@ -10,65 +11,14 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
-use std::collections::HashMap;
-
+use crate::agent::provider::AgentProvider;
 use crate::session::{SessionConfig, SessionInfo};
-
-/// Default permission mode passed to the Claude CLI when no explicit mode is configured.
-const DEFAULT_PERMISSION_MODE: &str = "default";
 
 pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-/// Build the CLI argument list from a SessionConfig.
-///
-/// This is extracted as a pure function for testability.
-pub fn build_claude_args(config: &SessionConfig) -> Vec<String> {
-    let mut args = Vec::new();
-
-    if let Some(ref session_id) = config.resume_session_id {
-        args.push("--resume".to_string());
-        args.push(session_id.clone());
-    } else if let Some(ref session_id) = config.claude_session_id {
-        args.push("--session-id".to_string());
-        args.push(session_id.clone());
-    }
-
-    // Role permission flags — default to "default" when no mode is configured.
-    let mode = config
-        .permissions
-        .permission_mode
-        .as_deref()
-        .unwrap_or(DEFAULT_PERMISSION_MODE);
-    args.push("--permission-mode".to_string());
-    args.push(mode.to_string());
-    if !config.permissions.allowed_tools.is_empty() {
-        args.push("--allowed-tools".to_string());
-        args.push(config.permissions.allowed_tools.join(" "));
-    }
-    if !config.permissions.disallowed_tools.is_empty() {
-        args.push("--disallowed-tools".to_string());
-        args.push(config.permissions.disallowed_tools.join(" "));
-    }
-    if let Some(ref tools) = config.permissions.tools {
-        args.push("--tools".to_string());
-        args.push(tools.clone());
-    }
-    if let Some(ref prompt) = config.permissions.append_system_prompt {
-        args.push("--append-system-prompt".to_string());
-        args.push(prompt.clone());
-    }
-
-    for dir in &config.additional_dirs {
-        args.push("--add-dir".to_string());
-        args.push(dir.display().to_string());
-    }
-
-    args
 }
 
 /// Metadata returned when discovering existing sessions from the backend.
@@ -162,7 +112,7 @@ struct WiredState {
     last_output_at: Arc<AtomicU64>,
 }
 
-/// A companion shell pane running alongside a Claude session.
+/// A companion shell pane running alongside an agent session.
 pub struct ShellPane {
     pub parser: Arc<Mutex<vt100::Parser>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -200,6 +150,7 @@ pub struct Session {
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
     backend_id: String,
     backend: Arc<dyn SessionBackend>,
+    provider: Arc<dyn AgentProvider>,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
     pub shell_pane: Option<ShellPane>,
@@ -215,13 +166,14 @@ impl Session {
         cols: u16,
         config: &SessionConfig,
         backend: &Arc<dyn SessionBackend>,
+        provider: &Arc<dyn AgentProvider>,
     ) -> Result<Self> {
-        let args = build_claude_args(config);
+        let args = provider.build_args(config);
         let window_name = format!("tb-{name}");
 
         let spawned = backend.spawn(
             &window_name,
-            "claude",
+            provider.command(),
             &args,
             config.cwd.as_deref(),
             &config.permissions.env,
@@ -230,7 +182,7 @@ impl Session {
         )?;
 
         let mut info = SessionInfo::new(name);
-        info.claude_session_id = config.claude_session_id.clone();
+        info.agent_session_id = config.agent_session_id.clone();
         info.cwd = config.cwd.clone();
         info.additional_dirs = config.additional_dirs.clone();
         if !config.role.is_empty() {
@@ -250,6 +202,7 @@ impl Session {
                 backend_id: spawned.backend_id,
             },
             backend,
+            provider,
             config.permissions.env.clone(),
         ))
     }
@@ -261,6 +214,7 @@ impl Session {
         cols: u16,
         backend_id: &str,
         backend: &Arc<dyn SessionBackend>,
+        provider: &Arc<dyn AgentProvider>,
         env: HashMap<String, String>,
     ) -> Result<Self> {
         let adopted = backend.adopt(backend_id, rows, cols)?;
@@ -288,6 +242,7 @@ impl Session {
                 backend_id: backend_id.to_string(),
             },
             backend,
+            provider,
             env,
         ))
     }
@@ -331,6 +286,7 @@ impl Session {
         cols: u16,
         io: SessionIo,
         backend: &Arc<dyn SessionBackend>,
+        provider: &Arc<dyn AgentProvider>,
         env: HashMap<String, String>,
     ) -> Self {
         let (state, backend_id) = Self::wire_up(rows, cols, io);
@@ -340,6 +296,7 @@ impl Session {
             input_tx: state.input_tx,
             backend_id,
             backend: Arc::clone(backend),
+            provider: Arc::clone(provider),
             exited: state.exited,
             last_output_at: state.last_output_at,
             shell_pane: None,
@@ -438,16 +395,16 @@ impl Session {
 
     /// Restart the session: kill the old pane, spawn a fresh one with new config.
     ///
-    /// Uses `--resume` so Claude picks up the conversation while getting
+    /// Uses `--resume` so the agent picks up the conversation while getting
     /// freshly-resolved role permissions.
     pub fn restart(&mut self, config: &SessionConfig, rows: u16, cols: u16) -> Result<()> {
         self.backend.kill(&self.backend_id)?;
 
-        let args = build_claude_args(config);
+        let args = self.provider.build_args(config);
         let window_name = format!("tb-{}", self.info.name);
         let spawned = self.backend.spawn(
             &window_name,
-            "claude",
+            self.provider.command(),
             &args,
             config.cwd.as_deref(),
             &config.permissions.env,
@@ -506,7 +463,7 @@ impl Session {
     /// Lazily spawn a companion shell pane in the same cwd.
     ///
     /// Uses `$SHELL` (fallback `/bin/sh`) as the command.
-    /// The window name uses `tbs-` prefix to distinguish from Claude's `tb-` windows.
+    /// The window name uses `tbs-` prefix to distinguish from the agent's `tb-` windows.
     pub fn ensure_shell_pane(&mut self, rows: u16, cols: u16) -> Result<()> {
         if self.shell_pane.is_some() {
             return Ok(());
@@ -576,7 +533,11 @@ impl Session {
 
     /// Create a lightweight stub for unit tests (no real backend process).
     #[cfg(test)]
-    pub fn stub(name: &str, backend: &Arc<dyn SessionBackend>) -> Self {
+    pub fn stub(
+        name: &str,
+        backend: &Arc<dyn SessionBackend>,
+        provider: &Arc<dyn AgentProvider>,
+    ) -> Self {
         let (input_tx, _input_rx) = mpsc::unbounded_channel();
         Self {
             info: SessionInfo::new(name.to_string()),
@@ -584,6 +545,7 @@ impl Session {
             input_tx,
             backend_id: String::new(),
             backend: Arc::clone(backend),
+            provider: Arc::clone(provider),
             exited: Arc::new(AtomicBool::new(false)),
             last_output_at: Arc::new(AtomicU64::new(now_millis())),
             shell_pane: None,
@@ -594,193 +556,12 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
-    use crate::session::RolePermissions;
-
-    #[test]
-    fn build_args_empty_config() {
-        let config = SessionConfig::default();
-        let args = build_claude_args(&config);
-        assert_eq!(args, vec!["--permission-mode", "default"]);
-    }
-
-    #[test]
-    fn build_args_no_permissions() {
-        let config = SessionConfig {
-            claude_session_id: Some("abc-123".to_string()),
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec!["--session-id", "abc-123", "--permission-mode", "default"]
-        );
-    }
-
-    #[test]
-    fn build_args_resume_takes_precedence() {
-        let config = SessionConfig {
-            resume_session_id: Some("resume-id".to_string()),
-            claude_session_id: Some("session-id".to_string()),
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec!["--resume", "resume-id", "--permission-mode", "default"]
-        );
-    }
-
-    #[test]
-    fn build_args_with_permission_mode() {
-        let config = SessionConfig {
-            permissions: RolePermissions {
-                permission_mode: Some("plan".to_string()),
-                ..RolePermissions::default()
-            },
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(args, vec!["--permission-mode", "plan"]);
-    }
-
-    #[test]
-    fn build_args_with_allowed_tools() {
-        let config = SessionConfig {
-            permissions: RolePermissions {
-                allowed_tools: vec!["Read".to_string(), "Bash(git:*)".to_string()],
-                ..RolePermissions::default()
-            },
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec![
-                "--permission-mode",
-                "default",
-                "--allowed-tools",
-                "Read Bash(git:*)"
-            ]
-        );
-    }
-
-    #[test]
-    fn build_args_with_disallowed_tools() {
-        let config = SessionConfig {
-            permissions: RolePermissions {
-                disallowed_tools: vec!["Edit".to_string()],
-                ..RolePermissions::default()
-            },
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec!["--permission-mode", "default", "--disallowed-tools", "Edit"]
-        );
-    }
-
-    #[test]
-    fn build_args_with_tools_empty_string() {
-        let config = SessionConfig {
-            permissions: RolePermissions {
-                tools: Some(String::new()),
-                ..RolePermissions::default()
-            },
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(args, vec!["--permission-mode", "default", "--tools", ""]);
-    }
-
-    #[test]
-    fn build_args_with_system_prompt() {
-        let config = SessionConfig {
-            permissions: RolePermissions {
-                append_system_prompt: Some("Be careful".to_string()),
-                ..RolePermissions::default()
-            },
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec![
-                "--permission-mode",
-                "default",
-                "--append-system-prompt",
-                "Be careful"
-            ]
-        );
-    }
 
     #[test]
     fn now_millis_returns_reasonable_value() {
         let ms = now_millis();
         // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
-    }
-
-    #[test]
-    fn build_args_with_additional_dirs() {
-        let config = SessionConfig {
-            additional_dirs: vec![
-                PathBuf::from("/home/user/repo2"),
-                PathBuf::from("/home/user/repo3"),
-            ],
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec![
-                "--permission-mode",
-                "default",
-                "--add-dir",
-                "/home/user/repo2",
-                "--add-dir",
-                "/home/user/repo3",
-            ]
-        );
-    }
-
-    #[test]
-    fn build_args_all_fields() {
-        let config = SessionConfig {
-            claude_session_id: Some("id-1".to_string()),
-            additional_dirs: vec![PathBuf::from("/extra")],
-            permissions: RolePermissions {
-                permission_mode: Some("plan".to_string()),
-                allowed_tools: vec!["Read".to_string()],
-                disallowed_tools: vec!["Edit".to_string()],
-                tools: Some("default".to_string()),
-                append_system_prompt: Some("Focus".to_string()),
-                env: HashMap::new(),
-            },
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec![
-                "--session-id",
-                "id-1",
-                "--permission-mode",
-                "plan",
-                "--allowed-tools",
-                "Read",
-                "--disallowed-tools",
-                "Edit",
-                "--tools",
-                "default",
-                "--append-system-prompt",
-                "Focus",
-                "--add-dir",
-                "/extra",
-            ]
-        );
     }
 }

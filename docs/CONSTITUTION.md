@@ -19,12 +19,12 @@ Dependency flow is strictly one-directional:
 
 ```text
 session  (no project-local imports)
-claude   → session
+agent    → session
 ui       → session
-app      → session, claude, ui
+app      → session, agent, ui
 ```
 
-`claude` and `ui` never import each other. This keeps the side-effect
+`agent` and `ui` never import each other. This keeps the side-effect
 layer (PTY management) completely decoupled from the rendering layer.
 
 ### 3. Zero-warning policy

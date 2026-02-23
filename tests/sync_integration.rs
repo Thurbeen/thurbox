@@ -18,7 +18,7 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
-        claude_session_id: Some(format!("claude-{name}")),
+        agent_session_id: Some(format!("claude-{name}")),
         cwd: None,
         additional_dirs: Vec::new(),
         worktrees: Vec::new(),
@@ -432,7 +432,7 @@ fn db_session_metadata_preserved_across_instances() {
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
-        claude_session_id: Some("claude-123".to_string()),
+        agent_session_id: Some("claude-123".to_string()),
         cwd: Some(PathBuf::from("/home/dev")),
         additional_dirs: Vec::new(),
         worktrees: Vec::new(),
@@ -450,7 +450,7 @@ fn db_session_metadata_preserved_across_instances() {
     assert_eq!(s.name, "Dev Session");
     assert_eq!(s.role, "developer");
     assert_eq!(s.backend_id, "thurbox:@0");
-    assert_eq!(s.claude_session_id, Some("claude-123".to_string()));
+    assert_eq!(s.agent_session_id, Some("claude-123".to_string()));
     assert_eq!(s.cwd, Some(PathBuf::from("/home/dev")));
 }
 

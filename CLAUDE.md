@@ -196,7 +196,7 @@ the TUI. See `docs/FEATURES.md` for details.
 
 ```text
 mcp → storage, session, project, sync, paths
-      (NEVER app, claude, ui, git)
+      (NEVER app, agent, ui, git)
 ```
 
 ## Architecture (TEA Pattern)
@@ -209,8 +209,8 @@ The app follows **The Elm Architecture**:
 ```text
 session  ← pure data types, no project-local imports
 project  ← pure data types + config loading, imports session only
-claude   ← imports session only (NEVER ui, git, or project)
-ui       ← imports session and project only (NEVER claude or git)
+agent    ← imports session only (NEVER ui, git, or project)
+ui       ← imports session and project only (NEVER agent or git)
 mcp      ← imports storage, session, project, sync, paths only
 app      ← coordinator, imports all modules
 ```
@@ -220,11 +220,13 @@ app      ← coordinator, imports all modules
 - **`app/`** — Model (`App` struct) + Update
   (`AppMessage` enum + `handle_key/resize`) + View.
   Owns all state, coordinates side effects.
-- **`claude/`** — Side-effect layer. `Session` wraps a
-  `SessionBackend` trait (default: `LocalTmuxBackend` using
-  `tmux -L thurbox`). Reads output into
-  `Arc<Mutex<vt100::Parser>>`, writes input via mpsc channel.
-  `input.rs` translates crossterm `KeyCode` → xterm ANSI bytes.
+- **`agent/`** — Side-effect layer. `AgentProvider` trait
+  abstracts CLI command + arg construction (default:
+  `ClaudeProvider`). `Session` wraps a `SessionBackend`
+  trait (default: `LocalTmuxBackend` using `tmux -L thurbox`).
+  Reads output into `Arc<Mutex<vt100::Parser>>`, writes input
+  via mpsc channel. `input.rs` translates crossterm `KeyCode`
+  → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
   `SessionInfo`, `SessionConfig` (with optional `cwd`).
   No logic beyond Display/Default impls.
