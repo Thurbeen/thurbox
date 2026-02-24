@@ -2882,9 +2882,17 @@ impl App {
             return;
         }
 
+        let Some(project) = self.active_project() else {
+            self.set_status(StatusLevel::Info, "No active project");
+            return;
+        };
+        let session_ids: std::collections::HashSet<SessionId> =
+            project.session_ids.iter().copied().collect();
+
         let worktree_sessions: Vec<_> = self
             .sessions
             .iter()
+            .filter(|s| session_ids.contains(&s.info.id))
             .flat_map(|s| {
                 s.info
                     .worktrees
@@ -2894,7 +2902,7 @@ impl App {
             .collect();
 
         if worktree_sessions.is_empty() {
-            self.set_status(StatusLevel::Info, "No worktrees to sync");
+            self.set_status(StatusLevel::Info, "No worktrees to sync in active project");
             return;
         }
 
@@ -7426,7 +7434,7 @@ mod tests {
     // --- Worktree sync tests ---
 
     #[test]
-    fn start_sync_with_no_worktrees_shows_info() {
+    fn start_sync_with_no_active_project_shows_info() {
         let mut app = App::new(
             24,
             80,
@@ -7440,7 +7448,7 @@ mod tests {
         assert!(!app.worktree_sync_in_progress);
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Info);
-        assert_eq!(msg.text, "No worktrees to sync");
+        assert_eq!(msg.text, "No active project");
     }
 
     #[test]
@@ -7473,9 +7481,9 @@ mod tests {
             None,
         );
         app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
-        // No worktrees → info message
+        // No active project → info message
         let msg = app.status_message.as_ref().unwrap();
-        assert_eq!(msg.text, "No worktrees to sync");
+        assert_eq!(msg.text, "No active project");
     }
 
     #[test]
@@ -7493,6 +7501,40 @@ mod tests {
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Info);
         assert!(msg.text.contains("Syncing 1 worktree"));
+    }
+
+    #[test]
+    fn start_sync_with_no_worktrees_in_active_project_shows_info() {
+        let mut app = app_with_sessions(1);
+        // Session has no worktrees
+        assert!(app.sessions[0].info.worktrees.is_empty());
+        app.start_sync();
+        assert!(!app.worktree_sync_in_progress);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Info);
+        assert_eq!(msg.text, "No worktrees to sync in active project");
+    }
+
+    #[test]
+    fn start_sync_ignores_sessions_outside_active_project() {
+        let mut app = app_with_sessions(1);
+        // Add a second session NOT in the active project, with a worktree
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let mut orphan = Session::stub("orphan-session", &backend_arc, &provider);
+        orphan.info.worktrees = vec![WorktreeInfo {
+            repo_path: PathBuf::from("/tmp/orphan-repo"),
+            worktree_path: PathBuf::from("/tmp/orphan-wt"),
+            branch: "orphan-branch".to_string(),
+        }];
+        app.sessions.push(orphan);
+        // Do NOT add orphan to projects[0].session_ids
+
+        app.start_sync();
+        // The active project's session has no worktrees, so sync should not start
+        assert!(!app.worktree_sync_in_progress);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "No worktrees to sync in active project");
     }
 
     #[test]
