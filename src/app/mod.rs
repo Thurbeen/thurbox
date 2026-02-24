@@ -29,6 +29,7 @@ use crate::session::{
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
+use crate::ui::selection::{self, PaneBounds, Selection, TermPos};
 use crate::ui::{
     add_project_modal, branch_selector_modal, delete_project_modal, edit_project_modal, info_panel,
     layout, project_list, repo_selector_modal, restore_sessions_modal, role_editor_modal,
@@ -296,6 +297,14 @@ pub enum AppMessage {
         y: u16,
         modifiers: KeyModifiers,
     },
+    MouseDrag {
+        x: u16,
+        y: u16,
+    },
+    MouseUp {
+        x: u16,
+        y: u16,
+    },
     Resize(u16, u16),
     ExternalStateChange(StateDelta),
     /// A VM has finished provisioning and is ready for a session.
@@ -468,6 +477,12 @@ pub struct App {
     pending_vm_id: Option<String>,
     /// MCP servers to write into the VM working directory before spawning.
     pending_vm_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
+    /// Active text selection (click+drag), uses screen-absolute coordinates.
+    pub(crate) text_selection: Option<Selection>,
+    /// Cached text extracted from the frame buffer for the current selection.
+    selected_text_cache: Option<String>,
+    /// Persistent clipboard handle to avoid "dropped too quickly" warnings on Linux.
+    clipboard: Option<arboard::Clipboard>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -758,6 +773,9 @@ impl App {
             pending_vm_config: None,
             pending_vm_id: None,
             pending_vm_mcp_servers: None,
+            text_selection: None,
+            selected_text_cache: None,
+            clipboard: arboard::Clipboard::new().ok(),
         }
     }
 
@@ -1253,6 +1271,8 @@ impl App {
             AppMessage::MouseScrollUp => self.scroll_terminal_up(MOUSE_SCROLL_LINES),
             AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
             AppMessage::MouseClick { x, y, modifiers } => self.handle_mouse_click(x, y, modifiers),
+            AppMessage::MouseDrag { x, y } => self.handle_mouse_drag(x, y),
+            AppMessage::MouseUp { x, y } => self.handle_mouse_up(x, y),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
             AppMessage::ExternalStateChange(delta) => self.handle_external_state_change(delta),
             AppMessage::VmReady { vm_id } => self.handle_vm_ready(&vm_id),
@@ -1321,14 +1341,16 @@ impl App {
         }
     }
 
-    pub(crate) fn scroll_terminal_up(&self, lines: usize) {
+    pub(crate) fn scroll_terminal_up(&mut self, lines: usize) {
+        self.text_selection = None;
         self.with_active_parser(|parser| {
             let current = parser.screen().scrollback();
             parser.screen_mut().set_scrollback(current + lines);
         });
     }
 
-    pub(crate) fn scroll_terminal_down(&self, lines: usize) {
+    pub(crate) fn scroll_terminal_down(&mut self, lines: usize) {
+        self.text_selection = None;
         self.with_active_parser(|parser| {
             let current = parser.screen().scrollback();
             parser
@@ -1342,31 +1364,129 @@ impl App {
         (rows as usize) / 2
     }
 
-    fn handle_mouse_click(&self, x: u16, y: u16, modifiers: KeyModifiers) {
+    fn handle_mouse_click(&mut self, x: u16, y: u16, modifiers: KeyModifiers) {
         use crate::ui::links;
 
-        if !modifiers.contains(KeyModifiers::CONTROL) {
-            return;
-        }
-
         let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let term_area = layout::compute_layout(area, self.show_info_panel).terminal;
-        let inner = Block::default().borders(Borders::ALL).inner(term_area);
+        let areas = layout::compute_layout(area, self.show_info_panel);
+        let border_block = Block::default().borders(Borders::ALL);
 
-        if !inner.contains(Position::new(x, y)) {
+        // Ctrl+Click: URL opening (terminal-relative, existing behavior)
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            self.text_selection = None;
+            let inner = border_block.inner(areas.terminal);
+
+            if inner.contains(Position::new(x, y)) {
+                let screen_col = (x - inner.x) as usize;
+                let screen_row = (y - inner.y) as usize;
+                self.with_active_parser(|parser| {
+                    let rows = links::extract_screen_rows(parser.screen());
+                    let detected = links::detect_urls(&rows);
+                    if let Some(url) = links::url_at_position(&detected, screen_row, screen_col) {
+                        open_url(url);
+                    }
+                });
+            }
             return;
         }
 
-        let screen_col = (x - inner.x) as usize;
-        let screen_row = (y - inner.y) as usize;
+        // Find which pane was clicked; use inner area (excluding borders).
+        let pos = Position::new(x, y);
+        let pane_rects = [Some(areas.terminal), areas.left_panel, areas.info_panel];
+        let pane_inner = pane_rects
+            .into_iter()
+            .flatten()
+            .find(|r| r.contains(pos))
+            .map(|r| border_block.inner(r));
 
-        self.with_active_parser(|parser| {
-            let rows = links::extract_screen_rows(parser.screen());
-            let detected = links::detect_urls(&rows);
-            if let Some(url) = links::url_at_position(&detected, screen_row, screen_col) {
-                open_url(url);
+        let Some(inner) = pane_inner else {
+            self.text_selection = None;
+            return;
+        };
+
+        let pane = PaneBounds::from_rect(inner);
+        let anchor = TermPos {
+            row: y as usize,
+            col: x as usize,
+        };
+        self.text_selection = Some(Selection::new(anchor, pane));
+    }
+
+    fn handle_mouse_drag(&mut self, x: u16, y: u16) {
+        if let Some(ref mut sel) = self.text_selection {
+            let (cx, cy) = sel.pane.clamp(x, y);
+            sel.cursor = TermPos {
+                row: cy as usize,
+                col: cx as usize,
+            };
+        }
+    }
+
+    fn handle_mouse_up(&mut self, x: u16, y: u16) {
+        self.handle_mouse_drag(x, y);
+
+        if let Some(ref mut sel) = self.text_selection {
+            sel.dragging = false;
+
+            // If anchor == cursor, it was just a click (no drag) — clear selection
+            if sel.anchor == sel.cursor {
+                self.text_selection = None;
             }
-        });
+        }
+    }
+
+    fn copy_selection_to_clipboard(&mut self) {
+        let text = match &self.selected_text_cache {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => return,
+        };
+
+        let Some(clipboard) = &mut self.clipboard else {
+            self.set_error("Clipboard not available");
+            return;
+        };
+
+        if let Err(e) = clipboard.set_text(&text) {
+            self.set_error(format!("Clipboard write failed: {e}"));
+            return;
+        }
+
+        self.text_selection = None;
+        self.selected_text_cache = None;
+        self.set_status(StatusLevel::Info, "Copied to clipboard");
+    }
+
+    fn paste_from_clipboard(&mut self) {
+        let Some(clipboard) = &mut self.clipboard else {
+            self.set_error("Clipboard not available");
+            return;
+        };
+
+        let text = match clipboard.get_text() {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_error(format!("Clipboard read failed: {e}"));
+                return;
+            }
+        };
+
+        if text.is_empty() {
+            return;
+        }
+
+        if let Some(session) = self.sessions.get(self.active_index) {
+            let bytes = text.into_bytes();
+            let result = if let (TerminalView::Shell, Some(shell)) =
+                (self.active_terminal_view(), &session.shell_pane)
+            {
+                shell.send_input(bytes)
+            } else {
+                session.send_input(bytes)
+            };
+            if let Err(e) = result {
+                error!("Failed to send pasted input: {e}");
+            }
+        }
     }
 
     pub(crate) fn submit_role_editor(&mut self) {
@@ -2574,7 +2694,7 @@ impl App {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame) {
+    pub fn view(&mut self, frame: &mut Frame) {
         let areas = layout::compute_layout(frame.area(), self.show_info_panel);
 
         status_bar::render_header(frame, areas.header);
@@ -2988,6 +3108,21 @@ impl App {
                     ..inner
                 },
             );
+        }
+
+        // Selection highlight and text cache — runs after all rendering.
+        if let Some(ref sel) = self.text_selection {
+            let sel_style = Style::default()
+                .bg(Theme::SELECTION_BG)
+                .fg(Theme::SELECTION_FG);
+            let sel_clone = sel.clone();
+
+            selection::highlight_buffer(frame.buffer_mut(), &sel_clone, sel_style);
+
+            let text = selection::extract_text_from_buffer(frame.buffer_mut(), &sel_clone);
+            self.selected_text_cache = if text.is_empty() { None } else { Some(text) };
+        } else {
+            self.selected_text_cache = None;
         }
     }
 
@@ -3626,7 +3761,7 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from(""),
         help_section("Session Management"),
         help_line("Ctrl+N", "New project (project focus) / session"),
-        help_line("Ctrl+C", "Close active session"),
+        help_line("Ctrl+C", "Copy selection / SIGINT (terminal)"),
         help_line("Ctrl+R", "Restart active session"),
         help_line("Ctrl+S", "Sync all worktrees with main"),
         help_line("Ctrl+T", "Toggle shell pane"),
@@ -3659,6 +3794,8 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Shift+\u{2191}/\u{2193}", "Scroll up/down 1 line"),
         help_line("Shift+PgUp/PgDn", "Scroll up/down half page"),
         help_line("Mouse wheel", "Scroll up/down 3 lines"),
+        help_line("Click+drag", "Select text (any pane)"),
+        help_line("Ctrl+V", "Paste from clipboard"),
         help_line("*", "All other keys forwarded to session"),
         Line::from(""),
         Line::from(Span::styled(
@@ -5216,12 +5353,52 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_closes_active_session() {
-        let mut app = app_with_sessions(2);
-        app.active_index = 0;
+    fn ctrl_c_copies_selection_or_falls_through() {
+        let mut app = app_with_sessions(1);
         let initial_count = app.sessions.len();
+        // With no selection, Ctrl+C should NOT close session (it falls through to terminal)
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert!(app.sessions.len() < initial_count);
+        assert_eq!(app.sessions.len(), initial_count);
+    }
+
+    #[test]
+    fn any_key_clears_text_selection() {
+        let mut app = app_with_sessions(1);
+        // Set up a fake selection
+        app.text_selection = Some(Selection::new(
+            TermPos { row: 0, col: 0 },
+            PaneBounds::from_rect(ratatui::layout::Rect::new(0, 0, 80, 24)),
+        ));
+        assert!(app.text_selection.is_some());
+
+        // Any non-copy key should clear the selection
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::empty());
+        assert!(app.text_selection.is_none());
+    }
+
+    #[test]
+    fn ctrl_v_clears_selection() {
+        let mut app = app_with_sessions(1);
+        app.text_selection = Some(Selection::new(
+            TermPos { row: 0, col: 0 },
+            PaneBounds::from_rect(ratatui::layout::Rect::new(0, 0, 80, 24)),
+        ));
+
+        // Ctrl+V should clear selection (paste)
+        app.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(app.text_selection.is_none());
+    }
+
+    #[test]
+    fn scroll_clears_selection() {
+        let mut app = app_with_sessions(1);
+        app.text_selection = Some(Selection::new(
+            TermPos { row: 0, col: 0 },
+            PaneBounds::from_rect(ratatui::layout::Rect::new(0, 0, 80, 24)),
+        ));
+
+        app.scroll_terminal_up(1);
+        assert!(app.text_selection.is_none());
     }
 
     #[test]
@@ -6333,7 +6510,9 @@ mod tests {
         app.active_project_index = app.projects.len() - 1;
         app.active_index = 0;
 
-        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        // Ctrl+D from session list attempts to close sessions
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert_eq!(app.sessions.len(), 1); // Session not closed
         assert_eq!(
             app.status_message.as_ref().map(|m| m.text.as_str()),

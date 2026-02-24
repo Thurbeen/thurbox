@@ -116,6 +116,25 @@ impl App {
             return;
         }
 
+        // Ctrl+C: copy selection if active, otherwise forward to terminal as SIGINT
+        if code == KeyCode::Char('c')
+            && mods.contains(KeyModifiers::CONTROL)
+            && self.text_selection.is_some()
+        {
+            self.copy_selection_to_clipboard();
+            return;
+        }
+
+        // Ctrl+V: paste from clipboard
+        if code == KeyCode::Char('v') && mods.contains(KeyModifiers::CONTROL) {
+            self.text_selection = None;
+            self.paste_from_clipboard();
+            return;
+        }
+
+        // Any key press clears text selection (but the key still performs its action)
+        self.text_selection = None;
+
         // Global keybindings (always active)
         if mods.contains(KeyModifiers::CONTROL) {
             match code {
@@ -130,10 +149,6 @@ impl App {
                     } else {
                         self.spawn_session();
                     }
-                    return;
-                }
-                KeyCode::Char('c') => {
-                    self.close_active_session();
                     return;
                 }
                 KeyCode::Char('d') => match self.focus {

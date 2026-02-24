@@ -50,6 +50,11 @@ impl Theme {
 
     pub const DANGER: Color = Color::Red;
 
+    // ── Selection ──────────────────────────────────────────────────────────
+
+    pub const SELECTION_BG: Color = Color::Indexed(24);
+    pub const SELECTION_FG: Color = Color::White;
+
     // ── Background colors ───────────────────────────────────────────────────
 
     pub const INVERTED_FG: Color = Color::Black;

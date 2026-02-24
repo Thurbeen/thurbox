@@ -123,6 +123,14 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
                         y: m.row,
                         modifiers: m.modifiers,
                     }),
+                    MouseEventKind::Drag(MouseButton::Left) => Some(AppMessage::MouseDrag {
+                        x: m.column,
+                        y: m.row,
+                    }),
+                    MouseEventKind::Up(MouseButton::Left) => Some(AppMessage::MouseUp {
+                        x: m.column,
+                        y: m.row,
+                    }),
                     _ => None,
                 },
                 Event::Resize(cols, rows) => Some(AppMessage::Resize(cols, rows)),
