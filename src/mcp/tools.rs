@@ -1972,7 +1972,7 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let server = test_server();
 
-        let cf_dir = temp.path().join("containerfiles");
+        let cf_dir = temp.path().join("admin").join("containerfiles");
         std::fs::create_dir_all(cf_dir.join("default")).unwrap();
         std::fs::write(cf_dir.join("default/Containerfile"), "FROM ubuntu").unwrap();
         std::fs::write(cf_dir.join("default/init.sh"), "#!/bin/sh").unwrap();
@@ -1996,7 +1996,11 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let server = test_server();
 
-        let cf_dir = temp.path().join("containerfiles").join("python");
+        let cf_dir = temp
+            .path()
+            .join("admin")
+            .join("containerfiles")
+            .join("python");
         std::fs::create_dir_all(&cf_dir).unwrap();
         std::fs::write(cf_dir.join("Containerfile"), "FROM python:3.12").unwrap();
         std::fs::write(cf_dir.join("setup.sh"), "pip install stuff").unwrap();
@@ -2070,7 +2074,11 @@ mod tests {
             .contains(&serde_json::json!("build.sh")));
 
         // Verify files on disk
-        let cf_dir = temp.path().join("containerfiles").join("rust");
+        let cf_dir = temp
+            .path()
+            .join("admin")
+            .join("containerfiles")
+            .join("rust");
         assert!(cf_dir.join("Containerfile").exists());
         assert_eq!(
             std::fs::read_to_string(cf_dir.join("Containerfile")).unwrap(),
@@ -2118,7 +2126,11 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let server = test_server();
 
-        let cf_dir = temp.path().join("containerfiles").join("custom");
+        let cf_dir = temp
+            .path()
+            .join("admin")
+            .join("containerfiles")
+            .join("custom");
         std::fs::create_dir_all(&cf_dir).unwrap();
         std::fs::write(cf_dir.join("Containerfile"), "FROM ubuntu").unwrap();
 
@@ -2244,7 +2256,7 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let server = test_server();
 
-        let img_dir = temp.path().join("images");
+        let img_dir = temp.path().join("admin").join("images");
         std::fs::create_dir_all(&img_dir).unwrap();
         std::fs::write(img_dir.join("debian.qcow2"), "image data").unwrap();
         std::fs::write(img_dir.join("ubuntu.qcow2.partial"), "downloading").unwrap();
@@ -2286,7 +2298,7 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let server = test_server();
 
-        let img_dir = temp.path().join("images");
+        let img_dir = temp.path().join("admin").join("images");
         std::fs::create_dir_all(&img_dir).unwrap();
         std::fs::write(img_dir.join("old.qcow2"), "data").unwrap();
 
