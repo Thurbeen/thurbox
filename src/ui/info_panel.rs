@@ -262,10 +262,7 @@ fn append_detail_sections<'a>(
     // ── VM section (for sandboxed sessions) ──
     if info.vm_id.is_some() {
         lines.push(separator(inner_width));
-        lines.push(Line::from(Span::styled(
-            "Sandbox VM",
-            Theme::section_header(),
-        )));
+        lines.push(Line::from(Span::styled("VM", Theme::section_header())));
 
         if let Some(vm) = vm_details {
             lines.push(Line::from(vec![

@@ -149,7 +149,7 @@ impl VmManager {
         }
     }
 
-    /// Check if QEMU and KVM are available (enough to show the "Sandbox VM" option).
+    /// Check if QEMU and KVM are available (enough to show the "VM" option).
     ///
     /// This only checks core requirements. Provisioning tools (genisoimage, ssh-keygen)
     /// are checked later at VM creation time via `check_provisioning_tools`.

@@ -10,14 +10,14 @@ use super::centered_fixed_height_rect;
 use super::theme::Theme;
 
 const MODES_BASE: [&str; 2] = ["Normal", "Worktree"];
-const MODE_DEVCONTAINER: &str = "Devcontainer";
-const MODE_SANDBOX_VM: &str = "Sandbox VM";
+const MODE_DEVCONTAINER: &str = "Container";
+const MODE_SANDBOX_VM: &str = "VM";
 
 pub struct SessionModeState {
     pub selected_index: usize,
-    /// Whether the "Devcontainer" option should be shown.
+    /// Whether the "Container" option should be shown.
     pub devcontainer_available: bool,
-    /// Whether the "Sandbox VM" option should be shown.
+    /// Whether the "VM" option should be shown.
     pub vm_available: bool,
 }
 

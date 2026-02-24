@@ -50,10 +50,10 @@ prompt to Claude. Closing the session automatically removes
 the worktree. Worktree sessions show the branch name in the
 terminal title and session list.
 
-### Devcontainer Sessions
+### Container Sessions
 
 Run sessions inside Docker or Podman containers for lightweight
-isolation. Choose "Devcontainer" in the session mode selector —
+isolation. Choose "Container" in the session mode selector —
 Thurbox builds a container image from a Containerfile template,
 runs the container with optional firewall-restricted network
 egress (nftables/iptables allowlist), and spawns the Claude
@@ -64,10 +64,10 @@ templates by creating folders with a `Containerfile` and any
 support files. Containers are auto-detected (Podman preferred,
 Docker fallback) and survive Thurbox restarts.
 
-### Sandbox VM Sessions
+### VM Sessions
 
 Run sessions inside QEMU/KVM virtual machines for full OS-level
-isolation. Choose "Sandbox VM" in the session mode selector —
+isolation. Choose "VM" in the session mode selector —
 Thurbox provisions a Debian 13 (Trixie) VM with 2 CPUs, 2 GB
 RAM, and a 10 GB qcow2 overlay disk, bootstrapped via
 cloud-init with tmux, git, rsync, and the Claude CLI
@@ -166,7 +166,7 @@ The binary will be available at `target/release/thurbox`.
    focused. Enter a name and one or more repository paths.
 3. **Create a session** — select your project, then press
    `Ctrl+N` again. Choose a session mode (Normal, Worktree,
-   Devcontainer, or Sandbox VM) and optionally select a role.
+   Container, or VM) and optionally select a role.
 4. **Work with Claude** — the terminal panel shows the live
    Claude Code session. All keys are forwarded to the PTY.
 5. **Navigate** — `Ctrl+L` cycles focus (project list → session

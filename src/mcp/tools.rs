@@ -465,7 +465,7 @@ impl ThurboxMcp {
     }
 
     #[tool(
-        description = "Configure default VM settings for a project. These settings apply to new sandbox VM sessions created for the project."
+        description = "Configure default VM settings for a project. These settings apply to new VM sessions created for the project."
     )]
     fn configure_project_vm(
         &self,

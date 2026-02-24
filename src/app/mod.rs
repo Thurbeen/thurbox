@@ -1753,7 +1753,7 @@ impl App {
             match self.backends.get("devcontainer") {
                 Some(b) => (Arc::clone(b), dc_name),
                 None => {
-                    self.set_error("Devcontainer backend disappeared".to_string());
+                    self.set_error("Container backend disappeared".to_string());
                     return;
                 }
             }
@@ -1886,7 +1886,7 @@ impl App {
 
     /// Start asynchronous VM provisioning for a sandbox session.
     ///
-    /// Called when the user selects "Sandbox VM" from the session mode modal.
+    /// Called when the user selects "VM" from the session mode modal.
     /// The VM boots in the background; `handle_vm_ready` spawns the actual session.
     pub(crate) fn start_vm_provisioning(&mut self) {
         if self.vm_provisioning {
@@ -2120,7 +2120,7 @@ impl App {
         }
 
         if self.backends.get("devcontainer").is_none() {
-            self.set_error("Devcontainer backend not available".to_string());
+            self.set_error("Container backend not available".to_string());
             return;
         }
 
@@ -2268,7 +2268,7 @@ impl App {
         let backend = match self.backends.get("devcontainer") {
             Some(b) => Arc::clone(b),
             None => {
-                self.set_error("Devcontainer backend disappeared".to_string());
+                self.set_error("Container backend disappeared".to_string());
                 return;
             }
         };

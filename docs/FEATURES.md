@@ -673,12 +673,12 @@ lines instead of blank lines, improving visual structure.
 
 ---
 
-## Devcontainer Sessions
+## Container Sessions
 
 Sessions can run inside Docker or Podman containers for
 lightweight OS-level isolation. This is opt-in: the session
-mode selector modal offers "Devcontainer" alongside "Normal",
-"Worktree", and "Sandbox VM".
+mode selector modal offers "Container" alongside "Normal",
+"Worktree", and "VM".
 
 ### Container runtime
 
@@ -752,11 +752,11 @@ with a foreign key to `sessions(id)`.
 
 ---
 
-## Sandbox VM Sessions
+## VM Sessions
 
 Sessions can run inside QEMU/KVM virtual machines for full OS-level
 isolation. This is opt-in: the session mode selector modal offers
-"Sandbox VM" alongside "Normal", "Worktree", and "Devcontainer".
+"VM" alongside "Normal", "Worktree", and "Container".
 
 ### VM specifications
 
@@ -785,8 +785,8 @@ lives under `~/.local/share/thurbox/vms/<vm-uuid>/`.
 
 1. `Ctrl+N` triggers session creation.
 2. The session mode modal offers "Normal", "Worktree", or
-   "Sandbox VM".
-3. Choosing "Sandbox VM" starts asynchronous VM provisioning:
+   "VM".
+3. Choosing "VM" starts asynchronous VM provisioning:
    - Downloads the Debian 13 base image (once, cached)
    - Creates a qcow2 CoW overlay disk
    - Generates cloud-init ISO (SSH key, user setup, packages)
@@ -833,7 +833,7 @@ and associated session ID.
 
 ### UI indicators
 
-- **Session mode modal**: "Sandbox VM" option with description.
+- **Session mode modal**: "VM" option with description.
 - **Info panel**: Shows VM ID, SSH port, and provisioning status
   for VM-backed sessions.
 - **Status bar**: Provisioning steps displayed during VM creation.

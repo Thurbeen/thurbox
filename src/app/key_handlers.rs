@@ -786,8 +786,8 @@ impl App {
                     "Worktree" => {
                         self.start_branch_selection();
                     }
-                    "Devcontainer" => {
-                        // Devcontainer mode — build config for role selection after
+                    "Container" => {
+                        // Container mode — build config for role selection after
                         // container is ready, store MCP servers for writing into container.
                         let config = if let Some(all_repos) = self.pending_all_repos.clone() {
                             SessionConfig {
@@ -823,8 +823,8 @@ impl App {
                             self.show_containerfile_picker = true;
                         }
                     }
-                    "Sandbox VM" => {
-                        // Sandbox VM mode — build config for role selection after
+                    "VM" => {
+                        // VM mode — build config for role selection after
                         // VM is ready, store MCP servers for writing into the VM.
                         let config = if let Some(all_repos) = self.pending_all_repos.clone() {
                             SessionConfig {
