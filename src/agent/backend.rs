@@ -20,6 +20,12 @@ use crate::session::{SessionConfig, SessionInfo};
 /// consumed by `QemuVmBackend::spawn()` to route the session to the correct VM.
 pub(crate) const VM_ID_ENV_KEY: &str = "__THURBOX_VM_ID";
 
+/// Internal env key used to pass the target container ID through `SessionBackend::spawn()`.
+///
+/// Injected by `Session::spawn/restart/ensure_shell_pane` when `SessionConfig.container_id` is
+/// set; consumed by `DevcontainerBackend::spawn()` to route the session to the correct container.
+pub(crate) const CONTAINER_ID_ENV_KEY: &str = "__THURBOX_CONTAINER_ID";
+
 pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -195,10 +201,13 @@ impl Session {
         let args = provider.build_args(config);
         let window_name = format!("tb-{name}");
 
-        // Build env map, injecting VM_ID_ENV_KEY if a VM target is specified.
+        // Build env map, injecting VM/container ID if a target is specified.
         let mut env = config.permissions.env.clone();
         if let Some(ref vm_id) = config.vm_id {
             env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
+        }
+        if let Some(ref container_id) = config.container_id {
+            env.insert(CONTAINER_ID_ENV_KEY.to_string(), container_id.clone());
         }
 
         let spawned = backend.spawn(
@@ -438,10 +447,13 @@ impl Session {
         let args = self.provider.build_args(config);
         let window_name = format!("tb-{}", self.info.name);
 
-        // Inject __THURBOX_VM_ID for VM-backed sessions (same as Session::spawn).
+        // Inject __THURBOX_VM_ID / __THURBOX_CONTAINER_ID for backend-routed sessions.
         let mut env = config.permissions.env.clone();
         if let Some(ref vm_id) = config.vm_id {
             env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
+        }
+        if let Some(ref container_id) = config.container_id {
+            env.insert(CONTAINER_ID_ENV_KEY.to_string(), container_id.clone());
         }
 
         let spawned = self.backend.spawn(
@@ -514,11 +526,14 @@ impl Session {
         let shell_cmd = self.backend.default_shell();
         let window_name = format!("tbs-{}", self.info.name);
 
-        // Inject __THURBOX_VM_ID for VM-backed sessions so the backend
-        // knows which VM to create the shell pane in.
+        // Inject __THURBOX_VM_ID / __THURBOX_CONTAINER_ID for backend-routed sessions
+        // so the backend knows which VM/container to create the shell pane in.
         let mut env = self.env.clone();
         if let Some(ref vm_id) = self.info.vm_id {
             env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
+        }
+        if let Some(ref container_id) = self.info.container_id {
+            env.insert(CONTAINER_ID_ENV_KEY.to_string(), container_id.clone());
         }
 
         let spawned = self.backend.spawn(
@@ -618,5 +633,10 @@ mod tests {
     fn vm_id_env_key_is_internal() {
         // The key should start with __ to signal it's an internal implementation detail.
         assert!(VM_ID_ENV_KEY.starts_with("__"));
+    }
+
+    #[test]
+    fn container_id_env_key_is_internal() {
+        assert!(CONTAINER_ID_ENV_KEY.starts_with("__"));
     }
 }

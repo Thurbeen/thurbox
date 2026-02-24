@@ -9,47 +9,21 @@ use ratatui::{
 use super::centered_fixed_height_rect;
 use super::theme::Theme;
 
-const MODES_BASE: [&str; 2] = ["Normal", "Worktree"];
-const MODE_DEVCONTAINER: &str = "Devcontainer";
-const MODE_SANDBOX_VM: &str = "Sandbox VM";
-
-pub struct SessionModeState {
+pub struct ContainerfilePickerState {
+    pub containerfiles: Vec<String>,
     pub selected_index: usize,
-    /// Whether the "Devcontainer" option should be shown.
-    pub devcontainer_available: bool,
-    /// Whether the "Sandbox VM" option should be shown.
-    pub vm_available: bool,
 }
 
-impl SessionModeState {
-    /// Build the list of visible mode names.
-    pub fn mode_names(&self) -> Vec<&'static str> {
-        let mut modes: Vec<&str> = MODES_BASE.to_vec();
-        if self.devcontainer_available {
-            modes.push(MODE_DEVCONTAINER);
-        }
-        if self.vm_available {
-            modes.push(MODE_SANDBOX_VM);
-        }
-        modes
-    }
-
-    /// Number of visible modes.
-    pub fn mode_count(&self) -> usize {
-        self.mode_names().len()
-    }
-}
-
-pub fn render_session_mode_modal(frame: &mut Frame, state: &SessionModeState) {
-    let mode_count = state.mode_count();
-    // Height = modes + 2 (border) + 1 (footer)
-    let height = mode_count as u16 + 3;
+pub fn render_containerfile_picker(frame: &mut Frame, state: &ContainerfilePickerState) {
+    let item_count = state.containerfiles.len();
+    // Height = items + 2 (border) + 1 (footer)
+    let height = (item_count as u16 + 3).min(frame.area().height.saturating_sub(4));
     let area = centered_fixed_height_rect(50, height, frame.area());
 
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Session Mode ")
+        .title(" Select Containerfile ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Theme::ACCENT));
 
@@ -59,17 +33,16 @@ pub fn render_session_mode_modal(frame: &mut Frame, state: &SessionModeState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // Mode list
+            Constraint::Min(1),    // Item list
             Constraint::Length(1), // Footer
         ])
         .split(inner);
 
-    let modes = state.mode_names();
-
-    let items: Vec<ListItem<'_>> = modes
+    let items: Vec<ListItem<'_>> = state
+        .containerfiles
         .iter()
         .enumerate()
-        .map(|(i, mode)| {
+        .map(|(i, name)| {
             let style = if i == state.selected_index {
                 Theme::selected_item()
             } else {
@@ -80,7 +53,7 @@ pub fn render_session_mode_modal(frame: &mut Frame, state: &SessionModeState) {
             } else {
                 "  "
             };
-            ListItem::new(Line::from(Span::styled(format!("{prefix}{mode}"), style)))
+            ListItem::new(Line::from(Span::styled(format!("{prefix}{name}"), style)))
         })
         .collect();
 

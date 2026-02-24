@@ -232,6 +232,8 @@ pub struct SessionInfo {
     pub shell_backend_id: Option<String>,
     /// VM identifier when this session runs inside a sandboxed VM.
     pub vm_id: Option<String>,
+    /// Container identifier when this session runs inside a devcontainer.
+    pub container_id: Option<String>,
     /// Current provisioning step description (shown while status is `Provisioning`).
     pub provisioning_step: Option<String>,
 }
@@ -250,6 +252,7 @@ impl SessionInfo {
             backend_id: None,
             shell_backend_id: None,
             vm_id: None,
+            container_id: None,
             provisioning_step: None,
         }
     }
@@ -277,6 +280,11 @@ pub struct SessionConfig {
     /// When set, the VM backend uses this to spawn the session on the specific VM
     /// rather than picking arbitrarily. Ensures each session is tied to its own VM.
     pub vm_id: Option<String>,
+    /// Target container ID for devcontainer-backed sessions.
+    ///
+    /// When set, the devcontainer backend uses this to spawn the session on the
+    /// specific container. Ensures each session is tied to its own container.
+    pub container_id: Option<String>,
 }
 
 /// VM state machine for sandboxed sessions.
@@ -364,6 +372,95 @@ impl Default for VmConfig {
             memory_mb: 2048,
             disk_gb: 10,
             setup_script: None,
+        }
+    }
+}
+
+/// Container state machine for devcontainer-backed sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerState {
+    /// Devcontainer image is being built.
+    Building,
+    /// Container is starting up.
+    Starting,
+    /// Container is running and ready for sessions.
+    Ready,
+    /// Container stop has been requested.
+    Stopping,
+    /// Container has been stopped.
+    Stopped,
+    /// Something went wrong.
+    Failed(String),
+}
+
+impl fmt::Display for ContainerState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Building => write!(f, "Building"),
+            Self::Starting => write!(f, "Starting"),
+            Self::Ready => write!(f, "Ready"),
+            Self::Stopping => write!(f, "Stopping"),
+            Self::Stopped => write!(f, "Stopped"),
+            Self::Failed(msg) => write!(f, "Failed: {msg}"),
+        }
+    }
+}
+
+impl ContainerState {
+    /// Parse from database string representation.
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "building" => Self::Building,
+            "starting" => Self::Starting,
+            "ready" => Self::Ready,
+            "stopping" => Self::Stopping,
+            "stopped" => Self::Stopped,
+            other => {
+                if let Some(msg) = other.strip_prefix("failed:") {
+                    Self::Failed(msg.trim().to_string())
+                } else {
+                    Self::Stopped
+                }
+            }
+        }
+    }
+
+    /// Convert to database string representation.
+    pub fn to_db_str(&self) -> String {
+        match self {
+            Self::Building => "building".to_string(),
+            Self::Starting => "starting".to_string(),
+            Self::Ready => "ready".to_string(),
+            Self::Stopping => "stopping".to_string(),
+            Self::Stopped => "stopped".to_string(),
+            Self::Failed(msg) => format!("failed:{msg}"),
+        }
+    }
+}
+
+/// Configuration for a container instance.
+#[derive(Debug, Clone)]
+pub struct ContainerConfig {
+    /// Docker image to use (None = build from Containerfile template).
+    pub image: Option<String>,
+    /// Number of CPUs to allocate.
+    pub cpus: u32,
+    /// RAM in megabytes.
+    pub memory_mb: u32,
+    /// Whether to enable egress firewall rules.
+    pub firewall_enabled: bool,
+    /// Containerfile template name (filename in containerfiles dir).
+    pub containerfile: Option<String>,
+}
+
+impl Default for ContainerConfig {
+    fn default() -> Self {
+        Self {
+            image: None,
+            cpus: 2,
+            memory_mb: 2048,
+            firewall_enabled: true,
+            containerfile: Some("default".to_string()),
         }
     }
 }
@@ -560,6 +657,7 @@ mod tests {
         assert_eq!(config.role, "");
         assert_eq!(config.permissions, RolePermissions::default());
         assert!(config.vm_id.is_none());
+        assert!(config.container_id.is_none());
     }
 
     #[test]

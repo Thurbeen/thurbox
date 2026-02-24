@@ -44,6 +44,12 @@ impl App {
             return;
         }
 
+        // Containerfile picker modal captures all input
+        if self.show_containerfile_picker {
+            self.handle_containerfile_picker_key(code);
+            return;
+        }
+
         // Session mode modal captures all input
         if self.show_session_mode_modal {
             self.handle_session_mode_key(code);
@@ -737,7 +743,15 @@ impl App {
     }
 
     fn handle_session_mode_key(&mut self, code: KeyCode) {
-        let max_index = if self.backends.has("qemu-vm") { 2 } else { 1 };
+        // Build the dynamic mode list matching the UI modal.
+        let mode_state = crate::ui::session_mode_modal::SessionModeState {
+            selected_index: self.session_mode_index,
+            devcontainer_available: self.backends.has("devcontainer"),
+            vm_available: self.backends.has("qemu-vm"),
+        };
+        let modes = mode_state.mode_names();
+        let max_index = modes.len().saturating_sub(1);
+
         match code {
             KeyCode::Esc => {
                 self.show_session_mode_modal = false;
@@ -754,11 +768,10 @@ impl App {
             }
             KeyCode::Enter => {
                 self.show_session_mode_modal = false;
-                match self.session_mode_index {
-                    0 => {
-                        // Normal mode
+                let selected_mode = modes.get(self.session_mode_index).copied().unwrap_or("");
+                match selected_mode {
+                    "Normal" => {
                         if let Some(all_repos) = self.pending_all_repos.take() {
-                            // Multi-repo project: use first repo as CWD, rest as add-dir
                             self.pending_repo_path = None;
                             let config = SessionConfig {
                                 cwd: Some(all_repos[0].clone()),
@@ -767,15 +780,50 @@ impl App {
                             };
                             self.spawn_session_with_config(&config);
                         } else if let Some(path) = self.pending_repo_path.take() {
-                            // Single-repo project
                             self.spawn_session_in_repo(path);
                         }
                     }
-                    1 => {
-                        // Worktree mode
+                    "Worktree" => {
                         self.start_branch_selection();
                     }
-                    2 => {
+                    "Devcontainer" => {
+                        // Devcontainer mode — build config for role selection after
+                        // container is ready, store MCP servers for writing into container.
+                        let config = if let Some(all_repos) = self.pending_all_repos.clone() {
+                            SessionConfig {
+                                cwd: Some(all_repos[0].clone()),
+                                additional_dirs: all_repos[1..].to_vec(),
+                                ..SessionConfig::default()
+                            }
+                        } else if let Some(ref path) = self.pending_repo_path {
+                            SessionConfig {
+                                cwd: Some(path.clone()),
+                                ..SessionConfig::default()
+                            }
+                        } else {
+                            SessionConfig::default()
+                        };
+                        self.pending_container_config = Some(config);
+                        self.pending_container_mcp_servers = self
+                            .active_project()
+                            .map(|p| p.config.mcp_servers.clone())
+                            .filter(|s| !s.is_empty());
+
+                        // Show containerfile picker (skip if only one file)
+                        let containerfiles = self.load_containerfiles();
+                        if containerfiles.len() <= 1 {
+                            self.pending_containerfile_name = containerfiles
+                                .first()
+                                .cloned()
+                                .or_else(|| Some("default".to_string()));
+                            self.start_container_provisioning();
+                        } else {
+                            self.containerfile_list = containerfiles;
+                            self.containerfile_picker_index = 0;
+                            self.show_containerfile_picker = true;
+                        }
+                    }
+                    "Sandbox VM" => {
                         // Sandbox VM mode — build config for role selection after
                         // VM is ready, store MCP servers for writing into the VM.
                         let config = if let Some(all_repos) = self.pending_all_repos.clone() {
@@ -801,6 +849,40 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_containerfile_picker_key(&mut self, code: KeyCode) {
+        let max_index = self.containerfile_list.len().saturating_sub(1);
+        match code {
+            KeyCode::Esc => {
+                self.show_containerfile_picker = false;
+                self.containerfile_list.clear();
+                self.pending_container_config = None;
+                self.pending_container_mcp_servers = None;
+                self.pending_repo_path = None;
+                self.pending_all_repos = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.containerfile_picker_index < max_index {
+                    self.containerfile_picker_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.containerfile_picker_index = self.containerfile_picker_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let name = self
+                    .containerfile_list
+                    .get(self.containerfile_picker_index)
+                    .cloned()
+                    .unwrap_or_else(|| "default".to_string());
+                self.show_containerfile_picker = false;
+                self.containerfile_list.clear();
+                self.pending_containerfile_name = Some(name);
+                self.start_container_provisioning();
             }
             _ => {}
         }

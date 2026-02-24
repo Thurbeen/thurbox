@@ -52,6 +52,8 @@ pub enum PathKind {
     Database,
     /// Admin session directory: `~/.local/share/thurbox/admin/`
     AdminDir,
+    /// Containerfile templates: `~/.local/share/thurbox/containerfiles/`
+    ContainerfilesDir,
 }
 
 /// Path resolution strategy (thread-local).
@@ -155,6 +157,24 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
+        PathKind::ContainerfilesDir => {
+            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
+            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+                let mut p = PathBuf::from(xdg);
+                p.push(app_dir_name());
+                p.push("containerfiles");
+                return Some(p);
+            }
+
+            std::env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".local");
+                p.push("share");
+                p.push(app_dir_name());
+                p.push("containerfiles");
+                p
+            })
+        }
     }
 }
 
@@ -165,6 +185,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::LogDir => base.to_path_buf(),
         PathKind::Database => base.join("thurbox.db"),
         PathKind::AdminDir => base.join("admin"),
+        PathKind::ContainerfilesDir => base.join("containerfiles"),
     }
 }
 
@@ -194,6 +215,14 @@ pub fn database_file() -> Option<PathBuf> {
 /// Returns: `$XDG_DATA_HOME/thurbox/admin/` or `$HOME/.local/share/thurbox/admin/`
 pub fn admin_directory() -> Option<PathBuf> {
     resolve(PathKind::AdminDir)
+}
+
+/// Resolve the containerfiles template directory path.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/containerfiles/` or
+/// `$HOME/.local/share/thurbox/containerfiles/`
+pub fn containerfiles_directory() -> Option<PathBuf> {
+    resolve(PathKind::ContainerfilesDir)
 }
 
 /// Resolve the path to the `thurbox-mcp` binary.
@@ -429,6 +458,10 @@ mod tests {
         assert_eq!(resolve(PathKind::LogDir), Some(base.clone()));
         assert_eq!(resolve(PathKind::Database), Some(base.join("thurbox.db")));
         assert_eq!(resolve(PathKind::AdminDir), Some(base.join("admin")));
+        assert_eq!(
+            resolve(PathKind::ContainerfilesDir),
+            Some(base.join("containerfiles"))
+        );
 
         reset_to_xdg();
     }
@@ -473,6 +506,17 @@ mod tests {
 
         let path = admin_directory().unwrap();
         assert!(path.ends_with("admin"));
+
+        reset_to_xdg();
+    }
+
+    #[test]
+    fn containerfiles_directory_convenience() {
+        let base = PathBuf::from("/custom");
+        set_test_dir(&base);
+
+        let path = containerfiles_directory().unwrap();
+        assert!(path.ends_with("containerfiles"));
 
         reset_to_xdg();
     }
@@ -558,6 +602,10 @@ mod tests {
         assert_eq!(
             resolve_override(base, PathKind::AdminDir),
             PathBuf::from("/data/admin")
+        );
+        assert_eq!(
+            resolve_override(base, PathKind::ContainerfilesDir),
+            PathBuf::from("/data/containerfiles")
         );
     }
 

@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -146,6 +146,38 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON vms(session_id) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_vms_project
             ON vms(project_id) WHERE deleted_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS containers (
+            id                  TEXT PRIMARY KEY,
+            session_id          TEXT REFERENCES sessions(id),
+            project_id          TEXT REFERENCES projects(id),
+            state               TEXT NOT NULL DEFAULT 'stopped',
+            docker_container_id TEXT,
+            image               TEXT,
+            cpus                INTEGER NOT NULL DEFAULT 2,
+            memory_mb           INTEGER NOT NULL DEFAULT 2048,
+            firewall_enabled    INTEGER NOT NULL DEFAULT 1,
+            containerfile       TEXT,
+            error_msg           TEXT,
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            deleted_at          INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS project_container_config (
+            project_id       TEXT PRIMARY KEY REFERENCES projects(id),
+            image            TEXT,
+            cpus             INTEGER,
+            memory_mb        INTEGER,
+            firewall_enabled INTEGER,
+            containerfile    TEXT,
+            updated_at       INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_containers_session
+            ON containers(session_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_containers_project
+            ON containers(project_id) WHERE deleted_at IS NULL;
         ",
     )?;
 
@@ -292,6 +324,50 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         );
     }
 
+    if version < 10 {
+        // v9 → v10: add containers and project_container_config tables
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS containers (
+                id                  TEXT PRIMARY KEY,
+                session_id          TEXT REFERENCES sessions(id),
+                project_id          TEXT REFERENCES projects(id),
+                state               TEXT NOT NULL DEFAULT 'stopped',
+                docker_container_id TEXT,
+                image               TEXT,
+                cpus                INTEGER NOT NULL DEFAULT 2,
+                memory_mb           INTEGER NOT NULL DEFAULT 2048,
+                firewall_enabled    INTEGER NOT NULL DEFAULT 1,
+                error_msg           TEXT,
+                created_at          INTEGER NOT NULL,
+                updated_at          INTEGER NOT NULL,
+                deleted_at          INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS project_container_config (
+                project_id       TEXT PRIMARY KEY REFERENCES projects(id),
+                image            TEXT,
+                cpus             INTEGER,
+                memory_mb        INTEGER,
+                firewall_enabled INTEGER,
+                updated_at       INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_containers_session
+                ON containers(session_id) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_containers_project
+                ON containers(project_id) WHERE deleted_at IS NULL;",
+        )?;
+    }
+
+    if version < 11 {
+        // v10 → v11: add containerfile column to containers and project_container_config
+        let _ = conn.execute("ALTER TABLE containers ADD COLUMN containerfile TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE project_container_config ADD COLUMN containerfile TEXT",
+            [],
+        );
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -328,6 +404,8 @@ mod tests {
         assert!(tables.contains(&"worktrees".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
         assert!(tables.contains(&"session_commands".to_string()));
+        assert!(tables.contains(&"containers".to_string()));
+        assert!(tables.contains(&"project_container_config".to_string()));
     }
 
     #[test]

@@ -336,6 +336,12 @@ fn render_session_section(
                 if info.vm_id.is_some() {
                     line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
                     line2_spans.push(Span::styled("VM", Style::default().fg(Theme::ACCENT)));
+                } else if info.container_id.is_some() {
+                    line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
+                    line2_spans.push(Span::styled(
+                        "Container",
+                        Style::default().fg(Theme::ACCENT),
+                    ));
                 }
                 Line::from(line2_spans)
             };

@@ -27,6 +27,7 @@ pub struct SessionMetrics {
     pub project_name: String,
     pub worktree_branch: Option<String>,
     pub is_vm: bool,
+    pub is_container: bool,
     pub cpu_percent: f32,
     pub memory_bytes: u64,
 }
@@ -219,6 +220,8 @@ fn render_session_name_line<'a>(sm: &'a SessionMetrics, name_width: usize) -> Li
     }
     if sm.is_vm {
         context.push_str(" VM");
+    } else if sm.is_container {
+        context.push_str(" Container");
     }
     if !context.is_empty() {
         spans.push(Span::styled(
@@ -488,6 +491,7 @@ mod tests {
             project_name: "myproj".into(),
             worktree_branch: None,
             is_vm: false,
+            is_container: false,
             cpu_percent: 42.0,
             memory_bytes: 1_073_741_824, // 1 GB
         }
@@ -512,6 +516,17 @@ mod tests {
         let line = render_session_name_line(&sm, 50);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("[myproj feat-x VM]"));
+    }
+
+    #[test]
+    fn session_name_line_with_container() {
+        let sm = SessionMetrics {
+            is_container: true,
+            ..sample_metrics()
+        };
+        let line = render_session_name_line(&sm, 50);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("[myproj Container]"));
     }
 
     #[test]

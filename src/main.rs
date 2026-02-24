@@ -9,7 +9,10 @@ use crossterm::execute;
 
 use thurbox::agent::claude::ClaudeProvider;
 use thurbox::agent::tmux::LocalTmuxBackend;
-use thurbox::agent::{AgentProvider, BackendRegistry, QemuVmBackend, SessionBackend, VmManager};
+use thurbox::agent::{
+    detect_runtime, AgentProvider, BackendRegistry, ContainerManager, DevcontainerBackend,
+    QemuVmBackend, SessionBackend, VmManager,
+};
 use thurbox::app::{App, AppMessage};
 use thurbox::storage::Database;
 
@@ -59,6 +62,36 @@ async fn main() -> Result<()> {
         tracing::debug!("QEMU VM backend not available (qemu-system-x86_64 not found or /dev/kvm not accessible)");
     }
 
+    // Register container backend if available (optional — requires Docker or Podman).
+    let mut container_manager_for_app = None;
+    match detect_runtime() {
+        Ok(runtime) => {
+            let containerfiles_dir = thurbox::paths::containerfiles_directory()
+                .unwrap_or_else(|| data_dir.join("containerfiles"));
+            let container_manager = Arc::new(std::sync::Mutex::new(ContainerManager::new(
+                &data_dir,
+                containerfiles_dir,
+                runtime,
+            )));
+            let dc_backend: Arc<dyn SessionBackend> = Arc::new(DevcontainerBackend::new(
+                Arc::clone(&container_manager),
+                runtime,
+            ));
+            if dc_backend.check_available().is_ok() {
+                if let Err(e) = dc_backend.ensure_ready() {
+                    tracing::warn!("Container backend available but setup failed: {e}");
+                } else {
+                    tracing::info!("Container backend registered (runtime: {runtime})");
+                    backends.register(dc_backend);
+                    container_manager_for_app = Some(container_manager);
+                }
+            }
+        }
+        Err(_) => {
+            tracing::debug!("Container backend not available (no Docker or Podman found)");
+        }
+    }
+
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
         let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
@@ -82,7 +115,11 @@ async fn main() -> Result<()> {
         provider,
         db,
         vm_manager_for_app,
+        container_manager_for_app,
     );
+
+    // Ensure containerfile templates directory exists and is seeded
+    app.ensure_containerfiles_dir();
 
     // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {

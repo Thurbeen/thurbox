@@ -35,6 +35,8 @@ pub struct FooterState<'a> {
     pub sync_in_progress: bool,
     pub vm_provisioning: bool,
     pub vm_provisioning_step: &'a str,
+    pub container_provisioning: bool,
+    pub container_provisioning_step: &'a str,
     pub tick_count: u64,
 }
 
@@ -57,6 +59,27 @@ pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
                         "Starting VM..."
                     } else {
                         state.vm_provisioning_step
+                    }
+                ),
+                Style::default().fg(Theme::ACCENT),
+            ),
+        ])
+    } else if state.container_provisioning {
+        let idx = (state.tick_count as usize / 10) % SPINNER_CHARS.len();
+        let spinner = SPINNER_CHARS[idx];
+        Line::from(vec![
+            focus_badge,
+            Span::styled(
+                format!(" {spinner} CONTAINER "),
+                Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
+            ),
+            Span::styled(
+                format!(
+                    " {}",
+                    if state.container_provisioning_step.is_empty() {
+                        "Starting container..."
+                    } else {
+                        state.container_provisioning_step
                     }
                 ),
                 Style::default().fg(Theme::ACCENT),

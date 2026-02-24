@@ -31,9 +31,10 @@ use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::selection::{self, PaneBounds, Selection, TermPos};
 use crate::ui::{
-    add_project_modal, branch_selector_modal, delete_project_modal, edit_project_modal, info_panel,
-    layout, project_list, repo_selector_modal, restore_sessions_modal, role_editor_modal,
-    role_selector_modal, session_mode_modal, status_bar, terminal_view, worktree_name_modal,
+    add_project_modal, branch_selector_modal, containerfile_picker, delete_project_modal,
+    edit_project_modal, info_panel, layout, project_list, repo_selector_modal,
+    restore_sessions_modal, role_editor_modal, role_selector_modal, session_mode_modal, status_bar,
+    terminal_view, worktree_name_modal,
 };
 
 const MOUSE_SCROLL_LINES: usize = 3;
@@ -84,6 +85,15 @@ You can:
 - Configure roles for projects (named permission presets applied to sessions)
 - Configure MCP servers for projects
 - List, inspect, delete, and restart sessions
+- Create and manage Containerfile templates for container-based sessions
+
+Containerfile templates live in ~/.local/share/thurbox/containerfiles/. Each \
+template is a folder containing a Containerfile and any support files (e.g. \
+init-firewall.sh). The default/ template includes Node.js LTS, tmux, git, \
+iptables, and claude-code. To create a new template, create a new folder \
+(e.g. python/) with a Containerfile inside it. The entire folder is used as \
+the build context. Users select a template when spawning a container session. \
+The containerfiles directory is available in your working directory.
 
 When the user asks you to manage projects, roles, sessions, or MCP servers, use \
 the appropriate thurbox MCP tool. Always list existing resources before making \
@@ -483,6 +493,34 @@ pub struct App {
     selected_text_cache: Option<String>,
     /// Persistent clipboard handle to avoid "dropped too quickly" warnings on Linux.
     clipboard: Option<arboard::Clipboard>,
+    /// Containerfile picker modal visible.
+    pub(crate) show_containerfile_picker: bool,
+    /// Selected index in the containerfile picker.
+    pub(crate) containerfile_picker_index: usize,
+    /// Available containerfile template names.
+    pub(crate) containerfile_list: Vec<String>,
+    /// Containerfile name selected by the user (consumed during provisioning).
+    pub(crate) pending_containerfile_name: Option<String>,
+    /// Container provisioning in progress.
+    container_provisioning: bool,
+    /// Container ID currently being provisioned.
+    container_provisioning_id: Option<String>,
+    /// Container lifecycle manager (shared with background provisioning thread).
+    container_manager: Option<Arc<std::sync::Mutex<crate::agent::ContainerManager>>>,
+    /// Receiver for container provisioning results from background thread.
+    container_provision_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    /// Receiver for container provisioning step updates (progress messages).
+    container_provision_step_rx: Option<mpsc::Receiver<String>>,
+    /// Current container provisioning step description.
+    container_provisioning_step: String,
+    /// Placeholder session shown during container provisioning.
+    container_placeholder: Option<SessionInfo>,
+    /// Session config preserved during container provisioning for role selection after ready.
+    pending_container_config: Option<SessionConfig>,
+    /// Container ID stored after provisioning completes, consumed by `do_spawn_session`.
+    pending_container_id: Option<String>,
+    /// MCP servers to write into the container working directory before spawning.
+    pending_container_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -650,6 +688,7 @@ impl App {
         provider: Arc<dyn crate::agent::AgentProvider>,
         db: Database,
         vm_manager: Option<Arc<std::sync::Mutex<crate::agent::VmManager>>>,
+        container_manager: Option<Arc<std::sync::Mutex<crate::agent::ContainerManager>>>,
     ) -> Self {
         // Migrate roles from config.toml on first run after upgrade
         migrate_config_toml_roles(&db);
@@ -776,7 +815,96 @@ impl App {
             text_selection: None,
             selected_text_cache: None,
             clipboard: arboard::Clipboard::new().ok(),
+            show_containerfile_picker: false,
+            containerfile_picker_index: 0,
+            containerfile_list: Vec::new(),
+            pending_containerfile_name: None,
+            container_provisioning: false,
+            container_provisioning_id: None,
+            container_manager,
+            container_provision_rx: None,
+            container_provision_step_rx: None,
+            container_provisioning_step: String::new(),
+            container_placeholder: None,
+            pending_container_config: None,
+            pending_container_id: None,
+            pending_container_mcp_servers: None,
         }
+    }
+
+    /// Ensure the containerfiles template directory exists and is seeded with defaults.
+    ///
+    /// Creates `~/.local/share/thurbox/containerfiles/default/` containing:
+    /// - `Containerfile` — the default container image definition
+    /// - `init-firewall.sh` — the firewall script referenced by the Containerfile
+    ///
+    /// Each template is a folder used as the build context.
+    pub fn ensure_containerfiles_dir(&self) {
+        let Some(dir) = crate::paths::containerfiles_directory() else {
+            return;
+        };
+        let default_dir = dir.join("default");
+        if let Err(e) = std::fs::create_dir_all(&default_dir) {
+            tracing::warn!("Failed to create default containerfile directory: {e}");
+            return;
+        }
+        // Always overwrite the "default" template to keep it in sync with the
+        // built-in version. Users who want a custom template should create a
+        // new named template instead of modifying "default".
+        if let Err(e) = std::fs::write(
+            default_dir.join("Containerfile"),
+            crate::agent::DEFAULT_CONTAINERFILE,
+        ) {
+            tracing::warn!("Failed to write default Containerfile: {e}");
+        }
+        if let Err(e) = std::fs::write(
+            default_dir.join("init-firewall.sh"),
+            crate::agent::INIT_FIREWALL_SH,
+        ) {
+            tracing::warn!("Failed to write init-firewall.sh: {e}");
+        }
+        if let Err(e) = std::fs::write(
+            default_dir.join("allowlist.conf"),
+            crate::agent::DEFAULT_ALLOWLIST,
+        ) {
+            tracing::warn!("Failed to write allowlist.conf: {e}");
+        }
+    }
+
+    /// Load available containerfile template names from the templates directory.
+    ///
+    /// Each template is a subdirectory containing a `Containerfile`. Returns
+    /// sorted directory names, excluding hidden directories and directories
+    /// without a `Containerfile`.
+    pub fn load_containerfiles(&self) -> Vec<String> {
+        let Some(dir) = crate::paths::containerfiles_directory() else {
+            return vec!["default".to_string()];
+        };
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => return vec!["default".to_string()],
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') {
+                    return None;
+                }
+                // Only include if the directory contains a Containerfile
+                if e.path().join("Containerfile").exists() {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        names.sort();
+        if names.is_empty() {
+            names.push("default".to_string());
+        }
+        names
     }
 
     /// Ensure the global admin project and `.mcp.json` exist.
@@ -960,6 +1088,7 @@ impl App {
             role,
             permissions,
             vm_id: session.info.vm_id.clone(),
+            container_id: session.info.container_id.clone(),
         };
 
         let (rows, cols) = self.content_area_size();
@@ -1137,6 +1266,7 @@ impl App {
             role: deleted.role,
             permissions,
             vm_id: None,
+            container_id: None,
         };
 
         let session_name = deleted.name.clone();
@@ -1587,15 +1717,21 @@ impl App {
         // When a VM was just provisioned, use the VM backend and take the
         // placeholder's name instead of generating a new one.
         let vm_id = self.pending_vm_id.take();
+        let container_id = self.pending_container_id.take();
         let placeholder = if vm_id.is_some() {
             self.vm_placeholder.take()
+        } else if container_id.is_some() {
+            self.container_placeholder.take()
         } else {
             None
         };
         let placeholder_id = placeholder.as_ref().map(|ph| ph.id);
-        // Tie the session to its specific VM.
+        // Tie the session to its specific VM or container.
         if vm_id.is_some() {
             config.vm_id = vm_id.clone();
+        }
+        if container_id.is_some() {
+            config.container_id = container_id.clone();
         }
         let (backend, spawn_name): (Arc<dyn SessionBackend>, String) = if vm_id.is_some() {
             let vm_name = placeholder
@@ -1606,6 +1742,18 @@ impl App {
                 Some(b) => (Arc::clone(b), vm_name),
                 None => {
                     self.set_error("QEMU VM backend disappeared".to_string());
+                    return;
+                }
+            }
+        } else if container_id.is_some() {
+            let dc_name = placeholder
+                .as_ref()
+                .map(|ph| ph.name.clone())
+                .unwrap_or_else(|| name.clone());
+            match self.backends.get("devcontainer") {
+                Some(b) => (Arc::clone(b), dc_name),
+                None => {
+                    self.set_error("Devcontainer backend disappeared".to_string());
                     return;
                 }
             }
@@ -1654,6 +1802,38 @@ impl App {
                     }
                 }
 
+                if let Some(ref cid) = container_id {
+                    session.info.container_id = Some(cid.clone());
+
+                    // Replace the placeholder ID with the real session ID.
+                    if let Some(ph_id) = placeholder_id {
+                        if let Some(project) = self.projects.get_mut(self.active_project_index) {
+                            project.session_ids.retain(|id| *id != ph_id);
+                        }
+                    }
+
+                    // Update container state to Ready with docker ID.
+                    let docker_id = if let Some(ref mgr) = self.container_manager {
+                        if let Ok(mgr) = mgr.lock() {
+                            mgr.get_instance(cid)
+                                .and_then(|i| i.docker_container_id.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Err(e) = self.db.update_container_state(
+                        cid,
+                        &crate::session::ContainerState::Ready,
+                        docker_id.as_deref(),
+                        None,
+                    ) {
+                        error!(container_id = %cid, "Failed to update container state to Ready: {e}");
+                    }
+                }
+
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
                 self.focus = InputFocus::Terminal;
@@ -1681,6 +1861,18 @@ impl App {
                             vm_id = %vid,
                             session_id = %sid_str,
                             "Failed to link VM record to session: {e}"
+                        );
+                    }
+                }
+
+                // Link the container record to this session (same FK constraint).
+                if let Some(ref cid) = container_id {
+                    let sid_str = session_id.to_string();
+                    if let Err(e) = self.db.update_container_session(cid, &sid_str) {
+                        error!(
+                            container_id = %cid,
+                            session_id = %sid_str,
+                            "Failed to link container record to session: {e}"
                         );
                     }
                 }
@@ -1914,6 +2106,242 @@ impl App {
             let _ = self.db.update_vm_state(
                 id,
                 &crate::session::VmState::Failed(error.to_string()),
+                None,
+                Some(error),
+            );
+        }
+    }
+
+    /// Start container provisioning in a background thread.
+    pub(crate) fn start_container_provisioning(&mut self) {
+        if self.container_provisioning {
+            self.set_info("Container is already being provisioned...".to_string());
+            return;
+        }
+
+        if self.backends.get("devcontainer").is_none() {
+            self.set_error("Devcontainer backend not available".to_string());
+            return;
+        }
+
+        let manager = match self.container_manager {
+            Some(ref m) => Arc::clone(m),
+            None => {
+                self.set_error("Container manager not initialized".to_string());
+                return;
+            }
+        };
+
+        let container_id = uuid::Uuid::new_v4().to_string();
+        self.container_provisioning = true;
+        self.container_provisioning_id = Some(container_id.clone());
+
+        // Create a placeholder session visible in the session list during provisioning.
+        let name = self.next_session_name();
+        let mut placeholder = SessionInfo::new(name);
+        placeholder.status = SessionStatus::Provisioning;
+        placeholder.container_id = Some(container_id.clone());
+        placeholder.provisioning_step = Some("Preparing workspace...".to_string());
+
+        // Add placeholder to the active project's session list so it renders.
+        if let Some(project) = self.projects.get_mut(self.active_project_index) {
+            project.session_ids.push(placeholder.id);
+        }
+        self.container_placeholder = Some(placeholder);
+
+        self.set_info("Provisioning container...".to_string());
+
+        // Determine repo path for the container workspace.
+        let repo_path: Option<PathBuf> = if let Some(ref all_repos) = self.pending_all_repos {
+            Some(all_repos[0].clone())
+        } else {
+            self.pending_repo_path.clone()
+        };
+
+        let containerfile_name = self
+            .pending_containerfile_name
+            .take()
+            .unwrap_or_else(|| "default".to_string());
+        let config = crate::session::ContainerConfig {
+            containerfile: Some(containerfile_name.clone()),
+            ..crate::session::ContainerConfig::default()
+        };
+        let project_id = self.active_project().map(|p| p.id.to_string());
+
+        // Record in DB
+        if let Err(e) = self.db.insert_container(
+            &container_id,
+            None,
+            project_id.as_deref(),
+            &crate::session::ContainerState::Building,
+            &config,
+        ) {
+            error!("Failed to insert container record: {e}");
+            self.set_error(format!("Failed to create container: {e}"));
+            self.container_provisioning = false;
+            self.container_provisioning_id = None;
+            return;
+        }
+
+        // Spawn background thread for container provisioning.
+        let (tx, rx) = mpsc::channel();
+        let (step_tx, step_rx) = mpsc::channel();
+        self.container_provision_rx = Some(rx);
+        self.container_provision_step_rx = Some(step_rx);
+        self.container_provisioning_step = "Preparing workspace...".to_string();
+        let container_id_thread = container_id.clone();
+        let config_thread = config;
+        let containerfile_thread = containerfile_name;
+        tracing::info!(container_id = %container_id, "Container provisioning started");
+
+        let spawn_result = std::thread::Builder::new()
+            .name(format!("dc-provision-{}", &container_id[..8]))
+            .spawn(move || {
+                let mgr = manager.lock().unwrap();
+                let result = mgr.create_container(
+                    &container_id_thread,
+                    &config_thread,
+                    &containerfile_thread,
+                    repo_path.as_deref(),
+                    &step_tx,
+                );
+                drop(mgr);
+                match result {
+                    Ok(()) => {
+                        let _ = tx.send(Ok(container_id_thread));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("{e:#}")));
+                    }
+                }
+            });
+
+        if let Err(e) = spawn_result {
+            error!("Failed to spawn container provisioning thread: {e}");
+            self.set_error(format!("Failed to start container provisioning: {e}"));
+            self.container_provisioning = false;
+            self.container_provisioning_id = None;
+            self.container_provision_rx = None;
+        }
+    }
+
+    /// Poll for container provisioning results from the background thread.
+    fn poll_container_provision(&mut self) {
+        // Drain step updates (keep the latest).
+        if let Some(ref rx) = self.container_provision_step_rx {
+            while let Ok(step) = rx.try_recv() {
+                self.container_provisioning_step = step.clone();
+                if let Some(ref mut ph) = self.container_placeholder {
+                    ph.provisioning_step = Some(step);
+                }
+            }
+        }
+
+        let result = match self.container_provision_rx {
+            Some(ref rx) => match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                    "Container provisioning thread terminated unexpectedly".to_string(),
+                )),
+            },
+            None => None,
+        };
+
+        if let Some(result) = result {
+            self.container_provision_rx = None;
+            self.container_provision_step_rx = None;
+            self.container_provisioning_step.clear();
+            match result {
+                Ok(container_id) => self.handle_container_ready(&container_id),
+                Err(error) => self.handle_container_failed(&error),
+            }
+        }
+    }
+
+    /// Handle successful container provisioning.
+    fn handle_container_ready(&mut self, container_id: &str) {
+        self.container_provisioning = false;
+        self.container_provisioning_id = None;
+        self.set_info("Container ready — starting session...".to_string());
+
+        let backend = match self.backends.get("devcontainer") {
+            Some(b) => Arc::clone(b),
+            None => {
+                self.set_error("Devcontainer backend disappeared".to_string());
+                return;
+            }
+        };
+
+        // Establish docker exec control mode connection.
+        if let Err(e) = backend.prepare_vm(container_id) {
+            error!("Failed to establish container control mode: {e}");
+            self.set_error(format!("Container ready but control mode failed: {e:#}"));
+            return;
+        }
+
+        // Take the pending config, remap host paths to container paths.
+        let mut config = self.pending_container_config.take().unwrap_or_default();
+        if let Some(ref cwd) = config.cwd {
+            config.cwd = Some(crate::agent::host_to_container_path(cwd));
+        }
+        config.additional_dirs = config
+            .additional_dirs
+            .iter()
+            .map(|p| crate::agent::host_to_container_path(p))
+            .collect();
+        self.pending_repo_path = None;
+        self.pending_all_repos = None;
+
+        // Write project MCP servers as .mcp.json into the container working directory.
+        if let Some(mcp_servers) = self.pending_container_mcp_servers.take() {
+            if let Some(ref cwd) = config.cwd {
+                if let Some(ref mgr) = self.container_manager {
+                    if let Ok(mgr) = mgr.lock() {
+                        let rt = mgr.runtime().cmd();
+                        if let Some(instance) = mgr.get_instance(container_id) {
+                            if let Some(ref docker_id) = instance.docker_container_id {
+                                if let Err(e) =
+                                    write_container_mcp_json(rt, docker_id, cwd, &mcp_servers)
+                                {
+                                    warn!("Failed to write .mcp.json into container: {e:#}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Store container ID so `do_spawn_session` uses the devcontainer backend.
+        self.pending_container_id = Some(container_id.to_string());
+
+        // Route through role selection.
+        self.prepare_spawn(config, Vec::new());
+    }
+
+    /// Handle a failed container provisioning attempt.
+    fn handle_container_failed(&mut self, error: &str) {
+        self.container_provisioning = false;
+        let container_id = self.container_provisioning_id.take();
+        self.set_error(format!("Container provisioning failed: {error}"));
+        self.pending_repo_path = None;
+        self.pending_all_repos = None;
+        self.pending_container_config = None;
+        self.pending_container_id = None;
+        self.pending_container_mcp_servers = None;
+
+        // Update placeholder to show error state.
+        if let Some(ref mut ph) = self.container_placeholder {
+            ph.status = SessionStatus::Error;
+            ph.provisioning_step = Some(error.to_string());
+        }
+
+        // Update DB record
+        if let Some(id) = &container_id {
+            let _ = self.db.update_container_state(
+                id,
+                &crate::session::ContainerState::Failed(error.to_string()),
                 None,
                 Some(error),
             );
@@ -2221,6 +2649,9 @@ impl App {
         // Poll for VM provisioning results from background thread
         self.poll_vm_provision();
 
+        // Poll for container provisioning results from background thread
+        self.poll_container_provision();
+
         // Process queued session commands from MCP
         self.process_session_commands();
 
@@ -2257,13 +2688,26 @@ impl App {
         let mut per_session = Vec::new();
 
         for session in &self.sessions {
-            // VM sessions: use the QEMU host PID; local sessions: tmux pane PID.
+            // VM sessions: use the QEMU host PID.
+            // Container sessions: use the container init PID on the host.
+            // Local sessions: use the tmux pane PID.
             let root_pid = self
                 .db
                 .get_vm_by_session(&session.info.id.to_string())
                 .ok()
                 .flatten()
                 .and_then(|vm| vm.qemu_pid)
+                .or_else(|| {
+                    // For container sessions, look up the container's host init PID.
+                    if let Some(ref cid) = session.info.container_id {
+                        if let Some(ref mgr) = self.container_manager {
+                            if let Ok(mgr) = mgr.lock() {
+                                return mgr.container_host_pid(cid);
+                            }
+                        }
+                    }
+                    None
+                })
                 .or_else(|| session.pane_pid().ok().flatten());
 
             if let Some(pid) = root_pid {
@@ -2275,11 +2719,13 @@ impl App {
                     .unwrap_or_default();
                 let worktree_branch = session.info.worktrees.first().map(|wt| wt.branch.clone());
                 let is_vm = session.info.vm_id.is_some();
+                let is_container = session.info.container_id.is_some();
                 per_session.push(info_panel::SessionMetrics {
                     name: session.info.name.clone(),
                     project_name,
                     worktree_branch,
                     is_vm,
+                    is_container,
                     cpu_percent: cpu,
                     memory_bytes: mem,
                 });
@@ -2623,6 +3069,7 @@ impl App {
                             role: shared_session.role.clone(),
                             permissions,
                             vm_id: None,
+                            container_id: None,
                         };
 
                         let (rows, cols) = self.content_area_size();
@@ -2721,6 +3168,16 @@ impl App {
                 }
             }
 
+            // Include container placeholder in the session list if it belongs to this project.
+            if let Some(ref ph) = self.container_placeholder {
+                if let Some(project) = self.projects.get(self.active_project_index) {
+                    if project.session_ids.contains(&ph.id) {
+                        project_sessions.push(ph);
+                        session_elapsed_ms.push(0);
+                    }
+                }
+            }
+
             let panel_focus = match self.focus {
                 InputFocus::ProjectList => project_list::LeftPanelFocus::Projects,
                 InputFocus::SessionList | InputFocus::Terminal => {
@@ -2762,7 +3219,8 @@ impl App {
                 .sessions
                 .get(self.active_index)
                 .map(|s| &s.info)
-                .or(self.vm_placeholder.as_ref());
+                .or(self.vm_placeholder.as_ref())
+                .or(self.container_placeholder.as_ref());
 
             if let Some(info) = info_session {
                 let vm_details = info.vm_id.as_deref().and_then(|vm_id| {
@@ -2840,6 +3298,8 @@ impl App {
                 sync_in_progress: self.worktree_sync_in_progress,
                 vm_provisioning: self.vm_provisioning,
                 vm_provisioning_step: &self.vm_provisioning_step,
+                container_provisioning: self.container_provisioning,
+                container_provisioning_step: &self.container_provisioning_step,
                 tick_count: self.tick_count,
             },
         );
@@ -2919,7 +3379,19 @@ impl App {
                 frame,
                 &session_mode_modal::SessionModeState {
                     selected_index: self.session_mode_index,
+                    devcontainer_available: self.backends.has("devcontainer"),
                     vm_available: self.backends.has("qemu-vm"),
+                },
+            );
+        }
+
+        // Containerfile picker modal
+        if self.show_containerfile_picker {
+            containerfile_picker::render_containerfile_picker(
+                frame,
+                &containerfile_picker::ContainerfilePickerState {
+                    containerfiles: self.containerfile_list.clone(),
+                    selected_index: self.containerfile_picker_index,
                 },
             );
         }
@@ -3293,11 +3765,13 @@ impl App {
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
 
-        // Pre-flight: restore any VMs that sessions depend on, so that
-        // discover() on the VM backend can find their tmux panes.
+        // Pre-flight: restore any VMs/containers that sessions depend on, so that
+        // discover() on the VM/devcontainer backend can find their tmux panes.
         for shared in &sessions {
             if shared.backend_type == "qemu-vm" {
                 self.restore_vm_for_session(shared);
+            } else if shared.backend_type == "devcontainer" {
+                self.restore_container_for_session(shared);
             }
         }
 
@@ -3411,6 +3885,15 @@ impl App {
                     }
                 }
 
+                // Restore container_id on adopted devcontainer sessions.
+                if shared.backend_type == "devcontainer" {
+                    if let Ok(Some(container_record)) =
+                        self.db.get_container_by_session(&session_id.to_string())
+                    {
+                        session.info.container_id = Some(container_record.id);
+                    }
+                }
+
                 // Re-adopt shell pane if one was persisted
                 if let Some(shell_bid) = &shared.shell_backend_id {
                     if discovered
@@ -3457,12 +3940,11 @@ impl App {
                 let permissions =
                     self.resolve_role_permissions_for_project(&role, target_project_index);
 
-                // For VM sessions where the VM died, trigger re-provisioning so
-                // do_spawn_session uses the VM backend instead of local-tmux.
+                // For VM sessions where the VM died, fall back to local-tmux.
+                let mut resolved_vm_id = None;
                 if shared.backend_type == "qemu-vm" {
                     if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string())
                     {
-                        // Check if the VM was restored (it's in VmManager).
                         let vm_alive = self.vm_manager.as_ref().is_some_and(|mgr| {
                             mgr.lock()
                                 .ok()
@@ -3475,12 +3957,52 @@ impl App {
                                 vm_id = %vm_record.id,
                                 "VM died — session will be re-spawned with --resume on local-tmux"
                             );
-                            // Mark VM as stopped in DB.
                             let _ = self.db.update_vm_state(
                                 &vm_record.id,
                                 &crate::session::VmState::Stopped,
                                 None,
                                 Some("VM not reachable after restart"),
+                            );
+                        } else {
+                            resolved_vm_id = Some(vm_record.id);
+                        }
+                    }
+                }
+
+                // For container sessions, re-use the container if it's alive.
+                let mut resolved_container_id = None;
+                if shared.backend_type == "devcontainer" {
+                    if let Ok(Some(container_record)) =
+                        self.db.get_container_by_session(&session_id.to_string())
+                    {
+                        let container_alive = self.container_manager.as_ref().is_some_and(|mgr| {
+                            mgr.lock()
+                                .ok()
+                                .and_then(|m| m.get_instance(&container_record.id))
+                                .is_some_and(|inst| {
+                                    inst.state == crate::session::ContainerState::Ready
+                                })
+                        });
+                        if container_alive {
+                            info!(
+                                session = %session_id,
+                                container_id = %container_record.id,
+                                "Container alive — re-spawning session inside container"
+                            );
+                            resolved_container_id = Some(container_record.id.clone());
+                            // Set pending so do_spawn_session picks the devcontainer backend.
+                            self.pending_container_id = Some(container_record.id);
+                        } else {
+                            warn!(
+                                session = %session_id,
+                                container_id = %container_record.id,
+                                "Container not alive — session will be re-spawned on local-tmux"
+                            );
+                            let _ = self.db.update_container_state(
+                                &container_record.id,
+                                &crate::session::ContainerState::Stopped,
+                                None,
+                                Some("Container not reachable after restart"),
                             );
                         }
                     }
@@ -3503,7 +4025,8 @@ impl App {
                     additional_dirs: shared.additional_dirs,
                     role,
                     permissions,
-                    vm_id: None,
+                    vm_id: resolved_vm_id,
+                    container_id: resolved_container_id,
                 };
                 self.do_spawn_session(name, &config, worktrees, Some(target_project_index));
             }
@@ -3576,6 +4099,94 @@ impl App {
                     vm_id = %vm_record.id,
                     session = %shared.id,
                     "VM restored and control mode established"
+                );
+            }
+        }
+    }
+
+    /// Restore a container instance for a devcontainer-backed session before discovery/adoption.
+    ///
+    /// Looks up the container record from the DB, re-registers it in `ContainerManager`
+    /// (starting the container if stopped), then establishes the docker exec
+    /// control mode connection so `discover()` can find its tmux panes.
+    fn restore_container_for_session(&mut self, shared: &sync::SharedSession) {
+        let session_id_str = shared.id.to_string();
+        let container_record = match self.db.get_container_by_session(&session_id_str) {
+            Ok(Some(rec)) => rec,
+            Ok(None) => {
+                warn!(session = %shared.id, "No container record found for devcontainer session");
+                return;
+            }
+            Err(e) => {
+                warn!(session = %shared.id, "Failed to look up container record: {e}");
+                return;
+            }
+        };
+
+        let docker_id = match container_record.docker_container_id {
+            Some(ref id) => id.clone(),
+            None => {
+                warn!(
+                    container_id = %container_record.id,
+                    "Container record has no docker container ID"
+                );
+                return;
+            }
+        };
+
+        // Re-register the running container in ContainerManager.
+        if let Some(ref mgr) = self.container_manager {
+            match mgr.lock() {
+                Ok(mgr) => {
+                    let config = crate::session::ContainerConfig {
+                        image: container_record.image.clone(),
+                        cpus: container_record.cpus,
+                        memory_mb: container_record.memory_mb,
+                        firewall_enabled: container_record.firewall_enabled,
+                        containerfile: container_record.containerfile.clone(),
+                    };
+
+                    // Determine workspace dir from the session's cwd or use containers dir
+                    let workspace_dir = shared
+                        .cwd
+                        .clone()
+                        .unwrap_or_else(|| std::path::PathBuf::from("/workspaces"));
+
+                    if let Err(e) = mgr.restore_container(
+                        &container_record.id,
+                        &docker_id,
+                        &config,
+                        &workspace_dir,
+                    ) {
+                        warn!(
+                            container_id = %container_record.id,
+                            "Container not reachable, will fall through to re-spawn: {e}"
+                        );
+                        return;
+                    }
+                }
+                Err(e) => {
+                    warn!("ContainerManager lock poisoned: {e}");
+                    return;
+                }
+            }
+        } else {
+            warn!("No ContainerManager available for container session restore");
+            return;
+        }
+
+        // Establish docker exec control mode connection so discover() works.
+        if let Some(dc_backend) = self.backends.get("devcontainer") {
+            if let Err(e) = dc_backend.prepare_vm(&container_record.id) {
+                warn!(
+                    container_id = %container_record.id,
+                    "Failed to establish docker exec control mode: {e}"
+                );
+            } else {
+                info!(
+                    container_id = %container_record.id,
+                    session = %shared.id,
+                    "Container restored and control mode established"
                 );
             }
         }
@@ -3698,6 +4309,7 @@ impl App {
             role,
             permissions,
             vm_id: session.info.vm_id.clone(),
+            container_id: session.info.container_id.clone(),
         };
 
         let (rows, cols) = self.content_area_size();
@@ -3922,6 +4534,64 @@ fn write_vm_mcp_json(
     }
 
     info!("Wrote .mcp.json into VM at {}", dest.display());
+    Ok(())
+}
+
+/// Write a `.mcp.json` file into a container directory via `docker exec` so Claude Code
+/// discovers the project's MCP servers when running inside the devcontainer.
+fn write_container_mcp_json(
+    runtime: &str,
+    docker_container_id: &str,
+    container_cwd: &std::path::Path,
+    mcp_servers: &[crate::session::McpServerConfig],
+) -> anyhow::Result<()> {
+    if mcp_servers.is_empty() {
+        return Ok(());
+    }
+
+    let docker_id = docker_container_id;
+
+    // Build the .mcp.json structure Claude Code expects.
+    let mut servers = serde_json::Map::new();
+    for srv in mcp_servers {
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "command".to_string(),
+            serde_json::Value::String(srv.command.clone()),
+        );
+        if !srv.args.is_empty() {
+            entry.insert("args".to_string(), serde_json::json!(srv.args));
+        }
+        if !srv.env.is_empty() {
+            entry.insert("env".to_string(), serde_json::json!(srv.env));
+        }
+        servers.insert(srv.name.clone(), serde_json::Value::Object(entry));
+    }
+    let doc = serde_json::json!({ "mcpServers": servers });
+    let json_str = serde_json::to_string_pretty(&doc)?;
+
+    let dest = container_cwd.join(".mcp.json");
+    let shell_cmd = format!("cat > '{}'", dest.to_string_lossy().replace('\'', "'\\''"));
+    let output = std::process::Command::new(runtime)
+        .args(["exec", "-i", docker_id, "sh", "-c", &shell_cmd])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin.write_all(json_str.as_bytes())?;
+            }
+            child.wait_with_output()
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("{runtime} exec write .mcp.json failed: {stderr}");
+    }
+
+    info!("Wrote .mcp.json into container at {}", dest.display());
     Ok(())
 }
 
@@ -4199,6 +4869,7 @@ mod tests {
             provider.clone(),
             test_db_with_project(&test_project_config()),
             None,
+            None,
         );
         for _i in 0..count {
             let session = Session::stub("test-session", &backend_arc, &provider);
@@ -4323,14 +4994,30 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(50, 100, stub_backend(), stub_provider(), test_db(), None);
+        let app = App::new(
+            50,
+            100,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(6, 80, stub_backend(), stub_provider(), test_db(), None);
+        let app = App::new(
+            6,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -4344,13 +5031,29 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -4358,7 +5061,15 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
@@ -4373,6 +5084,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&test_project_config()),
+            None,
             None,
         );
         app.open_role_editor();
@@ -4404,6 +5116,7 @@ mod tests {
             stub_provider(),
             test_db_with_project(&config),
             None,
+            None,
         );
         app.open_role_editor();
         assert_eq!(app.role_editor_roles.len(), 1);
@@ -4412,7 +5125,15 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
@@ -4432,7 +5153,15 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
@@ -4484,6 +5213,7 @@ mod tests {
             stub_provider(),
             test_db_with_project(&config),
             None,
+            None,
         );
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, Vec::new());
@@ -4506,6 +5236,7 @@ mod tests {
             stub_provider(),
             test_db_with_project(&config),
             None,
+            None,
         );
         // With no roles, the selector should never be set
         assert!(!app.show_role_selector);
@@ -4513,7 +5244,15 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
@@ -4544,7 +5283,15 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         // Add first role
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -4597,6 +5344,7 @@ mod tests {
             stub_provider(),
             test_db_with_project(&config),
             None,
+            None,
         );
         app.open_role_editor();
         app.open_role_for_editing(0);
@@ -4619,7 +5367,15 @@ mod tests {
 
     #[test]
     fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
@@ -4658,6 +5414,7 @@ mod tests {
             stub_provider(),
             test_db_with_project(&config),
             None,
+            None,
         );
         app.open_role_editor();
         app.open_role_for_editing(0);
@@ -4678,7 +5435,15 @@ mod tests {
     #[test]
     fn role_editor_tab_cycles_fields_forward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -4700,7 +5465,15 @@ mod tests {
     #[test]
     fn role_editor_backtab_cycles_fields_backward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -4721,7 +5494,15 @@ mod tests {
 
     #[test]
     fn role_editor_esc_returns_to_edit_project() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -4761,6 +5542,7 @@ mod tests {
             stub_provider(),
             test_db_with_project(&config),
             None,
+            None,
         );
         app.open_role_editor();
         // Select the last role
@@ -4773,7 +5555,15 @@ mod tests {
 
     #[test]
     fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -4896,7 +5686,15 @@ mod tests {
     #[test]
     fn tool_browse_add_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -4929,7 +5727,15 @@ mod tests {
     #[test]
     fn tool_browse_delete_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::AllowedTools;
@@ -4946,7 +5752,15 @@ mod tests {
     #[test]
     fn tool_adding_esc_cancels() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::DisallowedTools;
@@ -4988,6 +5802,7 @@ mod tests {
             stub_provider(),
             test_db_with_project(&config),
             None,
+            None,
         );
         app.open_role_editor();
         app.open_role_for_editing(0);
@@ -5007,7 +5822,15 @@ mod tests {
 
     #[test]
     fn system_prompt_empty_saves_as_none() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("test");
@@ -5043,6 +5866,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
             None,
         );
         // With exactly 1 role, prepare_spawn should not show selector
@@ -5146,7 +5970,15 @@ mod tests {
 
     #[test]
     fn empty_db_app_has_valid_active_project_index() {
-        let app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         // With an empty DB, the project list is empty, but the index should be valid
         assert!(
             app.projects.is_empty() || app.active_project_index < app.projects.len(),
@@ -5301,7 +6133,7 @@ mod tests {
         db.soft_delete_project(id).unwrap();
         assert!(!db.project_exists(id).unwrap());
 
-        let app = App::new(24, 120, backend, provider, db, None);
+        let app = App::new(24, 120, backend, provider, db, None, None);
 
         // Create a project with the same deterministic ID
         let project = ProjectInfo::new(config);
@@ -5557,7 +6389,15 @@ mod tests {
 
     #[test]
     fn load_persisted_state_empty_db_returns_none() {
-        let app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         assert!(app.load_persisted_state_from_db().is_none());
     }
 
@@ -5592,7 +6432,7 @@ mod tests {
         };
         db.upsert_session(&session).unwrap();
 
-        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None);
+        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None, None);
         assert!(app.load_persisted_state_from_db().is_none());
     }
 
@@ -5646,7 +6486,7 @@ mod tests {
         db.upsert_session(&s2).unwrap();
         db.set_session_counter(7).unwrap();
 
-        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None);
+        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None, None);
         let (sessions, counter) = app.load_persisted_state_from_db().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "2");
@@ -5663,6 +6503,7 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&test_project_config()),
+            None,
             None,
         );
 
@@ -5683,7 +6524,15 @@ mod tests {
 
     #[test]
     fn save_state_persists_session_counter() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.session_counter = 42;
 
         app.save_state();
@@ -5702,6 +6551,7 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db_with_project(&test_project_config()),
+            None,
             None,
         );
 
@@ -5741,6 +6591,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
             None,
         )
     }
@@ -5975,6 +6826,7 @@ mod tests {
             provider.clone(),
             db,
             None,
+            None,
         );
 
         // Verify initial state: 1 project named "TestA"
@@ -6029,6 +6881,7 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             app.db,
+            None,
             None,
         );
 
@@ -6150,6 +7003,7 @@ mod tests {
             provider.clone(),
             test_db_with_project(&test_project_config()),
             None,
+            None,
         );
 
         let mut session = Session::stub("test-session", &backend_arc, &provider);
@@ -6186,6 +7040,7 @@ mod tests {
             stub_backend(),
             stub_provider(),
             test_db_with_project(&config),
+            None,
             None,
         )
     }
@@ -6352,6 +7207,7 @@ mod tests {
             provider.clone(),
             test_db_with_project(&test_project_config()),
             None,
+            None,
         );
 
         let mut session = Session::stub("test-session", &backend_arc, &provider);
@@ -6396,6 +7252,7 @@ mod tests {
             provider,
             test_db_with_project(&admin_config),
             None,
+            None,
         );
         app.projects[0].is_admin = true;
 
@@ -6411,7 +7268,15 @@ mod tests {
 
     #[test]
     fn cannot_edit_admin_project() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
 
         // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -6434,7 +7299,15 @@ mod tests {
 
     #[test]
     fn cannot_delete_admin_project() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
 
         // Add an admin project and select it
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
@@ -6465,6 +7338,7 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db(),
+            None,
             None,
         );
 
@@ -6499,7 +7373,15 @@ mod tests {
 
     #[test]
     fn set_error_creates_error_status() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.set_error("something failed");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
@@ -6508,7 +7390,15 @@ mod tests {
 
     #[test]
     fn set_status_creates_typed_status() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.set_status(StatusLevel::Success, "all good");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Success);
@@ -6517,7 +7407,15 @@ mod tests {
 
     #[test]
     fn set_status_replaces_previous() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.set_error("old error");
         app.set_status(StatusLevel::Info, "new info");
         let msg = app.status_message.as_ref().unwrap();
@@ -6529,7 +7427,15 @@ mod tests {
 
     #[test]
     fn start_sync_with_no_worktrees_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.start_sync();
         assert!(!app.worktree_sync_in_progress);
         let msg = app.status_message.as_ref().unwrap();
@@ -6539,7 +7445,15 @@ mod tests {
 
     #[test]
     fn start_sync_ignores_if_already_in_progress() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.worktree_sync_in_progress = true;
         app.status_message = None;
         app.start_sync();
@@ -6549,7 +7463,15 @@ mod tests {
 
     #[test]
     fn ctrl_s_triggers_start_sync() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
         // No worktrees → info message
         let msg = app.status_message.as_ref().unwrap();
@@ -6575,7 +7497,15 @@ mod tests {
 
     #[test]
     fn tick_increments_tick_count() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         assert_eq!(app.tick_count, 0);
         app.tick();
         assert_eq!(app.tick_count, 1);
@@ -6585,7 +7515,15 @@ mod tests {
 
     #[test]
     fn finish_sync_all_synced_shows_success() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         let id = SessionId::default();
         app.worktree_sync_completed = vec![
             (id, git::SyncResult::Synced),
@@ -6599,7 +7537,15 @@ mod tests {
 
     #[test]
     fn finish_sync_with_errors_shows_error() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.worktree_sync_completed = vec![(
             SessionId::default(),
             git::SyncResult::Error("fetch failed".into()),
@@ -6613,7 +7559,15 @@ mod tests {
 
     #[test]
     fn finish_sync_with_conflicts_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.worktree_sync_completed = vec![
             (SessionId::default(), git::SyncResult::Synced),
             (
@@ -6630,7 +7584,15 @@ mod tests {
 
     #[test]
     fn finish_sync_errors_take_priority_over_conflicts() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.worktree_sync_completed = vec![
             (
                 SessionId::default(),
@@ -6649,7 +7611,15 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_sends_at_correct_tick() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"hello".to_vec(), 5));
 
@@ -6666,7 +7636,15 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_retains_future_items() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"early".to_vec(), 5));
         app.deferred_inputs.push((id, b"late".to_vec(), 20));
@@ -6679,7 +7657,15 @@ mod tests {
 
     #[test]
     fn send_conflict_prompt_noop_for_unknown_session() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         app.send_conflict_prompt(SessionId::default());
         assert!(app.deferred_inputs.is_empty());
     }
@@ -6697,7 +7683,15 @@ mod tests {
 
     #[test]
     fn poll_sync_results_triggers_finish_when_all_received() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         let (tx, rx) = mpsc::channel();
         let id = SessionId::default();
 
@@ -6718,7 +7712,15 @@ mod tests {
 
     #[test]
     fn poll_sync_results_waits_for_all_pending() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db(), None);
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         let (tx, rx) = mpsc::channel();
 
         tx.send((SessionId::default(), git::SyncResult::Synced))
@@ -6748,7 +7750,7 @@ mod tests {
             repos: vec![PathBuf::from("/other")],
             ..test_project_config()
         };
-        let mut app = App::new(24, 120, backend, provider, test_db(), None);
+        let mut app = App::new(24, 120, backend, provider, test_db(), None, None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         let project_b = ProjectInfo::new(config_b);
         let id_b = project_b.id;
@@ -6763,7 +7765,7 @@ mod tests {
     fn find_project_index_falls_back_to_active_project() {
         let backend = stub_backend();
         let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db(), None);
+        let mut app = App::new(24, 120, backend, provider, test_db(), None, None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.active_project_index = 0;
 
@@ -6789,7 +7791,7 @@ mod tests {
             }],
             ..test_project_config()
         };
-        let mut app = App::new(24, 120, backend, provider, test_db(), None);
+        let mut app = App::new(24, 120, backend, provider, test_db(), None, None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.projects.push(ProjectInfo::new(config_with_roles));
         app.active_project_index = 0;
@@ -6808,7 +7810,7 @@ mod tests {
         use crate::session::RolePermissions;
         let backend = stub_backend();
         let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db(), None);
+        let mut app = App::new(24, 120, backend, provider, test_db(), None, None);
         app.projects.push(ProjectInfo::new(test_project_config()));
         app.active_project_index = 0;
 
@@ -6821,7 +7823,7 @@ mod tests {
         use crate::session::RolePermissions;
         let backend = stub_backend();
         let provider = stub_provider();
-        let app = App::new(24, 120, backend, provider, test_db(), None);
+        let app = App::new(24, 120, backend, provider, test_db(), None, None);
 
         let perms = app.resolve_role_permissions_for_project("any-role", 999);
         assert_eq!(perms, RolePermissions::default());
@@ -6843,7 +7845,7 @@ mod tests {
     #[test]
     fn resolve_role_permissions_returns_admin_tools_for_admin_project() {
         let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, stub_provider(), test_db(), None);
+        let mut app = App::new(24, 120, backend, stub_provider(), test_db(), None, None);
         let admin_project = ProjectInfo::new_admin(ProjectConfig {
             name: "Admin".to_string(),
             repos: vec![],

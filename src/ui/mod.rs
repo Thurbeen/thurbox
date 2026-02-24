@@ -1,5 +1,6 @@
 pub mod add_project_modal;
 pub mod branch_selector_modal;
+pub mod containerfile_picker;
 pub mod delete_project_modal;
 pub mod edit_project_modal;
 pub mod info_panel;
