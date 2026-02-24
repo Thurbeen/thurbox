@@ -779,14 +779,14 @@ impl App {
         }
     }
 
-    /// Ensure the global admin session and project exist.
+    /// Ensure the global admin project and `.mcp.json` exist.
     ///
     /// Creates a dedicated admin directory with a `.mcp.json` pointing to the
-    /// `thurbox-mcp` binary, an "Admin" pseudo-project pinned at index 0,
-    /// and spawns an admin session if one doesn't already exist.
+    /// `thurbox-mcp` binary and an "Admin" pseudo-project pinned at index 0.
+    /// Does not auto-spawn any session — the user creates sessions explicitly.
     /// The `.mcp.json` is rewritten on every startup to pick up binary path
     /// changes after upgrades.
-    pub fn ensure_admin_session(&mut self) {
+    pub fn ensure_admin_setup(&mut self) {
         let Some(admin_dir) = crate::paths::admin_directory() else {
             tracing::warn!("Could not resolve admin directory path");
             return;
@@ -799,10 +799,6 @@ impl App {
 
         self.write_mcp_json(&admin_dir);
         self.ensure_admin_project(&admin_dir);
-
-        if self.projects[0].session_ids.is_empty() {
-            self.spawn_admin_session(admin_dir);
-        }
     }
 
     /// Write `.mcp.json` into the admin directory.
@@ -858,39 +854,10 @@ impl App {
         }
     }
 
-    /// Spawn a single admin session in the admin directory.
-    fn spawn_admin_session(&mut self, admin_dir: PathBuf) {
-        let config = SessionConfig {
-            cwd: Some(admin_dir),
-            permissions: admin_mcp_permissions(),
-            ..SessionConfig::default()
-        };
-        self.do_spawn_session("admin".to_string(), &config, Vec::new(), Some(0));
-    }
-
-    /// Count sessions belonging to non-admin projects.
-    pub fn user_session_count(&self) -> usize {
-        self.projects
-            .iter()
-            .filter(|p| !p.is_admin)
-            .map(|p| p.session_ids.len())
-            .sum()
-    }
-
     pub fn spawn_session(&mut self) {
         let Some(project) = self.active_project() else {
             return;
         };
-
-        // Admin project: respawn if no sessions, otherwise no-op
-        if project.is_admin {
-            if project.session_ids.is_empty() {
-                if let Some(admin_dir) = crate::paths::admin_directory() {
-                    self.spawn_admin_session(admin_dir);
-                }
-            }
-            return;
-        }
 
         let repos = project.config.repos.clone();
         match repos.len() {
@@ -937,9 +904,14 @@ impl App {
         mut config: SessionConfig,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        let name = self.next_session_name();
+        let raw_name = self.next_session_name();
         let Some(project) = self.active_project() else {
             return;
+        };
+        let name = if project.is_admin {
+            format!("admin-{raw_name}")
+        } else {
+            raw_name
         };
         let roles = &project.config.roles;
 
@@ -1014,18 +986,6 @@ impl App {
         };
 
         let session_id = session.info.id;
-
-        // Prevent closing admin sessions
-        if let Some(project) = self
-            .projects
-            .iter()
-            .find(|p| p.session_ids.contains(&session_id))
-        {
-            if project.is_admin {
-                self.set_error("Cannot close admin session");
-                return;
-            }
-        }
 
         // Find the project this session belongs to
         let project_id = self
@@ -3392,6 +3352,27 @@ impl App {
                 .get(&shared.backend_type)
                 .cloned()
                 .unwrap_or_else(|| self.backends.default_backend().clone());
+
+            // Admin sessions always start fresh — skip restoration and clean up
+            // the old tmux window and DB entry.
+            let target_project_index =
+                self.find_project_index_for_session(session_id, &shared.project_id);
+            let is_admin = self
+                .projects
+                .get(target_project_index)
+                .is_some_and(|p| p.is_admin);
+
+            if is_admin {
+                if let Some(disc) = matching_discovered {
+                    if let Err(e) = backend.kill(&disc.backend_id) {
+                        tracing::warn!("Failed to kill old admin tmux window: {e}");
+                    }
+                }
+                if let Err(e) = self.db.soft_delete_session(session_id) {
+                    error!("Failed to soft-delete old admin session {session_id}: {e}");
+                }
+                continue;
+            }
 
             // Try to adopt the existing backend session.
             let env = self.resolve_role_permissions(&role).env;
@@ -6387,52 +6368,45 @@ mod tests {
     }
 
     #[test]
-    fn user_session_count_excludes_admin_project() {
+    fn prepare_spawn_prefixes_admin_session_name() {
         let backend_arc = stub_backend_arc();
         let provider = stub_provider();
-        let config = ProjectConfig {
-            name: "UserProj".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
+        let admin_config = ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![PathBuf::from("/admin")],
+            roles: vec![
+                RoleConfig {
+                    name: "role-a".to_string(),
+                    description: String::new(),
+                    permissions: RolePermissions::default(),
+                },
+                RoleConfig {
+                    name: "role-b".to_string(),
+                    description: String::new(),
+                    permissions: RolePermissions::default(),
+                },
+            ],
+            mcp_servers: vec![],
             id: None,
         };
         let mut app = App::new(
             24,
             120,
-            BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
-            test_db_with_project(&config),
+            BackendRegistry::new(backend_arc),
+            provider,
+            test_db_with_project(&admin_config),
             None,
         );
+        app.projects[0].is_admin = true;
 
-        // User project has no sessions
-        assert_eq!(app.user_session_count(), 0);
+        app.prepare_spawn(SessionConfig::default(), Vec::new());
 
-        // Add a session to the user project
-        let session = Session::stub("user-1", &backend_arc, &provider);
-        let sid = session.info.id;
-        app.sessions.push(session);
-        app.projects[0].session_ids.push(sid);
-        assert_eq!(app.user_session_count(), 1);
-
-        // Add an admin project with a session
-        let admin_config = ProjectConfig {
-            name: "Admin".to_string(),
-            repos: vec![],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let mut admin_project = ProjectInfo::new_admin(admin_config);
-        let admin_session = Session::stub("admin-1", &backend_arc, &provider);
-        let admin_sid = admin_session.info.id;
-        app.sessions.push(admin_session);
-        admin_project.session_ids.push(admin_sid);
-        app.projects.insert(0, admin_project);
-
-        // Admin sessions should not count
-        assert_eq!(app.user_session_count(), 1);
+        // With 2+ roles the name is stored in pending_spawn_name
+        let name = app.pending_spawn_name.as_deref().unwrap();
+        assert!(
+            name.starts_with("admin-"),
+            "expected admin- prefix, got: {name}"
+        );
     }
 
     #[test]
@@ -6482,7 +6456,7 @@ mod tests {
     }
 
     #[test]
-    fn cannot_close_admin_session() {
+    fn can_close_admin_session() {
         let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let mut app = App::new(
@@ -6510,13 +6484,14 @@ mod tests {
         app.active_project_index = app.projects.len() - 1;
         app.active_index = 0;
 
-        // Ctrl+D from session list attempts to close sessions
+        // Ctrl+D from session list closes admin session
         app.focus = InputFocus::SessionList;
         app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
-        assert_eq!(app.sessions.len(), 1); // Session not closed
-        assert_eq!(
-            app.status_message.as_ref().map(|m| m.text.as_str()),
-            Some("Cannot close admin session")
+        assert_eq!(app.sessions.len(), 0); // Session closed
+                                           // No error — status message is the "Deleted ... Ctrl+Z to undo" info
+        assert_ne!(
+            app.status_message.as_ref().map(|m| m.level),
+            Some(StatusLevel::Error)
         );
     }
 

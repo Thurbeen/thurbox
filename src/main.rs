@@ -89,13 +89,8 @@ async fn main() -> Result<()> {
         app.restore_sessions(sessions, counter);
     }
 
-    // Ensure admin project + session exist (idempotent; rewrites .mcp.json on every startup)
-    app.ensure_admin_session();
-
-    // If no user sessions exist, spawn a fresh one
-    if app.user_session_count() == 0 {
-        app.spawn_session();
-    }
+    // Ensure admin project exists and .mcp.json is up to date
+    app.ensure_admin_setup();
 
     let res = run_loop(&mut terminal, &mut app).await;
 

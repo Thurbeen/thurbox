@@ -307,6 +307,24 @@ impl Drop for ControlMode {
     }
 }
 
+/// Check if an error is caused by a broken pipe (control mode stdin closed).
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
+/// Check if an error is caused by a recv timeout (reader thread died, response never arrives).
+fn is_recv_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::sync::mpsc::RecvTimeoutError>()
+            .is_some()
+    })
+}
+
 impl LocalTmuxBackend {
     pub fn new() -> Self {
         Self::default()
@@ -401,16 +419,54 @@ impl LocalTmuxBackend {
         Ok(guard)
     }
 
+    /// Drop the dead control mode connection and start a fresh one.
+    fn reconnect_control(&self) -> Result<()> {
+        let mut guard = self
+            .control
+            .lock()
+            .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
+        *guard = None; // Drop dead ControlMode (triggers cleanup)
+        *guard = Some(ControlMode::start()?);
+        debug!("Control mode reconnected successfully");
+        Ok(())
+    }
+
     /// Send a command via control mode and return the response.
+    /// On broken pipe or timeout, reconnects control mode and retries once.
     fn ctrl_command(&self, cmd: &str) -> Result<String> {
-        let guard = self.control()?;
-        guard.as_ref().unwrap().send_command(cmd)
+        let result = {
+            let guard = self.control()?;
+            guard.as_ref().unwrap().send_command(cmd)
+        };
+        match result {
+            Ok(val) => Ok(val),
+            Err(err) if is_broken_pipe(&err) || is_recv_timeout(&err) => {
+                warn!("Control mode error, reconnecting: {err:#}");
+                self.reconnect_control()?;
+                let guard = self.control()?;
+                guard.as_ref().unwrap().send_command(cmd)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Send a command via control mode without waiting for a response.
+    /// On broken pipe, reconnects control mode and retries once.
     fn ctrl_command_nowait(&self, cmd: &str) -> Result<()> {
-        let guard = self.control()?;
-        guard.as_ref().unwrap().send_command_nowait(cmd)
+        let result = {
+            let guard = self.control()?;
+            guard.as_ref().unwrap().send_command_nowait(cmd)
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(err) if is_broken_pipe(&err) => {
+                warn!("Control mode broken pipe (nowait), reconnecting: {err:#}");
+                self.reconnect_control()?;
+                let guard = self.control()?;
+                guard.as_ref().unwrap().send_command_nowait(cmd)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Register a pane sender and return the corresponding reader.
