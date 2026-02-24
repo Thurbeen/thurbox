@@ -71,6 +71,10 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__get_session",
     "mcp__thurbox__delete_session",
     "mcp__thurbox__restart_session",
+    "mcp__thurbox__restore_session",
+    "mcp__thurbox__list_vms",
+    "mcp__thurbox__get_vm",
+    "mcp__thurbox__configure_project_vm",
     "mcp__thurbox__list_containerfile_templates",
     "mcp__thurbox__get_containerfile_template",
     "mcp__thurbox__set_containerfile_template",
@@ -93,7 +97,8 @@ You can:
 - List, create, update, and delete projects (each project groups related sessions)
 - Configure roles for projects (named permission presets applied to sessions)
 - Configure MCP servers for projects
-- List, inspect, delete, and restart sessions
+- List, inspect, delete, restart, and restore sessions
+- List and inspect VMs; configure per-project VM defaults
 - Create and manage Containerfile templates for container-based sessions
 - Configure per-project container defaults (image, cpus, memory, firewall, template)
 - List, download, and delete VM images for sandbox sessions
@@ -7886,7 +7891,7 @@ mod tests {
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 22);
+        assert_eq!(perms.allowed_tools.len(), 26);
         assert!(perms
             .allowed_tools
             .iter()
