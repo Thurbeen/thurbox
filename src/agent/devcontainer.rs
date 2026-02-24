@@ -125,6 +125,15 @@ const DC_TMUX_SESSION: &str = "thurbox";
 /// Timeout for waiting for a control mode command response.
 const DC_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Short timeout for readiness poll commands during control mode startup.
+const DC_READINESS_POLL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Interval between readiness poll attempts during control mode startup.
+const DC_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Maximum number of readiness poll attempts before giving up.
+const DC_READINESS_MAX_ATTEMPTS: u32 = 15;
+
 /// Max attempts to wait for a stopped container to become running after `start`.
 const CONTAINER_START_MAX_ATTEMPTS: u32 = 10;
 
@@ -957,13 +966,26 @@ impl DockerExecControlMode {
             child: Mutex::new(child),
         };
 
-        // Wait for initial session creation output.
-        std::thread::sleep(Duration::from_secs(2));
-
-        // Drain initial output.
-        if control.send_command("refresh-client").is_err() {
-            debug!("Initial refresh-client timed out, retrying");
-            control.send_command("refresh-client")?;
+        // Poll until the container's tmux is responsive (typically 200-500ms,
+        // replaces the old 2s blind sleep).
+        let mut ready = false;
+        for attempt in 1..=DC_READINESS_MAX_ATTEMPTS {
+            match control.send_command_timeout("refresh-client", DC_READINESS_POLL_TIMEOUT) {
+                Ok(_) => {
+                    debug!(attempt, "Container tmux responsive after readiness poll");
+                    ready = true;
+                    break;
+                }
+                Err(e) => {
+                    debug!(attempt, "Readiness poll attempt failed: {e}");
+                    if attempt < DC_READINESS_MAX_ATTEMPTS {
+                        std::thread::sleep(DC_READINESS_POLL_INTERVAL);
+                    }
+                }
+            }
+        }
+        if !ready {
+            bail!("Container tmux not responsive after {DC_READINESS_MAX_ATTEMPTS} readiness poll attempts");
         }
 
         // Enable flow control.
@@ -1074,6 +1096,11 @@ impl DockerExecControlMode {
 
     /// Send a command and wait for its response.
     fn send_command(&self, cmd: &str) -> Result<String> {
+        self.send_command_timeout(cmd, DC_COMMAND_TIMEOUT)
+    }
+
+    /// Send a command and wait for its response with a custom timeout.
+    fn send_command_timeout(&self, cmd: &str, timeout: Duration) -> Result<String> {
         let (tx, rx) = sync_channel(1);
 
         {
@@ -1093,7 +1120,7 @@ impl DockerExecControlMode {
             stdin.flush()?;
         }
 
-        let response = rx.recv_timeout(DC_COMMAND_TIMEOUT).context(format!(
+        let response = rx.recv_timeout(timeout).context(format!(
             "Timeout waiting for container tmux response to: {cmd}"
         ))?;
 
@@ -1164,41 +1191,59 @@ impl DevcontainerBackend {
     }
 
     /// Ensure a docker exec control mode connection exists for the given container.
+    ///
+    /// Lock scoping is deliberate: the `controls` and `manager` mutexes are held
+    /// only for the brief check/lookup, then released before the expensive
+    /// `DockerExecControlMode::start()` call. This allows parallel restoration
+    /// of multiple containers without serialising on the locks.
     fn ensure_control(&self, container_id: &str) -> Result<()> {
-        let mut controls = self
-            .controls
-            .lock()
-            .map_err(|e| anyhow::anyhow!("controls lock: {e}"))?;
-
-        if controls.contains_key(container_id) {
-            return Ok(());
+        // 1. Fast path — already connected (brief lock).
+        {
+            let controls = self
+                .controls
+                .lock()
+                .map_err(|e| anyhow::anyhow!("controls lock: {e}"))?;
+            if controls.contains_key(container_id) {
+                return Ok(());
+            }
         }
 
-        let manager = self
-            .manager
-            .lock()
-            .map_err(|e| anyhow::anyhow!("manager lock: {e}"))?;
+        // 2. Look up the docker container ID (brief lock).
+        let docker_id = {
+            let manager = self
+                .manager
+                .lock()
+                .map_err(|e| anyhow::anyhow!("manager lock: {e}"))?;
 
-        let instance = manager
-            .get_instance(container_id)
-            .context(format!("Container {container_id} not found"))?;
+            let instance = manager
+                .get_instance(container_id)
+                .context(format!("Container {container_id} not found"))?;
 
-        if instance.state != ContainerState::Ready {
-            bail!(
-                "Container {container_id} is not ready (state: {})",
-                instance.state
-            );
-        }
+            if instance.state != ContainerState::Ready {
+                bail!(
+                    "Container {container_id} is not ready (state: {})",
+                    instance.state
+                );
+            }
 
-        let docker_id = instance
-            .docker_container_id
-            .as_ref()
-            .context("Container has no docker container ID")?
-            .clone();
-        drop(manager); // Release lock before starting exec (may take time)
+            instance
+                .docker_container_id
+                .as_ref()
+                .context("Container has no docker container ID")?
+                .clone()
+        };
 
+        // 3. Start control mode (NO locks held — expensive I/O).
         let control = DockerExecControlMode::start(self.runtime.cmd(), &docker_id)?;
-        controls.insert(container_id.to_string(), control);
+
+        // 4. Insert into the map (brief lock).
+        {
+            let mut controls = self
+                .controls
+                .lock()
+                .map_err(|e| anyhow::anyhow!("controls lock: {e}"))?;
+            controls.insert(container_id.to_string(), control);
+        }
 
         debug!(container_id = %container_id, "Docker exec control mode established");
         Ok(())

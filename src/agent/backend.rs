@@ -7,7 +7,7 @@ use std::sync::{
 };
 use std::time::SystemTime;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
@@ -173,6 +173,66 @@ impl ShellPane {
     }
 }
 
+/// Minimal no-op backend used by `Session::placeholder()`.
+struct NullBackend;
+
+impl SessionBackend for NullBackend {
+    fn name(&self) -> &str {
+        "null"
+    }
+    fn check_available(&self) -> Result<()> {
+        Ok(())
+    }
+    fn ensure_ready(&self) -> Result<()> {
+        Ok(())
+    }
+    fn spawn(
+        &self,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: Option<&Path>,
+        _: &HashMap<String, String>,
+        _: u16,
+        _: u16,
+    ) -> Result<SpawnedSession> {
+        bail!("NullBackend cannot spawn sessions")
+    }
+    fn adopt(&self, _: &str, _: u16, _: u16) -> Result<AdoptedSession> {
+        bail!("NullBackend cannot adopt sessions")
+    }
+    fn discover(&self) -> Result<Vec<DiscoveredSession>> {
+        Ok(Vec::new())
+    }
+    fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+        Ok(())
+    }
+    fn is_dead(&self, _: &str) -> Result<bool> {
+        Ok(true)
+    }
+    fn kill(&self, _: &str) -> Result<()> {
+        Ok(())
+    }
+    fn detach(&self, _: &str) -> Result<()> {
+        Ok(())
+    }
+    fn pane_pid(&self, _: &str) -> Result<Option<u32>> {
+        Ok(None)
+    }
+}
+
+/// Minimal no-op agent provider used by `Session::placeholder()`.
+struct NullProvider;
+
+impl AgentProvider for NullProvider {
+    fn command(&self) -> &str {
+        ""
+    }
+    fn build_args(&self, _: &SessionConfig) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 /// A running session connected to a backend.
 pub struct Session {
     pub info: SessionInfo,
@@ -284,6 +344,32 @@ impl Session {
             provider,
             env,
         ))
+    }
+
+    /// Create a lightweight placeholder session with no I/O.
+    ///
+    /// Used during async session restoration: the placeholder appears in the
+    /// session list with `Provisioning` status and spinner while the background
+    /// thread restores the container/VM. Once ready, the placeholder is replaced
+    /// with a real session via `adopt()` or `spawn()`.
+    pub fn placeholder(info: SessionInfo) -> Self {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0)));
+        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let exited = Arc::new(AtomicBool::new(true));
+        let last_output_at = Arc::new(AtomicU64::new(0));
+
+        Self {
+            info,
+            parser,
+            input_tx,
+            backend_id: String::new(),
+            backend: Arc::new(NullBackend),
+            provider: Arc::new(NullProvider),
+            exited,
+            last_output_at,
+            shell_pane: None,
+            env: HashMap::new(),
+        }
     }
 
     /// Create parser, spawn reader/writer loops for the given I/O handles.
@@ -638,5 +724,70 @@ mod tests {
     #[test]
     fn container_id_env_key_is_internal() {
         assert!(CONTAINER_ID_ENV_KEY.starts_with("__"));
+    }
+
+    #[test]
+    fn placeholder_session_is_exited() {
+        let info = SessionInfo::new("test".to_string());
+        let session = Session::placeholder(info);
+        assert!(session.exited.load(Ordering::Relaxed));
+        assert_eq!(session.backend_id, "");
+        assert!(session.shell_pane.is_none());
+    }
+
+    #[test]
+    fn placeholder_preserves_session_info() {
+        let mut info = SessionInfo::new("my-session".to_string());
+        info.status = crate::session::SessionStatus::Provisioning;
+        info.provisioning_step = Some("Restoring container...".to_string());
+        let session = Session::placeholder(info);
+        assert_eq!(session.info.name, "my-session");
+        assert_eq!(
+            session.info.status,
+            crate::session::SessionStatus::Provisioning
+        );
+        assert_eq!(
+            session.info.provisioning_step.as_deref(),
+            Some("Restoring container...")
+        );
+    }
+
+    #[test]
+    fn null_backend_name_is_null() {
+        let backend = NullBackend;
+        assert_eq!(backend.name(), "null");
+    }
+
+    #[test]
+    fn null_backend_is_dead_returns_true() {
+        let backend = NullBackend;
+        assert!(backend.is_dead("anything").unwrap());
+    }
+
+    #[test]
+    fn null_backend_discover_returns_empty() {
+        let backend = NullBackend;
+        assert!(backend.discover().unwrap().is_empty());
+    }
+
+    #[test]
+    fn null_backend_spawn_fails() {
+        let backend = NullBackend;
+        assert!(backend
+            .spawn("id", "name", &[], None, &HashMap::new(), 24, 80)
+            .is_err());
+    }
+
+    #[test]
+    fn null_backend_adopt_fails() {
+        let backend = NullBackend;
+        assert!(backend.adopt("id", 24, 80).is_err());
+    }
+
+    #[test]
+    fn null_provider_returns_empty() {
+        let provider = NullProvider;
+        assert_eq!(provider.command(), "");
+        assert!(provider.build_args(&SessionConfig::default()).is_empty());
     }
 }

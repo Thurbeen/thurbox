@@ -380,6 +380,26 @@ struct PendingDelete {
     created_at: std::time::Instant,
 }
 
+/// Result sent by a background container/VM restore thread on completion.
+struct RestoreResult {
+    /// Sessions discovered on the restored backend (for adopt matching).
+    discovered: Vec<crate::agent::backend::DiscoveredSession>,
+}
+
+/// A background container/VM restoration task being polled by `tick()`.
+struct PendingRestore {
+    /// Placeholder session ID shown with `Provisioning` status.
+    session_id: SessionId,
+    /// Completion channel — receives `Ok(RestoreResult)` or `Err(message)`.
+    rx: mpsc::Receiver<Result<RestoreResult, String>>,
+    /// Progress step channel — latest message shown as `provisioning_step`.
+    step_rx: mpsc::Receiver<String>,
+    /// Original session data needed for adopt/respawn once the background work finishes.
+    shared: sync::SharedSession,
+    /// Project index for this session.
+    project_index: usize,
+}
+
 pub struct App {
     pub(crate) projects: Vec<ProjectInfo>,
     pub(crate) active_project_index: usize,
@@ -538,6 +558,8 @@ pub struct App {
     pending_container_id: Option<String>,
     /// MCP servers to write into the container working directory before spawning.
     pending_container_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
+    /// Background container/VM restoration tasks polled by `tick()`.
+    pending_restores: Vec<PendingRestore>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -846,6 +868,7 @@ impl App {
             pending_container_config: None,
             pending_container_id: None,
             pending_container_mcp_servers: None,
+            pending_restores: Vec::new(),
         }
     }
 
@@ -2669,6 +2692,9 @@ impl App {
         // Poll for container provisioning results from background thread
         self.poll_container_provision();
 
+        // Poll for background session restore threads (container/VM startup on restart)
+        self.poll_session_restores();
+
         // Process queued session commands from MCP
         self.process_session_commands();
 
@@ -3782,368 +3808,140 @@ impl App {
 
     /// Restore sessions from the database on startup.
     ///
-    /// Tries to adopt existing backend sessions (tmux windows) or spawns new
-    /// sessions with `--resume` to reconnect to the agent session.
-    ///
-    /// For VM-backed sessions, this first restores the VM instance in `VmManager`
-    /// and establishes an SSH control mode connection before attempting adoption.
+    /// Local-tmux sessions are restored synchronously (fast — just tmux queries).
+    /// Container and VM sessions are restored asynchronously: a placeholder session
+    /// with `Provisioning` status is shown immediately, and a background thread
+    /// handles the expensive container inspect/start + control mode setup.
+    /// `poll_session_restores()` in `tick()` finishes the adopt/respawn once ready.
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
 
-        // Pre-flight: restore any VMs/containers that sessions depend on, so that
-        // discover() on the VM/devcontainer backend can find their tmux panes.
-        for shared in &sessions {
-            if shared.backend_type == "qemu-vm" {
-                self.restore_vm_for_session(shared);
-            } else if shared.backend_type == "devcontainer" {
-                self.restore_container_for_session(shared);
-            }
-        }
-
-        // Discover existing sessions from ALL backends, not just the default.
-        let mut discovered = Vec::new();
-        for backend in self.backends.all_backends() {
-            match backend.discover() {
-                Ok(disc) => discovered.extend(disc),
-                Err(e) => {
-                    warn!(
-                        backend = backend.name(),
-                        "Failed to discover sessions from backend: {e}"
-                    );
-                }
-            }
-        }
-
+        // Partition sessions by backend type.
+        let mut local_sessions = Vec::new();
+        let mut async_sessions = Vec::new();
         for shared in sessions {
-            let name = shared.name;
+            if shared.agent_session_id.is_none() {
+                continue; // Skip sessions without a claude session ID
+            }
+            match shared.backend_type.as_str() {
+                "devcontainer" | "qemu-vm" => async_sessions.push(shared),
+                _ => local_sessions.push(shared),
+            }
+        }
+
+        // --- Async sessions: create placeholders + spawn background threads ---
+        for shared in async_sessions {
             let session_id = shared.id;
-
-            let role = if shared.role.is_empty() {
-                DEFAULT_ROLE_NAME.to_string()
-            } else {
-                shared.role
-            };
-
-            let worktrees: Vec<WorktreeInfo> =
-                shared.worktrees.into_iter().map(Into::into).collect();
-
-            let agent_session_id = match shared.agent_session_id {
-                Some(id) => id,
-                None => continue, // Skip sessions without a claude session ID
-            };
-
-            // Try to match a discovered backend session by backend_id.
-            let matching_discovered = if !shared.backend_id.is_empty() {
-                discovered
-                    .iter()
-                    .find(|d| d.backend_id == shared.backend_id && d.is_alive)
-            } else {
-                // Fall back to matching by window name (tb-<name>).
-                let expected_name = format!("tb-{name}");
-                discovered
-                    .iter()
-                    .find(|d| d.name == expected_name && d.is_alive)
-            };
-
-            // Select the correct backend based on the persisted backend_type.
-            let backend = self
-                .backends
-                .get(&shared.backend_type)
-                .cloned()
-                .unwrap_or_else(|| self.backends.default_backend().clone());
-
-            // Admin sessions always start fresh — skip restoration and clean up
-            // the old tmux window and DB entry.
             let target_project_index =
                 self.find_project_index_for_session(session_id, &shared.project_id);
+
+            // Skip admin sessions — they always start fresh.
             let is_admin = self
                 .projects
                 .get(target_project_index)
                 .is_some_and(|p| p.is_admin);
-
             if is_admin {
-                if let Some(disc) = matching_discovered {
-                    if let Err(e) = backend.kill(&disc.backend_id) {
-                        tracing::warn!("Failed to kill old admin tmux window: {e}");
-                    }
-                }
                 if let Err(e) = self.db.soft_delete_session(session_id) {
                     error!("Failed to soft-delete old admin session {session_id}: {e}");
                 }
                 continue;
             }
 
-            // Try to adopt the existing backend session.
-            let env = self.resolve_role_permissions(&role).env;
-            let adopted = matching_discovered.and_then(|disc| {
-                let (rows, cols) = self.content_area_size();
-                match Session::adopt(
-                    name.clone(),
-                    rows,
-                    cols,
-                    &disc.backend_id,
-                    &backend,
-                    &self.provider,
-                    env.clone(),
-                ) {
-                    Ok(session) => Some(session),
-                    Err(e) => {
-                        error!("Failed to adopt session '{name}': {e}");
-                        None
-                    }
-                }
-            });
-
-            if let Some(mut session) = adopted {
-                session.info.id = session_id;
-                session.info.agent_session_id = Some(agent_session_id.clone());
-                session.info.cwd = shared.cwd.clone();
-                session.info.additional_dirs = shared.additional_dirs.clone();
-                session.info.role = role;
-                session.info.worktrees = worktrees.clone();
-
-                // Restore vm_id on adopted VM sessions.
-                if shared.backend_type == "qemu-vm" {
-                    if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string())
-                    {
-                        session.info.vm_id = Some(vm_record.id);
-                    }
-                }
-
-                // Restore container_id on adopted devcontainer sessions.
-                if shared.backend_type == "devcontainer" {
-                    if let Ok(Some(container_record)) =
-                        self.db.get_container_by_session(&session_id.to_string())
-                    {
-                        session.info.container_id = Some(container_record.id);
-                    }
-                }
-
-                // Re-adopt shell pane if one was persisted
-                if let Some(shell_bid) = &shared.shell_backend_id {
-                    if discovered
-                        .iter()
-                        .any(|d| d.backend_id == *shell_bid && d.is_alive)
-                    {
-                        let (rows, cols) = self.content_area_size();
-                        if let Err(e) = session.adopt_shell_pane(shell_bid, rows, cols) {
-                            tracing::warn!("Failed to re-adopt shell pane: {e}");
-                        }
-                    }
-                }
-
-                let sid = session.info.id;
-                self.sessions.push(session);
-                self.active_index = self.sessions.len() - 1;
-                self.focus = InputFocus::Terminal;
-
-                // Associate with the original project
-                let target_project_index =
-                    self.find_project_index_for_session(sid, &shared.project_id);
-
-                if let Some(project) = self.projects.get_mut(target_project_index) {
-                    if !project.session_ids.contains(&sid) {
-                        project.session_ids.push(sid);
-                    }
-                }
-            } else {
-                // No matching backend session or adopt failed — spawn new with --resume.
-                // Soft-delete the stale session entry to prevent duplication on next restart.
-                if let Err(e) = self.db.soft_delete_session(session_id) {
-                    error!("Failed to soft-delete stale session {session_id}: {e}");
-                }
-
-                // Look up the original project so we respawn into the correct one.
-                let target_project_index =
-                    self.find_project_index_for_session(session_id, &shared.project_id);
-
-                let is_admin = self
-                    .projects
-                    .get(target_project_index)
-                    .is_some_and(|p| p.config.name == "Admin");
-
-                let permissions =
-                    self.resolve_role_permissions_for_project(&role, target_project_index);
-
-                // For VM sessions where the VM died, fall back to local-tmux.
-                let mut resolved_vm_id = None;
-                if shared.backend_type == "qemu-vm" {
-                    if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string())
-                    {
-                        let vm_alive = self.vm_manager.as_ref().is_some_and(|mgr| {
-                            mgr.lock()
-                                .ok()
-                                .and_then(|m| m.vm_state(&vm_record.id))
-                                .is_some_and(|s| s == crate::session::VmState::Ready)
-                        });
-                        if !vm_alive {
-                            warn!(
-                                session = %session_id,
-                                vm_id = %vm_record.id,
-                                "VM died — session will be re-spawned with --resume on local-tmux"
-                            );
-                            let _ = self.db.update_vm_state(
-                                &vm_record.id,
-                                &crate::session::VmState::Stopped,
-                                None,
-                                Some("VM not reachable after restart"),
-                            );
-                        } else {
-                            resolved_vm_id = Some(vm_record.id);
-                        }
-                    }
-                }
-
-                // For container sessions, re-use the container if it's alive.
-                let mut resolved_container_id = None;
-                if shared.backend_type == "devcontainer" {
-                    if let Ok(Some(container_record)) =
-                        self.db.get_container_by_session(&session_id.to_string())
-                    {
-                        let container_alive = self.container_manager.as_ref().is_some_and(|mgr| {
-                            mgr.lock()
-                                .ok()
-                                .and_then(|m| m.get_instance(&container_record.id))
-                                .is_some_and(|inst| {
-                                    inst.state == crate::session::ContainerState::Ready
-                                })
-                        });
-                        if container_alive {
-                            info!(
-                                session = %session_id,
-                                container_id = %container_record.id,
-                                "Container alive — re-spawning session inside container"
-                            );
-                            resolved_container_id = Some(container_record.id.clone());
-                            // Set pending so do_spawn_session picks the devcontainer backend.
-                            self.pending_container_id = Some(container_record.id);
-                        } else {
-                            warn!(
-                                session = %session_id,
-                                container_id = %container_record.id,
-                                "Container not alive — session will be re-spawned on local-tmux"
-                            );
-                            let _ = self.db.update_container_state(
-                                &container_record.id,
-                                &crate::session::ContainerState::Stopped,
-                                None,
-                                Some("Container not reachable after restart"),
-                            );
-                        }
-                    }
-                }
-
-                // Admin sessions start fresh — --resume would fail because the
-                // old Claude conversation no longer exists after a tmux restart.
-                let config = SessionConfig {
-                    resume_session_id: if is_admin {
-                        None
-                    } else {
-                        Some(agent_session_id.clone())
-                    },
-                    agent_session_id: if is_admin {
-                        None
-                    } else {
-                        Some(agent_session_id)
-                    },
-                    cwd: shared.cwd,
-                    additional_dirs: shared.additional_dirs,
-                    role,
-                    permissions,
-                    vm_id: resolved_vm_id,
-                    container_id: resolved_container_id,
-                };
-                self.do_spawn_session(name, &config, worktrees, Some(target_project_index));
+            // Create a placeholder session with Provisioning status.
+            let mut placeholder = SessionInfo::new(shared.name.clone());
+            placeholder.id = session_id;
+            placeholder.status = SessionStatus::Provisioning;
+            if shared.backend_type == "devcontainer" {
+                placeholder.container_id = self
+                    .db
+                    .get_container_by_session(&session_id.to_string())
+                    .ok()
+                    .flatten()
+                    .map(|r| r.id);
+            } else if shared.backend_type == "qemu-vm" {
+                placeholder.vm_id = self
+                    .db
+                    .get_vm_by_session(&session_id.to_string())
+                    .ok()
+                    .flatten()
+                    .map(|r| r.id);
             }
+            let step_label = if shared.backend_type == "devcontainer" {
+                "Restoring container..."
+            } else {
+                "Restoring VM..."
+            };
+            placeholder.provisioning_step = Some(step_label.to_string());
+
+            // Add placeholder to the project's session list so it renders.
+            if let Some(project) = self.projects.get_mut(target_project_index) {
+                if !project.session_ids.contains(&session_id) {
+                    project.session_ids.push(session_id);
+                }
+            }
+            self.sessions.push(Session::placeholder(placeholder));
+
+            // Gather data needed by the background thread (DB lookups are fast).
+            let (tx, rx) = mpsc::channel();
+            let (step_tx, step_rx) = mpsc::channel();
+
+            if shared.backend_type == "devcontainer" {
+                self.spawn_container_restore_thread(&shared, tx, step_tx);
+            } else {
+                self.spawn_vm_restore_thread(&shared, tx, step_tx);
+            }
+
+            self.pending_restores.push(PendingRestore {
+                session_id,
+                rx,
+                step_rx,
+                shared,
+                project_index: target_project_index,
+            });
+        }
+
+        // --- Local-tmux sessions: restore synchronously (fast) ---
+        // Discover existing sessions from the default (local-tmux) backend only.
+        let mut discovered = Vec::new();
+        let default_backend = self.backends.default_backend().clone();
+        match default_backend.discover() {
+            Ok(disc) => discovered.extend(disc),
+            Err(e) => {
+                warn!(
+                    backend = default_backend.name(),
+                    "Failed to discover sessions from backend: {e}"
+                );
+            }
+        }
+
+        for shared in local_sessions {
+            self.restore_single_session(shared, &discovered);
         }
 
         // Claim ownership of restored sessions in the shared state
         self.save_state();
     }
 
-    /// Restore a VM instance for a VM-backed session before discovery/adoption.
-    ///
-    /// Looks up the VM record from the DB, re-registers it in `VmManager` (verifying
-    /// SSH is reachable), then establishes the SSH control mode connection so
-    /// `discover()` can find its tmux panes.
-    fn restore_vm_for_session(&mut self, shared: &sync::SharedSession) {
+    /// Spawn a background thread to restore a container for a session.
+    fn spawn_container_restore_thread(
+        &self,
+        shared: &sync::SharedSession,
+        tx: mpsc::Sender<Result<RestoreResult, String>>,
+        step_tx: mpsc::Sender<String>,
+    ) {
         let session_id_str = shared.id.to_string();
-        let vm_record = match self.db.get_vm_by_session(&session_id_str) {
-            Ok(Some(rec)) => rec,
-            Ok(None) => {
-                warn!(session = %shared.id, "No VM record found for VM session");
-                return;
-            }
-            Err(e) => {
-                warn!(session = %shared.id, "Failed to look up VM record: {e}");
-                return;
-            }
-        };
 
-        // Re-register the running VM in VmManager.
-        if let Some(ref mgr) = self.vm_manager {
-            match mgr.lock() {
-                Ok(mgr) => {
-                    if let Err(e) = mgr.restore_vm(&vm_record) {
-                        warn!(
-                            vm_id = %vm_record.id,
-                            "VM not reachable, will fall through to re-spawn: {e}"
-                        );
-                        return;
-                    }
-
-                    // Persist the QEMU PID so metrics can find it.
-                    if let Some(pid) = mgr.qemu_pid(&vm_record.id) {
-                        let _ = self.db.update_vm_state(
-                            &vm_record.id,
-                            &crate::session::VmState::Ready,
-                            Some(pid),
-                            None,
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!("VmManager lock poisoned: {e}");
-                    return;
-                }
-            }
-        } else {
-            warn!("No VmManager available for VM session restore");
-            return;
-        }
-
-        // Establish SSH control mode connection so discover() works.
-        if let Some(vm_backend) = self.backends.get("qemu-vm") {
-            if let Err(e) = vm_backend.prepare_vm(&vm_record.id) {
-                warn!(
-                    vm_id = %vm_record.id,
-                    "Failed to establish SSH control mode: {e}"
-                );
-            } else {
-                info!(
-                    vm_id = %vm_record.id,
-                    session = %shared.id,
-                    "VM restored and control mode established"
-                );
-            }
-        }
-    }
-
-    /// Restore a container instance for a devcontainer-backed session before discovery/adoption.
-    ///
-    /// Looks up the container record from the DB, re-registers it in `ContainerManager`
-    /// (starting the container if stopped), then establishes the docker exec
-    /// control mode connection so `discover()` can find its tmux panes.
-    fn restore_container_for_session(&mut self, shared: &sync::SharedSession) {
-        let session_id_str = shared.id.to_string();
+        // Look up container record from DB (fast).
         let container_record = match self.db.get_container_by_session(&session_id_str) {
             Ok(Some(rec)) => rec,
             Ok(None) => {
                 warn!(session = %shared.id, "No container record found for devcontainer session");
+                let _ = tx.send(Err("No container record found".to_string()));
                 return;
             }
             Err(e) => {
                 warn!(session = %shared.id, "Failed to look up container record: {e}");
+                let _ = tx.send(Err(format!("DB lookup failed: {e}")));
                 return;
             }
         };
@@ -4151,69 +3949,659 @@ impl App {
         let docker_id = match container_record.docker_container_id {
             Some(ref id) => id.clone(),
             None => {
-                warn!(
-                    container_id = %container_record.id,
-                    "Container record has no docker container ID"
-                );
+                let _ = tx.send(Err(
+                    "Container record has no docker container ID".to_string()
+                ));
                 return;
             }
         };
 
-        // Re-register the running container in ContainerManager.
-        if let Some(ref mgr) = self.container_manager {
-            match mgr.lock() {
-                Ok(mgr) => {
-                    let config = crate::session::ContainerConfig {
-                        image: container_record.image.clone(),
-                        cpus: container_record.cpus,
-                        memory_mb: container_record.memory_mb,
-                        firewall_enabled: container_record.firewall_enabled,
-                        containerfile: container_record.containerfile.clone(),
-                    };
+        let manager = match self.container_manager {
+            Some(ref m) => Arc::clone(m),
+            None => {
+                let _ = tx.send(Err("No ContainerManager available".to_string()));
+                return;
+            }
+        };
 
-                    // Determine workspace dir from the session's cwd or use containers dir
-                    let workspace_dir = shared
-                        .cwd
-                        .clone()
-                        .unwrap_or_else(|| std::path::PathBuf::from("/workspaces"));
+        let backend = match self.backends.get("devcontainer") {
+            Some(b) => Arc::clone(b),
+            None => {
+                let _ = tx.send(Err("devcontainer backend not available".to_string()));
+                return;
+            }
+        };
 
-                    if let Err(e) = mgr.restore_container(
-                        &container_record.id,
-                        &docker_id,
-                        &config,
-                        &workspace_dir,
-                    ) {
-                        warn!(
-                            container_id = %container_record.id,
-                            "Container not reachable, will fall through to re-spawn: {e}"
-                        );
+        let config = crate::session::ContainerConfig {
+            image: container_record.image.clone(),
+            cpus: container_record.cpus,
+            memory_mb: container_record.memory_mb,
+            firewall_enabled: container_record.firewall_enabled,
+            containerfile: container_record.containerfile.clone(),
+        };
+
+        let workspace_dir = shared
+            .cwd
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("/workspaces"));
+        let container_id = container_record.id.clone();
+        let session_id = shared.id;
+        let tx_fallback = tx.clone();
+
+        let spawn_result = std::thread::Builder::new()
+            .name(format!(
+                "dc-restore-{}",
+                &container_id[..8.min(container_id.len())]
+            ))
+            .spawn(move || {
+                let _ = step_tx.send("Starting container...".to_string());
+
+                // Restore container (inspect/start/wait for readiness).
+                let mgr = match manager.lock() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("ContainerManager lock poisoned: {e}")));
                         return;
                     }
-                }
-                Err(e) => {
-                    warn!("ContainerManager lock poisoned: {e}");
+                };
+                if let Err(e) =
+                    mgr.restore_container(&container_id, &docker_id, &config, &workspace_dir)
+                {
+                    let _ = tx.send(Err(format!("Container not reachable: {e:#}")));
                     return;
                 }
+                drop(mgr);
+
+                let _ = step_tx.send("Connecting to container...".to_string());
+
+                // Establish docker exec control mode connection.
+                if let Err(e) = backend.prepare_vm(&container_id) {
+                    let _ = tx.send(Err(format!("Control mode failed: {e:#}")));
+                    return;
+                }
+
+                // Discover sessions on this backend.
+                let discovered = match backend.discover() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            container_id = %container_id,
+                            session = %session_id,
+                            "Discover failed after container restore: {e}"
+                        );
+                        Vec::new()
+                    }
+                };
+
+                info!(
+                    container_id = %container_id,
+                    session = %session_id,
+                    discovered = discovered.len(),
+                    "Container restored and control mode established"
+                );
+                let _ = tx.send(Ok(RestoreResult { discovered }));
+            });
+
+        if let Err(e) = spawn_result {
+            error!("Failed to spawn container restore thread: {e}");
+            let _ = tx_fallback.send(Err(format!("Thread spawn failed: {e}")));
+        }
+    }
+
+    /// Spawn a background thread to restore a VM for a session.
+    fn spawn_vm_restore_thread(
+        &self,
+        shared: &sync::SharedSession,
+        tx: mpsc::Sender<Result<RestoreResult, String>>,
+        step_tx: mpsc::Sender<String>,
+    ) {
+        let session_id_str = shared.id.to_string();
+
+        // Look up VM record from DB (fast).
+        let vm_record = match self.db.get_vm_by_session(&session_id_str) {
+            Ok(Some(rec)) => rec,
+            Ok(None) => {
+                warn!(session = %shared.id, "No VM record found for VM session");
+                let _ = tx.send(Err("No VM record found".to_string()));
+                return;
             }
+            Err(e) => {
+                warn!(session = %shared.id, "Failed to look up VM record: {e}");
+                let _ = tx.send(Err(format!("DB lookup failed: {e}")));
+                return;
+            }
+        };
+
+        let manager = match self.vm_manager {
+            Some(ref m) => Arc::clone(m),
+            None => {
+                let _ = tx.send(Err("No VmManager available".to_string()));
+                return;
+            }
+        };
+
+        let backend = match self.backends.get("qemu-vm") {
+            Some(b) => Arc::clone(b),
+            None => {
+                let _ = tx.send(Err("qemu-vm backend not available".to_string()));
+                return;
+            }
+        };
+
+        let vm_id = vm_record.id.clone();
+        let session_id = shared.id;
+        let tx_fallback = tx.clone();
+
+        let spawn_result = std::thread::Builder::new()
+            .name(format!("vm-restore-{}", &vm_id[..8.min(vm_id.len())]))
+            .spawn(move || {
+                let _ = step_tx.send("Restoring VM...".to_string());
+
+                // Restore VM (verify SSH reachable).
+                let mgr = match manager.lock() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("VmManager lock poisoned: {e}")));
+                        return;
+                    }
+                };
+                if let Err(e) = mgr.restore_vm(&vm_record) {
+                    let _ = tx.send(Err(format!("VM not reachable: {e:#}")));
+                    return;
+                }
+                drop(mgr);
+
+                let _ = step_tx.send("Connecting to VM...".to_string());
+
+                // Establish SSH control mode connection.
+                if let Err(e) = backend.prepare_vm(&vm_id) {
+                    let _ = tx.send(Err(format!("SSH control mode failed: {e:#}")));
+                    return;
+                }
+
+                // Discover sessions on this backend.
+                let discovered = match backend.discover() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            vm_id = %vm_id,
+                            session = %session_id,
+                            "Discover failed after VM restore: {e}"
+                        );
+                        Vec::new()
+                    }
+                };
+
+                info!(
+                    vm_id = %vm_id,
+                    session = %session_id,
+                    discovered = discovered.len(),
+                    "VM restored and control mode established"
+                );
+                let _ = tx.send(Ok(RestoreResult { discovered }));
+            });
+
+        if let Err(e) = spawn_result {
+            error!("Failed to spawn VM restore thread: {e}");
+            let _ = tx_fallback.send(Err(format!("Thread spawn failed: {e}")));
+        }
+    }
+
+    /// Restore a single local-tmux session synchronously (used during startup).
+    fn restore_single_session(
+        &mut self,
+        shared: sync::SharedSession,
+        discovered: &[crate::agent::backend::DiscoveredSession],
+    ) {
+        let name = shared.name.clone();
+        let session_id = shared.id;
+
+        let role = if shared.role.is_empty() {
+            DEFAULT_ROLE_NAME.to_string()
         } else {
-            warn!("No ContainerManager available for container session restore");
+            shared.role.clone()
+        };
+
+        let worktrees: Vec<WorktreeInfo> =
+            shared.worktrees.iter().cloned().map(Into::into).collect();
+
+        let agent_session_id = match shared.agent_session_id {
+            Some(ref id) => id.clone(),
+            None => return,
+        };
+
+        let matching_discovered = Self::find_matching_discovered(&shared, discovered);
+
+        // Select the correct backend based on the persisted backend_type.
+        let backend = self
+            .backends
+            .get(&shared.backend_type)
+            .cloned()
+            .unwrap_or_else(|| self.backends.default_backend().clone());
+
+        let target_project_index =
+            self.find_project_index_for_session(session_id, &shared.project_id);
+        let is_admin = self
+            .projects
+            .get(target_project_index)
+            .is_some_and(|p| p.is_admin);
+
+        if is_admin {
+            if let Some(disc) = matching_discovered {
+                if let Err(e) = backend.kill(&disc.backend_id) {
+                    tracing::warn!("Failed to kill old admin tmux window: {e}");
+                }
+            }
+            if let Err(e) = self.db.soft_delete_session(session_id) {
+                error!("Failed to soft-delete old admin session {session_id}: {e}");
+            }
             return;
         }
 
-        // Establish docker exec control mode connection so discover() works.
-        if let Some(dc_backend) = self.backends.get("devcontainer") {
-            if let Err(e) = dc_backend.prepare_vm(&container_record.id) {
-                warn!(
-                    container_id = %container_record.id,
-                    "Failed to establish docker exec control mode: {e}"
-                );
-            } else {
-                info!(
-                    container_id = %container_record.id,
-                    session = %shared.id,
-                    "Container restored and control mode established"
-                );
+        // Try to adopt the existing backend session.
+        let env = self.resolve_role_permissions(&role).env;
+        let adopted = matching_discovered.and_then(|disc| {
+            let (rows, cols) = self.content_area_size();
+            match Session::adopt(
+                name.clone(),
+                rows,
+                cols,
+                &disc.backend_id,
+                &backend,
+                &self.provider,
+                env.clone(),
+            ) {
+                Ok(session) => Some(session),
+                Err(e) => {
+                    error!("Failed to adopt session '{name}': {e}");
+                    None
+                }
             }
+        });
+
+        if let Some(mut session) = adopted {
+            session.info.id = session_id;
+            session.info.agent_session_id = Some(agent_session_id.clone());
+            session.info.cwd = shared.cwd.clone();
+            session.info.additional_dirs = shared.additional_dirs.clone();
+            session.info.role = role;
+            session.info.worktrees = worktrees.clone();
+
+            // Re-adopt shell pane if one was persisted
+            if let Some(shell_bid) = &shared.shell_backend_id {
+                if discovered
+                    .iter()
+                    .any(|d| d.backend_id == *shell_bid && d.is_alive)
+                {
+                    let (rows, cols) = self.content_area_size();
+                    if let Err(e) = session.adopt_shell_pane(shell_bid, rows, cols) {
+                        tracing::warn!("Failed to re-adopt shell pane: {e}");
+                    }
+                }
+            }
+
+            self.sessions.push(session);
+            self.active_index = self.sessions.len() - 1;
+            self.focus = InputFocus::Terminal;
+
+            if let Some(project) = self.projects.get_mut(target_project_index) {
+                if !project.session_ids.contains(&session_id) {
+                    project.session_ids.push(session_id);
+                }
+            }
+        } else {
+            // No matching backend session or adopt failed — spawn new with --resume.
+            if let Err(e) = self.db.soft_delete_session(session_id) {
+                error!("Failed to soft-delete stale session {session_id}: {e}");
+            }
+
+            let permissions =
+                self.resolve_role_permissions_for_project(&role, target_project_index);
+
+            let config = SessionConfig {
+                resume_session_id: Some(agent_session_id.clone()),
+                agent_session_id: Some(agent_session_id),
+                cwd: shared.cwd,
+                additional_dirs: shared.additional_dirs,
+                role,
+                permissions,
+                vm_id: None,
+                container_id: None,
+            };
+            self.do_spawn_session(name, &config, worktrees, Some(target_project_index));
+        }
+    }
+
+    /// Poll background session restore threads for completion.
+    ///
+    /// Called from `tick()`. Drains step updates and checks for completion.
+    /// When a restore completes, the placeholder session is replaced with a
+    /// real session (adopted or respawned with `--resume`).
+    fn poll_session_restores(&mut self) {
+        if self.pending_restores.is_empty() {
+            return;
+        }
+
+        // Drain step updates — update placeholder provisioning_step.
+        for pending in &self.pending_restores {
+            let mut latest_step = None;
+            while let Ok(step) = pending.step_rx.try_recv() {
+                latest_step = Some(step);
+            }
+            if let Some(step) = latest_step {
+                // Find the placeholder session and update its provisioning step.
+                if let Some(session) = self
+                    .sessions
+                    .iter_mut()
+                    .find(|s| s.info.id == pending.session_id)
+                {
+                    session.info.provisioning_step = Some(step);
+                }
+            }
+        }
+
+        // Check for completed restores (drain finished entries).
+        let mut completed_indices = Vec::new();
+        for (i, pending) in self.pending_restores.iter().enumerate() {
+            match pending.rx.try_recv() {
+                Ok(result) => {
+                    completed_indices.push((i, result));
+                }
+                Err(mpsc::TryRecvError::Empty) => {} // Still in progress
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    completed_indices
+                        .push((i, Err("Restore thread terminated unexpectedly".to_string())));
+                }
+            }
+        }
+
+        // Process completed restores in reverse order so indices stay valid.
+        for (i, result) in completed_indices.into_iter().rev() {
+            let pending = self.pending_restores.remove(i);
+            match result {
+                Ok(restore_result) => {
+                    self.handle_restore_complete(pending, restore_result);
+                }
+                Err(error) => {
+                    self.handle_restore_failed(pending, &error);
+                }
+            }
+        }
+    }
+
+    /// Handle successful background restore: adopt or respawn the session.
+    fn handle_restore_complete(&mut self, pending: PendingRestore, result: RestoreResult) {
+        let shared = pending.shared;
+        let session_id = shared.id;
+        let name = shared.name.clone();
+
+        let role = if shared.role.is_empty() {
+            DEFAULT_ROLE_NAME.to_string()
+        } else {
+            shared.role.clone()
+        };
+
+        let worktrees: Vec<WorktreeInfo> =
+            shared.worktrees.iter().cloned().map(Into::into).collect();
+
+        let agent_session_id = match shared.agent_session_id {
+            Some(ref id) => id.clone(),
+            None => return,
+        };
+
+        // Remove the placeholder session.
+        self.sessions.retain(|s| s.info.id != session_id);
+
+        let matching_discovered = Self::find_matching_discovered(&shared, &result.discovered);
+
+        let backend = self
+            .backends
+            .get(&shared.backend_type)
+            .cloned()
+            .unwrap_or_else(|| self.backends.default_backend().clone());
+
+        // Try to adopt the existing backend session.
+        let env = self.resolve_role_permissions(&role).env;
+        let adopted = matching_discovered.and_then(|disc| {
+            let (rows, cols) = self.content_area_size();
+            match Session::adopt(
+                name.clone(),
+                rows,
+                cols,
+                &disc.backend_id,
+                &backend,
+                &self.provider,
+                env.clone(),
+            ) {
+                Ok(session) => Some(session),
+                Err(e) => {
+                    error!("Failed to adopt session '{name}': {e}");
+                    None
+                }
+            }
+        });
+
+        if let Some(mut session) = adopted {
+            session.info.id = session_id;
+            session.info.agent_session_id = Some(agent_session_id.clone());
+            session.info.cwd = shared.cwd.clone();
+            session.info.additional_dirs = shared.additional_dirs.clone();
+            session.info.role = role;
+            session.info.worktrees = worktrees;
+
+            // Restore vm_id on adopted VM sessions.
+            if shared.backend_type == "qemu-vm" {
+                if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string()) {
+                    session.info.vm_id = Some(vm_record.id);
+                }
+            }
+
+            // Restore container_id on adopted devcontainer sessions.
+            if shared.backend_type == "devcontainer" {
+                if let Ok(Some(container_record)) =
+                    self.db.get_container_by_session(&session_id.to_string())
+                {
+                    session.info.container_id = Some(container_record.id);
+                }
+            }
+
+            // Re-adopt shell pane if one was persisted.
+            if let Some(shell_bid) = &shared.shell_backend_id {
+                if result
+                    .discovered
+                    .iter()
+                    .any(|d| d.backend_id == *shell_bid && d.is_alive)
+                {
+                    let (rows, cols) = self.content_area_size();
+                    if let Err(e) = session.adopt_shell_pane(shell_bid, rows, cols) {
+                        tracing::warn!("Failed to re-adopt shell pane: {e}");
+                    }
+                }
+            }
+
+            self.sessions.push(session);
+            info!(session = %session_id, name = %name, "Session restored (adopted)");
+        } else {
+            // No matching backend session or adopt failed — spawn new with --resume.
+            if let Err(e) = self.db.soft_delete_session(session_id) {
+                error!("Failed to soft-delete stale session {session_id}: {e}");
+            }
+
+            let permissions =
+                self.resolve_role_permissions_for_project(&role, pending.project_index);
+
+            // Check if the backend resource is alive for respawn routing.
+            let mut resolved_vm_id = None;
+            let mut resolved_container_id = None;
+
+            if shared.backend_type == "qemu-vm" {
+                if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string()) {
+                    let vm_alive = self.vm_manager.as_ref().is_some_and(|mgr| {
+                        mgr.lock()
+                            .ok()
+                            .and_then(|m| m.vm_state(&vm_record.id))
+                            .is_some_and(|s| s == crate::session::VmState::Ready)
+                    });
+                    if vm_alive {
+                        resolved_vm_id = Some(vm_record.id);
+                    } else {
+                        warn!(
+                            session = %session_id,
+                            vm_id = %vm_record.id,
+                            "VM died — session will be re-spawned with --resume on local-tmux"
+                        );
+                        let _ = self.db.update_vm_state(
+                            &vm_record.id,
+                            &crate::session::VmState::Stopped,
+                            None,
+                            Some("VM not reachable after restart"),
+                        );
+                    }
+                }
+            } else if shared.backend_type == "devcontainer" {
+                if let Ok(Some(container_record)) =
+                    self.db.get_container_by_session(&session_id.to_string())
+                {
+                    let container_alive = self.container_manager.as_ref().is_some_and(|mgr| {
+                        mgr.lock()
+                            .ok()
+                            .and_then(|m| m.get_instance(&container_record.id))
+                            .is_some_and(|inst| inst.state == crate::session::ContainerState::Ready)
+                    });
+                    if container_alive {
+                        info!(
+                            session = %session_id,
+                            container_id = %container_record.id,
+                            "Container alive — re-spawning session inside container"
+                        );
+                        resolved_container_id = Some(container_record.id.clone());
+                        self.pending_container_id = Some(container_record.id);
+                    } else {
+                        warn!(
+                            session = %session_id,
+                            container_id = %container_record.id,
+                            "Container not alive — session will be re-spawned on local-tmux"
+                        );
+                        let _ = self.db.update_container_state(
+                            &container_record.id,
+                            &crate::session::ContainerState::Stopped,
+                            None,
+                            Some("Container not reachable after restart"),
+                        );
+                    }
+                }
+            }
+
+            let config = SessionConfig {
+                resume_session_id: Some(agent_session_id.clone()),
+                agent_session_id: Some(agent_session_id),
+                cwd: shared.cwd,
+                additional_dirs: shared.additional_dirs,
+                role,
+                permissions,
+                vm_id: resolved_vm_id,
+                container_id: resolved_container_id,
+            };
+            self.do_spawn_session(name, &config, worktrees, Some(pending.project_index));
+            info!(session = %session_id, "Session restored (respawned with --resume)");
+        }
+
+        // Ensure the project still has the session registered.
+        if let Some(project) = self.projects.get_mut(pending.project_index) {
+            if !project.session_ids.contains(&session_id) {
+                project.session_ids.push(session_id);
+            }
+        }
+
+        self.save_state();
+    }
+
+    /// Handle a failed background restore: remove placeholder, fall back to local-tmux.
+    fn handle_restore_failed(&mut self, pending: PendingRestore, error: &str) {
+        let session_id = pending.session_id;
+        warn!(session = %session_id, "Background restore failed: {error}");
+
+        // Try to respawn on local-tmux as a fallback.
+        let shared = pending.shared;
+        let name = shared.name.clone();
+        let role = if shared.role.is_empty() {
+            DEFAULT_ROLE_NAME.to_string()
+        } else {
+            shared.role.clone()
+        };
+        let worktrees: Vec<WorktreeInfo> =
+            shared.worktrees.iter().cloned().map(Into::into).collect();
+
+        // Remove the placeholder session.
+        self.sessions.retain(|s| s.info.id != session_id);
+
+        if let Some(ref agent_session_id) = shared.agent_session_id {
+            // Soft-delete the stale entry and respawn on local-tmux with --resume.
+            if let Err(e) = self.db.soft_delete_session(session_id) {
+                error!("Failed to soft-delete stale session {session_id}: {e}");
+            }
+
+            // Mark the container/VM as stopped in the DB.
+            if shared.backend_type == "devcontainer" {
+                if let Ok(Some(rec)) = self.db.get_container_by_session(&session_id.to_string()) {
+                    let _ = self.db.update_container_state(
+                        &rec.id,
+                        &crate::session::ContainerState::Stopped,
+                        None,
+                        Some(error),
+                    );
+                }
+            } else if shared.backend_type == "qemu-vm" {
+                if let Ok(Some(rec)) = self.db.get_vm_by_session(&session_id.to_string()) {
+                    let _ = self.db.update_vm_state(
+                        &rec.id,
+                        &crate::session::VmState::Stopped,
+                        None,
+                        Some(error),
+                    );
+                }
+            }
+
+            let permissions =
+                self.resolve_role_permissions_for_project(&role, pending.project_index);
+
+            let config = SessionConfig {
+                resume_session_id: Some(agent_session_id.clone()),
+                agent_session_id: Some(agent_session_id.clone()),
+                cwd: shared.cwd,
+                additional_dirs: shared.additional_dirs,
+                role,
+                permissions,
+                vm_id: None,
+                container_id: None,
+            };
+
+            warn!(
+                session = %session_id,
+                "Falling back to local-tmux for session after restore failure"
+            );
+            self.do_spawn_session(name, &config, worktrees, Some(pending.project_index));
+        }
+
+        self.save_state();
+    }
+
+    /// Find a discovered backend session matching a shared session.
+    ///
+    /// Tries to match by `backend_id` first, falls back to window name (`tb-<name>`).
+    fn find_matching_discovered<'a>(
+        shared: &sync::SharedSession,
+        discovered: &'a [crate::agent::backend::DiscoveredSession],
+    ) -> Option<&'a crate::agent::backend::DiscoveredSession> {
+        if !shared.backend_id.is_empty() {
+            discovered
+                .iter()
+                .find(|d| d.backend_id == shared.backend_id && d.is_alive)
+        } else {
+            let expected_name = format!("tb-{}", shared.name);
+            discovered
+                .iter()
+                .find(|d| d.name == expected_name && d.is_alive)
         }
     }
 
@@ -7998,5 +8386,84 @@ Pss_Anon:           8000 kB
 Pss_File:           4345 kB
 ";
         assert_eq!(super::parse_pss_from_smaps(content), None);
+    }
+
+    // --- find_matching_discovered tests ---
+
+    fn make_shared_session(backend_id: &str, name: &str) -> sync::SharedSession {
+        sync::SharedSession {
+            id: crate::session::SessionId::default(),
+            name: name.to_string(),
+            project_id: crate::project::ProjectId::from_uuid(uuid::Uuid::nil()),
+            role: String::new(),
+            backend_id: backend_id.to_string(),
+            backend_type: "tmux".to_string(),
+            agent_session_id: Some("agent-123".to_string()),
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            tombstone: false,
+            tombstone_at: None,
+        }
+    }
+
+    fn make_discovered(
+        backend_id: &str,
+        name: &str,
+        is_alive: bool,
+    ) -> crate::agent::backend::DiscoveredSession {
+        crate::agent::backend::DiscoveredSession {
+            backend_id: backend_id.to_string(),
+            name: name.to_string(),
+            is_alive,
+        }
+    }
+
+    #[test]
+    fn find_matching_discovered_by_backend_id() {
+        let shared = make_shared_session("thurbox:@0", "1");
+        let discovered = vec![
+            make_discovered("thurbox:@0", "tb-1", true),
+            make_discovered("thurbox:@1", "tb-2", true),
+        ];
+        let result = App::find_matching_discovered(&shared, &discovered);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().backend_id, "thurbox:@0");
+    }
+
+    #[test]
+    fn find_matching_discovered_by_name_fallback() {
+        let shared = make_shared_session("", "1");
+        let discovered = vec![
+            make_discovered("thurbox:@5", "tb-1", true),
+            make_discovered("thurbox:@6", "tb-2", true),
+        ];
+        let result = App::find_matching_discovered(&shared, &discovered);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().backend_id, "thurbox:@5");
+    }
+
+    #[test]
+    fn find_matching_discovered_skips_dead() {
+        let shared = make_shared_session("thurbox:@0", "1");
+        let discovered = vec![make_discovered("thurbox:@0", "tb-1", false)];
+        let result = App::find_matching_discovered(&shared, &discovered);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_matching_discovered_no_match() {
+        let shared = make_shared_session("thurbox:@99", "99");
+        let discovered = vec![make_discovered("thurbox:@0", "tb-1", true)];
+        let result = App::find_matching_discovered(&shared, &discovered);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_matching_discovered_empty_list() {
+        let shared = make_shared_session("thurbox:@0", "1");
+        let result = App::find_matching_discovered(&shared, &[]);
+        assert!(result.is_none());
     }
 }
