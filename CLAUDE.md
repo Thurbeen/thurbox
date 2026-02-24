@@ -149,13 +149,16 @@ Enforced by cocogitto via pre-commit hooks.
 ## MCP Server
 
 A separate binary (`thurbox-mcp`) exposes Thurbox configuration
-over the Model Context Protocol via stdio transport. It shares
-the same SQLite database as the TUI — changes appear in the TUI
+over the Model Context Protocol. It supports stdio (default) and
+Streamable HTTP (`--transport streamable-http`) transports, and
+shares the same SQLite database as the TUI — changes appear
 automatically via `PRAGMA data_version` polling.
 
 ```bash
 cargo build --bin thurbox-mcp       # Build MCP server
-cargo run --bin thurbox-mcp         # Run (stdin/stdout JSON-RPC)
+cargo run --bin thurbox-mcp         # Run stdio (default)
+thurbox-mcp --transport streamable-http        # HTTP on 127.0.0.1:8080
+thurbox-mcp --transport streamable-http --port 9090  # Custom port
 ```
 
 ### Available Tools
@@ -175,6 +178,9 @@ cargo run --bin thurbox-mcp         # Run (stdin/stdout JSON-RPC)
 | `get_session` | Get a session by UUID |
 | `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
 | `restart_session` | Queue a session restart (TUI processes the command) |
+| `restore_session` | Restore a soft-deleted session |
+| `list_vms` | List active VMs, optionally filtered by project |
+| `get_vm` | Get a VM by UUID |
 
 **Role Management**: `set_roles` performs an atomic replacement —
 all existing roles are deleted and replaced in a single transaction.
@@ -225,14 +231,20 @@ app      ← coordinator, imports all modules
   `ClaudeProvider`). `Session` wraps a `SessionBackend`
   trait. `BackendRegistry` manages multiple backends
   (default: `LocalTmuxBackend` using `tmux -L thurbox`,
+  `DevcontainerBackend` for Docker/Podman containers,
   optional: `QemuVmBackend` for sandboxed VM sessions).
-  `VmManager` handles QEMU/KVM VM lifecycle (create, start,
-  stop, destroy, restore). Reads output into
-  `Arc<Mutex<vt100::Parser>>`, writes input via mpsc channel.
-  `input.rs` translates crossterm `KeyCode` → xterm ANSI bytes.
+  `ContainerManager` handles container lifecycle (build,
+  run, stop, destroy) with auto-detected runtime (Podman
+  preferred, Docker fallback). `VmManager` handles QEMU/KVM
+  VM lifecycle (create, start, stop, destroy, restore).
+  Reads output into `Arc<Mutex<vt100::Parser>>`, writes input
+  via mpsc channel. `input.rs` translates crossterm `KeyCode`
+  → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
-  `SessionInfo` (with optional `vm_id`), `SessionConfig`
-  (with optional `cwd` and `vm_id`), `VmState`, `VmConfig`.
+  `SessionInfo` (with optional `vm_id` and `container_id`),
+  `SessionConfig` (with optional `cwd`, `vm_id`, `container_id`),
+  `VmState`, `VmConfig`, `ContainerState`, `ContainerConfig`.
+  `default_developer_role()` provides the seeded developer role.
   No logic beyond Display/Default impls.
 - **`project/`** — Plain data: `ProjectId`,
   `ProjectConfig`, `ProjectInfo`. Imports `session` only.
@@ -240,15 +252,17 @@ app      ← coordinator, imports all modules
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (two-section
   left panel), `terminal_view`, `info_panel`, `status_bar`.
+  `selection.rs` handles mouse-drag text selection,
+  `links.rs` detects and highlights clickable URLs.
 - **`mcp/`** — MCP server (`thurbox-mcp` binary). Exposes
-  project/role/session CRUD over stdio JSON-RPC. Shares the
-  same SQLite database as the TUI.
+  project/role/session/VM CRUD over stdio or Streamable HTTP
+  JSON-RPC. Shares the same SQLite database as the TUI.
 
 ### Event Loop (main.rs)
 
 ```text
 tokio::main → init backends (BackendRegistry: local-tmux
-  + optional qemu-vm) → open SQLite DB
+  + devcontainer + optional qemu-vm) → open SQLite DB
 → init terminal → spawn/restore sessions → loop {
     draw frame → poll crossterm events (10ms)
     → convert to AppMessage → app.update() → app.tick()
@@ -273,7 +287,8 @@ framework). Install with `prek install`. Stages:
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- Session backends: `LocalTmuxBackend` (`tmux -L thurbox`)
+- Session backends: `LocalTmuxBackend` (`tmux -L thurbox`),
+  `DevcontainerBackend` (tmux over Docker/Podman exec),
   and optional `QemuVmBackend` (tmux over SSH inside QEMU/KVM VMs)
 - Output reader runs in `tokio::task::spawn_blocking`
   (blocking I/O), writer in `tokio::spawn` (async)
@@ -292,7 +307,9 @@ Global keys use `Ctrl` + semantic Vim conventions:
 |-----|--------|----------|
 | `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
 | `Ctrl+N` | New project/session | **N**ew |
-| `Ctrl+C` | Close active session | **C**lose |
+| `Ctrl+C` | Close session / copy selection | **C**lose / **C**opy |
+| `Ctrl+V` | Paste from clipboard | Paste |
+| `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus project list | Vim: **h** = left |
 | `Ctrl+J` | Next project (project focus) / session | Vim: **j** = down |
 | `Ctrl+K` | Previous project (project focus) / session | Vim: **k** = up |

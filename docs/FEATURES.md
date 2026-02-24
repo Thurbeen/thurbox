@@ -122,7 +122,9 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+Q` | Global | Quit Thurbox | **Q**uit |
 | `Ctrl+N` | Project list | Add new project | **N**ew |
 | `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) | **N**ew |
-| `Ctrl+C` | Global | Close active session | **C**lose |
+| `Ctrl+C` | Global | Close active session (or copy selection if text selected) | **C**lose / **C**opy |
+| `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
+| `Ctrl+T` | Global | Toggle shell pane alongside Claude session | **T**erminal |
 | `Ctrl+H` | Global | Focus project list | Vim: **h** = left |
 | `Ctrl+J` | Global | Next project (project list focused) or session | Vim: **j** = down |
 | `Ctrl+K` | Global | Previous project (project list focused) or session | Vim: **k** = up |
@@ -261,7 +263,8 @@ if real demand emerges.
 
 Sessions can optionally run inside git worktrees for branch
 isolation. This is opt-in: after pressing `Ctrl+N`, a session
-mode selector modal asks "Normal" or "Worktree".
+mode selector modal asks "Normal", "Worktree", "Devcontainer",
+or "Sandbox VM".
 
 ### Flow
 
@@ -270,8 +273,9 @@ mode selector modal asks "Normal" or "Worktree".
    using all repos (first as cwd, rest via `--add-dir`).
    No repo selector or session mode modal is shown.
 3. If the project has 1 repo, a session mode modal offers
-   "Normal" (spawn in repo root) or "Worktree" (spawn in
-   an isolated worktree).
+   "Normal" (spawn in repo root), "Worktree" (spawn in
+   an isolated worktree), "Devcontainer" (spawn in a
+   container), or "Sandbox VM" (spawn in a QEMU/KVM VM).
 4. Choosing "Worktree" opens a base branch selector listing
    local branches from the selected repo.
 5. Selecting a base branch opens a prompt for the new branch
@@ -439,9 +443,10 @@ add/edit/delete capabilities; editing a role opens a detail form.
 For programmatic role management via the MCP server, see
 [MCP_ROLES.md](MCP_ROLES.md).
 
-Projects start with no roles. Users add roles explicitly.
-When no roles are defined, sessions spawn with default
-(empty) permissions and no role selector is shown.
+New projects are seeded with a built-in "developer" role
+(`permission_mode: acceptEdits`, no tool restrictions). Users
+can edit, remove, or add roles as needed. When creating a
+session, a role selector appears if the project has roles.
 
 ### Allow / Ask / Deny Semantics
 
@@ -466,7 +471,7 @@ closes the modal.
 
 ### Role Editor View
 
-Edits a single role with four text fields:
+Edits a single role with five text fields:
 
 - **Name** — role identifier (required, unique)
 - **Description** — human-readable summary
@@ -474,6 +479,8 @@ Edits a single role with four text fields:
   (auto-approved)
 - **Disallowed Tools** — space-separated tool names
   (blocked)
+- **Environment Variables** — key=value pairs injected
+  into sessions using this role
 
 Permission mode defaults to `default` and can be
 overridden per-role via the role editor.
@@ -666,11 +673,90 @@ lines instead of blank lines, improving visual structure.
 
 ---
 
+## Devcontainer Sessions
+
+Sessions can run inside Docker or Podman containers for
+lightweight OS-level isolation. This is opt-in: the session
+mode selector modal offers "Devcontainer" alongside "Normal",
+"Worktree", and "Sandbox VM".
+
+### Container runtime
+
+Thurbox auto-detects Docker or Podman, preferring Podman.
+The runtime is detected once at startup via `detect_runtime()`.
+
+### Containerfile templates
+
+User-editable templates live in
+`~/.local/share/thurbox/containerfiles/`. Each template is
+a folder containing a `Containerfile` and any support files
+(e.g., `init-firewall.sh`). The entire folder is used as the
+build context.
+
+```text
+~/.local/share/thurbox/containerfiles/
+  default/
+    Containerfile
+    init-firewall.sh
+  python/
+    Containerfile
+    requirements.txt
+```
+
+A `default/` template (based on `debian:bookworm-slim`) is
+seeded on first run. Users can add more folders for different
+environments and select them via a picker in the TUI.
+
+### Container defaults
+
+| Parameter | Value |
+|-----------|-------|
+| CPUs | 2 |
+| Memory | 2048 MB |
+| Firewall | Enabled (nftables/iptables allowlist) |
+| Containerfile | `default/` template |
+
+### Firewall allowlist
+
+When `firewall_enabled` is true, the container runs
+`init-firewall.sh` which restricts egress to a configurable
+allowlist of domains and CIDRs. The default allowlist includes
+`api.anthropic.com`, `github.com`, `crates.io`, and other
+common development endpoints.
+
+### Container lifecycle
+
+```text
+Building → Starting → Ready → Stopping → Stopped
+                        ↓
+                      Failed
+```
+
+- **Building**: Container image is being built from the
+  Containerfile template.
+- **Starting**: Container launched, waiting for readiness.
+- **Ready**: Container is running, sessions can be spawned.
+- **Stopping/Stopped**: Container is shutting down or destroyed.
+- **Failed**: Container build or start failed.
+
+### Session restoration
+
+Containers survive Thurbox restarts. On restart, Thurbox
+discovers containers from the database, verifies they are
+still running, and re-adopts their tmux sessions.
+
+### Container state persistence
+
+Container records are stored in the `containers` SQLite table
+with a foreign key to `sessions(id)`.
+
+---
+
 ## Sandbox VM Sessions
 
 Sessions can run inside QEMU/KVM virtual machines for full OS-level
 isolation. This is opt-in: the session mode selector modal offers
-"Sandbox VM" alongside "Normal" and "Worktree".
+"Sandbox VM" alongside "Normal", "Worktree", and "Devcontainer".
 
 ### VM specifications
 
@@ -751,6 +837,53 @@ and associated session ID.
 - **Info panel**: Shows VM ID, SSH port, and provisioning status
   for VM-backed sessions.
 - **Status bar**: Provisioning steps displayed during VM creation.
+
+---
+
+## Text Selection and Copy-Paste
+
+Mouse drag selects text in the terminal panel. The selection
+is confined to the active pane bounds.
+
+- **Mouse drag**: Select text (anchor at press, cursor
+  follows drag).
+- **`Ctrl+C`** (with active selection): Copies selected text
+  to the system clipboard via `arboard`. Trailing whitespace
+  is trimmed per line.
+- **`Ctrl+C`** (no selection): Closes the active session
+  (original behavior).
+- **`Ctrl+V`**: Pastes from system clipboard into the active
+  PTY.
+- Any other keypress clears the selection.
+
+Selection is highlighted in the terminal render buffer using
+inverted colors. The clipboard handle is kept alive for the
+app lifetime to avoid Linux-specific "dropped too quickly"
+issues.
+
+---
+
+## Shell Pane Toggle
+
+`Ctrl+T` toggles between the Claude Code session and a shell
+pane (plain bash/zsh) for the active session. The shell runs
+in a separate tmux pane alongside the Claude pane.
+
+- **Status bar**: Shows "Shell" label when viewing the shell
+  pane.
+- **Per-session state**: Each session tracks its own
+  `TerminalView` (Claude or Shell) independently.
+- Input is forwarded to whichever pane is currently active.
+
+---
+
+## Clickable URL Highlighting
+
+URLs (`https://`, `http://`, `file://`) in terminal output
+are detected via regex and highlighted in the terminal render.
+Trailing punctuation (`.`, `,`, `;`, `:`, `)`, `]`) is stripped
+from detected URLs. Character-based column offsets ensure
+correct positioning with multibyte characters.
 
 ---
 

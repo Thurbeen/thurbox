@@ -20,8 +20,10 @@ alive in the background. Restart a session with `Ctrl+R` to
 pick up new role permissions while preserving conversation
 history via `--resume`. Each session displays elapsed time
 ("Waiting 45s", "Idle 2m") and highlights clickable URLs in
-terminal output. Recover sessions externally at any time with
-`tmux -L thurbox attach`.
+terminal output. Select text with mouse drag and copy with
+`Ctrl+C`, paste with `Ctrl+V`. Toggle a shell pane alongside
+the Claude session with `Ctrl+T`. Recover sessions externally
+at any time with `tmux -L thurbox attach`.
 
 ### Project Management
 
@@ -47,6 +49,20 @@ on rebase conflicts, Thurbox automatically sends a resolution
 prompt to Claude. Closing the session automatically removes
 the worktree. Worktree sessions show the branch name in the
 terminal title and session list.
+
+### Devcontainer Sessions
+
+Run sessions inside Docker or Podman containers for lightweight
+isolation. Choose "Devcontainer" in the session mode selector —
+Thurbox builds a container image from a Containerfile template,
+runs the container with optional firewall-restricted network
+egress (nftables/iptables allowlist), and spawns the Claude
+session inside it. Templates are stored at
+`~/.local/share/thurbox/containerfiles/` — a `default/` template
+(Debian Bookworm-based) is seeded on first run. Add custom
+templates by creating folders with a `Containerfile` and any
+support files. Containers are auto-detected (Podman preferred,
+Docker fallback) and survive Thurbox restarts.
 
 ### Sandbox VM Sessions
 
@@ -76,9 +92,9 @@ session creation.
 
 ### MCP Server
 
-The `thurbox-mcp` binary exposes 13 tools over the Model Context
-Protocol for managing projects, roles, sessions, and MCP server
-configurations. The Admin session auto-configures `thurbox-mcp`,
+The `thurbox-mcp` binary exposes 16 tools over the Model Context
+Protocol for managing projects, roles, sessions, VMs, and MCP
+server configurations. The Admin session auto-configures `thurbox-mcp`,
 so you can manage everything conversationally — "create a
 reviewer role for my-app with read-only access." See
 [MCP Server](#mcp-server-1) below for the full tool reference.
@@ -136,6 +152,8 @@ The binary will be available at `target/release/thurbox`.
 - **tmux >= 3.2** — session backend
 - **claude CLI** — [github.com/anthropics/claude-code](https://github.com/anthropics/claude-code)
 - **git** — required for worktree features
+- **Docker or Podman** — optional, for devcontainer sessions
+  (Podman preferred, Docker fallback)
 - **QEMU/KVM** — optional, for sandbox VM sessions
   (`qemu-system-x86_64`, `/dev/kvm`, `genisoimage` or `mkisofs`)
 - **Rust 1.75+** — only needed for building from source
@@ -148,7 +166,7 @@ The binary will be available at `target/release/thurbox`.
    focused. Enter a name and one or more repository paths.
 3. **Create a session** — select your project, then press
    `Ctrl+N` again. Choose a session mode (Normal, Worktree,
-   or Sandbox VM) and optionally select a role.
+   Devcontainer, or Sandbox VM) and optionally select a role.
 4. **Work with Claude** — the terminal panel shows the live
    Claude Code session. All keys are forwarded to the PTY.
 5. **Navigate** — `Ctrl+L` cycles focus (project list → session
@@ -171,7 +189,9 @@ The binary will be available at `target/release/thurbox`.
 |-----|--------|----------|
 | `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
 | `Ctrl+N` | New project or session | **N**ew |
-| `Ctrl+C` | Close active session | **C**lose |
+| `Ctrl+C` | Close session / copy selection | **C**lose / **C**opy |
+| `Ctrl+V` | Paste from clipboard | Paste |
+| `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus project list | Vim: **h** = left |
 | `Ctrl+J` | Next project (project list) / session | Vim: **j** = down |
 | `Ctrl+K` | Previous project (project list) / session | Vim: **k** = up |
@@ -193,23 +213,28 @@ The binary will be available at `target/release/thurbox`.
 | `k` / `Up` | Previous item |
 | `Enter` | Select / focus |
 
-### Terminal Scrollback
+### Terminal Scrollback and Selection
 
 | Key | Action |
 |-----|--------|
 | `Shift+Up` / `Shift+Down` | Scroll 1 line |
 | `Shift+PageUp` / `Shift+PageDown` | Scroll half page |
 | Mouse wheel | Scroll 3 lines |
+| Mouse drag | Select text |
 | Any other key | Snap to bottom + forward to PTY |
 
 ## MCP Server
 
 The `thurbox-mcp` binary exposes Thurbox configuration over the
-Model Context Protocol via stdio transport. It shares the same
-SQLite database as the TUI — changes appear immediately.
+Model Context Protocol. It supports stdio (default) and
+Streamable HTTP transports, and shares the same SQLite database
+as the TUI — changes appear immediately.
 
 ```bash
 cargo build --bin thurbox-mcp
+thurbox-mcp                                    # stdio (default)
+thurbox-mcp --transport streamable-http        # HTTP on 127.0.0.1:8080
+thurbox-mcp --transport streamable-http --port 9090  # custom port
 ```
 
 ### Available Tools
@@ -229,6 +254,9 @@ cargo build --bin thurbox-mcp
 | `get_session` | Get a session by UUID |
 | `delete_session` | Soft-delete a session |
 | `restart_session` | Queue a session restart |
+| `restore_session` | Restore a soft-deleted session |
+| `list_vms` | List active VMs, optionally by project |
+| `get_vm` | Get a VM by UUID |
 
 ### Admin Session
 
@@ -248,8 +276,9 @@ Thurbox follows **The Elm Architecture** (TEA):
 `Event → Message → update(model, msg) → view(model) → Frame`.
 All state lives in a single `App` model. Sessions run via a
 pluggable `SessionBackend` trait with a `BackendRegistry` that
-manages multiple backends: local tmux (`tmux -L thurbox`) and
-optional QEMU/KVM VMs (tmux over SSH). Terminal output is parsed
+manages multiple backends: local tmux (`tmux -L thurbox`),
+Docker/Podman containers (tmux over `exec`), and optional
+QEMU/KVM VMs (tmux over SSH). Terminal output is parsed
 by `vt100::Parser` and rendered by `tui_term`. All persistent
 state (projects, sessions, roles, VMs) is stored in SQLite.
 

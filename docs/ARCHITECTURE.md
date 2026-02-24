@@ -532,3 +532,79 @@ satisfy the FK constraint.
 - *Docker instead of QEMU* — QEMU provides full OS isolation with
   KVM acceleration; Docker shares the host kernel and is less
   suitable for untrusted code sandboxing.
+
+---
+
+## ADR-16: Devcontainer backend (Docker/Podman)
+
+**Choice**: A `DevcontainerBackend` implementation of
+`SessionBackend` runs sessions inside Docker or Podman
+containers. The runtime is auto-detected at startup (Podman
+preferred, Docker fallback). `ContainerManager` handles the
+container lifecycle (build, run, stop, destroy).
+`DockerExecControlMode` tunnels tmux control mode over
+`docker/podman exec`.
+
+**Why**: Containers provide lightweight isolation without
+the overhead of full VMs. Many developers already have Docker
+or Podman installed, lowering the barrier to sandboxed sessions.
+The Containerfile template system lets users customize
+environments per use case (Python, Node, Rust, etc.) while
+the firewall allowlist restricts network egress by default.
+
+**Key components**:
+
+- `detect_runtime()` — probes `podman info` then `docker info`
+  to find an available runtime. Prefers Podman for rootless
+  operation.
+- `ContainerManager` — builds images from Containerfile
+  templates, runs containers with volume-mounted repos, and
+  manages lifecycle. Supports optional nftables/iptables
+  firewall via `init-firewall.sh`.
+- `DockerExecControlMode` — tunnels tmux control mode over
+  `docker/podman exec -i`, providing the same
+  `ControlModeReader`/`ControlModeWriter` abstraction as the
+  SSH-based VM backend.
+- Containerfile templates at
+  `~/.local/share/thurbox/containerfiles/<name>/`. A `default/`
+  template (Debian Bookworm-based) is seeded on first run.
+
+**Container state persistence**: The `containers` table stores
+container records with `session_id REFERENCES sessions(id)` (FK
+constraint), mirroring the VM state persistence pattern.
+
+**Rejected**:
+
+- *Reusing QemuVmBackend for Docker* — Docker and QEMU have
+  fundamentally different interfaces (`exec` vs SSH). A shared
+  backend would require too many conditionals.
+- *Docker-only (no Podman)* — Podman is increasingly popular,
+  especially on Linux where rootless operation avoids privilege
+  escalation. Auto-detection supports both with zero config.
+- *Kubernetes pods* — over-engineering for local development;
+  requires a cluster and adds latency/complexity.
+
+---
+
+## ADR-17: Streamable HTTP transport for MCP server
+
+**Choice**: The `thurbox-mcp` binary supports a second transport
+(`--transport streamable-http`) that serves MCP over HTTP POST
+with optional SSE streaming, powered by axum and the `rmcp`
+crate's `StreamableHttpService`.
+
+**Why**: Stdio transport works for local CLI tool integration
+(e.g., the Admin session's `.mcp.json`), but HTTP enables
+remote MCP clients, web dashboards, and multi-user setups.
+Streamable HTTP is the MCP standard for networked transports.
+
+**Defaults**: `127.0.0.1:8080`, path `/mcp`. Configurable via
+`--host` and `--port` flags.
+
+**Rejected**:
+
+- *WebSocket transport* — not part of the MCP specification.
+  Streamable HTTP with SSE covers the same use cases.
+- *Always-on HTTP (no stdio)* — stdio is simpler for the
+  common case (local Admin session). HTTP is opt-in for
+  advanced deployments.
