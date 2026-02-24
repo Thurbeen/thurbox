@@ -181,6 +181,15 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `restore_session` | Restore a soft-deleted session |
 | `list_vms` | List active VMs, optionally filtered by project |
 | `get_vm` | Get a VM by UUID |
+| `list_containerfile_templates` | List template names + files in each |
+| `get_containerfile_template` | Read a template's Containerfile content and list support files |
+| `set_containerfile_template` | Create/update a template (Containerfile + optional support files) |
+| `delete_containerfile_template` | Delete a template (refuses to delete "default") |
+| `configure_project_container` | Set project container defaults (image, cpus, memory, firewall, template) |
+| `get_project_container_config` | Read current project container config |
+| `list_vm_images` | List downloaded VM images with file sizes |
+| `download_vm_image` | Download a VM image from an HTTPS URL |
+| `delete_vm_image` | Delete a cached VM image |
 
 **Role Management**: `set_roles` performs an atomic replacement —
 all existing roles are deleted and replaced in a single transaction.

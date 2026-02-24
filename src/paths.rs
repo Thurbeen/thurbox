@@ -54,6 +54,8 @@ pub enum PathKind {
     AdminDir,
     /// Containerfile templates: `~/.local/share/thurbox/containerfiles/`
     ContainerfilesDir,
+    /// VM images: `~/.local/share/thurbox/images/`
+    ImagesDir,
 }
 
 /// Path resolution strategy (thread-local).
@@ -175,6 +177,24 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
+        PathKind::ImagesDir => {
+            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
+            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+                let mut p = PathBuf::from(xdg);
+                p.push(app_dir_name());
+                p.push("images");
+                return Some(p);
+            }
+
+            std::env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".local");
+                p.push("share");
+                p.push(app_dir_name());
+                p.push("images");
+                p
+            })
+        }
     }
 }
 
@@ -186,6 +206,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::Database => base.join("thurbox.db"),
         PathKind::AdminDir => base.join("admin"),
         PathKind::ContainerfilesDir => base.join("containerfiles"),
+        PathKind::ImagesDir => base.join("images"),
     }
 }
 
@@ -223,6 +244,13 @@ pub fn admin_directory() -> Option<PathBuf> {
 /// `$HOME/.local/share/thurbox/containerfiles/`
 pub fn containerfiles_directory() -> Option<PathBuf> {
     resolve(PathKind::ContainerfilesDir)
+}
+
+/// Resolve the VM images directory path.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/images/` or `$HOME/.local/share/thurbox/images/`
+pub fn images_directory() -> Option<PathBuf> {
+    resolve(PathKind::ImagesDir)
 }
 
 /// Resolve the path to the `thurbox-mcp` binary.
@@ -462,6 +490,7 @@ mod tests {
             resolve(PathKind::ContainerfilesDir),
             Some(base.join("containerfiles"))
         );
+        assert_eq!(resolve(PathKind::ImagesDir), Some(base.join("images")));
 
         reset_to_xdg();
     }
@@ -517,6 +546,17 @@ mod tests {
 
         let path = containerfiles_directory().unwrap();
         assert!(path.ends_with("containerfiles"));
+
+        reset_to_xdg();
+    }
+
+    #[test]
+    fn images_directory_convenience() {
+        let base = PathBuf::from("/custom");
+        set_test_dir(&base);
+
+        let path = images_directory().unwrap();
+        assert!(path.ends_with("images"));
 
         reset_to_xdg();
     }
@@ -606,6 +646,10 @@ mod tests {
         assert_eq!(
             resolve_override(base, PathKind::ContainerfilesDir),
             PathBuf::from("/data/containerfiles")
+        );
+        assert_eq!(
+            resolve_override(base, PathKind::ImagesDir),
+            PathBuf::from("/data/images")
         );
     }
 

@@ -71,6 +71,15 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__get_session",
     "mcp__thurbox__delete_session",
     "mcp__thurbox__restart_session",
+    "mcp__thurbox__list_containerfile_templates",
+    "mcp__thurbox__get_containerfile_template",
+    "mcp__thurbox__set_containerfile_template",
+    "mcp__thurbox__delete_containerfile_template",
+    "mcp__thurbox__configure_project_container",
+    "mcp__thurbox__get_project_container_config",
+    "mcp__thurbox__list_vm_images",
+    "mcp__thurbox__download_vm_image",
+    "mcp__thurbox__delete_vm_image",
 ];
 
 /// System prompt appended to the admin session to give Claude context about its
@@ -86,14 +95,17 @@ You can:
 - Configure MCP servers for projects
 - List, inspect, delete, and restart sessions
 - Create and manage Containerfile templates for container-based sessions
+- Configure per-project container defaults (image, cpus, memory, firewall, template)
+- List, download, and delete VM images for sandbox sessions
 
 Containerfile templates live in ~/.local/share/thurbox/containerfiles/. Each \
 template is a folder containing a Containerfile and any support files (e.g. \
 init-firewall.sh). The default/ template includes Node.js LTS, tmux, git, \
-iptables, and claude-code. To create a new template, create a new folder \
-(e.g. python/) with a Containerfile inside it. The entire folder is used as \
-the build context. Users select a template when spawning a container session. \
-The containerfiles directory is available in your working directory.
+iptables, and claude-code. Use the containerfile template tools to list, read, \
+create, update, and delete templates — no need to edit files directly.
+
+VM images live in ~/.local/share/thurbox/images/. Use the VM image tools to \
+list cached images, download new ones from HTTPS URLs, or delete old ones.
 
 When the user asks you to manage projects, roles, sessions, or MCP servers, use \
 the appropriate thurbox MCP tool. Always list existing resources before making \
@@ -7832,7 +7844,7 @@ mod tests {
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 13);
+        assert_eq!(perms.allowed_tools.len(), 22);
         assert!(perms
             .allowed_tools
             .iter()

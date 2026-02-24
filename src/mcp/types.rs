@@ -186,6 +186,79 @@ pub struct ConfigureProjectVmParams {
     pub setup_script: Option<String>,
 }
 
+// ── Containerfile Template Parameters ───────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetContainerfileTemplateParams {
+    #[schemars(description = "Template name (directory name under containerfiles/)")]
+    pub name: String,
+}
+
+/// A support file to include alongside the Containerfile in a template.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SupportFileInput {
+    #[schemars(description = "Filename (e.g. \"init-firewall.sh\")")]
+    pub filename: String,
+    #[schemars(description = "File content (text)")]
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetContainerfileTemplateParams {
+    #[schemars(description = "Template name (creates or updates the directory)")]
+    pub name: String,
+    #[schemars(description = "Content of the Containerfile")]
+    pub containerfile_content: String,
+    #[schemars(description = "Optional support files to include in the template directory")]
+    pub support_files: Option<Vec<SupportFileInput>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteContainerfileTemplateParams {
+    #[schemars(description = "Template name to delete")]
+    pub name: String,
+}
+
+// ── Project Container Config Parameters ────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ConfigureProjectContainerParams {
+    #[schemars(description = "Project name or UUID")]
+    pub project: String,
+    #[schemars(description = "Docker image to use (None = build from Containerfile)")]
+    pub image: Option<String>,
+    #[schemars(description = "Number of CPUs (default: 2)")]
+    pub cpus: Option<u32>,
+    #[schemars(description = "RAM in megabytes (default: 2048)")]
+    pub memory_mb: Option<u32>,
+    #[schemars(description = "Enable egress firewall (default: true)")]
+    pub firewall_enabled: Option<bool>,
+    #[schemars(description = "Containerfile template name")]
+    pub containerfile: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetProjectContainerConfigParams {
+    #[schemars(description = "Project name or UUID")]
+    pub project: String,
+}
+
+// ── VM Image Parameters ────────────────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DownloadVmImageParams {
+    #[schemars(description = "HTTPS URL to download the VM image from")]
+    pub url: String,
+    #[schemars(description = "Filename to save as (default: derived from URL)")]
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteVmImageParams {
+    #[schemars(description = "Filename of the image to delete")]
+    pub filename: String,
+}
+
 // ── Response Types ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -278,4 +351,39 @@ pub struct ProjectVmConfigResponse {
     pub disk_gb: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup_script: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContainerfileTemplateResponse {
+    pub name: String,
+    pub containerfile_content: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub support_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContainerfileTemplateSummary {
+    pub name: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectContainerConfigResponse {
+    pub project_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firewall_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub containerfile: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VmImageResponse {
+    pub filename: String,
+    pub size_bytes: u64,
 }
