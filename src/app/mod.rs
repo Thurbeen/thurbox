@@ -1,20 +1,19 @@
+mod helpers;
 mod key_handlers;
 pub(crate) mod mcp_editor_modal;
-mod modals;
+pub(crate) mod modals;
+mod provisioning;
 mod state;
+mod view;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
-use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Position, Rect},
-    style::Style,
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
+    layout::{Position, Rect},
+    widgets::{Block, Borders},
 };
 use tracing::{error, info, warn};
 
@@ -29,13 +28,8 @@ use crate::session::{
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
-use crate::ui::selection::{self, PaneBounds, Selection, TermPos};
-use crate::ui::{
-    add_project_modal, branch_selector_modal, containerfile_picker, delete_project_modal,
-    edit_project_modal, info_panel, layout, project_list, repo_selector_modal,
-    restore_sessions_modal, role_editor_modal, role_selector_modal, session_mode_modal, status_bar,
-    terminal_view, worktree_name_modal,
-};
+use crate::ui::selection::{PaneBounds, Selection, TermPos};
+use crate::ui::{info_panel, layout, role_editor_modal};
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -142,27 +136,11 @@ fn admin_mcp_permissions() -> RolePermissions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoleEditorView {
-    List,
-    Editor,
-}
+pub use modals::RoleEditorView;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddProjectField {
-    Name,
-    Path,
-    RepoList,
-}
+pub use modals::AddProjectField;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditProjectField {
-    Name,
-    Path,
-    RepoList,
-    Roles,
-    McpServers,
-}
+pub use modals::EditProjectField;
 
 /// State for an editable list of tool names (allowed or disallowed).
 pub(crate) struct ToolListState {
@@ -415,49 +393,18 @@ pub struct App {
     pub(crate) terminal_cols: u16,
     session_counter: usize,
     pub(crate) show_info_panel: bool,
-    pub(crate) show_help: bool,
-    pub(crate) show_add_project_modal: bool,
-    pub(crate) add_project_name: TextInput,
-    pub(crate) add_project_path: TextInput,
-    pub(crate) add_project_field: AddProjectField,
-    pub(crate) add_project_repos: Vec<PathBuf>,
-    pub(crate) add_project_repo_index: usize,
-    pub(crate) add_project_path_suggestion: Option<String>,
-    pub(crate) show_edit_project_modal: bool,
-    pub(crate) edit_project_name: TextInput,
-    pub(crate) edit_project_path: TextInput,
-    pub(crate) edit_project_field: EditProjectField,
-    pub(crate) edit_project_repos: Vec<PathBuf>,
-    pub(crate) edit_project_repo_index: usize,
-    pub(crate) edit_project_path_suggestion: Option<String>,
-    pub(crate) edit_project_original_id: Option<ProjectId>,
-    pub(crate) show_delete_project_modal_flag: bool,
-    pub(crate) delete_project_name: String,
-    pub(crate) delete_project_confirmation: TextInput,
-    pub(crate) delete_project_error: Option<String>,
-    pub(crate) show_repo_selector: bool,
-    pub(crate) repo_selector_index: usize,
-    pub(crate) show_session_mode_modal: bool,
-    pub(crate) session_mode_index: usize,
-    pub(crate) show_branch_selector: bool,
-    pub(crate) branch_selector_index: usize,
-    pub(crate) available_branches: Vec<String>,
+    pub(crate) modal: modals::Modal,
+    // (Delete project, add project, edit project modal state is now in self.modal)
     pub(crate) pending_repo_path: Option<PathBuf>,
     pub(crate) pending_all_repos: Option<Vec<PathBuf>>,
     /// Repo paths collected for rsync into the VM (set during provisioning).
     pub(crate) pending_vm_repo_paths: Option<Vec<PathBuf>>,
-    pub(crate) show_worktree_name_modal: bool,
-    pub(crate) worktree_name_input: TextInput,
     pub(crate) pending_base_branch: Option<String>,
-    pub(crate) show_role_selector: bool,
-    pub(crate) role_selector_index: usize,
     pub(crate) pending_spawn_config: Option<SessionConfig>,
     pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
     pub(crate) pending_spawn_name: Option<String>,
     pub(crate) show_role_editor: bool,
     pub(crate) role_editor_view: RoleEditorView,
-    pub(crate) role_editor_list_index: usize,
-    pub(crate) role_editor_roles: Vec<RoleConfig>,
     pub(crate) role_editor_field: role_editor_modal::RoleEditorField,
     pub(crate) role_editor_name: TextInput,
     pub(crate) role_editor_description: TextInput,
@@ -466,8 +413,6 @@ pub struct App {
     pub(crate) role_editor_system_prompt: TextInput,
     pub(crate) role_editor_env: ToolListState,
     pub(crate) role_editor_editing_index: Option<usize>,
-    pub(crate) edit_project_mcp_servers: Vec<crate::session::McpServerConfig>,
-    pub(crate) edit_project_mcp_server_index: usize,
     pub(crate) show_mcp_editor: bool,
     pub(crate) mcp_editor_field: mcp_editor_modal::McpEditorField,
     pub(crate) mcp_editor_name: TextInput,
@@ -500,10 +445,7 @@ pub struct App {
     session_terminal_views: HashMap<SessionId, TerminalView>,
     /// Recently deleted session awaiting finalization or undo (Ctrl+Z).
     pending_delete: Option<PendingDelete>,
-    /// Restore deleted sessions modal (Ctrl+U).
-    pub(crate) show_restore_sessions_modal: bool,
-    pub(crate) restore_sessions_list: Vec<DeletedSessionInfo>,
-    pub(crate) restore_sessions_index: usize,
+    // (Restore sessions modal state is now in self.modal)
     /// VM provisioning in progress — stores the pending session config.
     vm_provisioning: bool,
     /// VM ID currently being provisioned.
@@ -530,12 +472,6 @@ pub struct App {
     selected_text_cache: Option<String>,
     /// Persistent clipboard handle to avoid "dropped too quickly" warnings on Linux.
     clipboard: Option<arboard::Clipboard>,
-    /// Containerfile picker modal visible.
-    pub(crate) show_containerfile_picker: bool,
-    /// Selected index in the containerfile picker.
-    pub(crate) containerfile_picker_index: usize,
-    /// Available containerfile template names.
-    pub(crate) containerfile_list: Vec<String>,
     /// Containerfile name selected by the user (consumed during provisioning).
     pub(crate) pending_containerfile_name: Option<String>,
     /// Container provisioning in progress.
@@ -560,6 +496,10 @@ pub struct App {
     pending_container_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
     /// Background container/VM restoration tasks polled by `tick()`.
     pending_restores: Vec<PendingRestore>,
+    /// Reusable buffer for parent→children process map (avoids per-tick allocation).
+    children_map_buf: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    /// Reusable buffer for session elapsed-ms in the view (avoids per-frame allocation).
+    pub(crate) session_elapsed_buf: Vec<u64>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -760,48 +700,16 @@ impl App {
             terminal_cols: cols,
             session_counter,
             show_info_panel: false,
-            show_help: false,
-            show_add_project_modal: false,
-            add_project_name: TextInput::new(),
-            add_project_path: TextInput::new(),
-            add_project_field: AddProjectField::Name,
-            add_project_repos: Vec::new(),
-            add_project_repo_index: 0,
-            add_project_path_suggestion: None,
-            show_edit_project_modal: false,
-            edit_project_name: TextInput::new(),
-            edit_project_path: TextInput::new(),
-            edit_project_field: EditProjectField::Name,
-            edit_project_repos: Vec::new(),
-            edit_project_repo_index: 0,
-            edit_project_path_suggestion: None,
-            edit_project_original_id: None,
-            show_delete_project_modal_flag: false,
-            delete_project_name: String::new(),
-            delete_project_confirmation: TextInput::new(),
-            delete_project_error: None,
-            show_repo_selector: false,
-            repo_selector_index: 0,
-            show_session_mode_modal: false,
-            session_mode_index: 0,
-            show_branch_selector: false,
-            branch_selector_index: 0,
-            available_branches: Vec::new(),
+            modal: modals::Modal::None,
             pending_repo_path: None,
             pending_all_repos: None,
             pending_vm_repo_paths: None,
-            show_worktree_name_modal: false,
-            worktree_name_input: TextInput::new(),
             pending_base_branch: None,
-            show_role_selector: false,
-            role_selector_index: 0,
             pending_spawn_config: None,
             pending_spawn_worktrees: Vec::new(),
             pending_spawn_name: None,
             show_role_editor: false,
             role_editor_view: RoleEditorView::List,
-            role_editor_list_index: 0,
-            role_editor_roles: Vec::new(),
             role_editor_field: role_editor_modal::RoleEditorField::Name,
             role_editor_name: TextInput::new(),
             role_editor_description: TextInput::new(),
@@ -810,8 +718,6 @@ impl App {
             role_editor_system_prompt: TextInput::new(),
             role_editor_env: ToolListState::new(),
             role_editor_editing_index: None,
-            edit_project_mcp_servers: Vec::new(),
-            edit_project_mcp_server_index: 0,
             show_mcp_editor: false,
             mcp_editor_field: mcp_editor_modal::McpEditorField::Name,
             mcp_editor_name: TextInput::new(),
@@ -838,9 +744,6 @@ impl App {
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
             pending_delete: None,
-            show_restore_sessions_modal: false,
-            restore_sessions_list: Vec::new(),
-            restore_sessions_index: 0,
             vm_provisioning: false,
             vm_provisioning_id: None,
             vm_manager,
@@ -854,9 +757,6 @@ impl App {
             text_selection: None,
             selected_text_cache: None,
             clipboard: arboard::Clipboard::new().ok(),
-            show_containerfile_picker: false,
-            containerfile_picker_index: 0,
-            containerfile_list: Vec::new(),
             pending_containerfile_name: None,
             container_provisioning: false,
             container_provisioning_id: None,
@@ -869,6 +769,8 @@ impl App {
             pending_container_id: None,
             pending_container_mcp_servers: None,
             pending_restores: Vec::new(),
+            children_map_buf: HashMap::new(),
+            session_elapsed_buf: Vec::new(),
         }
     }
 
@@ -1040,8 +942,7 @@ impl App {
                 // 1+ repos: show session mode modal (Normal vs Worktree)
                 self.pending_repo_path = Some(repos[0].clone());
                 self.pending_all_repos = if repos.len() > 1 { Some(repos) } else { None };
-                self.session_mode_index = 0;
-                self.show_session_mode_modal = true;
+                self.modal = modals::Modal::SessionMode(modals::SessionModeModal { index: 0 });
             }
         }
     }
@@ -1101,8 +1002,7 @@ impl App {
                 self.pending_spawn_name = Some(name);
                 self.pending_spawn_config = Some(config);
                 self.pending_spawn_worktrees = worktrees;
-                self.role_selector_index = 0;
-                self.show_role_selector = true;
+                self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal::default());
             }
         }
     }
@@ -1272,9 +1172,8 @@ impl App {
         let project_id = project.id;
         match self.db.list_deleted_sessions_for_project(project_id) {
             Ok(list) => {
-                self.restore_sessions_list = list;
-                self.restore_sessions_index = 0;
-                self.show_restore_sessions_modal = true;
+                self.modal =
+                    modals::Modal::RestoreSessions(modals::RestoreSessionsModal { list, index: 0 });
             }
             Err(e) => {
                 error!("Failed to list deleted sessions: {e}");
@@ -1513,7 +1412,7 @@ impl App {
                     let rows = links::extract_screen_rows(parser.screen());
                     let detected = links::detect_urls(&rows);
                     if let Some(url) = links::url_at_position(&detected, screen_row, screen_col) {
-                        open_url(url);
+                        helpers::open_url(url);
                     }
                 });
             }
@@ -1626,8 +1525,12 @@ impl App {
             return;
         }
 
+        let modals::Modal::EditProject(ref ep) = self.modal else {
+            return;
+        };
+
         // Check uniqueness (exclude the role being edited)
-        let duplicate = self
+        let duplicate = ep
             .role_editor_roles
             .iter()
             .enumerate()
@@ -1665,7 +1568,7 @@ impl App {
         // Preserve fields not exposed in the editor (permission_mode, tools)
         let base_permissions = self
             .role_editor_editing_index
-            .and_then(|idx| self.role_editor_roles.get(idx))
+            .and_then(|idx| ep.role_editor_roles.get(idx))
             .map(|r| &r.permissions);
 
         let role = RoleConfig {
@@ -1681,13 +1584,17 @@ impl App {
             },
         };
 
+        let modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
+
         match self.role_editor_editing_index {
             Some(idx) => {
-                self.role_editor_roles[idx] = role;
+                ep.role_editor_roles[idx] = role;
             }
             None => {
-                self.role_editor_roles.push(role);
-                self.role_editor_list_index = self.role_editor_roles.len() - 1;
+                ep.role_editor_roles.push(role);
+                ep.role_editor_list_index = ep.role_editor_roles.len() - 1;
             }
         }
 
@@ -1695,7 +1602,9 @@ impl App {
         // Return to edit-project modal (roles field) instead of role list
         self.show_role_editor = false;
         self.role_editor_snapshot = None;
-        self.edit_project_field = EditProjectField::Roles;
+        if let modals::Modal::EditProject(ref mut ep) = self.modal {
+            ep.field = EditProjectField::Roles;
+        }
     }
 
     pub(crate) fn spawn_worktree_session(
@@ -1924,487 +1833,27 @@ impl App {
         }
     }
 
-    /// Start asynchronous VM provisioning for a sandbox session.
-    ///
-    /// Called when the user selects "VM" from the session mode modal.
-    /// The VM boots in the background; `handle_vm_ready` spawns the actual session.
-    pub(crate) fn start_vm_provisioning(&mut self) {
-        if self.vm_provisioning {
-            self.set_info("VM is already being provisioned...".to_string());
-            return;
-        }
-
-        if self.backends.get("qemu-vm").is_none() {
-            self.set_error("QEMU VM backend not available".to_string());
-            return;
-        }
-
-        let manager = match self.vm_manager {
-            Some(ref m) => Arc::clone(m),
-            None => {
-                self.set_error("VM manager not initialized".to_string());
-                return;
-            }
-        };
-
-        let vm_id = uuid::Uuid::new_v4().to_string();
-        self.vm_provisioning = true;
-        self.vm_provisioning_id = Some(vm_id.clone());
-
-        // Create a placeholder session visible in the session list during provisioning.
-        let name = self.next_session_name();
-        let mut placeholder = SessionInfo::new(name);
-        placeholder.status = SessionStatus::Provisioning;
-        placeholder.vm_id = Some(vm_id.clone());
-        placeholder.provisioning_step = Some("Checking tools...".to_string());
-
-        // Add placeholder to the active project's session list so it renders.
-        if let Some(project) = self.projects.get_mut(self.active_project_index) {
-            project.session_ids.push(placeholder.id);
-        }
-        self.vm_placeholder = Some(placeholder);
-
-        self.set_info("Provisioning VM...".to_string());
-
-        // Collect repo paths for rsync into the VM.
-        // pending_repo_path and pending_all_repos are already set by spawn_session().
-        let repo_paths: Vec<PathBuf> = if let Some(ref all_repos) = self.pending_all_repos {
-            all_repos.clone()
-        } else if let Some(ref path) = self.pending_repo_path {
-            vec![path.clone()]
-        } else {
-            Vec::new()
-        };
-
-        let config = crate::session::VmConfig::default();
-        let project_id = self.active_project().map(|p| p.id.to_string());
-
-        // Record in DB
-        if let Err(e) = self.db.insert_vm(
-            &vm_id,
-            None,
-            project_id.as_deref(),
-            &crate::session::VmState::Provisioning,
-            0, // SSH port allocated later by VmManager
-            &config,
-        ) {
-            error!("Failed to insert VM record: {e}");
-            self.set_error(format!("Failed to create VM: {e}"));
-            self.vm_provisioning = false;
-            self.vm_provisioning_id = None;
-            return;
-        }
-
-        // Spawn background thread for VM provisioning (QEMU + cloud-init + SSH + rsync).
-        let (tx, rx) = mpsc::channel();
-        let (step_tx, step_rx) = mpsc::channel();
-        self.vm_provision_rx = Some(rx);
-        self.vm_provision_step_rx = Some(step_rx);
-        self.vm_provisioning_step = "Checking tools...".to_string();
-        let vm_id_thread = vm_id.clone();
-        let config_thread = config;
-        tracing::info!(vm_id = %vm_id, "VM provisioning started");
-
-        let spawn_result = std::thread::Builder::new()
-            .name(format!("vm-provision-{}", &vm_id[..8]))
-            .spawn(move || {
-                let mgr = manager.lock().unwrap();
-                let result = mgr.create_vm(&vm_id_thread, &config_thread, &repo_paths, &step_tx);
-                drop(mgr);
-                match result {
-                    Ok(()) => {
-                        let _ = tx.send(Ok(vm_id_thread));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(format!("{e:#}")));
-                    }
-                }
-            });
-
-        if let Err(e) = spawn_result {
-            error!("Failed to spawn VM provisioning thread: {e}");
-            self.set_error(format!("Failed to start VM provisioning: {e}"));
-            self.vm_provisioning = false;
-            self.vm_provisioning_id = None;
-            self.vm_provision_rx = None;
-        }
-    }
-
-    /// Poll for VM provisioning results and step updates from the background thread.
-    fn poll_vm_provision(&mut self) {
-        // Drain step updates (keep the latest).
-        if let Some(ref rx) = self.vm_provision_step_rx {
-            while let Ok(step) = rx.try_recv() {
-                self.vm_provisioning_step = step.clone();
-                if let Some(ref mut ph) = self.vm_placeholder {
-                    ph.provisioning_step = Some(step);
-                }
-            }
-        }
-
-        let result = match self.vm_provision_rx {
-            Some(ref rx) => match rx.try_recv() {
-                Ok(r) => Some(r),
-                Err(mpsc::TryRecvError::Empty) => None,
-                Err(mpsc::TryRecvError::Disconnected) => Some(Err(
-                    "VM provisioning thread terminated unexpectedly".to_string(),
-                )),
-            },
-            None => None,
-        };
-
-        if let Some(result) = result {
-            self.vm_provision_rx = None;
-            self.vm_provision_step_rx = None;
-            self.vm_provisioning_step.clear();
-            match result {
-                Ok(vm_id) => self.handle_vm_ready(&vm_id),
-                Err(error) => self.handle_vm_failed(&error),
-            }
-        }
-    }
-
-    /// Handle a successfully provisioned VM — route through role selection before
-    /// spawning. The actual spawn happens in `do_spawn_session` which checks
-    /// `pending_vm_id` to use the VM backend.
-    fn handle_vm_ready(&mut self, vm_id: &str) {
-        self.vm_provisioning = false;
-        self.vm_provisioning_id = None;
-        self.set_info("VM ready — starting session...".to_string());
-
-        let backend = match self.backends.get("qemu-vm") {
-            Some(b) => Arc::clone(b),
-            None => {
-                self.set_error("QEMU VM backend disappeared".to_string());
-                return;
-            }
-        };
-
-        // Establish SSH control mode connection for the newly provisioned VM.
-        if let Err(e) = backend.prepare_vm(vm_id) {
-            error!("Failed to establish VM control mode: {e}");
-            self.set_error(format!("VM ready but control mode failed: {e:#}"));
-            return;
-        }
-
-        // Take the pending config built during session mode selection, remap host
-        // paths to VM paths.
-        let mut config = self.pending_vm_config.take().unwrap_or_default();
-        if let Some(ref cwd) = config.cwd {
-            config.cwd = Some(crate::agent::host_to_vm_path(cwd));
-        }
-        config.additional_dirs = config
-            .additional_dirs
-            .iter()
-            .map(|p| crate::agent::host_to_vm_path(p))
-            .collect();
-        self.pending_repo_path = None;
-        self.pending_all_repos = None;
-        self.pending_vm_repo_paths = None;
-
-        // Write project MCP servers as .mcp.json into the VM working directory.
-        if let Some(mcp_servers) = self.pending_vm_mcp_servers.take() {
-            if let Some(ref cwd) = config.cwd {
-                if let Some(ref mgr) = self.vm_manager {
-                    let mgr = mgr.lock().unwrap();
-                    if let Some(instance) = mgr.get_instance(vm_id) {
-                        if let Err(e) = write_vm_mcp_json(&instance, cwd, &mcp_servers) {
-                            warn!("Failed to write .mcp.json into VM: {e:#}");
-                        }
-                    }
-                }
-            }
-        }
-
-        // Store VM ID so `do_spawn_session` uses the VM backend.
-        self.pending_vm_id = Some(vm_id.to_string());
-
-        // Route through role selection (prepare_spawn handles 0/1/2+ roles).
-        self.prepare_spawn(config, Vec::new());
-    }
-
-    /// Handle a failed VM provisioning attempt.
-    fn handle_vm_failed(&mut self, error: &str) {
-        self.vm_provisioning = false;
-        let vm_id = self.vm_provisioning_id.take();
-        self.set_error(format!("VM provisioning failed: {error}"));
-        self.pending_repo_path = None;
-        self.pending_all_repos = None;
-        self.pending_vm_repo_paths = None;
-        self.pending_vm_config = None;
-        self.pending_vm_id = None;
-        self.pending_vm_mcp_servers = None;
-
-        // Update placeholder to show error state (keep it visible).
-        if let Some(ref mut ph) = self.vm_placeholder {
-            ph.status = SessionStatus::Error;
-            ph.provisioning_step = Some(error.to_string());
-        }
-
-        // Update DB record
-        if let Some(id) = &vm_id {
-            let _ = self.db.update_vm_state(
-                id,
-                &crate::session::VmState::Failed(error.to_string()),
-                None,
-                Some(error),
-            );
-        }
-    }
-
-    /// Start container provisioning in a background thread.
-    pub(crate) fn start_container_provisioning(&mut self) {
-        if self.container_provisioning {
-            self.set_info("Container is already being provisioned...".to_string());
-            return;
-        }
-
-        if self.backends.get("devcontainer").is_none() {
-            self.set_error("Container backend not available".to_string());
-            return;
-        }
-
-        let manager = match self.container_manager {
-            Some(ref m) => Arc::clone(m),
-            None => {
-                self.set_error("Container manager not initialized".to_string());
-                return;
-            }
-        };
-
-        let container_id = uuid::Uuid::new_v4().to_string();
-        self.container_provisioning = true;
-        self.container_provisioning_id = Some(container_id.clone());
-
-        // Create a placeholder session visible in the session list during provisioning.
-        let name = self.next_session_name();
-        let mut placeholder = SessionInfo::new(name);
-        placeholder.status = SessionStatus::Provisioning;
-        placeholder.container_id = Some(container_id.clone());
-        placeholder.provisioning_step = Some("Preparing workspace...".to_string());
-
-        // Add placeholder to the active project's session list so it renders.
-        if let Some(project) = self.projects.get_mut(self.active_project_index) {
-            project.session_ids.push(placeholder.id);
-        }
-        self.container_placeholder = Some(placeholder);
-
-        self.set_info("Provisioning container...".to_string());
-
-        // Determine repo path for the container workspace.
-        let repo_path: Option<PathBuf> = if let Some(ref all_repos) = self.pending_all_repos {
-            Some(all_repos[0].clone())
-        } else {
-            self.pending_repo_path.clone()
-        };
-
-        let containerfile_name = self
-            .pending_containerfile_name
-            .take()
-            .unwrap_or_else(|| "default".to_string());
-        let config = crate::session::ContainerConfig {
-            containerfile: Some(containerfile_name.clone()),
-            ..crate::session::ContainerConfig::default()
-        };
-        let project_id = self.active_project().map(|p| p.id.to_string());
-
-        // Record in DB
-        if let Err(e) = self.db.insert_container(
-            &container_id,
-            None,
-            project_id.as_deref(),
-            &crate::session::ContainerState::Building,
-            &config,
-        ) {
-            error!("Failed to insert container record: {e}");
-            self.set_error(format!("Failed to create container: {e}"));
-            self.container_provisioning = false;
-            self.container_provisioning_id = None;
-            return;
-        }
-
-        // Spawn background thread for container provisioning.
-        let (tx, rx) = mpsc::channel();
-        let (step_tx, step_rx) = mpsc::channel();
-        self.container_provision_rx = Some(rx);
-        self.container_provision_step_rx = Some(step_rx);
-        self.container_provisioning_step = "Preparing workspace...".to_string();
-        let container_id_thread = container_id.clone();
-        let config_thread = config;
-        let containerfile_thread = containerfile_name;
-        tracing::info!(container_id = %container_id, "Container provisioning started");
-
-        let spawn_result = std::thread::Builder::new()
-            .name(format!("dc-provision-{}", &container_id[..8]))
-            .spawn(move || {
-                let mgr = manager.lock().unwrap();
-                let result = mgr.create_container(
-                    &container_id_thread,
-                    &config_thread,
-                    &containerfile_thread,
-                    repo_path.as_deref(),
-                    &step_tx,
-                );
-                drop(mgr);
-                match result {
-                    Ok(()) => {
-                        let _ = tx.send(Ok(container_id_thread));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(format!("{e:#}")));
-                    }
-                }
-            });
-
-        if let Err(e) = spawn_result {
-            error!("Failed to spawn container provisioning thread: {e}");
-            self.set_error(format!("Failed to start container provisioning: {e}"));
-            self.container_provisioning = false;
-            self.container_provisioning_id = None;
-            self.container_provision_rx = None;
-        }
-    }
-
-    /// Poll for container provisioning results from the background thread.
-    fn poll_container_provision(&mut self) {
-        // Drain step updates (keep the latest).
-        if let Some(ref rx) = self.container_provision_step_rx {
-            while let Ok(step) = rx.try_recv() {
-                self.container_provisioning_step = step.clone();
-                if let Some(ref mut ph) = self.container_placeholder {
-                    ph.provisioning_step = Some(step);
-                }
-            }
-        }
-
-        let result = match self.container_provision_rx {
-            Some(ref rx) => match rx.try_recv() {
-                Ok(r) => Some(r),
-                Err(mpsc::TryRecvError::Empty) => None,
-                Err(mpsc::TryRecvError::Disconnected) => Some(Err(
-                    "Container provisioning thread terminated unexpectedly".to_string(),
-                )),
-            },
-            None => None,
-        };
-
-        if let Some(result) = result {
-            self.container_provision_rx = None;
-            self.container_provision_step_rx = None;
-            self.container_provisioning_step.clear();
-            match result {
-                Ok(container_id) => self.handle_container_ready(&container_id),
-                Err(error) => self.handle_container_failed(&error),
-            }
-        }
-    }
-
-    /// Handle successful container provisioning.
-    fn handle_container_ready(&mut self, container_id: &str) {
-        self.container_provisioning = false;
-        self.container_provisioning_id = None;
-        self.set_info("Container ready — starting session...".to_string());
-
-        let backend = match self.backends.get("devcontainer") {
-            Some(b) => Arc::clone(b),
-            None => {
-                self.set_error("Container backend disappeared".to_string());
-                return;
-            }
-        };
-
-        // Establish docker exec control mode connection.
-        if let Err(e) = backend.prepare_vm(container_id) {
-            error!("Failed to establish container control mode: {e}");
-            self.set_error(format!("Container ready but control mode failed: {e:#}"));
-            return;
-        }
-
-        // Take the pending config, remap host paths to container paths.
-        let mut config = self.pending_container_config.take().unwrap_or_default();
-        if let Some(ref cwd) = config.cwd {
-            config.cwd = Some(crate::agent::host_to_container_path(cwd));
-        }
-        config.additional_dirs = config
-            .additional_dirs
-            .iter()
-            .map(|p| crate::agent::host_to_container_path(p))
-            .collect();
-        self.pending_repo_path = None;
-        self.pending_all_repos = None;
-
-        // Write project MCP servers as .mcp.json into the container working directory.
-        if let Some(mcp_servers) = self.pending_container_mcp_servers.take() {
-            if let Some(ref cwd) = config.cwd {
-                if let Some(ref mgr) = self.container_manager {
-                    if let Ok(mgr) = mgr.lock() {
-                        let rt = mgr.runtime().cmd();
-                        if let Some(instance) = mgr.get_instance(container_id) {
-                            if let Some(ref docker_id) = instance.docker_container_id {
-                                if let Err(e) =
-                                    write_container_mcp_json(rt, docker_id, cwd, &mcp_servers)
-                                {
-                                    warn!("Failed to write .mcp.json into container: {e:#}");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Store container ID so `do_spawn_session` uses the devcontainer backend.
-        self.pending_container_id = Some(container_id.to_string());
-
-        // Route through role selection.
-        self.prepare_spawn(config, Vec::new());
-    }
-
-    /// Handle a failed container provisioning attempt.
-    fn handle_container_failed(&mut self, error: &str) {
-        self.container_provisioning = false;
-        let container_id = self.container_provisioning_id.take();
-        self.set_error(format!("Container provisioning failed: {error}"));
-        self.pending_repo_path = None;
-        self.pending_all_repos = None;
-        self.pending_container_config = None;
-        self.pending_container_id = None;
-        self.pending_container_mcp_servers = None;
-
-        // Update placeholder to show error state.
-        if let Some(ref mut ph) = self.container_placeholder {
-            ph.status = SessionStatus::Error;
-            ph.provisioning_step = Some(error.to_string());
-        }
-
-        // Update DB record
-        if let Some(id) = &container_id {
-            let _ = self.db.update_container_state(
-                id,
-                &crate::session::ContainerState::Failed(error.to_string()),
-                None,
-                Some(error),
-            );
-        }
-    }
-
     pub(crate) fn submit_add_project(&mut self) {
-        let name = self.add_project_name.value().trim().to_string();
+        let modals::Modal::AddProject(ref mut ap) = self.modal else {
+            return;
+        };
+
+        let name = ap.name.value().trim().to_string();
 
         // If the path field has content, treat it as an un-added repo
-        let pending_path = self.add_project_path.value().trim().to_string();
+        let pending_path = ap.path.value().trim().to_string();
         if !pending_path.is_empty() {
-            self.add_project_repos.push(PathBuf::from(pending_path));
+            ap.repos.push(PathBuf::from(pending_path));
         }
 
-        if name.is_empty() || self.add_project_repos.is_empty() {
+        if name.is_empty() || ap.repos.is_empty() {
             self.set_error("Project name and at least one repo are required");
             return;
         }
 
         let config = ProjectConfig {
             name,
-            repos: self.add_project_repos.clone(),
+            repos: ap.repos.clone(),
             roles: vec![default_developer_role()],
             mcp_servers: Vec::new(),
             id: None,
@@ -2436,37 +1885,41 @@ impl App {
         let mcp_servers = project.config.mcp_servers.clone();
         let id = project.id;
 
-        self.edit_project_name.set(&name);
-        self.edit_project_path.clear();
-        self.edit_project_field = EditProjectField::Name;
-        self.edit_project_repos = repos;
-        self.edit_project_repo_index = 0;
-        self.edit_project_path_suggestion = None;
-        self.edit_project_original_id = Some(id);
-        self.role_editor_roles = roles;
-        self.role_editor_list_index = 0;
-        self.edit_project_mcp_servers = mcp_servers;
-        self.edit_project_mcp_server_index = 0;
-        self.show_edit_project_modal = true;
+        let mut ep = modals::EditProjectModal::default();
+        ep.name.set(&name);
+        ep.field = EditProjectField::Name;
+        ep.repos = repos;
+        ep.original_id = Some(id);
+        ep.role_editor_roles = roles;
+        ep.mcp_servers = mcp_servers;
+        self.modal = modals::Modal::EditProject(Box::new(ep));
     }
 
     pub(crate) fn submit_edit_project(&mut self) {
-        let name = self.edit_project_name.value().trim().to_string();
+        let modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
+
+        let name = ep.name.value().trim().to_string();
 
         // If the path field has content, treat it as an un-added repo
-        let pending_path = self.edit_project_path.value().trim().to_string();
+        let pending_path = ep.path.value().trim().to_string();
         if !pending_path.is_empty() {
-            self.edit_project_repos.push(PathBuf::from(pending_path));
+            ep.repos.push(PathBuf::from(pending_path));
         }
 
-        if name.is_empty() || self.edit_project_repos.is_empty() {
+        if name.is_empty() || ep.repos.is_empty() {
             self.set_error("Project name and at least one repo are required");
             return;
         }
 
-        let Some(original_id) = self.edit_project_original_id else {
+        let Some(original_id) = ep.original_id else {
             return;
         };
+
+        let repos = ep.repos.clone();
+        let roles = ep.role_editor_roles.clone();
+        let mcp_servers = ep.mcp_servers.clone();
 
         // Find project by original ID (stable across renames)
         let Some(project) = self.projects.iter_mut().find(|p| p.id == original_id) else {
@@ -2476,9 +1929,9 @@ impl App {
 
         // Update config without regenerating ID
         project.config.name = name;
-        project.config.repos = self.edit_project_repos.clone();
-        project.config.roles = self.role_editor_roles.clone();
-        project.config.mcp_servers = self.edit_project_mcp_servers.clone();
+        project.config.repos = repos;
+        project.config.roles = roles;
+        project.config.mcp_servers = mcp_servers;
 
         // Persist project to DB at point of change
         let project_clone = project.clone();
@@ -2490,20 +1943,9 @@ impl App {
     }
 
     pub(crate) fn close_edit_project_modal(&mut self) {
-        self.show_edit_project_modal = false;
+        self.modal.close();
         self.show_role_editor = false;
         self.show_mcp_editor = false;
-        self.edit_project_name.clear();
-        self.edit_project_path.clear();
-        self.edit_project_field = EditProjectField::Name;
-        self.edit_project_repos.clear();
-        self.edit_project_repo_index = 0;
-        self.edit_project_path_suggestion = None;
-        self.edit_project_original_id = None;
-        self.role_editor_roles.clear();
-        self.role_editor_list_index = 0;
-        self.edit_project_mcp_servers.clear();
-        self.edit_project_mcp_server_index = 0;
     }
 
     pub(crate) fn show_delete_project_modal(&mut self) {
@@ -2524,22 +1966,27 @@ impl App {
         // Copy project name before borrowing self
         let project_name = project.config.name.clone();
 
-        self.show_delete_project_modal_flag = true;
-        self.delete_project_name = project_name;
-        self.delete_project_confirmation = TextInput::new();
-        self.delete_project_error = None;
+        self.modal = modals::Modal::DeleteProject(modals::DeleteProjectModal {
+            project_name,
+            confirmation: modals::TextInput::new(),
+            error: None,
+        });
     }
 
     pub(crate) fn delete_active_project(&mut self) {
         // Validate confirmation
-        if self.delete_project_confirmation.value() != self.delete_project_name {
-            self.delete_project_error = Some("Project name doesn't match".to_string());
+        if let modals::Modal::DeleteProject(ref mut dp) = self.modal {
+            if dp.confirmation.value() != dp.project_name {
+                dp.error = Some("Project name doesn't match".to_string());
+                return;
+            }
+        } else {
             return;
         }
 
         // Get project session IDs, ID, and name before removal
         let Some(project) = self.active_project() else {
-            self.show_delete_project_modal_flag = false;
+            self.modal.close();
             return;
         };
 
@@ -2576,7 +2023,7 @@ impl App {
         }
 
         // Close modal and show success
-        self.show_delete_project_modal_flag = false;
+        self.modal.close();
         self.set_status(
             StatusLevel::Success,
             format!("Deleted project '{project_name}'"),
@@ -2718,7 +2165,7 @@ impl App {
         let memory_total = self.sys.total_memory();
 
         // Build parent→children map once for all session tree walks
-        let children_map = Self::build_children_map(&self.sys);
+        Self::build_children_map(&self.sys, &mut self.children_map_buf);
 
         // Build session_id → project_name lookup
         let mut session_project: HashMap<SessionId, String> = HashMap::new();
@@ -2755,7 +2202,7 @@ impl App {
 
             if let Some(pid) = root_pid {
                 let root = sysinfo::Pid::from_u32(pid);
-                let (cpu, mem) = Self::sum_process_tree(&self.sys, root, &children_map);
+                let (cpu, mem) = Self::sum_process_tree(&self.sys, root, &self.children_map_buf);
                 let project_name = session_project
                     .get(&session.info.id)
                     .cloned()
@@ -2783,15 +2230,17 @@ impl App {
         };
     }
 
-    /// Build a parent→children index from the process table.
-    fn build_children_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
-        let mut map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+    /// Build a parent→children index from the process table into a reusable buffer.
+    fn build_children_map(
+        sys: &sysinfo::System,
+        buf: &mut HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    ) {
+        buf.clear();
         for (pid, proc_) in sys.processes() {
             if let Some(parent) = proc_.parent() {
-                map.entry(parent).or_default().push(*pid);
+                buf.entry(parent).or_default().push(*pid);
             }
         }
-        map
     }
 
     /// Read PSS (Proportional Set Size) from `/proc/{pid}/smaps_rollup`.
@@ -3152,463 +2601,6 @@ impl App {
         }
     }
 
-    pub fn view(&mut self, frame: &mut Frame) {
-        let areas = layout::compute_layout(frame.area(), self.show_info_panel);
-
-        status_bar::render_header(frame, areas.header);
-
-        // Left panel (projects + sessions)
-        if let Some(left_area) = areas.left_panel {
-            let project_entries: Vec<project_list::ProjectEntry<'_>> = self
-                .projects
-                .iter()
-                .map(|p| {
-                    let mut busy_count = 0usize;
-                    let mut waiting_count = 0usize;
-                    let mut error_count = 0usize;
-                    for sid in &p.session_ids {
-                        if let Some(s) = self.sessions.iter().find(|s| s.info.id == *sid) {
-                            match s.info.status {
-                                SessionStatus::Busy | SessionStatus::Provisioning => {
-                                    busy_count += 1;
-                                }
-                                SessionStatus::Waiting => waiting_count += 1,
-                                SessionStatus::Error => error_count += 1,
-                                SessionStatus::Idle => {}
-                            }
-                        }
-                    }
-
-                    let repo_count = p.config.repos.len();
-                    let repo_short = if repo_count == 1 {
-                        p.config.repos[0].file_name().and_then(|n| n.to_str())
-                    } else {
-                        None
-                    };
-
-                    project_list::ProjectEntry {
-                        name: &p.config.name,
-                        is_admin: p.is_admin,
-                        repo_count,
-                        repo_short,
-                        role_count: p.config.roles.len(),
-                        busy_count,
-                        waiting_count,
-                        error_count,
-                    }
-                })
-                .collect();
-
-            let project_session_indices = self.active_project_sessions();
-            let mut project_sessions: Vec<&SessionInfo> = project_session_indices
-                .iter()
-                .map(|&i| &self.sessions[i].info)
-                .collect();
-            let mut session_elapsed_ms: Vec<u64> = project_session_indices
-                .iter()
-                .map(|&i| self.sessions[i].millis_since_last_output())
-                .collect();
-
-            // Include VM placeholder in the session list if it belongs to this project.
-            if let Some(ref ph) = self.vm_placeholder {
-                if let Some(project) = self.projects.get(self.active_project_index) {
-                    if project.session_ids.contains(&ph.id) {
-                        project_sessions.push(ph);
-                        session_elapsed_ms.push(0);
-                    }
-                }
-            }
-
-            // Include container placeholder in the session list if it belongs to this project.
-            if let Some(ref ph) = self.container_placeholder {
-                if let Some(project) = self.projects.get(self.active_project_index) {
-                    if project.session_ids.contains(&ph.id) {
-                        project_sessions.push(ph);
-                        session_elapsed_ms.push(0);
-                    }
-                }
-            }
-
-            let panel_focus = match self.focus {
-                InputFocus::ProjectList => project_list::LeftPanelFocus::Projects,
-                InputFocus::SessionList | InputFocus::Terminal => {
-                    project_list::LeftPanelFocus::Sessions
-                }
-            };
-
-            // Compute tri-state focus levels for each sub-panel
-            use crate::ui::FocusLevel;
-            let (project_focus, session_focus) = match self.focus {
-                InputFocus::ProjectList => (FocusLevel::Focused, FocusLevel::Inactive),
-                InputFocus::SessionList => (FocusLevel::Active, FocusLevel::Focused),
-                InputFocus::Terminal => (FocusLevel::Inactive, FocusLevel::Active),
-            };
-
-            project_list::render_left_panel(
-                frame,
-                left_area,
-                &project_list::LeftPanelState {
-                    projects: &project_entries,
-                    active_project: self.active_project_index,
-                    sessions: &project_sessions,
-                    active_session: self.active_session_in_project(),
-                    session_elapsed_ms: &session_elapsed_ms,
-                    focus: panel_focus,
-                    panel_focused: self.focus != InputFocus::Terminal,
-                    project_focus,
-                    session_focus,
-                },
-            );
-        }
-
-        // Info panel
-        if let Some(info_area) = areas.info_panel {
-            let active_project = self.projects.get(self.active_project_index);
-
-            // Determine the session info to display: real session or VM placeholder.
-            let info_session: Option<&SessionInfo> = self
-                .sessions
-                .get(self.active_index)
-                .map(|s| &s.info)
-                .or(self.vm_placeholder.as_ref())
-                .or(self.container_placeholder.as_ref());
-
-            if let Some(info) = info_session {
-                let vm_details = info.vm_id.as_deref().and_then(|vm_id| {
-                    self.db
-                        .get_vm(vm_id)
-                        .ok()
-                        .flatten()
-                        .map(|rec| info_panel::VmDetails {
-                            state: rec.state.to_string(),
-                            cpus: rec.cpus,
-                            memory_mb: rec.memory_mb,
-                            ssh_port: rec.ssh_port,
-                            base_image: rec.base_image,
-                        })
-                });
-                info_panel::render_info_panel(
-                    frame,
-                    info_area,
-                    info,
-                    active_project,
-                    vm_details.as_ref(),
-                    Some(&self.system_metrics),
-                );
-            }
-        }
-
-        // Terminal
-        let terminal_focus = match self.focus {
-            InputFocus::Terminal => crate::ui::FocusLevel::Focused,
-            InputFocus::SessionList => crate::ui::FocusLevel::Active,
-            InputFocus::ProjectList => crate::ui::FocusLevel::Inactive,
-        };
-        let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
-        match self.sessions.get(self.active_index) {
-            Some(session) => {
-                let is_admin_project = self
-                    .projects
-                    .get(self.active_project_index)
-                    .is_some_and(|p| p.is_admin);
-                let parser_arc = if is_shell_view {
-                    session.shell_pane.as_ref().map(|sp| &sp.parser)
-                } else {
-                    None
-                }
-                .unwrap_or(&session.parser);
-                if let Ok(mut parser) = parser_arc.lock() {
-                    terminal_view::render_terminal(
-                        frame,
-                        areas.terminal,
-                        &mut parser,
-                        &session.info,
-                        terminal_focus,
-                        is_admin_project,
-                        is_shell_view,
-                    );
-                }
-            }
-            None => terminal_view::render_empty_terminal(frame, areas.terminal),
-        }
-
-        let focus_label = match self.focus {
-            InputFocus::ProjectList => "Projects",
-            InputFocus::SessionList => "Sessions",
-            InputFocus::Terminal if is_shell_view => "Shell",
-            InputFocus::Terminal => "Terminal",
-        };
-        status_bar::render_footer(
-            frame,
-            areas.footer,
-            &status_bar::FooterState {
-                session_count: self.sessions.len(),
-                project_count: self.projects.len(),
-                status: self.status_message.as_ref(),
-                focus_label,
-                sync_in_progress: self.worktree_sync_in_progress,
-                vm_provisioning: self.vm_provisioning,
-                vm_provisioning_step: &self.vm_provisioning_step,
-                container_provisioning: self.container_provisioning,
-                container_provisioning_step: &self.container_provisioning_step,
-                tick_count: self.tick_count,
-            },
-        );
-
-        // Help overlay (rendered last, on top of everything)
-        if self.show_help {
-            render_help_overlay(frame);
-        }
-
-        // Add-project modal (on top of everything including help)
-        if self.show_add_project_modal {
-            add_project_modal::render_add_project_modal(
-                frame,
-                &add_project_modal::AddProjectModalState {
-                    name: self.add_project_name.value(),
-                    name_cursor: self.add_project_name.cursor_pos(),
-                    path: self.add_project_path.value(),
-                    path_cursor: self.add_project_path.cursor_pos(),
-                    path_suggestion: self.add_project_path_suggestion.as_deref(),
-                    repos: &self.add_project_repos,
-                    repo_index: self.add_project_repo_index,
-                    focused_field: self.add_project_field,
-                },
-            );
-        }
-
-        // Edit-project modal
-        if self.show_edit_project_modal {
-            edit_project_modal::render_edit_project_modal(
-                frame,
-                &edit_project_modal::EditProjectModalState {
-                    name: self.edit_project_name.value(),
-                    name_cursor: self.edit_project_name.cursor_pos(),
-                    path: self.edit_project_path.value(),
-                    path_cursor: self.edit_project_path.cursor_pos(),
-                    path_suggestion: self.edit_project_path_suggestion.as_deref(),
-                    repos: &self.edit_project_repos,
-                    repo_index: self.edit_project_repo_index,
-                    roles: &self.role_editor_roles,
-                    role_index: self.role_editor_list_index,
-                    mcp_servers: &self.edit_project_mcp_servers,
-                    mcp_server_index: self.edit_project_mcp_server_index,
-                    focused_field: self.edit_project_field,
-                },
-            );
-        }
-
-        // Delete-project modal
-        if self.show_delete_project_modal_flag {
-            delete_project_modal::render_delete_project_modal(
-                frame,
-                &delete_project_modal::DeleteProjectModalState {
-                    project_name: &self.delete_project_name,
-                    confirmation: self.delete_project_confirmation.value(),
-                    confirmation_cursor: self.delete_project_confirmation.cursor_pos(),
-                    error: self.delete_project_error.as_deref(),
-                },
-            );
-        }
-
-        // Repo selector modal
-        if self.show_repo_selector {
-            if let Some(active_project) = self.active_project() {
-                repo_selector_modal::render_repo_selector_modal(
-                    frame,
-                    &repo_selector_modal::RepoSelectorState {
-                        repos: &active_project.config.repos,
-                        selected_index: self.repo_selector_index,
-                    },
-                );
-            }
-        }
-
-        // Session mode modal
-        if self.show_session_mode_modal {
-            session_mode_modal::render_session_mode_modal(
-                frame,
-                &session_mode_modal::SessionModeState {
-                    selected_index: self.session_mode_index,
-                    devcontainer_available: self.backends.has("devcontainer"),
-                    vm_available: self.backends.has("qemu-vm"),
-                },
-            );
-        }
-
-        // Containerfile picker modal
-        if self.show_containerfile_picker {
-            containerfile_picker::render_containerfile_picker(
-                frame,
-                &containerfile_picker::ContainerfilePickerState {
-                    containerfiles: self.containerfile_list.clone(),
-                    selected_index: self.containerfile_picker_index,
-                },
-            );
-        }
-
-        // Worktree name modal
-        if self.show_worktree_name_modal {
-            let base = self.pending_base_branch.as_deref().unwrap_or("");
-            worktree_name_modal::render_worktree_name_modal(
-                frame,
-                &worktree_name_modal::WorktreeNameState {
-                    name: self.worktree_name_input.value(),
-                    cursor: self.worktree_name_input.cursor_pos(),
-                    base_branch: base,
-                },
-            );
-        }
-
-        // Branch selector modal
-        if self.show_branch_selector {
-            branch_selector_modal::render_branch_selector_modal(
-                frame,
-                &branch_selector_modal::BranchSelectorState {
-                    branches: &self.available_branches,
-                    selected_index: self.branch_selector_index,
-                },
-            );
-        }
-
-        // Role selector modal
-        if self.show_role_selector {
-            if let Some(project) = self.active_project() {
-                role_selector_modal::render_role_selector_modal(
-                    frame,
-                    &role_selector_modal::RoleSelectorState {
-                        roles: &project.config.roles,
-                        selected_index: self.role_selector_index,
-                    },
-                );
-            }
-        }
-
-        // Role editor modal (detail form, overlays edit-project modal)
-        if self.show_role_editor {
-            role_editor_modal::render_role_editor_modal(
-                frame,
-                &role_editor_modal::RoleEditorState {
-                    project_name: self.edit_project_name.value(),
-                    name: self.role_editor_name.value(),
-                    name_cursor: self.role_editor_name.cursor_pos(),
-                    description: self.role_editor_description.value(),
-                    description_cursor: self.role_editor_description.cursor_pos(),
-                    allowed_tools: &self.role_editor_allowed_tools.items,
-                    allowed_tools_index: self.role_editor_allowed_tools.selected,
-                    allowed_tools_mode: self.role_editor_allowed_tools.mode,
-                    allowed_tools_input: self.role_editor_allowed_tools.input.value(),
-                    allowed_tools_input_cursor: self.role_editor_allowed_tools.input.cursor_pos(),
-                    disallowed_tools: &self.role_editor_disallowed_tools.items,
-                    disallowed_tools_index: self.role_editor_disallowed_tools.selected,
-                    disallowed_tools_mode: self.role_editor_disallowed_tools.mode,
-                    disallowed_tools_input: self.role_editor_disallowed_tools.input.value(),
-                    disallowed_tools_input_cursor: self
-                        .role_editor_disallowed_tools
-                        .input
-                        .cursor_pos(),
-                    system_prompt: self.role_editor_system_prompt.value(),
-                    system_prompt_cursor: self.role_editor_system_prompt.cursor_pos(),
-                    env: &self.role_editor_env.items,
-                    env_index: self.role_editor_env.selected,
-                    env_mode: self.role_editor_env.mode,
-                    env_input: self.role_editor_env.input.value(),
-                    env_input_cursor: self.role_editor_env.input.cursor_pos(),
-                    focused_field: self.role_editor_field,
-                },
-            );
-        }
-
-        // MCP editor modal (detail form, overlays edit-project modal)
-        if self.show_mcp_editor {
-            crate::ui::mcp_editor_modal::render_mcp_editor_modal(
-                frame,
-                &crate::ui::mcp_editor_modal::McpEditorState {
-                    project_name: self.edit_project_name.value(),
-                    name: self.mcp_editor_name.value(),
-                    name_cursor: self.mcp_editor_name.cursor_pos(),
-                    command: self.mcp_editor_command.value(),
-                    command_cursor: self.mcp_editor_command.cursor_pos(),
-                    args: &self.mcp_editor_args.items,
-                    args_index: self.mcp_editor_args.selected,
-                    args_mode: self.mcp_editor_args.mode,
-                    args_input: self.mcp_editor_args.input.value(),
-                    args_input_cursor: self.mcp_editor_args.input.cursor_pos(),
-                    env: &self.mcp_editor_env.items,
-                    env_index: self.mcp_editor_env.selected,
-                    env_mode: self.mcp_editor_env.mode,
-                    env_input: self.mcp_editor_env.input.value(),
-                    env_input_cursor: self.mcp_editor_env.input.cursor_pos(),
-                    focused_field: self.mcp_editor_field,
-                },
-            );
-        }
-
-        // Restore sessions modal
-        if self.show_restore_sessions_modal {
-            let entries: Vec<restore_sessions_modal::DeletedSessionEntry> = self
-                .restore_sessions_list
-                .iter()
-                .map(|d| restore_sessions_modal::DeletedSessionEntry {
-                    name: d.name.clone(),
-                    role: d.role.clone(),
-                    deleted_ago: format_time_ago(d.deleted_at),
-                    has_worktrees: !d.worktrees.is_empty(),
-                })
-                .collect();
-            restore_sessions_modal::render_restore_sessions_modal(
-                frame,
-                &restore_sessions_modal::RestoreSessionsModalState {
-                    entries: &entries,
-                    selected_index: self.restore_sessions_index,
-                },
-            );
-        }
-
-        // Discard confirmation overlay
-        if self.show_discard_confirmation {
-            let confirm_area = crate::ui::centered_fixed_height_rect(40, 5, frame.area());
-            frame.render_widget(Clear, confirm_area);
-            let block = Block::default()
-                .title(" Unsaved Changes ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Theme::STATUS_ERROR));
-            let inner = block.inner(confirm_area);
-            frame.render_widget(block, confirm_area);
-            let text = Line::from(vec![
-                Span::styled(
-                    " Discard changes? ",
-                    Style::default().fg(Theme::TEXT_PRIMARY),
-                ),
-                Span::styled("y", Theme::keybind()),
-                Span::styled("/", Style::default().fg(Theme::TEXT_MUTED)),
-                Span::styled("n", Theme::keybind()),
-            ]);
-            frame.render_widget(
-                Paragraph::new(text),
-                Rect {
-                    y: inner.y + inner.height / 2,
-                    ..inner
-                },
-            );
-        }
-
-        // Selection highlight and text cache — runs after all rendering.
-        if let Some(ref sel) = self.text_selection {
-            let sel_style = Style::default()
-                .bg(Theme::SELECTION_BG)
-                .fg(Theme::SELECTION_FG);
-            let sel_clone = sel.clone();
-
-            selection::highlight_buffer(frame.buffer_mut(), &sel_clone, sel_style);
-
-            let text = selection::extract_text_from_buffer(frame.buffer_mut(), &sel_clone);
-            self.selected_text_cache = if text.is_empty() { None } else { Some(text) };
-        } else {
-            self.selected_text_cache = None;
-        }
-    }
-
     pub fn should_quit(&self) -> bool {
         self.should_quit
     }
@@ -3688,7 +2680,9 @@ impl App {
         self.show_role_editor = false;
         self.role_editor_snapshot = None;
         self.show_discard_confirmation = false;
-        self.edit_project_field = EditProjectField::Roles;
+        if let modals::Modal::EditProject(ref mut ep) = self.modal {
+            ep.field = EditProjectField::Roles;
+        }
     }
 
     /// Close the MCP editor, clearing snapshot and confirmation state.
@@ -4748,264 +3742,43 @@ impl App {
     }
 }
 
-fn render_help_overlay(frame: &mut Frame) {
-    let area = centered_rect(60, 70, frame.area());
-
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Keybindings ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let help_lines = vec![
-        help_section("Navigation (Vim: h/j/k/l)"),
-        help_line("Ctrl+H", "Focus project list (h = left)"),
-        help_line("Ctrl+J", "Next project (project focus) / session"),
-        help_line("Ctrl+K", "Previous project (project focus) / session"),
-        help_line("Ctrl+L", "Cycle focus (l = right/forward)"),
-        Line::from(""),
-        help_section("Session Management"),
-        help_line("Ctrl+N", "New project (project focus) / session"),
-        help_line("Ctrl+C", "Copy selection / SIGINT (terminal)"),
-        help_line("Ctrl+R", "Restart active session"),
-        help_line("Ctrl+S", "Sync all worktrees with main"),
-        help_line("Ctrl+T", "Toggle shell pane"),
-        help_line("Ctrl+Z", "Undo session delete"),
-        help_line("Ctrl+U", "Restore deleted session"),
-        Line::from(""),
-        help_section("Project Management"),
-        help_line(
-            "Ctrl+D",
-            "Delete session (session list) / project (project list)",
-        ),
-        help_line("Ctrl+E", "Edit active project (name, repos, roles)"),
-        Line::from(""),
-        help_section("UI"),
-        help_line("Ctrl+Q", "Quit Thurbox"),
-        help_line("F1", "Show this help"),
-        help_line("F2", "Toggle info panel"),
-        Line::from(""),
-        help_section("Project List (when focused)"),
-        help_line("j / Down", "Next project"),
-        help_line("k / Up", "Previous project"),
-        help_line("Enter", "Focus session list"),
-        Line::from(""),
-        help_section("Session List (when focused)"),
-        help_line("j / Down", "Next session"),
-        help_line("k / Up", "Previous session"),
-        help_line("Enter", "Focus terminal"),
-        Line::from(""),
-        help_section("Terminal (when focused)"),
-        help_line("Shift+\u{2191}/\u{2193}", "Scroll up/down 1 line"),
-        help_line("Shift+PgUp/PgDn", "Scroll up/down half page"),
-        help_line("Mouse wheel", "Scroll up/down 3 lines"),
-        help_line("Click+drag", "Select text (any pane)"),
-        help_line("Ctrl+V", "Paste from clipboard"),
-        help_line("*", "All other keys forwarded to session"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Press Esc to close",
-            Style::default().fg(Theme::TEXT_MUTED),
-        )),
-    ];
-
-    let paragraph = Paragraph::new(help_lines).block(block);
-    frame.render_widget(paragraph, area);
-}
-
-fn help_section(title: &str) -> Line<'_> {
-    Line::from(Span::styled(title, Theme::section_header()))
-}
-
-fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
-    Line::from(vec![
-        Span::styled(format!("  {key:<16}"), Theme::keybind()),
-        Span::styled(desc, Style::default().fg(Theme::TEXT_PRIMARY)),
-    ])
-}
-
-/// Create a centered rectangle within the given area.
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
-}
-
-/// Format a millisecond timestamp as a human-readable "time ago" string.
-fn format_time_ago(millis: u64) -> String {
-    let now = crate::sync::current_time_millis();
-    let elapsed_secs = now.saturating_sub(millis) / 1000;
-    if elapsed_secs < 60 {
-        format!("{elapsed_secs}s ago")
-    } else if elapsed_secs < 3600 {
-        format!("{}m ago", elapsed_secs / 60)
-    } else if elapsed_secs < 86400 {
-        format!("{}h ago", elapsed_secs / 3600)
-    } else {
-        format!("{}d ago", elapsed_secs / 86400)
-    }
-}
-
-fn open_url(url: &str) {
-    let cmd = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(cmd)
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok();
-}
-
-/// Write a `.mcp.json` file into a VM directory via SSH so Claude Code discovers
-/// the project's MCP servers when running inside the sandbox.
-fn write_vm_mcp_json(
-    instance: &crate::agent::vm::VmInstance,
-    vm_cwd: &std::path::Path,
-    mcp_servers: &[crate::session::McpServerConfig],
-) -> anyhow::Result<()> {
-    if mcp_servers.is_empty() {
-        return Ok(());
+// Test-only helper accessors for modal state.
+//
+// These provide ergonomic access to fields that moved into the Modal enum,
+// so tests don't need to destructure the modal everywhere.
+#[cfg(test)]
+impl App {
+    fn is_edit_project_open(&self) -> bool {
+        matches!(self.modal, modals::Modal::EditProject(_))
     }
 
-    // Build the .mcp.json structure Claude Code expects.
-    let mut servers = serde_json::Map::new();
-    for srv in mcp_servers {
-        let mut entry = serde_json::Map::new();
-        entry.insert(
-            "command".to_string(),
-            serde_json::Value::String(srv.command.clone()),
-        );
-        if !srv.args.is_empty() {
-            entry.insert("args".to_string(), serde_json::json!(srv.args));
+    fn is_add_project_open(&self) -> bool {
+        matches!(self.modal, modals::Modal::AddProject(_))
+    }
+
+    fn edit_project(&self) -> Option<&modals::EditProjectModal> {
+        if let modals::Modal::EditProject(ref ep) = self.modal {
+            Some(ep)
+        } else {
+            None
         }
-        if !srv.env.is_empty() {
-            entry.insert("env".to_string(), serde_json::json!(srv.env));
+    }
+
+    fn edit_project_mut(&mut self) -> Option<&mut modals::EditProjectModal> {
+        if let modals::Modal::EditProject(ref mut ep) = self.modal {
+            Some(ep)
+        } else {
+            None
         }
-        servers.insert(srv.name.clone(), serde_json::Value::Object(entry));
-    }
-    let doc = serde_json::json!({ "mcpServers": servers });
-    let json_str = serde_json::to_string_pretty(&doc)?;
-
-    let key_path = instance.ssh_key_path();
-    let ssh_port = instance.ssh_port.to_string();
-    let user = instance.ssh_user();
-    let dest = vm_cwd.join(".mcp.json");
-
-    let shell_cmd = format!("cat > '{}'", dest.to_string_lossy().replace('\'', "'\\''"));
-    let output = std::process::Command::new("ssh")
-        .args([
-            "-i",
-            &key_path.to_string_lossy(),
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "BatchMode=yes",
-            "-p",
-            &ssh_port,
-            &format!("{user}@localhost"),
-            &shell_cmd,
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
-                stdin.write_all(json_str.as_bytes())?;
-            }
-            child.wait_with_output()
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("ssh write .mcp.json failed: {stderr}");
     }
 
-    info!("Wrote .mcp.json into VM at {}", dest.display());
-    Ok(())
-}
-
-/// Write a `.mcp.json` file into a container directory via `docker exec` so Claude Code
-/// discovers the project's MCP servers when running inside the devcontainer.
-fn write_container_mcp_json(
-    runtime: &str,
-    docker_container_id: &str,
-    container_cwd: &std::path::Path,
-    mcp_servers: &[crate::session::McpServerConfig],
-) -> anyhow::Result<()> {
-    if mcp_servers.is_empty() {
-        return Ok(());
+    /// Set up an empty EditProject modal with the role editor open.
+    /// Used by tests that need the role editor without requiring an active project.
+    fn open_empty_role_editor(&mut self) {
+        self.modal = modals::Modal::EditProject(Box::default());
+        self.role_editor_view = RoleEditorView::List;
+        self.show_role_editor = true;
     }
-
-    let docker_id = docker_container_id;
-
-    // Build the .mcp.json structure Claude Code expects.
-    let mut servers = serde_json::Map::new();
-    for srv in mcp_servers {
-        let mut entry = serde_json::Map::new();
-        entry.insert(
-            "command".to_string(),
-            serde_json::Value::String(srv.command.clone()),
-        );
-        if !srv.args.is_empty() {
-            entry.insert("args".to_string(), serde_json::json!(srv.args));
-        }
-        if !srv.env.is_empty() {
-            entry.insert("env".to_string(), serde_json::json!(srv.env));
-        }
-        servers.insert(srv.name.clone(), serde_json::Value::Object(entry));
-    }
-    let doc = serde_json::json!({ "mcpServers": servers });
-    let json_str = serde_json::to_string_pretty(&doc)?;
-
-    let dest = container_cwd.join(".mcp.json");
-    let shell_cmd = format!("cat > '{}'", dest.to_string_lossy().replace('\'', "'\\''"));
-    let output = std::process::Command::new(runtime)
-        .args(["exec", "-i", docker_id, "sh", "-c", &shell_cmd])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
-                stdin.write_all(json_str.as_bytes())?;
-            }
-            child.wait_with_output()
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("{runtime} exec write .mcp.json failed: {stderr}");
-    }
-
-    info!("Wrote .mcp.json into container at {}", dest.display());
-    Ok(())
 }
 
 #[cfg(test)]
@@ -5502,8 +4275,9 @@ mod tests {
         );
         app.open_role_editor();
         assert!(app.show_role_editor);
-        assert_eq!(app.role_editor_roles.len(), 1);
-        assert_eq!(app.role_editor_roles[0].name, "developer");
+        let ep = app.edit_project().unwrap();
+        assert_eq!(ep.role_editor_roles.len(), 1);
+        assert_eq!(ep.role_editor_roles[0].name, "developer");
         assert_eq!(app.role_editor_view, RoleEditorView::List);
     }
 
@@ -5532,8 +4306,9 @@ mod tests {
             None,
         );
         app.open_role_editor();
-        assert_eq!(app.role_editor_roles.len(), 1);
-        assert_eq!(app.role_editor_roles[0].name, "ops");
+        let ep = app.edit_project().unwrap();
+        assert_eq!(ep.role_editor_roles.len(), 1);
+        assert_eq!(ep.role_editor_roles[0].name, "ops");
     }
 
     #[test]
@@ -5547,7 +4322,7 @@ mod tests {
             None,
             None,
         );
-        app.open_role_editor();
+        app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
             app.role_editor_name.insert(c);
@@ -5557,9 +4332,10 @@ mod tests {
             .items
             .push("Bash(git:*)".to_string());
         app.submit_role_editor();
-        assert_eq!(app.role_editor_roles.len(), 1);
+        let ep = app.edit_project().unwrap();
+        assert_eq!(ep.role_editor_roles.len(), 1);
         assert_eq!(
-            app.role_editor_roles[0].permissions.allowed_tools,
+            ep.role_editor_roles[0].permissions.allowed_tools,
             vec!["Read".to_string(), "Bash(git:*)".to_string()]
         );
     }
@@ -5575,7 +4351,7 @@ mod tests {
             None,
             None,
         );
-        app.open_role_editor();
+        app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
             app.role_editor_name.insert(c);
@@ -5587,9 +4363,10 @@ mod tests {
             .items
             .push("Write".to_string());
         app.submit_role_editor();
-        assert_eq!(app.role_editor_roles.len(), 1);
+        let ep = app.edit_project().unwrap();
+        assert_eq!(ep.role_editor_roles.len(), 1);
         assert_eq!(
-            app.role_editor_roles[0].permissions.disallowed_tools,
+            ep.role_editor_roles[0].permissions.disallowed_tools,
             vec!["Edit".to_string(), "Write".to_string()]
         );
     }
@@ -5630,7 +4407,7 @@ mod tests {
         );
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, Vec::new());
-        assert!(app.show_role_selector);
+        assert!(matches!(app.modal, modals::Modal::RoleSelector(_)));
     }
 
     #[test]
@@ -5652,7 +4429,7 @@ mod tests {
             None,
         );
         // With no roles, the selector should never be set
-        assert!(!app.show_role_selector);
+        assert!(!matches!(app.modal, modals::Modal::RoleSelector(_)));
     }
 
     #[test]
@@ -5666,7 +4443,7 @@ mod tests {
             None,
             None,
         );
-        app.open_role_editor();
+        app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
         app.submit_role_editor();
@@ -5705,12 +4482,12 @@ mod tests {
             None,
             None,
         );
-        app.open_role_editor();
+        app.open_empty_role_editor();
         // Add first role
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("dev");
         app.submit_role_editor();
-        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(app.edit_project().unwrap().role_editor_roles.len(), 1);
 
         // Try to add a second role with the same name
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -5725,7 +4502,7 @@ mod tests {
             .contains("already exists"));
         // Should still be in editor view, role count unchanged
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
-        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(app.edit_project().unwrap().role_editor_roles.len(), 1);
     }
 
     #[test]
@@ -5766,7 +4543,7 @@ mod tests {
         app.role_editor_name.set("custom-v2");
         app.submit_role_editor();
 
-        let role = &app.role_editor_roles[0];
+        let role = &app.edit_project().unwrap().role_editor_roles[0];
         assert_eq!(role.name, "custom-v2");
         // permission_mode and tools are not exposed in the editor
         assert_eq!(role.permissions.permission_mode, Some("plan".to_string()));
@@ -5789,12 +4566,12 @@ mod tests {
             None,
             None,
         );
-        app.open_role_editor();
+        app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
         app.submit_role_editor();
 
-        let role = &app.role_editor_roles[0];
+        let role = &app.edit_project().unwrap().role_editor_roles[0];
         assert!(role.permissions.permission_mode.is_none());
         assert!(role.permissions.tools.is_none());
         assert!(role.permissions.append_system_prompt.is_none());
@@ -5916,14 +4693,14 @@ mod tests {
             None,
             None,
         );
-        app.open_role_editor();
+        app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
 
         app.handle_role_editor_editor_key(KeyCode::Esc);
         // Esc now closes the role editor overlay, returning to edit-project
         assert!(!app.show_role_editor);
-        assert_eq!(app.edit_project_field, EditProjectField::Roles);
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Roles);
     }
 
     #[test]
@@ -5959,11 +4736,11 @@ mod tests {
         );
         app.open_role_editor();
         // Select the last role
-        app.role_editor_list_index = 1;
+        app.edit_project_mut().unwrap().role_editor_list_index = 1;
         // Delete it
         app.handle_role_editor_list_key(KeyCode::Char('d'));
-        assert_eq!(app.role_editor_roles.len(), 1);
-        assert_eq!(app.role_editor_list_index, 0);
+        assert_eq!(app.edit_project().unwrap().role_editor_roles.len(), 1);
+        assert_eq!(app.edit_project().unwrap().role_editor_list_index, 0);
     }
 
     #[test]
@@ -5977,7 +4754,7 @@ mod tests {
             None,
             None,
         );
-        app.open_role_editor();
+        app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
         // Trigger an error by submitting with empty name
@@ -5991,7 +4768,7 @@ mod tests {
             .status_message
             .as_ref()
             .map_or(true, |m| m.level != StatusLevel::Error));
-        assert_eq!(app.role_editor_roles.len(), 1);
+        assert_eq!(app.edit_project().unwrap().role_editor_roles.len(), 1);
     }
 
     #[test]
@@ -6228,19 +5005,28 @@ mod tests {
         app.submit_role_editor();
 
         assert_eq!(
-            app.role_editor_roles[0].permissions.append_system_prompt,
+            app.edit_project().unwrap().role_editor_roles[0]
+                .permissions
+                .append_system_prompt,
             Some("Be very safe".to_string())
         );
     }
 
     #[test]
     fn system_prompt_empty_saves_as_none() {
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
         let mut app = App::new(
             24,
             120,
             stub_backend(),
             stub_provider(),
-            test_db(),
+            test_db_with_project(&config),
             None,
             None,
         );
@@ -6250,7 +5036,7 @@ mod tests {
         app.role_editor_system_prompt.set("");
         app.submit_role_editor();
 
-        assert!(app.role_editor_roles[0]
+        assert!(app.edit_project().unwrap().role_editor_roles[0]
             .permissions
             .append_system_prompt
             .is_none());
@@ -6284,7 +5070,7 @@ mod tests {
         );
         // With exactly 1 role, prepare_spawn should not show selector
         // (it would try to spawn, which needs a runtime — just verify no selector)
-        assert!(!app.show_role_selector);
+        assert!(!matches!(app.modal, modals::Modal::RoleSelector(_)));
     }
 
     // --- Project loading helper tests ---
@@ -6655,7 +5441,7 @@ mod tests {
         app.active_project_index = 1;
         app.focus = InputFocus::ProjectList;
         app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
-        assert!(app.show_delete_project_modal_flag);
+        assert!(matches!(app.modal, modals::Modal::DeleteProject(_)));
     }
 
     #[test]
@@ -6664,7 +5450,7 @@ mod tests {
         app.focus = InputFocus::Terminal;
         app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
         // Should NOT show delete modal — Ctrl+D is forwarded to PTY
-        assert!(!app.show_delete_project_modal_flag);
+        assert!(!matches!(app.modal, modals::Modal::DeleteProject(_)));
         assert_eq!(app.sessions.len(), 1); // session not closed either
     }
 
@@ -6685,19 +5471,22 @@ mod tests {
             InputFocus::SessionList,
             InputFocus::Terminal,
         ] {
-            app.show_help = false;
+            app.modal = modals::Modal::None;
             app.focus = focus;
             app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
-            assert!(app.show_help, "F1 should show help from {focus:?}");
+            assert!(
+                matches!(app.modal, modals::Modal::Help),
+                "F1 should show help from {focus:?}"
+            );
         }
     }
 
     #[test]
     fn f1_does_not_activate_during_modal() {
         let mut app = app_with_sessions(0);
-        app.show_repo_selector = true;
+        app.modal = modals::Modal::RepoSelector(modals::RepoSelectorModal::default());
         app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
-        assert!(!app.show_help);
+        assert!(!matches!(app.modal, modals::Modal::Help));
     }
 
     #[test]
@@ -7013,11 +5802,14 @@ mod tests {
     fn open_edit_project_populates_fields() {
         let mut app = app_with_project("my-proj", vec![PathBuf::from("/repo/a")]);
         app.open_edit_project_modal();
-        assert!(app.show_edit_project_modal);
-        assert_eq!(app.edit_project_name.value(), "my-proj");
-        assert_eq!(app.edit_project_repos, vec![PathBuf::from("/repo/a")]);
-        assert_eq!(app.edit_project_field, EditProjectField::Name);
-        assert!(app.edit_project_original_id.is_some());
+        assert!(app.is_edit_project_open());
+        assert_eq!(app.edit_project().unwrap().name.value(), "my-proj");
+        assert_eq!(
+            app.edit_project().unwrap().repos,
+            vec![PathBuf::from("/repo/a")]
+        );
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Name);
+        assert!(app.edit_project().unwrap().original_id.is_some());
     }
 
     #[test]
@@ -7026,12 +5818,13 @@ mod tests {
         let original_id = app.projects[0].id;
 
         app.open_edit_project_modal();
-        app.edit_project_name.clear();
-        app.edit_project_name.set("new-name");
-        app.edit_project_repos = vec![PathBuf::from("/repo/b"), PathBuf::from("/repo/c")];
+        app.edit_project_mut().unwrap().name.clear();
+        app.edit_project_mut().unwrap().name.set("new-name");
+        app.edit_project_mut().unwrap().repos =
+            vec![PathBuf::from("/repo/b"), PathBuf::from("/repo/c")];
         app.submit_edit_project();
 
-        assert!(!app.show_edit_project_modal);
+        assert!(!app.is_edit_project_open());
         assert_eq!(app.projects[0].config.name, "new-name");
         assert_eq!(app.projects[0].config.repos.len(), 2);
         // ID must stay stable (no UUID regeneration)
@@ -7042,11 +5835,11 @@ mod tests {
     fn submit_edit_project_rejects_empty_name() {
         let mut app = app_with_project("test", vec![PathBuf::from("/repo")]);
         app.open_edit_project_modal();
-        app.edit_project_name.clear();
+        app.edit_project_mut().unwrap().name.clear();
         app.submit_edit_project();
 
         // Modal should still be open
-        assert!(app.show_edit_project_modal);
+        assert!(app.is_edit_project_open());
         assert!(app.status_message.is_some());
     }
 
@@ -7054,10 +5847,10 @@ mod tests {
     fn submit_edit_project_rejects_empty_repos() {
         let mut app = app_with_project("test", vec![PathBuf::from("/repo")]);
         app.open_edit_project_modal();
-        app.edit_project_repos.clear();
+        app.edit_project_mut().unwrap().repos.clear();
         app.submit_edit_project();
 
-        assert!(app.show_edit_project_modal);
+        assert!(app.is_edit_project_open());
         assert!(app.status_message.is_some());
     }
 
@@ -7065,10 +5858,10 @@ mod tests {
     fn submit_edit_project_auto_adds_pending_path() {
         let mut app = app_with_project("test", vec![PathBuf::from("/repo/a")]);
         app.open_edit_project_modal();
-        app.edit_project_path.set("/repo/b");
+        app.edit_project_mut().unwrap().path.set("/repo/b");
         app.submit_edit_project();
 
-        assert!(!app.show_edit_project_modal);
+        assert!(!app.is_edit_project_open());
         assert_eq!(app.projects[0].config.repos.len(), 2);
         assert_eq!(app.projects[0].config.repos[1], PathBuf::from("/repo/b"));
     }
@@ -7077,13 +5870,12 @@ mod tests {
     fn close_edit_project_clears_all_state() {
         let mut app = app_with_project("test", vec![PathBuf::from("/repo")]);
         app.open_edit_project_modal();
-        assert!(app.show_edit_project_modal);
+        assert!(app.is_edit_project_open());
 
         app.close_edit_project_modal();
-        assert!(!app.show_edit_project_modal);
-        assert_eq!(app.edit_project_name.value(), "");
-        assert!(app.edit_project_repos.is_empty());
-        assert!(app.edit_project_original_id.is_none());
+        assert!(!app.is_edit_project_open());
+        // After closing, the EditProject modal is gone entirely
+        assert!(app.edit_project().is_none());
     }
 
     #[test]
@@ -7092,40 +5884,46 @@ mod tests {
         app.open_edit_project_modal();
 
         // Name -> Path
-        assert_eq!(app.edit_project_field, EditProjectField::Name);
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Name);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.edit_project_field, EditProjectField::Path);
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Path);
 
         // Path -> RepoList (repos not empty, no suggestion)
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.edit_project_field, EditProjectField::RepoList);
+        assert_eq!(
+            app.edit_project().unwrap().field,
+            EditProjectField::RepoList
+        );
 
         // RepoList -> Roles
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.edit_project_field, EditProjectField::Roles);
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Roles);
 
         // Roles -> McpServers
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.edit_project_field, EditProjectField::McpServers);
+        assert_eq!(
+            app.edit_project().unwrap().field,
+            EditProjectField::McpServers
+        );
 
         // McpServers -> Name
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.edit_project_field, EditProjectField::Name);
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Name);
     }
 
     #[test]
     fn edit_project_tab_skips_repo_list_when_empty() {
         let mut app = app_with_project("test", vec![PathBuf::from("/repo")]);
         app.open_edit_project_modal();
-        app.edit_project_repos.clear();
+        app.edit_project_mut().unwrap().repos.clear();
 
         // Name -> Path
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.edit_project_field, EditProjectField::Path);
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Path);
 
         // Path -> Roles (skip empty RepoList)
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.edit_project_field, EditProjectField::Roles);
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Roles);
     }
 
     #[test]
@@ -7133,7 +5931,7 @@ mod tests {
         let mut app = app_with_project("test", vec![PathBuf::from("/repo")]);
         app.open_edit_project_modal();
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!app.show_edit_project_modal);
+        assert!(!app.is_edit_project_open());
     }
 
     #[test]
@@ -7143,24 +5941,27 @@ mod tests {
             vec![PathBuf::from("/repo/a"), PathBuf::from("/repo/b")],
         );
         app.open_edit_project_modal();
-        app.edit_project_field = EditProjectField::RepoList;
-        app.edit_project_repo_index = 0;
+        app.edit_project_mut().unwrap().field = EditProjectField::RepoList;
+        app.edit_project_mut().unwrap().repo_index = 0;
 
         // Delete first repo
         app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        assert_eq!(app.edit_project_repos.len(), 1);
-        assert_eq!(app.edit_project_repos[0], PathBuf::from("/repo/b"));
+        assert_eq!(app.edit_project().unwrap().repos.len(), 1);
+        assert_eq!(
+            app.edit_project().unwrap().repos[0],
+            PathBuf::from("/repo/b")
+        );
     }
 
     #[test]
     fn edit_project_repo_list_empty_after_delete_switches_to_path() {
         let mut app = app_with_project("test", vec![PathBuf::from("/repo/a")]);
         app.open_edit_project_modal();
-        app.edit_project_field = EditProjectField::RepoList;
+        app.edit_project_mut().unwrap().field = EditProjectField::RepoList;
 
         app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        assert!(app.edit_project_repos.is_empty());
-        assert_eq!(app.edit_project_field, EditProjectField::Path);
+        assert!(app.edit_project().unwrap().repos.is_empty());
+        assert_eq!(app.edit_project().unwrap().field, EditProjectField::Path);
     }
 
     #[test]
@@ -7169,8 +5970,8 @@ mod tests {
         let id_before = app.projects[0].id;
 
         app.open_edit_project_modal();
-        app.edit_project_name.clear();
-        app.edit_project_name.set("beta");
+        app.edit_project_mut().unwrap().name.clear();
+        app.edit_project_mut().unwrap().name.set("beta");
         app.submit_edit_project();
 
         assert_eq!(app.projects[0].config.name, "beta");
@@ -7262,14 +6063,11 @@ mod tests {
 
         // Step 3: Rename "TestA" → "TestB" via edit modal
         app.open_edit_project_modal();
-        assert!(app.show_edit_project_modal);
-        app.edit_project_name.set("TestB");
+        assert!(app.is_edit_project_open());
+        app.edit_project_mut().unwrap().name.set("TestB");
         // Repos stay the same (pre-populated from open_edit_project_modal)
         app.submit_edit_project();
-        assert!(
-            !app.show_edit_project_modal,
-            "Modal should close on success"
-        );
+        assert!(!app.is_edit_project_open(), "Modal should close on success");
 
         // Verify: project renamed, ID stable
         let renamed_project = app.projects.iter().find(|p| p.config.name == "TestB");
@@ -7467,9 +6265,9 @@ mod tests {
             permissions: RolePermissions::default(),
         }]);
         app.open_edit_project_modal();
-        assert_eq!(app.role_editor_roles.len(), 1);
-        assert_eq!(app.role_editor_roles[0].name, "dev");
-        assert_eq!(app.role_editor_list_index, 0);
+        assert_eq!(app.edit_project().unwrap().role_editor_roles.len(), 1);
+        assert_eq!(app.edit_project().unwrap().role_editor_roles[0].name, "dev");
+        assert_eq!(app.edit_project().unwrap().role_editor_list_index, 0);
     }
 
     #[test]
@@ -7478,11 +6276,14 @@ mod tests {
         let mut app = app_with_roles(vec![]);
         app.open_edit_project_modal();
         // Add a role to the editor state (developer role was seeded on load)
-        app.role_editor_roles.push(RoleConfig {
-            name: "new-role".to_string(),
-            description: String::new(),
-            permissions: RolePermissions::default(),
-        });
+        app.edit_project_mut()
+            .unwrap()
+            .role_editor_roles
+            .push(RoleConfig {
+                name: "new-role".to_string(),
+                description: String::new(),
+                permissions: RolePermissions::default(),
+            });
         app.submit_edit_project();
         // Verify the project has both the seeded developer role and the new one
         let project = app
@@ -7506,10 +6307,10 @@ mod tests {
         app.open_edit_project_modal();
         app.show_role_editor = true; // Simulate role editor being open
         app.close_edit_project_modal();
-        assert!(!app.show_edit_project_modal);
+        assert!(!app.is_edit_project_open());
         assert!(!app.show_role_editor);
-        assert!(app.role_editor_roles.is_empty());
-        assert_eq!(app.role_editor_list_index, 0);
+        // After closing, the EditProject modal (and its state) is gone
+        assert!(app.edit_project().is_none());
     }
 
     #[test]
@@ -7528,28 +6329,28 @@ mod tests {
             },
         ]);
         app.open_edit_project_modal();
-        app.edit_project_field = EditProjectField::Roles;
-        assert_eq!(app.role_editor_list_index, 0);
+        app.edit_project_mut().unwrap().field = EditProjectField::Roles;
+        assert_eq!(app.edit_project().unwrap().role_editor_list_index, 0);
 
         // Navigate down
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.role_editor_list_index, 1);
+        assert_eq!(app.edit_project().unwrap().role_editor_list_index, 1);
 
         // Navigate up
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(app.role_editor_list_index, 0);
+        assert_eq!(app.edit_project().unwrap().role_editor_list_index, 0);
 
         // Delete first role
         app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        assert_eq!(app.role_editor_roles.len(), 1);
-        assert_eq!(app.role_editor_roles[0].name, "b");
+        assert_eq!(app.edit_project().unwrap().role_editor_roles.len(), 1);
+        assert_eq!(app.edit_project().unwrap().role_editor_roles[0].name, "b");
     }
 
     #[test]
     fn edit_project_roles_add_opens_role_editor() {
         let mut app = app_with_roles(vec![]);
         app.open_edit_project_modal();
-        app.edit_project_field = EditProjectField::Roles;
+        app.edit_project_mut().unwrap().field = EditProjectField::Roles;
         app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
         assert!(app.show_role_editor);
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -7565,7 +6366,7 @@ mod tests {
             permissions: RolePermissions::default(),
         }]);
         app.open_edit_project_modal();
-        app.edit_project_field = EditProjectField::Roles;
+        app.edit_project_mut().unwrap().field = EditProjectField::Roles;
         app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
         assert!(app.show_role_editor);
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -7578,16 +6379,19 @@ mod tests {
         use crate::session::{RoleConfig, RolePermissions};
         let mut app = app_with_roles(vec![]);
         app.open_edit_project_modal();
-        app.edit_project_field = EditProjectField::Roles;
+        app.edit_project_mut().unwrap().field = EditProjectField::Roles;
         // Add a role directly to the editor state (developer role was seeded on load)
-        app.role_editor_roles.push(RoleConfig {
-            name: "added".to_string(),
-            description: String::new(),
-            permissions: RolePermissions::default(),
-        });
+        app.edit_project_mut()
+            .unwrap()
+            .role_editor_roles
+            .push(RoleConfig {
+                name: "added".to_string(),
+                description: String::new(),
+                permissions: RolePermissions::default(),
+            });
         // Esc from Roles field triggers submit_edit_project (saves)
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!app.show_edit_project_modal);
+        assert!(!app.is_edit_project_open());
         let project = app
             .projects
             .iter()
@@ -7703,7 +6507,7 @@ mod tests {
         app.active_project_index = app.projects.len() - 1;
 
         app.open_edit_project_modal();
-        assert!(!app.show_edit_project_modal);
+        assert!(!app.is_edit_project_open());
         assert_eq!(
             app.status_message.as_ref().map(|m| m.text.as_str()),
             Some("Cannot edit admin project")
@@ -7734,7 +6538,7 @@ mod tests {
         app.active_project_index = app.projects.len() - 1;
 
         app.show_delete_project_modal();
-        assert!(!app.show_delete_project_modal_flag);
+        assert!(!matches!(app.modal, modals::Modal::DeleteProject(_)));
         assert_eq!(
             app.status_message.as_ref().map(|m| m.text.as_str()),
             Some("Cannot delete admin project")
@@ -8311,36 +7115,36 @@ mod tests {
     #[test]
     fn format_time_ago_seconds() {
         let now = crate::sync::current_time_millis();
-        assert_eq!(super::format_time_ago(now - 5_000), "5s ago");
-        assert_eq!(super::format_time_ago(now - 30_000), "30s ago");
+        assert_eq!(super::view::format_time_ago(now - 5_000), "5s ago");
+        assert_eq!(super::view::format_time_ago(now - 30_000), "30s ago");
     }
 
     #[test]
     fn format_time_ago_minutes() {
         let now = crate::sync::current_time_millis();
-        assert_eq!(super::format_time_ago(now - 120_000), "2m ago");
-        assert_eq!(super::format_time_ago(now - 3_540_000), "59m ago");
+        assert_eq!(super::view::format_time_ago(now - 120_000), "2m ago");
+        assert_eq!(super::view::format_time_ago(now - 3_540_000), "59m ago");
     }
 
     #[test]
     fn format_time_ago_hours() {
         let now = crate::sync::current_time_millis();
-        assert_eq!(super::format_time_ago(now - 3_600_000), "1h ago");
-        assert_eq!(super::format_time_ago(now - 7_200_000), "2h ago");
+        assert_eq!(super::view::format_time_ago(now - 3_600_000), "1h ago");
+        assert_eq!(super::view::format_time_ago(now - 7_200_000), "2h ago");
     }
 
     #[test]
     fn format_time_ago_days() {
         let now = crate::sync::current_time_millis();
-        assert_eq!(super::format_time_ago(now - 86_400_000), "1d ago");
-        assert_eq!(super::format_time_ago(now - 259_200_000), "3d ago");
+        assert_eq!(super::view::format_time_ago(now - 86_400_000), "1d ago");
+        assert_eq!(super::view::format_time_ago(now - 259_200_000), "3d ago");
     }
 
     #[test]
     fn format_time_ago_future_timestamp() {
         let now = crate::sync::current_time_millis();
         // Future timestamp should saturate to 0s
-        assert_eq!(super::format_time_ago(now + 10_000), "0s ago");
+        assert_eq!(super::view::format_time_ago(now + 10_000), "0s ago");
     }
 
     // --- PSS parsing tests ---
@@ -8465,5 +7269,443 @@ Pss_File:           4345 kB
         let shared = make_shared_session("thurbox:@0", "1");
         let result = App::find_matching_discovered(&shared, &[]);
         assert!(result.is_none());
+    }
+
+    // =========================================================================
+    // Phase 5: State transition tests
+    // =========================================================================
+
+    /// Create an App with a single project "test-project" and no sessions.
+    /// Convenience wrapper used by Phase 5 tests.
+    fn make_test_app() -> App {
+        app_with_project("test-project", vec![PathBuf::from("/tmp/test-repo")])
+    }
+
+    // --- 5a. Modal flow tests ---
+
+    #[test]
+    fn f1_opens_help() {
+        let mut app = make_test_app();
+        assert!(!matches!(app.modal, modals::Modal::Help));
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::Help));
+    }
+
+    #[test]
+    fn esc_closes_help() {
+        let mut app = make_test_app();
+        app.modal = modals::Modal::Help;
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!matches!(app.modal, modals::Modal::Help));
+    }
+
+    #[test]
+    fn ctrl_n_project_list_opens_add_project() {
+        let mut app = make_test_app();
+        app.focus = InputFocus::ProjectList;
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert!(app.is_add_project_open());
+    }
+
+    #[test]
+    fn esc_closes_add_project_modal() {
+        let mut app = make_test_app();
+        app.modal = modals::Modal::AddProject(modals::AddProjectModal::default());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.is_add_project_open());
+    }
+
+    #[test]
+    fn opening_new_modal_after_closing_previous() {
+        let mut app = make_test_app();
+        // Open help first
+        app.modal = modals::Modal::Help;
+        // Close help
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!matches!(app.modal, modals::Modal::Help));
+        // Now open add project
+        app.focus = InputFocus::ProjectList;
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert!(app.is_add_project_open());
+    }
+
+    #[test]
+    fn ctrl_d_project_list_opens_delete_modal() {
+        let mut app = make_test_app();
+        // Need at least 2 projects (can't delete the only project)
+        app.projects.push(ProjectInfo {
+            id: ProjectId::default(),
+            config: ProjectConfig {
+                name: "Extra".into(),
+                repos: vec![PathBuf::from("/tmp/extra")],
+                roles: vec![],
+                mcp_servers: vec![],
+                id: None,
+            },
+            session_ids: vec![],
+            is_admin: false,
+        });
+        app.active_project_index = 1;
+        app.focus = InputFocus::ProjectList;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(matches!(app.modal, modals::Modal::DeleteProject(_)));
+    }
+
+    #[test]
+    fn ctrl_e_opens_edit_project_modal() {
+        let mut app = make_test_app();
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert!(app.is_edit_project_open());
+    }
+
+    #[test]
+    fn help_modal_blocks_other_keys() {
+        let mut app = make_test_app();
+        app.modal = modals::Modal::Help;
+        let focus_before = app.focus;
+        // Ctrl+H should not change focus while help is open
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, focus_before);
+        assert!(matches!(app.modal, modals::Modal::Help));
+    }
+
+    #[test]
+    fn esc_closes_delete_project_modal() {
+        let mut app = make_test_app();
+        app.projects.push(ProjectInfo {
+            id: ProjectId::default(),
+            config: ProjectConfig {
+                name: "Extra".into(),
+                repos: vec![PathBuf::from("/tmp/extra")],
+                roles: vec![],
+                mcp_servers: vec![],
+                id: None,
+            },
+            session_ids: vec![],
+            is_admin: false,
+        });
+        app.active_project_index = 1;
+        app.focus = InputFocus::ProjectList;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(matches!(app.modal, modals::Modal::DeleteProject(_)));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!matches!(app.modal, modals::Modal::DeleteProject(_)));
+    }
+
+    #[test]
+    fn ctrl_u_opens_restore_sessions_modal() {
+        let mut app = make_test_app();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        // The modal opens only if there are deleted sessions;
+        // with no deleted sessions the DB query returns empty list,
+        // so the modal opens with an empty list.
+        assert!(matches!(app.modal, modals::Modal::RestoreSessions(_)));
+    }
+
+    #[test]
+    fn esc_closes_restore_sessions_modal() {
+        let mut app = make_test_app();
+        app.modal = modals::Modal::RestoreSessions(modals::RestoreSessionsModal::default());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!matches!(app.modal, modals::Modal::RestoreSessions(_)));
+    }
+
+    #[test]
+    fn add_project_modal_blocks_global_keys() {
+        let mut app = make_test_app();
+        app.modal = modals::Modal::AddProject(modals::AddProjectModal::default());
+        let focus_before = app.focus;
+        // Ctrl+Q should NOT quit while add-project modal is open
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(!app.should_quit);
+        assert_eq!(app.focus, focus_before);
+    }
+
+    // --- 5b. Focus management tests ---
+
+    #[test]
+    fn enter_in_project_list_focuses_session_list() {
+        let mut app = make_test_app();
+        app.focus = InputFocus::ProjectList;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    #[test]
+    fn enter_in_session_list_focuses_terminal() {
+        let mut app = make_test_app();
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::Terminal);
+    }
+
+    #[test]
+    fn ctrl_q_sets_should_quit() {
+        let mut app = make_test_app();
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_l_cycles_focus_back_to_project_list() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::Terminal;
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::ProjectList);
+    }
+
+    #[test]
+    fn ctrl_h_always_focuses_project_list() {
+        let mut app = make_test_app();
+        for initial_focus in [InputFocus::SessionList, InputFocus::Terminal] {
+            app.focus = initial_focus;
+            app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+            assert_eq!(
+                app.focus,
+                InputFocus::ProjectList,
+                "Ctrl+H should focus project list from {initial_focus:?}"
+            );
+        }
+    }
+
+    // --- 5c. Tick behavior tests ---
+
+    #[test]
+    fn status_message_persists_within_timeout() {
+        let mut app = make_test_app();
+        app.set_info("test message");
+        assert!(app.status_message.is_some());
+        app.tick();
+        // Should still be there (just created, no auto-expire in tick)
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn multiple_ticks_accumulate() {
+        let mut app = make_test_app();
+        let initial = app.tick_count;
+        app.tick();
+        app.tick();
+        app.tick();
+        assert_eq!(app.tick_count, initial + 3);
+    }
+
+    #[test]
+    fn tick_count_starts_at_zero() {
+        let app = make_test_app();
+        assert_eq!(app.tick_count, 0);
+    }
+
+    #[test]
+    fn tick_wraps_on_overflow() {
+        let mut app = make_test_app();
+        app.tick_count = u64::MAX;
+        app.tick();
+        // wrapping_add(1) from MAX wraps to 0
+        assert_eq!(app.tick_count, 0);
+    }
+
+    #[test]
+    fn set_info_replaces_previous_status() {
+        let mut app = make_test_app();
+        app.set_info("first");
+        app.set_info("second");
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "second");
+        assert_eq!(msg.level, StatusLevel::Info);
+    }
+
+    // --- 5d. External sync delta tests ---
+
+    #[test]
+    fn external_project_added_appears_in_list() {
+        let mut app = make_test_app();
+        let initial_count = app.projects.len();
+        let delta = StateDelta {
+            added_projects: vec![sync::SharedProject {
+                id: ProjectId::from_uuid(uuid::Uuid::new_v4()),
+                name: "external-project".to_string(),
+                repos: vec![PathBuf::from("/tmp/ext")],
+                roles: vec![],
+                mcp_servers: vec![],
+            }],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        assert_eq!(app.projects.len(), initial_count + 1);
+        assert!(app
+            .projects
+            .iter()
+            .any(|p| p.config.name == "external-project"));
+    }
+
+    #[test]
+    fn external_project_removed_disappears() {
+        let mut app = make_test_app();
+        let project_id = app.projects[0].id;
+        let delta = StateDelta {
+            removed_projects: vec![project_id],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        assert!(!app.projects.iter().any(|p| p.id == project_id));
+    }
+
+    #[test]
+    fn external_project_update_modifies_name() {
+        let mut app = make_test_app();
+        let project_id = app.projects[0].id;
+        let delta = StateDelta {
+            updated_projects: vec![sync::SharedProject {
+                id: project_id,
+                name: "renamed-project".to_string(),
+                repos: vec![PathBuf::from("/tmp/repo")],
+                roles: vec![],
+                mcp_servers: vec![],
+            }],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        assert_eq!(
+            app.projects
+                .iter()
+                .find(|p| p.id == project_id)
+                .unwrap()
+                .config
+                .name,
+            "renamed-project"
+        );
+    }
+
+    #[test]
+    fn active_project_index_adjusts_on_removal() {
+        let mut app = make_test_app();
+        // Add a second project
+        let config2 = ProjectConfig {
+            name: "second".to_string(),
+            repos: vec![PathBuf::from("/tmp/second")],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
+        let info2 = ProjectInfo::new(config2);
+        app.projects.push(info2);
+        app.active_project_index = 1; // Select second project
+
+        // Remove first project
+        let first_id = app.projects[0].id;
+        let delta = StateDelta {
+            removed_projects: vec![first_id],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+
+        // Active index should be valid
+        assert!(app.active_project_index < app.projects.len());
+    }
+
+    #[test]
+    fn duplicate_external_project_add_ignored() {
+        let mut app = make_test_app();
+        let project_id = app.projects[0].id;
+        let initial_count = app.projects.len();
+        let delta = StateDelta {
+            added_projects: vec![sync::SharedProject {
+                id: project_id, // Same ID as existing
+                name: "duplicate".to_string(),
+                repos: vec![],
+                roles: vec![],
+                mcp_servers: vec![],
+            }],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        assert_eq!(app.projects.len(), initial_count); // No duplicates
+    }
+
+    #[test]
+    fn external_project_removal_with_empty_list_stays_at_zero() {
+        let mut app = make_test_app();
+        let project_id = app.projects[0].id;
+        app.active_project_index = 0;
+        let delta = StateDelta {
+            removed_projects: vec![project_id],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        // With 0 projects, active_project_index should be 0 (saturating_sub(1))
+        assert_eq!(app.active_project_index, 0);
+    }
+
+    #[test]
+    fn external_update_preserves_project_count() {
+        let mut app = make_test_app();
+        let initial_count = app.projects.len();
+        let project_id = app.projects[0].id;
+        let delta = StateDelta {
+            updated_projects: vec![sync::SharedProject {
+                id: project_id,
+                name: "updated-name".to_string(),
+                repos: vec![PathBuf::from("/tmp/new-repo")],
+                roles: vec![],
+                mcp_servers: vec![],
+            }],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        assert_eq!(app.projects.len(), initial_count);
+    }
+
+    #[test]
+    fn external_update_for_nonexistent_project_is_noop() {
+        let mut app = make_test_app();
+        let initial_count = app.projects.len();
+        let fake_id = ProjectId::from_uuid(uuid::Uuid::new_v4());
+        let delta = StateDelta {
+            updated_projects: vec![sync::SharedProject {
+                id: fake_id,
+                name: "ghost".to_string(),
+                repos: vec![],
+                roles: vec![],
+                mcp_servers: vec![],
+            }],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        // No project was added or removed
+        assert_eq!(app.projects.len(), initial_count);
+    }
+
+    #[test]
+    fn external_removal_of_nonexistent_project_is_noop() {
+        let mut app = make_test_app();
+        let initial_count = app.projects.len();
+        let fake_id = ProjectId::from_uuid(uuid::Uuid::new_v4());
+        let delta = StateDelta {
+            removed_projects: vec![fake_id],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        assert_eq!(app.projects.len(), initial_count);
+    }
+
+    #[test]
+    fn external_delta_counter_increment_merges_with_max() {
+        let mut app = make_test_app();
+        app.session_counter = 5;
+        let delta = StateDelta {
+            counter_increment: 10,
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+        assert_eq!(app.session_counter, 10);
+
+        // If local is higher, it stays
+        let delta2 = StateDelta {
+            counter_increment: 3,
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta2));
+        assert_eq!(app.session_counter, 10);
     }
 }

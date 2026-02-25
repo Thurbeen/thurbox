@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::session::SessionConfig;
 
 use super::mcp_editor_modal::McpEditorField;
-use super::{AddProjectField, App, EditProjectField, InputFocus, RoleEditorView, TerminalView};
+use super::{App, EditProjectField, InputFocus, RoleEditorView, TerminalView};
 use crate::agent::input;
 use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -25,45 +25,45 @@ impl App {
     /// 3. Focus-based handlers (ProjectList, SessionList, Terminal)
     pub(crate) fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         // Dismiss help overlay with Esc
-        if self.show_help {
+        if matches!(self.modal, super::modals::Modal::Help) {
             if code == KeyCode::Esc {
-                self.show_help = false;
+                self.modal.close();
             }
             return;
         }
 
         // Restore sessions modal captures all input
-        if self.show_restore_sessions_modal {
+        if matches!(self.modal, super::modals::Modal::RestoreSessions(_)) {
             self.handle_restore_sessions_key(code);
             return;
         }
 
         // Repo selector modal captures all input
-        if self.show_repo_selector {
+        if matches!(self.modal, super::modals::Modal::RepoSelector(_)) {
             self.handle_repo_selector_key(code);
             return;
         }
 
         // Containerfile picker modal captures all input
-        if self.show_containerfile_picker {
+        if matches!(self.modal, super::modals::Modal::ContainerfilePicker(_)) {
             self.handle_containerfile_picker_key(code);
             return;
         }
 
         // Session mode modal captures all input
-        if self.show_session_mode_modal {
+        if matches!(self.modal, super::modals::Modal::SessionMode(_)) {
             self.handle_session_mode_key(code);
             return;
         }
 
         // Branch selector modal captures all input
-        if self.show_branch_selector {
+        if matches!(self.modal, super::modals::Modal::BranchSelector(_)) {
             self.handle_branch_selector_key(code);
             return;
         }
 
         // Worktree name modal captures all input
-        if self.show_worktree_name_modal {
+        if matches!(self.modal, super::modals::Modal::WorktreeName(_)) {
             self.handle_worktree_name_key(code);
             return;
         }
@@ -99,25 +99,25 @@ impl App {
         }
 
         // Role selector modal captures all input
-        if self.show_role_selector {
+        if matches!(self.modal, super::modals::Modal::RoleSelector(_)) {
             self.handle_role_selector_key(code);
             return;
         }
 
         // Add-project modal captures all input
-        if self.show_add_project_modal {
+        if matches!(self.modal, super::modals::Modal::AddProject(_)) {
             self.handle_add_project_key(code);
             return;
         }
 
         // Edit-project modal captures all input
-        if self.show_edit_project_modal {
+        if matches!(self.modal, super::modals::Modal::EditProject(_)) {
             self.handle_edit_project_key(code);
             return;
         }
 
         // Delete-project modal captures all input
-        if self.show_delete_project_modal_flag {
+        if matches!(self.modal, super::modals::Modal::DeleteProject(_)) {
             self.handle_delete_project_key(code);
             return;
         }
@@ -150,8 +150,9 @@ impl App {
                 }
                 KeyCode::Char('n') => {
                     if self.focus == InputFocus::ProjectList {
-                        self.show_add_project_modal = true;
-                        self.add_project_field = AddProjectField::Name;
+                        self.modal = super::modals::Modal::AddProject(
+                            super::modals::AddProjectModal::default(),
+                        );
                     } else {
                         self.spawn_session();
                     }
@@ -230,7 +231,7 @@ impl App {
         // Function keys (work reliably in all terminals)
         match code {
             KeyCode::F(1) => {
-                self.show_help = true;
+                self.modal = super::modals::Modal::Help;
                 return;
             }
             KeyCode::F(2) => {
@@ -327,114 +328,124 @@ impl App {
     }
 
     fn handle_add_project_key(&mut self, code: KeyCode) {
-        match self.add_project_field {
-            AddProjectField::Name => self.handle_add_project_name_key(code),
-            AddProjectField::Path => self.handle_add_project_path_key(code),
-            AddProjectField::RepoList => self.handle_add_project_repo_list_key(code),
+        let super::modals::Modal::AddProject(ref ap) = self.modal else {
+            return;
+        };
+        match ap.field {
+            super::modals::AddProjectField::Name => self.handle_add_project_name_key(code),
+            super::modals::AddProjectField::Path => self.handle_add_project_path_key(code),
+            super::modals::AddProjectField::RepoList => self.handle_add_project_repo_list_key(code),
         }
     }
 
     fn handle_add_project_name_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => self.close_add_project_modal(),
             KeyCode::Tab => {
-                self.add_project_field = AddProjectField::Path;
+                ap.field = super::modals::AddProjectField::Path;
             }
             KeyCode::BackTab => {
-                if !self.add_project_repos.is_empty() {
-                    self.add_project_field = AddProjectField::RepoList;
+                if !ap.repos.is_empty() {
+                    ap.field = super::modals::AddProjectField::RepoList;
                 } else {
-                    self.add_project_field = AddProjectField::Path;
+                    ap.field = super::modals::AddProjectField::Path;
                 }
             }
             KeyCode::Enter => self.submit_add_project(),
-            KeyCode::Backspace => self.add_project_name.backspace(),
-            KeyCode::Delete => self.add_project_name.delete(),
-            KeyCode::Left => self.add_project_name.move_left(),
-            KeyCode::Right => self.add_project_name.move_right(),
-            KeyCode::Home => self.add_project_name.home(),
-            KeyCode::End => self.add_project_name.end(),
-            KeyCode::Char(c) => self.add_project_name.insert(c),
+            KeyCode::Backspace => ap.name.backspace(),
+            KeyCode::Delete => ap.name.delete(),
+            KeyCode::Left => ap.name.move_left(),
+            KeyCode::Right => ap.name.move_right(),
+            KeyCode::Home => ap.name.home(),
+            KeyCode::End => ap.name.end(),
+            KeyCode::Char(c) => ap.name.insert(c),
             _ => {}
         }
     }
 
     fn handle_add_project_path_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
                 self.close_add_project_modal();
                 return;
             }
             KeyCode::Tab => {
-                if let Some(suggestion) = self.add_project_path_suggestion.take() {
+                if let Some(suggestion) = ap.path_suggestion.take() {
                     for c in suggestion.chars() {
-                        self.add_project_path.insert(c);
+                        ap.path.insert(c);
                     }
-                } else if !self.add_project_repos.is_empty() {
-                    self.add_project_field = AddProjectField::RepoList;
-                    self.add_project_path_suggestion = None;
+                } else if !ap.repos.is_empty() {
+                    ap.field = super::modals::AddProjectField::RepoList;
+                    ap.path_suggestion = None;
                     return;
                 } else {
-                    self.add_project_field = AddProjectField::Name;
-                    self.add_project_path_suggestion = None;
+                    ap.field = super::modals::AddProjectField::Name;
+                    ap.path_suggestion = None;
                     return;
                 }
             }
             KeyCode::BackTab => {
-                self.add_project_field = AddProjectField::Name;
-                self.add_project_path_suggestion = None;
+                ap.field = super::modals::AddProjectField::Name;
+                ap.path_suggestion = None;
                 return;
             }
             KeyCode::Enter => {
-                let path = self.add_project_path.value().trim().to_string();
+                let path = ap.path.value().trim().to_string();
                 if !path.is_empty() {
-                    self.add_project_repos.push(PathBuf::from(path));
-                    self.add_project_repo_index = self.add_project_repos.len().saturating_sub(1);
-                    self.add_project_path.clear();
-                    self.add_project_path_suggestion = None;
+                    ap.repos.push(PathBuf::from(path));
+                    ap.repo_index = ap.repos.len().saturating_sub(1);
+                    ap.path.clear();
+                    ap.path_suggestion = None;
                 }
                 return;
             }
-            KeyCode::Backspace => self.add_project_path.backspace(),
-            KeyCode::Delete => self.add_project_path.delete(),
-            KeyCode::Left => self.add_project_path.move_left(),
-            KeyCode::Right => self.add_project_path.move_right(),
-            KeyCode::Home => self.add_project_path.home(),
-            KeyCode::End => self.add_project_path.end(),
-            KeyCode::Char(c) => self.add_project_path.insert(c),
+            KeyCode::Backspace => ap.path.backspace(),
+            KeyCode::Delete => ap.path.delete(),
+            KeyCode::Left => ap.path.move_left(),
+            KeyCode::Right => ap.path.move_right(),
+            KeyCode::Home => ap.path.home(),
+            KeyCode::End => ap.path.end(),
+            KeyCode::Char(c) => ap.path.insert(c),
             _ => return,
         }
         self.update_path_suggestion();
     }
 
     fn handle_add_project_repo_list_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => self.close_add_project_modal(),
             KeyCode::Tab => {
-                self.add_project_field = AddProjectField::Name;
+                ap.field = super::modals::AddProjectField::Name;
             }
             KeyCode::BackTab => {
-                self.add_project_field = AddProjectField::Path;
+                ap.field = super::modals::AddProjectField::Path;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.add_project_repo_index + 1 < self.add_project_repos.len() {
-                    self.add_project_repo_index += 1;
+                if ap.repo_index + 1 < ap.repos.len() {
+                    ap.repo_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.add_project_repo_index = self.add_project_repo_index.saturating_sub(1);
+                ap.repo_index = ap.repo_index.saturating_sub(1);
             }
             KeyCode::Char('d') => {
-                if !self.add_project_repos.is_empty() {
-                    self.add_project_repos.remove(self.add_project_repo_index);
-                    if self.add_project_repo_index >= self.add_project_repos.len()
-                        && self.add_project_repo_index > 0
-                    {
-                        self.add_project_repo_index -= 1;
+                if !ap.repos.is_empty() {
+                    ap.repos.remove(ap.repo_index);
+                    if ap.repo_index >= ap.repos.len() && ap.repo_index > 0 {
+                        ap.repo_index -= 1;
                     }
                     // If list becomes empty, switch to Path field
-                    if self.add_project_repos.is_empty() {
-                        self.add_project_field = AddProjectField::Path;
+                    if ap.repos.is_empty() {
+                        ap.field = super::modals::AddProjectField::Path;
                     }
                 }
             }
@@ -445,28 +456,28 @@ impl App {
 
     /// Recompute path suggestion (fish-style: only when cursor is at end).
     fn update_path_suggestion(&mut self) {
-        let value = self.add_project_path.value();
-        let at_end = self.add_project_path.cursor_pos() == value.chars().count();
+        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
+            return;
+        };
+        let value = ap.path.value().to_string();
+        let at_end = ap.path.cursor_pos() == value.chars().count();
         if at_end && !value.is_empty() {
-            self.add_project_path_suggestion = paths::complete_directory_path(value);
+            ap.path_suggestion = paths::complete_directory_path(&value);
         } else {
-            self.add_project_path_suggestion = None;
+            ap.path_suggestion = None;
         }
     }
 
     /// Close the add-project modal and clear all related state.
     pub(crate) fn close_add_project_modal(&mut self) {
-        self.show_add_project_modal = false;
-        self.add_project_name.clear();
-        self.add_project_path.clear();
-        self.add_project_field = AddProjectField::Name;
-        self.add_project_repos.clear();
-        self.add_project_repo_index = 0;
-        self.add_project_path_suggestion = None;
+        self.modal.close();
     }
 
     fn handle_edit_project_key(&mut self, code: KeyCode) {
-        match self.edit_project_field {
+        let super::modals::Modal::EditProject(ref ep) = self.modal else {
+            return;
+        };
+        match ep.field {
             EditProjectField::Name => self.handle_edit_project_name_key(code),
             EditProjectField::Path => self.handle_edit_project_path_key(code),
             EditProjectField::RepoList => self.handle_edit_project_repo_list_key(code),
@@ -476,102 +487,144 @@ impl App {
     }
 
     fn handle_edit_project_name_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => self.close_edit_project_modal(),
             KeyCode::Tab => {
-                self.edit_project_field = EditProjectField::Path;
+                ep.field = EditProjectField::Path;
             }
             KeyCode::BackTab => {
-                self.edit_project_field = EditProjectField::McpServers;
+                ep.field = EditProjectField::McpServers;
             }
             KeyCode::Enter => self.submit_edit_project(),
-            KeyCode::Backspace => self.edit_project_name.backspace(),
-            KeyCode::Delete => self.edit_project_name.delete(),
-            KeyCode::Left => self.edit_project_name.move_left(),
-            KeyCode::Right => self.edit_project_name.move_right(),
-            KeyCode::Home => self.edit_project_name.home(),
-            KeyCode::End => self.edit_project_name.end(),
-            KeyCode::Char(c) => self.edit_project_name.insert(c),
+            KeyCode::Backspace => {
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                ep.name.backspace();
+            }
+            KeyCode::Delete => {
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                ep.name.delete();
+            }
+            KeyCode::Left => {
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                ep.name.move_left();
+            }
+            KeyCode::Right => {
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                ep.name.move_right();
+            }
+            KeyCode::Home => {
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                ep.name.home();
+            }
+            KeyCode::End => {
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                ep.name.end();
+            }
+            KeyCode::Char(c) => {
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                ep.name.insert(c);
+            }
             _ => {}
         }
     }
 
     fn handle_edit_project_path_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
                 self.close_edit_project_modal();
                 return;
             }
             KeyCode::Tab => {
-                if let Some(suggestion) = self.edit_project_path_suggestion.take() {
+                if let Some(suggestion) = ep.path_suggestion.take() {
                     for c in suggestion.chars() {
-                        self.edit_project_path.insert(c);
+                        ep.path.insert(c);
                     }
-                } else if !self.edit_project_repos.is_empty() {
-                    self.edit_project_field = EditProjectField::RepoList;
-                    self.edit_project_path_suggestion = None;
+                } else if !ep.repos.is_empty() {
+                    ep.field = EditProjectField::RepoList;
+                    ep.path_suggestion = None;
                     return;
                 } else {
-                    self.edit_project_field = EditProjectField::Roles;
-                    self.edit_project_path_suggestion = None;
+                    ep.field = EditProjectField::Roles;
+                    ep.path_suggestion = None;
                     return;
                 }
             }
             KeyCode::BackTab => {
-                self.edit_project_field = EditProjectField::Name;
-                self.edit_project_path_suggestion = None;
+                ep.field = EditProjectField::Name;
+                ep.path_suggestion = None;
                 return;
             }
             KeyCode::Enter => {
-                let path = self.edit_project_path.value().trim().to_string();
+                let path = ep.path.value().trim().to_string();
                 if !path.is_empty() {
-                    self.edit_project_repos.push(PathBuf::from(path));
-                    self.edit_project_repo_index = self.edit_project_repos.len().saturating_sub(1);
-                    self.edit_project_path.clear();
-                    self.edit_project_path_suggestion = None;
+                    ep.repos.push(PathBuf::from(path));
+                    ep.repo_index = ep.repos.len().saturating_sub(1);
+                    ep.path.clear();
+                    ep.path_suggestion = None;
                 }
                 return;
             }
-            KeyCode::Backspace => self.edit_project_path.backspace(),
-            KeyCode::Delete => self.edit_project_path.delete(),
-            KeyCode::Left => self.edit_project_path.move_left(),
-            KeyCode::Right => self.edit_project_path.move_right(),
-            KeyCode::Home => self.edit_project_path.home(),
-            KeyCode::End => self.edit_project_path.end(),
-            KeyCode::Char(c) => self.edit_project_path.insert(c),
+            KeyCode::Backspace => ep.path.backspace(),
+            KeyCode::Delete => ep.path.delete(),
+            KeyCode::Left => ep.path.move_left(),
+            KeyCode::Right => ep.path.move_right(),
+            KeyCode::Home => ep.path.home(),
+            KeyCode::End => ep.path.end(),
+            KeyCode::Char(c) => ep.path.insert(c),
             _ => return,
         }
         self.update_edit_path_suggestion();
     }
 
     fn handle_edit_project_repo_list_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => self.close_edit_project_modal(),
             KeyCode::Tab => {
-                self.edit_project_field = EditProjectField::Roles;
+                ep.field = EditProjectField::Roles;
             }
             KeyCode::BackTab => {
-                self.edit_project_field = EditProjectField::Path;
+                ep.field = EditProjectField::Path;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.edit_project_repo_index + 1 < self.edit_project_repos.len() {
-                    self.edit_project_repo_index += 1;
+                if ep.repo_index + 1 < ep.repos.len() {
+                    ep.repo_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.edit_project_repo_index = self.edit_project_repo_index.saturating_sub(1);
+                ep.repo_index = ep.repo_index.saturating_sub(1);
             }
             KeyCode::Char('d') => {
-                if !self.edit_project_repos.is_empty() {
-                    self.edit_project_repos.remove(self.edit_project_repo_index);
-                    if self.edit_project_repo_index >= self.edit_project_repos.len()
-                        && self.edit_project_repo_index > 0
-                    {
-                        self.edit_project_repo_index -= 1;
+                if !ep.repos.is_empty() {
+                    ep.repos.remove(ep.repo_index);
+                    if ep.repo_index >= ep.repos.len() && ep.repo_index > 0 {
+                        ep.repo_index -= 1;
                     }
                     // If list becomes empty, switch to Path field
-                    if self.edit_project_repos.is_empty() {
-                        self.edit_project_field = EditProjectField::Path;
+                    if ep.repos.is_empty() {
+                        ep.field = EditProjectField::Path;
                     }
                 }
             }
@@ -581,46 +634,55 @@ impl App {
     }
 
     fn handle_edit_project_roles_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => self.submit_edit_project(),
             KeyCode::Tab => {
-                self.edit_project_field = EditProjectField::McpServers;
+                ep.field = EditProjectField::McpServers;
             }
             KeyCode::BackTab => {
-                if !self.edit_project_repos.is_empty() {
-                    self.edit_project_field = EditProjectField::RepoList;
+                if !ep.repos.is_empty() {
+                    ep.field = EditProjectField::RepoList;
                 } else {
-                    self.edit_project_field = EditProjectField::Path;
+                    ep.field = EditProjectField::Path;
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.role_editor_roles.is_empty()
-                    && self.role_editor_list_index + 1 < self.role_editor_roles.len()
+                if !ep.role_editor_roles.is_empty()
+                    && ep.role_editor_list_index + 1 < ep.role_editor_roles.len()
                 {
-                    self.role_editor_list_index += 1;
+                    ep.role_editor_list_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
+                ep.role_editor_list_index = ep.role_editor_list_index.saturating_sub(1);
             }
             KeyCode::Char('a') => {
                 self.prepare_new_role_editor();
                 self.show_role_editor = true;
             }
             KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.role_editor_roles.is_empty() {
-                    let idx = self.role_editor_list_index;
+                let super::modals::Modal::EditProject(ref ep) = self.modal else {
+                    return;
+                };
+                if !ep.role_editor_roles.is_empty() {
+                    let idx = ep.role_editor_list_index;
                     self.open_role_for_editing(idx);
                     self.show_role_editor = true;
                 }
             }
             KeyCode::Char('d') => {
-                if !self.role_editor_roles.is_empty() {
-                    self.role_editor_roles.remove(self.role_editor_list_index);
-                    if self.role_editor_list_index >= self.role_editor_roles.len()
-                        && self.role_editor_list_index > 0
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                if !ep.role_editor_roles.is_empty() {
+                    ep.role_editor_roles.remove(ep.role_editor_list_index);
+                    if ep.role_editor_list_index >= ep.role_editor_roles.len()
+                        && ep.role_editor_list_index > 0
                     {
-                        self.role_editor_list_index -= 1;
+                        ep.role_editor_list_index -= 1;
                     }
                 }
             }
@@ -630,83 +692,82 @@ impl App {
 
     /// Recompute path suggestion for edit-project modal.
     fn update_edit_path_suggestion(&mut self) {
-        let value = self.edit_project_path.value();
-        let at_end = self.edit_project_path.cursor_pos() == value.chars().count();
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
+        let value = ep.path.value().to_string();
+        let at_end = ep.path.cursor_pos() == value.chars().count();
         if at_end && !value.is_empty() {
-            self.edit_project_path_suggestion = paths::complete_directory_path(value);
+            ep.path_suggestion = paths::complete_directory_path(&value);
         } else {
-            self.edit_project_path_suggestion = None;
+            ep.path_suggestion = None;
         }
     }
 
     fn handle_delete_project_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::DeleteProject(ref mut dp) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Enter => {
                 self.delete_active_project();
             }
             KeyCode::Esc => {
-                self.show_delete_project_modal_flag = false;
-                self.delete_project_confirmation.clear();
-                self.delete_project_error = None;
+                self.modal.close();
             }
             KeyCode::Char(c) => {
-                self.delete_project_confirmation.insert(c);
-                self.delete_project_error = None; // Clear error on new input
+                dp.confirmation.insert(c);
+                dp.error = None; // Clear error on new input
             }
             KeyCode::Backspace => {
-                self.delete_project_confirmation.backspace();
-                self.delete_project_error = None;
+                dp.confirmation.backspace();
+                dp.error = None;
             }
             KeyCode::Delete => {
-                self.delete_project_confirmation.delete();
-                self.delete_project_error = None;
+                dp.confirmation.delete();
+                dp.error = None;
             }
             KeyCode::Left => {
-                self.delete_project_confirmation.move_left();
+                dp.confirmation.move_left();
             }
             KeyCode::Right => {
-                self.delete_project_confirmation.move_right();
+                dp.confirmation.move_right();
             }
             KeyCode::Home => {
-                self.delete_project_confirmation.home();
+                dp.confirmation.home();
             }
             KeyCode::End => {
-                self.delete_project_confirmation.end();
+                dp.confirmation.end();
             }
             _ => {}
         }
     }
 
     fn handle_restore_sessions_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::RestoreSessions(ref mut rs) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
-                self.show_restore_sessions_modal = false;
-                self.restore_sessions_list.clear();
+                self.modal.close();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.restore_sessions_list.is_empty()
-                    && self.restore_sessions_index + 1 < self.restore_sessions_list.len()
-                {
-                    self.restore_sessions_index += 1;
+                if !rs.list.is_empty() && rs.index + 1 < rs.list.len() {
+                    rs.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.restore_sessions_index = self.restore_sessions_index.saturating_sub(1);
+                rs.index = rs.index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                if self.restore_sessions_list.is_empty() {
+                if rs.list.is_empty() {
                     return;
                 }
-                let deleted = self
-                    .restore_sessions_list
-                    .remove(self.restore_sessions_index);
-                if self.restore_sessions_index >= self.restore_sessions_list.len()
-                    && self.restore_sessions_index > 0
-                {
-                    self.restore_sessions_index -= 1;
+                let deleted = rs.list.remove(rs.index);
+                if rs.index >= rs.list.len() && rs.index > 0 {
+                    rs.index -= 1;
                 }
-                self.show_restore_sessions_modal = false;
-                self.restore_sessions_list.clear();
+                self.modal.close();
                 self.restore_deleted_session(deleted);
             }
             _ => {}
@@ -714,28 +775,36 @@ impl App {
     }
 
     fn handle_repo_selector_key(&mut self, code: KeyCode) {
-        let Some(project) = self.active_project() else {
+        let repo_count = self
+            .active_project()
+            .map(|p| p.config.repos.len())
+            .unwrap_or(0);
+        let super::modals::Modal::RepoSelector(ref mut rs) = self.modal else {
             return;
         };
-        let repo_count = project.config.repos.len();
         match code {
             KeyCode::Esc => {
-                self.show_repo_selector = false;
+                self.modal.close();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.repo_selector_index + 1 < repo_count {
-                    self.repo_selector_index += 1;
+                if rs.index + 1 < repo_count {
+                    rs.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.repo_selector_index = self.repo_selector_index.saturating_sub(1);
+                rs.index = rs.index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                if let Some(path) = project.config.repos.get(self.repo_selector_index).cloned() {
+                let idx = rs.index;
+                let path = self
+                    .active_project()
+                    .and_then(|p| p.config.repos.get(idx).cloned());
+                if let Some(path) = path {
                     self.pending_repo_path = Some(path);
-                    self.show_repo_selector = false;
-                    self.session_mode_index = 0;
-                    self.show_session_mode_modal = true;
+                    self.modal =
+                        super::modals::Modal::SessionMode(super::modals::SessionModeModal {
+                            index: 0,
+                        });
                 }
             }
             _ => {}
@@ -743,9 +812,12 @@ impl App {
     }
 
     fn handle_session_mode_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::SessionMode(ref mut sm) = self.modal else {
+            return;
+        };
         // Build the dynamic mode list matching the UI modal.
         let mode_state = crate::ui::session_mode_modal::SessionModeState {
-            selected_index: self.session_mode_index,
+            selected_index: sm.index,
             devcontainer_available: self.backends.has("devcontainer"),
             vm_available: self.backends.has("qemu-vm"),
         };
@@ -754,21 +826,21 @@ impl App {
 
         match code {
             KeyCode::Esc => {
-                self.show_session_mode_modal = false;
+                self.modal.close();
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.session_mode_index < max_index {
-                    self.session_mode_index += 1;
+                if sm.index < max_index {
+                    sm.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.session_mode_index = self.session_mode_index.saturating_sub(1);
+                sm.index = sm.index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                self.show_session_mode_modal = false;
-                let selected_mode = modes.get(self.session_mode_index).copied().unwrap_or("");
+                let selected_mode = modes.get(sm.index).copied().unwrap_or("");
+                self.modal.close();
                 match selected_mode {
                     "Normal" => {
                         if let Some(all_repos) = self.pending_all_repos.take() {
@@ -818,9 +890,12 @@ impl App {
                                 .or_else(|| Some("default".to_string()));
                             self.start_container_provisioning();
                         } else {
-                            self.containerfile_list = containerfiles;
-                            self.containerfile_picker_index = 0;
-                            self.show_containerfile_picker = true;
+                            self.modal = super::modals::Modal::ContainerfilePicker(
+                                super::modals::ContainerfilePickerModal {
+                                    index: 0,
+                                    list: containerfiles,
+                                },
+                            );
                         }
                     }
                     "VM" => {
@@ -855,32 +930,33 @@ impl App {
     }
 
     fn handle_containerfile_picker_key(&mut self, code: KeyCode) {
-        let max_index = self.containerfile_list.len().saturating_sub(1);
+        let super::modals::Modal::ContainerfilePicker(ref mut cp) = self.modal else {
+            return;
+        };
+        let max_index = cp.list.len().saturating_sub(1);
         match code {
             KeyCode::Esc => {
-                self.show_containerfile_picker = false;
-                self.containerfile_list.clear();
+                self.modal.close();
                 self.pending_container_config = None;
                 self.pending_container_mcp_servers = None;
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.containerfile_picker_index < max_index {
-                    self.containerfile_picker_index += 1;
+                if cp.index < max_index {
+                    cp.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.containerfile_picker_index = self.containerfile_picker_index.saturating_sub(1);
+                cp.index = cp.index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                let name = self
-                    .containerfile_list
-                    .get(self.containerfile_picker_index)
+                let name = cp
+                    .list
+                    .get(cp.index)
                     .cloned()
                     .unwrap_or_else(|| "default".to_string());
-                self.show_containerfile_picker = false;
-                self.containerfile_list.clear();
+                self.modal.close();
                 self.pending_containerfile_name = Some(name);
                 self.start_container_provisioning();
             }
@@ -889,51 +965,52 @@ impl App {
     }
 
     fn handle_branch_selector_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::BranchSelector(ref mut bs) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
-                self.show_branch_selector = false;
-                self.available_branches.clear();
+                self.modal.close();
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.branch_selector_index + 1 < self.available_branches.len() {
-                    self.branch_selector_index += 1;
+                if bs.index + 1 < bs.branches.len() {
+                    bs.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.branch_selector_index = self.branch_selector_index.saturating_sub(1);
+                bs.index = bs.index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                let base_branch = self.available_branches[self.branch_selector_index].clone();
-                self.show_branch_selector = false;
-                self.available_branches.clear();
-                self.worktree_name_input.clear();
+                let base_branch = bs.branches[bs.index].clone();
                 self.pending_base_branch = Some(base_branch);
-                self.show_worktree_name_modal = true;
+                self.modal =
+                    super::modals::Modal::WorktreeName(super::modals::WorktreeNameModal::default());
             }
             _ => {}
         }
     }
 
     fn handle_worktree_name_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::WorktreeName(ref mut wn) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
-                self.show_worktree_name_modal = false;
-                self.worktree_name_input.clear();
+                self.modal.close();
                 self.pending_base_branch = None;
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
             }
             KeyCode::Enter => {
-                let new_branch = self.worktree_name_input.value().trim().to_string();
+                let new_branch = wn.name.value().trim().to_string();
                 if new_branch.is_empty() {
                     self.set_error("Branch name cannot be empty");
                     return;
                 }
-                self.show_worktree_name_modal = false;
+                self.modal.close();
                 if let Some(base_branch) = self.pending_base_branch.take() {
-                    self.worktree_name_input.clear();
                     // Use all repos for multi-repo projects, single repo otherwise
                     let repo_paths = if let Some(all_repos) = self.pending_all_repos.take() {
                         self.pending_repo_path = None;
@@ -946,13 +1023,13 @@ impl App {
                     self.spawn_worktree_session(&repo_paths, &new_branch, &base_branch);
                 }
             }
-            KeyCode::Backspace => self.worktree_name_input.backspace(),
-            KeyCode::Delete => self.worktree_name_input.delete(),
-            KeyCode::Left => self.worktree_name_input.move_left(),
-            KeyCode::Right => self.worktree_name_input.move_right(),
-            KeyCode::Home => self.worktree_name_input.home(),
-            KeyCode::End => self.worktree_name_input.end(),
-            KeyCode::Char(c) => self.worktree_name_input.insert(c),
+            KeyCode::Backspace => wn.name.backspace(),
+            KeyCode::Delete => wn.name.delete(),
+            KeyCode::Left => wn.name.move_left(),
+            KeyCode::Right => wn.name.move_right(),
+            KeyCode::Home => wn.name.home(),
+            KeyCode::End => wn.name.end(),
+            KeyCode::Char(c) => wn.name.insert(c),
             _ => {}
         }
     }
@@ -962,9 +1039,12 @@ impl App {
             .active_project()
             .map(|p| p.config.roles.len())
             .unwrap_or(0);
+        let super::modals::Modal::RoleSelector(ref mut rsel) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
-                self.show_role_selector = false;
+                self.modal.close();
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
@@ -973,16 +1053,16 @@ impl App {
                 self.session_counter = self.session_counter.saturating_sub(1);
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.role_selector_index + 1 < role_count {
-                    self.role_selector_index += 1;
+                if rsel.index + 1 < role_count {
+                    rsel.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.role_selector_index = self.role_selector_index.saturating_sub(1);
+                rsel.index = rsel.index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                self.show_role_selector = false;
-                let role_index = self.role_selector_index;
+                let role_index = rsel.index;
+                self.modal.close();
                 if let (Some(mut config), Some(name)) = (
                     self.pending_spawn_config.take(),
                     self.pending_spawn_name.take(),
@@ -1004,10 +1084,13 @@ impl App {
     /// Navigate the role list — used by tests to simulate inline role list actions.
     #[cfg(test)]
     pub(crate) fn handle_role_editor_list_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => {
                 // Save & close
-                let roles_to_save = self.role_editor_roles.clone();
+                let roles_to_save = ep.role_editor_roles.clone();
                 if let Some(project) = self.active_project_mut() {
                     project.config.roles = roles_to_save;
                     let project_clone = project.clone();
@@ -1016,31 +1099,37 @@ impl App {
                 self.show_role_editor = false;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.role_editor_roles.is_empty()
-                    && self.role_editor_list_index + 1 < self.role_editor_roles.len()
+                if !ep.role_editor_roles.is_empty()
+                    && ep.role_editor_list_index + 1 < ep.role_editor_roles.len()
                 {
-                    self.role_editor_list_index += 1;
+                    ep.role_editor_list_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
+                ep.role_editor_list_index = ep.role_editor_list_index.saturating_sub(1);
             }
             KeyCode::Char('a') => {
                 self.prepare_new_role_editor();
             }
             KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.role_editor_roles.is_empty() {
-                    let idx = self.role_editor_list_index;
+                let super::modals::Modal::EditProject(ref ep) = self.modal else {
+                    return;
+                };
+                if !ep.role_editor_roles.is_empty() {
+                    let idx = ep.role_editor_list_index;
                     self.open_role_for_editing(idx);
                 }
             }
             KeyCode::Char('d') => {
-                if !self.role_editor_roles.is_empty() {
-                    self.role_editor_roles.remove(self.role_editor_list_index);
-                    if self.role_editor_list_index >= self.role_editor_roles.len()
-                        && self.role_editor_list_index > 0
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                if !ep.role_editor_roles.is_empty() {
+                    ep.role_editor_roles.remove(ep.role_editor_list_index);
+                    if ep.role_editor_list_index >= ep.role_editor_roles.len()
+                        && ep.role_editor_list_index > 0
                     {
-                        self.role_editor_list_index -= 1;
+                        ep.role_editor_list_index -= 1;
                     }
                 }
             }
@@ -1155,13 +1244,22 @@ impl App {
     }
 
     /// Load roles from the active project into editor state — used by tests.
+    ///
+    /// This opens the EditProject modal and sets up role editing state.
     #[cfg(test)]
     pub(crate) fn open_role_editor(&mut self) {
         let Some(project) = self.active_project() else {
             return;
         };
-        self.role_editor_roles = project.config.roles.clone();
-        self.role_editor_list_index = 0;
+        let roles = project.config.roles.clone();
+        // Ensure the EditProject modal is open (tests may not have it open yet)
+        if !matches!(self.modal, super::modals::Modal::EditProject(_)) {
+            self.open_edit_project_modal();
+        }
+        if let super::modals::Modal::EditProject(ref mut ep) = self.modal {
+            ep.role_editor_roles = roles;
+            ep.role_editor_list_index = 0;
+        }
         self.role_editor_view = RoleEditorView::List;
         self.show_role_editor = true;
     }
@@ -1181,27 +1279,34 @@ impl App {
     }
 
     pub(crate) fn open_role_for_editing(&mut self, index: usize) {
-        let role = &self.role_editor_roles[index];
-        self.role_editor_editing_index = Some(index);
-        self.role_editor_name.set(&role.name);
-        self.role_editor_description.set(&role.description);
-        self.role_editor_allowed_tools
-            .load(&role.permissions.allowed_tools);
-        self.role_editor_disallowed_tools
-            .load(&role.permissions.disallowed_tools);
-        self.role_editor_system_prompt.set(
-            role.permissions
-                .append_system_prompt
-                .as_deref()
-                .unwrap_or(""),
-        );
-        // Load env as KEY=VALUE strings for the list editor
+        let super::modals::Modal::EditProject(ref ep) = self.modal else {
+            return;
+        };
+        let Some(role) = ep.role_editor_roles.get(index) else {
+            return;
+        };
+        let name = role.name.clone();
+        let description = role.description.clone();
+        let allowed = role.permissions.allowed_tools.clone();
+        let disallowed = role.permissions.disallowed_tools.clone();
+        let system_prompt = role
+            .permissions
+            .append_system_prompt
+            .clone()
+            .unwrap_or_default();
         let env_items: Vec<String> = role
             .permissions
             .env
             .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect();
+
+        self.role_editor_editing_index = Some(index);
+        self.role_editor_name.set(&name);
+        self.role_editor_description.set(&description);
+        self.role_editor_allowed_tools.load(&allowed);
+        self.role_editor_disallowed_tools.load(&disallowed);
+        self.role_editor_system_prompt.set(&system_prompt);
         self.role_editor_env.load(&env_items);
         self.role_editor_field = crate::ui::role_editor_modal::RoleEditorField::Name;
         self.role_editor_view = RoleEditorView::Editor;
@@ -1237,44 +1342,47 @@ impl App {
     }
 
     fn handle_edit_project_mcp_servers_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
         match code {
             KeyCode::Esc => self.submit_edit_project(),
             KeyCode::Tab => {
-                self.edit_project_field = EditProjectField::Name;
+                ep.field = EditProjectField::Name;
             }
             KeyCode::BackTab => {
-                self.edit_project_field = EditProjectField::Roles;
+                ep.field = EditProjectField::Roles;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.edit_project_mcp_servers.is_empty()
-                    && self.edit_project_mcp_server_index + 1 < self.edit_project_mcp_servers.len()
-                {
-                    self.edit_project_mcp_server_index += 1;
+                if !ep.mcp_servers.is_empty() && ep.mcp_server_index + 1 < ep.mcp_servers.len() {
+                    ep.mcp_server_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.edit_project_mcp_server_index =
-                    self.edit_project_mcp_server_index.saturating_sub(1);
+                ep.mcp_server_index = ep.mcp_server_index.saturating_sub(1);
             }
             KeyCode::Char('a') => {
                 self.prepare_new_mcp_editor();
                 self.show_mcp_editor = true;
             }
             KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.edit_project_mcp_servers.is_empty() {
-                    let idx = self.edit_project_mcp_server_index;
+                let super::modals::Modal::EditProject(ref ep) = self.modal else {
+                    return;
+                };
+                if !ep.mcp_servers.is_empty() {
+                    let idx = ep.mcp_server_index;
                     self.open_mcp_server_for_editing(idx);
                     self.show_mcp_editor = true;
                 }
             }
             KeyCode::Char('d') => {
-                if !self.edit_project_mcp_servers.is_empty() {
-                    self.edit_project_mcp_servers
-                        .remove(self.edit_project_mcp_server_index);
-                    if self.edit_project_mcp_server_index >= self.edit_project_mcp_servers.len()
-                        && self.edit_project_mcp_server_index > 0
-                    {
-                        self.edit_project_mcp_server_index -= 1;
+                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+                    return;
+                };
+                if !ep.mcp_servers.is_empty() {
+                    ep.mcp_servers.remove(ep.mcp_server_index);
+                    if ep.mcp_server_index >= ep.mcp_servers.len() && ep.mcp_server_index > 0 {
+                        ep.mcp_server_index -= 1;
                     }
                 }
             }
@@ -1403,9 +1511,11 @@ impl App {
                         branches.insert(0, branch);
                     }
                 }
-                self.available_branches = branches;
-                self.branch_selector_index = 0;
-                self.show_branch_selector = true;
+                self.modal =
+                    super::modals::Modal::BranchSelector(super::modals::BranchSelectorModal {
+                        index: 0,
+                        branches,
+                    });
             }
             Err(e) => {
                 error!("Failed to list branches: {e}");

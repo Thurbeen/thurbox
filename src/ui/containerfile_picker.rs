@@ -9,12 +9,12 @@ use ratatui::{
 use super::centered_fixed_height_rect;
 use super::theme::Theme;
 
-pub struct ContainerfilePickerState {
-    pub containerfiles: Vec<String>,
+pub struct ContainerfilePickerState<'a> {
+    pub containerfiles: &'a [String],
     pub selected_index: usize,
 }
 
-pub fn render_containerfile_picker(frame: &mut Frame, state: &ContainerfilePickerState) {
+pub fn render_containerfile_picker(frame: &mut Frame, state: &ContainerfilePickerState<'_>) {
     let item_count = state.containerfiles.len();
     // Height = items + 2 (border) + 1 (footer)
     let height = (item_count as u16 + 3).min(frame.area().height.saturating_sub(4));

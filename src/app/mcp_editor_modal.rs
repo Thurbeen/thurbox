@@ -29,16 +29,23 @@ impl App {
 
     /// Populate the MCP editor from an existing server config.
     pub(crate) fn open_mcp_server_for_editing(&mut self, idx: usize) {
-        let server = &self.edit_project_mcp_servers[idx];
-        self.mcp_editor_editing_index = Some(idx);
-        self.mcp_editor_name.set(&server.name);
-        self.mcp_editor_command.set(&server.command);
-        self.mcp_editor_args.load(&server.args);
-
-        // Convert env HashMap to "KEY=VALUE" strings for the tool list
+        let super::modals::Modal::EditProject(ref ep) = self.modal else {
+            return;
+        };
+        let Some(server) = ep.mcp_servers.get(idx) else {
+            return;
+        };
+        let name = server.name.clone();
+        let command = server.command.clone();
+        let args = server.args.clone();
         let mut env_strings: Vec<String> =
             server.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         env_strings.sort();
+
+        self.mcp_editor_editing_index = Some(idx);
+        self.mcp_editor_name.set(&name);
+        self.mcp_editor_command.set(&command);
+        self.mcp_editor_args.load(&args);
         self.mcp_editor_env.load(&env_strings);
 
         self.mcp_editor_field = McpEditorField::Name;
@@ -54,9 +61,13 @@ impl App {
             return;
         }
 
+        let super::modals::Modal::EditProject(ref ep) = self.modal else {
+            return;
+        };
+
         // Check duplicate names (excluding the server being edited)
-        let is_duplicate = self
-            .edit_project_mcp_servers
+        let is_duplicate = ep
+            .mcp_servers
             .iter()
             .enumerate()
             .any(|(i, s)| s.name == name && Some(i) != self.mcp_editor_editing_index);
@@ -82,12 +93,15 @@ impl App {
             env,
         };
 
+        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
+            return;
+        };
+
         if let Some(idx) = self.mcp_editor_editing_index {
-            self.edit_project_mcp_servers[idx] = server;
+            ep.mcp_servers[idx] = server;
         } else {
-            self.edit_project_mcp_servers.push(server);
-            self.edit_project_mcp_server_index =
-                self.edit_project_mcp_servers.len().saturating_sub(1);
+            ep.mcp_servers.push(server);
+            ep.mcp_server_index = ep.mcp_servers.len().saturating_sub(1);
         }
 
         self.show_mcp_editor = false;
