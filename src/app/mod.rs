@@ -1131,14 +1131,12 @@ impl App {
         infos
     }
 
-    /// Finalize a pending delete — kill backend and remove worktrees.
+    /// Finalize a pending delete — kill the backend session.
+    ///
+    /// Worktrees, containers, and VMs are intentionally preserved on disk
+    /// so that restored sessions (Ctrl+U) can reuse them without re-cloning.
     fn finalize_pending_delete(&mut self) {
         if let Some(pending) = self.pending_delete.take() {
-            for wt in &pending.session.info.worktrees {
-                if let Err(e) = git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
-                    error!("Failed to remove worktree: {e}");
-                }
-            }
             pending.session.kill();
         }
     }
