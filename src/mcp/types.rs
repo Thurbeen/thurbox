@@ -243,6 +243,36 @@ pub struct GetProjectContainerConfigParams {
     pub project: String,
 }
 
+// ── Scheduled Command Parameters ───────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScheduleCommandParams {
+    #[schemars(description = "Session UUID")]
+    pub session: String,
+    #[schemars(description = "Text to type into the session terminal")]
+    pub command_text: String,
+    #[schemars(description = "Unix millisecond timestamp at which to send the command")]
+    pub scheduled_at: u64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListScheduledCommandsParams {
+    #[schemars(description = "Optional session UUID to filter by")]
+    pub session: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetScheduledCommandParams {
+    #[schemars(description = "Scheduled command ID")]
+    pub id: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CancelScheduledCommandParams {
+    #[schemars(description = "Scheduled command ID")]
+    pub id: i64,
+}
+
 // ── VM Image Parameters ────────────────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -386,4 +416,14 @@ pub struct ProjectContainerConfigResponse {
 pub struct VmImageResponse {
     pub filename: String,
     pub size_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScheduledCommandResponse {
+    pub id: i64,
+    pub session_id: String,
+    pub command_text: String,
+    pub scheduled_at: u64,
+    pub created_at: u64,
+    pub status: String,
 }

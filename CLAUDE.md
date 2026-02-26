@@ -198,6 +198,10 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `list_vm_images` | List downloaded VM images with file sizes |
 | `download_vm_image` | Download a VM image from an HTTPS URL |
 | `delete_vm_image` | Delete a cached VM image |
+| `schedule_command` | Schedule text to be sent to a session at a future time |
+| `list_scheduled_commands` | List pending scheduled commands, optionally by session |
+| `get_scheduled_command` | Get a scheduled command by ID |
+| `cancel_scheduled_command` | Cancel a pending scheduled command |
 
 **Role Management**: `set_roles` performs an atomic replacement —
 all existing roles are deleted and replaced in a single transaction.
@@ -327,6 +331,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+N` | New project/session | **N**ew |
 | `Ctrl+C` | Close session / copy selection | **C**lose / **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
+| `Ctrl+P` | Schedule command for active session | **P**rogram |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus project list | Vim: **h** = left |
 | `Ctrl+J` | Next project (project focus) / session | Vim: **j** = down |

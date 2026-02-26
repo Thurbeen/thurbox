@@ -224,6 +224,32 @@ pub struct RestoreSessionsModal {
     pub index: usize,
 }
 
+// ── ScheduleCommandModal ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScheduleCommandField {
+    #[default]
+    Command,
+    Delay,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScheduleCommandModal {
+    pub command: TextInput,
+    pub delay_minutes: TextInput,
+    pub field: ScheduleCommandField,
+}
+
+impl ScheduleCommandModal {
+    /// Return a mutable reference to whichever text field is currently focused.
+    pub fn active_field_mut(&mut self) -> &mut TextInput {
+        match self.field {
+            ScheduleCommandField::Command => &mut self.command,
+            ScheduleCommandField::Delay => &mut self.delay_minutes,
+        }
+    }
+}
+
 // ── Main Modal Enum ────────────────────────────────────────────────────────
 
 /// Single, discriminated union replacing boolean flags for modal state.
@@ -249,6 +275,7 @@ pub enum Modal {
     EditProject(Box<EditProjectModal>),
     ContainerfilePicker(ContainerfilePickerModal),
     RestoreSessions(RestoreSessionsModal),
+    ScheduleCommand(ScheduleCommandModal),
 }
 
 impl Modal {
@@ -412,5 +439,41 @@ mod tests {
         let mut input3 = TextInput::new();
         input3.set("test");
         assert_ne!(input1, input3);
+    }
+
+    #[test]
+    fn test_schedule_command_modal_default() {
+        let modal = ScheduleCommandModal::default();
+        assert_eq!(modal.command.value(), "");
+        assert_eq!(modal.delay_minutes.value(), "");
+        assert_eq!(modal.field, ScheduleCommandField::Command);
+    }
+
+    #[test]
+    fn test_schedule_command_active_field_returns_command() {
+        let mut modal = ScheduleCommandModal::default();
+        modal.active_field_mut().insert('a');
+        assert_eq!(modal.command.value(), "a");
+        assert_eq!(modal.delay_minutes.value(), "");
+    }
+
+    #[test]
+    fn test_schedule_command_active_field_returns_delay() {
+        let mut modal = ScheduleCommandModal {
+            field: ScheduleCommandField::Delay,
+            ..Default::default()
+        };
+        modal.active_field_mut().insert('5');
+        assert_eq!(modal.delay_minutes.value(), "5");
+        assert_eq!(modal.command.value(), "");
+    }
+
+    #[test]
+    fn test_schedule_command_field_toggle() {
+        let field = ScheduleCommandField::Command;
+        assert_ne!(field, ScheduleCommandField::Delay);
+
+        let field = ScheduleCommandField::default();
+        assert_eq!(field, ScheduleCommandField::Command);
     }
 }

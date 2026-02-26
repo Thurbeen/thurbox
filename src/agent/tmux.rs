@@ -37,6 +37,10 @@ const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 /// Timeout for waiting for a control mode command response.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Delay (in seconds) between sending command text and pressing Enter via tmux,
+/// giving the target application time to process the input.
+const SEND_KEYS_ENTER_DELAY_SECS: &str = "0.2";
+
 /// Local tmux backend — sessions persist in `tmux -L thurbox`.
 ///
 /// Uses tmux control mode (`-C`) for all I/O after `ensure_ready()`.
@@ -803,6 +807,59 @@ impl SessionBackend for LocalTmuxBackend {
         ))?;
         Ok(result.trim().parse().ok())
     }
+}
+
+/// Schedule a command to be sent to a tmux session window after a delay.
+///
+/// Uses `tmux run-shell -b -d <seconds>` so the timer fires independently of
+/// Thurbox. Before sending, the shell script checks `cancelled_at` in the DB
+/// (via `sqlite3` CLI) and marks `executed_at` after sending.
+pub fn schedule_tmux_command(
+    session_name: &str,
+    command_text: &str,
+    delay_seconds: u64,
+    command_id: i64,
+    db_path: &Path,
+) -> Result<()> {
+    let escaped_text = shell_escape(command_text);
+    let escaped_db = shell_escape(&db_path.display().to_string());
+    let target = format!("{TMUX_SESSION}:tb-{session_name}");
+    let escaped_target = shell_escape(&target);
+
+    // Shell script that checks cancellation before sending, then marks executed.
+    // Sends the text first, waits for the app to process, then sends Enter.
+    let script = format!(
+        "cancelled=$(sqlite3 {escaped_db} \
+         \"SELECT cancelled_at FROM scheduled_commands WHERE id={command_id};\"); \
+         if [ -z \"$cancelled\" ]; then \
+         tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} {escaped_text}; \
+         sleep {SEND_KEYS_ENTER_DELAY_SECS}; \
+         tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} Enter; \
+         sqlite3 {escaped_db} \
+         \"UPDATE scheduled_commands SET executed_at=$(date +%s)000 WHERE id={command_id};\"; \
+         fi"
+    );
+
+    let status = Command::new("tmux")
+        .arg("-L")
+        .arg(TMUX_SOCKET)
+        .arg("run-shell")
+        .arg("-b")
+        .arg("-d")
+        .arg(delay_seconds.to_string())
+        .arg(script)
+        .status()
+        .context("Failed to spawn tmux run-shell for scheduled command")?;
+
+    if !status.success() {
+        bail!(
+            "tmux run-shell exited with status {} for command {}",
+            status,
+            command_id
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

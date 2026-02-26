@@ -68,6 +68,12 @@ impl App {
             return;
         }
 
+        // Schedule command modal captures all input
+        if matches!(self.modal, super::modals::Modal::ScheduleCommand(_)) {
+            self.handle_schedule_command_key(code);
+            return;
+        }
+
         // Discard confirmation overlay captures all input
         if self.show_discard_confirmation {
             match code {
@@ -175,6 +181,10 @@ impl App {
                 }
                 KeyCode::Char('r') => {
                     self.restart_active_session();
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    self.open_schedule_command_modal();
                     return;
                 }
                 KeyCode::Char('s') => {
@@ -1030,6 +1040,41 @@ impl App {
             KeyCode::Home => wn.name.home(),
             KeyCode::End => wn.name.end(),
             KeyCode::Char(c) => wn.name.insert(c),
+            _ => {}
+        }
+    }
+
+    fn handle_schedule_command_key(&mut self, code: KeyCode) {
+        use super::modals::ScheduleCommandField;
+
+        let super::modals::Modal::ScheduleCommand(ref mut sc) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                sc.field = match sc.field {
+                    ScheduleCommandField::Command => ScheduleCommandField::Delay,
+                    ScheduleCommandField::Delay => ScheduleCommandField::Command,
+                };
+            }
+            KeyCode::Enter => {
+                self.submit_schedule_command();
+            }
+            KeyCode::Char(c) => {
+                if sc.field == ScheduleCommandField::Delay && !c.is_ascii_digit() {
+                    return;
+                }
+                sc.active_field_mut().insert(c);
+            }
+            KeyCode::Backspace => sc.active_field_mut().backspace(),
+            KeyCode::Delete => sc.active_field_mut().delete(),
+            KeyCode::Left => sc.active_field_mut().move_left(),
+            KeyCode::Right => sc.active_field_mut().move_right(),
+            KeyCode::Home => sc.active_field_mut().home(),
+            KeyCode::End => sc.active_field_mut().end(),
             _ => {}
         }
     }

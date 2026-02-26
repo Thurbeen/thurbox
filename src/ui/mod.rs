@@ -12,6 +12,7 @@ pub mod repo_selector_modal;
 pub mod restore_sessions_modal;
 pub mod role_editor_modal;
 pub mod role_selector_modal;
+pub mod schedule_command_modal;
 pub mod selection;
 pub mod session_mode_modal;
 pub mod status_bar;

@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -178,6 +178,19 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON containers(session_id) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_containers_project
             ON containers(project_id) WHERE deleted_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS scheduled_commands (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     TEXT NOT NULL,
+            command_text   TEXT NOT NULL,
+            scheduled_at   INTEGER NOT NULL,
+            created_at     INTEGER NOT NULL,
+            executed_at    INTEGER,
+            cancelled_at   INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_commands_pending
+            ON scheduled_commands(scheduled_at)
+            WHERE executed_at IS NULL AND cancelled_at IS NULL;
         ",
     )?;
 
@@ -368,6 +381,24 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         );
     }
 
+    if version < 12 {
+        // v11 → v12: add scheduled_commands table for time-scheduled session inputs
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scheduled_commands (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id     TEXT NOT NULL,
+                command_text   TEXT NOT NULL,
+                scheduled_at   INTEGER NOT NULL,
+                created_at     INTEGER NOT NULL,
+                executed_at    INTEGER,
+                cancelled_at   INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_scheduled_commands_pending
+                ON scheduled_commands(scheduled_at)
+                WHERE executed_at IS NULL AND cancelled_at IS NULL;",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -406,6 +437,7 @@ mod tests {
         assert!(tables.contains(&"session_commands".to_string()));
         assert!(tables.contains(&"containers".to_string()));
         assert!(tables.contains(&"project_container_config".to_string()));
+        assert!(tables.contains(&"scheduled_commands".to_string()));
     }
 
     #[test]

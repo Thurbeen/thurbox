@@ -16,6 +16,7 @@ pub mod containers;
 mod mcp_servers;
 mod projects;
 mod roles;
+mod scheduled_commands;
 mod schema;
 mod sessions;
 pub use sessions::DeletedSessionInfo;

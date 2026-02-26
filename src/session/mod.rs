@@ -291,6 +291,18 @@ pub struct SessionCommand {
     pub created_at: u64,
 }
 
+/// A time-scheduled command for a session, inserted by MCP and executed by the TUI tick loop.
+#[derive(Debug, Clone)]
+pub struct ScheduledCommand {
+    pub id: i64,
+    pub session_id: SessionId,
+    pub command_text: String,
+    pub scheduled_at: u64,
+    pub created_at: u64,
+    pub executed_at: Option<u64>,
+    pub cancelled_at: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
     pub resume_session_id: Option<String>,

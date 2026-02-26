@@ -17,8 +17,8 @@ use crate::ui::theme::Theme;
 use crate::ui::{
     add_project_modal, branch_selector_modal, containerfile_picker, delete_project_modal,
     edit_project_modal, info_panel, layout, project_list, repo_selector_modal,
-    restore_sessions_modal, role_editor_modal, role_selector_modal, session_mode_modal, status_bar,
-    terminal_view, worktree_name_modal,
+    restore_sessions_modal, role_editor_modal, role_selector_modal, schedule_command_modal,
+    session_mode_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -445,6 +445,26 @@ impl App {
             );
         }
 
+        // Schedule command modal
+        if let super::modals::Modal::ScheduleCommand(ref sc) = self.modal {
+            let session_name = self
+                .sessions
+                .get(self.active_index)
+                .map(|s| s.info.name.as_str())
+                .unwrap_or("?");
+            schedule_command_modal::render_schedule_command_modal(
+                frame,
+                &schedule_command_modal::ScheduleCommandState {
+                    command: sc.command.value(),
+                    command_cursor: sc.command.cursor_pos(),
+                    delay_minutes: sc.delay_minutes.value(),
+                    delay_cursor: sc.delay_minutes.cursor_pos(),
+                    focused_field: sc.field,
+                    session_name,
+                },
+            );
+        }
+
         // Discard confirmation overlay
         if self.show_discard_confirmation {
             let confirm_area = crate::ui::centered_fixed_height_rect(40, 5, frame.area());
@@ -512,6 +532,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+C", "Copy selection / SIGINT (terminal)"),
         help_line("Ctrl+R", "Restart active session"),
         help_line("Ctrl+S", "Sync all worktrees with main"),
+        help_line("Ctrl+P", "Schedule command for active session"),
         help_line("Ctrl+T", "Toggle shell pane"),
         help_line("Ctrl+Z", "Undo session delete"),
         help_line("Ctrl+U", "Restore deleted session"),

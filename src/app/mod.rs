@@ -78,6 +78,10 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__list_vm_images",
     "mcp__thurbox__download_vm_image",
     "mcp__thurbox__delete_vm_image",
+    "mcp__thurbox__schedule_command",
+    "mcp__thurbox__list_scheduled_commands",
+    "mcp__thurbox__get_scheduled_command",
+    "mcp__thurbox__cancel_scheduled_command",
 ];
 
 /// System prompt appended to the admin session to give Claude context about its
@@ -188,6 +192,8 @@ pub use modals::RoleEditorView;
 pub use modals::AddProjectField;
 
 pub use modals::EditProjectField;
+
+pub use modals::ScheduleCommandField;
 
 /// State for an editable list of tool names (allowed or disallowed).
 pub(crate) struct ToolListState {
@@ -2299,6 +2305,9 @@ impl App {
         // Process queued session commands from MCP
         self.process_session_commands();
 
+        // Process scheduled commands (once per second)
+        self.process_scheduled_commands();
+
         // Refresh system metrics periodically
         if self.tick_count % METRICS_REFRESH_TICKS == 0 {
             self.refresh_system_metrics();
@@ -3783,6 +3792,133 @@ impl App {
                     "Failed to restart session {} via command: {e}",
                     cmd.session_id
                 );
+            }
+        }
+    }
+
+    /// Process due scheduled commands from the database (fallback).
+    ///
+    /// The primary dispatch is via `tmux run-shell -b -d` timers set at
+    /// scheduling time. This tick-loop catches commands whose tmux timer
+    /// failed or was never set (e.g., scheduled while Thurbox was down).
+    /// Throttled to once per second (~100 ticks at 10ms each).
+    fn process_scheduled_commands(&mut self) {
+        if self.tick_count % 100 != 0 {
+            return;
+        }
+
+        let commands = match self.db.due_scheduled_commands() {
+            Ok(cmds) => cmds,
+            Err(e) => {
+                error!("Failed to fetch due scheduled commands: {e}");
+                return;
+            }
+        };
+
+        for cmd in commands {
+            // Skip if we don't have this session — the tmux timer can handle it independently.
+            let Some(session) = self.sessions.iter().find(|s| s.info.id == cmd.session_id) else {
+                continue;
+            };
+
+            let mut paste = b"\x1b[200~".to_vec();
+            paste.extend_from_slice(cmd.command_text.as_bytes());
+            paste.extend_from_slice(b"\x1b[201~");
+            if let Err(e) = session.send_input(paste) {
+                error!(
+                    "Failed to send scheduled command {} to session {}: {e}",
+                    cmd.id, cmd.session_id
+                );
+            } else {
+                self.deferred_inputs.push((
+                    cmd.session_id,
+                    b"\r".to_vec(),
+                    self.tick_count + DEFERRED_INPUT_DELAY_TICKS,
+                ));
+                info!(
+                    "Executed scheduled command {} for session {}",
+                    cmd.id, cmd.session_id
+                );
+            }
+
+            // Mark as executed to prevent the tmux timer from duplicating
+            if let Err(e) = self.db.mark_scheduled_command_executed(cmd.id) {
+                error!(
+                    "Failed to mark scheduled command {} as executed: {e}",
+                    cmd.id
+                );
+            }
+        }
+    }
+
+    /// Open the schedule-command modal for the active session.
+    fn open_schedule_command_modal(&mut self) {
+        if self.sessions.is_empty() {
+            self.set_error("No active session to schedule a command for");
+            return;
+        }
+        self.modal = modals::Modal::ScheduleCommand(modals::ScheduleCommandModal::default());
+    }
+
+    /// Validate and submit the schedule-command modal.
+    fn submit_schedule_command(&mut self) {
+        let modals::Modal::ScheduleCommand(ref sc) = self.modal else {
+            return;
+        };
+        let command_text = sc.command.value().trim().to_string();
+        if command_text.is_empty() {
+            self.set_error("Command cannot be empty");
+            return;
+        }
+        let delay_minutes: u64 = match sc.delay_minutes.value().trim().parse() {
+            Ok(v) if v > 0 => v,
+            _ => {
+                self.set_error("Delay must be a positive number of minutes");
+                return;
+            }
+        };
+
+        let session = match self.sessions.get(self.active_index) {
+            Some(s) => s,
+            None => {
+                self.set_error("No active session");
+                return;
+            }
+        };
+        let session_id = session.info.id;
+        let session_name = session.info.name.clone();
+
+        let delay_seconds = delay_minutes * 60;
+        let now = crate::sync::current_time_millis();
+        let scheduled_at = now + delay_seconds * 1000;
+
+        match self
+            .db
+            .create_scheduled_command(session_id, &command_text, scheduled_at)
+        {
+            Ok(id) => {
+                // Set up a tmux timer for external dispatch
+                if let Some(db_path) = crate::paths::database_file() {
+                    if let Err(e) = crate::agent::tmux::schedule_tmux_command(
+                        &session_name,
+                        &command_text,
+                        delay_seconds,
+                        id,
+                        &db_path,
+                    ) {
+                        warn!("Failed to set tmux timer for command {id}: {e}");
+                    }
+                }
+
+                self.modal.close();
+                self.set_status(
+                    StatusLevel::Success,
+                    format!("Command scheduled for {} in {delay_minutes}m", session_name),
+                );
+            }
+            Err(e) => {
+                error!("Failed to create scheduled command: {e}");
+                self.set_error("Failed to schedule command");
             }
         }
     }
@@ -7136,7 +7272,7 @@ mod tests {
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 26);
+        assert_eq!(perms.allowed_tools.len(), 30);
         assert!(perms
             .allowed_tools
             .iter()

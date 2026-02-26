@@ -291,6 +291,18 @@ impl Database {
         Ok(sessions.into_iter().next())
     }
 
+    /// Get just the name of an active session by its ID.
+    pub fn get_session_name(&self, id: SessionId) -> rusqlite::Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT name FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .ok())
+    }
+
     /// List soft-deleted sessions for a project, most recently deleted first.
     pub fn list_deleted_sessions_for_project(
         &self,
@@ -696,6 +708,36 @@ mod tests {
 
         let result = db.get_session_by_id(sid).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_session_name_found() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let name = db.get_session_name(sid).unwrap();
+        assert_eq!(name.as_deref(), Some("Session 1"));
+    }
+
+    #[test]
+    fn get_session_name_not_found() {
+        let (db, _pid) = setup_db_with_project();
+        let name = db.get_session_name(SessionId::default()).unwrap();
+        assert!(name.is_none());
+    }
+
+    #[test]
+    fn get_session_name_excludes_deleted() {
+        let (db, pid) = setup_db_with_project();
+        let session = make_session("Session 1", pid);
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.soft_delete_session(sid).unwrap();
+
+        let name = db.get_session_name(sid).unwrap();
+        assert!(name.is_none());
     }
 
     #[test]

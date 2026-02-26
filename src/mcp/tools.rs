@@ -13,16 +13,20 @@ use crate::sync::{SharedProject, SharedSession};
 use crate::session::VmConfig;
 use crate::storage::vms::VmRecord;
 
+use crate::session::ScheduledCommand;
+
 use super::types::{
-    ConfigureProjectContainerParams, ConfigureProjectVmParams, ContainerfileTemplateResponse,
-    ContainerfileTemplateSummary, CreateProjectParams, DeleteContainerfileTemplateParams,
-    DeleteProjectParams, DeleteSessionParams, DeleteVmImageParams, DownloadVmImageParams,
-    GetContainerfileTemplateParams, GetProjectContainerConfigParams, GetProjectParams,
-    GetSessionParams, GetVmParams, ListMcpServersParams, ListRolesParams, ListSessionsParams,
-    ListVmsParams, McpServerResponse, ProjectContainerConfigResponse, ProjectResponse,
-    ProjectVmConfigResponse, RestartSessionParams, RestoreSessionParams, RoleResponse,
-    SessionResponse, SetContainerfileTemplateParams, SetMcpServersParams, SetRolesParams,
-    UpdateProjectParams, VmImageResponse, VmResponse, WorktreeResponse,
+    CancelScheduledCommandParams, ConfigureProjectContainerParams, ConfigureProjectVmParams,
+    ContainerfileTemplateResponse, ContainerfileTemplateSummary, CreateProjectParams,
+    DeleteContainerfileTemplateParams, DeleteProjectParams, DeleteSessionParams,
+    DeleteVmImageParams, DownloadVmImageParams, GetContainerfileTemplateParams,
+    GetProjectContainerConfigParams, GetProjectParams, GetScheduledCommandParams, GetSessionParams,
+    GetVmParams, ListMcpServersParams, ListRolesParams, ListScheduledCommandsParams,
+    ListSessionsParams, ListVmsParams, McpServerResponse, ProjectContainerConfigResponse,
+    ProjectResponse, ProjectVmConfigResponse, RestartSessionParams, RestoreSessionParams,
+    RoleResponse, ScheduleCommandParams, ScheduledCommandResponse, SessionResponse,
+    SetContainerfileTemplateParams, SetMcpServersParams, SetRolesParams, UpdateProjectParams,
+    VmImageResponse, VmResponse, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -939,6 +943,141 @@ impl ThurboxMcp {
         })
         .to_string()
     }
+
+    // ── Scheduled Command Tools ────────────────────────────────
+
+    #[tool(
+        description = "Schedule a command to be sent to a session at a future time. The command text is typed into the session's terminal as if the user typed it, then Enter is pressed automatically. One-shot: fires once at the scheduled time."
+    )]
+    fn schedule_command(&self, Parameters(params): Parameters<ScheduleCommandParams>) -> String {
+        let db = self.db.lock().unwrap();
+
+        let session = match resolve_session(&db, &params.session) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+
+        if params.command_text.is_empty() {
+            return error_json("command_text must not be empty");
+        }
+
+        let now = crate::sync::current_time_millis();
+        if params.scheduled_at <= now {
+            return error_json("scheduled_at must be in the future");
+        }
+
+        let session_name = match db.get_session_name(session.id) {
+            Ok(Some(name)) => name,
+            Ok(None) => return error_json("Session name not found"),
+            Err(e) => return error_json(&e.to_string()),
+        };
+
+        match db.create_scheduled_command(session.id, &params.command_text, params.scheduled_at) {
+            Ok(id) => {
+                let delay_seconds = params.scheduled_at.saturating_sub(now) / 1000;
+                if let Err(e) = crate::agent::tmux::schedule_tmux_command(
+                    &session_name,
+                    &params.command_text,
+                    delay_seconds,
+                    id,
+                    &self.db_path,
+                ) {
+                    tracing::warn!("Failed to set tmux timer for command {id}: {e}");
+                }
+
+                let cmd = ScheduledCommand {
+                    id,
+                    session_id: session.id,
+                    command_text: params.command_text,
+                    scheduled_at: params.scheduled_at,
+                    created_at: now,
+                    executed_at: None,
+                    cancelled_at: None,
+                };
+                json_text(&scheduled_command_to_response(&cmd))
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(description = "List pending scheduled commands, optionally filtered by session UUID")]
+    fn list_scheduled_commands(
+        &self,
+        Parameters(params): Parameters<ListScheduledCommandsParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+
+        let commands = match db.list_pending_scheduled_commands() {
+            Ok(cmds) => cmds,
+            Err(e) => return error_json(&e.to_string()),
+        };
+
+        let filtered: Vec<_> = if let Some(ref session_id) = params.session {
+            let session = match resolve_session(&db, session_id) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            commands
+                .into_iter()
+                .filter(|c| c.session_id == session.id)
+                .collect()
+        } else {
+            commands
+        };
+
+        let responses: Vec<_> = filtered.iter().map(scheduled_command_to_response).collect();
+        json_text(&responses)
+    }
+
+    #[tool(description = "Get a scheduled command by ID")]
+    fn get_scheduled_command(
+        &self,
+        Parameters(params): Parameters<GetScheduledCommandParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+
+        match db.get_scheduled_command(params.id) {
+            Ok(Some(cmd)) => json_text(&scheduled_command_to_response(&cmd)),
+            Ok(None) => error_json(&format!("Scheduled command not found: {}", params.id)),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(description = "Cancel a pending scheduled command")]
+    fn cancel_scheduled_command(
+        &self,
+        Parameters(params): Parameters<CancelScheduledCommandParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+
+        match db.cancel_scheduled_command(params.id) {
+            Ok(true) => serde_json::json!({
+                "cancelled": true,
+                "id": params.id,
+            })
+            .to_string(),
+            Ok(false) => error_json("Command not found or already executed/cancelled"),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+}
+
+fn scheduled_command_to_response(cmd: &ScheduledCommand) -> ScheduledCommandResponse {
+    let status = if cmd.cancelled_at.is_some() {
+        "cancelled"
+    } else if cmd.executed_at.is_some() {
+        "executed"
+    } else {
+        "pending"
+    };
+    ScheduledCommandResponse {
+        id: cmd.id,
+        session_id: cmd.session_id.to_string(),
+        command_text: cmd.command_text.clone(),
+        scheduled_at: cmd.scheduled_at,
+        created_at: cmd.created_at,
+        status: status.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -955,6 +1094,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         ThurboxMcp {
             db: Mutex::new(db),
+            db_path: PathBuf::from(":memory:"),
             tool_router: ThurboxMcp::tool_router(),
         }
     }
