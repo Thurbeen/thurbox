@@ -2191,6 +2191,7 @@ impl App {
         if self.active_project_index >= self.projects.len() {
             self.active_project_index = self.projects.len().saturating_sub(1);
         }
+        self.sync_active_session_to_project();
 
         // Close modal and show success
         self.modal.close();
@@ -2200,11 +2201,14 @@ impl App {
         );
     }
 
-    /// When switching projects, select the first session of the new project.
+    /// Sync `active_index` to the active project's first session, or invalidate
+    /// it when the project has no sessions.
     pub(crate) fn sync_active_session_to_project(&mut self) {
         let project_sessions = self.active_project_sessions();
         if let Some(&first) = project_sessions.first() {
             self.active_index = first;
+        } else {
+            self.active_index = self.sessions.len();
         }
     }
 
@@ -2549,6 +2553,7 @@ impl App {
                 if self.active_project_index >= self.projects.len() {
                     self.active_project_index = self.projects.len().saturating_sub(1);
                 }
+                self.sync_active_session_to_project();
                 tracing::debug!("Removed project {} from external state", project_id);
             }
         }
@@ -2587,8 +2592,8 @@ impl App {
         for session_id in delta.removed_sessions {
             if let Some(pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
                 self.sessions.remove(pos);
-                if self.active_index >= self.sessions.len() && self.active_index > 0 {
-                    self.active_index -= 1;
+                if self.active_index >= self.sessions.len() {
+                    self.sync_active_session_to_project();
                 }
 
                 // Remove session from all projects (cleanup project.session_ids)
@@ -7982,5 +7987,146 @@ mod tests {
         };
         app.update(AppMessage::ExternalStateChange(delta2));
         assert_eq!(app.session_counter, 10);
+    }
+
+    // --- Project switching with empty projects ---
+
+    /// Helper: create an app with two projects, only the first has sessions.
+    fn app_with_two_projects(sessions_in_first: usize) -> App {
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let config_a = ProjectConfig {
+            name: "ProjectA".to_string(),
+            repos: vec![PathBuf::from("/repo-a")],
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            id: None,
+        };
+        let db = test_db_with_project(&config_a);
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(backend_arc.clone()),
+            provider.clone(),
+            db,
+            None,
+            None,
+        );
+        // Add sessions to first project
+        for _ in 0..sessions_in_first {
+            let session = Session::stub("test-session", &backend_arc, &provider);
+            let session_id = session.info.id;
+            app.sessions.push(session);
+            app.projects[0].session_ids.push(session_id);
+        }
+        if !app.sessions.is_empty() {
+            app.active_index = 0;
+        }
+        // Add a second project with no sessions
+        let config_b = ProjectConfig {
+            name: "ProjectB".to_string(),
+            repos: vec![PathBuf::from("/repo-b")],
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            id: None,
+        };
+        app.projects.push(ProjectInfo::new(config_b));
+        app
+    }
+
+    #[test]
+    fn sync_to_empty_project_invalidates_active_index() {
+        let mut app = app_with_two_projects(2);
+        // Start on first project with sessions
+        app.active_project_index = 0;
+        app.active_index = 0;
+        assert!(app.has_active_session());
+
+        // Switch to second project (empty)
+        app.active_project_index = 1;
+        app.sync_active_session_to_project();
+        assert!(!app.has_active_session());
+    }
+
+    #[test]
+    fn switch_project_to_empty_then_back() {
+        let mut app = app_with_two_projects(2);
+        app.active_project_index = 0;
+        app.active_index = 0;
+
+        // Switch to empty project
+        app.active_project_index = 1;
+        app.sync_active_session_to_project();
+        assert!(!app.has_active_session());
+
+        // Switch back to project with sessions
+        app.active_project_index = 0;
+        app.sync_active_session_to_project();
+        assert!(app.has_active_session());
+        assert_eq!(app.active_index, 0);
+    }
+
+    #[test]
+    fn delete_project_syncs_active_session() {
+        // Start with one project, then add a second with no sessions
+        let mut app = app_with_two_projects(1);
+
+        // Find which index is ProjectB (empty — no sessions)
+        let idx_b = app
+            .projects
+            .iter()
+            .position(|p| p.config.name == "ProjectB")
+            .unwrap();
+
+        // Delete the empty project and verify active_index syncs to ProjectA
+        app.active_project_index = idx_b;
+        app.modal = modals::Modal::DeleteProject(modals::DeleteProjectModal {
+            project_name: "ProjectB".to_string(),
+            confirmation: {
+                let mut input = modals::TextInput::new();
+                for c in "ProjectB".chars() {
+                    input.insert(c);
+                }
+                input
+            },
+            error: None,
+        });
+        app.delete_active_project();
+
+        // After deletion, only ProjectA remains, and its session is active
+        assert_eq!(app.projects.len(), 1);
+        assert_eq!(app.projects[0].config.name, "ProjectA");
+        assert!(app.has_active_session());
+    }
+
+    #[test]
+    fn switch_project_forward_to_empty_clears_active_session() {
+        let mut app = app_with_two_projects(2);
+        app.active_project_index = 0;
+        app.active_index = 0;
+        assert!(app.has_active_session());
+
+        // Ctrl+J equivalent: forward to the empty project
+        app.switch_project_forward();
+        assert_eq!(app.active_project_index, 1);
+        assert!(!app.has_active_session());
+    }
+
+    #[test]
+    fn external_session_removal_syncs_to_active_project() {
+        let mut app = app_with_two_projects(1);
+        app.active_project_index = 0;
+        app.active_index = 0;
+        let session_id = app.sessions[0].info.id;
+
+        // Externally remove the only session
+        let delta = StateDelta {
+            removed_sessions: vec![session_id],
+            ..StateDelta::default()
+        };
+        app.update(AppMessage::ExternalStateChange(delta));
+
+        // active_index should be invalidated (no sessions left in project)
+        assert!(!app.has_active_session());
     }
 }
