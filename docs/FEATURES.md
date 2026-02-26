@@ -124,6 +124,7 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) | **N**ew |
 | `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
+| `Ctrl+P` | Global | Schedule command for active session | **P**rogram |
 | `Ctrl+T` | Global | Toggle shell pane alongside Claude session | **T**erminal |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next project or session | Vim: **j** = down |
@@ -211,6 +212,78 @@ UUIDs are collision-free without coordination, simple to generate,
 and usable as map keys. Sequential IDs would work too, but UUIDs
 prevent bugs where an old session ID accidentally refers to
 a new session after recycling.
+
+---
+
+## Scheduled Commands
+
+`Ctrl+P` opens a modal to schedule text that will be sent to the
+active session after a configurable delay. This is useful for
+queuing follow-up prompts, running maintenance commands, or
+pacing multi-step workflows without manual intervention.
+
+### Ctrl+P modal
+
+The modal has two fields:
+
+- **Command** — the text to send to the session's PTY.
+- **Delay (minutes)** — a positive integer specifying how many
+  minutes to wait before sending.
+
+`Tab` switches between fields. `Enter` submits the scheduled
+command, `Esc` cancels. The delay field only accepts digits.
+
+### Dual-track execution
+
+Scheduled commands use two independent execution paths for
+reliability:
+
+1. **Tmux external timer** — `tmux run-shell -b -d <seconds>`
+   fires a shell script after the delay. The script checks the
+   database for a cancellation flag before sending the command
+   via `tmux send-keys`. This path is independent of the Thurbox
+   process and survives crashes or restarts.
+2. **App tick-loop safety net** — the TUI's tick loop polls the
+   `scheduled_commands` table once per second for due commands.
+   When found, it sends the command text via bracketed paste mode
+   with a deferred Enter keystroke (~100 ms later).
+
+Both paths mark the `executed_at` timestamp on completion.
+Whichever fires first prevents the other from executing a
+second time.
+
+**Why dual-track?** The tmux timer guarantees execution even
+if Thurbox crashes. The app tick loop guarantees execution even
+if the tmux timer encounters an edge case. Together they provide
+a reliability guarantee: once scheduled, the command will execute.
+
+### Persistence
+
+Scheduled commands are stored in the `scheduled_commands` SQLite
+table with fields for `session_id`, `command_text`, `scheduled_at`,
+`created_at`, `executed_at`, and `cancelled_at`. A partial index
+on `scheduled_at` (where pending) optimizes due-command queries.
+
+### Cancellation
+
+The `cancelled_at` timestamp prevents execution. When set:
+
+- The tmux timer's shell script checks the flag and skips sending.
+- The app tick loop's query excludes cancelled commands.
+
+Cancellation is atomic — it only succeeds if the command has not
+already been executed or cancelled.
+
+### MCP access
+
+Four MCP tools provide programmatic access:
+
+| Tool | Description |
+|------|-------------|
+| `schedule_command` | Schedule text to be sent to a session at a future time |
+| `list_scheduled_commands` | List pending commands, optionally filtered by session |
+| `get_scheduled_command` | Get a scheduled command by ID |
+| `cancel_scheduled_command` | Cancel a pending scheduled command |
 
 ---
 
@@ -337,6 +410,74 @@ where `/` in branch names is replaced by `-`.
 
 ---
 
+## Worktree Sync
+
+`Ctrl+S` synchronizes all worktree sessions in the active project
+with their upstream default branch. The operation runs in the
+background — the TUI stays responsive throughout.
+
+### Algorithm
+
+Sessions are grouped by repository path so that worktrees sharing
+the same `.git` directory are synced sequentially (avoiding git
+lock contention). Different repositories sync in parallel.
+
+Per-worktree steps:
+
+1. **Clean stale index locks** — removes `.git/index.lock` from
+   crashed git processes (see below).
+2. **Stash** — saves uncommitted changes so rebase can proceed
+   on a clean tree.
+3. **Fetch** — `git fetch` from origin.
+4. **Rebase** — `git rebase origin/main` onto the latest upstream.
+5. **Stash pop** — restores the stashed changes. If rebase fails
+   (conflict), the stash is popped before reporting the conflict.
+
+**Why stash instead of requiring a clean tree?** Claude sessions
+frequently have uncommitted work in progress. Requiring a clean
+tree would make sync unusable in the most common case.
+
+**Why group by repo?** Worktrees linked to the same repository
+share a single `.git` directory. Running concurrent git operations
+against the same `.git` causes index lock conflicts. Sequential
+processing within a repo group eliminates this.
+
+### Stale index lock cleanup
+
+Before stashing, Thurbox checks for stale `.git/index.lock` files
+left behind by crashed git processes:
+
+- **Linux**: reads the PID from the lock file and checks
+  `/proc/{pid}` — removes the lock if the process is dead.
+- **Fallback** (all platforms): removes locks older than 60 seconds
+  based on file mtime.
+
+If the first stash attempt fails with a lock-related error,
+Thurbox retries up to 3 times with increasing delays
+(100 ms, 500 ms, 1 s) after cleaning stale locks.
+
+### Results
+
+Each worktree reports one of three outcomes:
+
+- **Synced** — rebase succeeded, stash restored.
+- **Conflict** — rebase failed due to merge conflicts. The conflict
+  details are sent to the session's Claude instance as a prompt
+  asking it to resolve the rebase.
+- **Error** — fetch or stash failed. The error message is shown
+  in the status bar.
+
+The status bar summarizes results:
+`"3 worktree(s) synced"` or `"2 synced, 1 conflict(s)"`.
+
+### Non-blocking execution
+
+Sync runs on background threads via an `mpsc` channel. The main
+event loop polls `try_recv()` each tick to collect results as
+they complete. The TUI remains fully interactive during sync.
+
+---
+
 ## Session Persistence
 
 Sessions run inside a dedicated tmux server (`tmux -L thurbox`)
@@ -382,7 +523,7 @@ reconstructed on restore.
 - **`Ctrl+Q` (Quit)**: Detaches from all sessions (tmux panes
   keep running), saves metadata. Sessions resume on next launch
   with terminal content preserved.
-- **`Ctrl+C` (Close)**: Permanently kills the tmux pane.
+- **`Ctrl+D` (Close)**: Permanently kills the tmux pane.
   Its worktree (if any) is removed immediately.
   Closed sessions are not saved and will not be restored.
 
@@ -750,6 +891,51 @@ still running, and re-adopts their tmux sessions.
 Container records are stored in the `containers` SQLite table
 with a foreign key to `sessions(id)`.
 
+### TUI template picker
+
+When creating a container session, a Containerfile picker modal
+lists all available templates. `j`/`k` navigate, `Enter` selects,
+`Esc` cancels. If only one template exists, the picker is skipped
+and the default template is used automatically.
+
+### Default template contents
+
+The seeded `default/` Containerfile builds on `debian:bookworm-slim`
+and installs: `curl`, `ca-certificates`, `git`, `tmux`, `iptables`,
+`ipset`, `jq`, `rsync`. It creates a dedicated `thurbox` user
+(UID/GID 5000), installs Claude Code via the native installer,
+copies the firewall script and allowlist into the image, and
+configures sudoers for firewall script execution.
+
+### Per-project container configuration
+
+Each project can override the default container settings
+(image, CPUs, memory, firewall, template name). Configuration
+is stored in a `project_container_config` SQLite table keyed
+by project ID. When a container session is created, the project's
+stored config is merged with the defaults.
+
+### Template management via MCP
+
+Six MCP tools provide programmatic access to templates and
+per-project configuration:
+
+| Tool | Description |
+|------|-------------|
+| `list_containerfile_templates` | List template names and the files each contains |
+| `get_containerfile_template` | Read a template's Containerfile content and list support files |
+| `set_containerfile_template` | Create or update a template (Containerfile + optional support files) |
+| `delete_containerfile_template` | Delete a template (refuses to delete "default") |
+| `configure_project_container` | Set project container defaults (image, cpus, memory, firewall, template) |
+| `get_project_container_config` | Read current project container config |
+
+### Template name safety
+
+Template names and support file names are validated to prevent
+path traversal: they must be non-empty, at most 64 characters,
+and cannot contain `/`, `\`, `..`, or start with `.`. The
+`default` template is protected from deletion.
+
 ---
 
 ## VM Sessions
@@ -838,6 +1024,71 @@ and associated session ID.
   for VM-backed sessions.
 - **Status bar**: Provisioning steps displayed during VM creation.
 
+### Per-VM disk layout
+
+Each VM's state lives in `~/.local/share/thurbox/vms/<vm-uuid>/`:
+
+```text
+<vm-uuid>/
+  disk.qcow2       # CoW overlay (base image unchanged)
+  cloud-init.iso   # nocloud format ISO
+  ssh_key           # ephemeral ed25519 private key
+  ssh_key.pub       # ephemeral ed25519 public key
+  qemu.pid          # QEMU process PID file
+```
+
+The SSH ControlMaster socket is stored at
+`/tmp/thurbox-ssh-<short-id>` (first 8 characters of the VM UUID)
+to stay within the 108-byte Unix socket path limit.
+
+### CoW overlay
+
+Each VM gets a QCOW2 copy-on-write overlay that references the
+shared base image as a backing file. The base image on disk is
+never modified — all writes go to the per-VM overlay, which grows
+on demand. This means creating a new VM is nearly instant (no
+multi-gigabyte copy) and base image updates affect only new VMs.
+
+### Cloud-init provisioning
+
+VMs are provisioned via cloud-init in nocloud format:
+
+- **User account**: `thurbox` with passwordless sudo and
+  `/bin/bash` shell. SSH public key injected from the
+  ephemeral keypair.
+- **Packages**: `tmux`, `rsync`, `git`, `curl` installed
+  via `package_update` + `packages`.
+- **Claude CLI**: Installed via `curl -fsSL https://claude.ai/install.sh | bash`
+  and symlinked to `/usr/local/bin/claude`.
+- **Setup script**: An optional custom shell script from
+  `VmConfig.setup_script` runs after package installation.
+
+Thurbox waits for `cloud-init status --wait` to complete before
+marking the VM as ready. If cloud-init reports errors (e.g.,
+a runcmd failure), provisioning continues as long as core
+packages are installed.
+
+### SSH port allocation
+
+VM SSH ports start at 22200 and increment. On allocation,
+Thurbox probes candidate ports to skip those already bound by
+orphaned QEMU processes, scanning up to 100 ports. Host port
+forwarding is configured via QEMU user-mode networking:
+`-netdev user,id=net0,hostfwd=tcp::{port}-:22`.
+
+### VM image management via MCP
+
+Three MCP tools manage the base image cache:
+
+| Tool | Description |
+|------|-------------|
+| `list_vm_images` | List downloaded images with file sizes |
+| `download_vm_image` | Download an image from an HTTPS URL (rejects http/file) |
+| `delete_vm_image` | Delete a cached image |
+
+Image filenames are validated with the same path-traversal
+protection used for container templates.
+
 ---
 
 ## Text Selection and Copy-Paste
@@ -850,8 +1101,8 @@ is confined to the active pane bounds.
 - **`Ctrl+C`** (with active selection): Copies selected text
   to the system clipboard via `arboard`. Trailing whitespace
   is trimmed per line.
-- **`Ctrl+C`** (no selection): Closes the active session
-  (original behavior).
+- **`Ctrl+C`** (no selection): Forwarded to the terminal as
+  SIGINT.
 - **`Ctrl+V`**: Pastes from system clipboard into the active
   PTY.
 - Any other keypress clears the selection.

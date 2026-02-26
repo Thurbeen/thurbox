@@ -76,6 +76,7 @@
             <li><a href="#list-navigation">List Navigation</a></li>
             <li><a href="#terminal-scrollback">Terminal Scrollback</a></li>
             <li><a href="#modals">Modal Keybindings</a></li>
+            <li><a href="#scheduled-commands">Scheduled Commands</a></li>
             <li><a href="#role-editor">Role Editor</a></li>
           </ul>
         </aside>
@@ -151,10 +152,8 @@
               </tr>
               <tr>
                 <td><code>Ctrl+C</code></td>
-                <td>Close session / copy selection</td>
+                <td>Copy selection, or send SIGINT if none</td>
                 <td>
-                  <strong>C</strong>
-                  lose /
                   <strong>C</strong>
                   opy
                 </td>
@@ -163,6 +162,14 @@
                 <td><code>Ctrl+V</code></td>
                 <td>Paste from clipboard</td>
                 <td>Paste</td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+P</code></td>
+                <td>Schedule command for active session</td>
+                <td>
+                  <strong>P</strong>
+                  rogram
+                </td>
               </tr>
               <tr>
                 <td><code>Ctrl+T</code></td>
@@ -174,7 +181,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+H</code></td>
-                <td>Focus project list</td>
+                <td>Focus previous pane (cycle backward)</td>
                 <td>
                   Vim:
                   <strong>h</strong>
@@ -183,7 +190,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+J</code></td>
-                <td>Next project / session</td>
+                <td>Select next project or session</td>
                 <td>
                   Vim:
                   <strong>j</strong>
@@ -192,7 +199,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+K</code></td>
-                <td>Previous project / session</td>
+                <td>Select previous project or session</td>
                 <td>
                   Vim:
                   <strong>k</strong>
@@ -201,7 +208,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+L</code></td>
-                <td>Cycle focus</td>
+                <td>Focus next pane (cycle forward)</td>
                 <td>
                   Vim:
                   <strong>l</strong>
@@ -259,7 +266,7 @@
               </tr>
               <tr>
                 <td><code>F1</code></td>
-                <td>Help overlay</td>
+                <td>Toggle keybindings help</td>
                 <td>Universal</td>
               </tr>
               <tr>
@@ -443,6 +450,39 @@
               <tr>
                 <td><code>Enter</code></td>
                 <td>Confirm name, create branch and worktree</td>
+              </tr>
+              <tr>
+                <td><code>Esc</code></td>
+                <td>Cancel</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="scheduled-commands">
+            Scheduled Commands
+            <a href="#scheduled-commands" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <code>Ctrl+P</code>
+            opens a modal to schedule text that will be sent to the active session after a delay.
+          </p>
+
+          <h3>Schedule command modal</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Tab</code></td>
+                <td>Switch between Command and Delay fields</td>
+              </tr>
+              <tr>
+                <td><code>Enter</code></td>
+                <td>Submit scheduled command</td>
               </tr>
               <tr>
                 <td><code>Esc</code></td>

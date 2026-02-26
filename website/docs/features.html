@@ -73,7 +73,9 @@
           <ul>
             <li><a href="#session-orchestration">Session Orchestration</a></li>
             <li><a href="#project-management">Project Management</a></li>
+            <li><a href="#scheduled-commands">Scheduled Commands</a></li>
             <li><a href="#git-worktrees">Git Worktrees</a></li>
+            <li><a href="#worktree-sync">Worktree Sync</a></li>
             <li><a href="#container-sessions">Container Sessions</a></li>
             <li><a href="#vm-sessions">VM Sessions</a></li>
             <li><a href="#role-system">Role System</a></li>
@@ -120,6 +122,9 @@
               <code>Ctrl+C</code>
               , paste with
               <code>Ctrl+V</code>
+              . With no selection,
+              <code>Ctrl+C</code>
+              sends SIGINT to the active session.
             </li>
             <li>
               Toggle a shell pane alongside the Claude session with
@@ -157,6 +162,45 @@
             </li>
           </ul>
 
+          <h2 id="scheduled-commands">
+            Scheduled Commands
+            <a href="#scheduled-commands" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Press
+            <code>Ctrl+P</code>
+            to schedule text that will be sent to the active session after a configurable delay.
+            Useful for queuing follow-up prompts or pacing multi-step workflows.
+          </p>
+          <ul>
+            <li>
+              Modal with two fields: command text and delay in minutes.
+              <code>Tab</code>
+              switches fields,
+              <code>Enter</code>
+              submits,
+              <code>Esc</code>
+              cancels.
+            </li>
+            <li>
+              Dual-track execution: a tmux external timer fires independently of Thurbox (survives
+              crashes), and an app-level tick loop provides a safety net. Whichever fires first
+              prevents duplicate execution.
+            </li>
+            <li>
+              Scheduled commands are persisted in SQLite and can be managed programmatically via
+              four MCP tools:
+              <code>schedule_command</code>
+              ,
+              <code>list_scheduled_commands</code>
+              ,
+              <code>get_scheduled_command</code>
+              ,
+              <code>cancel_scheduled_command</code>
+              .
+            </li>
+          </ul>
+
           <h2 id="git-worktrees">
             Git Worktrees
             <a href="#git-worktrees" class="heading-anchor">#</a>
@@ -191,6 +235,36 @@
             .
           </p>
 
+          <h2 id="worktree-sync">
+            Worktree Sync
+            <a href="#worktree-sync" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <code>Ctrl+S</code>
+            synchronizes all worktree sessions in the active project with their upstream default
+            branch.
+          </p>
+          <ul>
+            <li>
+              Sessions are grouped by repository to avoid git lock contention. Different repos sync
+              in parallel.
+            </li>
+            <li>
+              Per-worktree: stash uncommitted changes, fetch, rebase
+              <code>origin/main</code>
+              , stash pop.
+            </li>
+            <li>
+              Stale
+              <code>.git/index.lock</code>
+              files from crashed git processes are automatically cleaned up before syncing.
+            </li>
+            <li>Runs on background threads &mdash; the TUI remains fully responsive.</li>
+            <li>
+              Results shown per-session: synced, conflict (sent to Claude for resolution), or error.
+            </li>
+          </ul>
+
           <h2 id="container-sessions">
             Container Sessions
             <a href="#container-sessions" class="heading-anchor">#</a>
@@ -218,10 +292,34 @@
             <code>~/.local/share/thurbox/containerfiles/</code>
             . A
             <code>default/</code>
-            template (Debian Bookworm-based) is seeded on first run. Add custom templates by
-            creating folders with a
+            template (Debian Bookworm-based) is seeded on first run. It installs tmux, git,
+            iptables, Claude Code, and creates a dedicated
+            <code>thurbox</code>
+            user (UID/GID 5000). Add custom templates by creating folders with a
             <code>Containerfile</code>
             and any support files.
+          </p>
+          <p>
+            A TUI picker modal lets you choose a template when creating a container session. If only
+            one template exists, the picker is skipped.
+          </p>
+
+          <h3>Template management via MCP</h3>
+          <p>
+            Six MCP tools provide programmatic access to templates and per-project container
+            configuration:
+            <code>list_containerfile_templates</code>
+            ,
+            <code>get_containerfile_template</code>
+            ,
+            <code>set_containerfile_template</code>
+            ,
+            <code>delete_containerfile_template</code>
+            ,
+            <code>configure_project_container</code>
+            , and
+            <code>get_project_container_config</code>
+            . Template names are validated to prevent path traversal.
           </p>
 
           <h3>Default container configuration</h3>
@@ -328,6 +426,32 @@
             inside the VM. If a VM has died, Thurbox re-provisions a new one with
             <code>--resume</code>
             to preserve conversation history.
+          </p>
+
+          <h3>CoW overlay and cloud-init</h3>
+          <p>
+            Each VM gets a QCOW2 copy-on-write overlay referencing the shared base image. The base
+            image is never modified &mdash; all writes go to the per-VM overlay, which grows on
+            demand. VMs are provisioned via cloud-init (nocloud format) with a
+            <code>thurbox</code>
+            user, SSH key injection, and an optional custom setup script.
+          </p>
+
+          <h3>SSH port allocation</h3>
+          <p>
+            VM SSH ports start at 22200 and increment. Thurbox probes candidate ports to skip those
+            already bound by orphaned QEMU processes, scanning up to 100 ports.
+          </p>
+
+          <h3>VM image management via MCP</h3>
+          <p>
+            Three MCP tools manage the base image cache:
+            <code>list_vm_images</code>
+            ,
+            <code>download_vm_image</code>
+            (HTTPS-only), and
+            <code>delete_vm_image</code>
+            . Filenames are validated to prevent path traversal.
           </p>
 
           <h2 id="role-system">
@@ -475,7 +599,7 @@
               </tr>
               <tr>
                 <td>
-                  <code>Ctrl+C</code>
+                  <code>Ctrl+D</code>
                   (Close)
                 </td>
                 <td>Permanently kills the tmux pane. Worktree (if any) is removed immediately.</td>
