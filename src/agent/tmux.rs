@@ -517,51 +517,29 @@ impl LocalTmuxBackend {
         })
     }
 
-    /// Capture the full screen content (including scrollback) from a pane.
-    ///
-    /// `-S -` starts from the beginning of scrollback history,
-    /// `-e` includes ANSI escape sequences (colors, bold, etc.),
-    /// `-p` prints to stdout (captured via control mode response).
-    fn capture_pane(&self, pane_id: &str) -> Vec<u8> {
-        let cmd = format!("capture-pane -t {pane_id} -p -e -S -");
-        let content = self.ctrl_command(&cmd).unwrap_or_default();
-        debug!(
-            pane_id = %pane_id,
-            bytes = content.len(),
-            lines = content.lines().count(),
-            "capture-pane result"
-        );
-        content.into_bytes()
-    }
-
-    /// Connect I/O to an existing pane: start monitoring, capture screen,
-    /// resize (triggers app redraw), and create writer.
+    /// Connect I/O to an existing pane: start monitoring, resize to correct
+    /// dimensions, and create writer.
     fn connect_pane(&self, pane_id: &str, rows: u16, cols: u16) -> Result<AdoptedSession> {
         let reader = self.register_pane(pane_id)?;
         // Must use send_command (waited) here — a nowait call would leave an
         // unclaimed %begin/%end response in the stream that steals the next
-        // send_command waiter (e.g., capture-pane below).
+        // send_command waiter.
         self.ctrl_command(&format!(
             "refresh-client -A '{}:on'",
             pane_id.replace('\'', "'\\''")
         ))?;
-        // Capture the current screen as a quick initial approximation (colors
-        // and backgrounds may be approximate since capture-pane -p renders text
-        // rather than replaying the original escape sequences).
-        let initial_screen = self.capture_pane(pane_id);
-        let writer = self.pane_writer(pane_id)?;
 
-        // Resize to the target dimensions. If the pane was already at this
-        // size, force a SIGWINCH by briefly shrinking by one row and resizing
-        // back. This makes TUI applications (like claude) repaint their full
-        // screen through the normal output stream, which the reader_loop
-        // processes with all escape sequences intact.
+        // Resize to the TUI panel dimensions. force_resize triggers a
+        // SIGWINCH, making TUI applications (like claude) repaint at the
+        // correct dimensions through the normal output stream, which the
+        // reader_loop processes with all escape sequences intact.
         self.force_resize(pane_id, rows, cols)?;
+
+        let writer = self.pane_writer(pane_id)?;
 
         Ok(AdoptedSession {
             output: Box::new(reader),
             input: Box::new(writer),
-            initial_screen,
         })
     }
 
@@ -706,7 +684,6 @@ impl SessionBackend for LocalTmuxBackend {
             backend_id: pane_id,
             output: connected.output,
             input: connected.input,
-            initial_screen: connected.initial_screen,
         })
     }
 

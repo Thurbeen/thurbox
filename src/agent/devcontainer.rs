@@ -1340,20 +1340,8 @@ impl DevcontainerBackend {
         })
     }
 
-    /// Capture screen content from a pane.
-    fn capture_pane(&self, container_id: &str, pane_id: &str) -> Vec<u8> {
-        let cmd = format!("capture-pane -t {pane_id} -p -e -S -");
-        let content = self.ctrl_command(container_id, &cmd).unwrap_or_default();
-        debug!(
-            container_id = %container_id,
-            pane_id = %pane_id,
-            bytes = content.len(),
-            "capture-pane result"
-        );
-        content.into_bytes()
-    }
-
-    /// Connect I/O to an existing pane in a container.
+    /// Connect I/O to an existing pane in a container: resize to correct
+    /// dimensions and create writer.
     fn connect_pane(
         &self,
         container_id: &str,
@@ -1366,16 +1354,17 @@ impl DevcontainerBackend {
             container_id,
             &format!("refresh-client -A '{}:on'", pane_id.replace('\'', "'\\''")),
         )?;
-        let initial_screen = self.capture_pane(container_id, pane_id);
-        let writer = self.pane_writer(container_id, pane_id)?;
 
-        // Force resize to trigger repaint.
+        // Resize to TUI panel dimensions. force_resize triggers a SIGWINCH,
+        // making TUI apps repaint via the streaming reader with proper escape
+        // sequences.
         self.force_resize(container_id, pane_id, rows, cols)?;
+
+        let writer = self.pane_writer(container_id, pane_id)?;
 
         Ok(AdoptedSession {
             output: Box::new(reader),
             input: Box::new(writer),
-            initial_screen,
         })
     }
 
@@ -1476,7 +1465,6 @@ impl SessionBackend for DevcontainerBackend {
             backend_id: composite_id,
             output: connected.output,
             input: connected.input,
-            initial_screen: connected.initial_screen,
         })
     }
 

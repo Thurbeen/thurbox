@@ -51,8 +51,6 @@ pub struct SpawnedSession {
     pub output: Box<dyn Read + Send>,
     /// Input write handle to send bytes to the session.
     pub input: Box<dyn Write + Send>,
-    /// Captured screen content for parser seeding (output produced before streaming started).
-    pub initial_screen: Vec<u8>,
 }
 
 /// A reconnected session from the backend.
@@ -61,8 +59,6 @@ pub struct AdoptedSession {
     pub output: Box<dyn Read + Send>,
     /// Input write handle to send bytes to the session.
     pub input: Box<dyn Write + Send>,
-    /// Captured screen content for parser seeding.
-    pub initial_screen: Vec<u8>,
 }
 
 /// Trait that all session backends implement. The app layer interacts only through this trait.
@@ -130,7 +126,6 @@ pub trait SessionBackend: Send + Sync {
 struct SessionIo {
     output: Box<dyn Read + Send>,
     input: Box<dyn Write + Send>,
-    initial_screen: Vec<u8>,
     backend_id: String,
 }
 
@@ -297,7 +292,6 @@ impl Session {
             SessionIo {
                 output: spawned.output,
                 input: spawned.input,
-                initial_screen: spawned.initial_screen,
                 backend_id: spawned.backend_id,
             },
             backend,
@@ -320,10 +314,9 @@ impl Session {
 
         debug!(
             backend_id = %backend_id,
-            initial_screen_bytes = adopted.initial_screen.len(),
             parser_rows = rows,
             parser_cols = cols,
-            "Adopting session with initial screen"
+            "Adopting session"
         );
 
         let mut info = SessionInfo::new(name);
@@ -337,7 +330,6 @@ impl Session {
             SessionIo {
                 output: adopted.output,
                 input: adopted.input,
-                initial_screen: adopted.initial_screen,
                 backend_id: backend_id.to_string(),
             },
             backend,
@@ -375,12 +367,6 @@ impl Session {
     /// Create parser, spawn reader/writer loops for the given I/O handles.
     fn wire_up(rows: u16, cols: u16, io: SessionIo) -> (WiredState, String) {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
-
-        if !io.initial_screen.is_empty() {
-            if let Ok(mut p) = parser.lock() {
-                p.process(&io.initial_screen);
-            }
-        }
 
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(now_millis()));
@@ -558,7 +544,6 @@ impl Session {
             SessionIo {
                 output: spawned.output,
                 input: spawned.input,
-                initial_screen: spawned.initial_screen,
                 backend_id: spawned.backend_id,
             },
         );
@@ -638,7 +623,6 @@ impl Session {
             SessionIo {
                 output: spawned.output,
                 input: spawned.input,
-                initial_screen: spawned.initial_screen,
                 backend_id: spawned.backend_id,
             },
         );
@@ -660,7 +644,6 @@ impl Session {
             SessionIo {
                 output: adopted.output,
                 input: adopted.input,
-                initial_screen: adopted.initial_screen,
                 backend_id: backend_id.to_string(),
             },
         );
