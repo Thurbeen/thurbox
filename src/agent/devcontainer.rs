@@ -13,13 +13,13 @@
 //!
 //! ## Containerfile templates
 //!
-//! User-editable templates live in `~/.local/share/thurbox/containerfiles/`.
+//! User-editable templates live in `~/.local/share/thurbox/admin/containerfiles/`.
 //! Each template is a **folder** containing a `Containerfile` and any support
 //! files (e.g. `init-firewall.sh`). The entire folder is used as the build
 //! context.
 //!
 //! ```text
-//! ~/.local/share/thurbox/containerfiles/
+//! ~/.local/share/thurbox/admin/containerfiles/
 //!   default/
 //!     Containerfile
 //!     init-firewall.sh

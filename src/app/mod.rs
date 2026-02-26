@@ -102,7 +102,7 @@ You can:
 - Configure per-project container defaults (image, cpus, memory, firewall, template)
 - List, download, and delete VM images for sandbox sessions
 
-Containerfile templates live in ~/.local/share/thurbox/containerfiles/. Each \
+Containerfile templates live in ~/.local/share/thurbox/admin/containerfiles/. Each \
 template is a folder containing a Containerfile and any support files (e.g. \
 init-firewall.sh). The default/ template includes Node.js LTS, tmux, git, \
 iptables, and claude-code. Use the containerfile template tools to list, read, \
@@ -825,7 +825,7 @@ impl App {
 
     /// Ensure the containerfiles template directory exists and is seeded with defaults.
     ///
-    /// Creates `~/.local/share/thurbox/containerfiles/default/` containing:
+    /// Creates `~/.local/share/thurbox/admin/containerfiles/default/` containing:
     /// - `Containerfile` — the default container image definition
     /// - `init-firewall.sh` — the firewall script referenced by the Containerfile
     ///

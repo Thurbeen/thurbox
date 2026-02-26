@@ -566,7 +566,7 @@ the firewall allowlist restricts network egress by default.
   `ControlModeReader`/`ControlModeWriter` abstraction as the
   SSH-based VM backend.
 - Containerfile templates at
-  `~/.local/share/thurbox/containerfiles/<name>/`. A `default/`
+  `~/.local/share/thurbox/admin/containerfiles/<name>/`. A `default/`
   template (Debian Bookworm-based) is seeded on first run.
 
 **Container state persistence**: The `containers` table stores

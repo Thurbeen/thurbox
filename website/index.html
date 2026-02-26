@@ -24,10 +24,8 @@
   <body>
     <!-- Navigation -->
     <nav class="nav" id="nav">
-      <a href="index.html" class="nav-brand">
-        thur
-        <span>box</span>
-      </a>
+      <!-- prettier-ignore -->
+      <a href="index.html" class="nav-brand">thur<span>box</span></a>
       <button class="hamburger" id="hamburger" aria-label="Toggle menu">
         <span></span>
         <span></span>
@@ -112,10 +110,12 @@
           </div>
           <div class="card">
             <div class="card-icon">&#x1f333;</div>
-            <h3>Git Worktrees</h3>
+            <h3>Git Worktrees &amp; Sync</h3>
             <p>
-              Spawn sessions in isolated git worktrees for branch-level isolation. Auto-sync with
-              origin/main and automatic worktree cleanup on session close.
+              Spawn sessions in isolated git worktrees for branch-level isolation. One-key sync (
+              <code>Ctrl+S</code>
+              ) rebases all worktrees from origin/main, with automatic conflict resolution and
+              worktree cleanup on session close.
             </p>
           </div>
           <div class="card">
@@ -145,13 +145,24 @@
             </p>
           </div>
           <div class="card">
+            <div class="card-icon">&#x23f0;</div>
+            <h3>Scheduled Commands</h3>
+            <p>
+              Press
+              <code>Ctrl+P</code>
+              to queue follow-up prompts or pace multi-step workflows. Commands fire via a
+              dual-track timer (tmux + app-level) that survives crashes, and are fully manageable
+              through MCP.
+            </p>
+          </div>
+          <div class="card">
             <div class="card-icon">&#x1f50c;</div>
             <h3>MCP Server</h3>
             <p>
               The
               <code>thurbox-mcp</code>
-              binary exposes project, role, and session management over the Model Context Protocol.
-              Manage everything conversationally via the Admin session.
+              binary exposes project, role, session, and scheduled command management over the Model
+              Context Protocol. Manage everything conversationally via the Admin session.
             </p>
           </div>
         </div>
@@ -256,6 +267,8 @@
                   <pre><code><span class="syn-keyword">Ctrl+N</span>  <span class="syn-comment">New session (select mode)</span>
 <span class="syn-keyword">Ctrl+L</span>  <span class="syn-comment">Cycle focus to terminal</span>
 <span class="syn-keyword">Ctrl+J</span>  <span class="syn-comment">Switch between sessions</span>
+<span class="syn-keyword">Ctrl+S</span>  <span class="syn-comment">Sync worktrees with origin/main</span>
+<span class="syn-keyword">Ctrl+P</span>  <span class="syn-comment">Schedule a command for later</span>
 <span class="syn-keyword">Ctrl+E</span>  <span class="syn-comment">Edit project (roles, repos)</span></code></pre>
                 </div>
               </div>

@@ -23,10 +23,8 @@
   </head>
   <body>
     <nav class="nav scrolled" id="nav">
-      <a href="../index.html" class="nav-brand">
-        thur
-        <span>box</span>
-      </a>
+      <!-- prettier-ignore -->
+      <a href="../index.html" class="nav-brand">thur<span>box</span></a>
       <button class="hamburger" id="hamburger" aria-label="Toggle menu">
         <span></span>
         <span></span>
@@ -262,6 +260,34 @@
               <tr>
                 <td><code>restore_session</code></td>
                 <td>Restore a soft-deleted session</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Scheduled commands</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>schedule_command</code></td>
+                <td>Schedule text to be sent to a session at a future time</td>
+              </tr>
+              <tr>
+                <td><code>list_scheduled_commands</code></td>
+                <td>List pending scheduled commands, optionally by session</td>
+              </tr>
+              <tr>
+                <td><code>get_scheduled_command</code></td>
+                <td>Get a scheduled command by ID</td>
+              </tr>
+              <tr>
+                <td><code>cancel_scheduled_command</code></td>
+                <td>Cancel a pending scheduled command</td>
               </tr>
             </tbody>
           </table>

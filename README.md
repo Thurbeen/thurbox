@@ -58,7 +58,7 @@ Thurbox builds a container image from a Containerfile template,
 runs the container with optional firewall-restricted network
 egress (nftables/iptables allowlist), and spawns the Claude
 session inside it. Templates are stored at
-`~/.local/share/thurbox/containerfiles/` — a `default/` template
+`~/.local/share/thurbox/admin/containerfiles/` — a `default/` template
 (Debian Bookworm-based) is seeded on first run. Add custom
 templates by creating folders with a `Containerfile` and any
 support files. Containers are auto-detected (Podman preferred,
