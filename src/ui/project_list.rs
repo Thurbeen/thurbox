@@ -6,9 +6,9 @@ use ratatui::{
     Frame,
 };
 
+use super::focus_block;
 use super::theme::Theme;
 use super::FocusLevel;
-use super::{admin_block, focus_block};
 use crate::session::SessionInfo;
 
 pub struct ProjectEntry<'a> {
@@ -44,72 +44,35 @@ pub struct LeftPanelState<'a> {
 }
 
 pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &LeftPanelState<'_>) {
-    // Partition projects into regular and admin groups, keeping original indices
-    let regular: Vec<(usize, &ProjectEntry<'_>)> = state
-        .projects
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| !p.is_admin)
-        .collect();
-    let admin: Vec<(usize, &ProjectEntry<'_>)> = state
-        .projects
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.is_admin)
-        .collect();
+    // All projects in a single list (admin is first, already guaranteed by app)
+    let all_projects: Vec<(usize, &ProjectEntry<'_>)> = state.projects.iter().enumerate().collect();
 
-    // 2 lines per regular project, 1 line per admin entry, +2 for borders per section
-    let regular_content = regular.len() as u16 * 2;
-    let regular_height = regular_content + 2; // borders
+    // 2 lines per project, +1 separator line per admin entry, +2 for borders
+    let admin_count = all_projects.iter().filter(|(_, p)| p.is_admin).count() as u16;
+    let projects_content = all_projects.len() as u16 * 2 + admin_count;
+    let projects_height = projects_content + 2;
 
-    let has_admin = !admin.is_empty();
-    let admin_content = admin.len() as u16; // admin entries are single-line
-    let admin_height = if has_admin {
-        admin_content + 2 // borders
-    } else {
-        0
-    };
-
-    let mut constraints = vec![];
-    if has_admin {
-        constraints.push(Constraint::Length(admin_height));
-    }
-    constraints.push(Constraint::Length(regular_height));
-    constraints.push(Constraint::Min(4)); // sessions
+    let constraints = vec![
+        Constraint::Length(projects_height),
+        Constraint::Min(4), // sessions
+    ];
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    let projects_chunk_idx = if has_admin {
-        // Render admin section first
-        render_admin_section(
-            frame,
-            chunks[0],
-            &admin,
-            state.active_project,
-            state.project_focus,
-        );
-        1
-    } else {
-        0
-    };
-
-    // Render regular projects section
     render_project_section(
         frame,
-        chunks[projects_chunk_idx],
-        &regular,
+        chunks[0],
+        &all_projects,
         state.active_project,
         state.project_focus,
     );
 
-    let session_chunk_idx = projects_chunk_idx + 1;
-
     render_session_section(
         frame,
-        chunks[session_chunk_idx],
+        chunks[1],
         state.sessions,
         state.active_session,
         state.session_elapsed_ms,
@@ -165,86 +128,57 @@ fn render_project_section(
     level: FocusLevel,
 ) {
     let block = focus_block(" Projects ", level);
+    let inner_width = area.width.saturating_sub(2) as usize;
 
     let items: Vec<ListItem> = projects
         .iter()
         .map(|&(orig_idx, project)| {
             let is_active = orig_idx == active_index;
-            let name_style = if is_active {
-                Style::default()
-                    .fg(Theme::ACCENT)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Theme::TEXT_PRIMARY)
-            };
-
             let indicator = if is_active { "▸" } else { " " };
 
-            // Line 1: indicator + name + status dots
+            let (prefix, name_color) = if project.is_admin {
+                (format!("{indicator} ⚙ "), Theme::ADMIN_BADGE)
+            } else {
+                (
+                    format!("{indicator} "),
+                    if is_active {
+                        Theme::ACCENT
+                    } else {
+                        Theme::TEXT_PRIMARY
+                    },
+                )
+            };
+
+            let name_style = if is_active {
+                Style::default().fg(name_color).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(name_color)
+            };
+
             let mut line1_spans = vec![
-                Span::styled(format!("{indicator} "), name_style),
+                Span::styled(prefix, name_style),
                 Span::styled(project.name, name_style),
                 Span::raw("  "),
             ];
             line1_spans.extend(status_dots(project));
-
             let line1 = Line::from(line1_spans);
-            let line2 = project_meta_line(project);
 
-            ListItem::new(vec![line1, line2])
-        })
-        .collect();
-
-    // Find which index within the regular list is active
-    let list_active = projects
-        .iter()
-        .position(|&(orig_idx, _)| orig_idx == active_index);
-
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let mut list_state = ListState::default();
-    list_state.select(list_active);
-    frame.render_stateful_widget(list, area, &mut list_state);
-}
-
-fn render_admin_section(
-    frame: &mut Frame,
-    area: Rect,
-    projects: &[(usize, &ProjectEntry<'_>)],
-    active_index: usize,
-    level: FocusLevel,
-) {
-    let block = admin_block(" Admin ", level);
-
-    let items: Vec<ListItem> = projects
-        .iter()
-        .map(|&(orig_idx, project)| {
-            let is_active = orig_idx == active_index;
-            let name_style = if is_active {
-                Style::default()
-                    .fg(Theme::ADMIN_BADGE)
-                    .add_modifier(Modifier::BOLD)
+            let lines = if project.is_admin {
+                let line2 = Line::from(Span::styled("    admin", Theme::project_meta()));
+                let separator = Line::from(Span::styled(
+                    "─ ".repeat(inner_width / 2),
+                    Style::default().fg(Theme::BORDER_UNFOCUSED),
+                ));
+                vec![line1, line2, separator]
             } else {
-                Style::default().fg(Theme::ADMIN_BADGE)
+                vec![line1, project_meta_line(project)]
             };
 
-            let indicator = if is_active { "▸" } else { " " };
-
-            let mut line_spans = vec![
-                Span::styled(format!("{indicator} ⚙ "), name_style),
-                Span::styled(project.name, name_style),
-                Span::raw("  "),
-            ];
-            line_spans.extend(status_dots(project));
-
-            ListItem::new(Line::from(line_spans))
+            ListItem::new(lines)
         })
         .collect();
 
+    // Find which index within the list is active
     let list_active = projects
         .iter()
         .position(|&(orig_idx, _)| orig_idx == active_index);
@@ -406,6 +340,24 @@ mod tests {
         }
     }
 
+    fn admin_entry<'a>(
+        name: &'a str,
+        busy: usize,
+        waiting: usize,
+        error: usize,
+    ) -> ProjectEntry<'a> {
+        ProjectEntry {
+            name,
+            is_admin: true,
+            repo_count: 0,
+            repo_short: None,
+            role_count: 0,
+            busy_count: busy,
+            waiting_count: waiting,
+            error_count: error,
+        }
+    }
+
     // --- status_dots ---
 
     #[test]
@@ -432,6 +384,15 @@ mod tests {
         assert_eq!(dots[1].content, "◉");
         // Error dot uses ✗
         assert_eq!(dots[2].content, "✗");
+    }
+
+    #[test]
+    fn status_dots_work_for_admin_entries() {
+        let entry = admin_entry("Admin", 1, 0, 1);
+        let dots = status_dots(&entry);
+        assert_eq!(dots.len(), 2);
+        assert_eq!(dots[0].content, "●");
+        assert_eq!(dots[1].content, "✗");
     }
 
     // --- project_meta_line ---
