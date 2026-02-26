@@ -19,6 +19,7 @@ use tracing::{error, info, warn};
 
 use crate::agent::{BackendRegistry, Session, SessionBackend};
 use crate::git;
+use crate::paths;
 use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
     default_developer_permissions, default_developer_role, RoleConfig, RolePermissions,
@@ -2006,7 +2007,7 @@ impl App {
         // If the path field has content, treat it as an un-added repo
         let pending_path = ap.path.value().trim().to_string();
         if !pending_path.is_empty() {
-            ap.repos.push(PathBuf::from(pending_path));
+            ap.repos.push(paths::expand_tilde(&pending_path));
         }
 
         if name.is_empty() || ap.repos.is_empty() {
@@ -2068,7 +2069,7 @@ impl App {
         // If the path field has content, treat it as an un-added repo
         let pending_path = ep.path.value().trim().to_string();
         if !pending_path.is_empty() {
-            ep.repos.push(PathBuf::from(pending_path));
+            ep.repos.push(paths::expand_tilde(&pending_path));
         }
 
         if name.is_empty() || ep.repos.is_empty() {

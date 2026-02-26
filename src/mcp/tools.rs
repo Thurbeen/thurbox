@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 
+use crate::paths;
 use crate::project::{ProjectConfig, ProjectId};
 use crate::session::{ContainerConfig, McpServerConfig, RoleConfig, RolePermissions, SessionId};
 use crate::storage::Database;
@@ -191,7 +192,11 @@ impl ThurboxMcp {
 
     #[tool(description = "Create a new project with the given name and repository paths")]
     fn create_project(&self, Parameters(params): Parameters<CreateProjectParams>) -> String {
-        let repos: Vec<PathBuf> = params.repos.iter().map(PathBuf::from).collect();
+        let repos: Vec<PathBuf> = params
+            .repos
+            .iter()
+            .map(|r| paths::expand_tilde(r))
+            .collect();
         let config = ProjectConfig {
             name: params.name.clone(),
             repos: repos.clone(),
@@ -239,7 +244,7 @@ impl ThurboxMcp {
 
         let new_name = params.name.as_deref().unwrap_or(&project.name);
         let new_repos: Vec<PathBuf> = match params.repos {
-            Some(ref r) => r.iter().map(PathBuf::from).collect(),
+            Some(ref r) => r.iter().map(|p| paths::expand_tilde(p)).collect(),
             None => project.repos.clone(),
         };
 

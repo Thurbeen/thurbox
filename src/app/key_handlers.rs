@@ -5,8 +5,6 @@
 //! - Focus-based handlers (ProjectList, SessionList, Terminal)
 //! - Modal handlers (AddProject, RepoSelector, BranchSelector, etc.)
 
-use std::path::PathBuf;
-
 use crate::session::SessionConfig;
 
 use super::mcp_editor_modal::McpEditorField;
@@ -408,7 +406,7 @@ impl App {
             KeyCode::Enter => {
                 let path = ap.path.value().trim().to_string();
                 if !path.is_empty() {
-                    ap.repos.push(PathBuf::from(path));
+                    ap.repos.push(paths::expand_tilde(&path));
                     ap.repo_index = ap.repos.len().saturating_sub(1);
                     ap.path.clear();
                     ap.path_suggestion = None;
@@ -587,7 +585,7 @@ impl App {
             KeyCode::Enter => {
                 let path = ep.path.value().trim().to_string();
                 if !path.is_empty() {
-                    ep.repos.push(PathBuf::from(path));
+                    ep.repos.push(paths::expand_tilde(&path));
                     ep.repo_index = ep.repos.len().saturating_sub(1);
                     ep.path.clear();
                     ep.path_suggestion = None;

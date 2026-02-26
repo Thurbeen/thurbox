@@ -357,6 +357,25 @@ impl Drop for TestPathGuard {
     }
 }
 
+/// Expand a leading `~` or `~/` to the user's home directory.
+///
+/// - `"~/foo"` → `"/home/user/foo"`
+/// - `"~"` → `"/home/user"`
+/// - `"/absolute/path"` → unchanged
+/// - `"relative/path"` → unchanged
+pub fn expand_tilde(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
 /// Find the longest common prefix among a slice of strings.
 fn longest_common_prefix(strings: &[String]) -> String {
     if strings.is_empty() {
@@ -392,10 +411,13 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
         return None;
     }
 
-    let path = Path::new(input);
+    // Expand tilde for filesystem operations
+    let expanded = expand_tilde(input);
+    let expanded_str = expanded.to_str().unwrap_or(input);
+    let path = Path::new(expanded_str);
 
     // Determine parent directory and the prefix the user is typing
-    let (parent, prefix) = if input.ends_with('/') {
+    let (parent, prefix) = if expanded_str.ends_with('/') {
         // User typed a trailing slash — list contents of this directory
         (path.to_path_buf(), String::new())
     } else {
@@ -862,5 +884,85 @@ mod tests {
             longest_common_prefix(&["ab".to_string(), "abcdef".to_string()]),
             "ab"
         );
+    }
+
+    #[test]
+    fn expand_tilde_home() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_tilde("~/foo"), PathBuf::from(format!("{home}/foo")));
+    }
+
+    #[test]
+    fn expand_tilde_bare() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_tilde("~"), PathBuf::from(&home));
+    }
+
+    #[test]
+    fn expand_tilde_absolute() {
+        assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn expand_tilde_relative() {
+        assert_eq!(expand_tilde("rel/path"), PathBuf::from("rel/path"));
+    }
+
+    #[test]
+    fn expand_tilde_no_home() {
+        // Temporarily unset HOME — use a thread to avoid interfering with other tests
+        let result = std::thread::spawn(|| {
+            let orig = std::env::var_os("HOME");
+            std::env::remove_var("HOME");
+            let p = expand_tilde("~/foo");
+            if let Some(home) = orig {
+                std::env::set_var("HOME", home);
+            }
+            p
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, PathBuf::from("~/foo"));
+    }
+
+    #[test]
+    fn expand_tilde_nested_path() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            expand_tilde("~/a/b/c"),
+            PathBuf::from(format!("{home}/a/b/c"))
+        );
+    }
+
+    #[test]
+    fn expand_tilde_empty() {
+        assert_eq!(expand_tilde(""), PathBuf::from(""));
+    }
+
+    #[test]
+    fn expand_tilde_other_user() {
+        // ~otheruser should NOT be expanded — only ~ and ~/ are handled
+        assert_eq!(expand_tilde("~otheruser"), PathBuf::from("~otheruser"));
+    }
+
+    #[test]
+    fn complete_directory_path_tilde() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let base = temp.path();
+        std::fs::create_dir(base.join("mydir")).unwrap();
+
+        // Use expanded path to simulate what tilde expansion produces
+        let input = format!("{}/my", base.display());
+        let result = complete_directory_path(&input);
+        assert_eq!(result, Some("dir/".to_string()));
+    }
+
+    #[test]
+    fn complete_directory_path_tilde_trailing_slash() {
+        // "~/" should produce completions from the home directory
+        // The result (if any) should be a relative suffix, not start with '/'
+        if let Some(s) = complete_directory_path("~/") {
+            assert!(!s.starts_with('/'));
+        }
     }
 }
