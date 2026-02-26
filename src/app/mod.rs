@@ -117,6 +117,16 @@ not just new ones.";
 /// Parse the PSS value (in bytes) from the contents of `smaps_rollup`.
 ///
 /// Looks for a line like `Pss:             12345 kB` and returns the value in bytes.
+fn parse_pss_from_smaps(content: &str) -> Option<u64> {
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("Pss:") {
+            let kib: u64 = rest.trim().strip_suffix("kB")?.trim().parse().ok()?;
+            return Some(kib * 1024);
+        }
+    }
+    None
+}
+
 /// Parse agent metrics from a Claude CLI statusline JSON value.
 fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics {
     use crate::session::AgentMetrics;
@@ -143,13 +153,13 @@ fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics 
             .pointer("/cost/total_lines_removed")
             .and_then(|v| v.as_u64()),
         total_input_tokens: raw
-            .pointer("/cost/total_input_tokens")
+            .pointer("/context_window/total_input_tokens")
             .and_then(|v| v.as_u64()),
         total_output_tokens: raw
-            .pointer("/cost/total_output_tokens")
+            .pointer("/context_window/total_output_tokens")
             .and_then(|v| v.as_u64()),
         context_window_size: raw
-            .pointer("/context_window/total_tokens")
+            .pointer("/context_window/context_window_size")
             .and_then(|v| v.as_u64()),
         used_percentage: raw
             .pointer("/context_window/used_percentage")
@@ -545,6 +555,8 @@ pub struct App {
     pending_restores: Vec<PendingRestore>,
     /// Reusable buffer for session elapsed-ms in the view (avoids per-frame allocation).
     pub(crate) session_elapsed_buf: Vec<u64>,
+    /// Reusable buffer for building the process children map (avoids per-tick allocation).
+    children_map_buf: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -784,6 +796,8 @@ impl App {
                 cpu_percent: 0.0,
                 memory_used: 0,
                 memory_total: 0,
+                session_cpu_percent: 0.0,
+                session_memory_bytes: 0,
             },
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
@@ -814,6 +828,7 @@ impl App {
             pending_container_mcp_servers: None,
             pending_restores: Vec::new(),
             session_elapsed_buf: Vec::new(),
+            children_map_buf: HashMap::new(),
         }
     }
 
@@ -934,15 +949,25 @@ impl App {
         }
 
         // Write statusline shell script.
+        // The script captures stdin JSON from the Claude CLI and saves it
+        // using the THURBOX_SESSION_ID env var as filename. If the env var
+        // is missing (e.g. sessions spawned before this feature), it falls
+        // back to extracting `session_id` from the JSON itself.
         let script_path = data_dir.join("statusline.sh");
         let script = format!(
             "#!/bin/sh\n\
-             METRICS_DIR=\"${{THURBOX_METRICS_DIR:-{}}}\"\n\
+             METRICS_DIR=\"${{THURBOX_METRICS_DIR:-{metrics_dir}}}\"\n\
              mkdir -p \"$METRICS_DIR\"\n\
-             if [ -n \"$THURBOX_SESSION_ID\" ]; then\n\
-             \tcat > \"$METRICS_DIR/$THURBOX_SESSION_ID.json\"\n\
+             INPUT=$(cat)\n\
+             SID=\"$THURBOX_SESSION_ID\"\n\
+             if [ -z \"$SID\" ]; then\n\
+             \tSID=$(printf '%s' \"$INPUT\" | grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' \
+             | head -1 | sed 's/.*\"\\([^\"]*\\)\"$/\\1/')\n\
+             fi\n\
+             if [ -n \"$SID\" ]; then\n\
+             \tprintf '%s' \"$INPUT\" > \"$METRICS_DIR/$SID.json\"\n\
              fi\n",
-            metrics_dir.display()
+            metrics_dir = metrics_dir.display()
         );
         if let Err(e) = std::fs::write(&script_path, &script) {
             tracing::warn!("Failed to write statusline script: {e}");
@@ -2309,15 +2334,22 @@ impl App {
     fn refresh_system_metrics(&mut self) {
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
+        self.sys
+            .refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
         let cpu_percent = self.sys.global_cpu_usage();
         let memory_used = self.sys.used_memory();
         let memory_total = self.sys.total_memory();
 
+        // Compute CPU/RAM for the active session's process tree.
+        let (session_cpu, session_mem) = self.active_session_metrics();
+
         self.system_metrics = info_panel::SystemMetrics {
             cpu_percent,
             memory_used,
             memory_total,
+            session_cpu_percent: session_cpu,
+            session_memory_bytes: session_mem,
         };
 
         // Poll agent metrics files written by the statusline script.
@@ -2333,6 +2365,56 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Compute CPU% and memory (bytes) for the active session's process tree.
+    fn active_session_metrics(&mut self) -> (f32, u64) {
+        let active = match self.sessions.get(self.active_index) {
+            Some(s) => s,
+            None => return (0.0, 0),
+        };
+
+        let root_pid = match active.pane_pid() {
+            Ok(Some(pid)) => sysinfo::Pid::from_u32(pid),
+            _ => return (0.0, 0),
+        };
+
+        // Build parent→children map from current process snapshot.
+        self.build_children_map();
+
+        // Walk the process tree, summing CPU and memory.
+        let mut cpu_total = 0.0f32;
+        let mut mem_total = 0u64;
+        let mut stack = vec![root_pid];
+        while let Some(pid) = stack.pop() {
+            if let Some(proc_info) = self.sys.process(pid) {
+                cpu_total += proc_info.cpu_usage();
+                mem_total += Self::read_pss(pid).unwrap_or(proc_info.memory());
+            }
+            if let Some(children) = self.children_map_buf.get(&pid) {
+                stack.extend(children);
+            }
+        }
+
+        (cpu_total, mem_total)
+    }
+
+    /// Build parent→children map in `self.children_map_buf`.
+    fn build_children_map(&mut self) {
+        self.children_map_buf.clear();
+        for (pid, proc_info) in self.sys.processes() {
+            if let Some(parent) = proc_info.parent() {
+                self.children_map_buf.entry(parent).or_default().push(*pid);
+            }
+        }
+    }
+
+    /// Read Proportional Set Size from `/proc/{pid}/smaps_rollup` (Linux only).
+    /// Falls back to `None` if the file isn't readable (non-Linux, permissions, etc.).
+    fn read_pss(pid: sysinfo::Pid) -> Option<u64> {
+        let path = format!("/proc/{}/smaps_rollup", pid.as_u32());
+        let content = std::fs::read_to_string(path).ok()?;
+        parse_pss_from_smaps(&content)
     }
 
     /// Send deferred inputs whose scheduled tick has arrived.
@@ -7205,19 +7287,19 @@ mod tests {
     #[test]
     fn parse_agent_metrics_full_json() {
         let json = serde_json::json!({
-            "version": "1.0.80",
-            "model": { "id": "claude-opus-4-6", "display_name": "Opus" },
+            "version": "2.1.58",
+            "model": { "id": "claude-opus-4-6", "display_name": "Opus 4.6" },
             "cost": {
                 "total_cost_usd": 0.0123,
                 "total_duration_ms": 5000,
                 "total_api_duration_ms": 3000,
                 "total_lines_added": 156,
                 "total_lines_removed": 23,
-                "total_input_tokens": 15200,
-                "total_output_tokens": 4500,
             },
             "context_window": {
-                "total_tokens": 200000,
+                "total_input_tokens": 15200,
+                "total_output_tokens": 4500,
+                "context_window_size": 200000,
                 "used_percentage": 8,
                 "current_usage": {
                     "input_tokens": 1200,
@@ -7229,7 +7311,7 @@ mod tests {
         });
         let m = super::parse_agent_metrics(&json);
         assert_eq!(m.model_id.as_deref(), Some("claude-opus-4-6"));
-        assert_eq!(m.model_display_name.as_deref(), Some("Opus"));
+        assert_eq!(m.model_display_name.as_deref(), Some("Opus 4.6"));
         assert!((m.total_cost_usd.unwrap() - 0.0123).abs() < 1e-6);
         assert_eq!(m.total_input_tokens, Some(15200));
         assert_eq!(m.total_output_tokens, Some(4500));
@@ -7239,7 +7321,7 @@ mod tests {
         assert_eq!(m.total_lines_removed, Some(23));
         assert_eq!(m.cache_read_input_tokens, Some(2000));
         assert_eq!(m.cache_creation_input_tokens, Some(5000));
-        assert_eq!(m.cli_version.as_deref(), Some("1.0.80"));
+        assert_eq!(m.cli_version.as_deref(), Some("2.1.58"));
     }
 
     #[test]
@@ -7262,6 +7344,28 @@ mod tests {
         assert!(m.model_id.is_none());
         assert!((m.total_cost_usd.unwrap() - 0.05).abs() < 1e-6);
         assert!(m.total_input_tokens.is_none());
+    }
+
+    // --- parse_pss_from_smaps tests ---
+
+    #[test]
+    fn parse_pss_from_smaps_valid() {
+        let content = "\
+Rss:            12345 kB
+Pss:             6789 kB
+Swap:               0 kB";
+        assert_eq!(super::parse_pss_from_smaps(content), Some(6789 * 1024));
+    }
+
+    #[test]
+    fn parse_pss_from_smaps_missing() {
+        let content = "Rss:            12345 kB\nSwap:               0 kB";
+        assert_eq!(super::parse_pss_from_smaps(content), None);
+    }
+
+    #[test]
+    fn parse_pss_from_smaps_empty() {
+        assert_eq!(super::parse_pss_from_smaps(""), None);
     }
 
     // --- find_matching_discovered tests ---

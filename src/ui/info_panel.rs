@@ -18,7 +18,7 @@ pub struct VmDetails {
     pub base_image: String,
 }
 
-/// System-wide resource metrics.
+/// System-wide and active-session resource metrics.
 pub struct SystemMetrics {
     /// Overall CPU usage 0-100.
     pub cpu_percent: f32,
@@ -26,6 +26,10 @@ pub struct SystemMetrics {
     pub memory_used: u64,
     /// Total RAM in bytes.
     pub memory_total: u64,
+    /// Active session CPU usage 0-100+.
+    pub session_cpu_percent: f32,
+    /// Active session memory in bytes.
+    pub session_memory_bytes: u64,
 }
 
 pub fn render_info_panel(
@@ -67,6 +71,24 @@ pub fn render_info_panel(
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+
+    // ── Session CPU/RAM ──
+    if let Some(m) = metrics {
+        if m.session_cpu_percent > 0.0 || m.session_memory_bytes > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("CPU:     ", Theme::label()),
+                Span::styled(
+                    format!("{:.0}%", m.session_cpu_percent),
+                    Style::default().fg(Theme::ACCENT),
+                ),
+                Span::styled("  RAM: ", Theme::label()),
+                Span::styled(
+                    format_bytes(m.session_memory_bytes),
+                    Style::default().fg(Theme::ACCENT),
+                ),
+            ]));
+        }
+    }
 
     // ── Agent section (Claude CLI metrics) ──
     if let Some(ref metrics) = info.agent_metrics {
@@ -281,6 +303,12 @@ fn render_gauge_lines(
     ]);
 
     vec![header_line, bar_line]
+}
+
+/// Format bytes as a human-readable string like "1.2 GB".
+fn format_bytes(bytes: u64) -> String {
+    let (val, _, unit) = human_bytes(bytes);
+    format!("{val:.1} {unit}")
 }
 
 /// Format a used/total byte pair like "8.2/16.0 GB".
