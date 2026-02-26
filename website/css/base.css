@@ -92,7 +92,8 @@ pre code {
   color: var(--text-primary);
 }
 
-img {
+img,
+video {
   max-width: 100%;
   height: auto;
 }

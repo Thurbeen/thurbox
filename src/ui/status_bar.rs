@@ -15,7 +15,7 @@ pub fn render_header(frame: &mut Frame, area: Rect) {
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" thurbox ", Theme::focused_title()),
         Span::styled(
-            " Multi-Session Claude Code Orchestrator",
+            " Multi-Session Agent Orchestrator",
             Style::default().fg(Theme::TEXT_SECONDARY),
         ),
         Span::styled(
