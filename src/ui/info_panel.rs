@@ -75,16 +75,14 @@ pub fn render_info_panel(
     // ── Session CPU/RAM ──
     if let Some(m) = metrics {
         if m.session_cpu_percent > 0.0 || m.session_memory_bytes > 0 {
+            let cpu_gauge = render_gauge_lines("CPU", m.session_cpu_percent, None, inner_width);
+            lines.extend(cpu_gauge);
+
             lines.push(Line::from(vec![
-                Span::styled("CPU:     ", Theme::label()),
+                Span::styled("RAM", Style::default().fg(Theme::TEXT_MUTED)),
                 Span::styled(
-                    format!("{:.0}%", m.session_cpu_percent),
-                    Style::default().fg(Theme::ACCENT),
-                ),
-                Span::styled("  RAM: ", Theme::label()),
-                Span::styled(
-                    format_bytes(m.session_memory_bytes),
-                    Style::default().fg(Theme::ACCENT),
+                    format!("  {}", format_bytes(m.session_memory_bytes)),
+                    Style::default().fg(Theme::TEXT_PRIMARY),
                 ),
             ]));
         }
@@ -136,17 +134,6 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
         (None, None) => "Agent".to_string(),
     };
     lines.push(Line::from(Span::styled(header, Theme::section_header())));
-
-    // Cost
-    if let Some(cost) = metrics.total_cost_usd {
-        lines.push(Line::from(vec![
-            Span::styled("Cost:    ", Theme::label()),
-            Span::styled(
-                format!("${cost:.4}"),
-                Style::default().fg(Theme::TEXT_PRIMARY),
-            ),
-        ]));
-    }
 
     // Tokens
     if metrics.total_input_tokens.is_some() || metrics.total_output_tokens.is_some() {
@@ -385,6 +372,18 @@ mod tests {
         let (val, divisor, unit) = human_bytes(bytes);
         assert_eq!(unit, "GB");
         assert!((bytes as f64 / divisor - val).abs() < 0.001);
+    }
+
+    // ── format_bytes tests ──
+
+    #[test]
+    fn format_bytes_megabytes() {
+        assert_eq!(format_bytes(524_288_000), "500.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0.0 KB");
     }
 
     // ── format_bytes_pair tests ──
