@@ -35,3 +35,6 @@ junit.xml
 # Temporary files
 tmp/
 temp/
+
+# Node (website linting tools)
+node_modules/

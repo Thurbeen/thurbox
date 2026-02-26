@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Thurbox — Multi-Session Claude Code Orchestrator</title>
+    <meta
+      name="description"
+      content="Run parallel Claude Code instances in persistent tmux panes. Sessions survive crashes and restarts."
+    />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="css/variables.css" />
+    <link rel="stylesheet" href="css/base.css" />
+    <link rel="stylesheet" href="css/layout.css" />
+    <link rel="stylesheet" href="css/components.css" />
+    <link rel="stylesheet" href="css/landing.css" />
+  </head>
+  <body>
+    <!-- Navigation -->
+    <nav class="nav" id="nav">
+      <a href="index.html" class="nav-brand">
+        thur
+        <span>box</span>
+      </a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how-it-works">How It Works</a></li>
+        <li><a href="#installation">Install</a></li>
+        <li><a href="docs/index.html">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero section">
+      <div class="container">
+        <h1>
+          Multi-Session
+          <span class="accent">Claude Code</span>
+          Orchestrator
+        </h1>
+        <p class="subtitle">
+          Run parallel Claude instances in persistent tmux panes. Sessions survive crashes and
+          restarts.
+        </p>
+        <div class="hero-ctas">
+          <a href="#installation" class="btn btn-primary">Get Started</a>
+          <a href="docs/index.html" class="btn btn-secondary">View Docs</a>
+        </div>
+        <div class="hero-badges">
+          <span class="badge badge-yellow">MIT License</span>
+          <span class="badge badge-green">Built with Rust</span>
+        </div>
+        <div class="hero-demo">
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">thurbox</span>
+            </div>
+            <div class="terminal-body">
+              <img
+                src="assets/thurbox-demo.gif"
+                alt="Thurbox demo showing multiple Claude Code sessions running in parallel"
+                loading="lazy"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="features section" id="features">
+      <div class="container">
+        <div class="section-title">
+          <h2>Features</h2>
+          <p>Everything you need to run Claude Code at scale</p>
+        </div>
+        <div class="grid grid-3">
+          <div class="card">
+            <div class="card-icon">&#x1f5a5;</div>
+            <h3>Session Orchestration</h3>
+            <p>
+              Run multiple Claude Code instances side-by-side, each in its own tmux pane. Sessions
+              persist across crashes, restarts, and multiple concurrent Thurbox instances.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon">&#x1f333;</div>
+            <h3>Git Worktrees</h3>
+            <p>
+              Spawn sessions in isolated git worktrees for branch-level isolation. Auto-sync with
+              origin/main and automatic worktree cleanup on session close.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon">&#x1f4e6;</div>
+            <h3>Container Sessions</h3>
+            <p>
+              Run sessions inside Docker or Podman containers with customizable Containerfile
+              templates and optional firewall-restricted network egress.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon">&#x1f512;</div>
+            <h3>VM Sandbox</h3>
+            <p>
+              Full OS-level isolation via QEMU/KVM virtual machines. Debian 13 VMs with 2 CPUs, 2 GB
+              RAM, pre-installed Claude CLI, and automatic session restoration.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon">&#x1f6e1;</div>
+            <h3>Role System</h3>
+            <p>
+              Define per-project permission profiles that control Claude's behavior. Configure
+              permission modes, allowed/denied tools, and scope patterns like
+              <code>Bash(git:*)</code>
+              .
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon">&#x1f50c;</div>
+            <h3>MCP Server</h3>
+            <p>
+              The
+              <code>thurbox-mcp</code>
+              binary exposes project, role, and session management over the Model Context Protocol.
+              Manage everything conversationally via the Admin session.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How It Works -->
+    <section class="section" id="how-it-works">
+      <div class="container">
+        <div class="section-title">
+          <h2>How It Works</h2>
+          <p>Four steps from install to coding</p>
+        </div>
+        <div class="how-it-works-steps">
+          <div class="step">
+            <span class="step-number">1</span>
+            <div class="step-content">
+              <h3>Install</h3>
+              <p>One command to download and install the latest release.</p>
+              <div class="terminal-frame">
+                <div class="terminal-header">
+                  <div class="terminal-dot red"></div>
+                  <div class="terminal-dot yellow"></div>
+                  <div class="terminal-dot green"></div>
+                  <span class="terminal-title">bash</span>
+                </div>
+                <div class="terminal-body">
+                  <button
+                    class="copy-btn"
+                    data-code="curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
+                  >
+                    Copy
+                  </button>
+                  <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="step">
+            <span class="step-number">2</span>
+            <div class="step-content">
+              <h3>Launch</h3>
+              <p>Start Thurbox. The Admin session appears automatically.</p>
+              <div class="terminal-frame">
+                <div class="terminal-header">
+                  <div class="terminal-dot red"></div>
+                  <div class="terminal-dot yellow"></div>
+                  <div class="terminal-dot green"></div>
+                  <span class="terminal-title">bash</span>
+                </div>
+                <div class="terminal-body">
+                  <button class="copy-btn" data-code="thurbox">Copy</button>
+                  <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox</span></code></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="step">
+            <span class="step-number">3</span>
+            <div class="step-content">
+              <h3>Create a Project</h3>
+              <p>
+                Press
+                <code>Ctrl+N</code>
+                to create a project with one or more repository paths.
+              </p>
+              <div class="terminal-frame">
+                <div class="terminal-header">
+                  <div class="terminal-dot red"></div>
+                  <div class="terminal-dot yellow"></div>
+                  <div class="terminal-dot green"></div>
+                  <span class="terminal-title">thurbox</span>
+                </div>
+                <div class="terminal-body">
+                  <pre><code><span class="syn-comment"># With the project list focused:</span>
+<span class="syn-keyword">Ctrl+N</span>  <span class="syn-comment">Create new project</span>
+<span class="syn-comment"># Enter name: my-app</span>
+<span class="syn-comment"># Enter path: ~/projects/my-app</span></code></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="step">
+            <span class="step-number">4</span>
+            <div class="step-content">
+              <h3>Start Coding</h3>
+              <p>
+                Create sessions, choose a mode (Normal, Worktree, Container, or VM), and start
+                working with Claude.
+              </p>
+              <div class="terminal-frame">
+                <div class="terminal-header">
+                  <div class="terminal-dot red"></div>
+                  <div class="terminal-dot yellow"></div>
+                  <div class="terminal-dot green"></div>
+                  <span class="terminal-title">thurbox</span>
+                </div>
+                <div class="terminal-body">
+                  <pre><code><span class="syn-keyword">Ctrl+N</span>  <span class="syn-comment">New session (select mode)</span>
+<span class="syn-keyword">Ctrl+L</span>  <span class="syn-comment">Cycle focus to terminal</span>
+<span class="syn-keyword">Ctrl+J</span>  <span class="syn-comment">Switch between sessions</span>
+<span class="syn-keyword">Ctrl+E</span>  <span class="syn-comment">Edit project (roles, repos)</span></code></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Installation -->
+    <section class="install section" id="installation">
+      <div class="container">
+        <div class="section-title">
+          <h2>Installation</h2>
+          <p>Get up and running in seconds</p>
+        </div>
+        <div class="install-main">
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">bash</span>
+            </div>
+            <div class="terminal-body">
+              <button
+                class="copy-btn"
+                data-code="curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
+              >
+                Copy
+              </button>
+              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
+            </div>
+          </div>
+          <p style="margin-top: var(--space-md)">
+            Installs the latest release to
+            <code>~/.local/bin</code>
+            . Auto-detects platform, verifies checksums.
+          </p>
+
+          <div class="install-alt">
+            <div class="install-alt-item">
+              <h4>Custom Directory</h4>
+              <p><code>INSTALL_DIR=/usr/local/bin curl ...</code></p>
+            </div>
+            <div class="install-alt-item">
+              <h4>Specific Version</h4>
+              <p><code>VERSION=v0.1.0 curl ...</code></p>
+            </div>
+            <div class="install-alt-item">
+              <h4>From Source</h4>
+              <p><code>cargo build --release</code></p>
+            </div>
+          </div>
+
+          <div class="prereqs">
+            <h3>Prerequisites</h3>
+            <ul>
+              <li>
+                <strong>tmux >= 3.2</strong>
+                &mdash; session backend
+              </li>
+              <li>
+                <strong>claude CLI</strong>
+                &mdash;
+                <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener">
+                  github.com/anthropics/claude-code
+                </a>
+              </li>
+              <li>
+                <strong>git</strong>
+                &mdash; required for worktree features
+              </li>
+              <li>
+                <strong>Docker or Podman</strong>
+                &mdash; for container sessions
+                <span class="optional">(optional)</span>
+              </li>
+              <li>
+                <strong>QEMU/KVM</strong>
+                &mdash; for VM sandbox sessions
+                <span class="optional">(optional)</span>
+              </li>
+              <li>
+                <strong>Rust 1.75+</strong>
+                &mdash; only for building from source
+                <span class="optional">(optional)</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="container">
+        <p>
+          Thurbox is open source under the
+          <a href="https://opensource.org/licenses/MIT" target="_blank" rel="noopener">
+            MIT License
+          </a>
+        </p>
+        <p>
+          <a href="https://github.com/Thurbeen/thurbox" target="_blank" rel="noopener">GitHub</a>
+          &middot; Built with Rust
+        </p>
+      </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+  </body>
+</html>

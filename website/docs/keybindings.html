@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Keybindings — Thurbox Docs</title>
+    <meta
+      name="description"
+      content="Thurbox keybindings reference: Vim-inspired keyboard shortcuts for navigation, session management, and terminal control."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <a href="../index.html" class="nav-brand">
+        thur
+        <span>box</span>
+      </a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="keybindings.html" class="current-page">Keybindings</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="mcp.html">MCP Server</a></li>
+            <li><a href="roles.html">Role Configuration</a></li>
+            <li><a href="architecture.html">Architecture</a></li>
+          </ul>
+          <h4>On This Page</h4>
+          <ul>
+            <li><a href="#design">Design Philosophy</a></li>
+            <li><a href="#global-keys">Global Keys</a></li>
+            <li><a href="#list-navigation">List Navigation</a></li>
+            <li><a href="#terminal-scrollback">Terminal Scrollback</a></li>
+            <li><a href="#modals">Modal Keybindings</a></li>
+            <li><a href="#role-editor">Role Editor</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <a href="index.html">Docs</a>
+            <span class="separator">/</span>
+            <span class="current">Keybindings</span>
+          </div>
+
+          <h1>Keybindings</h1>
+
+          <h2 id="design">
+            Design Philosophy
+            <a href="#design" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            When the terminal panel is focused,
+            <strong>all keys are forwarded to the PTY</strong>
+            except those with a
+            <code>Ctrl</code>
+            modifier (intercepted as global commands) and
+            <code>Shift+arrow/page</code>
+            keys (for scrollback).
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>Why Ctrl, not Alt?</strong>
+              Claude Code and shell programs heavily use Alt-key combinations. Ctrl has established
+              precedent for meta actions in terminal multiplexers (tmux uses
+              <code>Ctrl+B</code>
+              , screen uses
+              <code>Ctrl+A</code>
+              ).
+            </p>
+          </div>
+
+          <h2 id="global-keys">
+            Global Keys
+            <a href="#global-keys" class="heading-anchor">#</a>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+                <th>Mnemonic</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Ctrl+Q</code></td>
+                <td>Quit (detach sessions)</td>
+                <td>
+                  <strong>Q</strong>
+                  uit
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+N</code></td>
+                <td>New project or session</td>
+                <td>
+                  <strong>N</strong>
+                  ew
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+C</code></td>
+                <td>Close session / copy selection</td>
+                <td>
+                  <strong>C</strong>
+                  lose /
+                  <strong>C</strong>
+                  opy
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+V</code></td>
+                <td>Paste from clipboard</td>
+                <td>Paste</td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+T</code></td>
+                <td>Toggle shell pane</td>
+                <td>
+                  <strong>T</strong>
+                  erminal
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+H</code></td>
+                <td>Focus project list</td>
+                <td>
+                  Vim:
+                  <strong>h</strong>
+                  = left
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+J</code></td>
+                <td>Next project / session</td>
+                <td>
+                  Vim:
+                  <strong>j</strong>
+                  = down
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+K</code></td>
+                <td>Previous project / session</td>
+                <td>
+                  Vim:
+                  <strong>k</strong>
+                  = up
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+L</code></td>
+                <td>Cycle focus</td>
+                <td>
+                  Vim:
+                  <strong>l</strong>
+                  = right
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+D</code></td>
+                <td>Delete session or project</td>
+                <td>
+                  Vim:
+                  <strong>d</strong>
+                  = delete
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+E</code></td>
+                <td>Edit active project</td>
+                <td>
+                  <strong>E</strong>
+                  dit
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+R</code></td>
+                <td>Restart active session</td>
+                <td>
+                  <strong>R</strong>
+                  estart
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+S</code></td>
+                <td>Sync worktrees with origin/main</td>
+                <td>
+                  <strong>S</strong>
+                  ync
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+Z</code></td>
+                <td>Undo session/project delete</td>
+                <td>
+                  <strong>Z</strong>
+                  = undo
+                </td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+U</code></td>
+                <td>Restore deleted sessions</td>
+                <td>
+                  <strong>U</strong>
+                  ndelete
+                </td>
+              </tr>
+              <tr>
+                <td><code>F1</code></td>
+                <td>Help overlay</td>
+                <td>Universal</td>
+              </tr>
+              <tr>
+                <td><code>F2</code></td>
+                <td>Toggle info panel</td>
+                <td>Next to F1</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="list-navigation">
+            List Navigation
+            <a href="#list-navigation" class="heading-anchor">#</a>
+          </h2>
+          <p>When the project list or session list is focused:</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>j</code>
+                  /
+                  <code>Down</code>
+                </td>
+                <td>Next item</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>k</code>
+                  /
+                  <code>Up</code>
+                </td>
+                <td>Previous item</td>
+              </tr>
+              <tr>
+                <td><code>Enter</code></td>
+                <td>Select / focus</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="terminal-scrollback">
+            Terminal Scrollback &amp; Selection
+            <a href="#terminal-scrollback" class="heading-anchor">#</a>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>Shift+Up</code>
+                  /
+                  <code>Shift+Down</code>
+                </td>
+                <td>Scroll 1 line</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>Shift+PageUp</code>
+                  /
+                  <code>Shift+PageDown</code>
+                </td>
+                <td>Scroll half page</td>
+              </tr>
+              <tr>
+                <td>Mouse wheel</td>
+                <td>Scroll 3 lines</td>
+              </tr>
+              <tr>
+                <td>Mouse drag</td>
+                <td>Select text</td>
+              </tr>
+              <tr>
+                <td>Any other key</td>
+                <td>Snap to bottom + forward to PTY</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            When scrolled up, the block title shows a
+            <code>[N&#x2191;]</code>
+            indicator and the PTY cursor is hidden.
+          </p>
+
+          <h2 id="modals">
+            Modal Keybindings
+            <a href="#modals" class="heading-anchor">#</a>
+          </h2>
+
+          <h3>Session mode selector</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>j</code>
+                  /
+                  <code>Down</code>
+                </td>
+                <td>Next mode</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>k</code>
+                  /
+                  <code>Up</code>
+                </td>
+                <td>Previous mode</td>
+              </tr>
+              <tr>
+                <td><code>Enter</code></td>
+                <td>Select mode</td>
+              </tr>
+              <tr>
+                <td><code>Esc</code></td>
+                <td>Cancel</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Branch selector (Worktree mode)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>j</code>
+                  /
+                  <code>Down</code>
+                </td>
+                <td>Next branch</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>k</code>
+                  /
+                  <code>Up</code>
+                </td>
+                <td>Previous branch</td>
+              </tr>
+              <tr>
+                <td><code>Enter</code></td>
+                <td>Select base branch, open name prompt</td>
+              </tr>
+              <tr>
+                <td><code>Esc</code></td>
+                <td>Cancel</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>New branch name prompt</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Enter</code></td>
+                <td>Confirm name, create branch and worktree</td>
+              </tr>
+              <tr>
+                <td><code>Esc</code></td>
+                <td>Cancel</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="role-editor">
+            Role Editor
+            <a href="#role-editor" class="heading-anchor">#</a>
+          </h2>
+
+          <h3>Role list (inside edit project)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>j</code>
+                  /
+                  <code>Down</code>
+                </td>
+                <td>Next role</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>k</code>
+                  /
+                  <code>Up</code>
+                </td>
+                <td>Previous role</td>
+              </tr>
+              <tr>
+                <td><code>a</code></td>
+                <td>Add new role</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>e</code>
+                  /
+                  <code>Enter</code>
+                </td>
+                <td>Edit selected role</td>
+              </tr>
+              <tr>
+                <td><code>d</code></td>
+                <td>Delete selected role</td>
+              </tr>
+              <tr>
+                <td><code>Esc</code></td>
+                <td>Save and close</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Role detail form</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>Tab</code>
+                  /
+                  <code>Shift+Tab</code>
+                </td>
+                <td>Cycle fields</td>
+              </tr>
+              <tr>
+                <td><code>Enter</code></td>
+                <td>Save role</td>
+              </tr>
+              <tr>
+                <td><code>Esc</code></td>
+                <td>Discard changes</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>

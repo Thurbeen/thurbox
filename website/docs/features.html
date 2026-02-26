@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Features — Thurbox Docs</title>
+    <meta
+      name="description"
+      content="Thurbox features: session orchestration, git worktrees, containers, VMs, role system, MCP server, and responsive UI."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <a href="../index.html" class="nav-brand">
+        thur
+        <span>box</span>
+      </a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html" class="current-page">Features</a></li>
+            <li><a href="keybindings.html">Keybindings</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="mcp.html">MCP Server</a></li>
+            <li><a href="roles.html">Role Configuration</a></li>
+            <li><a href="architecture.html">Architecture</a></li>
+          </ul>
+          <h4>On This Page</h4>
+          <ul>
+            <li><a href="#session-orchestration">Session Orchestration</a></li>
+            <li><a href="#project-management">Project Management</a></li>
+            <li><a href="#git-worktrees">Git Worktrees</a></li>
+            <li><a href="#container-sessions">Container Sessions</a></li>
+            <li><a href="#vm-sessions">VM Sessions</a></li>
+            <li><a href="#role-system">Role System</a></li>
+            <li><a href="#responsive-ui">Responsive UI</a></li>
+            <li><a href="#session-persistence">Session Persistence</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <a href="index.html">Docs</a>
+            <span class="separator">/</span>
+            <span class="current">Features</span>
+          </div>
+
+          <h1>Features</h1>
+
+          <h2 id="session-orchestration">
+            Session Orchestration
+            <a href="#session-orchestration" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Run multiple Claude Code instances side-by-side, each in its own tmux pane. Sessions
+            persist across crashes, restarts, and even multiple concurrent Thurbox instances &mdash;
+            tmux keeps them alive in the background.
+          </p>
+          <ul>
+            <li>
+              Restart a session with
+              <code>Ctrl+R</code>
+              to pick up new role permissions while preserving conversation history via
+              <code>--resume</code>
+            </li>
+            <li>Each session displays elapsed time ("Waiting 45s", "Idle 2m")</li>
+            <li>Clickable URLs highlighted in terminal output</li>
+            <li>
+              Select text with mouse drag, copy with
+              <code>Ctrl+C</code>
+              , paste with
+              <code>Ctrl+V</code>
+            </li>
+            <li>
+              Toggle a shell pane alongside the Claude session with
+              <code>Ctrl+T</code>
+            </li>
+            <li>
+              Recover sessions externally at any time with
+              <code>tmux -L thurbox attach</code>
+            </li>
+          </ul>
+
+          <h2 id="project-management">
+            Project Management
+            <a href="#project-management" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Organize work into projects, each with its own sessions and settings. The two-section
+            left sidebar shows all projects on top and the active project's sessions below.
+          </p>
+          <ul>
+            <li>
+              Multiple repositories per project &mdash; first repo becomes working directory, rest
+              passed via
+              <code>--add-dir</code>
+            </li>
+            <li>
+              Edit projects on the fly with
+              <code>Ctrl+E</code>
+              (name, repos, roles, MCP servers) without losing running sessions
+            </li>
+            <li>Soft-deleted projects and sessions can be restored via Admin session or MCP API</li>
+            <li>
+              Built-in Admin project (pinned at index 0) provides conversational Thurbox management
+              via MCP
+            </li>
+          </ul>
+
+          <h2 id="git-worktrees">
+            Git Worktrees
+            <a href="#git-worktrees" class="heading-anchor">#</a>
+          </h2>
+          <p>Optionally spawn sessions inside git worktrees for branch isolation.</p>
+          <ul>
+            <li>
+              When creating a session (
+              <code>Ctrl+N</code>
+              ), choose "Worktree" mode to select a base branch and name a new branch
+            </li>
+            <li>Thurbox creates the worktree and launches Claude inside it</li>
+            <li>
+              Press
+              <code>Ctrl+S</code>
+              to sync all worktree sessions with
+              <code>origin/main</code>
+            </li>
+            <li>On rebase conflicts, Thurbox automatically sends a resolution prompt to Claude</li>
+            <li>Closing a session automatically removes the worktree</li>
+            <li>Worktree sessions show the branch name in the terminal title and session list</li>
+          </ul>
+
+          <h3>Worktree storage</h3>
+          <p>
+            Worktrees are created at
+            <code>&lt;repo&gt;/.git/thurbox-worktrees/&lt;sanitized-branch&gt;</code>
+            , where
+            <code>/</code>
+            in branch names is replaced by
+            <code>-</code>
+            .
+          </p>
+
+          <h2 id="container-sessions">
+            Container Sessions
+            <a href="#container-sessions" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Run sessions inside Docker or Podman containers for lightweight isolation. Choose
+            "Container" in the session mode selector.
+          </p>
+
+          <h3>How it works</h3>
+          <ul>
+            <li>Thurbox builds a container image from a Containerfile template</li>
+            <li>
+              Runs the container with optional firewall-restricted network egress (nftables/iptables
+              allowlist)
+            </li>
+            <li>Spawns the Claude session inside the container</li>
+            <li>Auto-detects runtime (Podman preferred, Docker fallback)</li>
+            <li>Containers survive Thurbox restarts</li>
+          </ul>
+
+          <h3>Templates</h3>
+          <p>
+            Templates are stored at
+            <code>~/.local/share/thurbox/containerfiles/</code>
+            . A
+            <code>default/</code>
+            template (Debian Bookworm-based) is seeded on first run. Add custom templates by
+            creating folders with a
+            <code>Containerfile</code>
+            and any support files.
+          </p>
+
+          <h3>Default container configuration</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>CPUs</td>
+                <td>2</td>
+              </tr>
+              <tr>
+                <td>Memory</td>
+                <td>2048 MB</td>
+              </tr>
+              <tr>
+                <td>Firewall</td>
+                <td>Enabled (domain allowlist)</td>
+              </tr>
+              <tr>
+                <td>Containerfile</td>
+                <td>
+                  <code>default/</code>
+                  template
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="vm-sessions">
+            VM Sessions
+            <a href="#vm-sessions" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Run sessions inside QEMU/KVM virtual machines for full OS-level isolation. Choose "VM"
+            in the session mode selector.
+          </p>
+
+          <h3>VM specifications</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Base image</td>
+                <td>Debian 13 (Trixie) genericcloud amd64 qcow2</td>
+              </tr>
+              <tr>
+                <td>CPUs</td>
+                <td>2</td>
+              </tr>
+              <tr>
+                <td>RAM</td>
+                <td>2048 MB</td>
+              </tr>
+              <tr>
+                <td>Disk</td>
+                <td>10 GB qcow2 CoW overlay</td>
+              </tr>
+              <tr>
+                <td>Networking</td>
+                <td>User-mode (SLIRP), SSH on ports 22200+</td>
+              </tr>
+              <tr>
+                <td>Pre-installed</td>
+                <td>tmux, git, rsync, curl, Claude CLI</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Requirements</h3>
+          <ul>
+            <li>
+              <code>qemu-system-x86_64</code>
+              with
+              <code>/dev/kvm</code>
+              support
+            </li>
+            <li>
+              <code>genisoimage</code>
+              or
+              <code>mkisofs</code>
+              (cloud-init ISO creation)
+            </li>
+            <li>
+              <code>ssh-keygen</code>
+              ,
+              <code>rsync</code>
+            </li>
+          </ul>
+
+          <h3>Session restoration</h3>
+          <p>
+            VMs survive Thurbox restarts. On restart, Thurbox discovers VMs from the database,
+            verifies the QEMU process is still running via SSH probe, and re-adopts the tmux session
+            inside the VM. If a VM has died, Thurbox re-provisions a new one with
+            <code>--resume</code>
+            to preserve conversation history.
+          </p>
+
+          <h2 id="role-system">
+            Role System
+            <a href="#role-system" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Define per-project permission profiles that control Claude's behavior. Each role
+            specifies:
+          </p>
+          <ul>
+            <li>
+              A
+              <strong>permission mode</strong>
+              (
+              <code>default</code>
+              ,
+              <code>plan</code>
+              ,
+              <code>acceptEdits</code>
+              ,
+              <code>dontAsk</code>
+              ,
+              <code>bypassPermissions</code>
+              )
+            </li>
+            <li>
+              Lists of
+              <strong>allowed</strong>
+              and
+              <strong>disallowed</strong>
+              tools with scope patterns like
+              <code>Bash(git:*)</code>
+            </li>
+            <li>
+              Optional
+              <strong>system prompt</strong>
+              text appended to Claude's prompt
+            </li>
+            <li>
+              Optional
+              <strong>environment variables</strong>
+              injected into the session
+            </li>
+          </ul>
+          <p>
+            Manage roles from the TUI via
+            <code>Ctrl+E</code>
+            or programmatically through the
+            <a href="mcp.html">MCP server</a>
+            . See
+            <a href="roles.html">Role Configuration</a>
+            for the full guide.
+          </p>
+
+          <h2 id="responsive-ui">
+            Responsive UI
+            <a href="#responsive-ui" class="heading-anchor">#</a>
+          </h2>
+          <p>Three layout tiers adapt to your terminal width:</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Width</th>
+                <th>Layout</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>&lt; 80 cols</td>
+                <td>Terminal only</td>
+              </tr>
+              <tr>
+                <td>&gt;= 80 cols</td>
+                <td>Project/session sidebar + terminal</td>
+              </tr>
+              <tr>
+                <td>&gt;= 120 cols</td>
+                <td>Sidebar + terminal + info panel</td>
+              </tr>
+            </tbody>
+          </table>
+          <ul>
+            <li>
+              Scrollback with
+              <code>Shift+arrows</code>
+              /
+              <code>PageUp</code>
+              /
+              <code>PageDown</code>
+              / mouse wheel
+            </li>
+            <li>Non-modal error messages in the status bar</li>
+            <li>Vim-inspired keybindings throughout</li>
+            <li>Tri-state focus system (Focused, Active, Inactive) with visual border feedback</li>
+          </ul>
+
+          <h2 id="session-persistence">
+            Session Persistence
+            <a href="#session-persistence" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Sessions run inside a dedicated tmux server (
+            <code>tmux -L thurbox</code>
+            ) and survive crashes, restarts, and multiple concurrent instances.
+          </p>
+
+          <h3>How it works</h3>
+          <ul>
+            <li>
+              Sessions spawn as tmux windows. The tmux pane keeps running regardless of Thurbox's
+              lifecycle.
+            </li>
+            <li>
+              On shutdown (
+              <code>Ctrl+Q</code>
+              ), session metadata is saved to SQLite. Thurbox detaches without killing sessions.
+            </li>
+            <li>
+              On restart, Thurbox discovers existing sessions from tmux, matches them to persisted
+              metadata, and adopts them with terminal content intact.
+            </li>
+            <li>
+              External recovery is always possible via
+              <code>tmux -L thurbox attach</code>
+              .
+            </li>
+          </ul>
+
+          <h3>Close vs Quit</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>Ctrl+Q</code>
+                  (Quit)
+                </td>
+                <td>Detaches all sessions, saves metadata. Sessions resume on next launch.</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>Ctrl+C</code>
+                  (Close)
+                </td>
+                <td>Permanently kills the tmux pane. Worktree (if any) is removed immediately.</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>

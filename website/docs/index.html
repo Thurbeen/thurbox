@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Documentation — Thurbox</title>
+    <meta
+      name="description"
+      content="Thurbox documentation — installation, features, keybindings, MCP server, roles, and architecture."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <a href="../index.html" class="nav-brand">
+        thur
+        <span>box</span>
+      </a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="keybindings.html">Keybindings</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="mcp.html">MCP Server</a></li>
+            <li><a href="roles.html">Role Configuration</a></li>
+            <li><a href="architecture.html">Architecture</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <span class="current">Docs</span>
+          </div>
+
+          <h1>Documentation</h1>
+          <p>Everything you need to get started with Thurbox and make the most of its features.</p>
+
+          <div class="docs-hub-grid">
+            <a href="installation.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x1f4e5;</div>
+                <h3>Installation</h3>
+                <p>
+                  Install from binary or source. Platform detection, prerequisites, and
+                  configuration.
+                </p>
+              </div>
+            </a>
+            <a href="features.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x2728;</div>
+                <h3>Features</h3>
+                <p>
+                  Session orchestration, worktrees, containers, VMs, roles, and the responsive UI.
+                </p>
+              </div>
+            </a>
+            <a href="keybindings.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x2328;</div>
+                <h3>Keybindings</h3>
+                <p>
+                  Vim-inspired keyboard shortcuts for navigation, session management, and terminal
+                  control.
+                </p>
+              </div>
+            </a>
+            <a href="mcp.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x1f50c;</div>
+                <h3>MCP Server</h3>
+                <p>
+                  Model Context Protocol server for programmatic project, role, and session
+                  management.
+                </p>
+              </div>
+            </a>
+            <a href="roles.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x1f6e1;</div>
+                <h3>Role Configuration</h3>
+                <p>
+                  Permission modes, tool scoping, allow/deny semantics, and common role patterns.
+                </p>
+              </div>
+            </a>
+            <a href="architecture.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x1f3d7;</div>
+                <h3>Architecture</h3>
+                <p>
+                  The Elm Architecture, module isolation, session backends, and design principles.
+                </p>
+              </div>
+            </a>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>

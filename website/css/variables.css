@@ -1,0 +1,55 @@
+:root {
+  /* Backgrounds */
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-card: #21262d;
+  --bg-code: #0a0e14;
+  --bg-hover: #30363d;
+  --bg-nav: rgba(13, 17, 23, 0.95);
+
+  /* Text */
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #484f58;
+
+  /* Accents */
+  --green: #3fb950;
+  --cyan: #56d4dd;
+  --yellow: #d29922;
+  --purple: #bc8cff;
+  --red: #f85149;
+  --blue: #58a6ff;
+
+  /* Borders */
+  --border: #30363d;
+  --border-light: #21262d;
+
+  /* Terminal chrome */
+  --term-dot-red: #ff5f57;
+  --term-dot-yellow: #febc2e;
+  --term-dot-green: #28c840;
+  --term-glow: rgba(86, 212, 221, 0.15);
+
+  /* Typography */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Spacing */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4rem;
+
+  /* Sizing */
+  --container-max: 1200px;
+  --nav-height: 64px;
+  --sidebar-width: 260px;
+  --border-radius: 8px;
+  --border-radius-sm: 4px;
+
+  /* Transitions */
+  --transition: 200ms ease;
+}

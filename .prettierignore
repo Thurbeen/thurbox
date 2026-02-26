@@ -1,0 +1,4 @@
+# Only lint website/ — ignore everything else
+*
+!website/
+!website/**

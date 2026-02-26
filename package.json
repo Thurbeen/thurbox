@@ -1,0 +1,19 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint:html": "htmlhint 'website/**/*.html'",
+    "lint:css": "stylelint 'website/**/*.css'",
+    "lint:js": "eslint 'website/**/*.js'",
+    "lint:format": "prettier --check 'website/**/*.{html,css,js}'",
+    "lint:website": "npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
+    "fmt:website": "prettier --write 'website/**/*.{html,css,js}'"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "htmlhint": "^1.1.4",
+    "prettier": "^3.0.0",
+    "stylelint": "^16.0.0",
+    "stylelint-config-standard": "^37.0.0"
+  }
+}

@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MCP Server — Thurbox Docs</title>
+    <meta
+      name="description"
+      content="Thurbox MCP server reference: available tools, transports, and the Admin session."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <a href="../index.html" class="nav-brand">
+        thur
+        <span>box</span>
+      </a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="keybindings.html">Keybindings</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="mcp.html" class="current-page">MCP Server</a></li>
+            <li><a href="roles.html">Role Configuration</a></li>
+            <li><a href="architecture.html">Architecture</a></li>
+          </ul>
+          <h4>On This Page</h4>
+          <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#transports">Transports</a></li>
+            <li><a href="#available-tools">Available Tools</a></li>
+            <li><a href="#admin-session">Admin Session</a></li>
+            <li><a href="#cli-integration">CLI Integration</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <a href="index.html">Docs</a>
+            <span class="separator">/</span>
+            <span class="current">MCP Server</span>
+          </div>
+
+          <h1>MCP Server</h1>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The
+            <code>thurbox-mcp</code>
+            binary exposes Thurbox configuration over the
+            <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">
+              Model Context Protocol
+            </a>
+            . It shares the same SQLite database as the TUI &mdash; changes appear immediately via
+            <code>PRAGMA data_version</code>
+            polling.
+          </p>
+
+          <h2 id="transports">
+            Transports
+            <a href="#transports" class="heading-anchor">#</a>
+          </h2>
+
+          <h3>stdio (default)</h3>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">bash</span>
+            </div>
+            <div class="terminal-body">
+              <button class="copy-btn" data-code="thurbox-mcp">Copy</button>
+              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-mcp</span></code></pre>
+            </div>
+          </div>
+
+          <h3>Streamable HTTP</h3>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">bash</span>
+            </div>
+            <div class="terminal-body">
+              <button
+                class="copy-btn"
+                data-code="thurbox-mcp --transport streamable-http --port 9090"
+              >
+                Copy
+              </button>
+              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-mcp</span> <span class="syn-flag">--transport</span> <span class="syn-string">streamable-http</span>              <span class="syn-comment"># HTTP on 127.0.0.1:8080</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-mcp</span> <span class="syn-flag">--transport</span> <span class="syn-string">streamable-http</span> <span class="syn-flag">--port</span> <span class="syn-number">9090</span>  <span class="syn-comment"># Custom port</span></code></pre>
+            </div>
+          </div>
+
+          <h2 id="available-tools">
+            Available Tools
+            <a href="#available-tools" class="heading-anchor">#</a>
+          </h2>
+
+          <h3>Project management</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>list_projects</code></td>
+                <td>List all active projects</td>
+              </tr>
+              <tr>
+                <td><code>get_project</code></td>
+                <td>Get a project by name or UUID</td>
+              </tr>
+              <tr>
+                <td><code>create_project</code></td>
+                <td>Create a new project with name and repo paths</td>
+              </tr>
+              <tr>
+                <td><code>update_project</code></td>
+                <td>Update project name and/or repos (partial update)</td>
+              </tr>
+              <tr>
+                <td><code>delete_project</code></td>
+                <td>Soft-delete a project (preserves for undo)</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Role management</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>list_roles</code></td>
+                <td>List all roles for a project</td>
+              </tr>
+              <tr>
+                <td><code>set_roles</code></td>
+                <td>Atomically replace all roles for a project</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="info-box">
+            <p>
+              <strong>Atomic replacement:</strong>
+              <code>set_roles</code>
+              deletes all existing roles and replaces them in a single transaction. To add a role,
+              include all existing roles plus the new one.
+            </p>
+          </div>
+
+          <h3>MCP server configuration</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>list_mcp_servers</code></td>
+                <td>List MCP servers for a project</td>
+              </tr>
+              <tr>
+                <td><code>set_mcp_servers</code></td>
+                <td>Set MCP servers for a project</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Session management</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>list_sessions</code></td>
+                <td>List sessions, optionally filtered by project</td>
+              </tr>
+              <tr>
+                <td><code>get_session</code></td>
+                <td>Get a session by UUID</td>
+              </tr>
+              <tr>
+                <td><code>delete_session</code></td>
+                <td>Soft-delete a session (TUI cleans up tmux/worktree)</td>
+              </tr>
+              <tr>
+                <td><code>restart_session</code></td>
+                <td>Queue a session restart (TUI processes the command)</td>
+              </tr>
+              <tr>
+                <td><code>restore_session</code></td>
+                <td>Restore a soft-deleted session</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>VM management</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>list_vms</code></td>
+                <td>List active VMs, optionally filtered by project</td>
+              </tr>
+              <tr>
+                <td><code>get_vm</code></td>
+                <td>Get a VM by UUID</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Container configuration</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>list_containerfile_templates</code></td>
+                <td>List template names + files in each</td>
+              </tr>
+              <tr>
+                <td><code>get_containerfile_template</code></td>
+                <td>Read a template's Containerfile content</td>
+              </tr>
+              <tr>
+                <td><code>set_containerfile_template</code></td>
+                <td>Create/update a template</td>
+              </tr>
+              <tr>
+                <td><code>delete_containerfile_template</code></td>
+                <td>Delete a template (refuses "default")</td>
+              </tr>
+              <tr>
+                <td><code>configure_project_container</code></td>
+                <td>Set project container defaults</td>
+              </tr>
+              <tr>
+                <td><code>get_project_container_config</code></td>
+                <td>Read current project container config</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>VM image management</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>list_vm_images</code></td>
+                <td>List downloaded VM images with file sizes</td>
+              </tr>
+              <tr>
+                <td><code>download_vm_image</code></td>
+                <td>Download a VM image from an HTTPS URL</td>
+              </tr>
+              <tr>
+                <td><code>delete_vm_image</code></td>
+                <td>Delete a cached VM image</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="admin-session">
+            Admin Session
+            <a href="#admin-session" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The TUI includes a built-in Admin session that auto-configures
+            <code>thurbox-mcp</code>
+            as an MCP server. Claude Code discovers the config automatically, enabling
+            conversational management inside the TUI.
+          </p>
+
+          <h3>How it works</h3>
+          <ol>
+            <li>
+              On startup, Thurbox creates an admin directory at
+              <code>~/.local/share/thurbox/admin/</code>
+            </li>
+            <li>
+              A
+              <code>.mcp.json</code>
+              is written pointing to the
+              <code>thurbox-mcp</code>
+              binary
+            </li>
+            <li>
+              An "Admin" project is pinned at index 0 with a yellow
+              <code>&#x2699;</code>
+              prefix
+            </li>
+            <li>A single admin session spawns with all MCP tools pre-allowed</li>
+          </ol>
+
+          <h3>Restrictions</h3>
+          <ul>
+            <li>
+              Cannot be edited (
+              <code>Ctrl+E</code>
+              shows an error)
+            </li>
+            <li>
+              Cannot be deleted (
+              <code>Ctrl+D</code>
+              shows an error)
+            </li>
+            <li>Cannot have additional sessions created</li>
+            <li>
+              The admin session cannot be closed (
+              <code>Ctrl+C</code>
+              shows an error)
+            </li>
+          </ul>
+
+          <h3>Example usage</h3>
+          <p>In the Admin session, use natural language:</p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">Admin session</span>
+            </div>
+            <div class="terminal-body">
+              <pre><code><span class="syn-string">"Set up developer and reviewer roles for the my-app project.
+Developer should have acceptEdits mode with git auto-approved.
+Reviewer should be plan-only with read access."</span></code></pre>
+            </div>
+          </div>
+
+          <h2 id="cli-integration">
+            CLI Integration
+            <a href="#cli-integration" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Configure
+            <code>thurbox-mcp</code>
+            in your Claude Code
+            <code>.mcp.json</code>
+            :
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">.mcp.json</span>
+            </div>
+            <div class="terminal-body">
+              <button
+                class="copy-btn"
+                data-code='{
+  "mcpServers": {
+    "thurbox": {
+      "command": "thurbox-mcp",
+      "args": []
+    }
+  }
+}'
+              >
+                Copy
+              </button>
+              <pre><code><span class="syn-bracket">{</span>
+  <span class="syn-key">"mcpServers"</span>: <span class="syn-bracket">{</span>
+    <span class="syn-key">"thurbox"</span>: <span class="syn-bracket">{</span>
+      <span class="syn-key">"command"</span>: <span class="syn-value">"thurbox-mcp"</span>,
+      <span class="syn-key">"args"</span>: <span class="syn-bracket">[]</span>
+    <span class="syn-bracket">}</span>
+  <span class="syn-bracket">}</span>
+<span class="syn-bracket">}</span></code></pre>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>

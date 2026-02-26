@@ -77,6 +77,14 @@ rumdl check .                        # Markdown lint (.rumdl.toml)
 rumdl fmt .                          # Markdown auto-fix
 ```
 
+## Website Linting
+
+```bash
+npm ci                               # Install deps (use lockfile)
+npm run lint:website                 # Run all website linters
+npm run fmt:website                  # Auto-fix formatting (Prettier)
+```
+
 ## Architecture Enforcement
 
 ```bash
@@ -284,12 +292,13 @@ tokio::main → init backends (BackendRegistry: local-tmux
 
 ## Pre-commit Hooks
 
-11 hooks run automatically via `prek` (Rust-based pre-commit
+16 hooks run automatically via `prek` (Rust-based pre-commit
 framework). Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
 - **pre-commit**: fmt, clippy, check, nextest, architecture,
-  deny, audit, doc, rumdl
+  deny, doc, bats, rumdl, prettier, htmlhint, stylelint,
+  eslint
 - **pre-push**: commit history check (`cog check`)
 
 ## Key Technical Details

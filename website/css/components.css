@@ -1,0 +1,371 @@
+/* ---- Navigation ---- */
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--nav-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-lg);
+  z-index: 100;
+  border-bottom: 1px solid transparent;
+  transition:
+    background var(--transition),
+    border-color var(--transition);
+}
+
+.nav.scrolled {
+  background: var(--bg-nav);
+  border-bottom-color: var(--border);
+  backdrop-filter: blur(12px);
+}
+
+.nav-brand {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.nav-brand span {
+  color: var(--cyan);
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.nav-links a {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  transition: color var(--transition);
+}
+
+.nav-links a:hover {
+  color: var(--text-primary);
+}
+
+.nav-links .github-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.hamburger {
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-sm);
+}
+
+.hamburger span {
+  display: block;
+  width: 22px;
+  height: 2px;
+  background: var(--text-primary);
+  transition:
+    transform var(--transition),
+    opacity var(--transition);
+}
+
+.hamburger.active span:nth-child(1) {
+  transform: rotate(45deg) translate(5px, 5px);
+}
+
+.hamburger.active span:nth-child(2) {
+  opacity: 0;
+}
+
+.hamburger.active span:nth-child(3) {
+  transform: rotate(-45deg) translate(5px, -5px);
+}
+
+@media (max-width: 639px) {
+  .hamburger {
+    display: flex;
+  }
+
+  .nav-links {
+    position: absolute;
+    top: var(--nav-height);
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    background: var(--bg-nav);
+    border-bottom: 1px solid var(--border);
+    padding: var(--space-lg);
+    gap: var(--space-md);
+    display: none;
+    backdrop-filter: blur(12px);
+  }
+
+  .nav-links.open {
+    display: flex;
+  }
+}
+
+/* ---- Buttons ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0.75rem 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  border-radius: var(--border-radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-decoration: none;
+}
+
+.btn-primary {
+  background: var(--green);
+  color: var(--bg-primary);
+}
+
+.btn-primary:hover {
+  background: #4cc764;
+  color: var(--bg-primary);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.btn-secondary:hover {
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+}
+
+/* ---- Cards ---- */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  padding: var(--space-lg);
+  transition: border-color var(--transition);
+}
+
+.card:hover {
+  border-color: var(--text-muted);
+}
+
+.card-icon {
+  font-size: 1.5rem;
+  margin-bottom: var(--space-sm);
+}
+
+.card h3 {
+  margin-bottom: var(--space-sm);
+}
+
+.card p {
+  font-size: 0.9rem;
+  margin-bottom: 0;
+}
+
+/* ---- Badges ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0.25rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.badge-green {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.badge-yellow {
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+/* ---- Terminal frame ---- */
+.terminal-frame {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  overflow: hidden;
+  box-shadow: 0 0 30px var(--term-glow);
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminal-dot.red {
+  background: var(--term-dot-red);
+}
+.terminal-dot.yellow {
+  background: var(--term-dot-yellow);
+}
+.terminal-dot.green {
+  background: var(--term-dot-green);
+}
+
+.terminal-title {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-left: var(--space-sm);
+}
+
+.terminal-body {
+  padding: var(--space-md) var(--space-lg);
+  overflow-x: auto;
+  position: relative;
+}
+
+.terminal-body pre {
+  margin: 0;
+}
+
+.terminal-body code {
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+/* Code block copy button */
+.copy-btn {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  padding: 0.35rem 0.65rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  opacity: 0;
+}
+
+.terminal-body:hover .copy-btn {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.copy-btn.copied {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+/* ---- Syntax colors (manual, no library) ---- */
+.syn-comment {
+  color: var(--text-muted);
+}
+.syn-keyword {
+  color: var(--purple);
+}
+.syn-string {
+  color: var(--green);
+}
+.syn-flag {
+  color: var(--cyan);
+}
+.syn-cmd {
+  color: var(--yellow);
+}
+.syn-prompt {
+  color: var(--text-muted);
+}
+.syn-url {
+  color: var(--blue);
+  text-decoration: underline;
+}
+.syn-key {
+  color: var(--cyan);
+}
+.syn-value {
+  color: var(--green);
+}
+.syn-bracket {
+  color: var(--text-muted);
+}
+.syn-number {
+  color: var(--yellow);
+}
+
+/* ---- Footer ---- */
+.footer {
+  padding: var(--space-2xl) 0;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.footer p {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-xs);
+}
+
+.footer a {
+  color: var(--text-secondary);
+}
+
+.footer a:hover {
+  color: var(--cyan);
+}
+
+/* ---- Step numbers ---- */
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: var(--cyan);
+  color: var(--bg-primary);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.875rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ---- GitHub icon (inline SVG) ---- */
+.icon-github {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}

@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture — Thurbox Docs</title>
+    <meta
+      name="description"
+      content="Thurbox architecture: The Elm Architecture, module isolation, session backends, and design principles."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <a href="../index.html" class="nav-brand">
+        thur
+        <span>box</span>
+      </a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="keybindings.html">Keybindings</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="mcp.html">MCP Server</a></li>
+            <li><a href="roles.html">Role Configuration</a></li>
+            <li><a href="architecture.html" class="current-page">Architecture</a></li>
+          </ul>
+          <h4>On This Page</h4>
+          <ul>
+            <li><a href="#tea">The Elm Architecture</a></li>
+            <li><a href="#modules">Module Structure</a></li>
+            <li><a href="#session-pipeline">Session Pipeline</a></li>
+            <li><a href="#multi-backend">Multi-Backend</a></li>
+            <li><a href="#async">Async Runtime</a></li>
+            <li><a href="#persistence">Persistence</a></li>
+            <li><a href="#principles">Core Principles</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <a href="index.html">Docs</a>
+            <span class="separator">/</span>
+            <span class="current">Architecture</span>
+          </div>
+
+          <h1>Architecture</h1>
+
+          <h2 id="tea">
+            The Elm Architecture (TEA)
+            <a href="#tea" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            All state lives in a single
+            <code>App</code>
+            model. Events become messages,
+            <code>update()</code>
+            applies them,
+            <code>view()</code>
+            renders the result.
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">event loop</span>
+            </div>
+            <div class="terminal-body">
+              <pre><code>Event <span class="syn-flag">&rarr;</span> Message <span class="syn-flag">&rarr;</span> update(model, msg) <span class="syn-flag">&rarr;</span> view(model) <span class="syn-flag">&rarr;</span> Frame</code></pre>
+            </div>
+          </div>
+          <p>
+            TEA makes state transitions explicit and testable. Every input has a traceable path from
+            event to screen change. There's no hidden state scattered across components.
+          </p>
+
+          <h3>Event loop</h3>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">main.rs</span>
+            </div>
+            <div class="terminal-body">
+              <pre><code><span class="syn-keyword">tokio::main</span> <span class="syn-flag">&rarr;</span> init backends (<span class="syn-string">BackendRegistry</span>)
+  <span class="syn-flag">&rarr;</span> open SQLite DB
+  <span class="syn-flag">&rarr;</span> init terminal
+  <span class="syn-flag">&rarr;</span> spawn/restore sessions
+  <span class="syn-flag">&rarr;</span> <span class="syn-keyword">loop</span> {
+    draw frame <span class="syn-flag">&rarr;</span> poll crossterm events (10ms)
+    <span class="syn-flag">&rarr;</span> convert to AppMessage
+    <span class="syn-flag">&rarr;</span> app.update()
+    <span class="syn-flag">&rarr;</span> app.tick()
+  }
+  <span class="syn-flag">&rarr;</span> app.shutdown() (detach sessions)
+  <span class="syn-flag">&rarr;</span> restore terminal</code></pre>
+            </div>
+          </div>
+
+          <h2 id="modules">
+            Module Structure
+            <a href="#modules" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Dependencies flow strictly one-directionally. Enforced by
+            <code>tests/architecture_rules.rs</code>
+            .
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">dependency rules</span>
+            </div>
+            <div class="terminal-body">
+              <pre><code><span class="syn-keyword">session</span>  <span class="syn-comment">&larr; pure data types, no project-local imports</span>
+<span class="syn-keyword">project</span>  <span class="syn-comment">&larr; imports session only</span>
+<span class="syn-keyword">agent</span>    <span class="syn-comment">&larr; imports session only (NEVER ui, git, or project)</span>
+<span class="syn-keyword">ui</span>       <span class="syn-comment">&larr; imports session and project only (NEVER agent or git)</span>
+<span class="syn-keyword">mcp</span>      <span class="syn-comment">&larr; imports storage, session, project, sync, paths only</span>
+<span class="syn-keyword">app</span>      <span class="syn-comment">&larr; coordinator, imports all modules</span></code></pre>
+            </div>
+          </div>
+
+          <h3>Module responsibilities</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Module</th>
+                <th>Responsibility</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>app/</code></td>
+                <td>
+                  Model (
+                  <code>App</code>
+                  struct), Update (
+                  <code>AppMessage</code>
+                  + handlers), View. Owns all state, coordinates side effects.
+                </td>
+              </tr>
+              <tr>
+                <td><code>agent/</code></td>
+                <td>
+                  Side-effect layer.
+                  <code>AgentProvider</code>
+                  trait abstracts CLI command construction.
+                  <code>Session</code>
+                  wraps
+                  <code>SessionBackend</code>
+                  .
+                  <code>BackendRegistry</code>
+                  manages multiple backends.
+                  <code>ContainerManager</code>
+                  and
+                  <code>VmManager</code>
+                  handle lifecycle.
+                </td>
+              </tr>
+              <tr>
+                <td><code>session/</code></td>
+                <td>
+                  Plain data types:
+                  <code>SessionId</code>
+                  ,
+                  <code>SessionStatus</code>
+                  ,
+                  <code>SessionInfo</code>
+                  ,
+                  <code>SessionConfig</code>
+                  ,
+                  <code>VmState</code>
+                  ,
+                  <code>ContainerState</code>
+                  . No logic beyond Display/Default.
+                </td>
+              </tr>
+              <tr>
+                <td><code>project/</code></td>
+                <td>
+                  Plain data:
+                  <code>ProjectId</code>
+                  ,
+                  <code>ProjectConfig</code>
+                  ,
+                  <code>ProjectInfo</code>
+                  . Imports session only.
+                </td>
+              </tr>
+              <tr>
+                <td><code>ui/</code></td>
+                <td>
+                  Pure rendering functions.
+                  <code>layout.rs</code>
+                  computes panel areas (responsive breakpoints). Widgets: project_list,
+                  terminal_view, info_panel, status_bar.
+                </td>
+              </tr>
+              <tr>
+                <td><code>mcp/</code></td>
+                <td>
+                  MCP server (
+                  <code>thurbox-mcp</code>
+                  binary). Exposes CRUD over stdio or Streamable HTTP JSON-RPC.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="session-pipeline">
+            Session Pipeline
+            <a href="#session-pipeline" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            A
+            <code>SessionBackend</code>
+            trait abstracts session lifecycle. The default is
+            <code>LocalTmuxBackend</code>
+            (
+            <code>tmux -L thurbox</code>
+            ).
+            <code>vt100::Parser</code>
+            interprets escape sequences,
+            <code>tui_term::PseudoTerminal</code>
+            renders into ratatui.
+          </p>
+
+          <h3>Backend trait methods</h3>
+          <ul>
+            <li>
+              <code>check_available</code>
+              &mdash; verify backend prerequisites
+            </li>
+            <li>
+              <code>ensure_ready</code>
+              &mdash; initialize backend resources
+            </li>
+            <li>
+              <code>spawn()</code>
+              &mdash; returns
+              <code>(backend_id, output_reader, input_writer)</code>
+            </li>
+            <li>
+              <code>adopt()</code>
+              &mdash; reconnect to existing session, returns initial screen content
+            </li>
+            <li>
+              <code>discover()</code>
+              &mdash; list existing sessions for restore-on-startup
+            </li>
+            <li>
+              <code>resize()</code>
+              &mdash; update terminal dimensions
+            </li>
+            <li>
+              <code>detach()</code>
+              &mdash; stop streaming without killing session
+            </li>
+            <li>
+              <code>kill()</code>
+              &mdash; permanently destroy session
+            </li>
+          </ul>
+
+          <h3>tmux details</h3>
+          <p>
+            Control mode (
+            <code>-C</code>
+            ) supports multiple concurrent client connections. Output arrives as
+            <code>%output</code>
+            notifications (octal-encoded), input is sent via
+            <code>send-keys -H</code>
+            (hex-encoded). Configuration on init includes
+            <code>remain-on-exit on</code>
+            ,
+            <code>extended-keys on</code>
+            , and flow control via
+            <code>pause-after</code>
+            .
+          </p>
+
+          <h2 id="multi-backend">
+            Multi-Backend Architecture
+            <a href="#multi-backend" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Sessions select their backend at creation time via a
+            <code>BackendRegistry</code>
+            . Each session stores its
+            <code>backend_type</code>
+            in the database.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Backend</th>
+                <th>Transport</th>
+                <th>Use Case</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>LocalTmuxBackend</code></td>
+                <td><code>tmux -L thurbox</code></td>
+                <td>Default, local sessions</td>
+              </tr>
+              <tr>
+                <td><code>DevcontainerBackend</code></td>
+                <td>
+                  tmux over
+                  <code>docker/podman exec</code>
+                </td>
+                <td>Container isolation</td>
+              </tr>
+              <tr>
+                <td><code>QemuVmBackend</code></td>
+                <td>tmux over SSH</td>
+                <td>Full VM sandbox</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="async">
+            Async Runtime
+            <a href="#async" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The app runs on tokio's multi-threaded runtime. PTY read loops run inside
+            <code>spawn_blocking</code>
+            (blocking I/O in a threadpool), while PTY write and event handling run in
+            <code>tokio::spawn</code>
+            (async).
+          </p>
+          <div class="info-box">
+            <p>
+              PTY reads are blocking by nature. Putting them in
+              <code>spawn_blocking</code>
+              prevents stalling the async executor and freezing the UI.
+            </p>
+          </div>
+
+          <h2 id="persistence">
+            Persistence
+            <a href="#persistence" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            All state is stored in SQLite at
+            <code>~/.local/share/thurbox/thurbox.db</code>
+            . Multiple instances synchronize via
+            <code>PRAGMA data_version</code>
+            polling (250ms). SQLite WAL mode handles concurrent access.
+          </p>
+
+          <h3>Multi-instance sync</h3>
+          <ul>
+            <li>
+              <strong>Database</strong>
+              : Atomic transactions, no race conditions
+            </li>
+            <li>
+              <strong>Session I/O</strong>
+              : Each instance independently connects to tmux control mode. Tmux broadcasts output to
+              all clients.
+            </li>
+            <li>
+              <strong>Input</strong>
+              : Commands serialized by tmux (same as
+              <code>tmux attach</code>
+              with multiple clients)
+            </li>
+          </ul>
+
+          <h2 id="principles">
+            Core Principles
+            <a href="#principles" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Non-negotiable rules that define what Thurbox must always be. Each has an automated
+            enforcement mechanism.
+          </p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Principle</th>
+                <th>Enforcement</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td>Crash-free operation</td>
+                <td>Clippy + code review</td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td>Module isolation</td>
+                <td><code>tests/architecture_rules.rs</code></td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td>Zero-warning policy</td>
+                <td>
+                  <code>clippy -D warnings</code>
+                  +
+                  <code>RUSTDOCFLAGS="-D warnings"</code>
+                </td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td>Permissive licenses only</td>
+                <td><code>cargo-deny check bans licenses</code></td>
+              </tr>
+              <tr>
+                <td>5</td>
+                <td>Zero known vulnerabilities</td>
+                <td><code>cargo-deny check advisories</code></td>
+              </tr>
+              <tr>
+                <td>6</td>
+                <td>Conventional commits</td>
+                <td>
+                  cocogitto (
+                  <code>cog verify</code>
+                  )
+                </td>
+              </tr>
+              <tr>
+                <td>7</td>
+                <td>TEA as single pattern</td>
+                <td>Architecture tests + code review</td>
+              </tr>
+              <tr>
+                <td>8</td>
+                <td>Backend-first sessions</td>
+                <td>Code review</td>
+              </tr>
+              <tr>
+                <td>9</td>
+                <td>Logging never touches stdout</td>
+                <td>Code review</td>
+              </tr>
+              <tr>
+                <td>10</td>
+                <td>Test-driven development</td>
+                <td><code>cargo-nextest</code></td>
+              </tr>
+              <tr>
+                <td>11</td>
+                <td>Deterministic CI</td>
+                <td>Scripts over LLMs</td>
+              </tr>
+              <tr>
+                <td>12</td>
+                <td>Tag-based versioning</td>
+                <td>
+                  <code>build.rs</code>
+                  + release workflow
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Key technical details</h3>
+          <ul>
+            <li>MSRV: 1.75, Edition 2021</li>
+            <li>Async runtime: tokio (multi-threaded)</li>
+            <li>
+              Terminal state:
+              <code>vt100::Parser</code>
+              +
+              <code>tui_term::PseudoTerminal</code>
+            </li>
+            <li>
+              Logging: file-based at
+              <code>~/.local/share/thurbox/thurbox.log</code>
+            </li>
+            <li>Panic hook restores terminal before printing</li>
+            <li>Requires tmux >= 3.2</li>
+          </ul>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>

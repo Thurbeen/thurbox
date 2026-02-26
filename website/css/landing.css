@@ -1,0 +1,167 @@
+/* ---- Hero ---- */
+.hero {
+  padding-top: calc(var(--nav-height) + var(--space-3xl));
+  padding-bottom: var(--space-3xl);
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  margin-bottom: var(--space-md);
+  letter-spacing: -0.03em;
+}
+
+.hero h1 .accent {
+  color: var(--cyan);
+}
+
+.hero .subtitle {
+  font-size: 1.15rem;
+  max-width: 600px;
+  margin: 0 auto var(--space-xl);
+  color: var(--text-secondary);
+}
+
+.hero-ctas {
+  display: flex;
+  gap: var(--space-md);
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-xl);
+}
+
+.hero-badges {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: center;
+  margin-bottom: var(--space-2xl);
+}
+
+.hero-demo {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.hero-demo .terminal-frame {
+  box-shadow:
+    0 0 60px var(--term-glow),
+    0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.hero-demo img {
+  display: block;
+  width: 100%;
+}
+
+/* ---- Features grid ---- */
+.features {
+  background: var(--bg-secondary);
+}
+
+.features .card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--border-radius-sm);
+  font-size: 1.25rem;
+}
+
+/* ---- How it works ---- */
+.how-it-works-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.step {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: flex-start;
+}
+
+.step-content {
+  flex: 1;
+}
+
+.step-content h3 {
+  margin-bottom: var(--space-sm);
+}
+
+.step-content p {
+  margin-bottom: var(--space-md);
+}
+
+.step .terminal-frame {
+  box-shadow: none;
+}
+
+/* ---- Install section ---- */
+.install {
+  background: var(--bg-secondary);
+}
+
+.install-main {
+  max-width: 700px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.install-main .terminal-frame {
+  margin-bottom: var(--space-lg);
+  text-align: left;
+}
+
+.install-alt {
+  display: flex;
+  gap: var(--space-xl);
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: var(--space-xl);
+}
+
+.install-alt-item h4 {
+  margin-bottom: var(--space-sm);
+  color: var(--text-primary);
+}
+
+.install-alt-item p {
+  font-size: 0.9rem;
+}
+
+/* ---- Prerequisites ---- */
+.prereqs {
+  margin-top: var(--space-xl);
+  text-align: left;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.prereqs h3 {
+  text-align: center;
+  margin-bottom: var(--space-md);
+}
+
+.prereqs ul {
+  list-style: none;
+  padding: 0;
+}
+
+.prereqs li {
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 0.9rem;
+}
+
+.prereqs li strong {
+  color: var(--text-primary);
+}
+
+.prereqs li .optional {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
