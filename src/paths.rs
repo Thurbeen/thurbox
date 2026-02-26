@@ -56,6 +56,8 @@ pub enum PathKind {
     ContainerfilesDir,
     /// VM images: `~/.local/share/thurbox/admin/images/`
     ImagesDir,
+    /// Agent metrics files: `~/.local/share/thurbox/metrics/`
+    MetricsDir,
 }
 
 /// Path resolution strategy (thread-local).
@@ -199,6 +201,24 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
+        PathKind::MetricsDir => {
+            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
+            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+                let mut p = PathBuf::from(xdg);
+                p.push(app_dir_name());
+                p.push("metrics");
+                return Some(p);
+            }
+
+            std::env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".local");
+                p.push("share");
+                p.push(app_dir_name());
+                p.push("metrics");
+                p
+            })
+        }
     }
 }
 
@@ -211,6 +231,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::AdminDir => base.join("admin"),
         PathKind::ContainerfilesDir => base.join("admin").join("containerfiles"),
         PathKind::ImagesDir => base.join("admin").join("images"),
+        PathKind::MetricsDir => base.join("metrics"),
     }
 }
 
@@ -256,6 +277,13 @@ pub fn containerfiles_directory() -> Option<PathBuf> {
 /// `$HOME/.local/share/thurbox/admin/images/`
 pub fn images_directory() -> Option<PathBuf> {
     resolve(PathKind::ImagesDir)
+}
+
+/// Resolve the agent metrics directory path.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/metrics/` or `$HOME/.local/share/thurbox/metrics/`
+pub fn metrics_directory() -> Option<PathBuf> {
+    resolve(PathKind::MetricsDir)
 }
 
 /// Resolve the path to the `thurbox-mcp` binary.
@@ -499,6 +527,7 @@ mod tests {
             resolve(PathKind::ImagesDir),
             Some(base.join("admin").join("images"))
         );
+        assert_eq!(resolve(PathKind::MetricsDir), Some(base.join("metrics")));
 
         reset_to_xdg();
     }
@@ -659,6 +688,21 @@ mod tests {
             resolve_override(base, PathKind::ImagesDir),
             PathBuf::from("/data/admin/images")
         );
+        assert_eq!(
+            resolve_override(base, PathKind::MetricsDir),
+            PathBuf::from("/data/metrics")
+        );
+    }
+
+    #[test]
+    fn metrics_directory_convenience() {
+        let base = PathBuf::from("/custom");
+        set_test_dir(&base);
+
+        let path = metrics_directory().unwrap();
+        assert!(path.ends_with("metrics"));
+
+        reset_to_xdg();
     }
 
     #[test]

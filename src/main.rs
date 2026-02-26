@@ -129,6 +129,9 @@ async fn main() -> Result<()> {
     // Ensure admin project exists and .mcp.json is up to date
     app.ensure_admin_setup();
 
+    // Set up statusline script and Claude CLI settings for agent metrics
+    app.ensure_statusline_setup();
+
     let res = run_loop(&mut terminal, &mut app).await;
 
     app.shutdown();

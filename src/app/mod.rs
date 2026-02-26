@@ -117,14 +117,61 @@ not just new ones.";
 /// Parse the PSS value (in bytes) from the contents of `smaps_rollup`.
 ///
 /// Looks for a line like `Pss:             12345 kB` and returns the value in bytes.
-fn parse_pss_from_smaps(content: &str) -> Option<u64> {
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("Pss:") {
-            let kib: u64 = rest.trim().strip_suffix("kB")?.trim().parse().ok()?;
-            return Some(kib * 1024);
-        }
+/// Parse agent metrics from a Claude CLI statusline JSON value.
+fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics {
+    use crate::session::AgentMetrics;
+    AgentMetrics {
+        model_id: raw
+            .pointer("/model/id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        model_display_name: raw
+            .pointer("/model/display_name")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        total_cost_usd: raw.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64()),
+        total_duration_ms: raw
+            .pointer("/cost/total_duration_ms")
+            .and_then(|v| v.as_u64()),
+        total_api_duration_ms: raw
+            .pointer("/cost/total_api_duration_ms")
+            .and_then(|v| v.as_u64()),
+        total_lines_added: raw
+            .pointer("/cost/total_lines_added")
+            .and_then(|v| v.as_u64()),
+        total_lines_removed: raw
+            .pointer("/cost/total_lines_removed")
+            .and_then(|v| v.as_u64()),
+        total_input_tokens: raw
+            .pointer("/cost/total_input_tokens")
+            .and_then(|v| v.as_u64()),
+        total_output_tokens: raw
+            .pointer("/cost/total_output_tokens")
+            .and_then(|v| v.as_u64()),
+        context_window_size: raw
+            .pointer("/context_window/total_tokens")
+            .and_then(|v| v.as_u64()),
+        used_percentage: raw
+            .pointer("/context_window/used_percentage")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(100) as u8),
+        current_input_tokens: raw
+            .pointer("/context_window/current_usage/input_tokens")
+            .and_then(|v| v.as_u64()),
+        current_output_tokens: raw
+            .pointer("/context_window/current_usage/output_tokens")
+            .and_then(|v| v.as_u64()),
+        cache_creation_input_tokens: raw
+            .pointer("/context_window/current_usage/cache_creation_input_tokens")
+            .and_then(|v| v.as_u64()),
+        cache_read_input_tokens: raw
+            .pointer("/context_window/current_usage/cache_read_input_tokens")
+            .and_then(|v| v.as_u64()),
+        cli_version: raw
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     }
-    None
 }
 
 /// Build `RolePermissions` with all admin MCP tools pre-allowed.
@@ -496,8 +543,6 @@ pub struct App {
     pending_container_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
     /// Background container/VM restoration tasks polled by `tick()`.
     pending_restores: Vec<PendingRestore>,
-    /// Reusable buffer for parent→children process map (avoids per-tick allocation).
-    children_map_buf: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
     /// Reusable buffer for session elapsed-ms in the view (avoids per-frame allocation).
     pub(crate) session_elapsed_buf: Vec<u64>,
 }
@@ -739,7 +784,6 @@ impl App {
                 cpu_percent: 0.0,
                 memory_used: 0,
                 memory_total: 0,
-                per_session: Vec::new(),
             },
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
@@ -769,7 +813,6 @@ impl App {
             pending_container_id: None,
             pending_container_mcp_servers: None,
             pending_restores: Vec::new(),
-            children_map_buf: HashMap::new(),
             session_elapsed_buf: Vec::new(),
         }
     }
@@ -869,6 +912,93 @@ impl App {
 
         self.write_mcp_json(&admin_dir);
         self.ensure_admin_project(&admin_dir);
+    }
+
+    /// Set up the statusline script and `~/.claude/settings.json` for agent metrics.
+    ///
+    /// Creates a shell script that the Claude CLI pipes statusline JSON into,
+    /// which writes metrics to per-session files. Also configures the Claude CLI
+    /// global settings to use this script as the statusline handler.
+    pub fn ensure_statusline_setup(&self) {
+        let Some(data_dir) = crate::paths::log_directory() else {
+            return;
+        };
+        let Some(metrics_dir) = crate::paths::metrics_directory() else {
+            return;
+        };
+
+        // Ensure metrics directory exists.
+        if let Err(e) = std::fs::create_dir_all(&metrics_dir) {
+            tracing::warn!("Failed to create metrics directory: {e}");
+            return;
+        }
+
+        // Write statusline shell script.
+        let script_path = data_dir.join("statusline.sh");
+        let script = format!(
+            "#!/bin/sh\n\
+             METRICS_DIR=\"${{THURBOX_METRICS_DIR:-{}}}\"\n\
+             mkdir -p \"$METRICS_DIR\"\n\
+             if [ -n \"$THURBOX_SESSION_ID\" ]; then\n\
+             \tcat > \"$METRICS_DIR/$THURBOX_SESSION_ID.json\"\n\
+             fi\n",
+            metrics_dir.display()
+        );
+        if let Err(e) = std::fs::write(&script_path, &script) {
+            tracing::warn!("Failed to write statusline script: {e}");
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+        }
+
+        // Configure ~/.claude/settings.json with the statusline command.
+        let home = match std::env::var_os("HOME") {
+            Some(h) => std::path::PathBuf::from(h),
+            None => return,
+        };
+        let settings_path = home.join(".claude").join("settings.json");
+        if let Err(e) = std::fs::create_dir_all(settings_path.parent().unwrap()) {
+            tracing::warn!("Failed to create ~/.claude directory: {e}");
+            return;
+        }
+
+        let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        // Only write statusLine if not already configured by the user.
+        if settings.get("statusLine").is_none() {
+            settings["statusLine"] = serde_json::json!({
+                "type": "command",
+                "command": script_path.display().to_string()
+            });
+            if let Err(e) = std::fs::write(
+                &settings_path,
+                serde_json::to_string_pretty(&settings).unwrap(),
+            ) {
+                tracing::warn!("Failed to write ~/.claude/settings.json: {e}");
+            }
+        }
+
+        // Clean up stale metrics files (sessions that no longer exist).
+        if let Ok(entries) = std::fs::read_dir(&metrics_dir) {
+            let active_sids: std::collections::HashSet<String> = self
+                .sessions
+                .iter()
+                .filter_map(|s| s.info.agent_session_id.clone())
+                .collect();
+            for entry in entries.flatten() {
+                if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                    if !active_sids.contains(stem) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
     }
 
     /// Write `.mcp.json` into the admin directory.
@@ -1137,6 +1267,12 @@ impl App {
     /// so that restored sessions (Ctrl+U) can reuse them without re-cloning.
     fn finalize_pending_delete(&mut self) {
         if let Some(pending) = self.pending_delete.take() {
+            // Clean up agent metrics file.
+            if let Some(ref sid) = pending.session.info.agent_session_id {
+                if let Some(metrics_dir) = crate::paths::metrics_directory() {
+                    let _ = std::fs::remove_file(metrics_dir.join(format!("{sid}.json")));
+                }
+            }
             pending.session.kill();
         }
     }
@@ -1661,6 +1797,20 @@ impl App {
             config.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
         }
 
+        // Inject statusline env vars so the metrics script knows which session this is.
+        if let Some(ref sid) = config.agent_session_id {
+            config
+                .permissions
+                .env
+                .insert("THURBOX_SESSION_ID".into(), sid.clone());
+        }
+        if let Some(metrics_dir) = crate::paths::metrics_directory() {
+            config.permissions.env.insert(
+                "THURBOX_METRICS_DIR".into(),
+                metrics_dir.to_string_lossy().into(),
+            );
+        }
+
         // When a VM was just provisioned, use the VM backend and take the
         // placeholder's name instead of generating a new one.
         let vm_id = self.pending_vm_id.take();
@@ -2007,6 +2157,12 @@ impl App {
         // Close all sessions belonging to this project
         for session_id in session_ids_to_close {
             if let Some(session_pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
+                // Clean up agent metrics file.
+                if let Some(ref sid) = self.sessions[session_pos].info.agent_session_id {
+                    if let Some(metrics_dir) = crate::paths::metrics_directory() {
+                        let _ = std::fs::remove_file(metrics_dir.join(format!("{sid}.json")));
+                    }
+                }
                 self.sessions[session_pos].kill();
                 self.sessions.remove(session_pos);
             }
@@ -2149,135 +2305,34 @@ impl App {
         }
     }
 
-    /// Collect CPU/RAM metrics from sysinfo and per-session process trees.
-    /// Includes ALL sessions across ALL projects.
+    /// Collect CPU/RAM metrics from sysinfo and poll agent metrics files.
     fn refresh_system_metrics(&mut self) {
-        use sysinfo::ProcessesToUpdate;
-
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
-        self.sys.refresh_processes(ProcessesToUpdate::All, true);
 
         let cpu_percent = self.sys.global_cpu_usage();
         let memory_used = self.sys.used_memory();
         let memory_total = self.sys.total_memory();
 
-        // Build parent→children map once for all session tree walks
-        Self::build_children_map(&self.sys, &mut self.children_map_buf);
-
-        // Build session_id → project_name lookup
-        let mut session_project: HashMap<SessionId, String> = HashMap::new();
-        for project in &self.projects {
-            for sid in &project.session_ids {
-                session_project.insert(*sid, project.config.name.clone());
-            }
-        }
-
-        let mut per_session = Vec::new();
-
-        for session in &self.sessions {
-            // VM sessions: use the QEMU host PID.
-            // Container sessions: use the container init PID on the host.
-            // Local sessions: use the tmux pane PID.
-            let root_pid = self
-                .db
-                .get_vm_by_session(&session.info.id.to_string())
-                .ok()
-                .flatten()
-                .and_then(|vm| vm.qemu_pid)
-                .or_else(|| {
-                    // For container sessions, look up the container's host init PID.
-                    if let Some(ref cid) = session.info.container_id {
-                        if let Some(ref mgr) = self.container_manager {
-                            if let Ok(mgr) = mgr.lock() {
-                                return mgr.container_host_pid(cid);
-                            }
-                        }
-                    }
-                    None
-                })
-                .or_else(|| session.pane_pid().ok().flatten());
-
-            if let Some(pid) = root_pid {
-                let root = sysinfo::Pid::from_u32(pid);
-                let (cpu, mem) = Self::sum_process_tree(&self.sys, root, &self.children_map_buf);
-                let project_name = session_project
-                    .get(&session.info.id)
-                    .cloned()
-                    .unwrap_or_default();
-                let worktree_branch = session.info.worktrees.first().map(|wt| wt.branch.clone());
-                let is_vm = session.info.vm_id.is_some();
-                let is_container = session.info.container_id.is_some();
-                per_session.push(info_panel::SessionMetrics {
-                    name: session.info.name.clone(),
-                    project_name,
-                    worktree_branch,
-                    is_vm,
-                    is_container,
-                    cpu_percent: cpu,
-                    memory_bytes: mem,
-                });
-            }
-        }
-
         self.system_metrics = info_panel::SystemMetrics {
             cpu_percent,
             memory_used,
             memory_total,
-            per_session,
         };
-    }
 
-    /// Build a parent→children index from the process table into a reusable buffer.
-    fn build_children_map(
-        sys: &sysinfo::System,
-        buf: &mut HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
-    ) {
-        buf.clear();
-        for (pid, proc_) in sys.processes() {
-            if let Some(parent) = proc_.parent() {
-                buf.entry(parent).or_default().push(*pid);
-            }
-        }
-    }
-
-    /// Read PSS (Proportional Set Size) from `/proc/{pid}/smaps_rollup`.
-    ///
-    /// PSS divides shared pages proportionally among all processes mapping them,
-    /// avoiding the double-counting that RSS causes when summing across a process tree.
-    fn read_pss(pid: sysinfo::Pid) -> Option<u64> {
-        let path = format!("/proc/{}/smaps_rollup", pid.as_u32());
-        let content = std::fs::read_to_string(path).ok()?;
-        parse_pss_from_smaps(&content)
-    }
-
-    /// Sum CPU% and memory for a process and all its descendants.
-    ///
-    /// Threads are skipped entirely: on Linux, `/proc/{tid}/stat` returns the
-    /// **aggregate** CPU time for the whole process (not per-thread), and
-    /// RSS/PSS is identical across all threads sharing an address space.
-    /// Counting threads would multiply both CPU and memory by the thread count.
-    fn sum_process_tree(
-        sys: &sysinfo::System,
-        root: sysinfo::Pid,
-        children_map: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
-    ) -> (f32, u64) {
-        let mut cpu = 0.0f32;
-        let mut mem = 0u64;
-        let mut stack = vec![root];
-        while let Some(pid) = stack.pop() {
-            if let Some(proc_) = sys.process(pid) {
-                if proc_.thread_kind().is_some() {
-                    continue;
+        // Poll agent metrics files written by the statusline script.
+        if let Some(metrics_dir) = crate::paths::metrics_directory() {
+            for session in &mut self.sessions {
+                if let Some(ref agent_sid) = session.info.agent_session_id {
+                    let path = metrics_dir.join(format!("{agent_sid}.json"));
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&content) {
+                            session.info.agent_metrics = Some(parse_agent_metrics(&raw));
+                        }
+                    }
                 }
-                cpu += proc_.cpu_usage();
-                mem += Self::read_pss(pid).unwrap_or_else(|| proc_.memory());
-            }
-            if let Some(kids) = children_map.get(&pid) {
-                stack.extend(kids);
             }
         }
-        (cpu, mem)
     }
 
     /// Send deferred inputs whose scheduled tick has arrived.
@@ -7145,49 +7200,68 @@ mod tests {
         assert_eq!(super::view::format_time_ago(now + 10_000), "0s ago");
     }
 
-    // --- PSS parsing tests ---
+    // --- parse_agent_metrics tests ---
 
     #[test]
-    fn parse_pss_from_smaps_typical() {
-        let content = "\
-00400000-7fff0000 ---p 00000000 00:00 0                          [rollup]
-Rss:               48000 kB
-Pss:               12345 kB
-Pss_Anon:           8000 kB
-Pss_File:           4345 kB
-Pss_Shmem:             0 kB
-";
-        assert_eq!(super::parse_pss_from_smaps(content), Some(12_345 * 1024));
+    fn parse_agent_metrics_full_json() {
+        let json = serde_json::json!({
+            "version": "1.0.80",
+            "model": { "id": "claude-opus-4-6", "display_name": "Opus" },
+            "cost": {
+                "total_cost_usd": 0.0123,
+                "total_duration_ms": 5000,
+                "total_api_duration_ms": 3000,
+                "total_lines_added": 156,
+                "total_lines_removed": 23,
+                "total_input_tokens": 15200,
+                "total_output_tokens": 4500,
+            },
+            "context_window": {
+                "total_tokens": 200000,
+                "used_percentage": 8,
+                "current_usage": {
+                    "input_tokens": 1200,
+                    "output_tokens": 300,
+                    "cache_creation_input_tokens": 5000,
+                    "cache_read_input_tokens": 2000,
+                }
+            }
+        });
+        let m = super::parse_agent_metrics(&json);
+        assert_eq!(m.model_id.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(m.model_display_name.as_deref(), Some("Opus"));
+        assert!((m.total_cost_usd.unwrap() - 0.0123).abs() < 1e-6);
+        assert_eq!(m.total_input_tokens, Some(15200));
+        assert_eq!(m.total_output_tokens, Some(4500));
+        assert_eq!(m.context_window_size, Some(200000));
+        assert_eq!(m.used_percentage, Some(8));
+        assert_eq!(m.total_lines_added, Some(156));
+        assert_eq!(m.total_lines_removed, Some(23));
+        assert_eq!(m.cache_read_input_tokens, Some(2000));
+        assert_eq!(m.cache_creation_input_tokens, Some(5000));
+        assert_eq!(m.cli_version.as_deref(), Some("1.0.80"));
     }
 
     #[test]
-    fn parse_pss_from_smaps_missing() {
-        let content = "\
-Rss:               48000 kB
-Shared_Clean:       1000 kB
-";
-        assert_eq!(super::parse_pss_from_smaps(content), None);
+    fn parse_agent_metrics_empty_json() {
+        let json = serde_json::json!({});
+        let m = super::parse_agent_metrics(&json);
+        assert!(m.model_id.is_none());
+        assert!(m.total_cost_usd.is_none());
+        assert!(m.used_percentage.is_none());
     }
 
     #[test]
-    fn parse_pss_from_smaps_empty() {
-        assert_eq!(super::parse_pss_from_smaps(""), None);
-    }
-
-    #[test]
-    fn parse_pss_from_smaps_zero() {
-        let content = "Pss:                   0 kB\n";
-        assert_eq!(super::parse_pss_from_smaps(content), Some(0));
-    }
-
-    #[test]
-    fn parse_pss_from_smaps_ignores_pss_anon() {
-        // Pss_Anon starts with "Pss" but not "Pss:" — must not match.
-        let content = "\
-Pss_Anon:           8000 kB
-Pss_File:           4345 kB
-";
-        assert_eq!(super::parse_pss_from_smaps(content), None);
+    fn parse_agent_metrics_partial_json() {
+        let json = serde_json::json!({
+            "model": { "display_name": "Sonnet" },
+            "cost": { "total_cost_usd": 0.05 }
+        });
+        let m = super::parse_agent_metrics(&json);
+        assert_eq!(m.model_display_name.as_deref(), Some("Sonnet"));
+        assert!(m.model_id.is_none());
+        assert!((m.total_cost_usd.unwrap() - 0.05).abs() < 1e-6);
+        assert!(m.total_input_tokens.is_none());
     }
 
     // --- find_matching_discovered tests ---

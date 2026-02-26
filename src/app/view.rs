@@ -136,8 +136,6 @@ impl App {
 
         // Info panel
         if let Some(info_area) = areas.info_panel {
-            let active_project = self.projects.get(self.active_project_index);
-
             // Determine the session info to display: real session or VM placeholder.
             let info_session: Option<&SessionInfo> = self
                 .sessions
@@ -164,7 +162,6 @@ impl App {
                     frame,
                     info_area,
                     info,
-                    active_project,
                     vm_details.as_ref(),
                     Some(&self.system_metrics),
                 );

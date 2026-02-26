@@ -219,6 +219,27 @@ impl fmt::Display for SessionStatus {
     }
 }
 
+/// Agent metrics collected from the Claude CLI statusline mechanism.
+#[derive(Debug, Clone, Default)]
+pub struct AgentMetrics {
+    pub model_id: Option<String>,
+    pub model_display_name: Option<String>,
+    pub total_cost_usd: Option<f64>,
+    pub total_duration_ms: Option<u64>,
+    pub total_api_duration_ms: Option<u64>,
+    pub total_lines_added: Option<u64>,
+    pub total_lines_removed: Option<u64>,
+    pub total_input_tokens: Option<u64>,
+    pub total_output_tokens: Option<u64>,
+    pub context_window_size: Option<u64>,
+    pub used_percentage: Option<u8>,
+    pub current_input_tokens: Option<u64>,
+    pub current_output_tokens: Option<u64>,
+    pub cache_creation_input_tokens: Option<u64>,
+    pub cache_read_input_tokens: Option<u64>,
+    pub cli_version: Option<String>,
+}
+
 pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
@@ -236,6 +257,8 @@ pub struct SessionInfo {
     pub container_id: Option<String>,
     /// Current provisioning step description (shown while status is `Provisioning`).
     pub provisioning_step: Option<String>,
+    /// Agent metrics from Claude CLI statusline.
+    pub agent_metrics: Option<AgentMetrics>,
 }
 
 impl SessionInfo {
@@ -254,6 +277,7 @@ impl SessionInfo {
             vm_id: None,
             container_id: None,
             provisioning_step: None,
+            agent_metrics: None,
         }
     }
 }
