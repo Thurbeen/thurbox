@@ -122,13 +122,13 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+Q` | Global | Quit Thurbox | **Q**uit |
 | `Ctrl+N` | Project list | Add new project | **N**ew |
 | `Ctrl+N` | Session list / Terminal | New session (mode selector, then optional branch selector) | **N**ew |
-| `Ctrl+C` | Global | Close active session (or copy selection if text selected) | **C**lose / **C**opy |
+| `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
 | `Ctrl+T` | Global | Toggle shell pane alongside Claude session | **T**erminal |
-| `Ctrl+H` | Global | Focus project list | Vim: **h** = left |
-| `Ctrl+J` | Global | Next project (project list focused) or session | Vim: **j** = down |
-| `Ctrl+K` | Global | Previous project (project list focused) or session | Vim: **k** = up |
-| `Ctrl+L` | Global | Cycle focus: Project → Session → Terminal | Vim: **l** = right |
+| `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
+| `Ctrl+J` | Global | Select next project or session | Vim: **j** = down |
+| `Ctrl+K` | Global | Select previous project or session | Vim: **k** = up |
+| `Ctrl+L` | Global | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
 | `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
 | `Ctrl+E` | Global | Edit active project (name, repos, roles, MCP servers) | **E**dit |
@@ -136,7 +136,7 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+S` | Global | Sync all worktree sessions with origin/main | **S**ync |
 | `Ctrl+Z` | Global | Undo session/project delete | **Z** = undo |
 | `Ctrl+U` | Global | Restore deleted sessions | **U**ndelete |
-| `F1` | Global | Show help overlay | Universal help |
+| `F1` | Global | Toggle keybindings help | Universal help |
 | `F2` | Global | Toggle info panel | Next to F1 |
 | `j` / `Down` | Project list | Next project | |
 | `k` / `Up` | Project list | Previous project | |

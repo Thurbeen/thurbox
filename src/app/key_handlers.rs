@@ -22,9 +22,9 @@ impl App {
     /// 2. Global keybindings (Ctrl+Q, Ctrl+N, etc.)
     /// 3. Focus-based handlers (ProjectList, SessionList, Terminal)
     pub(crate) fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        // Dismiss help overlay with Esc
+        // Dismiss help overlay with Esc or F1 (toggle)
         if matches!(self.modal, super::modals::Modal::Help) {
-            if code == KeyCode::Esc {
+            if code == KeyCode::Esc || code == KeyCode::F(1) {
                 self.modal.close();
             }
             return;
@@ -203,9 +203,13 @@ impl App {
                     self.open_restore_sessions_modal();
                     return;
                 }
-                // Vim navigation: h=left, j=down, k=up, l=cycle-right
+                // Vim navigation: h=cycle-left, j=down, k=up, l=cycle-right
                 KeyCode::Char('h') => {
-                    self.focus = InputFocus::ProjectList;
+                    self.focus = match self.focus {
+                        InputFocus::ProjectList => InputFocus::Terminal,
+                        InputFocus::SessionList => InputFocus::ProjectList,
+                        InputFocus::Terminal => InputFocus::SessionList,
+                    };
                     return;
                 }
                 KeyCode::Char('j') => {

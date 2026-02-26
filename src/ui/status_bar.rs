@@ -1,6 +1,6 @@
 use ratatui::{
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -43,76 +43,53 @@ pub struct FooterState<'a> {
 pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
     let focus_badge = Span::styled(format!(" {} ", state.focus_label), Theme::focused_title());
 
-    let line = if state.vm_provisioning {
-        let idx = (state.tick_count as usize / 10) % SPINNER_CHARS.len();
-        let spinner = SPINNER_CHARS[idx];
-        Line::from(vec![
-            focus_badge,
-            Span::styled(
-                format!(" {spinner} VM "),
-                Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
-            ),
-            Span::styled(
-                format!(
-                    " {}",
-                    if state.vm_provisioning_step.is_empty() {
-                        "Starting VM..."
-                    } else {
-                        state.vm_provisioning_step
-                    }
-                ),
-                Style::default().fg(Theme::ACCENT),
-            ),
-        ])
+    let mut spans = vec![focus_badge];
+
+    if state.vm_provisioning {
+        push_spinner_badge(&mut spans, state.tick_count, "VM");
+        let step = if state.vm_provisioning_step.is_empty() {
+            "Starting VM..."
+        } else {
+            state.vm_provisioning_step
+        };
+        spans.push(Span::styled(
+            format!(" {step} "),
+            Style::default().fg(Theme::ACCENT),
+        ));
     } else if state.container_provisioning {
-        let idx = (state.tick_count as usize / 10) % SPINNER_CHARS.len();
-        let spinner = SPINNER_CHARS[idx];
-        Line::from(vec![
-            focus_badge,
-            Span::styled(
-                format!(" {spinner} CONTAINER "),
-                Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
-            ),
-            Span::styled(
-                format!(
-                    " {}",
-                    if state.container_provisioning_step.is_empty() {
-                        "Starting container..."
-                    } else {
-                        state.container_provisioning_step
-                    }
-                ),
-                Style::default().fg(Theme::ACCENT),
-            ),
-        ])
+        push_spinner_badge(&mut spans, state.tick_count, "CONTAINER");
+        let step = if state.container_provisioning_step.is_empty() {
+            "Starting container..."
+        } else {
+            state.container_provisioning_step
+        };
+        spans.push(Span::styled(
+            format!(" {step} "),
+            Style::default().fg(Theme::ACCENT),
+        ));
     } else if state.sync_in_progress {
-        let idx = (state.tick_count as usize / 10) % SPINNER_CHARS.len();
-        let spinner = SPINNER_CHARS[idx];
+        push_spinner_badge(&mut spans, state.tick_count, "SYNC");
         let text = state
             .status
             .map_or("Syncing...".to_string(), |s| s.text.clone());
-        Line::from(vec![
-            focus_badge,
-            Span::styled(
-                format!(" {spinner} SYNC "),
-                Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
-            ),
-            Span::styled(format!(" {text}"), Style::default().fg(Theme::ACCENT)),
-        ])
+        spans.push(Span::styled(
+            format!(" {text} "),
+            Style::default().fg(Theme::ACCENT),
+        ));
     } else if let Some(msg) = state.status {
         let (badge_text, badge_bg, text_color) = match msg.level {
             StatusLevel::Info => (" INFO ", Theme::ACCENT, Theme::TEXT_SECONDARY),
             StatusLevel::Success => (" ✓ SYNC ", Theme::STATUS_BUSY, Theme::STATUS_BUSY),
             StatusLevel::Error => (" ERROR ", Theme::STATUS_ERROR, Theme::STATUS_ERROR),
         };
-        Line::from(vec![
-            focus_badge,
-            Span::styled(
-                badge_text,
-                Style::default().fg(Theme::TEXT_PRIMARY).bg(badge_bg),
-            ),
-            Span::styled(format!(" {}", msg.text), Style::default().fg(text_color)),
-        ])
+        spans.push(Span::styled(
+            badge_text,
+            Style::default().fg(Theme::TEXT_PRIMARY).bg(badge_bg),
+        ));
+        spans.push(Span::styled(
+            format!(" {} ", msg.text),
+            Style::default().fg(text_color),
+        ));
     } else {
         let counts = if state.project_count > 0 {
             format!(
@@ -122,15 +99,34 @@ pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
         } else {
             format!(" {} session(s) ", state.session_count)
         };
-        Line::from(vec![
-            focus_badge,
-            Span::styled(counts, Style::default().fg(Theme::TEXT_SECONDARY)),
-            Span::styled(
-                " ^N New  ^C Close  ^D Delete  ^E Edit  ^R Restart  ^S Sync  ^T Shell  ^Z Undo  ^U Restore  ^H/J/K/L Nav  F1 Help  F2 Info  ^Q Quit ",
-                Style::default().fg(Theme::TEXT_MUTED),
-            ),
-        ])
-    };
+        spans.push(Span::styled(
+            counts,
+            Style::default().fg(Theme::TEXT_SECONDARY),
+        ));
+    }
 
-    frame.render_widget(Paragraph::new(line), area);
+    // Always-visible shortcut hints
+    let bold_key = Theme::keybind().add_modifier(Modifier::BOLD);
+    let desc = Theme::keybind_desc();
+    spans.extend([
+        Span::styled(" ^H", bold_key),
+        Span::styled("/", desc),
+        Span::styled("^L", bold_key),
+        Span::styled(" Focus  ", desc),
+        Span::styled("F1", bold_key),
+        Span::styled(" Help  ", desc),
+        Span::styled("^Q", Theme::keybind()),
+        Span::styled(" Quit ", desc),
+    ]);
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn push_spinner_badge<'a>(spans: &mut Vec<Span<'a>>, tick_count: u64, label: &'a str) {
+    let idx = (tick_count as usize / 10) % SPINNER_CHARS.len();
+    let spinner = SPINNER_CHARS[idx];
+    spans.push(Span::styled(
+        format!(" {spinner} {label} "),
+        Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
+    ));
 }

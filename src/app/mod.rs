@@ -5581,15 +5581,15 @@ mod tests {
     // --- Global keybinding tests ---
 
     #[test]
-    fn ctrl_h_focuses_project_list_from_terminal() {
+    fn ctrl_h_cycles_focus_backward_from_terminal() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::Terminal;
         app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(app.focus, InputFocus::ProjectList);
+        assert_eq!(app.focus, InputFocus::SessionList);
     }
 
     #[test]
-    fn ctrl_h_focuses_project_list_from_session_list() {
+    fn ctrl_h_cycles_focus_backward_from_session_list() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::SessionList;
         app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
@@ -7551,6 +7551,17 @@ mod tests {
     }
 
     #[test]
+    fn f1_toggles_help() {
+        let mut app = make_test_app();
+        // F1 opens help
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::Help));
+        // F1 again closes help
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+        assert!(!matches!(app.modal, modals::Modal::Help));
+    }
+
+    #[test]
     fn ctrl_n_project_list_opens_add_project() {
         let mut app = make_test_app();
         app.focus = InputFocus::ProjectList;
@@ -7706,17 +7717,30 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_h_always_focuses_project_list() {
-        let mut app = make_test_app();
-        for initial_focus in [InputFocus::SessionList, InputFocus::Terminal] {
-            app.focus = initial_focus;
-            app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
-            assert_eq!(
-                app.focus,
-                InputFocus::ProjectList,
-                "Ctrl+H should focus project list from {initial_focus:?}"
-            );
-        }
+    fn ctrl_h_cycles_focus_backward() {
+        let mut app = app_with_sessions(1);
+        // Terminal → SessionList
+        app.focus = InputFocus::Terminal;
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.focus,
+            InputFocus::SessionList,
+            "Terminal should cycle to SessionList"
+        );
+        // SessionList → ProjectList
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.focus,
+            InputFocus::ProjectList,
+            "SessionList should cycle to ProjectList"
+        );
+        // ProjectList → Terminal (wrap-around)
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.focus,
+            InputFocus::Terminal,
+            "ProjectList should wrap to Terminal"
+        );
     }
 
     // --- 5c. Tick behavior tests ---

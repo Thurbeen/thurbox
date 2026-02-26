@@ -329,21 +329,21 @@ Global keys use `Ctrl` + semantic Vim conventions:
 |-----|--------|----------|
 | `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
 | `Ctrl+N` | New project/session | **N**ew |
-| `Ctrl+C` | Close session / copy selection | **C**lose / **C**opy |
+| `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+P` | Schedule command for active session | **P**rogram |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
-| `Ctrl+H` | Focus project list | Vim: **h** = left |
-| `Ctrl+J` | Next project (project focus) / session | Vim: **j** = down |
-| `Ctrl+K` | Previous project (project focus) / session | Vim: **k** = up |
-| `Ctrl+L` | Cycle focus | Vim: **l** = right |
+| `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
+| `Ctrl+J` | Select next project or session | Vim: **j** = down |
+| `Ctrl+K` | Select previous project or session | Vim: **k** = up |
+| `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session/project | Vim: **d** = delete |
 | `Ctrl+E` | Edit active project (name, repos, roles, MCP servers) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
 | `Ctrl+Z` | Undo session/project delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
-| `F1` | Help overlay | Universal |
+| `F1` | Toggle keybindings help | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
 
 List contexts use plain `j`/`k`/`Enter` for navigation.
