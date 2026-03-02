@@ -58,6 +58,8 @@ pub enum PathKind {
     ImagesDir,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
     MetricsDir,
+    /// Git worktrees: `~/.local/share/thurbox/worktrees/`
+    WorktreesDir,
 }
 
 /// Path resolution strategy (thread-local).
@@ -219,6 +221,24 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
+        PathKind::WorktreesDir => {
+            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
+            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+                let mut p = PathBuf::from(xdg);
+                p.push(app_dir_name());
+                p.push("worktrees");
+                return Some(p);
+            }
+
+            std::env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".local");
+                p.push("share");
+                p.push(app_dir_name());
+                p.push("worktrees");
+                p
+            })
+        }
     }
 }
 
@@ -232,6 +252,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::ContainerfilesDir => base.join("admin").join("containerfiles"),
         PathKind::ImagesDir => base.join("admin").join("images"),
         PathKind::MetricsDir => base.join("metrics"),
+        PathKind::WorktreesDir => base.join("worktrees"),
     }
 }
 
@@ -284,6 +305,13 @@ pub fn images_directory() -> Option<PathBuf> {
 /// Returns: `$XDG_DATA_HOME/thurbox/metrics/` or `$HOME/.local/share/thurbox/metrics/`
 pub fn metrics_directory() -> Option<PathBuf> {
     resolve(PathKind::MetricsDir)
+}
+
+/// Resolve the worktrees directory path.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/worktrees/` or `$HOME/.local/share/thurbox/worktrees/`
+pub fn worktrees_directory() -> Option<PathBuf> {
+    resolve(PathKind::WorktreesDir)
 }
 
 /// Resolve the path to the `thurbox-mcp` binary.
@@ -550,6 +578,10 @@ mod tests {
             Some(base.join("admin").join("images"))
         );
         assert_eq!(resolve(PathKind::MetricsDir), Some(base.join("metrics")));
+        assert_eq!(
+            resolve(PathKind::WorktreesDir),
+            Some(base.join("worktrees"))
+        );
 
         reset_to_xdg();
     }
@@ -714,6 +746,10 @@ mod tests {
             resolve_override(base, PathKind::MetricsDir),
             PathBuf::from("/data/metrics")
         );
+        assert_eq!(
+            resolve_override(base, PathKind::WorktreesDir),
+            PathBuf::from("/data/worktrees")
+        );
     }
 
     #[test]
@@ -723,6 +759,17 @@ mod tests {
 
         let path = metrics_directory().unwrap();
         assert!(path.ends_with("metrics"));
+
+        reset_to_xdg();
+    }
+
+    #[test]
+    fn worktrees_directory_convenience() {
+        let base = PathBuf::from("/custom");
+        set_test_dir(&base);
+
+        let path = worktrees_directory().unwrap();
+        assert!(path.ends_with("worktrees"));
 
         reset_to_xdg();
     }

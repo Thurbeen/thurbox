@@ -1,9 +1,13 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::warn;
+
+use crate::paths;
 
 /// List local branch names for a repo.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
@@ -30,9 +34,10 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
 /// Create a git worktree on a new branch and return the worktree directory path.
 ///
 /// Creates `new_branch` starting from `base_branch`.
-/// Path format: `<repo>/.git/thurbox-worktrees/<sanitized-new-branch>`
+/// Path format: `~/.local/share/thurbox/worktrees/<repo-hash>/<sanitized-branch>`
 pub fn create_worktree(repo_path: &Path, new_branch: &str, base_branch: &str) -> Result<PathBuf> {
-    let wt_path = worktree_path(repo_path, new_branch);
+    let wt_path =
+        worktree_path(repo_path, new_branch).context("failed to resolve worktrees directory")?;
 
     let output = Command::new("git")
         .args([
@@ -119,7 +124,8 @@ fn default_branch_from_remote(repo_path: &Path) -> Option<String> {
 /// Returns the worktree directory path. If the worktree path already exists on
 /// disk the function returns early with `Ok(path)`.
 pub fn add_existing_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> {
-    let wt_path = worktree_path(repo_path, branch);
+    let wt_path =
+        worktree_path(repo_path, branch).context("failed to resolve worktrees directory")?;
 
     if wt_path.exists() {
         return Ok(wt_path);
@@ -152,12 +158,19 @@ pub fn branch_exists(repo_path: &Path, branch: &str) -> bool {
 }
 
 /// Deterministic worktree directory path for a repo + branch.
-fn worktree_path(repo_path: &Path, branch: &str) -> PathBuf {
+///
+/// Worktrees are placed under the XDG data directory to avoid being inside
+/// the source repo (which would cause Claude Code to discover duplicate
+/// `.claude/commands/` skill files).
+///
+/// Path format: `~/.local/share/thurbox/worktrees/<repo-hash>/<sanitized-branch>`
+fn worktree_path(repo_path: &Path, branch: &str) -> Option<PathBuf> {
+    let base = paths::worktrees_directory()?;
+    let mut hasher = DefaultHasher::new();
+    repo_path.display().to_string().hash(&mut hasher);
+    let repo_hash = format!("{:016x}", hasher.finish());
     let sanitized = branch.replace('/', "-");
-    repo_path
-        .join(".git")
-        .join("thurbox-worktrees")
-        .join(sanitized)
+    Some(base.join(repo_hash).join(sanitized))
 }
 
 /// Result of attempting to sync a worktree with origin/main.
@@ -431,65 +444,100 @@ pub fn sync_worktree(worktree_path: &Path) -> SyncResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::TestPathGuard;
+
+    /// Compute the 16-char hex repo hash used in worktree paths.
+    fn repo_hash(repo_path: &Path) -> String {
+        let mut hasher = DefaultHasher::new();
+        repo_path.display().to_string().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
 
     #[test]
     fn worktree_path_simple_branch() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
         let repo = Path::new("/home/user/repo");
-        let result = worktree_path(repo, "main");
-        assert_eq!(
-            result,
-            PathBuf::from("/home/user/repo/.git/thurbox-worktrees/main")
-        );
+        let result = worktree_path(repo, "main").unwrap();
+        let hash = repo_hash(repo);
+        assert_eq!(result, base.join("worktrees").join(&hash).join("main"));
     }
 
     #[test]
     fn worktree_path_slash_branch() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
         let repo = Path::new("/home/user/repo");
-        let result = worktree_path(repo, "feature/foo");
+        let result = worktree_path(repo, "feature/foo").unwrap();
+        let hash = repo_hash(repo);
         assert_eq!(
             result,
-            PathBuf::from("/home/user/repo/.git/thurbox-worktrees/feature-foo")
+            base.join("worktrees").join(&hash).join("feature-foo")
         );
     }
 
     #[test]
     fn worktree_path_nested_slashes() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
         let repo = Path::new("/home/user/repo");
-        let result = worktree_path(repo, "feature/team/task");
+        let result = worktree_path(repo, "feature/team/task").unwrap();
+        let hash = repo_hash(repo);
         assert_eq!(
             result,
-            PathBuf::from("/home/user/repo/.git/thurbox-worktrees/feature-team-task")
+            base.join("worktrees").join(&hash).join("feature-team-task")
         );
     }
 
     #[test]
     fn worktree_path_no_slashes_unchanged() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
         let repo = Path::new("/repo");
-        let result = worktree_path(repo, "my-branch");
-        assert_eq!(
-            result,
-            PathBuf::from("/repo/.git/thurbox-worktrees/my-branch")
-        );
+        let result = worktree_path(repo, "my-branch").unwrap();
+        let hash = repo_hash(repo);
+        assert_eq!(result, base.join("worktrees").join(&hash).join("my-branch"));
     }
 
     #[test]
     fn worktree_path_trailing_slash() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
         let repo = Path::new("/repo");
-        let result = worktree_path(repo, "branch/");
-        assert_eq!(
-            result,
-            PathBuf::from("/repo/.git/thurbox-worktrees/branch-")
-        );
+        let result = worktree_path(repo, "branch/").unwrap();
+        let hash = repo_hash(repo);
+        assert_eq!(result, base.join("worktrees").join(&hash).join("branch-"));
     }
 
     #[test]
     fn worktree_path_leading_slash() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
         let repo = Path::new("/repo");
-        let result = worktree_path(repo, "/branch");
-        assert_eq!(
-            result,
-            PathBuf::from("/repo/.git/thurbox-worktrees/-branch")
-        );
+        let result = worktree_path(repo, "/branch").unwrap();
+        let hash = repo_hash(repo);
+        assert_eq!(result, base.join("worktrees").join(&hash).join("-branch"));
+    }
+
+    #[test]
+    fn worktree_path_different_repos_produce_different_hashes() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
+        let path_a = worktree_path(Path::new("/repo/a"), "main").unwrap();
+        let path_b = worktree_path(Path::new("/repo/b"), "main").unwrap();
+        assert_ne!(path_a, path_b);
+        // Both end with the same branch name
+        assert_eq!(path_a.file_name(), path_b.file_name());
+    }
+
+    #[test]
+    fn worktree_path_same_repo_is_deterministic() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
+        let repo = Path::new("/home/user/repo");
+        let first = worktree_path(repo, "main").unwrap();
+        let second = worktree_path(repo, "main").unwrap();
+        assert_eq!(first, second);
     }
 
     #[test]
