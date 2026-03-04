@@ -31,7 +31,7 @@ impl App {
 
         // Left panel (projects + sessions)
         if let Some(left_area) = areas.left_panel {
-            let project_entries: Vec<project_list::ProjectEntry<'_>> = self
+            let mut project_entries: Vec<project_list::ProjectEntry<'_>> = self
                 .projects
                 .iter()
                 .map(|p| {
@@ -67,9 +67,18 @@ impl App {
                         busy_count,
                         waiting_count,
                         error_count,
+                        match_positions: None, // set below
                     }
                 })
                 .collect();
+
+            // Attach fuzzy match positions to each project entry.
+            for (i, entry) in project_entries.iter_mut().enumerate() {
+                entry.match_positions = self
+                    .project_match_positions
+                    .get(i)
+                    .and_then(|m| m.as_deref());
+            }
 
             let project_session_indices = self.active_project_sessions();
             let mut project_sessions: Vec<&SessionInfo> = project_session_indices
@@ -102,6 +111,8 @@ impl App {
                 }
             }
 
+            let session_elapsed_buf = self.session_elapsed_buf.clone();
+
             let panel_focus = match self.focus {
                 InputFocus::ProjectList => project_list::LeftPanelFocus::Projects,
                 InputFocus::SessionList | InputFocus::Terminal => {
@@ -120,16 +131,25 @@ impl App {
             project_list::render_left_panel(
                 frame,
                 left_area,
-                &project_list::LeftPanelState {
+                &mut project_list::LeftPanelState {
                     projects: &project_entries,
                     active_project: self.active_project_index,
                     sessions: &project_sessions,
                     active_session: self.active_session_in_project(),
-                    session_elapsed_ms: &self.session_elapsed_buf,
+                    session_elapsed_ms: &session_elapsed_buf,
                     focus: panel_focus,
                     panel_focused: self.focus != InputFocus::Terminal,
                     project_focus,
                     session_focus,
+                    project_list_state: &mut self.project_list_state,
+                    session_list_state: &mut self.session_list_state,
+                    search_query: &self.search_input.buffer,
+                    search_active: self.search_active,
+                    search_cursor: self.search_input.cursor,
+                    session_match_positions: &self.session_match_positions,
+                    search_targets_projects: self.search_target == super::SearchTarget::Projects,
+                    project_search_active: !self.project_match_positions.is_empty(),
+                    session_search_active: !self.session_match_positions.is_empty(),
                 },
             );
         }

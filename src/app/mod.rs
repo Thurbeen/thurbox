@@ -1,3 +1,4 @@
+mod fuzzy;
 mod helpers;
 mod key_handlers;
 pub(crate) mod mcp_editor_modal;
@@ -30,7 +31,7 @@ use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
-use crate::ui::{info_panel, layout, role_editor_modal};
+use crate::ui::{info_panel, layout, project_list, role_editor_modal};
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -403,6 +404,13 @@ pub(crate) enum TerminalView {
     Shell,
 }
 
+/// Which list section is being searched/filtered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchTarget {
+    Projects,
+    Sessions,
+}
+
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
 struct PendingDelete {
     session: Session,
@@ -551,6 +559,22 @@ pub struct App {
     pending_restores: Vec<PendingRestore>,
     /// Reusable buffer for session elapsed-ms in the view (avoids per-frame allocation).
     pub(crate) session_elapsed_buf: Vec<u64>,
+    /// Persistent list state for the project section (preserves scroll offset).
+    pub(crate) project_list_state: ratatui::widgets::ListState,
+    /// Persistent list state for the session section (preserves scroll offset).
+    pub(crate) session_list_state: ratatui::widgets::ListState,
+    /// Whether the search input is active (accepting keystrokes).
+    pub(crate) search_active: bool,
+    /// Which list section is being searched.
+    pub(crate) search_target: SearchTarget,
+    /// Search input buffer.
+    pub(crate) search_input: TextInput,
+    /// Per-project fuzzy match positions: None = no match (dim), Some(positions) = match.
+    /// Empty vec means no search is active.
+    pub(crate) project_match_positions: Vec<Option<Vec<usize>>>,
+    /// Per-session fuzzy match positions (local indices within active project's session list).
+    /// Empty vec means no search is active.
+    pub(crate) session_match_positions: Vec<Option<project_list::SessionMatch>>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -822,6 +846,13 @@ impl App {
             pending_container_mcp_servers: None,
             pending_restores: Vec::new(),
             session_elapsed_buf: Vec::new(),
+            project_list_state: ratatui::widgets::ListState::default(),
+            session_list_state: ratatui::widgets::ListState::default(),
+            search_active: false,
+            search_target: SearchTarget::Projects,
+            search_input: TextInput::new(),
+            project_match_positions: Vec::new(),
+            session_match_positions: Vec::new(),
         }
     }
 
@@ -2278,6 +2309,176 @@ impl App {
         let new_pos = current_pos as isize + offset;
         if new_pos >= 0 && (new_pos as usize) < project_sessions.len() {
             self.active_index = project_sessions[new_pos as usize];
+        }
+    }
+
+    /// Clear all search/filter state.
+    pub(crate) fn clear_search(&mut self) {
+        self.search_active = false;
+        self.search_input.buffer.clear();
+        self.search_input.cursor = 0;
+        self.project_match_positions.clear();
+        self.session_match_positions.clear();
+    }
+
+    /// Recompute fuzzy match positions based on the current search query and
+    /// snap selection to the first match if the current selection is a non-match.
+    pub(crate) fn recompute_search_filter(&mut self) {
+        let query = &self.search_input.buffer;
+        if query.is_empty() {
+            self.project_match_positions.clear();
+            self.session_match_positions.clear();
+            return;
+        }
+        match self.search_target {
+            SearchTarget::Projects => {
+                self.project_match_positions = self
+                    .projects
+                    .iter()
+                    .map(|p| fuzzy::fuzzy_match(query, &p.config.name).map(|m| m.positions))
+                    .collect();
+                // Snap to first match if current selection is a non-match.
+                let current_matches = self
+                    .project_match_positions
+                    .get(self.active_project_index)
+                    .map(|m| m.is_some())
+                    .unwrap_or(false);
+                if !current_matches {
+                    if let Some(first) = self
+                        .project_match_positions
+                        .iter()
+                        .position(|m| m.is_some())
+                    {
+                        self.active_project_index = first;
+                        self.sync_active_session_to_project();
+                    }
+                }
+            }
+            SearchTarget::Sessions => {
+                let project_sessions = self.active_project_sessions();
+                self.session_match_positions = project_sessions
+                    .iter()
+                    .map(|&global_idx| {
+                        let info = &self.sessions[global_idx].info;
+                        let name = fuzzy::fuzzy_match(query, &info.name).map(|m| m.positions);
+                        let role = fuzzy::fuzzy_match(query, &info.role).map(|m| m.positions);
+                        let branch = info
+                            .worktrees
+                            .first()
+                            .and_then(|wt| fuzzy::fuzzy_match(query, &wt.branch))
+                            .map(|m| m.positions);
+                        project_list::SessionMatch::from_matches(name, role, branch)
+                    })
+                    .collect();
+                // Snap to first match if current selection is a non-match.
+                let current_local = self.active_session_in_project();
+                let current_matches = self
+                    .session_match_positions
+                    .get(current_local)
+                    .map(|m| m.is_some())
+                    .unwrap_or(false);
+                if !current_matches {
+                    if let Some(first_local) = self
+                        .session_match_positions
+                        .iter()
+                        .position(|m| m.is_some())
+                    {
+                        if let Some(&global_idx) = project_sessions.get(first_local) {
+                            self.active_index = global_idx;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Navigate forward to the next matching item during search.
+    pub(crate) fn search_navigate_forward(&mut self) {
+        match self.search_target {
+            SearchTarget::Projects => {
+                if self.project_match_positions.is_empty() {
+                    self.switch_project_forward();
+                    return;
+                }
+                let start = self.active_project_index + 1;
+                let len = self.project_match_positions.len();
+                for offset in 0..len {
+                    let idx = (start + offset) % len;
+                    if self.project_match_positions[idx].is_some() {
+                        self.active_project_index = idx;
+                        self.sync_active_session_to_project();
+                        return;
+                    }
+                }
+            }
+            SearchTarget::Sessions => {
+                if self.session_match_positions.is_empty() {
+                    self.switch_session_forward();
+                    return;
+                }
+                let project_sessions = self.active_project_sessions();
+                let current_local = self.active_session_in_project();
+                let start = current_local + 1;
+                let len = self.session_match_positions.len();
+                for offset in 0..len {
+                    let idx = (start + offset) % len;
+                    if self.session_match_positions[idx].is_some() {
+                        if let Some(&global_idx) = project_sessions.get(idx) {
+                            self.active_index = global_idx;
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Navigate backward to the previous matching item during search.
+    pub(crate) fn search_navigate_backward(&mut self) {
+        match self.search_target {
+            SearchTarget::Projects => {
+                if self.project_match_positions.is_empty() {
+                    self.switch_project_backward();
+                    return;
+                }
+                let len = self.project_match_positions.len();
+                let start = if self.active_project_index == 0 {
+                    len - 1
+                } else {
+                    self.active_project_index - 1
+                };
+                for offset in 0..len {
+                    let idx = (start + len - offset) % len;
+                    if self.project_match_positions[idx].is_some() {
+                        self.active_project_index = idx;
+                        self.sync_active_session_to_project();
+                        return;
+                    }
+                }
+            }
+            SearchTarget::Sessions => {
+                if self.session_match_positions.is_empty() {
+                    self.switch_session_backward();
+                    return;
+                }
+                let project_sessions = self.active_project_sessions();
+                let current_local = self.active_session_in_project();
+                let len = self.session_match_positions.len();
+                let start = if current_local == 0 {
+                    len - 1
+                } else {
+                    current_local - 1
+                };
+                for offset in 0..len {
+                    let idx = (start + len - offset) % len;
+                    if self.session_match_positions[idx].is_some() {
+                        if let Some(&global_idx) = project_sessions.get(idx) {
+                            self.active_index = global_idx;
+                        }
+                        return;
+                    }
+                }
+            }
         }
     }
 

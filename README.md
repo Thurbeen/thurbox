@@ -212,7 +212,10 @@ The binary will be available at `target/release/thurbox`.
 |-----|--------|
 | `j` / `Down` | Next item |
 | `k` / `Up` | Previous item |
+| `/` | Fuzzy search (projects or sessions) |
 | `Enter` | Select / focus |
+
+Session search matches against name, role, and branch.
 
 ### Terminal Scrollback and Selection
 

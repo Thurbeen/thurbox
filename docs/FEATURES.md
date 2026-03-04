@@ -142,6 +142,10 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `j` / `Down` | Project list | Next project | |
 | `k` / `Up` | Project list | Previous project | |
 | `Enter` | Project list | Focus session list | |
+| `/` | Project list | Open project search (fuzzy filter by name) | Vim search |
+| `/` | Session list | Open session search (fuzzy filter by name, role, or branch) | Vim search |
+| `Enter` | Search bar | Confirm and close search | |
+| `Esc` | Search bar | Cancel search | |
 | `j` / `Down` | Session list | Next session | |
 | `k` / `Up` | Session list | Previous session | |
 | `Enter` | Session list | Focus terminal | |

@@ -72,6 +72,7 @@
             <li><a href="#design">Design Philosophy</a></li>
             <li><a href="#global-keys">Global Keys</a></li>
             <li><a href="#list-navigation">List Navigation</a></li>
+            <li><a href="#search">Search</a></li>
             <li><a href="#terminal-scrollback">Terminal Scrollback</a></li>
             <li><a href="#modals">Modal Keybindings</a></li>
             <li><a href="#scheduled-commands">Scheduled Commands</a></li>
@@ -305,11 +306,47 @@
                 <td>Previous item</td>
               </tr>
               <tr>
+                <td><code>/</code></td>
+                <td>Open fuzzy search</td>
+              </tr>
+              <tr>
                 <td><code>Enter</code></td>
                 <td>Select / focus</td>
               </tr>
             </tbody>
           </table>
+
+          <h2 id="search">
+            Search
+            <a href="#search" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Press
+            <code>/</code>
+            in the project or session list to open a fuzzy search bar. The search bar appears below
+            the active section.
+          </p>
+          <ul>
+            <li>
+              <strong>Project search</strong>
+              matches against the project name.
+            </li>
+            <li>
+              <strong>Session search</strong>
+              matches against the session name, role, and worktree branch.
+            </li>
+          </ul>
+          <p>
+            Matched characters are highlighted inline. Non-matching entries are dimmed. Use
+            <code>j</code>
+            /
+            <code>k</code>
+            to jump between matches,
+            <code>Enter</code>
+            to confirm, or
+            <code>Esc</code>
+            to cancel.
+          </p>
 
           <h2 id="terminal-scrollback">
             Terminal Scrollback &amp; Selection

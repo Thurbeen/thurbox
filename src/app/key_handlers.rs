@@ -126,6 +126,12 @@ impl App {
             return;
         }
 
+        // Search input captures all keys when active
+        if self.search_active {
+            self.handle_search_key(code, mods);
+            return;
+        }
+
         // Ctrl+C: copy selection if active, otherwise forward to terminal as SIGINT
         if code == KeyCode::Char('c')
             && mods.contains(KeyModifiers::CONTROL)
@@ -205,6 +211,7 @@ impl App {
                 }
                 // Vim navigation: h=cycle-left, j=down, k=up, l=cycle-right
                 KeyCode::Char('h') => {
+                    self.clear_search();
                     self.focus = match self.focus {
                         InputFocus::ProjectList => InputFocus::Terminal,
                         InputFocus::SessionList => InputFocus::ProjectList,
@@ -229,6 +236,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('l') => {
+                    self.clear_search();
                     self.focus = match self.focus {
                         InputFocus::ProjectList => InputFocus::SessionList,
                         InputFocus::SessionList => InputFocus::Terminal,
@@ -271,6 +279,13 @@ impl App {
             KeyCode::Enter => {
                 self.focus = InputFocus::SessionList;
             }
+            KeyCode::Char('/') => {
+                self.search_active = true;
+                self.search_target = super::SearchTarget::Projects;
+                self.search_input.buffer.clear();
+                self.search_input.cursor = 0;
+                self.project_match_positions.clear();
+            }
             _ => {}
         }
     }
@@ -285,6 +300,61 @@ impl App {
             }
             KeyCode::Enter => {
                 self.focus = InputFocus::Terminal;
+            }
+            KeyCode::Char('/') => {
+                self.search_active = true;
+                self.search_target = super::SearchTarget::Sessions;
+                self.search_input.buffer.clear();
+                self.search_input.cursor = 0;
+                self.session_match_positions.clear();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        // Allow Ctrl+Q to quit even during search
+        if code == KeyCode::Char('q') && mods.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+
+        match code {
+            KeyCode::Esc => {
+                // Cancel search and clear filter
+                self.clear_search();
+            }
+            KeyCode::Enter => {
+                // Confirm search: exit input mode but keep filter active
+                self.search_active = false;
+            }
+            KeyCode::Backspace => {
+                self.search_input.backspace();
+                self.recompute_search_filter();
+            }
+            KeyCode::Left => {
+                self.search_input.move_left();
+            }
+            KeyCode::Right => {
+                self.search_input.move_right();
+            }
+            KeyCode::Up => {
+                self.search_navigate_backward();
+            }
+            KeyCode::Down => {
+                self.search_navigate_forward();
+            }
+            KeyCode::Char('j') if mods.contains(KeyModifiers::CONTROL) => {
+                self.search_navigate_forward();
+            }
+            KeyCode::Char('k') if mods.contains(KeyModifiers::CONTROL) => {
+                self.search_navigate_backward();
+            }
+            KeyCode::Char(c) => {
+                if !mods.contains(KeyModifiers::CONTROL) {
+                    self.search_input.insert(c);
+                    self.recompute_search_filter();
+                }
             }
             _ => {}
         }
