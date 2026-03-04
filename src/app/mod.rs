@@ -986,8 +986,26 @@ impl App {
             .and_then(|c| serde_json::from_str(&c).ok())
             .unwrap_or_else(|| serde_json::json!({}));
 
-        // Only write statusLine if not already configured by the user.
-        if settings.get("statusLine").is_none() {
+        let should_write = match settings.get("statusLine") {
+            None => true,
+            Some(existing) => {
+                let cmd = existing
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if cmd.contains("thurbox") && cmd.ends_with("statusline.sh") {
+                    // Thurbox-managed statusLine — update to current path.
+                    true
+                } else {
+                    tracing::warn!(
+                        "statusLine already set to a non-Thurbox command ({cmd}); \
+                         agent monitoring metrics will not be available"
+                    );
+                    false
+                }
+            }
+        };
+        if should_write {
             settings["statusLine"] = serde_json::json!({
                 "type": "command",
                 "command": script_path.display().to_string()
