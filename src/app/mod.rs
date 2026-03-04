@@ -36,6 +36,8 @@ const MOUSE_SCROLL_LINES: usize = 3;
 
 /// How long the user has to press Ctrl+Z to undo a session delete.
 const UNDO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a status-bar message is shown before reverting to default counts.
+const STATUS_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// If no output for this many milliseconds, consider session "Waiting".
 const ACTIVITY_TIMEOUT_MS: u64 = 1000;
@@ -2317,6 +2319,13 @@ impl App {
         if let Some(ref pending) = self.pending_delete {
             if pending.created_at.elapsed() >= UNDO_TIMEOUT {
                 self.finalize_pending_delete();
+            }
+        }
+
+        // Auto-expire status messages so default project/session counts reappear
+        if let Some(ref msg) = self.status_message {
+            if msg.created_at.elapsed() >= STATUS_MESSAGE_TIMEOUT {
+                self.status_message = None;
             }
         }
 
@@ -7776,6 +7785,18 @@ mod tests {
         app.tick();
         // Should still be there (just created, no auto-expire in tick)
         assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn status_message_expires_after_timeout() {
+        let mut app = make_test_app();
+        app.status_message = Some(StatusMessage {
+            text: "old message".into(),
+            level: StatusLevel::Info,
+            created_at: std::time::Instant::now() - STATUS_MESSAGE_TIMEOUT,
+        });
+        app.tick();
+        assert!(app.status_message.is_none());
     }
 
     #[test]
