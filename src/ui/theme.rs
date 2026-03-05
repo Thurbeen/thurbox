@@ -35,6 +35,7 @@ impl Theme {
     pub const ROLE_NAME: Color = Color::Magenta;
     pub const ADMIN_BADGE: Color = Color::Yellow;
     pub const BRANCH_NAME: Color = Color::Green;
+    pub const SEARCH_BAR: Color = Color::Blue;
 
     // ── Keybind hints / tool permissions ─────────────────────────────────────
 

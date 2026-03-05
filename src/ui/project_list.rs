@@ -222,7 +222,7 @@ fn render_scroll_indicators(
 /// Render a bordered search bar block.
 fn render_search_bar(frame: &mut Frame, area: Rect, query: &str, is_active: bool, cursor: usize) {
     let style = if is_active {
-        Style::default().fg(Theme::ACCENT)
+        Style::default().fg(Theme::SEARCH_BAR)
     } else {
         Style::default().fg(Theme::TEXT_MUTED)
     };
