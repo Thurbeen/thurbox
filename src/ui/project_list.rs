@@ -174,7 +174,7 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
 /// Overlay scroll indicators ("▲ N" / "▼ N") on the block borders when items
 /// are clipped above or below. Renders right-aligned on the top/bottom border
 /// lines, consuming no content space.
-fn render_scroll_indicators(
+pub(super) fn render_scroll_indicators(
     frame: &mut Frame,
     block_area: Rect,
     total_items: usize,
