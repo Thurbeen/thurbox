@@ -8382,4 +8382,23 @@ mod tests {
         // Project should still exist but have no sessions
         assert_eq!(app.projects[0].session_ids.len(), 0);
     }
+
+    #[test]
+    fn close_active_session_focuses_first_remaining_when_multiple_exist() {
+        let mut app = app_with_two_projects(2);
+        // Start on first project with two sessions, active on second
+        app.active_project_index = 0;
+        app.active_index = 1; // Second session in global list
+        assert!(app.has_active_session());
+        let first_session_id = app.sessions[0].info.id;
+
+        // Delete the active session
+        app.close_active_session();
+
+        // Should have one session left in project
+        assert_eq!(app.projects[0].session_ids.len(), 1);
+        // Active session should shift to the remaining one (first in project)
+        assert!(app.has_active_session());
+        assert_eq!(app.sessions[app.active_index].info.id, first_session_id);
+    }
 }
