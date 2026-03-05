@@ -1278,11 +1278,7 @@ impl App {
             project.session_ids.retain(|id| *id != session_id);
         }
 
-        if self.sessions.is_empty() {
-            self.active_index = 0;
-        } else if self.active_index >= self.sessions.len() {
-            self.active_index = self.sessions.len() - 1;
-        }
+        self.sync_active_session_to_project();
 
         // Finalize any existing pending delete before storing the new one
         self.finalize_pending_delete();
@@ -8368,5 +8364,22 @@ mod tests {
 
         // active_index should be invalidated (no sessions left in project)
         assert!(!app.has_active_session());
+    }
+
+    #[test]
+    fn close_active_session_invalidates_when_deleting_last_in_project() {
+        let mut app = app_with_two_projects(1);
+        // Start on first project with one session
+        app.active_project_index = 0;
+        app.active_index = 0;
+        assert!(app.has_active_session());
+
+        // Delete the only session in the project
+        app.close_active_session();
+
+        // After deletion, active_index should be invalidated (no active session)
+        assert!(!app.has_active_session());
+        // Project should still exist but have no sessions
+        assert_eq!(app.projects[0].session_ids.len(), 0);
     }
 }
