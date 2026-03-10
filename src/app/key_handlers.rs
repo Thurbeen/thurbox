@@ -183,10 +183,13 @@ impl App {
                     self.open_edit_project_modal();
                     return;
                 }
-                KeyCode::Char('r') => {
-                    self.restart_active_session();
-                    return;
-                }
+                KeyCode::Char('r') => match self.focus {
+                    InputFocus::Terminal => {} // forward to PTY (e.g. bash reverse search)
+                    _ => {
+                        self.restart_active_session();
+                        return;
+                    }
+                },
                 KeyCode::Char('p') => {
                     self.open_schedule_command_modal();
                     return;
