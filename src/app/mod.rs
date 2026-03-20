@@ -2507,7 +2507,7 @@ impl App {
         }
     }
 
-    /// Start syncing all worktree sessions with origin/main.
+    /// Start syncing the active session's worktrees with origin/main.
     ///
     /// Worktrees sharing the same parent repo are synced sequentially (to avoid
     /// concurrent `index.lock` contention), while different repos sync in parallel.
@@ -2517,8 +2517,8 @@ impl App {
         }
 
         let worktree_sessions: Vec<_> = self
-            .sessions
-            .iter()
+            .active_session()
+            .into_iter()
             .flat_map(|s| {
                 s.info
                     .worktrees
@@ -6336,9 +6336,10 @@ mod tests {
     }
 
     #[test]
-    fn start_sync_includes_all_sessions() {
+    fn start_sync_only_syncs_active_session() {
         let mut app = app_with_sessions(1);
-        // Add a second session with a worktree
+        // Active session (index 0) has no worktrees by default.
+        // Add a second session with a worktree — it should NOT be synced.
         let backend_arc = stub_backend_arc();
         let provider = stub_provider();
         let mut other = Session::stub("other-session", &backend_arc, &provider);
@@ -6348,8 +6349,34 @@ mod tests {
             branch: "other-branch".to_string(),
         }];
         app.sessions.push(other);
+        // active_index is 0 (no worktrees), so sync should find nothing
         app.start_sync();
-        // All sessions' worktrees are synced (not just active project's)
+        assert!(!app.worktree_sync_in_progress);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.text, "No worktrees to sync");
+    }
+
+    #[test]
+    fn start_sync_ignores_inactive_session_worktrees() {
+        let mut app = app_with_sessions(1);
+        // Give the active session (index 0) a worktree.
+        app.sessions[0].info.worktrees = vec![WorktreeInfo {
+            repo_path: PathBuf::from("/tmp/active-repo"),
+            worktree_path: PathBuf::from("/tmp/active-wt"),
+            branch: "active-branch".to_string(),
+        }];
+        // Add an inactive session with its own worktree.
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let mut other = Session::stub("inactive-session", &backend_arc, &provider);
+        other.info.worktrees = vec![WorktreeInfo {
+            repo_path: PathBuf::from("/tmp/inactive-repo"),
+            worktree_path: PathBuf::from("/tmp/inactive-wt"),
+            branch: "inactive-branch".to_string(),
+        }];
+        app.sessions.push(other);
+        // Only the active session's 1 worktree should be synced, not 2.
+        app.start_sync();
         assert!(app.worktree_sync_in_progress);
         assert_eq!(app.worktree_sync_pending, 1);
     }
