@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -16,6 +16,8 @@ pub struct SessionMatch {
     pub name: Vec<usize>,
     pub role: Vec<usize>,
     pub branch: Vec<usize>,
+    pub cwd: Vec<usize>,
+    pub status: Vec<usize>,
 }
 
 impl SessionMatch {
@@ -24,12 +26,17 @@ impl SessionMatch {
         name: Option<Vec<usize>>,
         role: Option<Vec<usize>>,
         branch: Option<Vec<usize>>,
+        cwd: Option<Vec<usize>>,
+        status: Option<Vec<usize>>,
     ) -> Option<Self> {
-        if name.is_some() || role.is_some() || branch.is_some() {
+        if name.is_some() || role.is_some() || branch.is_some() || cwd.is_some() || status.is_some()
+        {
             Some(Self {
                 name: name.unwrap_or_default(),
                 role: role.unwrap_or_default(),
                 branch: branch.unwrap_or_default(),
+                cwd: cwd.unwrap_or_default(),
+                status: status.unwrap_or_default(),
             })
         } else {
             None
@@ -46,40 +53,13 @@ impl SessionMatch {
     }
 }
 
-pub struct ProjectEntry<'a> {
-    pub name: &'a str,
-    pub is_admin: bool,
-    pub repo_count: usize,
-    pub repo_short: Option<&'a str>,
-    pub role_count: usize,
-    pub busy_count: usize,
-    pub waiting_count: usize,
-    pub error_count: usize,
-    /// Fuzzy match byte positions (None = no match / dim, Some = highlight).
-    pub match_positions: Option<&'a [usize]>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeftPanelFocus {
-    Projects,
-    Sessions,
-}
-
 pub struct LeftPanelState<'a> {
-    pub projects: &'a [ProjectEntry<'a>],
-    pub active_project: usize,
     pub sessions: &'a [&'a SessionInfo],
     pub active_session: usize,
     /// Elapsed millis since last output, parallel to `sessions`.
     pub session_elapsed_ms: &'a [u64],
-    pub focus: LeftPanelFocus,
-    pub panel_focused: bool,
-    /// Focus level for the project sub-section.
-    pub project_focus: FocusLevel,
-    /// Focus level for the session sub-section.
+    /// Focus level for the session list.
     pub session_focus: FocusLevel,
-    /// Persistent list state for the project section.
-    pub project_list_state: &'a mut ListState,
     /// Persistent list state for the session section.
     pub session_list_state: &'a mut ListState,
     /// Active search query (empty = no search).
@@ -90,39 +70,24 @@ pub struct LeftPanelState<'a> {
     pub search_cursor: usize,
     /// Per-session fuzzy match positions (parallel to sessions slice).
     pub session_match_positions: &'a [Option<SessionMatch>],
-    /// Whether the search targets the project section (else sessions).
-    pub search_targets_projects: bool,
-    /// Whether a project search is active (non-empty project_match_positions).
-    pub project_search_active: bool,
     /// Whether a session search is active (non-empty session_match_positions).
     pub session_search_active: bool,
+    /// Number of sessions matching the current search query.
+    pub match_count: usize,
+    /// Total number of sessions (for search count display).
+    pub total_count: usize,
 }
 
 pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelState<'_>) {
-    // All projects in a single list (admin is first, already guaranteed by app)
-    let all_projects: Vec<(usize, &ProjectEntry<'_>)> = state.projects.iter().enumerate().collect();
-
     let search_visible = state.search_active || !state.search_query.is_empty();
-    let search_below_projects = search_visible && state.search_targets_projects;
-    let search_below_sessions = search_visible && !search_below_projects;
 
-    let constraints = if search_below_projects {
+    let constraints = if search_visible {
         vec![
-            Constraint::Percentage(33), // projects
-            Constraint::Length(3),      // search bar (below projects)
-            Constraint::Percentage(67), // sessions
-        ]
-    } else if search_below_sessions {
-        vec![
-            Constraint::Percentage(33), // projects
-            Constraint::Percentage(67), // sessions
-            Constraint::Length(3),      // search bar (below sessions)
+            Constraint::Min(0),    // sessions
+            Constraint::Length(3), // search bar
         ]
     } else {
-        vec![
-            Constraint::Percentage(33), // projects
-            Constraint::Percentage(67), // sessions
-        ]
+        vec![Constraint::Min(0)] // sessions only
     };
 
     let chunks = Layout::default()
@@ -130,23 +95,12 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         .constraints(constraints)
         .split(area);
 
-    let (project_area, search_area, session_area) = if search_below_projects {
-        (chunks[0], Some(chunks[1]), chunks[2])
-    } else if search_below_sessions {
-        (chunks[0], Some(chunks[2]), chunks[1])
+    let session_area = chunks[0];
+    let search_area = if search_visible {
+        Some(chunks[1])
     } else {
-        (chunks[0], None, chunks[1])
+        None
     };
-
-    render_project_section(
-        frame,
-        project_area,
-        &all_projects,
-        state.active_project,
-        state.project_focus,
-        state.project_list_state,
-        state.project_search_active,
-    );
 
     render_session_section(
         frame,
@@ -158,6 +112,7 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.session_list_state,
         state.session_match_positions,
         state.session_search_active,
+        state.search_query,
     );
 
     if let Some(area) = search_area {
@@ -167,11 +122,13 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
             state.search_query,
             state.search_active,
             state.search_cursor,
+            state.match_count,
+            state.total_count,
         );
     }
 }
 
-/// Overlay scroll indicators ("▲ N" / "▼ N") on the block borders when items
+/// Overlay scroll indicators ("^" N" / "v N") on the block borders when items
 /// are clipped above or below. Renders right-aligned on the top/bottom border
 /// lines, consuming no content space.
 pub(super) fn render_scroll_indicators(
@@ -196,7 +153,7 @@ pub(super) fn render_scroll_indicators(
     let indicator_style = Style::default().fg(Theme::TEXT_MUTED);
 
     if items_above > 0 {
-        let text = format!("▲ {items_above} ");
+        let text = format!("\u{25b2} {items_above} ");
         let text_len = text.chars().count() as u16;
         let x = block_area
             .x
@@ -206,7 +163,7 @@ pub(super) fn render_scroll_indicators(
     }
 
     if items_below > 0 {
-        let text = format!("▼ {items_below} ");
+        let text = format!("\u{25bc} {items_below} ");
         let text_len = text.chars().count() as u16;
         let x = block_area
             .x
@@ -220,15 +177,31 @@ pub(super) fn render_scroll_indicators(
 }
 
 /// Render a bordered search bar block.
-fn render_search_bar(frame: &mut Frame, area: Rect, query: &str, is_active: bool, cursor: usize) {
+fn render_search_bar(
+    frame: &mut Frame,
+    area: Rect,
+    query: &str,
+    is_active: bool,
+    cursor: usize,
+    match_count: usize,
+    total_count: usize,
+) {
+    use ratatui::widgets::{Block, Borders};
+
     let style = if is_active {
         Style::default().fg(Theme::SEARCH_BAR)
     } else {
         Style::default().fg(Theme::TEXT_MUTED)
     };
 
+    let title = if !query.is_empty() {
+        format!(" Search ({match_count}/{total_count}) ")
+    } else {
+        " Search ".to_string()
+    };
+
     let block = Block::default()
-        .title(Line::from(Span::styled(" Search ", style)))
+        .title(Line::from(Span::styled(title, style)))
         .borders(Borders::ALL)
         .border_style(style);
 
@@ -277,46 +250,6 @@ fn render_search_bar(frame: &mut Frame, area: Rect, query: &str, is_active: bool
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), inner);
-}
-
-/// Build status dot spans for a project's aggregate session statuses.
-fn status_dots<'a>(project: &ProjectEntry<'a>) -> Vec<Span<'a>> {
-    let mut dots = Vec::new();
-    for _ in 0..project.busy_count {
-        dots.push(Span::styled("●", Style::default().fg(Theme::STATUS_BUSY)));
-    }
-    for _ in 0..project.waiting_count {
-        dots.push(Span::styled(
-            "◉",
-            Style::default().fg(Theme::STATUS_WAITING),
-        ));
-    }
-    for _ in 0..project.error_count {
-        dots.push(Span::styled("✗", Style::default().fg(Theme::STATUS_ERROR)));
-    }
-    dots
-}
-
-/// Build the metadata line (line 2) for a regular project entry.
-fn project_meta_line<'a>(project: &ProjectEntry<'a>, style: Style) -> Line<'a> {
-    let repo_text = if project.repo_count == 1 {
-        project.repo_short.unwrap_or("1 repo").to_string()
-    } else if project.repo_count > 1 {
-        format!("{} repos", project.repo_count)
-    } else {
-        "no repos".to_string()
-    };
-
-    let role_text = if project.role_count == 1 {
-        "1 role".to_string()
-    } else {
-        format!("{} roles", project.role_count)
-    };
-
-    Line::from(vec![Span::styled(
-        format!("    {repo_text} · {role_text}"),
-        style,
-    )])
 }
 
 /// Build spans for a name with fuzzy-matched characters highlighted.
@@ -368,109 +301,6 @@ fn append_name_spans<'a>(
     }
 }
 
-fn render_project_section(
-    frame: &mut Frame,
-    area: Rect,
-    projects: &[(usize, &ProjectEntry<'_>)],
-    active_index: usize,
-    level: FocusLevel,
-    list_state: &mut ListState,
-    search_active: bool,
-) {
-    let block = focus_block(" Projects ", level);
-    let inner_width = area.width.saturating_sub(2) as usize;
-
-    let items: Vec<ListItem> = projects
-        .iter()
-        .map(|&(orig_idx, project)| {
-            let is_active = orig_idx == active_index;
-            let indicator = if is_active { "▸" } else { " " };
-
-            let is_dimmed = search_active && project.match_positions.is_none();
-
-            let (prefix, name_color) = if is_dimmed {
-                (
-                    if project.is_admin {
-                        format!("{indicator} ⚙ ")
-                    } else {
-                        format!("{indicator} ")
-                    },
-                    Theme::TEXT_MUTED,
-                )
-            } else if project.is_admin {
-                (format!("{indicator} ⚙ "), Theme::ADMIN_BADGE)
-            } else {
-                (
-                    format!("{indicator} "),
-                    if is_active {
-                        Theme::ACCENT
-                    } else {
-                        Theme::TEXT_PRIMARY
-                    },
-                )
-            };
-
-            let name_style = if is_dimmed {
-                Style::default().fg(Theme::TEXT_MUTED)
-            } else if is_active {
-                Style::default().fg(name_color).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(name_color)
-            };
-
-            let mut line1_spans = vec![Span::styled(prefix, name_style)];
-            append_name_spans(
-                &mut line1_spans,
-                project.name,
-                project.match_positions,
-                name_style,
-            );
-            line1_spans.push(Span::raw("  "));
-            if !is_dimmed {
-                line1_spans.extend(status_dots(project));
-            }
-            let line1 = Line::from(line1_spans);
-
-            let meta_style = if is_dimmed {
-                Style::default().fg(Theme::TEXT_MUTED)
-            } else {
-                Theme::project_meta()
-            };
-
-            let lines = if project.is_admin {
-                let line2 = Line::from(Span::styled("    admin", meta_style));
-                let separator = Line::from(Span::styled(
-                    "─ ".repeat(inner_width / 2),
-                    Style::default().fg(Theme::BORDER_UNFOCUSED),
-                ));
-                vec![line1, line2, separator]
-            } else {
-                vec![line1, project_meta_line(project, meta_style)]
-            };
-
-            ListItem::new(lines)
-        })
-        .collect();
-
-    // Find which index within the list is active
-    let list_active = projects
-        .iter()
-        .position(|&(orig_idx, _)| orig_idx == active_index);
-
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    list_state.select(list_active);
-    frame.render_stateful_widget(list, area, list_state);
-
-    // Admin entries are 3 lines, regular are 2. Use 2 as the base height
-    // since most items are regular projects.
-    render_scroll_indicators(frame, area, projects.len(), list_state, 2);
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_session_section(
     frame: &mut Frame,
@@ -482,13 +312,24 @@ fn render_session_section(
     list_state: &mut ListState,
     match_positions: &[Option<SessionMatch>],
     search_active: bool,
+    search_query: &str,
 ) {
     let block = focus_block(" Sessions ", level);
 
     if sessions.is_empty() {
-        let text = Paragraph::new("Ctrl+N to create session")
-            .block(block)
-            .style(Style::default().fg(Theme::TEXT_MUTED));
+        let text = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No sessions yet",
+                Style::default().fg(Theme::TEXT_MUTED),
+            )),
+            Line::from(Span::styled(
+                "Press Ctrl+N to create one",
+                Style::default().fg(Theme::TEXT_MUTED),
+            )),
+        ])
+        .block(block)
+        .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(text, area);
         return;
     }
@@ -501,7 +342,8 @@ fn render_session_section(
         .enumerate()
         .map(|(i, info)| {
             let is_active = i == active_index;
-            let prefix = if is_active { "▸" } else { " " };
+            let prefix = if is_active { "\u{25b8}" } else { " " };
+            let is_admin = info.is_admin;
 
             // Determine if this session is dimmed (search active + no match).
             let session_match = match_positions.get(i).and_then(|m| m.as_ref());
@@ -516,8 +358,13 @@ fn render_session_section(
                 Theme::normal_item()
             };
 
-            // "▸ ● " prefix is 4 chars wide (indicator + space + icon + space)
-            let prefix_width = 4;
+            // Build prefix with optional admin badge
+            let prefix_str = if is_admin {
+                format!("{prefix} \u{2699} {} ", info.status.icon())
+            } else {
+                format!("{prefix} {} ", info.status.icon())
+            };
+            let prefix_width = prefix_str.chars().count();
             let name_len = info.name.chars().count();
             let status_len = status_text.chars().count();
             let used = prefix_width + name_len + status_len;
@@ -533,10 +380,13 @@ fn render_session_section(
                 Style::default().fg(super::status_color(info.status))
             };
 
-            let mut line1_spans = vec![Span::styled(
-                format!("{prefix} {} ", info.status.icon()),
-                status_style,
-            )];
+            let prefix_style = if is_admin && !is_dimmed {
+                Style::default().fg(Theme::ADMIN_BADGE)
+            } else {
+                status_style
+            };
+
+            let mut line1_spans = vec![Span::styled(prefix_str, prefix_style)];
             append_name_spans(
                 &mut line1_spans,
                 &info.name,
@@ -548,25 +398,32 @@ fn render_session_section(
             line1_spans.push(Span::styled(status_text, status_style));
             let line1 = Line::from(line1_spans);
 
-            // Line 2: provisioning step (if provisioning) or role · branch/VM
-            let line2 = if is_dimmed {
-                let mut line2_spans = vec![Span::styled(
+            // Line 2: provisioning step or role [+ tag]
+            // Line 3 (optional): repo/branch text
+            let mut item_lines = vec![line1];
+
+            if is_dimmed {
+                let dimmed = Style::default().fg(Theme::TEXT_MUTED);
+                item_lines.push(Line::from(vec![Span::styled(
                     format!("    {}", info.role),
-                    Style::default().fg(Theme::TEXT_MUTED),
-                )];
-                if let Some(wt) = info.worktrees.first() {
-                    line2_spans.push(Span::styled(
-                        format!(" · {}", wt.branch),
-                        Style::default().fg(Theme::TEXT_MUTED),
-                    ));
+                    dimmed,
+                )]));
+                let entries = build_repo_entries(info);
+                if !entries.is_empty() {
+                    let text = format_repo_entries_plain(&entries);
+                    if !text.is_empty() {
+                        item_lines.push(Line::from(vec![Span::styled(
+                            format!("    {text}"),
+                            dimmed,
+                        )]));
+                    }
                 }
-                Line::from(line2_spans)
             } else if info.status == crate::session::SessionStatus::Provisioning {
                 let step_text = info.provisioning_step.as_deref().unwrap_or("Starting...");
-                Line::from(vec![
-                    Span::styled("    ⟳ ", Style::default().fg(Theme::ACCENT)),
+                item_lines.push(Line::from(vec![
+                    Span::styled("    \u{27f3} ", Style::default().fg(Theme::ACCENT)),
                     Span::styled(step_text, Style::default().fg(Theme::ACCENT)),
-                ])
+                ]));
             } else {
                 let role_style = Style::default().fg(Theme::ROLE_NAME);
                 let mut line2_spans = vec![Span::raw("    ")];
@@ -576,30 +433,69 @@ fn render_session_section(
                     session_match.and_then(|m| m.positions(&m.role)),
                     role_style,
                 );
-                if let Some(wt) = info.worktrees.first() {
-                    line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
-                    let branch_style = Style::default().fg(Theme::BRANCH_NAME);
-                    append_name_spans(
-                        &mut line2_spans,
-                        &wt.branch,
-                        session_match.and_then(|m| m.positions(&m.branch)),
-                        branch_style,
-                    );
-                }
                 if info.vm_id.is_some() {
-                    line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
+                    line2_spans.push(Span::styled(
+                        " \u{00b7} ",
+                        Style::default().fg(Theme::TEXT_MUTED),
+                    ));
                     line2_spans.push(Span::styled("VM", Style::default().fg(Theme::ACCENT)));
                 } else if info.container_id.is_some() {
-                    line2_spans.push(Span::styled(" · ", Style::default().fg(Theme::TEXT_MUTED)));
+                    line2_spans.push(Span::styled(
+                        " \u{00b7} ",
+                        Style::default().fg(Theme::TEXT_MUTED),
+                    ));
                     line2_spans.push(Span::styled(
                         "Container",
                         Style::default().fg(Theme::ACCENT),
                     ));
                 }
-                Line::from(line2_spans)
-            };
+                item_lines.push(Line::from(line2_spans));
 
-            ListItem::new(vec![line1, line2])
+                let entries = build_repo_entries(info);
+                if !entries.is_empty() {
+                    let repo_style = Style::default().fg(Theme::TEXT_PRIMARY);
+                    let branch_style = Style::default().fg(Theme::BRANCH_NAME);
+                    let muted = Style::default().fg(Theme::TEXT_MUTED);
+                    let mut line3_spans: Vec<Span<'static>> = vec![Span::raw("    ")];
+
+                    // Build the plain text for search matching.
+                    let plain = format_repo_entries_plain(&entries);
+                    let search_positions = if !search_query.is_empty() {
+                        crate::fuzzy::fuzzy_match(search_query, &plain).map(|m| m.positions)
+                    } else {
+                        None
+                    };
+
+                    if let Some(ref positions) = search_positions {
+                        if !positions.is_empty() {
+                            line3_spans.extend(
+                                build_highlighted_spans(&plain, positions, repo_style)
+                                    .into_iter()
+                                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                            );
+                        } else {
+                            line3_spans.push(Span::styled(plain, repo_style));
+                        }
+                    } else {
+                        // No search — render with colored branches.
+                        for (i, entry) in entries.iter().enumerate() {
+                            if i > 0 {
+                                line3_spans.push(Span::styled(", ", muted));
+                            }
+                            line3_spans.push(Span::styled(entry.name.clone(), repo_style));
+                            if let Some(ref br) = entry.branch {
+                                line3_spans.push(Span::styled("(", branch_style));
+                                line3_spans.push(Span::styled(br.clone(), branch_style));
+                                line3_spans.push(Span::styled(")", branch_style));
+                            }
+                        }
+                    }
+
+                    item_lines.push(Line::from(line3_spans));
+                }
+            }
+
+            ListItem::new(item_lines)
         })
         .collect();
 
@@ -612,8 +508,48 @@ fn render_session_section(
     list_state.select(Some(active_index));
     frame.render_stateful_widget(list, area, list_state);
 
-    // Sessions are 2 lines per item.
-    render_scroll_indicators(frame, area, sessions.len(), list_state, 2);
+    // Most sessions are 3 lines (name + role + repo); use 3 as conservative estimate.
+    render_scroll_indicators(frame, area, sessions.len(), list_state, 3);
+}
+
+/// A single repo entry with an optional branch (for worktree repos).
+struct RepoEntry {
+    name: String,
+    branch: Option<String>,
+}
+
+/// Build a list of repo entries for line 3 of a session entry.
+///
+/// Uses pre-resolved `repo_display_names` (from git remote or dir name).
+/// Worktree repos (indices 0..worktrees.len()) get their branch name.
+fn build_repo_entries(info: &SessionInfo) -> Vec<RepoEntry> {
+    info.repo_display_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| RepoEntry {
+            name: name.clone(),
+            branch: info.worktrees.get(i).map(|wt| wt.branch.clone()),
+        })
+        .collect()
+}
+
+/// Format repo entries as a plain string for search matching and dimmed display.
+///
+/// Example: `"thurbox(feat-search), shared-lib"`
+fn format_repo_entries_plain(entries: &[RepoEntry]) -> String {
+    let mut out = String::new();
+    for (i, entry) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&entry.name);
+        if let Some(ref br) = entry.branch {
+            out.push('(');
+            out.push_str(br);
+            out.push(')');
+        }
+    }
+    out
 }
 
 /// Format status text with elapsed time for Waiting/Idle sessions.
@@ -639,122 +575,6 @@ fn format_status_with_elapsed(
 mod tests {
     use super::*;
     use crate::session::SessionStatus;
-
-    fn test_entry<'a>(
-        name: &'a str,
-        busy: usize,
-        waiting: usize,
-        error: usize,
-        repo_count: usize,
-        repo_short: Option<&'a str>,
-        role_count: usize,
-    ) -> ProjectEntry<'a> {
-        ProjectEntry {
-            name,
-            is_admin: false,
-            repo_count,
-            repo_short,
-            role_count,
-            busy_count: busy,
-            waiting_count: waiting,
-            error_count: error,
-            match_positions: None,
-        }
-    }
-
-    fn admin_entry<'a>(
-        name: &'a str,
-        busy: usize,
-        waiting: usize,
-        error: usize,
-    ) -> ProjectEntry<'a> {
-        ProjectEntry {
-            name,
-            is_admin: true,
-            repo_count: 0,
-            repo_short: None,
-            role_count: 0,
-            busy_count: busy,
-            waiting_count: waiting,
-            error_count: error,
-            match_positions: None,
-        }
-    }
-
-    // --- status_dots ---
-
-    #[test]
-    fn status_dots_empty_for_no_sessions() {
-        let entry = test_entry("P", 0, 0, 0, 0, None, 0);
-        assert!(status_dots(&entry).is_empty());
-    }
-
-    #[test]
-    fn status_dots_counts_match_input() {
-        let entry = test_entry("P", 2, 1, 3, 0, None, 0);
-        let dots = status_dots(&entry);
-        assert_eq!(dots.len(), 6); // 2 busy + 1 waiting + 3 error
-    }
-
-    #[test]
-    fn status_dots_ordering_is_busy_waiting_error() {
-        let entry = test_entry("P", 1, 1, 1, 0, None, 0);
-        let dots = status_dots(&entry);
-        assert_eq!(dots.len(), 3);
-        // Busy dot uses ●
-        assert_eq!(dots[0].content, "●");
-        // Waiting dot uses ◉
-        assert_eq!(dots[1].content, "◉");
-        // Error dot uses ✗
-        assert_eq!(dots[2].content, "✗");
-    }
-
-    #[test]
-    fn status_dots_work_for_admin_entries() {
-        let entry = admin_entry("Admin", 1, 0, 1);
-        let dots = status_dots(&entry);
-        assert_eq!(dots.len(), 2);
-        assert_eq!(dots[0].content, "●");
-        assert_eq!(dots[1].content, "✗");
-    }
-
-    // --- project_meta_line ---
-
-    #[test]
-    fn meta_line_single_repo_shows_name() {
-        let entry = test_entry("P", 0, 0, 0, 1, Some("myrepo"), 2);
-        let line = project_meta_line(&entry, Theme::project_meta());
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("myrepo"));
-        assert!(text.contains("2 roles"));
-    }
-
-    #[test]
-    fn meta_line_multiple_repos_shows_count() {
-        let entry = test_entry("P", 0, 0, 0, 3, None, 1);
-        let line = project_meta_line(&entry, Theme::project_meta());
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("3 repos"));
-        assert!(text.contains("1 role"));
-    }
-
-    #[test]
-    fn meta_line_no_repos() {
-        let entry = test_entry("P", 0, 0, 0, 0, None, 0);
-        let line = project_meta_line(&entry, Theme::project_meta());
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("no repos"));
-        assert!(text.contains("0 roles"));
-    }
-
-    #[test]
-    fn meta_line_single_repo_without_short_name() {
-        let entry = test_entry("P", 0, 0, 0, 1, None, 1);
-        let line = project_meta_line(&entry, Theme::project_meta());
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("1 repo"));
-        assert!(text.contains("1 role"));
-    }
 
     // --- format_status_with_elapsed ---
 
@@ -859,20 +679,22 @@ mod tests {
 
     #[test]
     fn session_match_from_matches_all_none_returns_none() {
-        assert!(SessionMatch::from_matches(None, None, None).is_none());
+        assert!(SessionMatch::from_matches(None, None, None, None, None).is_none());
     }
 
     #[test]
     fn session_match_from_matches_name_only() {
-        let m = SessionMatch::from_matches(Some(vec![0, 1]), None, None).unwrap();
+        let m = SessionMatch::from_matches(Some(vec![0, 1]), None, None, None, None).unwrap();
         assert_eq!(m.name, vec![0, 1]);
         assert!(m.role.is_empty());
         assert!(m.branch.is_empty());
+        assert!(m.cwd.is_empty());
+        assert!(m.status.is_empty());
     }
 
     #[test]
     fn session_match_from_matches_role_only() {
-        let m = SessionMatch::from_matches(None, Some(vec![2]), None).unwrap();
+        let m = SessionMatch::from_matches(None, Some(vec![2]), None, None, None).unwrap();
         assert!(m.name.is_empty());
         assert_eq!(m.role, vec![2]);
         assert!(m.branch.is_empty());
@@ -880,7 +702,7 @@ mod tests {
 
     #[test]
     fn session_match_from_matches_branch_only() {
-        let m = SessionMatch::from_matches(None, None, Some(vec![3, 5])).unwrap();
+        let m = SessionMatch::from_matches(None, None, Some(vec![3, 5]), None, None).unwrap();
         assert!(m.name.is_empty());
         assert!(m.role.is_empty());
         assert_eq!(m.branch, vec![3, 5]);
@@ -888,32 +710,146 @@ mod tests {
 
     #[test]
     fn session_match_from_matches_all_fields() {
-        let m = SessionMatch::from_matches(Some(vec![0]), Some(vec![1]), Some(vec![2])).unwrap();
+        let m = SessionMatch::from_matches(
+            Some(vec![0]),
+            Some(vec![1]),
+            Some(vec![2]),
+            Some(vec![3]),
+            Some(vec![4]),
+        )
+        .unwrap();
         assert_eq!(m.name, vec![0]);
         assert_eq!(m.role, vec![1]);
         assert_eq!(m.branch, vec![2]);
+        assert_eq!(m.cwd, vec![3]);
+        assert_eq!(m.status, vec![4]);
+    }
+
+    #[test]
+    fn session_match_from_matches_cwd_only() {
+        let m = SessionMatch::from_matches(None, None, None, Some(vec![0, 3]), None).unwrap();
+        assert!(m.name.is_empty());
+        assert_eq!(m.cwd, vec![0, 3]);
+    }
+
+    #[test]
+    fn session_match_from_matches_status_only() {
+        let m = SessionMatch::from_matches(None, None, None, None, Some(vec![1])).unwrap();
+        assert!(m.name.is_empty());
+        assert_eq!(m.status, vec![1]);
     }
 
     #[test]
     fn session_match_positions_empty_returns_none() {
-        let m = SessionMatch::from_matches(Some(vec![0]), None, None).unwrap();
+        let m = SessionMatch::from_matches(Some(vec![0]), None, None, None, None).unwrap();
         assert!(m.positions(&m.role).is_none());
         assert!(m.positions(&m.branch).is_none());
     }
 
     #[test]
     fn session_match_positions_non_empty_returns_some() {
-        let m = SessionMatch::from_matches(Some(vec![0, 4]), None, None).unwrap();
+        let m = SessionMatch::from_matches(Some(vec![0, 4]), None, None, None, None).unwrap();
         assert_eq!(m.positions(&m.name), Some(&[0, 4][..]));
     }
 
-    // --- project_meta_line with custom style ---
+    // --- build_repo_entries / format_repo_entries_plain ---
 
     #[test]
-    fn meta_line_uses_provided_style() {
-        let entry = test_entry("P", 0, 0, 0, 1, Some("myrepo"), 1);
-        let muted = Style::default().fg(Theme::TEXT_MUTED);
-        let line = project_meta_line(&entry, muted);
-        assert_eq!(line.spans[0].style, muted);
+    fn repo_entries_single_repo() {
+        let mut info = SessionInfo::new("test".to_string());
+        info.repo_display_names = vec!["thurbox".to_string()];
+        let entries = build_repo_entries(&info);
+        assert_eq!(format_repo_entries_plain(&entries), "thurbox");
+    }
+
+    #[test]
+    fn repo_entries_worktree_shows_branch_on_first_repo() {
+        let mut info = SessionInfo::new("test".to_string());
+        info.repo_display_names = vec!["thurbox".to_string()];
+        info.worktrees.push(crate::session::WorktreeInfo {
+            repo_path: std::path::PathBuf::from("/home/user/repos/thurbox"),
+            worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
+            branch: "feat-search".to_string(),
+        });
+        let entries = build_repo_entries(&info);
+        assert_eq!(format_repo_entries_plain(&entries), "thurbox(feat-search)");
+    }
+
+    #[test]
+    fn repo_entries_mixed_worktree_and_normal() {
+        let mut info = SessionInfo::new("test".to_string());
+        info.repo_display_names = vec!["thurbox".to_string(), "shared-lib".to_string()];
+        info.worktrees.push(crate::session::WorktreeInfo {
+            repo_path: std::path::PathBuf::from("/home/user/repos/thurbox"),
+            worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
+            branch: "feat-search".to_string(),
+        });
+        let entries = build_repo_entries(&info);
+        assert_eq!(
+            format_repo_entries_plain(&entries),
+            "thurbox(feat-search), shared-lib"
+        );
+    }
+
+    #[test]
+    fn repo_entries_multiple_normal_repos() {
+        let mut info = SessionInfo::new("test".to_string());
+        info.repo_display_names = vec!["main-app".to_string(), "shared-lib".to_string()];
+        let entries = build_repo_entries(&info);
+        assert_eq!(format_repo_entries_plain(&entries), "main-app, shared-lib");
+    }
+
+    #[test]
+    fn repo_entries_multiple_worktrees() {
+        let mut info = SessionInfo::new("test".to_string());
+        info.repo_display_names = vec!["thurbox".to_string(), "api-server".to_string()];
+        info.worktrees.push(crate::session::WorktreeInfo {
+            repo_path: std::path::PathBuf::from("/repos/thurbox"),
+            worktree_path: std::path::PathBuf::from("/tmp/wt1/feat"),
+            branch: "feat".to_string(),
+        });
+        info.worktrees.push(crate::session::WorktreeInfo {
+            repo_path: std::path::PathBuf::from("/repos/api-server"),
+            worktree_path: std::path::PathBuf::from("/tmp/wt2/feat"),
+            branch: "feat".to_string(),
+        });
+        let entries = build_repo_entries(&info);
+        assert_eq!(
+            format_repo_entries_plain(&entries),
+            "thurbox(feat), api-server(feat)"
+        );
+    }
+
+    #[test]
+    fn repo_entries_multi_worktree_plus_normal() {
+        let mut info = SessionInfo::new("test".to_string());
+        info.repo_display_names = vec![
+            "thurbox".to_string(),
+            "api-server".to_string(),
+            "docs".to_string(),
+        ];
+        info.worktrees.push(crate::session::WorktreeInfo {
+            repo_path: std::path::PathBuf::from("/repos/thurbox"),
+            worktree_path: std::path::PathBuf::from("/tmp/wt1/feat"),
+            branch: "feat".to_string(),
+        });
+        info.worktrees.push(crate::session::WorktreeInfo {
+            repo_path: std::path::PathBuf::from("/repos/api-server"),
+            worktree_path: std::path::PathBuf::from("/tmp/wt2/feat"),
+            branch: "feat".to_string(),
+        });
+        let entries = build_repo_entries(&info);
+        assert_eq!(
+            format_repo_entries_plain(&entries),
+            "thurbox(feat), api-server(feat), docs"
+        );
+    }
+
+    #[test]
+    fn repo_entries_empty_when_no_repos() {
+        let info = SessionInfo::new("test".to_string());
+        let entries = build_repo_entries(&info);
+        assert!(entries.is_empty());
+        assert_eq!(format_repo_entries_plain(&entries), "");
     }
 }

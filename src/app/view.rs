@@ -11,14 +11,14 @@ use ratatui::{
     Frame,
 };
 
-use crate::session::{SessionInfo, SessionStatus};
+use crate::session::SessionInfo;
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
     add_project_modal, branch_selector_modal, containerfile_picker, delete_project_modal,
-    edit_project_modal, info_panel, layout, project_list, repo_selector_modal,
-    restore_sessions_modal, role_editor_modal, role_selector_modal, schedule_command_modal,
-    session_mode_modal, status_bar, terminal_view, worktree_name_modal,
+    info_panel, layout, project_list, repo_selector_modal, restore_sessions_modal,
+    role_editor_modal, role_selector_modal, schedule_command_modal, session_mode_modal, status_bar,
+    terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -29,127 +29,59 @@ impl App {
 
         status_bar::render_header(frame, areas.header);
 
-        // Left panel (projects + sessions)
+        // Left panel (flat session list)
         if let Some(left_area) = areas.left_panel {
-            let mut project_entries: Vec<project_list::ProjectEntry<'_>> = self
-                .projects
-                .iter()
-                .map(|p| {
-                    let mut busy_count = 0usize;
-                    let mut waiting_count = 0usize;
-                    let mut error_count = 0usize;
-                    for sid in &p.session_ids {
-                        if let Some(s) = self.sessions.iter().find(|s| s.info.id == *sid) {
-                            match s.info.status {
-                                SessionStatus::Busy | SessionStatus::Provisioning => {
-                                    busy_count += 1;
-                                }
-                                SessionStatus::Waiting => waiting_count += 1,
-                                SessionStatus::Error => error_count += 1,
-                                SessionStatus::Idle => {}
-                            }
-                        }
-                    }
-
-                    let repo_count = p.config.repos.len();
-                    let repo_short = if repo_count == 1 {
-                        p.config.repos[0].file_name().and_then(|n| n.to_str())
-                    } else {
-                        None
-                    };
-
-                    project_list::ProjectEntry {
-                        name: &p.config.name,
-                        is_admin: p.is_admin,
-                        repo_count,
-                        repo_short,
-                        role_count: p.config.roles.len(),
-                        busy_count,
-                        waiting_count,
-                        error_count,
-                        match_positions: None, // set below
-                    }
-                })
-                .collect();
-
-            // Attach fuzzy match positions to each project entry.
-            for (i, entry) in project_entries.iter_mut().enumerate() {
-                entry.match_positions = self
-                    .project_match_positions
-                    .get(i)
-                    .and_then(|m| m.as_deref());
-            }
-
-            let project_session_indices = self.active_project_sessions();
-            let mut project_sessions: Vec<&SessionInfo> = project_session_indices
-                .iter()
-                .map(|&i| &self.sessions[i].info)
-                .collect();
+            // Build flat session list: all sessions, with tag names from projects
+            let mut all_sessions: Vec<&SessionInfo> =
+                self.sessions.iter().map(|s| &s.info).collect();
             self.session_elapsed_buf.clear();
-            for &i in &project_session_indices {
-                self.session_elapsed_buf
-                    .push(self.sessions[i].millis_since_last_output());
+            for s in &self.sessions {
+                self.session_elapsed_buf.push(s.millis_since_last_output());
             }
 
-            // Include VM placeholder in the session list if it belongs to this project.
+            // Include VM placeholder in the session list.
             if let Some(ref ph) = self.vm_placeholder {
-                if let Some(project) = self.projects.get(self.active_project_index) {
-                    if project.session_ids.contains(&ph.id) {
-                        project_sessions.push(ph);
-                        self.session_elapsed_buf.push(0);
-                    }
-                }
+                all_sessions.push(ph);
+                self.session_elapsed_buf.push(0);
             }
 
-            // Include container placeholder in the session list if it belongs to this project.
+            // Include container placeholder in the session list.
             if let Some(ref ph) = self.container_placeholder {
-                if let Some(project) = self.projects.get(self.active_project_index) {
-                    if project.session_ids.contains(&ph.id) {
-                        project_sessions.push(ph);
-                        self.session_elapsed_buf.push(0);
-                    }
-                }
+                all_sessions.push(ph);
+                self.session_elapsed_buf.push(0);
             }
 
             let session_elapsed_buf = self.session_elapsed_buf.clone();
 
-            let panel_focus = match self.focus {
-                InputFocus::ProjectList => project_list::LeftPanelFocus::Projects,
-                InputFocus::SessionList | InputFocus::Terminal => {
-                    project_list::LeftPanelFocus::Sessions
-                }
+            use crate::ui::FocusLevel;
+            let list_focus = match self.focus {
+                InputFocus::SessionList => FocusLevel::Focused,
+                InputFocus::Terminal => FocusLevel::Active,
             };
 
-            // Compute tri-state focus levels for each sub-panel
-            use crate::ui::FocusLevel;
-            let (project_focus, session_focus) = match self.focus {
-                InputFocus::ProjectList => (FocusLevel::Focused, FocusLevel::Inactive),
-                InputFocus::SessionList => (FocusLevel::Active, FocusLevel::Focused),
-                InputFocus::Terminal => (FocusLevel::Inactive, FocusLevel::Active),
-            };
+            let match_count = self
+                .session_match_positions
+                .iter()
+                .filter(|m| m.is_some())
+                .count();
+            let total_count = all_sessions.len();
 
             project_list::render_left_panel(
                 frame,
                 left_area,
                 &mut project_list::LeftPanelState {
-                    projects: &project_entries,
-                    active_project: self.active_project_index,
-                    sessions: &project_sessions,
-                    active_session: self.active_session_in_project(),
+                    sessions: &all_sessions,
+                    active_session: self.active_index,
                     session_elapsed_ms: &session_elapsed_buf,
-                    focus: panel_focus,
-                    panel_focused: self.focus != InputFocus::Terminal,
-                    project_focus,
-                    session_focus,
-                    project_list_state: &mut self.project_list_state,
+                    session_focus: list_focus,
                     session_list_state: &mut self.session_list_state,
                     search_query: &self.search_input.buffer,
                     search_active: self.search_active,
                     search_cursor: self.search_input.cursor,
                     session_match_positions: &self.session_match_positions,
-                    search_targets_projects: self.search_target == super::SearchTarget::Projects,
-                    project_search_active: !self.project_match_positions.is_empty(),
                     session_search_active: !self.session_match_positions.is_empty(),
+                    match_count,
+                    total_count,
                 },
             );
         }
@@ -192,15 +124,11 @@ impl App {
         let terminal_focus = match self.focus {
             InputFocus::Terminal => crate::ui::FocusLevel::Focused,
             InputFocus::SessionList => crate::ui::FocusLevel::Active,
-            InputFocus::ProjectList => crate::ui::FocusLevel::Inactive,
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
         match self.sessions.get(self.active_index) {
             Some(session) => {
-                let is_admin_project = self
-                    .projects
-                    .get(self.active_project_index)
-                    .is_some_and(|p| p.is_admin);
+                let is_admin_project = session.info.is_admin;
                 let parser_arc = if is_shell_view {
                     session.shell_pane.as_ref().map(|sp| &sp.parser)
                 } else {
@@ -223,7 +151,6 @@ impl App {
         }
 
         let focus_label = match self.focus {
-            InputFocus::ProjectList => "Projects",
             InputFocus::SessionList => "Sessions",
             InputFocus::Terminal if is_shell_view => "Shell",
             InputFocus::Terminal => "Terminal",
@@ -263,27 +190,6 @@ impl App {
                     repos: &ap.repos,
                     repo_index: ap.repo_index,
                     focused_field: ap.field,
-                },
-            );
-        }
-
-        // Edit-project modal
-        if let super::modals::Modal::EditProject(ref ep) = self.modal {
-            edit_project_modal::render_edit_project_modal(
-                frame,
-                &edit_project_modal::EditProjectModalState {
-                    name: ep.name.value(),
-                    name_cursor: ep.name.cursor_pos(),
-                    path: ep.path.value(),
-                    path_cursor: ep.path.cursor_pos(),
-                    path_suggestion: ep.path_suggestion.as_deref(),
-                    repos: &ep.repos,
-                    repo_index: ep.repo_index,
-                    roles: &ep.role_editor_roles,
-                    role_index: ep.role_editor_list_index,
-                    mcp_servers: &ep.mcp_servers,
-                    mcp_server_index: ep.mcp_server_index,
-                    focused_field: ep.field,
                 },
             );
         }
@@ -363,24 +269,32 @@ impl App {
 
         // Role selector modal
         if let super::modals::Modal::RoleSelector(ref rsel) = self.modal {
-            if let Some(project) = self.active_project() {
-                role_selector_modal::render_role_selector_modal(
-                    frame,
-                    &role_selector_modal::RoleSelectorState {
-                        roles: &project.config.roles,
-                        selected_index: rsel.index,
-                    },
-                );
-            }
+            role_selector_modal::render_role_selector_modal(
+                frame,
+                &role_selector_modal::RoleSelectorState {
+                    roles: &self.global_roles,
+                    selected_index: rsel.index,
+                },
+            );
+        }
+
+        // Settings overlay (tabbed list of roles / MCP servers)
+        if self.show_settings && !self.show_role_editor && !self.show_mcp_editor {
+            crate::ui::settings_overlay::render_settings_overlay(
+                frame,
+                &crate::ui::settings_overlay::SettingsOverlayState {
+                    tab: self.settings_tab,
+                    roles: &self.global_roles,
+                    role_index: self.role_editor_list_index,
+                    mcp_servers: &self.global_mcp_servers,
+                    mcp_index: self.mcp_server_list_index,
+                },
+            );
         }
 
         // Role editor modal (detail form, overlays edit-project modal)
         if self.show_role_editor {
-            let project_name = if let super::modals::Modal::EditProject(ref ep) = self.modal {
-                ep.name.value()
-            } else {
-                ""
-            };
+            let project_name = "Global Roles";
             role_editor_modal::render_role_editor_modal(
                 frame,
                 &role_editor_modal::RoleEditorState {
@@ -414,17 +328,12 @@ impl App {
             );
         }
 
-        // MCP editor modal (detail form, overlays edit-project modal)
+        // MCP editor modal (detail form for global MCP servers)
         if self.show_mcp_editor {
-            let project_name = if let super::modals::Modal::EditProject(ref ep) = self.modal {
-                ep.name.value()
-            } else {
-                ""
-            };
             crate::ui::mcp_editor_modal::render_mcp_editor_modal(
                 frame,
                 &crate::ui::mcp_editor_modal::McpEditorState {
-                    project_name,
+                    project_name: "Global MCP Servers",
                     name: self.mcp_editor_name.value(),
                     name_cursor: self.mcp_editor_name.cursor_pos(),
                     command: self.mcp_editor_command.value(),
@@ -481,6 +390,23 @@ impl App {
                     delay_cursor: sc.delay_minutes.cursor_pos(),
                     focused_field: sc.field,
                     session_name,
+                },
+            );
+        }
+
+        // Repo picker modal
+        if let super::modals::Modal::RepoPicker(ref rp) = self.modal {
+            crate::ui::repo_picker_modal::render_repo_picker_modal(
+                frame,
+                &crate::ui::repo_picker_modal::RepoPickerState {
+                    bookmarks: &rp.bookmarks,
+                    selected: &rp.selected,
+                    worktree: &rp.worktree,
+                    list_index: rp.list_index,
+                    path_input: rp.path_input.value(),
+                    path_cursor: rp.path_input.cursor_pos(),
+                    path_suggestion: rp.path_suggestion.as_deref(),
+                    focus: rp.focus,
                 },
             );
         }
@@ -542,27 +468,21 @@ fn render_help_overlay(frame: &mut Frame) {
 
     let help_lines = vec![
         help_section("Navigation"),
-        help_line(
-            "Ctrl+H",
-            "Focus previous pane (← project ← session ← terminal)",
-        ),
-        help_line("Ctrl+L", "Focus next pane (→ project → session → terminal)"),
-        help_line("Ctrl+J", "Select next project or session"),
-        help_line("Ctrl+K", "Select previous project or session"),
+        help_line("Ctrl+H/L", "Toggle focus between session list and terminal"),
+        help_line("Ctrl+J", "Select next session"),
+        help_line("Ctrl+K", "Select previous session"),
         Line::from(""),
         help_section("Sessions"),
-        help_line(
-            "Ctrl+N",
-            "Create new session (or project when list focused)",
-        ),
-        help_line("Ctrl+D", "Delete focused session or project"),
+        help_line("Ctrl+N", "Create new session"),
+        help_line("Ctrl+A", "Create admin session"),
+        help_line("Ctrl+D", "Delete focused session"),
         help_line("Ctrl+R", "Restart active session"),
         help_line("Ctrl+P", "Schedule a command for active session"),
         help_line("Ctrl+Z", "Undo last delete"),
         help_line("Ctrl+U", "Restore deleted sessions"),
         Line::from(""),
         help_section("Project"),
-        help_line("Ctrl+E", "Edit active project (name, repos, roles)"),
+        help_line("Ctrl+E", "Settings (roles & MCP servers)"),
         help_line("Ctrl+S", "Sync all worktrees with main"),
         Line::from(""),
         help_section("UI"),

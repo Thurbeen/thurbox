@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod app;
+pub(crate) mod fuzzy;
 pub mod git;
 pub mod mcp;
 pub mod paths;

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::session::{McpServerConfig, RoleConfig, SessionId};
+use crate::session::{McpServerConfig, RoleConfig};
 
 // Keep serde on ProjectId for backward compat (used in session/mod.rs serialization)
 
@@ -81,7 +81,6 @@ impl ProjectConfig {
 pub struct ProjectInfo {
     pub id: ProjectId,
     pub config: ProjectConfig,
-    pub session_ids: Vec<SessionId>,
     pub is_admin: bool,
 }
 
@@ -91,7 +90,6 @@ impl ProjectInfo {
         Self {
             id,
             config,
-            session_ids: Vec::new(),
             is_admin: false,
         }
     }
@@ -101,7 +99,6 @@ impl ProjectInfo {
         Self {
             id,
             config,
-            session_ids: Vec::new(),
             is_admin: true,
         }
     }
@@ -127,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn project_info_new_has_empty_sessions() {
+    fn project_info_new_is_not_admin() {
         let config = ProjectConfig {
             name: "test".to_string(),
             repos: vec![PathBuf::from("/tmp/test")],
@@ -136,7 +133,6 @@ mod tests {
             id: None,
         };
         let info = ProjectInfo::new(config);
-        assert!(info.session_ids.is_empty());
         assert_eq!(info.config.name, "test");
         assert!(!info.is_admin);
     }
@@ -152,7 +148,6 @@ mod tests {
         };
         let info = ProjectInfo::new_admin(config);
         assert!(info.is_admin);
-        assert!(info.session_ids.is_empty());
         assert_eq!(info.config.name, "Admin");
     }
 

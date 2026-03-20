@@ -100,6 +100,18 @@ pub struct SetRolesParams {
     pub roles: Vec<RoleInput>,
 }
 
+/// Parameters for the `set_global_roles` tool.
+///
+/// Atomically replaces all global roles. All existing global roles are deleted
+/// and the provided list is inserted in a single database transaction. To add
+/// a role, include all existing roles plus the new one. To clear all roles,
+/// pass an empty array.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetGlobalRolesParams {
+    #[schemars(description = "Complete list of roles — atomically replaces all global roles")]
+    pub roles: Vec<RoleInput>,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListSessionsParams {
     #[schemars(description = "Optional project name or UUID to filter sessions")]
@@ -155,6 +167,18 @@ pub struct SetMcpServersParams {
     #[schemars(description = "Project name or UUID")]
     pub project: String,
     #[schemars(description = "List of MCP server definitions (replaces all existing)")]
+    pub servers: Vec<McpServerInput>,
+}
+
+/// Parameters for the `set_global_mcp_servers` tool.
+///
+/// Atomically replaces all global MCP servers. All existing global servers are
+/// deleted and the provided list is inserted in a single database transaction.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetGlobalMcpServersParams {
+    #[schemars(
+        description = "Complete list of MCP servers — atomically replaces all global servers"
+    )]
     pub servers: Vec<McpServerInput>,
 }
 

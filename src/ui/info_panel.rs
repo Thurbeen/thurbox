@@ -72,6 +72,9 @@ pub fn render_info_panel(
         ),
     ]));
 
+    // ── Repos ──
+    append_repos_section(&mut lines, info);
+
     // ── Session CPU/RAM ──
     if let Some(m) = metrics {
         if m.session_cpu_percent > 0.0 || m.session_memory_bytes > 0 {
@@ -190,6 +193,56 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
                 Style::default().fg(Theme::TEXT_PRIMARY),
             ),
         ]));
+    }
+}
+
+/// Append the repos section showing all repo paths for a session.
+fn append_repos_section<'a>(lines: &mut Vec<Line<'a>>, info: &'a SessionInfo) {
+    // Collect repo names: first worktree repo, then additional_dirs.
+    let first_repo = info
+        .worktrees
+        .first()
+        .map(|wt| &wt.repo_path)
+        .or(info.cwd.as_ref())
+        .and_then(|p| p.file_name())
+        .and_then(|f| f.to_str());
+
+    let branch = info.worktrees.first().map(|wt| wt.branch.as_str());
+
+    // Nothing to show if there's no repo info at all.
+    if first_repo.is_none() && branch.is_none() {
+        return;
+    }
+
+    let primary = match (first_repo, branch) {
+        (Some(repo), Some(br)) => format!("{repo}/{br}"),
+        (Some(repo), None) => repo.to_string(),
+        (None, Some(br)) => br.to_string(),
+        (None, None) => return,
+    };
+
+    let extra_names: Vec<&str> = info
+        .additional_dirs
+        .iter()
+        .filter_map(|d| d.file_name().and_then(|f| f.to_str()))
+        .collect();
+
+    if extra_names.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Repos: ", Theme::label()),
+            Span::styled(primary, Style::default().fg(Theme::BRANCH_NAME)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Repos: ", Theme::label()),
+            Span::styled(primary, Style::default().fg(Theme::BRANCH_NAME)),
+        ]));
+        for name in &extra_names {
+            lines.push(Line::from(vec![
+                Span::styled("       ", Theme::label()),
+                Span::styled(*name, Style::default().fg(Theme::BRANCH_NAME)),
+            ]));
+        }
     }
 }
 

@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 
-use crate::session::{McpServerConfig, RoleConfig};
 use crate::storage::DeletedSessionInfo;
 
 // ── TextInput Helper ────────────────────────────────────────────────────────
@@ -66,6 +65,7 @@ impl TextInput {
         self.cursor = 0;
     }
 
+    #[allow(dead_code)] // used in tests
     pub fn set(&mut self, value: &str) {
         self.buffer = value.to_string();
         self.cursor = value.chars().count();
@@ -162,52 +162,6 @@ pub enum RoleEditorView {
     Editor,
 }
 
-// ── EditProjectField ──────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditProjectField {
-    Name,
-    Path,
-    RepoList,
-    Roles,
-    McpServers,
-}
-
-// ── EditProjectModal ─────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct EditProjectModal {
-    pub name: TextInput,
-    pub path: TextInput,
-    pub field: EditProjectField,
-    pub repos: Vec<PathBuf>,
-    pub repo_index: usize,
-    pub path_suggestion: Option<String>,
-    pub original_id: Option<crate::project::ProjectId>,
-    pub role_editor_roles: Vec<RoleConfig>,
-    pub role_editor_list_index: usize,
-    pub mcp_servers: Vec<McpServerConfig>,
-    pub mcp_server_index: usize,
-}
-
-impl Default for EditProjectModal {
-    fn default() -> Self {
-        Self {
-            name: TextInput::default(),
-            path: TextInput::default(),
-            field: EditProjectField::Name,
-            repos: Vec::new(),
-            repo_index: 0,
-            path_suggestion: None,
-            original_id: None,
-            role_editor_roles: Vec::new(),
-            role_editor_list_index: 0,
-            mcp_servers: Vec::new(),
-            mcp_server_index: 0,
-        }
-    }
-}
-
 // ── ContainerfilePickerModal ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -250,21 +204,61 @@ impl ScheduleCommandModal {
     }
 }
 
+// ── RepoPickerModal ─────────────────────────────────────────────────────
+
+/// Which section of the repo picker is focused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepoPickerFocus {
+    /// The list of bookmarked/recent repos (multi-select).
+    #[default]
+    List,
+    /// The text input for adding a new path.
+    Input,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RepoPickerModal {
+    /// Bookmarked repos shown in the list.
+    pub bookmarks: Vec<PathBuf>,
+    /// Which bookmarks are selected (checked).
+    pub selected: Vec<bool>,
+    /// Whether each selected repo should use worktree mode (parallel to `bookmarks`).
+    pub worktree: Vec<bool>,
+    /// Cursor index in the bookmark list.
+    pub list_index: usize,
+    /// Text input for adding a new repo path.
+    pub path_input: TextInput,
+    /// Autocomplete suggestion for the path input.
+    pub path_suggestion: Option<String>,
+    /// Which section is focused (list vs input).
+    pub focus: RepoPickerFocus,
+}
+
+// ── SettingsTab ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    #[default]
+    Roles,
+    McpServers,
+}
+
 // ── Main Modal Enum ────────────────────────────────────────────────────────
 
 /// Single, discriminated union replacing boolean flags for modal state.
 /// Only one modal can be active at a time, making invalid states unrepresentable.
 ///
 /// Note: `RoleEditor`, `McpEditor`, and `DiscardConfirmation` are kept as separate
-/// boolean flags on `App` because they overlay the `EditProject` modal without
-/// replacing it. See `App::show_role_editor`, `App::show_mcp_editor`, and
+/// boolean flags on `App`. See `App::show_role_editor`, `App::show_mcp_editor`, and
 /// `App::show_discard_confirmation`.
 #[derive(Debug, Clone, Default)]
 pub enum Modal {
     #[default]
     None,
     Help,
+    #[allow(dead_code)] // Available via MCP / tests, not from main keybindings
     AddProject(AddProjectModal),
+    #[allow(dead_code)] // Available via MCP / tests, not from main keybindings
     DeleteProject(DeleteProjectModal),
     #[allow(dead_code)] // Planned: not yet wired to a trigger key
     RepoSelector(RepoSelectorModal),
@@ -272,10 +266,10 @@ pub enum Modal {
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
     RoleSelector(RoleSelectorModal),
-    EditProject(Box<EditProjectModal>),
     ContainerfilePicker(ContainerfilePickerModal),
     RestoreSessions(RestoreSessionsModal),
     ScheduleCommand(ScheduleCommandModal),
+    RepoPicker(RepoPickerModal),
 }
 
 impl Modal {

@@ -14,7 +14,7 @@ use super::Database;
 pub struct DeletedSessionInfo {
     pub id: SessionId,
     pub name: String,
-    pub project_id: ProjectId,
+    pub project_id: Option<ProjectId>,
     pub role: String,
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
@@ -27,7 +27,7 @@ impl Database {
     pub fn upsert_session(&self, session: &SharedSession) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
-        let project_id_str = session.project_id.to_string();
+        let project_id_str = session.project_id.map(|p| p.to_string());
 
         let existing: Option<String> = self
             .conn
@@ -188,7 +188,7 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             let id_str: String = row.get(0)?;
-            let project_id_str: String = row.get(2)?;
+            let project_id_str: Option<String> = row.get(2)?;
             let cwd: Option<String> = row.get(7)?;
             let dirs_str: String = row.get(8)?;
             let shell_backend_id: Option<String> = row.get(9)?;
@@ -216,9 +216,8 @@ impl Database {
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
                     project_id: project_id_str
-                        .parse::<uuid::Uuid>()
-                        .map(ProjectId::from_uuid)
-                        .unwrap_or_default(),
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+                        .map(ProjectId::from_uuid),
                     role: row.get(3)?,
                     backend_id: row.get(4)?,
                     backend_type: row.get(5)?,
@@ -338,7 +337,7 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             let id_str: String = row.get(0)?;
-            let project_id_str: String = row.get(2)?;
+            let project_id_str: Option<String> = row.get(2)?;
             let cwd: Option<String> = row.get(5)?;
             let deleted_at: i64 = row.get(6)?;
             let wt_repo: Option<String> = row.get(7)?;
@@ -359,9 +358,8 @@ impl Database {
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
                     project_id: project_id_str
-                        .parse::<uuid::Uuid>()
-                        .map(ProjectId::from_uuid)
-                        .unwrap_or_default(),
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+                        .map(ProjectId::from_uuid),
                     role: row.get(3)?,
                     agent_session_id: row.get(4)?,
                     cwd: cwd.map(PathBuf::from),
@@ -459,7 +457,7 @@ mod tests {
         SharedSession {
             id: SessionId::default(),
             name: name.to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -850,7 +848,7 @@ mod tests {
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].id, s1_id);
         assert_eq!(deleted[0].name, "S1");
-        assert_eq!(deleted[0].project_id, pid);
+        assert_eq!(deleted[0].project_id, Some(pid));
     }
 
     #[test]

@@ -69,7 +69,7 @@ mod tests {
         SharedSession {
             id: SessionId::default(),
             name: name.to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),

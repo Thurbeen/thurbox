@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -33,7 +33,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS sessions (
             id                TEXT PRIMARY KEY,
             name              TEXT NOT NULL,
-            project_id        TEXT NOT NULL REFERENCES projects(id),
+            project_id        TEXT REFERENCES projects(id),
             role              TEXT NOT NULL DEFAULT 'developer',
             backend_id        TEXT NOT NULL DEFAULT '',
             backend_type      TEXT NOT NULL DEFAULT 'tmux',
@@ -92,6 +92,28 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             created_at          INTEGER NOT NULL,
             updated_at          INTEGER NOT NULL,
             PRIMARY KEY (project_id, role_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS roles (
+            role_name           TEXT PRIMARY KEY,
+            description         TEXT NOT NULL DEFAULT '',
+            permission_mode     TEXT,
+            allowed_tools       TEXT NOT NULL DEFAULT '',
+            disallowed_tools    TEXT NOT NULL DEFAULT '',
+            tools               TEXT,
+            append_system_prompt TEXT,
+            env                 TEXT NOT NULL DEFAULT '',
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+            server_name TEXT PRIMARY KEY,
+            command     TEXT NOT NULL DEFAULT '',
+            args        TEXT NOT NULL DEFAULT '',
+            env         TEXT NOT NULL DEFAULT '',
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS project_mcp_servers (
@@ -191,6 +213,13 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_scheduled_commands_pending
             ON scheduled_commands(scheduled_at)
             WHERE executed_at IS NULL AND cancelled_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS repo_bookmarks (
+            repo_path    TEXT PRIMARY KEY,
+            label        TEXT,
+            last_used_at INTEGER NOT NULL,
+            use_count    INTEGER NOT NULL DEFAULT 1
+        );
         ",
     )?;
 
@@ -399,6 +428,110 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 13 {
+        // v12 → v13: add global `roles` table and seed from project_roles
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS roles (
+                role_name           TEXT PRIMARY KEY,
+                description         TEXT NOT NULL DEFAULT '',
+                permission_mode     TEXT,
+                allowed_tools       TEXT NOT NULL DEFAULT '',
+                disallowed_tools    TEXT NOT NULL DEFAULT '',
+                tools               TEXT,
+                append_system_prompt TEXT,
+                env                 TEXT NOT NULL DEFAULT '',
+                created_at          INTEGER NOT NULL,
+                updated_at          INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO roles
+                (role_name, description, permission_mode, allowed_tools,
+                 disallowed_tools, tools, append_system_prompt, env,
+                 created_at, updated_at)
+                SELECT DISTINCT role_name, description, permission_mode, allowed_tools,
+                       disallowed_tools, tools, append_system_prompt, env,
+                       created_at, updated_at
+                FROM project_roles;",
+        )?;
+    }
+
+    if version < 14 {
+        // v13 → v14: add global `mcp_servers` table and seed from project_mcp_servers
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mcp_servers (
+                server_name TEXT PRIMARY KEY,
+                command     TEXT NOT NULL DEFAULT '',
+                args        TEXT NOT NULL DEFAULT '',
+                env         TEXT NOT NULL DEFAULT '',
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO mcp_servers
+                (server_name, command, args, env, created_at, updated_at)
+                SELECT DISTINCT server_name, command, args, env,
+                       created_at, updated_at
+                FROM project_mcp_servers;",
+        )?;
+    }
+
+    if version < 15 {
+        // v14 → v15: make project_id nullable on sessions, add repo_bookmarks table
+        // SQLite doesn't support ALTER COLUMN, so recreate the sessions table.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS sessions_new;
+            CREATE TABLE sessions_new (
+                id                TEXT PRIMARY KEY,
+                name              TEXT NOT NULL,
+                project_id        TEXT REFERENCES projects(id),
+                role              TEXT NOT NULL DEFAULT 'developer',
+                backend_id        TEXT NOT NULL DEFAULT '',
+                backend_type      TEXT NOT NULL DEFAULT 'tmux',
+                agent_session_id  TEXT,
+                cwd               TEXT,
+                additional_dirs   TEXT NOT NULL DEFAULT '',
+                shell_backend_id  TEXT,
+                created_at        INTEGER NOT NULL,
+                updated_at        INTEGER NOT NULL,
+                deleted_at        INTEGER
+            );
+            PRAGMA foreign_keys = OFF;
+            INSERT INTO sessions_new (id, name, project_id, role, backend_id,
+                backend_type, agent_session_id, cwd, additional_dirs,
+                shell_backend_id, created_at, updated_at, deleted_at)
+                SELECT id, name,
+                    CASE WHEN project_id IN (SELECT id FROM projects) THEN project_id ELSE NULL END,
+                    role, backend_id,
+                    backend_type, agent_session_id, cwd, additional_dirs,
+                    shell_backend_id,
+                    COALESCE(created_at, 0),
+                    COALESCE(updated_at, 0),
+                    deleted_at
+                FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+            PRAGMA foreign_keys = ON;
+            CREATE INDEX IF NOT EXISTS idx_sessions_project
+                ON sessions(project_id) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_sessions_active
+                ON sessions(id) WHERE deleted_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS repo_bookmarks (
+                repo_path    TEXT PRIMARY KEY,
+                label        TEXT,
+                last_used_at INTEGER NOT NULL,
+                use_count    INTEGER NOT NULL DEFAULT 1
+            );
+
+            INSERT OR IGNORE INTO repo_bookmarks (repo_path, last_used_at, use_count)
+                SELECT DISTINCT repo_path,
+                       COALESCE((SELECT MAX(s.updated_at) FROM sessions s
+                                  INNER JOIN projects p ON p.id = s.project_id
+                                  INNER JOIN project_repos pr ON pr.project_id = p.id
+                                  AND pr.repo_path = project_repos.repo_path), 0),
+                       1
+                FROM project_repos;",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -430,6 +563,8 @@ mod tests {
         assert!(tables.contains(&"projects".to_string()));
         assert!(tables.contains(&"project_repos".to_string()));
         assert!(tables.contains(&"project_roles".to_string()));
+        assert!(tables.contains(&"roles".to_string()));
+        assert!(tables.contains(&"mcp_servers".to_string()));
         assert!(tables.contains(&"project_mcp_servers".to_string()));
         assert!(tables.contains(&"sessions".to_string()));
         assert!(tables.contains(&"worktrees".to_string()));
@@ -438,6 +573,7 @@ mod tests {
         assert!(tables.contains(&"containers".to_string()));
         assert!(tables.contains(&"project_container_config".to_string()));
         assert!(tables.contains(&"scheduled_commands".to_string()));
+        assert!(tables.contains(&"repo_bookmarks".to_string()));
     }
 
     #[test]

@@ -26,8 +26,9 @@ use super::types::{
     ListSessionsParams, ListVmsParams, McpServerResponse, ProjectContainerConfigResponse,
     ProjectResponse, ProjectVmConfigResponse, RestartSessionParams, RestoreSessionParams,
     RoleResponse, ScheduleCommandParams, ScheduledCommandResponse, SessionResponse,
-    SetContainerfileTemplateParams, SetMcpServersParams, SetRolesParams, UpdateProjectParams,
-    VmImageResponse, VmResponse, WorktreeResponse,
+    SetContainerfileTemplateParams, SetGlobalMcpServersParams, SetGlobalRolesParams,
+    SetMcpServersParams, SetRolesParams, UpdateProjectParams, VmImageResponse, VmResponse,
+    WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -107,7 +108,7 @@ fn session_to_response(s: &SharedSession) -> SessionResponse {
     SessionResponse {
         id: s.id.to_string(),
         name: s.name.clone(),
-        project_id: s.project_id.to_string(),
+        project_id: s.project_id.map(|p| p.to_string()).unwrap_or_default(),
         role: s.role.clone(),
         backend_type: s.backend_type.clone(),
         agent_session_id: s.agent_session_id.clone(),
@@ -336,6 +337,52 @@ impl ThurboxMcp {
         }
     }
 
+    #[tool(
+        description = "List all global roles. Global roles are shared across all projects and sessions. Returns a JSON array of role objects with name, description, permission_mode, allowed_tools, disallowed_tools, tools, append_system_prompt, and env fields."
+    )]
+    fn list_global_roles(&self) -> String {
+        let db = self.db.lock().unwrap();
+        match db.list_global_roles() {
+            Ok(roles) => {
+                let resp: Vec<RoleResponse> = roles.iter().map(role_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Atomically replace all global roles. Deletes existing global roles and inserts the provided list in a single transaction. To add a role, include all existing roles plus the new one. To clear all roles, pass an empty array. Each role has: name (1-64 chars, unique), description, permission_mode (default/plan/acceptEdits/dontAsk/bypassPermissions), allowed_tools, disallowed_tools, tools, append_system_prompt, env (object of key-value environment variables). See docs/MCP_ROLES.md for the complete guide."
+    )]
+    fn set_global_roles(&self, Parameters(params): Parameters<SetGlobalRolesParams>) -> String {
+        let db = self.db.lock().unwrap();
+
+        let roles: Vec<RoleConfig> = params
+            .roles
+            .into_iter()
+            .map(|r| RoleConfig {
+                name: r.name,
+                description: r.description,
+                permissions: RolePermissions {
+                    permission_mode: r.permission_mode,
+                    allowed_tools: r.allowed_tools,
+                    disallowed_tools: r.disallowed_tools,
+                    tools: r.tools,
+                    append_system_prompt: r.append_system_prompt,
+                    env: r.env,
+                },
+            })
+            .collect();
+
+        match db.replace_global_roles(&roles) {
+            Ok(()) => {
+                let resp: Vec<RoleResponse> = roles.iter().map(role_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
     #[tool(description = "List MCP servers for a project")]
     fn list_mcp_servers(&self, Parameters(params): Parameters<ListMcpServersParams>) -> String {
         let db = self.db.lock().unwrap();
@@ -376,6 +423,51 @@ impl ThurboxMcp {
             .collect();
 
         match db.replace_mcp_servers(projects[idx].id, &servers) {
+            Ok(()) => {
+                let resp: Vec<McpServerResponse> =
+                    servers.iter().map(mcp_server_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "List all global MCP servers. Global servers are shared across all projects and sessions. Returns a JSON array of server objects with name, command, args, and env fields."
+    )]
+    fn list_global_mcp_servers(&self) -> String {
+        let db = self.db.lock().unwrap();
+        match db.list_global_mcp_servers() {
+            Ok(servers) => {
+                let resp: Vec<McpServerResponse> =
+                    servers.iter().map(mcp_server_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Atomically replace all global MCP servers. Deletes existing global servers and inserts the provided list in a single transaction. To add a server, include all existing servers plus the new one. To clear all servers, pass an empty array."
+    )]
+    fn set_global_mcp_servers(
+        &self,
+        Parameters(params): Parameters<SetGlobalMcpServersParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+
+        let servers: Vec<McpServerConfig> = params
+            .servers
+            .into_iter()
+            .map(|s| McpServerConfig {
+                name: s.name,
+                command: s.command,
+                args: s.args,
+                env: s.env,
+            })
+            .collect();
+
+        match db.replace_global_mcp_servers(&servers) {
             Ok(()) => {
                 let resp: Vec<McpServerResponse> =
                     servers.iter().map(mcp_server_to_response).collect();
@@ -1577,6 +1669,123 @@ mod tests {
         assert!(v["error"].as_str().unwrap().contains("Project not found"));
     }
 
+    // ── Global roles MCP tool tests ──────────────────────────────
+
+    #[test]
+    fn list_global_roles_empty() {
+        let server = test_server();
+        let result = server.list_global_roles();
+        let v = parse_json(&result);
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
+    fn set_global_roles_and_list() {
+        let server = test_server();
+        let result = server.set_global_roles(Parameters(SetGlobalRolesParams {
+            roles: vec![RoleInput {
+                name: "architect".to_string(),
+                description: "Architecture role".to_string(),
+                permission_mode: Some("plan".to_string()),
+                allowed_tools: vec!["Read".to_string()],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: Some("You are an architect.".to_string()),
+                env: HashMap::new(),
+            }],
+        }));
+        let roles = parse_json(&result);
+        assert_eq!(roles[0]["name"], "architect");
+        assert_eq!(roles[0]["permission_mode"], "plan");
+
+        // Verify persistence via list
+        let list_result = server.list_global_roles();
+        let listed = parse_json(&list_result);
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["name"], "architect");
+    }
+
+    #[test]
+    fn set_global_roles_replaces_existing() {
+        let server = test_server();
+        server.set_global_roles(Parameters(SetGlobalRolesParams {
+            roles: vec![RoleInput {
+                name: "old".to_string(),
+                description: "Old role".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+                env: HashMap::new(),
+            }],
+        }));
+
+        // Replace with different role
+        server.set_global_roles(Parameters(SetGlobalRolesParams {
+            roles: vec![RoleInput {
+                name: "new".to_string(),
+                description: "New role".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+                env: HashMap::new(),
+            }],
+        }));
+
+        let listed = parse_json(&server.list_global_roles());
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["name"], "new");
+    }
+
+    #[test]
+    fn set_global_roles_empty_clears_all() {
+        let server = test_server();
+        server.set_global_roles(Parameters(SetGlobalRolesParams {
+            roles: vec![RoleInput {
+                name: "temp".to_string(),
+                description: "Temporary".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+                env: HashMap::new(),
+            }],
+        }));
+
+        // Clear
+        server.set_global_roles(Parameters(SetGlobalRolesParams { roles: vec![] }));
+
+        let listed = parse_json(&server.list_global_roles());
+        assert_eq!(listed, serde_json::json!([]));
+    }
+
+    #[test]
+    fn set_global_roles_with_env() {
+        let server = test_server();
+        let mut env = HashMap::new();
+        env.insert("SECRET".to_string(), "value".to_string());
+
+        server.set_global_roles(Parameters(SetGlobalRolesParams {
+            roles: vec![RoleInput {
+                name: "env-role".to_string(),
+                description: "Has env".to_string(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+                env,
+            }],
+        }));
+
+        let listed = parse_json(&server.list_global_roles());
+        assert_eq!(listed[0]["env"]["SECRET"], "value");
+    }
+
     #[test]
     fn list_sessions_empty() {
         let server = test_server();
@@ -1729,6 +1938,79 @@ mod tests {
         assert_eq!(v["mcp_servers"][0]["env"]["KEY"], "VAL");
     }
 
+    // ── Global MCP server tool tests ─────────────────────────────
+
+    #[test]
+    fn list_global_mcp_servers_empty() {
+        let server = test_server();
+        let result = server.list_global_mcp_servers();
+        let v = parse_json(&result);
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
+    fn set_global_mcp_servers_and_list() {
+        let server = test_server();
+        let result = server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
+            servers: vec![McpServerInput {
+                name: "filesystem".to_string(),
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "server-fs".to_string()],
+                env: HashMap::from([("TOKEN".to_string(), "abc".to_string())]),
+            }],
+        }));
+        let servers = parse_json(&result);
+        assert_eq!(servers[0]["name"], "filesystem");
+        assert_eq!(servers[0]["command"], "npx");
+
+        let listed = parse_json(&server.list_global_mcp_servers());
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["name"], "filesystem");
+        assert_eq!(listed[0]["env"]["TOKEN"], "abc");
+    }
+
+    #[test]
+    fn set_global_mcp_servers_replaces_existing() {
+        let server = test_server();
+        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
+            servers: vec![McpServerInput {
+                name: "old".to_string(),
+                command: "old-cmd".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            }],
+        }));
+        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
+            servers: vec![McpServerInput {
+                name: "new".to_string(),
+                command: "new-cmd".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            }],
+        }));
+
+        let listed = parse_json(&server.list_global_mcp_servers());
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["name"], "new");
+    }
+
+    #[test]
+    fn set_global_mcp_servers_empty_clears() {
+        let server = test_server();
+        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
+            servers: vec![McpServerInput {
+                name: "temp".to_string(),
+                command: "cmd".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            }],
+        }));
+        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams { servers: vec![] }));
+
+        let listed = parse_json(&server.list_global_mcp_servers());
+        assert_eq!(listed, serde_json::json!([]));
+    }
+
     // ── Session tool tests ─────────────────────────────────────
 
     fn insert_test_session(server: &ThurboxMcp, project_name: &str) -> SessionId {
@@ -1737,7 +2019,7 @@ mod tests {
         let session = SharedSession {
             id: SessionId::default(),
             name: "1".to_string(),
-            project_id: pid,
+            project_id: Some(pid),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),

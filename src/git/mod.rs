@@ -1,13 +1,84 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::warn;
 
 use crate::paths;
+
+/// Global cache for repo display names (path → name).
+static REPO_NAME_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, String>>> =
+    std::sync::OnceLock::new();
+
+fn repo_name_cache() -> &'static Mutex<HashMap<PathBuf, String>> {
+    REPO_NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Get a short display name for a repo directory.
+///
+/// Tries to extract the repo name from `git remote get-url origin`
+/// (e.g. `github.com/user/thurbox.git` → `"thurbox"`).
+/// Falls back to the directory's file name if no remote is found.
+/// Results are cached globally.
+pub fn repo_display_name(path: &Path) -> Option<String> {
+    let cache = repo_name_cache();
+    if let Ok(guard) = cache.lock() {
+        if let Some(name) = guard.get(path) {
+            return Some(name.clone());
+        }
+    }
+    let name = repo_name_from_remote(path).or_else(|| {
+        path.file_name()
+            .and_then(|f| f.to_str())
+            .map(|s| s.to_string())
+    })?;
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(path.to_path_buf(), name.clone());
+    }
+    Some(name)
+}
+
+/// Parse repo name from the origin remote URL.
+fn repo_name_from_remote(path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_repo_name_from_url(&url)
+}
+
+/// Extract repo name from a git remote URL.
+///
+/// Handles common formats:
+/// - `git@github.com:user/repo.git` → `"repo"`
+/// - `https://github.com/user/repo.git` → `"repo"`
+/// - `https://github.com/user/repo` → `"repo"`
+fn parse_repo_name_from_url(url: &str) -> Option<String> {
+    // Split on the last '/' (HTTPS/SSH with path) or ':' (SSH shorthand).
+    let after_sep = if url.contains('/') {
+        url.rsplit('/').next()?
+    } else {
+        url.rsplit(':').next()?
+    };
+    let name = after_sep.strip_suffix(".git").unwrap_or(after_sep);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
 
 /// List local branch names for a repo.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
@@ -650,5 +721,53 @@ mod tests {
 
         try_remove_by_age(&lock);
         assert!(lock.exists(), "fresh lock should be preserved");
+    }
+
+    // ── parse_repo_name_from_url ────────────────────────────────────
+
+    #[test]
+    fn parse_ssh_url() {
+        assert_eq!(
+            parse_repo_name_from_url("git@github.com:user/thurbox.git"),
+            Some("thurbox".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_https_url_with_git_suffix() {
+        assert_eq!(
+            parse_repo_name_from_url("https://github.com/org/api-server.git"),
+            Some("api-server".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_https_url_without_git_suffix() {
+        assert_eq!(
+            parse_repo_name_from_url("https://github.com/org/api-server"),
+            Some("api-server".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_empty_url() {
+        assert_eq!(parse_repo_name_from_url(""), None);
+    }
+
+    #[test]
+    fn parse_ssh_url_no_user_path() {
+        assert_eq!(
+            parse_repo_name_from_url("git@host:repo.git"),
+            Some("repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_url_trailing_slash() {
+        // Trailing slash produces empty last segment — rsplit('/').next() = ""
+        assert_eq!(
+            parse_repo_name_from_url("https://github.com/org/repo/"),
+            None
+        );
     }
 }

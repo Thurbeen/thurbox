@@ -57,8 +57,8 @@ pub struct SharedSession {
     /// Human-readable session name (e.g., "1", "Session 1").
     pub name: String,
 
-    /// Project this session belongs to.
-    pub project_id: ProjectId,
+    /// Project this session belongs to (None for project-less sessions).
+    pub project_id: Option<ProjectId>,
 
     /// Role assigned to this session (e.g., "developer", "reviewer").
     pub role: String,

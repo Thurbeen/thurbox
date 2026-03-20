@@ -170,7 +170,7 @@ mod tests {
         let session = SharedSession {
             id: SessionId::default(),
             name: "New Session".to_string(),
-            project_id: ProjectId::default(),
+            project_id: Some(ProjectId::default()),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -199,7 +199,7 @@ mod tests {
         let session = SharedSession {
             id: session_id,
             name: "Old Session".to_string(),
-            project_id: ProjectId::default(),
+            project_id: Some(ProjectId::default()),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -231,7 +231,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session A".to_string(),
-            project_id: ProjectId::default(),
+            project_id: Some(ProjectId::default()),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -249,7 +249,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session A (renamed)".to_string(), // Changed
-            project_id: ProjectId::default(),
+            project_id: Some(ProjectId::default()),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -279,7 +279,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id: ProjectId::default(),
+            project_id: Some(ProjectId::default()),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -297,7 +297,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id: ProjectId::default(),
+            project_id: Some(ProjectId::default()),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -344,7 +344,7 @@ mod tests {
         old_state.sessions.push(SharedSession {
             id: session1_id,
             name: "Session 1".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -359,7 +359,7 @@ mod tests {
         old_state.sessions.push(SharedSession {
             id: session2_id,
             name: "Session 2".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -378,7 +378,7 @@ mod tests {
         new_state.sessions.push(SharedSession {
             id: session1_id,
             name: "Session 1".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -394,7 +394,7 @@ mod tests {
         new_state.sessions.push(SharedSession {
             id: session2_id,
             name: "Session 2".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -410,7 +410,7 @@ mod tests {
         new_state.sessions.push(SharedSession {
             id: session3_id,
             name: "Session 3".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -440,7 +440,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -458,7 +458,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "reviewer".to_string(), // Changed
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -489,7 +489,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -507,7 +507,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -535,7 +535,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -553,7 +553,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -583,7 +583,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -605,7 +605,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -639,7 +639,7 @@ mod tests {
         old_state.sessions.push(SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -660,7 +660,7 @@ mod tests {
         new_state.sessions.push(SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -697,7 +697,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -715,7 +715,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "ssh".to_string(), // Changed
@@ -743,7 +743,7 @@ mod tests {
         let old_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -761,7 +761,7 @@ mod tests {
         let new_session = SharedSession {
             id: session_id,
             name: "Session".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -790,7 +790,7 @@ mod tests {
         old_state.sessions.push(SharedSession {
             id: session_id,
             name: "S".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -807,7 +807,7 @@ mod tests {
         new_state.sessions.push(SharedSession {
             id: session_id,
             name: "S".to_string(),
-            project_id,
+            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),

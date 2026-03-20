@@ -8,7 +8,7 @@
 use crate::session::SessionConfig;
 
 use super::mcp_editor_modal::McpEditorField;
-use super::{App, EditProjectField, InputFocus, RoleEditorView, TerminalView};
+use super::{App, InputFocus, RoleEditorView, TerminalView};
 use crate::agent::input;
 use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -102,6 +102,12 @@ impl App {
             return;
         }
 
+        // Settings overlay (tabbed list of roles / MCP servers) captures all input
+        if self.show_settings {
+            self.handle_settings_key(code);
+            return;
+        }
+
         // Role selector modal captures all input
         if matches!(self.modal, super::modals::Modal::RoleSelector(_)) {
             self.handle_role_selector_key(code);
@@ -114,15 +120,15 @@ impl App {
             return;
         }
 
-        // Edit-project modal captures all input
-        if matches!(self.modal, super::modals::Modal::EditProject(_)) {
-            self.handle_edit_project_key(code);
-            return;
-        }
-
         // Delete-project modal captures all input
         if matches!(self.modal, super::modals::Modal::DeleteProject(_)) {
             self.handle_delete_project_key(code);
+            return;
+        }
+
+        // Repo picker modal captures all input
+        if matches!(self.modal, super::modals::Modal::RepoPicker(_)) {
+            self.handle_repo_picker_key(code);
             return;
         }
 
@@ -159,13 +165,11 @@ impl App {
                     return;
                 }
                 KeyCode::Char('n') => {
-                    if self.focus == InputFocus::ProjectList {
-                        self.modal = super::modals::Modal::AddProject(
-                            super::modals::AddProjectModal::default(),
-                        );
-                    } else {
-                        self.spawn_session();
-                    }
+                    self.open_repo_picker();
+                    return;
+                }
+                KeyCode::Char('a') => {
+                    self.spawn_admin_session();
                     return;
                 }
                 KeyCode::Char('d') => match self.focus {
@@ -173,14 +177,10 @@ impl App {
                         self.close_active_session();
                         return;
                     }
-                    InputFocus::ProjectList => {
-                        self.show_delete_project_modal();
-                        return;
-                    }
                     InputFocus::Terminal => {} // forward to PTY
                 },
                 KeyCode::Char('e') => {
-                    self.open_edit_project_modal();
+                    self.open_settings();
                     return;
                 }
                 KeyCode::Char('r') => match self.focus {
@@ -216,34 +216,24 @@ impl App {
                 KeyCode::Char('h') => {
                     self.clear_search();
                     self.focus = match self.focus {
-                        InputFocus::ProjectList => InputFocus::Terminal,
-                        InputFocus::SessionList => InputFocus::ProjectList,
+                        InputFocus::SessionList => InputFocus::Terminal,
                         InputFocus::Terminal => InputFocus::SessionList,
                     };
                     return;
                 }
                 KeyCode::Char('j') => {
-                    if self.focus == InputFocus::ProjectList {
-                        self.switch_project_forward();
-                    } else {
-                        self.switch_session_forward();
-                    }
+                    self.switch_session_forward();
                     return;
                 }
                 KeyCode::Char('k') => {
-                    if self.focus == InputFocus::ProjectList {
-                        self.switch_project_backward();
-                    } else {
-                        self.switch_session_backward();
-                    }
+                    self.switch_session_backward();
                     return;
                 }
                 KeyCode::Char('l') => {
                     self.clear_search();
                     self.focus = match self.focus {
-                        InputFocus::ProjectList => InputFocus::SessionList,
                         InputFocus::SessionList => InputFocus::Terminal,
-                        InputFocus::Terminal => InputFocus::ProjectList,
+                        InputFocus::Terminal => InputFocus::SessionList,
                     };
                     return;
                 }
@@ -265,31 +255,8 @@ impl App {
         }
 
         match self.focus {
-            InputFocus::ProjectList => self.handle_project_list_key(code),
             InputFocus::SessionList => self.handle_session_list_key(code),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
-        }
-    }
-
-    fn handle_project_list_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.switch_project_forward();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.switch_project_backward();
-            }
-            KeyCode::Enter => {
-                self.focus = InputFocus::SessionList;
-            }
-            KeyCode::Char('/') => {
-                self.search_active = true;
-                self.search_target = super::SearchTarget::Projects;
-                self.search_input.buffer.clear();
-                self.search_input.cursor = 0;
-                self.project_match_positions.clear();
-            }
-            _ => {}
         }
     }
 
@@ -306,7 +273,6 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.search_active = true;
-                self.search_target = super::SearchTarget::Sessions;
                 self.search_input.buffer.clear();
                 self.search_input.cursor = 0;
                 self.session_match_positions.clear();
@@ -558,237 +524,6 @@ impl App {
         self.modal.close();
     }
 
-    fn handle_edit_project_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::EditProject(ref ep) = self.modal else {
-            return;
-        };
-        match ep.field {
-            EditProjectField::Name => self.handle_edit_project_name_key(code),
-            EditProjectField::Path => self.handle_edit_project_path_key(code),
-            EditProjectField::RepoList => self.handle_edit_project_repo_list_key(code),
-            EditProjectField::Roles => self.handle_edit_project_roles_key(code),
-            EditProjectField::McpServers => self.handle_edit_project_mcp_servers_key(code),
-        }
-    }
-
-    fn handle_edit_project_name_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => self.close_edit_project_modal(),
-            KeyCode::Tab => {
-                ep.field = EditProjectField::Path;
-            }
-            KeyCode::BackTab => {
-                ep.field = EditProjectField::McpServers;
-            }
-            KeyCode::Enter => self.submit_edit_project(),
-            KeyCode::Backspace => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                ep.name.backspace();
-            }
-            KeyCode::Delete => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                ep.name.delete();
-            }
-            KeyCode::Left => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                ep.name.move_left();
-            }
-            KeyCode::Right => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                ep.name.move_right();
-            }
-            KeyCode::Home => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                ep.name.home();
-            }
-            KeyCode::End => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                ep.name.end();
-            }
-            KeyCode::Char(c) => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                ep.name.insert(c);
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_edit_project_path_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => {
-                self.close_edit_project_modal();
-                return;
-            }
-            KeyCode::Tab => {
-                if let Some(suggestion) = ep.path_suggestion.take() {
-                    for c in suggestion.chars() {
-                        ep.path.insert(c);
-                    }
-                } else if !ep.repos.is_empty() {
-                    ep.field = EditProjectField::RepoList;
-                    ep.path_suggestion = None;
-                    return;
-                } else {
-                    ep.field = EditProjectField::Roles;
-                    ep.path_suggestion = None;
-                    return;
-                }
-            }
-            KeyCode::BackTab => {
-                ep.field = EditProjectField::Name;
-                ep.path_suggestion = None;
-                return;
-            }
-            KeyCode::Enter => {
-                let path = ep.path.value().trim().to_string();
-                if !path.is_empty() {
-                    ep.repos.push(paths::expand_tilde(&path));
-                    ep.repo_index = ep.repos.len().saturating_sub(1);
-                    ep.path.clear();
-                    ep.path_suggestion = None;
-                }
-                return;
-            }
-            KeyCode::Backspace => ep.path.backspace(),
-            KeyCode::Delete => ep.path.delete(),
-            KeyCode::Left => ep.path.move_left(),
-            KeyCode::Right => ep.path.move_right(),
-            KeyCode::Home => ep.path.home(),
-            KeyCode::End => ep.path.end(),
-            KeyCode::Char(c) => ep.path.insert(c),
-            _ => return,
-        }
-        self.update_edit_path_suggestion();
-    }
-
-    fn handle_edit_project_repo_list_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => self.close_edit_project_modal(),
-            KeyCode::Tab => {
-                ep.field = EditProjectField::Roles;
-            }
-            KeyCode::BackTab => {
-                ep.field = EditProjectField::Path;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if ep.repo_index + 1 < ep.repos.len() {
-                    ep.repo_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                ep.repo_index = ep.repo_index.saturating_sub(1);
-            }
-            KeyCode::Char('d') => {
-                if !ep.repos.is_empty() {
-                    ep.repos.remove(ep.repo_index);
-                    if ep.repo_index >= ep.repos.len() && ep.repo_index > 0 {
-                        ep.repo_index -= 1;
-                    }
-                    // If list becomes empty, switch to Path field
-                    if ep.repos.is_empty() {
-                        ep.field = EditProjectField::Path;
-                    }
-                }
-            }
-            KeyCode::Enter => self.submit_edit_project(),
-            _ => {}
-        }
-    }
-
-    fn handle_edit_project_roles_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => self.submit_edit_project(),
-            KeyCode::Tab => {
-                ep.field = EditProjectField::McpServers;
-            }
-            KeyCode::BackTab => {
-                if !ep.repos.is_empty() {
-                    ep.field = EditProjectField::RepoList;
-                } else {
-                    ep.field = EditProjectField::Path;
-                }
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !ep.role_editor_roles.is_empty()
-                    && ep.role_editor_list_index + 1 < ep.role_editor_roles.len()
-                {
-                    ep.role_editor_list_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                ep.role_editor_list_index = ep.role_editor_list_index.saturating_sub(1);
-            }
-            KeyCode::Char('a') => {
-                self.prepare_new_role_editor();
-                self.show_role_editor = true;
-            }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                let super::modals::Modal::EditProject(ref ep) = self.modal else {
-                    return;
-                };
-                if !ep.role_editor_roles.is_empty() {
-                    let idx = ep.role_editor_list_index;
-                    self.open_role_for_editing(idx);
-                    self.show_role_editor = true;
-                }
-            }
-            KeyCode::Char('d') => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                if !ep.role_editor_roles.is_empty() {
-                    ep.role_editor_roles.remove(ep.role_editor_list_index);
-                    if ep.role_editor_list_index >= ep.role_editor_roles.len()
-                        && ep.role_editor_list_index > 0
-                    {
-                        ep.role_editor_list_index -= 1;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Recompute path suggestion for edit-project modal.
-    fn update_edit_path_suggestion(&mut self) {
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
-        let value = ep.path.value().to_string();
-        let at_end = ep.path.cursor_pos() == value.chars().count();
-        if at_end && !value.is_empty() {
-            ep.path_suggestion = paths::complete_directory_path(&value);
-        } else {
-            ep.path_suggestion = None;
-        }
-    }
-
     fn handle_delete_project_key(&mut self, code: KeyCode) {
         let super::modals::Modal::DeleteProject(ref mut dp) = self.modal else {
             return;
@@ -914,6 +649,7 @@ impl App {
                 self.modal.close();
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
+                self.pending_normal_repos.clear();
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if sm.index < max_index {
@@ -961,10 +697,11 @@ impl App {
                             SessionConfig::default()
                         };
                         self.pending_container_config = Some(config);
-                        self.pending_container_mcp_servers = self
-                            .active_project()
-                            .map(|p| p.config.mcp_servers.clone())
-                            .filter(|s| !s.is_empty());
+                        self.pending_container_mcp_servers = if self.global_mcp_servers.is_empty() {
+                            None
+                        } else {
+                            Some(self.global_mcp_servers.clone())
+                        };
 
                         // Show containerfile picker (skip if only one file)
                         let containerfiles = self.load_containerfiles();
@@ -1001,10 +738,11 @@ impl App {
                             SessionConfig::default()
                         };
                         self.pending_vm_config = Some(config);
-                        self.pending_vm_mcp_servers = self
-                            .active_project()
-                            .map(|p| p.config.mcp_servers.clone())
-                            .filter(|s| !s.is_empty());
+                        self.pending_vm_mcp_servers = if self.global_mcp_servers.is_empty() {
+                            None
+                        } else {
+                            Some(self.global_mcp_servers.clone())
+                        };
                         self.start_vm_provisioning();
                     }
                     _ => {}
@@ -1058,6 +796,7 @@ impl App {
                 self.modal.close();
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
+                self.pending_normal_repos.clear();
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if bs.index + 1 < bs.branches.len() {
@@ -1087,6 +826,7 @@ impl App {
                 self.pending_base_branch = None;
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
+                self.pending_normal_repos.clear();
             }
             KeyCode::Enter => {
                 let new_branch = wn.name.value().trim().to_string();
@@ -1155,10 +895,7 @@ impl App {
     }
 
     fn handle_role_selector_key(&mut self, code: KeyCode) {
-        let role_count = self
-            .active_project()
-            .map(|p| p.config.roles.len())
-            .unwrap_or(0);
+        let role_count = self.global_roles.len();
         let super::modals::Modal::RoleSelector(ref mut rsel) = self.modal else {
             return;
         };
@@ -1168,6 +905,7 @@ impl App {
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
+                self.pending_spawn_project_index = None;
                 self.pending_vm_id = None;
                 // Undo the counter increment from prepare_spawn()
                 self.session_counter = self.session_counter.saturating_sub(1);
@@ -1187,13 +925,12 @@ impl App {
                     self.pending_spawn_config.take(),
                     self.pending_spawn_name.take(),
                 ) {
-                    if let Some(project) = self.active_project() {
-                        if let Some(role) = project.config.roles.get(role_index) {
-                            config.role = role.name.clone();
-                            config.permissions = role.permissions.clone();
-                            let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                            self.do_spawn_session(name, &config, worktrees, None);
-                        }
+                    if let Some(role) = self.global_roles.get(role_index) {
+                        config.role = role.name.clone();
+                        config.permissions = role.permissions.clone();
+                        let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                        let project_index = self.pending_spawn_project_index.take();
+                        self.do_spawn_session(name, &config, worktrees, project_index);
                     }
                 }
             }
@@ -1204,52 +941,40 @@ impl App {
     /// Navigate the role list — used by tests to simulate inline role list actions.
     #[cfg(test)]
     pub(crate) fn handle_role_editor_list_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
         match code {
             KeyCode::Esc => {
                 // Save & close
-                let roles_to_save = ep.role_editor_roles.clone();
-                if let Some(project) = self.active_project_mut() {
-                    project.config.roles = roles_to_save;
-                    let project_clone = project.clone();
-                    self.save_project_to_db(&project_clone);
+                if let Err(e) = self.db.replace_global_roles(&self.global_roles) {
+                    tracing::error!("Failed to save global roles: {e}");
                 }
                 self.show_role_editor = false;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !ep.role_editor_roles.is_empty()
-                    && ep.role_editor_list_index + 1 < ep.role_editor_roles.len()
+                if !self.global_roles.is_empty()
+                    && self.role_editor_list_index + 1 < self.global_roles.len()
                 {
-                    ep.role_editor_list_index += 1;
+                    self.role_editor_list_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                ep.role_editor_list_index = ep.role_editor_list_index.saturating_sub(1);
+                self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
             }
             KeyCode::Char('a') => {
                 self.prepare_new_role_editor();
             }
             KeyCode::Char('e') | KeyCode::Enter => {
-                let super::modals::Modal::EditProject(ref ep) = self.modal else {
-                    return;
-                };
-                if !ep.role_editor_roles.is_empty() {
-                    let idx = ep.role_editor_list_index;
+                if !self.global_roles.is_empty() {
+                    let idx = self.role_editor_list_index;
                     self.open_role_for_editing(idx);
                 }
             }
             KeyCode::Char('d') => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                if !ep.role_editor_roles.is_empty() {
-                    ep.role_editor_roles.remove(ep.role_editor_list_index);
-                    if ep.role_editor_list_index >= ep.role_editor_roles.len()
-                        && ep.role_editor_list_index > 0
+                if !self.global_roles.is_empty() {
+                    self.global_roles.remove(self.role_editor_list_index);
+                    if self.role_editor_list_index >= self.global_roles.len()
+                        && self.role_editor_list_index > 0
                     {
-                        ep.role_editor_list_index -= 1;
+                        self.role_editor_list_index -= 1;
                     }
                 }
             }
@@ -1363,23 +1088,130 @@ impl App {
         }
     }
 
-    /// Load roles from the active project into editor state — used by tests.
-    ///
-    /// This opens the EditProject modal and sets up role editing state.
-    #[cfg(test)]
+    /// Open the settings overlay (tabbed list of roles / MCP servers).
+    pub(crate) fn open_settings(&mut self) {
+        self.settings_tab = super::SettingsTab::Roles;
+        self.role_editor_list_index = 0;
+        self.mcp_server_list_index = 0;
+        self.show_settings = true;
+    }
+
+    /// Handle input in the settings overlay (tabbed list view).
+    pub(crate) fn handle_settings_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                // Save and close settings
+                if let Err(e) = self.db.replace_global_roles(&self.global_roles) {
+                    tracing::error!("Failed to save global roles: {e}");
+                }
+                if let Err(e) = self.db.replace_global_mcp_servers(&self.global_mcp_servers) {
+                    tracing::error!("Failed to save global MCP servers: {e}");
+                }
+                self.show_settings = false;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.settings_tab = match self.settings_tab {
+                    super::SettingsTab::Roles => super::SettingsTab::McpServers,
+                    super::SettingsTab::McpServers => super::SettingsTab::Roles,
+                };
+            }
+            _ => match self.settings_tab {
+                super::SettingsTab::Roles => self.handle_settings_roles_key(code),
+                super::SettingsTab::McpServers => self.handle_settings_mcp_key(code),
+            },
+        }
+    }
+
+    /// Handle keys for the Roles tab in the settings overlay.
+    fn handle_settings_roles_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.global_roles.is_empty()
+                    && self.role_editor_list_index + 1 < self.global_roles.len()
+                {
+                    self.role_editor_list_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
+            }
+            KeyCode::Char('a') => {
+                self.prepare_new_role_editor();
+                self.show_role_editor = true;
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if !self.global_roles.is_empty() {
+                    let idx = self.role_editor_list_index;
+                    self.open_role_for_editing(idx);
+                    self.show_role_editor = true;
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.global_roles.is_empty() {
+                    self.global_roles.remove(self.role_editor_list_index);
+                    if self.role_editor_list_index >= self.global_roles.len()
+                        && self.role_editor_list_index > 0
+                    {
+                        self.role_editor_list_index -= 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle keys for the MCP Servers tab in the settings overlay.
+    fn handle_settings_mcp_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.global_mcp_servers.is_empty()
+                    && self.mcp_server_list_index + 1 < self.global_mcp_servers.len()
+                {
+                    self.mcp_server_list_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mcp_server_list_index = self.mcp_server_list_index.saturating_sub(1);
+            }
+            KeyCode::Char('a') => {
+                self.open_new_mcp_editor();
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if !self.global_mcp_servers.is_empty() {
+                    let idx = self.mcp_server_list_index;
+                    self.open_mcp_for_editing(idx);
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.global_mcp_servers.is_empty() {
+                    self.global_mcp_servers.remove(self.mcp_server_list_index);
+                    if self.mcp_server_list_index >= self.global_mcp_servers.len()
+                        && self.mcp_server_list_index > 0
+                    {
+                        self.mcp_server_list_index -= 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the MCP editor for a new server.
+    fn open_new_mcp_editor(&mut self) {
+        self.prepare_new_mcp_editor();
+        self.show_mcp_editor = true;
+    }
+
+    /// Open the MCP editor for an existing server at the given index.
+    fn open_mcp_for_editing(&mut self, idx: usize) {
+        self.open_mcp_server_for_editing(idx);
+        self.show_mcp_editor = true;
+    }
+
+    /// Open the global role editor (list view).
+    #[allow(dead_code)]
     pub(crate) fn open_role_editor(&mut self) {
-        let Some(project) = self.active_project() else {
-            return;
-        };
-        let roles = project.config.roles.clone();
-        // Ensure the EditProject modal is open (tests may not have it open yet)
-        if !matches!(self.modal, super::modals::Modal::EditProject(_)) {
-            self.open_edit_project_modal();
-        }
-        if let super::modals::Modal::EditProject(ref mut ep) = self.modal {
-            ep.role_editor_roles = roles;
-            ep.role_editor_list_index = 0;
-        }
+        self.role_editor_list_index = 0;
         self.role_editor_view = RoleEditorView::List;
         self.show_role_editor = true;
     }
@@ -1399,10 +1231,7 @@ impl App {
     }
 
     pub(crate) fn open_role_for_editing(&mut self, index: usize) {
-        let super::modals::Modal::EditProject(ref ep) = self.modal else {
-            return;
-        };
-        let Some(role) = ep.role_editor_roles.get(index) else {
+        let Some(role) = self.global_roles.get(index) else {
             return;
         };
         let name = role.name.clone();
@@ -1458,55 +1287,6 @@ impl App {
             self.show_discard_confirmation = true;
         } else {
             self.close_mcp_editor();
-        }
-    }
-
-    fn handle_edit_project_mcp_servers_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => self.submit_edit_project(),
-            KeyCode::Tab => {
-                ep.field = EditProjectField::Name;
-            }
-            KeyCode::BackTab => {
-                ep.field = EditProjectField::Roles;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !ep.mcp_servers.is_empty() && ep.mcp_server_index + 1 < ep.mcp_servers.len() {
-                    ep.mcp_server_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                ep.mcp_server_index = ep.mcp_server_index.saturating_sub(1);
-            }
-            KeyCode::Char('a') => {
-                self.prepare_new_mcp_editor();
-                self.show_mcp_editor = true;
-            }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                let super::modals::Modal::EditProject(ref ep) = self.modal else {
-                    return;
-                };
-                if !ep.mcp_servers.is_empty() {
-                    let idx = ep.mcp_server_index;
-                    self.open_mcp_server_for_editing(idx);
-                    self.show_mcp_editor = true;
-                }
-            }
-            KeyCode::Char('d') => {
-                let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-                    return;
-                };
-                if !ep.mcp_servers.is_empty() {
-                    ep.mcp_servers.remove(ep.mcp_server_index);
-                    if ep.mcp_server_index >= ep.mcp_servers.len() && ep.mcp_server_index > 0 {
-                        ep.mcp_server_index -= 1;
-                    }
-                }
-            }
-            _ => {}
         }
     }
 
@@ -1642,6 +1422,199 @@ impl App {
                 self.set_error(format!("Failed to list branches: {e:#}"));
                 self.pending_repo_path = None;
             }
+        }
+    }
+
+    // ── Repo Picker Modal ────────────────────────────────────────────────
+
+    fn handle_repo_picker_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        match rp.focus {
+            super::modals::RepoPickerFocus::List => self.handle_repo_picker_list_key(code),
+            super::modals::RepoPickerFocus::Input => self.handle_repo_picker_input_key(code),
+        }
+    }
+
+    fn handle_repo_picker_list_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+            }
+            KeyCode::Tab => {
+                rp.focus = super::modals::RepoPickerFocus::Input;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !rp.bookmarks.is_empty() && rp.list_index + 1 < rp.bookmarks.len() {
+                    rp.list_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                rp.list_index = rp.list_index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') => {
+                if let Some(sel) = rp.selected.get_mut(rp.list_index) {
+                    *sel = !*sel;
+                }
+            }
+            KeyCode::Char('w') => {
+                let idx = rp.list_index;
+                if let Some(wt) = rp.worktree.get_mut(idx) {
+                    *wt = !*wt;
+                    // Auto-select when toggling worktree on
+                    if *wt {
+                        if let Some(sel) = rp.selected.get_mut(idx) {
+                            *sel = true;
+                        }
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                self.submit_repo_picker();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_repo_picker_input_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+                return;
+            }
+            KeyCode::Tab => {
+                if let Some(suggestion) = rp.path_suggestion.take() {
+                    for c in suggestion.chars() {
+                        rp.path_input.insert(c);
+                    }
+                } else {
+                    rp.focus = super::modals::RepoPickerFocus::List;
+                    rp.path_suggestion = None;
+                    return;
+                }
+            }
+            KeyCode::BackTab => {
+                rp.focus = super::modals::RepoPickerFocus::List;
+                rp.path_suggestion = None;
+                return;
+            }
+            KeyCode::Enter => {
+                let path = rp.path_input.value().trim().to_string();
+                if !path.is_empty() {
+                    let expanded = paths::expand_tilde(&path);
+                    // Add to bookmarks list if not already present
+                    if !rp.bookmarks.contains(&expanded) {
+                        rp.bookmarks.push(expanded.clone());
+                        rp.selected.push(true); // auto-select newly added
+                        rp.worktree.push(false);
+                    } else {
+                        // Already in list — just select it
+                        if let Some(idx) = rp.bookmarks.iter().position(|p| p == &expanded) {
+                            rp.selected[idx] = true;
+                        }
+                    }
+                    // Persist as bookmark
+                    if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
+                        error!("Failed to save repo bookmark: {e}");
+                    }
+                    let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+                        return;
+                    };
+                    rp.path_input.clear();
+                    rp.path_suggestion = None;
+                }
+                return;
+            }
+            KeyCode::Backspace => rp.path_input.backspace(),
+            KeyCode::Delete => rp.path_input.delete(),
+            KeyCode::Left => rp.path_input.move_left(),
+            KeyCode::Right => rp.path_input.move_right(),
+            KeyCode::Home => rp.path_input.home(),
+            KeyCode::End => rp.path_input.end(),
+            KeyCode::Char(c) => rp.path_input.insert(c),
+            _ => return,
+        }
+        self.update_repo_picker_path_suggestion();
+    }
+
+    fn update_repo_picker_path_suggestion(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let value = rp.path_input.value().to_string();
+        let at_end = rp.path_input.cursor_pos() == value.chars().count();
+        if at_end && !value.is_empty() {
+            rp.path_suggestion = paths::complete_directory_path(&value);
+        } else {
+            rp.path_suggestion = None;
+        }
+    }
+
+    fn submit_repo_picker(&mut self) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+
+        // Partition selected repos into worktree and normal sets.
+        let mut worktree_repos: Vec<std::path::PathBuf> = Vec::new();
+        let mut normal_repos: Vec<std::path::PathBuf> = Vec::new();
+        for (i, path) in rp.bookmarks.iter().enumerate() {
+            let selected = rp.selected.get(i).copied().unwrap_or(false);
+            if !selected {
+                continue;
+            }
+            let is_worktree = rp.worktree.get(i).copied().unwrap_or(false);
+            if is_worktree {
+                worktree_repos.push(path.clone());
+            } else {
+                normal_repos.push(path.clone());
+            }
+        }
+
+        // Touch all selected bookmarks so they stay sorted by recency.
+        for repo in worktree_repos.iter().chain(normal_repos.iter()) {
+            if let Err(e) = self.db.upsert_repo_bookmark(repo) {
+                error!("Failed to touch repo bookmark: {e}");
+            }
+        }
+
+        self.modal.close();
+
+        if worktree_repos.is_empty() && normal_repos.is_empty() {
+            // No repos selected — spawn with HOME as cwd
+            let mut config = SessionConfig::default();
+            if let Some(home) = std::env::var_os("HOME") {
+                config.cwd = Some(std::path::PathBuf::from(home));
+            }
+            self.spawn_session_with_config(&config);
+        } else if !worktree_repos.is_empty() {
+            // Has worktree repos — go to branch selection.
+            // Store normal repos for inclusion after worktree creation.
+            self.pending_repo_path = Some(worktree_repos[0].clone());
+            self.pending_all_repos = if worktree_repos.len() > 1 {
+                Some(worktree_repos)
+            } else {
+                None
+            };
+            self.pending_normal_repos = normal_repos;
+            self.start_branch_selection();
+        } else {
+            // All normal repos — go to session mode selection.
+            self.pending_repo_path = Some(normal_repos[0].clone());
+            self.pending_all_repos = if normal_repos.len() > 1 {
+                Some(normal_repos)
+            } else {
+                None
+            };
+            self.modal =
+                super::modals::Modal::SessionMode(super::modals::SessionModeModal { index: 0 });
         }
     }
 }

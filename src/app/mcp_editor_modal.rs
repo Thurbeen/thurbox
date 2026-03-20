@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use tracing::error;
+
 use crate::session::McpServerConfig;
 
 use super::App;
@@ -27,12 +29,9 @@ impl App {
         self.mcp_editor_snapshot = Some(self.capture_mcp_editor_snapshot());
     }
 
-    /// Populate the MCP editor from an existing server config.
+    /// Populate the MCP editor from an existing global server config.
     pub(crate) fn open_mcp_server_for_editing(&mut self, idx: usize) {
-        let super::modals::Modal::EditProject(ref ep) = self.modal else {
-            return;
-        };
-        let Some(server) = ep.mcp_servers.get(idx) else {
+        let Some(server) = self.global_mcp_servers.get(idx) else {
             return;
         };
         let name = server.name.clone();
@@ -52,7 +51,7 @@ impl App {
         self.mcp_editor_snapshot = Some(self.capture_mcp_editor_snapshot());
     }
 
-    /// Validate and save the MCP editor state to the working copy.
+    /// Validate and save the MCP editor state to the global MCP servers list.
     pub(crate) fn submit_mcp_editor(&mut self) {
         let name = self.mcp_editor_name.value().trim().to_string();
         let command = self.mcp_editor_command.value().trim().to_string();
@@ -61,13 +60,9 @@ impl App {
             return;
         }
 
-        let super::modals::Modal::EditProject(ref ep) = self.modal else {
-            return;
-        };
-
         // Check duplicate names (excluding the server being edited)
-        let is_duplicate = ep
-            .mcp_servers
+        let is_duplicate = self
+            .global_mcp_servers
             .iter()
             .enumerate()
             .any(|(i, s)| s.name == name && Some(i) != self.mcp_editor_editing_index);
@@ -93,15 +88,16 @@ impl App {
             env,
         };
 
-        let super::modals::Modal::EditProject(ref mut ep) = self.modal else {
-            return;
-        };
-
         if let Some(idx) = self.mcp_editor_editing_index {
-            ep.mcp_servers[idx] = server;
+            self.global_mcp_servers[idx] = server;
         } else {
-            ep.mcp_servers.push(server);
-            ep.mcp_server_index = ep.mcp_servers.len().saturating_sub(1);
+            self.global_mcp_servers.push(server);
+            self.mcp_server_list_index = self.global_mcp_servers.len().saturating_sub(1);
+        }
+
+        // Persist to DB
+        if let Err(e) = self.db.replace_global_mcp_servers(&self.global_mcp_servers) {
+            error!("Failed to save global MCP servers to DB: {e}");
         }
 
         self.show_mcp_editor = false;

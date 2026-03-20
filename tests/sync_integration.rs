@@ -14,7 +14,7 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
     SharedSession {
         id,
         name: name.to_string(),
-        project_id,
+        project_id: Some(project_id),
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
@@ -428,7 +428,7 @@ fn db_session_metadata_preserved_across_instances() {
     let session = SharedSession {
         id: session_id,
         name: "Dev Session".to_string(),
-        project_id: pid,
+        project_id: Some(pid),
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
@@ -613,7 +613,7 @@ fn db_project_rename_does_not_affect_sessions() {
     let sessions = db_b.list_active_sessions().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].id, sid);
-    assert_eq!(sessions[0].project_id, pid);
+    assert_eq!(sessions[0].project_id, Some(pid));
 }
 
 #[test]

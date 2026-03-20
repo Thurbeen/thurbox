@@ -259,6 +259,12 @@ pub struct SessionInfo {
     pub provisioning_step: Option<String>,
     /// Agent metrics from Claude CLI statusline.
     pub agent_metrics: Option<AgentMetrics>,
+    /// Whether this is the admin session (internal, never user-visible).
+    pub is_admin: bool,
+    /// Cached display names for repos, resolved from git remote or directory name.
+    /// Order: worktree repos first, then non-worktree additional dirs.
+    /// Populated by the app layer at spawn/restore time.
+    pub repo_display_names: Vec<String>,
 }
 
 impl SessionInfo {
@@ -278,6 +284,8 @@ impl SessionInfo {
             container_id: None,
             provisioning_step: None,
             agent_metrics: None,
+            is_admin: false,
+            repo_display_names: Vec::new(),
         }
     }
 }

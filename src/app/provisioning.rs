@@ -44,10 +44,6 @@ impl App {
         placeholder.vm_id = Some(vm_id.clone());
         placeholder.provisioning_step = Some("Checking tools...".to_string());
 
-        // Add placeholder to the active project's session list so it renders.
-        if let Some(project) = self.projects.get_mut(self.active_project_index) {
-            project.session_ids.push(placeholder.id);
-        }
         self.vm_placeholder = Some(placeholder);
 
         self.set_info("Provisioning VM...".to_string());
@@ -269,10 +265,6 @@ impl App {
         placeholder.container_id = Some(container_id.clone());
         placeholder.provisioning_step = Some("Preparing workspace...".to_string());
 
-        // Add placeholder to the active project's session list so it renders.
-        if let Some(project) = self.projects.get_mut(self.active_project_index) {
-            project.session_ids.push(placeholder.id);
-        }
         self.container_placeholder = Some(placeholder);
 
         self.set_info("Provisioning container...".to_string());

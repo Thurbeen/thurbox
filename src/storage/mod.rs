@@ -15,6 +15,7 @@ pub mod audit;
 pub mod containers;
 mod mcp_servers;
 mod projects;
+pub mod repo_bookmarks;
 mod roles;
 mod scheduled_commands;
 mod schema;
