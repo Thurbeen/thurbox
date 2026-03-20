@@ -149,7 +149,6 @@ impl App {
 
         // Ctrl+V: paste from clipboard
         if code == KeyCode::Char('v') && mods.contains(KeyModifiers::CONTROL) {
-            self.text_selection = None;
             self.paste_from_clipboard();
             return;
         }

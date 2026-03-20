@@ -347,6 +347,8 @@ impl TextInput {
 
 pub enum AppMessage {
     KeyPress(KeyCode, KeyModifiers),
+    /// Text pasted via the terminal's bracketed paste mode.
+    Paste(String),
     MouseScrollUp,
     MouseScrollDown,
     MouseClick {
@@ -1520,6 +1522,7 @@ impl App {
     pub fn update(&mut self, msg: AppMessage) {
         match msg {
             AppMessage::KeyPress(code, mods) => self.handle_key(code, mods),
+            AppMessage::Paste(text) => self.handle_paste(text),
             AppMessage::MouseScrollUp => self.scroll_terminal_up(MOUSE_SCROLL_LINES),
             AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
             AppMessage::MouseClick { x, y, modifiers } => self.handle_mouse_click(x, y, modifiers),
@@ -1708,7 +1711,40 @@ impl App {
         self.set_status(StatusLevel::Info, "Copied to clipboard");
     }
 
+    /// Wrap text in bracketed paste escape sequences and send it to the
+    /// active session (or shell pane, if focused).
+    fn send_paste_to_session(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(session) = self.sessions.get(self.active_index) {
+            let mut paste = b"\x1b[200~".to_vec();
+            paste.extend_from_slice(text.as_bytes());
+            paste.extend_from_slice(b"\x1b[201~");
+            let result = if let (TerminalView::Shell, Some(shell)) =
+                (self.active_terminal_view(), &session.shell_pane)
+            {
+                shell.send_input(paste)
+            } else {
+                session.send_input(paste)
+            };
+            if let Err(e) = result {
+                error!("Failed to send pasted input: {e}");
+            }
+        }
+    }
+
+    /// Handle a native paste event from crossterm's bracketed paste capture.
+    fn handle_paste(&mut self, text: String) {
+        self.text_selection = None;
+        self.selected_text_cache = None;
+        self.send_paste_to_session(&text);
+    }
+
     fn paste_from_clipboard(&mut self) {
+        self.text_selection = None;
+        self.selected_text_cache = None;
+
         let Some(clipboard) = &mut self.clipboard else {
             self.set_error("Clipboard not available");
             return;
@@ -1722,23 +1758,7 @@ impl App {
             }
         };
 
-        if text.is_empty() {
-            return;
-        }
-
-        if let Some(session) = self.sessions.get(self.active_index) {
-            let bytes = text.into_bytes();
-            let result = if let (TerminalView::Shell, Some(shell)) =
-                (self.active_terminal_view(), &session.shell_pane)
-            {
-                shell.send_input(bytes)
-            } else {
-                session.send_input(bytes)
-            };
-            if let Err(e) = result {
-                error!("Failed to send pasted input: {e}");
-            }
-        }
+        self.send_paste_to_session(&text);
     }
 
     pub(crate) fn submit_role_editor(&mut self) {
@@ -7521,5 +7541,55 @@ mod tests {
         // Active session should shift to the remaining one
         assert!(app.has_active_session());
         assert_eq!(app.sessions[app.active_index].info.id, first_session_id);
+    }
+
+    #[test]
+    fn handle_paste_clears_selection() {
+        let mut app = app_with_sessions(1);
+        app.text_selection = Some(Selection::new(
+            TermPos { row: 0, col: 0 },
+            PaneBounds::from_rect(ratatui::layout::Rect::new(0, 0, 80, 24)),
+        ));
+        app.selected_text_cache = Some("old".to_string());
+
+        app.handle_paste("hello".to_string());
+
+        assert!(app.text_selection.is_none());
+        assert!(app.selected_text_cache.is_none());
+    }
+
+    #[test]
+    fn paste_message_dispatches_to_handle_paste() {
+        let mut app = app_with_sessions(1);
+        app.text_selection = Some(Selection::new(
+            TermPos { row: 0, col: 0 },
+            PaneBounds::from_rect(ratatui::layout::Rect::new(0, 0, 80, 24)),
+        ));
+
+        app.update(AppMessage::Paste("pasted text".to_string()));
+
+        assert!(app.text_selection.is_none());
+    }
+
+    #[test]
+    fn send_paste_to_session_noop_when_no_sessions() {
+        let mut app = App::new(
+            24,
+            80,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        // Should not panic with no active sessions
+        app.send_paste_to_session("hello");
+    }
+
+    #[test]
+    fn send_paste_to_session_noop_for_empty_text() {
+        let mut app = app_with_sessions(1);
+        // Should return early without error for empty text
+        app.send_paste_to_session("");
     }
 }

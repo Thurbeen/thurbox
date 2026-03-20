@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEventKind, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 
@@ -21,6 +22,11 @@ async fn main() -> Result<()> {
     // Set up panic hook that restores terminal before printing the panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = execute!(
+            std::io::stdout(),
+            DisableBracketedPaste,
+            DisableMouseCapture
+        );
         ratatui::restore();
         original_hook(panic_info);
     }));
@@ -105,7 +111,7 @@ async fn main() -> Result<()> {
     let db = Database::open(&db_path).expect("Failed to open database");
 
     let mut terminal = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)?;
+    execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let size = terminal.size()?;
 
     let mut app = App::new(
@@ -135,7 +141,11 @@ async fn main() -> Result<()> {
     let res = run_loop(&mut terminal, &mut app).await;
 
     app.shutdown();
-    execute!(std::io::stdout(), DisableMouseCapture)?;
+    execute!(
+        std::io::stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture
+    )?;
     ratatui::restore();
 
     res
@@ -168,6 +178,7 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
                     }),
                     _ => None,
                 },
+                Event::Paste(text) => Some(AppMessage::Paste(text)),
                 Event::Resize(cols, rows) => Some(AppMessage::Resize(cols, rows)),
                 _ => None,
             };
