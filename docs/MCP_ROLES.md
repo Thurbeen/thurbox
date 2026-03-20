@@ -12,9 +12,9 @@ For TUI-based role editing, see the
 
 ## Overview
 
-Roles are per-project permission profiles stored in Thurbox's
-SQLite database. When a session starts, its assigned role
-determines the Claude CLI flags passed at spawn time:
+Roles are global permission presets stored in Thurbox's SQLite
+database. When a session starts, its assigned role determines
+the Claude CLI flags passed at spawn time:
 
 ```text
 claude --permission-mode <mode> \
@@ -28,9 +28,9 @@ injected into the session's tmux pane at spawn time via
 `tmux new-window -e KEY=VALUE`. This is useful for API keys,
 custom paths, or feature flags.
 
-Each project can have zero or more roles. Sessions select a role
-at creation time. If no roles are defined, sessions spawn with
-default (empty) permissions.
+Roles are shared across all projects and sessions. Sessions
+select a role at creation time. If no roles are defined, sessions
+spawn with the built-in "developer" role (`acceptEdits` mode).
 
 ---
 
@@ -133,7 +133,7 @@ Tool lists are JSON arrays of strings:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | yes | — | Role identifier, unique per project. 1-64 chars, trimmed. |
+| `name` | string | yes | — | Role identifier, globally unique. 1-64 chars, trimmed. |
 | `description` | string | yes | — | Human-readable summary of the role's purpose. |
 | `permission_mode` | string \| null | no | `null` | One of: `default`, `plan`, `acceptEdits`, `dontAsk`, `bypassPermissions`. |
 | `allowed_tools` | string[] | no | `[]` | Tools that auto-approve. See [Tool Name Format](#tool-name-format). |
@@ -159,13 +159,9 @@ Tool lists are JSON arrays of strings:
 
 ### list_roles
 
-List all roles for a project.
+List all global roles.
 
-**Parameters**:
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project` | string | yes | Project name (case-insensitive) or UUID |
+**Parameters**: None required.
 
 **Response**: JSON array of role objects.
 
@@ -176,9 +172,7 @@ List all roles for a project.
   "method": "tools/call",
   "params": {
     "name": "list_roles",
-    "arguments": {
-      "project": "my-app"
-    }
+    "arguments": {}
   }
 }
 ```
@@ -208,13 +202,12 @@ List all roles for a project.
 
 ### set_roles
 
-Atomically replace all roles for a project.
+Atomically replace all global roles.
 
 **Parameters**:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `project` | string | yes | Project name (case-insensitive) or UUID |
 | `roles` | RoleInput[] | yes | Complete list of roles (replaces all existing) |
 
 **Behavior**:
@@ -235,7 +228,6 @@ Atomically replace all roles for a project.
   "params": {
     "name": "set_roles",
     "arguments": {
-      "project": "my-app",
       "roles": [
         {
           "name": "developer",
@@ -262,7 +254,6 @@ Atomically replace all roles for a project.
 
 **Error cases**:
 
-- Project not found: `{"error": "Project not found: <name>"}`
 - Database error: `{"error": "<sqlite error message>"}`
 
 ---
@@ -384,4 +375,4 @@ Configure `thurbox-mcp` in `.mcp.json`:
 Then use the `set_roles` and `list_roles` tools directly.
 After setting roles, new sessions can select any configured role.
 The role selector appears when creating a session (`Ctrl+N`)
-in a project with multiple roles defined.
+if two or more global roles are defined.

@@ -178,10 +178,10 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `create_project` | Create a new project with name and repo paths |
 | `update_project` | Update project name and/or repos (partial update) |
 | `delete_project` | Soft-delete a project (preserves for undo) |
-| `list_roles` | List all roles for a project (by name or UUID) |
-| `set_roles` | Atomically replace all roles for a project |
-| `list_mcp_servers` | List MCP servers for a project |
-| `set_mcp_servers` | Set MCP servers for a project |
+| `list_roles` | List all global roles |
+| `set_roles` | Atomically replace all global roles |
+| `list_mcp_servers` | List all global MCP servers |
+| `set_mcp_servers` | Set global MCP servers |
 | `list_sessions` | List sessions, optionally filtered by project |
 | `get_session` | Get a session by UUID |
 | `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
@@ -203,9 +203,10 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `get_scheduled_command` | Get a scheduled command by ID |
 | `cancel_scheduled_command` | Cancel a pending scheduled command |
 
-**Role Management**: `set_roles` performs an atomic replacement —
-all existing roles are deleted and replaced in a single transaction.
-To add a role, include all existing roles plus the new one.
+**Role Management**: Roles are global presets (not per-project).
+`set_roles` performs an atomic replacement — all existing roles
+are deleted and replaced in a single transaction. To add a role,
+include all existing roles plus the new one.
 See [`docs/MCP_ROLES.md`](docs/MCP_ROLES.md) for the complete
 role configuration guide including permission modes, tool name
 format, and example role patterns.
@@ -271,10 +272,11 @@ app      ← coordinator, imports all modules
   `ProjectConfig`, `ProjectInfo`. Imports `session` only.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
-  >=120 = optional 3-panel). Widgets: `project_list` (two-section
-  left panel), `terminal_view`, `info_panel`, `status_bar`.
-  `selection.rs` handles mouse-drag text selection,
-  `links.rs` detects and highlights clickable URLs.
+  >=120 = optional 3-panel). Widgets: `project_list` (session
+  list with repo/branch display), `terminal_view`, `info_panel`,
+  `status_bar`, `repo_picker_modal` (repo selection with
+  worktree toggle). `selection.rs` handles mouse-drag text
+  selection, `links.rs` detects and highlights clickable URLs.
 - **`mcp/`** — MCP server (`thurbox-mcp` binary). Exposes
   project/role/session/VM CRUD over stdio or Streamable HTTP
   JSON-RPC. Shares the same SQLite database as the TUI.
@@ -328,7 +330,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | Key | Action | Mnemonic |
 |-----|--------|----------|
 | `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
-| `Ctrl+N` | New project/session | **N**ew |
+| `Ctrl+N` | New session (opens repo picker) | **N**ew |
 | `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+P` | Schedule command for active session | **P**rogram |
@@ -338,7 +340,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+K` | Select previous project or session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session/project | Vim: **d** = delete |
-| `Ctrl+E` | Edit active project (name, repos, roles, MCP servers) | **E**dit |
+| `Ctrl+E` | Edit active project (name, repos) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
 | `Ctrl+Z` | Undo session/project delete | **Z** = undo |

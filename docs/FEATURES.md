@@ -58,9 +58,8 @@ Admin project is present. Users create their first project via
 ### Edit project modal
 
 `Ctrl+E` opens a pre-populated modal for editing the active
-project's name, repositories, and roles. The modal mirrors the
-add-project flow (Name → Path → RepoList) with an inline Roles
-list that supports j/k navigation, add/edit/delete operations.
+project's name and repositories. Roles and MCP servers are
+managed globally (see Role Editor and MCP Server sections).
 
 **Why not just delete and recreate?**
 
@@ -72,22 +71,22 @@ list that supports j/k navigation, add/edit/delete operations.
   creation time never changes, even when the project is renamed.
 - Users can fix typos or add repos without losing active work.
 
-**Why a separate modal from add-project?**
+### Session creation flow
 
-- The edit modal needs pre-populated fields and a Roles section.
-  Overloading the add modal with "mode" logic would complicate
-  both the state machine and the key handlers.
-- Separate modals keep each flow simple and independently testable.
+`Ctrl+N` opens the repo picker modal:
 
-#### Roles field behavior
+1. **Repo picker** — select repos from bookmarks (Space to
+   toggle, `w` to mark as worktree). Add new paths via text
+   input with filesystem autocomplete.
+2. **Session mode** — Normal / Worktree / Container / VM.
+   If any repo is marked as worktree, skips directly to branch
+   selection.
+3. **Branch selector** — pick base branch (worktree mode only).
+4. **Branch name** — enter new branch name (worktree mode only).
+5. **Role selector** — pick from global roles (if 2+ defined).
 
-- The Roles field shows an inline list of configured roles with
-  j/k navigation, `a` to add, `e`/`Enter` to edit, `d` to delete.
-- Editing or adding a role opens the role editor detail form as
-  an overlay. `Esc` from the role editor returns to the Roles
-  field in the edit-project modal.
-- `Esc` from the Roles field saves all changes (name, repos,
-  roles) and closes the modal.
+Mixed sessions are supported: worktree repos get a new branch
+while normal repos are added as-is via `--add-dir`.
 
 ---
 
@@ -132,7 +131,7 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+L` | Global | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
 | `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
-| `Ctrl+E` | Global | Edit active project (name, repos, roles, MCP servers) | **E**dit |
+| `Ctrl+E` | Global | Edit active project (name, repos) | **E**dit |
 | `Ctrl+R` | Global | Restart active session | **R**estart |
 | `Ctrl+S` | Global | Sync all worktree sessions with origin/main | **S**ync |
 | `Ctrl+Z` | Global | Undo session/project delete | **Z** = undo |
@@ -149,10 +148,13 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `j` / `Down` | Session list | Next session | |
 | `k` / `Up` | Session list | Previous session | |
 | `Enter` | Session list | Focus terminal | |
-| `j` / `Down` | Repo selector | Next repo | |
-| `k` / `Up` | Repo selector | Previous repo | |
-| `Enter` | Repo selector | Select repo and spawn session | |
-| `Esc` | Repo selector | Cancel selection | |
+| `j` / `Down` | Repo picker | Next repo | |
+| `k` / `Up` | Repo picker | Previous repo | |
+| `Space` | Repo picker | Toggle repo selection | |
+| `w` | Repo picker | Toggle worktree mode for repo | |
+| `Tab` | Repo picker | Switch to path input | |
+| `Enter` | Repo picker | Confirm selection | |
+| `Esc` | Repo picker | Cancel | |
 | `j` / `Down` | Session mode modal | Next mode | |
 | `k` / `Up` | Session mode modal | Previous mode | |
 | `Enter` | Session mode modal | Select mode | |
@@ -581,17 +583,17 @@ noise in historical output.
 
 ## Role Editor
 
-Roles can be managed from the TUI via the edit project modal
-(`Ctrl+E`). The Roles field provides an inline list with
-add/edit/delete capabilities; editing a role opens a detail form.
+Roles are global presets shared across all sessions (not
+per-project). They can be managed via the MCP server or the
+settings overlay.
 
 For programmatic role management via the MCP server, see
 [MCP_ROLES.md](MCP_ROLES.md).
 
-New projects are seeded with a built-in "developer" role
-(`permission_mode: acceptEdits`, no tool restrictions). Users
-can edit, remove, or add roles as needed. When creating a
-session, a role selector appears if the project has roles.
+A built-in "developer" role (`permission_mode: acceptEdits`,
+no tool restrictions) is used as the default when no roles are
+configured. When creating a session, a role selector appears
+if 2+ global roles are defined.
 
 ### Allow / Ask / Deny Semantics
 
@@ -609,10 +611,9 @@ are supported in both allowed and disallowed tool lists.
 
 ### Role List View
 
-Shows all roles for the active project. Supports
-add (`a`), edit (`e` / `Enter`), and delete (`d`).
-Pressing `Esc` saves changes to the database and
-closes the modal.
+Shows all global roles. Supports add (`a`), edit
+(`e` / `Enter`), and delete (`d`). Pressing `Esc`
+saves changes to the database and closes the modal.
 
 ### Role Editor View
 

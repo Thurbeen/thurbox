@@ -34,8 +34,8 @@ settings. The two-section left sidebar shows all projects on top
 and the active project's sessions below. Projects support
 multiple repositories — the first repo becomes the working
 directory and the rest are passed via `--add-dir`. Edit
-projects on the fly with `Ctrl+E` (name, repos, roles, MCP
-servers) without losing running sessions. Soft-deleted
+projects on the fly with `Ctrl+E` (name, repos) without
+losing running sessions. Soft-deleted
 projects and sessions can be restored via the Admin session
 or MCP API. A built-in Admin project (pinned at index 0)
 provides conversational access to Thurbox management via MCP.
@@ -83,14 +83,13 @@ and `genisoimage` (or `mkisofs`).
 
 ### Role System
 
-Define per-project permission profiles that control Claude's
-behavior. Each role specifies a permission mode (`default`,
-`plan`, `acceptEdits`, `dontAsk`, `bypassPermissions`), lists
-of allowed and disallowed tools with scope patterns like
-`Bash(git:*)`, and optional system prompt text. Manage roles
-from the TUI via `Ctrl+E` or programmatically through the MCP
-server. When a project has roles, a role selector appears at
-session creation.
+Define global permission presets that control Claude's behavior.
+Each role specifies a permission mode (`default`, `plan`,
+`acceptEdits`, `dontAsk`, `bypassPermissions`), lists of allowed
+and disallowed tools with scope patterns like `Bash(git:*)`, and
+optional system prompt text. Manage roles programmatically through
+the MCP server. When two or more roles exist, a role selector
+appears at session creation.
 
 ### MCP Server
 
@@ -164,23 +163,20 @@ The binary will be available at `target/release/thurbox`.
 
 1. **Launch Thurbox** — run `thurbox` in your terminal. The Admin
    session appears automatically in the sidebar.
-2. **Create a project** — press `Ctrl+N` with the project list
-   focused. Enter a name and one or more repository paths.
-3. **Create a session** — select your project, then press
-   `Ctrl+N` again. Choose a session mode (Normal, Worktree,
-   Container, or VM) and optionally select a role.
-4. **Work with Claude** — the terminal panel shows the live
+2. **Create a session** — press `Ctrl+N` to open the repo picker.
+   Select repos from bookmarks (Space to toggle, `w` to mark as
+   worktree), then choose a session mode and optionally a role.
+3. **Work with Claude** — the terminal panel shows the live
    Claude Code session. All keys are forwarded to the PTY.
-5. **Navigate** — `Ctrl+L` cycles focus (project list → session
+4. **Navigate** — `Ctrl+L` cycles focus (project list → session
    list → terminal). `Ctrl+H` jumps to the project list.
    `Ctrl+J` / `Ctrl+K` switch projects or sessions.
-6. **Manage projects** — `Ctrl+E` edits the active project
-   (name, repos, roles, MCP servers). `Ctrl+D` deletes a
-   session or project.
-7. **Restart a session** — `Ctrl+R` restarts with `--resume` to
+5. **Manage projects** — `Ctrl+E` edits the active project
+   (name, repos). `Ctrl+D` deletes a session or project.
+6. **Restart a session** — `Ctrl+R` restarts with `--resume` to
    preserve conversation history while picking up new
    role permissions.
-8. **Quit** — `Ctrl+Q` detaches all sessions (tmux keeps them
+7. **Quit** — `Ctrl+Q` detaches all sessions (tmux keeps them
    running). They resume automatically on next launch.
 
 ## Keybindings
@@ -190,7 +186,7 @@ The binary will be available at `target/release/thurbox`.
 | Key | Action | Mnemonic |
 |-----|--------|----------|
 | `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
-| `Ctrl+N` | New project or session | **N**ew |
+| `Ctrl+N` | New session (opens repo picker) | **N**ew |
 | `Ctrl+C` | Close session / copy selection | **C**lose / **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
