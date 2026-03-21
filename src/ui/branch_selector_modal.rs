@@ -1,13 +1,13 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{List, ListItem, ListState, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
 use super::project_list::render_scroll_indicators;
+use super::render_modal_frame;
 use super::theme::Theme;
 
 pub struct BranchSelectorState<'a> {
@@ -19,15 +19,7 @@ pub fn render_branch_selector_modal(frame: &mut Frame, state: &BranchSelectorSta
     let height = (state.branches.len().min(15) + 4) as u16;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Base Branch ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Base Branch");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

@@ -2,11 +2,12 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame_danger;
 use super::theme::Theme;
 
 pub struct DeleteProjectModalState<'a> {
@@ -19,15 +20,7 @@ pub struct DeleteProjectModalState<'a> {
 pub fn render_delete_project_modal(frame: &mut Frame, state: &DeleteProjectModalState<'_>) {
     let area = centered_fixed_height_rect(60, 13, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Delete Project ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::DANGER));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame_danger(frame, area, "Delete Project");
 
     // Layout: warning, spacer, confirmation input, error message, help
     let chunks = Layout::default()

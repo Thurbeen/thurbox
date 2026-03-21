@@ -1,14 +1,14 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
 use crate::app::ScheduleCommandField;
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame;
 use super::theme::Theme;
 
 pub struct ScheduleCommandState<'a> {
@@ -23,15 +23,8 @@ pub struct ScheduleCommandState<'a> {
 pub fn render_schedule_command_modal(frame: &mut Frame, state: &ScheduleCommandState<'_>) {
     let area = centered_fixed_height_rect(50, 11, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(format!(" Schedule Command → {} ", state.session_name))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let title = format!("Schedule Command → {}", state.session_name);
+    let inner = render_modal_frame(frame, area, &title);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

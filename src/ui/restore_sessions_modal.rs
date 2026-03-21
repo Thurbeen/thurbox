@@ -2,11 +2,12 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame;
 use super::theme::Theme;
 
 /// View-only entry for the restore sessions modal.
@@ -28,15 +29,7 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
     let total_height = (list_height + 5).min(20);
     let area = centered_fixed_height_rect(60, total_height, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Restore Deleted Sessions ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Restore Deleted Sessions");
 
     if state.entries.is_empty() {
         let chunks = Layout::default()

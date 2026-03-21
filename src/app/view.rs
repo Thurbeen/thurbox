@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
@@ -414,13 +414,8 @@ impl App {
         // Discard confirmation overlay
         if self.show_discard_confirmation {
             let confirm_area = crate::ui::centered_fixed_height_rect(40, 5, frame.area());
-            frame.render_widget(Clear, confirm_area);
-            let block = Block::default()
-                .title(" Unsaved Changes ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Theme::STATUS_ERROR));
-            let inner = block.inner(confirm_area);
-            frame.render_widget(block, confirm_area);
+            let inner =
+                crate::ui::render_modal_frame_danger(frame, confirm_area, "Unsaved Changes");
             let text = Line::from(vec![
                 Span::styled(
                     " Discard changes? ",
@@ -459,12 +454,7 @@ impl App {
 fn render_help_overlay(frame: &mut Frame) {
     let area = centered_rect(60, 70, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Keybindings ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
+    let inner = crate::ui::render_modal_frame(frame, area, "Keybindings");
 
     let help_lines = vec![
         help_section("Navigation"),
@@ -511,8 +501,7 @@ fn render_help_overlay(frame: &mut Frame) {
         )),
     ];
 
-    let paragraph = Paragraph::new(help_lines).block(block);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(Paragraph::new(help_lines), inner);
 }
 
 fn help_section(title: &str) -> Line<'_> {

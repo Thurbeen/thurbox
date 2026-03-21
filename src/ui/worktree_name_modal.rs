@@ -1,12 +1,12 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame;
 use super::theme::Theme;
 
 pub struct WorktreeNameState<'a> {
@@ -18,15 +18,8 @@ pub struct WorktreeNameState<'a> {
 pub fn render_worktree_name_modal(frame: &mut Frame, state: &WorktreeNameState<'_>) {
     let area = centered_fixed_height_rect(50, 8, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(format!(" New Branch (from {}) ", state.base_branch))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let title = format!("New Branch (from {})", state.base_branch);
+    let inner = render_modal_frame(frame, area, &title);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

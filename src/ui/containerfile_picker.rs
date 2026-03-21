@@ -1,12 +1,12 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame;
 use super::theme::Theme;
 
 pub struct ContainerfilePickerState<'a> {
@@ -20,15 +20,7 @@ pub fn render_containerfile_picker(frame: &mut Frame, state: &ContainerfilePicke
     let height = (item_count as u16 + 3).min(frame.area().height.saturating_sub(4));
     let area = centered_fixed_height_rect(50, height, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Select Containerfile ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Select Containerfile");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

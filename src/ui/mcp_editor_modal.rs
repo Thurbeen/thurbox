@@ -2,10 +2,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
+use super::render_modal_frame;
 use super::theme::Theme;
 use super::{centered_fixed_height_rect, render_text_field};
 use crate::app::mcp_editor_modal::McpEditorField;
@@ -47,15 +48,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
     let height = (content_height + 2).min(max_height);
     let area = centered_fixed_height_rect(60, height, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Edit MCP Server ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Edit MCP Server");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

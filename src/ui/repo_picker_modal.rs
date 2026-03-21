@@ -4,10 +4,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
+use super::render_modal_frame;
 use super::theme::Theme;
 use super::{centered_fixed_height_rect, render_text_field_with_suggestion};
 use crate::app::modals::RepoPickerFocus;
@@ -36,15 +37,7 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
 
     let area = centered_fixed_height_rect(60, total_height, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Select Repos ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Select Repos");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

@@ -3,11 +3,12 @@
 use ratatui::{
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame;
 use super::theme::Theme;
 use crate::app::SettingsTab;
 use crate::session::{McpServerConfig, RoleConfig};
@@ -23,15 +24,7 @@ pub struct SettingsOverlayState<'a> {
 
 pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) {
     let area = centered_fixed_height_rect(60, 22, frame.area());
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Settings ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Settings");
 
     if inner.height < 4 || inner.width < 10 {
         return;

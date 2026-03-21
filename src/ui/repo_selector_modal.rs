@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame;
 use super::theme::Theme;
 
 pub struct RepoSelectorState<'a> {
@@ -20,15 +20,7 @@ pub fn render_repo_selector_modal(frame: &mut Frame, state: &RepoSelectorState<'
     let height = (state.repos.len().min(15) + 4) as u16;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Select Repo ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Select Repo");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

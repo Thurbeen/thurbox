@@ -2,11 +2,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
     Frame,
 };
 
 use super::centered_fixed_height_rect;
+use super::render_modal_frame;
 use super::theme::Theme;
 use crate::session::RoleConfig;
 
@@ -20,15 +21,7 @@ pub fn render_role_selector_modal(frame: &mut Frame, state: &RoleSelectorState<'
     let height = (state.roles.len() as u16) + 4;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Session Role ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_modal_frame(frame, area, "Session Role");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

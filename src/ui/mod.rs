@@ -25,7 +25,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -142,6 +142,52 @@ pub fn centered_fixed_height_rect(percent_x: u16, height: u16, area: Rect) -> Re
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// Render a full-screen dim overlay to visually separate a modal from the background.
+pub fn render_dim_overlay(frame: &mut Frame) {
+    let dim = Block::default().style(Style::default().bg(Theme::MODAL_DIM_BG));
+    frame.render_widget(dim, frame.area());
+}
+
+/// Build a modal [`Block`] with the given title style and border color.
+fn build_modal_block(title: &str, title_style: Style, border_color: Color) -> Block<'_> {
+    Block::default()
+        .title(Line::from(Span::styled(format!(" {title} "), title_style)))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .style(Style::default().bg(Theme::MODAL_BG))
+}
+
+/// Build a styled modal [`Block`] with rounded borders and an explicit background.
+pub fn modal_block(title: &str) -> Block<'_> {
+    build_modal_block(title, Theme::modal_title(), Theme::MODAL_BORDER)
+}
+
+/// Build a danger-styled modal [`Block`] with red borders and background.
+pub fn modal_block_danger(title: &str) -> Block<'_> {
+    build_modal_block(title, Theme::modal_title_danger(), Theme::DANGER)
+}
+
+/// Dim the background, clear the modal region, render a styled block, and return the inner area.
+pub fn render_modal_frame(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+    render_dim_overlay(frame);
+    frame.render_widget(Clear, area);
+    let block = modal_block(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    inner
+}
+
+/// Dim the background, clear the modal region, render a danger-styled block, and return the inner area.
+pub fn render_modal_frame_danger(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+    render_dim_overlay(frame);
+    frame.render_widget(Clear, area);
+    let block = modal_block_danger(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    inner
 }
 
 /// Render a labeled text input field with cursor visualization and horizontal
@@ -378,5 +424,34 @@ mod tests {
             assert!(inner.width < test_area.width);
             assert!(inner.height < test_area.height);
         }
+    }
+
+    #[test]
+    fn modal_block_produces_valid_block_with_borders() {
+        let test_area = area(40, 10);
+        let block = modal_block("Test Modal");
+        let inner = block.inner(test_area);
+        assert!(inner.width < test_area.width);
+        assert!(inner.height < test_area.height);
+    }
+
+    #[test]
+    fn modal_block_danger_produces_valid_block_with_borders() {
+        let test_area = area(40, 10);
+        let block = modal_block_danger("Delete");
+        let inner = block.inner(test_area);
+        assert!(inner.width < test_area.width);
+        assert!(inner.height < test_area.height);
+    }
+
+    #[test]
+    fn modal_title_matches_focused_title() {
+        assert_eq!(Theme::modal_title(), Theme::focused_title());
+    }
+
+    #[test]
+    fn modal_title_danger_uses_danger_color() {
+        let style = Theme::modal_title_danger();
+        assert_eq!(style.bg, Some(Theme::DANGER));
     }
 }

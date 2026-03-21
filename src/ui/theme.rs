@@ -56,6 +56,15 @@ impl Theme {
     pub const SELECTION_BG: Color = Color::Indexed(24);
     pub const SELECTION_FG: Color = Color::White;
 
+    // ── Modal ──────────────────────────────────────────────────────────────
+
+    /// Dark background for the full-screen dim overlay behind modals.
+    pub const MODAL_DIM_BG: Color = Color::Indexed(235); // #262626
+    /// Background color for the modal surface itself.
+    pub const MODAL_BG: Color = Color::Indexed(236); // #303030
+    /// Border color for modal windows.
+    pub const MODAL_BORDER: Color = Color::Cyan;
+
     // ── Background colors ───────────────────────────────────────────────────
 
     pub const INVERTED_FG: Color = Color::Black;
@@ -119,6 +128,19 @@ impl Theme {
     /// Style for project metadata lines (repo info, role count).
     pub fn project_meta() -> Style {
         Style::default().fg(Self::TEXT_MUTED)
+    }
+
+    /// Style for modal titles: bold black on accent background (same as focused panels).
+    pub fn modal_title() -> Style {
+        Self::focused_title()
+    }
+
+    /// Style for danger modal titles: bold white on red background.
+    pub fn modal_title_danger() -> Style {
+        Style::default()
+            .fg(Self::TEXT_PRIMARY)
+            .bg(Self::DANGER)
+            .add_modifier(Modifier::BOLD)
     }
 
     /// Style for the block cursor in text fields.
