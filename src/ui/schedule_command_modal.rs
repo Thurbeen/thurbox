@@ -18,12 +18,17 @@ pub struct ScheduleCommandState<'a> {
     pub delay_cursor: usize,
     pub focused_field: ScheduleCommandField,
     pub session_name: &'a str,
+    pub editing: bool,
 }
 
 pub fn render_schedule_command_modal(frame: &mut Frame, state: &ScheduleCommandState<'_>) {
     let area = centered_fixed_height_rect(50, 11, frame.area());
 
-    let title = format!("Schedule Command → {}", state.session_name);
+    let title = if state.editing {
+        format!("Edit Command → {}", state.session_name)
+    } else {
+        format!("Schedule Command → {}", state.session_name)
+    };
     let inner = render_modal_frame(frame, area, &title);
 
     let chunks = Layout::default()
@@ -53,11 +58,16 @@ pub fn render_schedule_command_modal(frame: &mut Frame, state: &ScheduleCommandS
         state.focused_field == ScheduleCommandField::Delay,
     );
 
+    let action = if state.editing {
+        " save  "
+    } else {
+        " schedule  "
+    };
     let footer = Line::from(vec![
         Span::styled("Tab", Theme::keybind()),
         Span::styled(" switch  ", Theme::keybind_desc()),
         Span::styled("Enter", Theme::keybind()),
-        Span::styled(" schedule  ", Theme::keybind_desc()),
+        Span::styled(action, Theme::keybind_desc()),
         Span::styled("Esc", Theme::keybind()),
         Span::styled(" cancel", Theme::keybind_desc()),
     ]);

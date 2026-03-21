@@ -72,6 +72,12 @@ impl App {
             return;
         }
 
+        // Scheduled commands list modal captures all input
+        if matches!(self.modal, super::modals::Modal::ScheduledCommandsList(_)) {
+            self.handle_scheduled_commands_list_key(code);
+            return;
+        }
+
         // Discard confirmation overlay captures all input
         if self.show_discard_confirmation {
             match code {
@@ -190,7 +196,7 @@ impl App {
                     }
                 },
                 KeyCode::Char('p') => {
-                    self.open_schedule_command_modal();
+                    self.open_scheduled_commands_list();
                     return;
                 }
                 KeyCode::Char('s') => {
@@ -891,6 +897,75 @@ impl App {
             KeyCode::End => sc.active_field_mut().end(),
             _ => {}
         }
+    }
+
+    fn handle_scheduled_commands_list_key(&mut self, code: KeyCode) {
+        if let super::modals::Modal::ScheduledCommandsList(ref mut scl) = self.modal {
+            match code {
+                KeyCode::Esc => {
+                    self.modal.close();
+                    return;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if scl.index + 1 < scl.commands.len() {
+                        scl.index += 1;
+                    }
+                    return;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    scl.index = scl.index.saturating_sub(1);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        match code {
+            KeyCode::Enter => self.cancel_selected_scheduled_command(),
+            KeyCode::Char('n') => {
+                self.modal.close();
+                self.open_schedule_command_modal();
+            }
+            KeyCode::Char('e') => self.edit_selected_scheduled_command(),
+            _ => {}
+        }
+    }
+
+    /// Cancel the currently selected command in the list modal.
+    fn cancel_selected_scheduled_command(&mut self) {
+        let id = {
+            let super::modals::Modal::ScheduledCommandsList(ref mut scl) = self.modal else {
+                return;
+            };
+            if scl.commands.is_empty() {
+                return;
+            }
+            let entry = scl.commands.remove(scl.index);
+            if scl.index >= scl.commands.len() && scl.index > 0 {
+                scl.index -= 1;
+            }
+            entry.id
+        };
+        self.cancel_scheduled_command_by_id(id);
+        if let super::modals::Modal::ScheduledCommandsList(ref scl) = self.modal {
+            if scl.commands.is_empty() {
+                self.modal.close();
+            }
+        }
+    }
+
+    /// Open the edit modal for the currently selected command in the list.
+    fn edit_selected_scheduled_command(&mut self) {
+        let entry = {
+            let super::modals::Modal::ScheduledCommandsList(ref scl) = self.modal else {
+                return;
+            };
+            if scl.commands.is_empty() {
+                return;
+            }
+            scl.commands[scl.index].clone()
+        };
+        self.open_edit_scheduled_command(entry);
     }
 
     fn handle_role_selector_key(&mut self, code: KeyCode) {

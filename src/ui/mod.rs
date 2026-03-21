@@ -13,6 +13,7 @@ pub mod restore_sessions_modal;
 pub mod role_editor_modal;
 pub mod role_selector_modal;
 pub mod schedule_command_modal;
+pub mod scheduled_commands_list_modal;
 pub mod selection;
 pub mod session_mode_modal;
 pub mod settings_overlay;
@@ -188,6 +189,48 @@ pub fn render_modal_frame_danger(frame: &mut Frame, area: Rect, title: &str) -> 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner
+}
+
+/// Set up a list modal with dim overlay, styled border, and list + footer split.
+///
+/// If `entry_count` is 0 and `empty_message` is `Some`, renders the empty state
+/// with the given message and footer keybinds, then returns `None`.
+/// Otherwise returns `Some([list_area, footer_area])`.
+pub fn render_list_modal_frame<'a>(
+    frame: &mut Frame,
+    percent_width: u16,
+    title: &str,
+    entry_count: usize,
+    empty_message: Option<&str>,
+    empty_footer: Option<Line<'a>>,
+) -> Option<[Rect; 2]> {
+    let list_height = entry_count.max(1) as u16;
+    let total_height = (list_height + 5).min(20);
+    let area = centered_fixed_height_rect(percent_width, total_height, frame.area());
+    let inner = render_modal_frame(frame, area, title);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    if entry_count == 0 {
+        if let Some(msg) = empty_message {
+            let empty = Paragraph::new(Line::from(Span::styled(
+                msg,
+                Style::default().fg(Theme::TEXT_MUTED),
+            )))
+            .alignment(ratatui::layout::Alignment::Center);
+            frame.render_widget(empty, chunks[0]);
+
+            if let Some(footer) = empty_footer {
+                frame.render_widget(Paragraph::new(footer), chunks[1]);
+            }
+        }
+        return None;
+    }
+
+    Some([chunks[0], chunks[1]])
 }
 
 /// Render a labeled text input field with cursor visualization and horizontal

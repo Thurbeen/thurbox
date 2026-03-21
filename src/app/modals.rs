@@ -192,6 +192,17 @@ pub struct ScheduleCommandModal {
     pub command: TextInput,
     pub delay_minutes: TextInput,
     pub field: ScheduleCommandField,
+    /// When editing an existing command, holds the original command ID to cancel on submit
+    /// and the session ID + name to preserve the target session.
+    pub editing: Option<EditingCommand>,
+}
+
+/// State preserved when editing an existing scheduled command.
+#[derive(Debug, Clone)]
+pub struct EditingCommand {
+    pub id: i64,
+    pub session_id: crate::session::SessionId,
+    pub session_name: String,
 }
 
 impl ScheduleCommandModal {
@@ -202,6 +213,24 @@ impl ScheduleCommandModal {
             ScheduleCommandField::Delay => &mut self.delay_minutes,
         }
     }
+}
+
+// ── ScheduledCommandsListModal ──────────────────────────────────────────
+
+/// An entry in the scheduled commands list modal.
+#[derive(Debug, Clone)]
+pub struct ScheduledCommandListEntry {
+    pub id: i64,
+    pub session_name: String,
+    pub command_text: String,
+    pub countdown: String,
+}
+
+/// Modal state for listing and cancelling pending scheduled commands.
+#[derive(Debug, Clone, Default)]
+pub struct ScheduledCommandsListModal {
+    pub index: usize,
+    pub commands: Vec<ScheduledCommandListEntry>,
 }
 
 // ── RepoPickerModal ─────────────────────────────────────────────────────
@@ -269,6 +298,7 @@ pub enum Modal {
     ContainerfilePicker(ContainerfilePickerModal),
     RestoreSessions(RestoreSessionsModal),
     ScheduleCommand(ScheduleCommandModal),
+    ScheduledCommandsList(ScheduledCommandsListModal),
     RepoPicker(RepoPickerModal),
 }
 
@@ -469,5 +499,33 @@ mod tests {
 
         let field = ScheduleCommandField::default();
         assert_eq!(field, ScheduleCommandField::Command);
+    }
+
+    #[test]
+    fn test_schedule_command_modal_editing_default_is_none() {
+        let modal = ScheduleCommandModal::default();
+        assert!(modal.editing.is_none());
+    }
+
+    #[test]
+    fn test_scheduled_commands_list_modal_default() {
+        let modal = ScheduledCommandsListModal::default();
+        assert_eq!(modal.index, 0);
+        assert!(modal.commands.is_empty());
+    }
+
+    #[test]
+    fn test_schedule_command_modal_with_editing() {
+        let mut modal = ScheduleCommandModal::default();
+        modal.command.set("test cmd");
+        modal.delay_minutes.set("5");
+        modal.editing = Some(EditingCommand {
+            id: 42,
+            session_id: "test-session".parse().unwrap_or_default(),
+            session_name: "my-session".to_string(),
+        });
+        assert_eq!(modal.command.value(), "test cmd");
+        assert_eq!(modal.editing.as_ref().unwrap().id, 42);
+        assert_eq!(modal.editing.as_ref().unwrap().session_name, "my-session");
     }
 }

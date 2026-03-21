@@ -23,8 +23,8 @@ use crate::paths;
 use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
     default_developer_permissions, default_developer_role, McpServerConfig, RoleConfig,
-    RolePermissions, SessionCommand, SessionConfig, SessionId, SessionInfo, SessionStatus,
-    WorktreeInfo, DEFAULT_ROLE_NAME,
+    RolePermissions, ScheduledCommand, SessionCommand, SessionConfig, SessionId, SessionInfo,
+    SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
@@ -574,6 +574,8 @@ pub struct App {
     pub(crate) global_mcp_servers: Vec<McpServerConfig>,
     /// Index into global_mcp_servers for the MCP server list in the edit modal.
     pub(crate) mcp_server_list_index: usize,
+    /// Cached pending scheduled commands, refreshed every ~1 second.
+    pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -856,6 +858,7 @@ impl App {
             global_roles,
             global_mcp_servers,
             mcp_server_list_index: 0,
+            cached_pending_commands: Vec::new(),
         }
     }
 
@@ -2374,6 +2377,11 @@ impl App {
 
         // Process scheduled commands (once per second)
         self.process_scheduled_commands();
+
+        // Refresh cached pending commands for UI (same cadence)
+        if self.tick_count % 100 == 0 {
+            self.refresh_pending_commands();
+        }
 
         // Refresh system metrics periodically
         if self.tick_count % METRICS_REFRESH_TICKS == 0 {
@@ -3909,6 +3917,35 @@ impl App {
         }
     }
 
+    /// Open the scheduled commands list modal showing all pending commands.
+    fn open_scheduled_commands_list(&mut self) {
+        self.refresh_pending_commands();
+        let commands: Vec<modals::ScheduledCommandListEntry> = self
+            .cached_pending_commands
+            .iter()
+            .map(|cmd| {
+                let session_name = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.info.id == cmd.session_id)
+                    .map(|s| s.info.name.clone())
+                    .unwrap_or_else(|| "?".to_string());
+                let now = crate::sync::current_time_millis();
+                let remaining = cmd.scheduled_at.saturating_sub(now);
+                modals::ScheduledCommandListEntry {
+                    id: cmd.id,
+                    session_name,
+                    command_text: cmd.command_text.clone(),
+                    countdown: view::format_countdown(remaining),
+                }
+            })
+            .collect();
+        self.modal = modals::Modal::ScheduledCommandsList(modals::ScheduledCommandsListModal {
+            index: 0,
+            commands,
+        });
+    }
+
     /// Open the schedule-command modal for the active session.
     fn open_schedule_command_modal(&mut self) {
         if self.sessions.is_empty() {
@@ -3916,6 +3953,30 @@ impl App {
             return;
         }
         self.modal = modals::Modal::ScheduleCommand(modals::ScheduleCommandModal::default());
+    }
+
+    /// Open the schedule-command modal pre-filled for editing an existing command.
+    fn open_edit_scheduled_command(&mut self, entry: modals::ScheduledCommandListEntry) {
+        let now = crate::sync::current_time_millis();
+        let cached = self
+            .cached_pending_commands
+            .iter()
+            .find(|cmd| cmd.id == entry.id);
+        let remaining_minutes = cached
+            .map(|cmd| cmd.scheduled_at.saturating_sub(now) / 60_000)
+            .unwrap_or(1)
+            .max(1);
+        let session_id = cached.map(|cmd| cmd.session_id).unwrap_or_default();
+
+        let mut modal = modals::ScheduleCommandModal::default();
+        modal.command.set(&entry.command_text);
+        modal.delay_minutes.set(&remaining_minutes.to_string());
+        modal.editing = Some(modals::EditingCommand {
+            id: entry.id,
+            session_id,
+            session_name: entry.session_name.clone(),
+        });
+        self.modal = modals::Modal::ScheduleCommand(modal);
     }
 
     /// Validate and submit the schedule-command modal.
@@ -3935,48 +3996,101 @@ impl App {
                 return;
             }
         };
+        let editing = sc.editing.clone();
 
-        let session = match self.sessions.get(self.active_index) {
-            Some(s) => s,
-            None => {
-                self.set_error("No active session");
-                return;
-            }
+        let (session_id, session_name) = self.resolve_schedule_session(&editing);
+        let Some(session_id) = session_id else {
+            self.set_error("No active session");
+            return;
         };
-        let session_id = session.info.id;
-        let session_name = session.info.name.clone();
 
         let delay_seconds = delay_minutes * 60;
         let now = crate::sync::current_time_millis();
         let scheduled_at = now + delay_seconds * 1000;
 
-        match self
+        let id = match self
             .db
             .create_scheduled_command(session_id, &command_text, scheduled_at)
         {
-            Ok(id) => {
-                // Set up a tmux timer for external dispatch
-                if let Some(db_path) = crate::paths::database_file() {
-                    if let Err(e) = crate::agent::tmux::schedule_tmux_command(
-                        &session_name,
-                        &command_text,
-                        delay_seconds,
-                        id,
-                        &db_path,
-                    ) {
-                        warn!("Failed to set tmux timer for command {id}: {e}");
-                    }
-                }
-
-                self.modal.close();
-                self.set_status(
-                    StatusLevel::Success,
-                    format!("Command scheduled for {} in {delay_minutes}m", session_name),
-                );
-            }
+            Ok(id) => id,
             Err(e) => {
                 error!("Failed to create scheduled command: {e}");
                 self.set_error("Failed to schedule command");
+                return;
+            }
+        };
+
+        if let Some(ref ed) = editing {
+            let _ = self.db.cancel_scheduled_command(ed.id);
+        }
+        self.setup_tmux_timer(&session_name, &command_text, delay_seconds, id);
+        self.modal.close();
+        self.refresh_pending_commands();
+        let verb = if editing.is_some() {
+            "updated"
+        } else {
+            "scheduled"
+        };
+        self.set_status(
+            StatusLevel::Success,
+            format!("Command {verb} for {session_name} in {delay_minutes}m"),
+        );
+    }
+
+    /// Resolve the target session for a scheduled command (editing or active).
+    fn resolve_schedule_session(
+        &self,
+        editing: &Option<modals::EditingCommand>,
+    ) -> (Option<SessionId>, String) {
+        if let Some(ref ed) = editing {
+            return (Some(ed.session_id), ed.session_name.clone());
+        }
+        match self.sessions.get(self.active_index) {
+            Some(s) => (Some(s.info.id), s.info.name.clone()),
+            None => (None, String::new()),
+        }
+    }
+
+    /// Set up a tmux background timer for a scheduled command.
+    fn setup_tmux_timer(
+        &self,
+        session_name: &str,
+        command_text: &str,
+        delay_seconds: u64,
+        id: i64,
+    ) {
+        if let Some(db_path) = crate::paths::database_file() {
+            if let Err(e) = crate::agent::tmux::schedule_tmux_command(
+                session_name,
+                command_text,
+                delay_seconds,
+                id,
+                &db_path,
+            ) {
+                warn!("Failed to set tmux timer for command {id}: {e}");
+            }
+        }
+    }
+
+    /// Refresh the cached list of pending scheduled commands from the database.
+    fn refresh_pending_commands(&mut self) {
+        match self.db.list_pending_scheduled_commands() {
+            Ok(cmds) => self.cached_pending_commands = cmds,
+            Err(e) => error!("Failed to list pending commands: {e}"),
+        }
+    }
+
+    /// Cancel a scheduled command by ID and refresh the cache.
+    fn cancel_scheduled_command_by_id(&mut self, id: i64) {
+        match self.db.cancel_scheduled_command(id) {
+            Ok(true) => {
+                self.refresh_pending_commands();
+                self.set_status(StatusLevel::Success, "Scheduled command cancelled");
+            }
+            Ok(false) => self.set_error("Command already executed or cancelled"),
+            Err(e) => {
+                error!("Failed to cancel scheduled command {id}: {e}");
+                self.set_error("Failed to cancel command");
             }
         }
     }

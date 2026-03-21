@@ -38,6 +38,7 @@ pub struct FooterState<'a> {
     pub container_provisioning: bool,
     pub container_provisioning_step: &'a str,
     pub tick_count: u64,
+    pub pending_scheduled_count: usize,
 }
 
 pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
@@ -103,6 +104,12 @@ pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
             counts,
             Style::default().fg(Theme::TEXT_SECONDARY),
         ));
+        if state.pending_scheduled_count > 0 {
+            spans.push(Span::styled(
+                format!(" {} scheduled ", state.pending_scheduled_count),
+                Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
+            ));
+        }
     }
 
     // Always-visible shortcut hints

@@ -333,7 +333,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+N` | New session (opens repo picker) | **N**ew |
 | `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
-| `Ctrl+P` | Schedule command for active session | **P**rogram |
+| `Ctrl+P` | Scheduled commands (list/cancel/new) | **P**rogram |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next project or session | Vim: **j** = down |

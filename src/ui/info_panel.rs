@@ -9,6 +9,12 @@ use ratatui::{
 use super::theme::Theme;
 use crate::session::{AgentMetrics, SessionInfo, SessionStatus};
 
+/// View-only entry for scheduled commands shown in the info panel.
+pub struct ScheduledCommandEntry {
+    pub command_preview: String,
+    pub countdown: String,
+}
+
 /// Rich VM details for the info panel, sourced from the database VM record.
 pub struct VmDetails {
     pub state: String,
@@ -38,6 +44,7 @@ pub fn render_info_panel(
     info: &SessionInfo,
     vm_details: Option<&VmDetails>,
     metrics: Option<&SystemMetrics>,
+    scheduled_commands: &[ScheduledCommandEntry],
 ) {
     let block = Block::default()
         .title(" Info ")
@@ -119,6 +126,25 @@ pub fn render_info_panel(
 
     // ── VM section (for sandboxed sessions) ──
     append_vm_section(&mut lines, info, vm_details, inner_width);
+
+    // ── Scheduled commands section ──
+    if !scheduled_commands.is_empty() {
+        lines.push(separator(inner_width));
+        lines.push(Line::from(Span::styled(
+            format!("Scheduled ({})", scheduled_commands.len()),
+            Theme::section_header(),
+        )));
+        for entry in scheduled_commands {
+            lines.push(Line::from(vec![
+                Span::styled(&entry.countdown, Style::default().fg(Theme::ACCENT)),
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    &entry.command_preview,
+                    Style::default().fg(Theme::TEXT_SECONDARY),
+                ),
+            ]));
+        }
+    }
 
     let paragraph = Paragraph::new(lines)
         .block(block)

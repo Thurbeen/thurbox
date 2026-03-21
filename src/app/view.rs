@@ -17,8 +17,8 @@ use crate::ui::theme::Theme;
 use crate::ui::{
     add_project_modal, branch_selector_modal, containerfile_picker, delete_project_modal,
     info_panel, layout, project_list, repo_selector_modal, restore_sessions_modal,
-    role_editor_modal, role_selector_modal, schedule_command_modal, session_mode_modal, status_bar,
-    terminal_view, worktree_name_modal,
+    role_editor_modal, role_selector_modal, schedule_command_modal, scheduled_commands_list_modal,
+    session_mode_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -110,12 +110,26 @@ impl App {
                             base_image: rec.base_image,
                         })
                 });
+                let now = crate::sync::current_time_millis();
+                let scheduled_entries: Vec<info_panel::ScheduledCommandEntry> = self
+                    .cached_pending_commands
+                    .iter()
+                    .filter(|cmd| cmd.session_id == info.id)
+                    .map(|cmd| {
+                        let remaining = cmd.scheduled_at.saturating_sub(now);
+                        info_panel::ScheduledCommandEntry {
+                            command_preview: truncate_str(&cmd.command_text, 30),
+                            countdown: format_countdown(remaining),
+                        }
+                    })
+                    .collect();
                 info_panel::render_info_panel(
                     frame,
                     info_area,
                     info,
                     vm_details.as_ref(),
                     Some(&self.system_metrics),
+                    &scheduled_entries,
                 );
             }
         }
@@ -169,6 +183,7 @@ impl App {
                 container_provisioning: self.container_provisioning,
                 container_provisioning_step: &self.container_provisioning_step,
                 tick_count: self.tick_count,
+                pending_scheduled_count: self.cached_pending_commands.len(),
             },
         );
 
@@ -376,11 +391,16 @@ impl App {
 
         // Schedule command modal
         if let super::modals::Modal::ScheduleCommand(ref sc) = self.modal {
-            let session_name = self
-                .sessions
-                .get(self.active_index)
-                .map(|s| s.info.name.as_str())
-                .unwrap_or("?");
+            let session_name = sc
+                .editing
+                .as_ref()
+                .map(|ed| ed.session_name.as_str())
+                .unwrap_or_else(|| {
+                    self.sessions
+                        .get(self.active_index)
+                        .map(|s| s.info.name.as_str())
+                        .unwrap_or("?")
+                });
             schedule_command_modal::render_schedule_command_modal(
                 frame,
                 &schedule_command_modal::ScheduleCommandState {
@@ -390,6 +410,29 @@ impl App {
                     delay_cursor: sc.delay_minutes.cursor_pos(),
                     focused_field: sc.field,
                     session_name,
+                    editing: sc.editing.is_some(),
+                },
+            );
+        }
+
+        // Scheduled commands list modal
+        if let super::modals::Modal::ScheduledCommandsList(ref scl) = self.modal {
+            let entries: Vec<scheduled_commands_list_modal::ScheduledCommandsListEntry> = scl
+                .commands
+                .iter()
+                .map(
+                    |e| scheduled_commands_list_modal::ScheduledCommandsListEntry {
+                        session_name: e.session_name.clone(),
+                        command_preview: e.command_text.clone(),
+                        countdown: e.countdown.clone(),
+                    },
+                )
+                .collect();
+            scheduled_commands_list_modal::render_scheduled_commands_list_modal(
+                frame,
+                &scheduled_commands_list_modal::ScheduledCommandsListState {
+                    entries: &entries,
+                    selected_index: scl.index,
                 },
             );
         }
@@ -467,7 +510,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+A", "Create admin session"),
         help_line("Ctrl+D", "Delete focused session"),
         help_line("Ctrl+R", "Restart active session"),
-        help_line("Ctrl+P", "Schedule a command for active session"),
+        help_line("Ctrl+P", "Scheduled commands (list/cancel/new)"),
         help_line("Ctrl+Z", "Undo last delete"),
         help_line("Ctrl+U", "Restore deleted sessions"),
         Line::from(""),
@@ -548,5 +591,98 @@ pub(super) fn format_time_ago(millis: u64) -> String {
         format!("{}h ago", elapsed_secs / 3600)
     } else {
         format!("{}d ago", elapsed_secs / 86400)
+    }
+}
+
+/// Format a remaining-milliseconds value as a human-readable countdown.
+pub(super) fn format_countdown(remaining_ms: u64) -> String {
+    let secs = remaining_ms / 1000;
+    if secs == 0 {
+        "due".to_string()
+    } else if secs < 60 {
+        format!("in {secs}s")
+    } else if secs < 3600 {
+        let m = secs / 60;
+        let s = secs % 60;
+        if s == 0 {
+            format!("in {m}m")
+        } else {
+            format!("in {m}m {s}s")
+        }
+    } else {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if m == 0 {
+            format!("in {h}h")
+        } else {
+            format!("in {h}h {m}m")
+        }
+    }
+}
+
+/// Truncate a string to `max_len` characters, appending "..." if truncated.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{truncated}...")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── format_countdown tests ──
+
+    #[test]
+    fn format_countdown_zero() {
+        assert_eq!(format_countdown(0), "due");
+    }
+
+    #[test]
+    fn format_countdown_sub_minute() {
+        assert_eq!(format_countdown(999), "due");
+        assert_eq!(format_countdown(1_000), "in 1s");
+        assert_eq!(format_countdown(45_000), "in 45s");
+        assert_eq!(format_countdown(59_999), "in 59s");
+    }
+
+    #[test]
+    fn format_countdown_minutes() {
+        assert_eq!(format_countdown(60_000), "in 1m");
+        assert_eq!(format_countdown(90_000), "in 1m 30s");
+        assert_eq!(format_countdown(300_000), "in 5m");
+        assert_eq!(format_countdown(3_599_000), "in 59m 59s");
+    }
+
+    #[test]
+    fn format_countdown_hours() {
+        assert_eq!(format_countdown(3_600_000), "in 1h");
+        assert_eq!(format_countdown(5_400_000), "in 1h 30m");
+        assert_eq!(format_countdown(7_200_000), "in 2h");
+    }
+
+    // ── truncate_str tests ──
+
+    #[test]
+    fn truncate_str_short() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_exact_fit() {
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_str_needs_truncation() {
+        assert_eq!(truncate_str("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn truncate_str_empty() {
+        assert_eq!(truncate_str("", 5), "");
     }
 }

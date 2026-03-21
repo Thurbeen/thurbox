@@ -1,13 +1,11 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
 
-use super::centered_fixed_height_rect;
-use super::render_modal_frame;
+use super::render_list_modal_frame;
 use super::theme::Theme;
 
 /// View-only entry for the restore sessions modal.
@@ -24,38 +22,21 @@ pub struct RestoreSessionsModalState<'a> {
 }
 
 pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsModalState<'_>) {
-    let list_height = state.entries.len().max(1) as u16;
-    // 2 (borders) + list_height + 1 (footer) + 2 (padding)
-    let total_height = (list_height + 5).min(20);
-    let area = centered_fixed_height_rect(60, total_height, frame.area());
+    let empty_footer = Line::from(vec![
+        Span::styled("Esc", Theme::keybind()),
+        Span::raw(" close"),
+    ]);
 
-    let inner = render_modal_frame(frame, area, "Restore Deleted Sessions");
-
-    if state.entries.is_empty() {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(inner);
-
-        let empty = Paragraph::new(Line::from(Span::styled(
-            "No deleted sessions",
-            Style::default().fg(Theme::TEXT_MUTED),
-        )))
-        .alignment(Alignment::Center);
-        frame.render_widget(empty, chunks[0]);
-
-        let help = Line::from(vec![
-            Span::styled("Esc", Theme::keybind()),
-            Span::raw(" close"),
-        ]);
-        frame.render_widget(Paragraph::new(help), chunks[1]);
+    let Some([list_area, footer_area]) = render_list_modal_frame(
+        frame,
+        60,
+        "Restore Deleted Sessions",
+        state.entries.len(),
+        Some("No deleted sessions"),
+        Some(empty_footer),
+    ) else {
         return;
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
+    };
 
     // Session list
     let lines: Vec<Line<'_>> = state
@@ -80,7 +61,7 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), chunks[0]);
+    frame.render_widget(Paragraph::new(lines), list_area);
 
     // Footer
     let help = Line::from(vec![
@@ -89,5 +70,5 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
         Span::styled("Esc", Theme::keybind()),
         Span::raw(" close"),
     ]);
-    frame.render_widget(Paragraph::new(help), chunks[1]);
+    frame.render_widget(Paragraph::new(help), footer_area);
 }
