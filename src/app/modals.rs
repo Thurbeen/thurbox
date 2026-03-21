@@ -145,6 +145,11 @@ pub struct WorktreeNameModal {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct SessionNameModal {
+    pub name: TextInput,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct RoleSelectorModal {
     pub index: usize,
 }
@@ -300,6 +305,7 @@ pub enum Modal {
     ScheduleCommand(ScheduleCommandModal),
     ScheduledCommandsList(ScheduledCommandsListModal),
     RepoPicker(RepoPickerModal),
+    SessionName(SessionNameModal),
 }
 
 impl Modal {

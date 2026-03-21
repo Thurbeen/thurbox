@@ -1243,7 +1243,7 @@ impl App {
     /// Core spawn logic with an explicit project index for tagging.
     fn prepare_spawn_for_project(
         &mut self,
-        mut config: SessionConfig,
+        config: SessionConfig,
         worktrees: Vec<WorktreeInfo>,
         project_index: Option<usize>,
     ) {
@@ -1251,11 +1251,32 @@ impl App {
         let is_admin = project_index
             .and_then(|i| self.projects.get(i))
             .is_some_and(|p| p.is_admin);
-        let name = if is_admin {
-            format!("admin-{raw_name}")
+
+        if is_admin {
+            // Admin sessions skip the name modal — auto-name and proceed.
+            let name = format!("admin-{raw_name}");
+            self.finish_prepare_spawn(name, config, worktrees, project_index);
         } else {
-            raw_name
-        };
+            // Show session name modal pre-filled with the default name.
+            self.pending_spawn_config = Some(config);
+            self.pending_spawn_worktrees = worktrees;
+            self.pending_spawn_project_index = project_index;
+            let mut modal = modals::SessionNameModal::default();
+            modal.name.set(&raw_name);
+            self.modal = modals::Modal::SessionName(modal);
+        }
+    }
+
+    /// Continue spawn after the user has chosen a session name.
+    ///
+    /// Routes to role selection if 2+ roles exist, otherwise spawns directly.
+    fn finish_prepare_spawn(
+        &mut self,
+        name: String,
+        mut config: SessionConfig,
+        worktrees: Vec<WorktreeInfo>,
+        project_index: Option<usize>,
+    ) {
         let roles = &self.global_roles;
 
         match roles.len() {
@@ -4774,7 +4795,127 @@ mod tests {
         let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
         let session_config = SessionConfig::default();
         app.prepare_spawn(session_config, Vec::new());
+        // Session name modal appears first.
+        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
+        // Confirm the default name to proceed to role selector.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(app.modal, modals::Modal::RoleSelector(_)));
+    }
+
+    #[test]
+    fn prepare_spawn_shows_session_name_modal() {
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+            None,
+            None,
+        );
+        app.prepare_spawn(SessionConfig::default(), Vec::new());
+        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
+        // Default name should be pre-filled.
+        if let modals::Modal::SessionName(ref sn) = app.modal {
+            assert_eq!(sn.name.value(), "1");
+        }
+    }
+
+    #[test]
+    fn session_name_modal_accepts_custom_name() {
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+            None,
+            None,
+        );
+        app.prepare_spawn(SessionConfig::default(), Vec::new());
+        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
+        // Clear default and type a custom name with spaces.
+        app.handle_key(KeyCode::Home, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Delete, KeyModifiers::NONE); // delete "1"
+        for c in "Fix MCP Bug".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        if let modals::Modal::SessionName(ref sn) = app.modal {
+            assert_eq!(sn.name.value(), "Fix MCP Bug");
+        } else {
+            panic!("Expected SessionName modal");
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        // Modal closed after accepting the name.
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
+    #[test]
+    fn session_name_modal_esc_cancels_and_undoes_counter() {
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+            None,
+            None,
+        );
+        let counter_before = app.session_counter;
+        app.prepare_spawn(SessionConfig::default(), Vec::new());
+        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+        assert_eq!(app.session_counter, counter_before);
+    }
+
+    #[test]
+    fn session_name_modal_rejects_empty_name() {
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            repos: vec![],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db_with_project(&config),
+            None,
+            None,
+        );
+        app.prepare_spawn(SessionConfig::default(), Vec::new());
+        // Clear the default name.
+        app.handle_key(KeyCode::Home, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Delete, KeyModifiers::NONE);
+        // Try to submit empty.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        // Modal should still be open.
+        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
     }
 
     #[test]

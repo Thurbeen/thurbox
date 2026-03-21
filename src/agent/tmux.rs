@@ -670,8 +670,9 @@ impl SessionBackend for LocalTmuxBackend {
             .iter()
             .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
             .collect();
+        let escaped_window_name = shell_escape(window_name);
         let cmd = format!(
-            "new-window -t {TMUX_SESSION} -n {window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
+            "new-window -t {TMUX_SESSION} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
         );
         let result = self.ctrl_command(&cmd)?;
         let pane_id = result.trim().to_string();

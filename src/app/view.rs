@@ -18,7 +18,7 @@ use crate::ui::{
     add_project_modal, branch_selector_modal, containerfile_picker, delete_project_modal,
     info_panel, layout, project_list, repo_selector_modal, restore_sessions_modal,
     role_editor_modal, role_selector_modal, schedule_command_modal, scheduled_commands_list_modal,
-    session_mode_modal, status_bar, terminal_view, worktree_name_modal,
+    session_mode_modal, session_name_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -267,6 +267,17 @@ impl App {
                     name: wn.name.value(),
                     cursor: wn.name.cursor_pos(),
                     base_branch: base,
+                },
+            );
+        }
+
+        // Session name modal
+        if let super::modals::Modal::SessionName(ref sn) = self.modal {
+            session_name_modal::render_session_name_modal(
+                frame,
+                &session_name_modal::SessionNameState {
+                    name: sn.name.value(),
+                    cursor: sn.name.cursor_pos(),
                 },
             );
         }

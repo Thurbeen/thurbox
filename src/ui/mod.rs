@@ -16,6 +16,7 @@ pub mod schedule_command_modal;
 pub mod scheduled_commands_list_modal;
 pub mod selection;
 pub mod session_mode_modal;
+pub mod session_name_modal;
 pub mod settings_overlay;
 pub mod status_bar;
 pub mod terminal_view;

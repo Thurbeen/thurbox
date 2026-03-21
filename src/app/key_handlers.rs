@@ -66,6 +66,12 @@ impl App {
             return;
         }
 
+        // Session name modal captures all input
+        if matches!(self.modal, super::modals::Modal::SessionName(_)) {
+            self.handle_session_name_key(code);
+            return;
+        }
+
         // Schedule command modal captures all input
         if matches!(self.modal, super::modals::Modal::ScheduleCommand(_)) {
             self.handle_schedule_command_key(code);
@@ -860,6 +866,44 @@ impl App {
             KeyCode::Home => wn.name.home(),
             KeyCode::End => wn.name.end(),
             KeyCode::Char(c) => wn.name.insert(c),
+            _ => {}
+        }
+    }
+
+    fn handle_session_name_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::SessionName(ref mut sn) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+                self.pending_spawn_config = None;
+                self.pending_spawn_worktrees.clear();
+                self.pending_spawn_project_index = None;
+                self.pending_vm_id = None;
+                // Undo the counter increment from prepare_spawn().
+                self.session_counter = self.session_counter.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let name = sn.name.value().trim().to_string();
+                if name.is_empty() {
+                    self.set_error("Session name cannot be empty");
+                    return;
+                }
+                self.modal.close();
+                if let Some(config) = self.pending_spawn_config.take() {
+                    let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                    let project_index = self.pending_spawn_project_index.take();
+                    self.finish_prepare_spawn(name, config, worktrees, project_index);
+                }
+            }
+            KeyCode::Backspace => sn.name.backspace(),
+            KeyCode::Delete => sn.name.delete(),
+            KeyCode::Left => sn.name.move_left(),
+            KeyCode::Right => sn.name.move_right(),
+            KeyCode::Home => sn.name.home(),
+            KeyCode::End => sn.name.end(),
+            KeyCode::Char(c) => sn.name.insert(c),
             _ => {}
         }
     }
