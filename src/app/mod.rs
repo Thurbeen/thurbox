@@ -7096,7 +7096,15 @@ mod tests {
     #[test]
     fn ensure_admin_project_stays_at_admin_when_only_project() {
         let admin_dir = PathBuf::from("/tmp/admin");
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None, None);
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
         assert!(app.projects.is_empty());
 
         app.ensure_admin_project(&admin_dir);
