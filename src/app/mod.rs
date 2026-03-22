@@ -1119,6 +1119,11 @@ impl App {
             }
             self.save_project_to_db(&self.projects[0].clone());
         }
+
+        // Never start with the admin project selected when user projects exist.
+        if self.active_project_index == 0 && self.projects.len() > 1 {
+            self.active_project_index = 1;
+        }
     }
 
     pub fn spawn_session(&mut self) {
@@ -7045,6 +7050,84 @@ mod tests {
             app.status_message.as_ref().map(|m| m.level),
             Some(StatusLevel::Error)
         );
+    }
+
+    #[test]
+    fn ensure_admin_project_skips_admin_for_active_selection() {
+        // Create a DB with both the admin project and a user project so that
+        // on startup the admin project is loaded at index 0 (insertion order).
+        let admin_dir = PathBuf::from("/tmp/admin");
+        let admin_config = ProjectConfig {
+            name: "Admin".to_string(),
+            repos: vec![admin_dir.clone()],
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            id: None,
+        };
+        let user_config = ProjectConfig {
+            name: "MyProject".to_string(),
+            repos: vec![PathBuf::from("/tmp/repo")],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
+        let db = test_db();
+        let admin_id = admin_config.effective_id();
+        db.insert_project(admin_id, &admin_config.name, &admin_config.repos)
+            .unwrap();
+        let user_id = user_config.effective_id();
+        db.insert_project(user_id, &user_config.name, &user_config.repos)
+            .unwrap();
+
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        // App::new sets active_project_index = 0 (admin is at 0 from DB).
+        assert_eq!(app.active_project_index, 0);
+
+        app.ensure_admin_project(&admin_dir);
+
+        // After ensure_admin_project, active selection should skip the admin project.
+        assert!(
+            !app.active_project().unwrap().is_admin,
+            "active project should not be the admin project after ensure_admin_project"
+        );
+        assert_eq!(app.active_project().unwrap().config.name, "MyProject");
+    }
+
+    #[test]
+    fn ensure_admin_project_stays_at_admin_when_only_project() {
+        let admin_dir = PathBuf::from("/tmp/admin");
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db(), None, None);
+        assert!(app.projects.is_empty());
+
+        app.ensure_admin_project(&admin_dir);
+
+        // With only the admin project, it must remain selected.
+        assert_eq!(app.active_project_index, 0);
+        assert!(app.active_project().unwrap().is_admin);
+    }
+
+    #[test]
+    fn ensure_admin_project_skips_admin_on_fresh_install_with_user_project() {
+        // User project already in DB, admin not yet created.
+        let user_config = ProjectConfig {
+            name: "MyProject".to_string(),
+            repos: vec![PathBuf::from("/tmp/repo")],
+            roles: vec![],
+            mcp_servers: vec![],
+            id: None,
+        };
+        let db = test_db_with_project(&user_config);
+
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let admin_dir = PathBuf::from("/tmp/admin");
+        app.ensure_admin_project(&admin_dir);
+
+        // Admin inserted at 0, user project pushed to 1, selection should follow.
+        assert!(
+            !app.active_project().unwrap().is_admin,
+            "active project should not be admin after fresh admin setup"
+        );
+        assert_eq!(app.active_project().unwrap().config.name, "MyProject");
     }
 
     // --- StatusMessage / set_error / set_status tests ---
