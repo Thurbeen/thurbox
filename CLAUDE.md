@@ -173,28 +173,21 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 
 | Tool | Description |
 |------|-------------|
-| `list_projects` | List all active projects |
-| `get_project` | Get a project by name or UUID |
-| `create_project` | Create a new project with name and repo paths |
-| `update_project` | Update project name and/or repos (partial update) |
-| `delete_project` | Soft-delete a project (preserves for undo) |
 | `list_roles` | List all global roles |
 | `set_roles` | Atomically replace all global roles |
 | `list_mcp_servers` | List all global MCP servers |
 | `set_mcp_servers` | Set global MCP servers |
-| `list_sessions` | List sessions, optionally filtered by project |
+| `list_sessions` | List all active sessions |
 | `get_session` | Get a session by UUID |
 | `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
 | `restart_session` | Queue a session restart (TUI processes the command) |
 | `restore_session` | Restore a soft-deleted session |
-| `list_vms` | List active VMs, optionally filtered by project |
+| `list_vms` | List active VMs |
 | `get_vm` | Get a VM by UUID |
 | `list_containerfile_templates` | List template names + files in each |
 | `get_containerfile_template` | Read a template's Containerfile content and list support files |
 | `set_containerfile_template` | Create/update a template (Containerfile + optional support files) |
 | `delete_containerfile_template` | Delete a template (refuses to delete "default") |
-| `configure_project_container` | Set project container defaults (image, cpus, memory, firewall, template) |
-| `get_project_container_config` | Read current project container config |
 | `list_vm_images` | List downloaded VM images with file sizes |
 | `download_vm_image` | Download a VM image from an HTTPS URL |
 | `delete_vm_image` | Delete a cached VM image |
@@ -203,7 +196,7 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `get_scheduled_command` | Get a scheduled command by ID |
 | `cancel_scheduled_command` | Cancel a pending scheduled command |
 
-**Role Management**: Roles are global presets (not per-project).
+**Role Management**: Roles are global presets.
 `set_roles` performs an atomic replacement — all existing roles
 are deleted and replaced in a single transaction. To add a role,
 include all existing roles plus the new one.
@@ -217,13 +210,13 @@ The TUI includes a global "Admin" session that auto-configures
 `thurbox-mcp` as an MCP server. On startup, Thurbox creates
 `~/.local/share/thurbox/admin/.mcp.json` and spawns an admin
 session there. Claude Code discovers the MCP config automatically,
-enabling conversational project/role/session management inside
+enabling conversational role/session management inside
 the TUI. See `docs/FEATURES.md` for details.
 
 ### Module Isolation
 
 ```text
-mcp → storage, session, project, sync, paths
+mcp → storage, session, sync, paths
       (NEVER app, agent, ui, git)
 ```
 
@@ -235,11 +228,10 @@ The app follows **The Elm Architecture**:
 ### Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
-session  ← pure data types, no project-local imports
-project  ← pure data types + config loading, imports session only
-agent    ← imports session only (NEVER ui, git, or project)
-ui       ← imports session and project only (NEVER agent or git)
-mcp      ← imports storage, session, project, sync, paths only
+session  ← pure data types, no local imports
+agent    ← imports session only (NEVER ui or git)
+ui       ← imports session only (NEVER agent or git)
+mcp      ← imports storage, session, sync, paths only
 app      ← coordinator, imports all modules
 ```
 
@@ -268,8 +260,6 @@ app      ← coordinator, imports all modules
   `VmState`, `VmConfig`, `ContainerState`, `ContainerConfig`.
   `default_developer_role()` provides the seeded developer role.
   No logic beyond Display/Default impls.
-- **`project/`** — Plain data: `ProjectId`,
-  `ProjectConfig`, `ProjectInfo`. Imports `session` only.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (session
@@ -278,7 +268,7 @@ app      ← coordinator, imports all modules
   worktree toggle). `selection.rs` handles mouse-drag text
   selection, `links.rs` detects and highlights clickable URLs.
 - **`mcp/`** — MCP server (`thurbox-mcp` binary). Exposes
-  project/role/session/VM CRUD over stdio or Streamable HTTP
+  role/session/VM CRUD over stdio or Streamable HTTP
   JSON-RPC. Shares the same SQLite database as the TUI.
 
 ### Event Loop (main.rs)
@@ -319,7 +309,7 @@ framework). Install with `prek install`. Stages:
 - Terminal state parsed by `vt100::Parser`,
   rendered by `tui_term::PseudoTerminal`
 - Sessions persist across restarts (tmux keeps them alive)
-- All state (projects, sessions, roles) in SQLite:
+- All state (sessions, roles) in SQLite:
   `~/.local/share/thurbox/thurbox.db` (XDG_DATA_HOME respected)
 - Requires tmux >= 3.2
 
@@ -336,14 +326,14 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+P` | Scheduled commands (list/cancel/new) | **P**rogram |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
-| `Ctrl+J` | Select next project or session | Vim: **j** = down |
-| `Ctrl+K` | Select previous project or session | Vim: **k** = up |
+| `Ctrl+J` | Select next session | Vim: **j** = down |
+| `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
-| `Ctrl+D` | Delete session/project | Vim: **d** = delete |
-| `Ctrl+E` | Edit active project (name, repos) | **E**dit |
+| `Ctrl+D` | Delete session | Vim: **d** = delete |
+| `Ctrl+E` | Edit settings (roles, MCP servers) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
-| `Ctrl+Z` | Undo session/project delete | **Z** = undo |
+| `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `F1` | Toggle keybindings help | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
