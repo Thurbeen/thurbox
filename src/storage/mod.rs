@@ -7,14 +7,12 @@
 //!
 //! ```ignore
 //! let db = Database::open(path)?;
-//! db.insert_project(id, "name", &repos)?;
 //! db.upsert_session(&session)?;
 //! ```
 
 pub mod audit;
 pub mod containers;
 mod mcp_servers;
-mod projects;
 pub mod repo_bookmarks;
 mod roles;
 mod scheduled_commands;

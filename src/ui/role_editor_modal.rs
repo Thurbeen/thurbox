@@ -32,7 +32,6 @@ pub enum ToolListMode {
 }
 
 pub struct RoleEditorState<'a> {
-    pub project_name: &'a str,
     pub name: &'a str,
     pub name_cursor: usize,
     pub description: &'a str,
@@ -103,12 +102,7 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
         format!("\"{}\"", state.name)
     };
     let breadcrumb = Line::from(vec![
-        Span::styled(
-            format!(" Edit \"{}\"", state.project_name),
-            Style::default().fg(Theme::TEXT_MUTED),
-        ),
-        Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled("Roles", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(" Roles", Style::default().fg(Theme::TEXT_MUTED)),
         Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
         Span::styled(role_label, Style::default().fg(Theme::ACCENT)),
     ]);

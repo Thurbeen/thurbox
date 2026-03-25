@@ -13,7 +13,6 @@ use crate::app::mcp_editor_modal::McpEditorField;
 use crate::ui::role_editor_modal::ToolListMode;
 
 pub struct McpEditorState<'a> {
-    pub project_name: &'a str,
     pub name: &'a str,
     pub name_cursor: usize,
     pub command: &'a str,
@@ -69,12 +68,7 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
         format!("\"{}\"", state.name)
     };
     let breadcrumb = Line::from(vec![
-        Span::styled(
-            format!(" Edit \"{}\"", state.project_name),
-            Style::default().fg(Theme::TEXT_MUTED),
-        ),
-        Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled("MCP Servers", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(" MCP Servers", Style::default().fg(Theme::TEXT_MUTED)),
         Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
         Span::styled(mcp_label, Style::default().fg(Theme::ACCENT)),
     ]);

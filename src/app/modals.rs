@@ -89,41 +89,10 @@ impl TextInput {
     }
 }
 
-// ── AddProjectField ────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddProjectField {
-    Name,
-    Path,
-    RepoList,
-}
-
 // ── Modal State Structs ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub struct AddProjectModal {
-    pub name: TextInput,
-    pub path: TextInput,
-    pub field: AddProjectField,
-    pub repos: Vec<PathBuf>,
-    pub repo_index: usize,
-    pub path_suggestion: Option<String>,
-}
-
-impl Default for AddProjectModal {
-    fn default() -> Self {
-        Self {
-            name: TextInput::default(),
-            path: TextInput::default(),
-            field: AddProjectField::Name,
-            repos: Vec::new(),
-            repo_index: 0,
-            path_suggestion: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct RepoSelectorModal {
     pub index: usize,
 }
@@ -152,13 +121,6 @@ pub struct SessionNameModal {
 #[derive(Debug, Clone, Default)]
 pub struct RoleSelectorModal {
     pub index: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DeleteProjectModal {
-    pub project_name: String,
-    pub confirmation: TextInput,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,10 +252,6 @@ pub enum Modal {
     #[default]
     None,
     Help,
-    #[allow(dead_code)] // Available via MCP / tests, not from main keybindings
-    AddProject(AddProjectModal),
-    #[allow(dead_code)] // Available via MCP / tests, not from main keybindings
-    DeleteProject(DeleteProjectModal),
     #[allow(dead_code)] // Planned: not yet wired to a trigger key
     RepoSelector(RepoSelectorModal),
     SessionMode(SessionModeModal),
@@ -380,14 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn test_add_project_modal_default() {
-        let modal = AddProjectModal::default();
-        assert_eq!(modal.name.value(), "");
-        assert_eq!(modal.path.value(), "");
-        assert_eq!(modal.field, AddProjectField::Name);
-    }
-
-    #[test]
     fn test_text_input_with_unicode() {
         let mut input = TextInput::new();
         // Test with multi-byte UTF-8 characters
@@ -408,14 +358,10 @@ mod tests {
 
     #[test]
     fn test_modal_state_transitions() {
-        // Test that only one modal can be active
         let mut modal = Modal::None;
         assert!(matches!(modal, Modal::None));
 
         modal = Modal::Help;
-        assert!(!matches!(modal, Modal::None));
-
-        modal = Modal::AddProject(AddProjectModal::default());
         assert!(!matches!(modal, Modal::None));
 
         modal.close();
@@ -427,37 +373,6 @@ mod tests {
         let branch = BranchSelectorModal::default();
         assert_eq!(branch.index, 0);
         assert_eq!(branch.branches.len(), 0);
-    }
-
-    #[test]
-    fn test_add_project_modal_default_state() {
-        let modal = AddProjectModal::default();
-        assert_eq!(modal.name.value(), "");
-        assert_eq!(modal.path.value(), "");
-        assert_eq!(modal.field, AddProjectField::Name);
-        assert!(modal.repos.is_empty());
-        assert_eq!(modal.repo_index, 0);
-        assert!(modal.path_suggestion.is_none());
-    }
-
-    #[test]
-    fn test_add_project_field_has_repo_list_variant() {
-        let field = AddProjectField::RepoList;
-        assert_ne!(field, AddProjectField::Name);
-        assert_ne!(field, AddProjectField::Path);
-    }
-
-    #[test]
-    fn test_add_project_modal_with_repos() {
-        let mut modal = AddProjectModal::default();
-        modal.repos.push(PathBuf::from("/path/to/repo1"));
-        modal.repos.push(PathBuf::from("/path/to/repo2"));
-        modal.repo_index = 1;
-        modal.path_suggestion = Some("er/".to_string());
-
-        assert_eq!(modal.repos.len(), 2);
-        assert_eq!(modal.repo_index, 1);
-        assert_eq!(modal.path_suggestion.as_deref(), Some("er/"));
     }
 
     #[test]

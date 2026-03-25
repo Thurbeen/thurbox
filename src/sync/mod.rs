@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use tracing::debug;
 
 pub use delta::StateDelta;
-pub use state::{current_time_millis, SharedProject, SharedSession, SharedState, SharedWorktree};
+pub use state::{current_time_millis, SharedSession, SharedState, SharedWorktree};
 
 /// Tracks polling state for external change detection.
 ///
@@ -180,23 +180,14 @@ mod tests {
     fn set_initial_snapshot_replaces_default() {
         let mut sync = SyncState::new();
         assert!(sync.local_state_snapshot.sessions.is_empty());
-        assert!(sync.local_state_snapshot.projects.is_empty());
 
         let state = SharedState {
             session_counter: 42,
-            projects: vec![SharedProject {
-                id: crate::project::ProjectId::default(),
-                name: "Test".to_string(),
-                repos: vec![],
-                roles: vec![],
-                mcp_servers: vec![],
-            }],
             ..Default::default()
         };
 
         sync.set_initial_snapshot(state);
 
         assert_eq!(sync.local_state_snapshot.session_counter, 42);
-        assert_eq!(sync.local_state_snapshot.projects.len(), 1);
     }
 }

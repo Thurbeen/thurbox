@@ -29,7 +29,6 @@ pub fn render_header(frame: &mut Frame, area: Rect) {
 /// State needed to render the footer bar.
 pub struct FooterState<'a> {
     pub session_count: usize,
-    pub project_count: usize,
     pub status: Option<&'a StatusMessage>,
     pub focus_label: &'a str,
     pub sync_in_progress: bool,
@@ -92,14 +91,7 @@ pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
             Style::default().fg(text_color),
         ));
     } else {
-        let counts = if state.project_count > 0 {
-            format!(
-                " {} project(s) | {} session(s) ",
-                state.project_count, state.session_count
-            )
-        } else {
-            format!(" {} session(s) ", state.session_count)
-        };
+        let counts = format!(" {} session(s) ", state.session_count);
         spans.push(Span::styled(
             counts,
             Style::default().fg(Theme::TEXT_SECONDARY),

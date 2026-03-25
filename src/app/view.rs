@@ -15,10 +15,10 @@ use crate::session::SessionInfo;
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
-    add_project_modal, branch_selector_modal, containerfile_picker, delete_project_modal,
-    info_panel, layout, project_list, repo_selector_modal, restore_sessions_modal,
-    role_editor_modal, role_selector_modal, schedule_command_modal, scheduled_commands_list_modal,
-    session_mode_modal, session_name_modal, status_bar, terminal_view, worktree_name_modal,
+    branch_selector_modal, containerfile_picker, info_panel, layout, project_list,
+    restore_sessions_modal, role_editor_modal, role_selector_modal, schedule_command_modal,
+    scheduled_commands_list_modal, session_mode_modal, session_name_modal, status_bar,
+    terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -174,7 +174,6 @@ impl App {
             areas.footer,
             &status_bar::FooterState {
                 session_count: self.sessions.len(),
-                project_count: self.projects.len(),
                 status: self.status_message.as_ref(),
                 focus_label,
                 sync_in_progress: self.worktree_sync_in_progress,
@@ -190,49 +189,6 @@ impl App {
         // Help overlay (rendered last, on top of everything)
         if matches!(self.modal, super::modals::Modal::Help) {
             render_help_overlay(frame);
-        }
-
-        // Add-project modal (on top of everything including help)
-        if let super::modals::Modal::AddProject(ref ap) = self.modal {
-            add_project_modal::render_add_project_modal(
-                frame,
-                &add_project_modal::AddProjectModalState {
-                    name: ap.name.value(),
-                    name_cursor: ap.name.cursor_pos(),
-                    path: ap.path.value(),
-                    path_cursor: ap.path.cursor_pos(),
-                    path_suggestion: ap.path_suggestion.as_deref(),
-                    repos: &ap.repos,
-                    repo_index: ap.repo_index,
-                    focused_field: ap.field,
-                },
-            );
-        }
-
-        // Delete-project modal
-        if let super::modals::Modal::DeleteProject(ref dp) = self.modal {
-            delete_project_modal::render_delete_project_modal(
-                frame,
-                &delete_project_modal::DeleteProjectModalState {
-                    project_name: &dp.project_name,
-                    confirmation: dp.confirmation.value(),
-                    confirmation_cursor: dp.confirmation.cursor_pos(),
-                    error: dp.error.as_deref(),
-                },
-            );
-        }
-
-        // Repo selector modal
-        if let super::modals::Modal::RepoSelector(ref rs) = self.modal {
-            if let Some(active_project) = self.active_project() {
-                repo_selector_modal::render_repo_selector_modal(
-                    frame,
-                    &repo_selector_modal::RepoSelectorState {
-                        repos: &active_project.config.repos,
-                        selected_index: rs.index,
-                    },
-                );
-            }
         }
 
         // Session mode modal
@@ -320,11 +276,9 @@ impl App {
 
         // Role editor modal (detail form, overlays edit-project modal)
         if self.show_role_editor {
-            let project_name = "Global Roles";
             role_editor_modal::render_role_editor_modal(
                 frame,
                 &role_editor_modal::RoleEditorState {
-                    project_name,
                     name: self.role_editor_name.value(),
                     name_cursor: self.role_editor_name.cursor_pos(),
                     description: self.role_editor_description.value(),
@@ -359,7 +313,6 @@ impl App {
             crate::ui::mcp_editor_modal::render_mcp_editor_modal(
                 frame,
                 &crate::ui::mcp_editor_modal::McpEditorState {
-                    project_name: "Global MCP Servers",
                     name: self.mcp_editor_name.value(),
                     name_cursor: self.mcp_editor_name.cursor_pos(),
                     command: self.mcp_editor_command.value(),

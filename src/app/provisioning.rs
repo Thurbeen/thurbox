@@ -59,13 +59,11 @@ impl App {
         };
 
         let config = crate::session::VmConfig::default();
-        let project_id = self.active_project().map(|p| p.id.to_string());
 
         // Record in DB
         if let Err(e) = self.db.insert_vm(
             &vm_id,
             None,
-            project_id.as_deref(),
             &crate::session::VmState::Provisioning,
             0, // SSH port allocated later by VmManager
             &config,
@@ -284,13 +282,11 @@ impl App {
             containerfile: Some(containerfile_name.clone()),
             ..crate::session::ContainerConfig::default()
         };
-        let project_id = self.active_project().map(|p| p.id.to_string());
 
         // Record in DB
         if let Err(e) = self.db.insert_container(
             &container_id,
             None,
-            project_id.as_deref(),
             &crate::session::ContainerState::Building,
             &config,
         ) {

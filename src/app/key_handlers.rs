@@ -36,12 +36,6 @@ impl App {
             return;
         }
 
-        // Repo selector modal captures all input
-        if matches!(self.modal, super::modals::Modal::RepoSelector(_)) {
-            self.handle_repo_selector_key(code);
-            return;
-        }
-
         // Containerfile picker modal captures all input
         if matches!(self.modal, super::modals::Modal::ContainerfilePicker(_)) {
             self.handle_containerfile_picker_key(code);
@@ -123,18 +117,6 @@ impl App {
         // Role selector modal captures all input
         if matches!(self.modal, super::modals::Modal::RoleSelector(_)) {
             self.handle_role_selector_key(code);
-            return;
-        }
-
-        // Add-project modal captures all input
-        if matches!(self.modal, super::modals::Modal::AddProject(_)) {
-            self.handle_add_project_key(code);
-            return;
-        }
-
-        // Delete-project modal captures all input
-        if matches!(self.modal, super::modals::Modal::DeleteProject(_)) {
-            self.handle_delete_project_key(code);
             return;
         }
 
@@ -389,191 +371,6 @@ impl App {
         }
     }
 
-    fn handle_add_project_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::AddProject(ref ap) = self.modal else {
-            return;
-        };
-        match ap.field {
-            super::modals::AddProjectField::Name => self.handle_add_project_name_key(code),
-            super::modals::AddProjectField::Path => self.handle_add_project_path_key(code),
-            super::modals::AddProjectField::RepoList => self.handle_add_project_repo_list_key(code),
-        }
-    }
-
-    fn handle_add_project_name_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => self.close_add_project_modal(),
-            KeyCode::Tab => {
-                ap.field = super::modals::AddProjectField::Path;
-            }
-            KeyCode::BackTab => {
-                if !ap.repos.is_empty() {
-                    ap.field = super::modals::AddProjectField::RepoList;
-                } else {
-                    ap.field = super::modals::AddProjectField::Path;
-                }
-            }
-            KeyCode::Enter => self.submit_add_project(),
-            KeyCode::Backspace => ap.name.backspace(),
-            KeyCode::Delete => ap.name.delete(),
-            KeyCode::Left => ap.name.move_left(),
-            KeyCode::Right => ap.name.move_right(),
-            KeyCode::Home => ap.name.home(),
-            KeyCode::End => ap.name.end(),
-            KeyCode::Char(c) => ap.name.insert(c),
-            _ => {}
-        }
-    }
-
-    fn handle_add_project_path_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => {
-                self.close_add_project_modal();
-                return;
-            }
-            KeyCode::Tab => {
-                if let Some(suggestion) = ap.path_suggestion.take() {
-                    for c in suggestion.chars() {
-                        ap.path.insert(c);
-                    }
-                } else if !ap.repos.is_empty() {
-                    ap.field = super::modals::AddProjectField::RepoList;
-                    ap.path_suggestion = None;
-                    return;
-                } else {
-                    ap.field = super::modals::AddProjectField::Name;
-                    ap.path_suggestion = None;
-                    return;
-                }
-            }
-            KeyCode::BackTab => {
-                ap.field = super::modals::AddProjectField::Name;
-                ap.path_suggestion = None;
-                return;
-            }
-            KeyCode::Enter => {
-                let path = ap.path.value().trim().to_string();
-                if !path.is_empty() {
-                    ap.repos.push(paths::expand_tilde(&path));
-                    ap.repo_index = ap.repos.len().saturating_sub(1);
-                    ap.path.clear();
-                    ap.path_suggestion = None;
-                }
-                return;
-            }
-            KeyCode::Backspace => ap.path.backspace(),
-            KeyCode::Delete => ap.path.delete(),
-            KeyCode::Left => ap.path.move_left(),
-            KeyCode::Right => ap.path.move_right(),
-            KeyCode::Home => ap.path.home(),
-            KeyCode::End => ap.path.end(),
-            KeyCode::Char(c) => ap.path.insert(c),
-            _ => return,
-        }
-        self.update_path_suggestion();
-    }
-
-    fn handle_add_project_repo_list_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => self.close_add_project_modal(),
-            KeyCode::Tab => {
-                ap.field = super::modals::AddProjectField::Name;
-            }
-            KeyCode::BackTab => {
-                ap.field = super::modals::AddProjectField::Path;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if ap.repo_index + 1 < ap.repos.len() {
-                    ap.repo_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                ap.repo_index = ap.repo_index.saturating_sub(1);
-            }
-            KeyCode::Char('d') => {
-                if !ap.repos.is_empty() {
-                    ap.repos.remove(ap.repo_index);
-                    if ap.repo_index >= ap.repos.len() && ap.repo_index > 0 {
-                        ap.repo_index -= 1;
-                    }
-                    // If list becomes empty, switch to Path field
-                    if ap.repos.is_empty() {
-                        ap.field = super::modals::AddProjectField::Path;
-                    }
-                }
-            }
-            KeyCode::Enter => self.submit_add_project(),
-            _ => {}
-        }
-    }
-
-    /// Recompute path suggestion (fish-style: only when cursor is at end).
-    fn update_path_suggestion(&mut self) {
-        let super::modals::Modal::AddProject(ref mut ap) = self.modal else {
-            return;
-        };
-        let value = ap.path.value().to_string();
-        let at_end = ap.path.cursor_pos() == value.chars().count();
-        if at_end && !value.is_empty() {
-            ap.path_suggestion = paths::complete_directory_path(&value);
-        } else {
-            ap.path_suggestion = None;
-        }
-    }
-
-    /// Close the add-project modal and clear all related state.
-    pub(crate) fn close_add_project_modal(&mut self) {
-        self.modal.close();
-    }
-
-    fn handle_delete_project_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::DeleteProject(ref mut dp) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Enter => {
-                self.delete_active_project();
-            }
-            KeyCode::Esc => {
-                self.modal.close();
-            }
-            KeyCode::Char(c) => {
-                dp.confirmation.insert(c);
-                dp.error = None; // Clear error on new input
-            }
-            KeyCode::Backspace => {
-                dp.confirmation.backspace();
-                dp.error = None;
-            }
-            KeyCode::Delete => {
-                dp.confirmation.delete();
-                dp.error = None;
-            }
-            KeyCode::Left => {
-                dp.confirmation.move_left();
-            }
-            KeyCode::Right => {
-                dp.confirmation.move_right();
-            }
-            KeyCode::Home => {
-                dp.confirmation.home();
-            }
-            KeyCode::End => {
-                dp.confirmation.end();
-            }
-            _ => {}
-        }
-    }
-
     fn handle_restore_sessions_key(&mut self, code: KeyCode) {
         let super::modals::Modal::RestoreSessions(ref mut rs) = self.modal else {
             return;
@@ -600,43 +397,6 @@ impl App {
                 }
                 self.modal.close();
                 self.restore_deleted_session(deleted);
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_repo_selector_key(&mut self, code: KeyCode) {
-        let repo_count = self
-            .active_project()
-            .map(|p| p.config.repos.len())
-            .unwrap_or(0);
-        let super::modals::Modal::RepoSelector(ref mut rs) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => {
-                self.modal.close();
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if rs.index + 1 < repo_count {
-                    rs.index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                rs.index = rs.index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                let idx = rs.index;
-                let path = self
-                    .active_project()
-                    .and_then(|p| p.config.repos.get(idx).cloned());
-                if let Some(path) = path {
-                    self.pending_repo_path = Some(path);
-                    self.modal =
-                        super::modals::Modal::SessionMode(super::modals::SessionModeModal {
-                            index: 0,
-                        });
-                }
             }
             _ => {}
         }
@@ -879,7 +639,6 @@ impl App {
                 self.modal.close();
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
-                self.pending_spawn_project_index = None;
                 self.pending_vm_id = None;
                 // Undo the counter increment from prepare_spawn().
                 self.session_counter = self.session_counter.saturating_sub(1);
@@ -893,8 +652,7 @@ impl App {
                 self.modal.close();
                 if let Some(config) = self.pending_spawn_config.take() {
                     let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                    let project_index = self.pending_spawn_project_index.take();
-                    self.finish_prepare_spawn(name, config, worktrees, project_index);
+                    self.finish_prepare_spawn(name, config, worktrees);
                 }
             }
             KeyCode::Backspace => sn.name.backspace(),
@@ -1023,7 +781,6 @@ impl App {
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
-                self.pending_spawn_project_index = None;
                 self.pending_vm_id = None;
                 // Undo the counter increment from prepare_spawn()
                 self.session_counter = self.session_counter.saturating_sub(1);
@@ -1047,8 +804,7 @@ impl App {
                         config.role = role.name.clone();
                         config.permissions = role.permissions.clone();
                         let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                        let project_index = self.pending_spawn_project_index.take();
-                        self.do_spawn_session(name, &config, worktrees, project_index);
+                        self.do_spawn_session(name, &config, worktrees, false);
                     }
                 }
             }

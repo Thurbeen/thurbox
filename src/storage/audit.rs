@@ -7,7 +7,6 @@ use super::Database;
 /// Entity type for audit log entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityType {
-    Project,
     Session,
     Worktree,
 }
@@ -15,7 +14,6 @@ pub enum EntityType {
 impl EntityType {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Project => "project",
             Self::Session => "session",
             Self::Worktree => "worktree",
         }
@@ -136,7 +134,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         db.log_audit(
-            EntityType::Project,
+            EntityType::Session,
             "proj-1",
             AuditAction::Created,
             None,
@@ -147,7 +145,7 @@ mod tests {
 
         let entries = db.get_audit_log(None, None, 10).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].entity_type, "project");
+        assert_eq!(entries[0].entity_type, "session");
         assert_eq!(entries[0].entity_id, "proj-1");
         assert_eq!(entries[0].action, "created");
     }
@@ -157,8 +155,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         db.log_audit(
-            EntityType::Project,
-            "p1",
+            EntityType::Worktree,
+            "w1",
             AuditAction::Created,
             None,
             None,
@@ -175,11 +173,11 @@ mod tests {
         )
         .unwrap();
 
-        let projects = db
-            .get_audit_log(Some(EntityType::Project), None, 10)
+        let worktrees = db
+            .get_audit_log(Some(EntityType::Worktree), None, 10)
             .unwrap();
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].entity_id, "p1");
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].entity_id, "w1");
     }
 
     #[test]
@@ -217,7 +215,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         db.log_audit(
-            EntityType::Project,
+            EntityType::Session,
             "p1",
             AuditAction::Updated,
             Some("name"),
@@ -257,7 +255,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         db.log_audit(
-            EntityType::Project,
+            EntityType::Session,
             "p1",
             AuditAction::Created,
             None,

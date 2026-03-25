@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use crate::project::ProjectId;
-use crate::session::{McpServerConfig, RoleConfig, SessionId};
+use crate::session::SessionId;
 
 /// Current shared state format version.
 const SHARED_STATE_VERSION: u32 = 1;
@@ -22,9 +21,6 @@ pub struct SharedState {
 
     /// Active sessions across all instances.
     pub sessions: Vec<SharedSession>,
-
-    /// Active projects across all instances.
-    pub projects: Vec<SharedProject>,
 }
 
 impl SharedState {
@@ -35,7 +31,6 @@ impl SharedState {
             last_modified: current_time_millis(),
             session_counter: 0,
             sessions: Vec::new(),
-            projects: Vec::new(),
         }
     }
 }
@@ -56,9 +51,6 @@ pub struct SharedSession {
 
     /// Human-readable session name (e.g., "1", "Session 1").
     pub name: String,
-
-    /// Project this session belongs to (None for project-less sessions).
-    pub project_id: Option<ProjectId>,
 
     /// Role assigned to this session (e.g., "developer", "reviewer").
     pub role: String,
@@ -91,25 +83,6 @@ pub struct SharedSession {
 
     /// Timestamp when this session was tombstoned (millis since epoch).
     pub tombstone_at: Option<u64>,
-}
-
-/// A project known to the shared state.
-#[derive(Debug, Clone)]
-pub struct SharedProject {
-    /// Unique project identifier (derived deterministically from project name).
-    pub id: ProjectId,
-
-    /// Human-readable project name.
-    pub name: String,
-
-    /// Repository paths associated with this project.
-    pub repos: Vec<PathBuf>,
-
-    /// Role definitions for this project.
-    pub roles: Vec<RoleConfig>,
-
-    /// MCP server configurations for this project.
-    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 /// Worktree information embedded in shared session.
@@ -163,7 +136,6 @@ mod tests {
         assert_eq!(state.version, SHARED_STATE_VERSION);
         assert_eq!(state.session_counter, 0);
         assert!(state.sessions.is_empty());
-        assert!(state.projects.is_empty());
         assert!(state.last_modified > 0);
     }
 

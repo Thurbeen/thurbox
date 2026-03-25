@@ -114,31 +114,16 @@ impl Database {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::project::ProjectConfig;
     use crate::sync::SharedSession;
 
     use super::*;
 
-    fn test_project_id() -> crate::project::ProjectId {
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        config.deterministic_id()
-    }
-
     fn setup_db_with_session() -> (Database, SessionId) {
         let db = Database::open_in_memory().unwrap();
-        let pid = test_project_id();
-        db.insert_project(pid, "test", &[]).unwrap();
 
         let session = SharedSession {
             id: SessionId::default(),
             name: "S1".to_string(),
-            project_id: Some(pid),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),

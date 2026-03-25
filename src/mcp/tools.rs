@@ -1,66 +1,29 @@
 //! Tool implementations for the Thurbox MCP server.
 
-use std::path::PathBuf;
-
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 
-use crate::paths;
-use crate::project::{ProjectConfig, ProjectId};
-use crate::session::{ContainerConfig, McpServerConfig, RoleConfig, RolePermissions, SessionId};
+use crate::session::{McpServerConfig, RoleConfig, RolePermissions, SessionId};
 use crate::storage::Database;
-use crate::sync::{SharedProject, SharedSession};
+use crate::sync::SharedSession;
 
-use crate::session::VmConfig;
 use crate::storage::vms::VmRecord;
 
 use crate::session::ScheduledCommand;
 
 use super::types::{
-    CancelScheduledCommandParams, ConfigureProjectContainerParams, ConfigureProjectVmParams,
-    ContainerfileTemplateResponse, ContainerfileTemplateSummary, CreateProjectParams,
-    DeleteContainerfileTemplateParams, DeleteProjectParams, DeleteSessionParams,
-    DeleteVmImageParams, DownloadVmImageParams, GetContainerfileTemplateParams,
-    GetProjectContainerConfigParams, GetProjectParams, GetScheduledCommandParams, GetSessionParams,
-    GetVmParams, ListMcpServersParams, ListRolesParams, ListScheduledCommandsParams,
-    ListSessionsParams, ListVmsParams, McpServerResponse, ProjectContainerConfigResponse,
-    ProjectResponse, ProjectVmConfigResponse, RestartSessionParams, RestoreSessionParams,
-    RoleResponse, ScheduleCommandParams, ScheduledCommandResponse, SessionResponse,
-    SetContainerfileTemplateParams, SetGlobalMcpServersParams, SetGlobalRolesParams,
-    SetMcpServersParams, SetRolesParams, UpdateProjectParams, VmImageResponse, VmResponse,
-    WorktreeResponse,
+    CancelScheduledCommandParams, ContainerfileTemplateResponse, ContainerfileTemplateSummary,
+    DeleteContainerfileTemplateParams, DeleteSessionParams, DeleteVmImageParams,
+    DownloadVmImageParams, GetContainerfileTemplateParams, GetScheduledCommandParams,
+    GetSessionParams, GetVmParams, ListScheduledCommandsParams, ListSessionsParams, ListVmsParams,
+    McpServerResponse, RestartSessionParams, RestoreSessionParams, RoleResponse,
+    ScheduleCommandParams, ScheduledCommandResponse, SessionResponse,
+    SetContainerfileTemplateParams, SetMcpServersParams, SetRolesParams, VmImageResponse,
+    VmResponse, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
 // ── Helpers ─────────────────────────────────────────────────────
-
-/// Resolve a project identifier (name or UUID) against the active project list.
-fn resolve_project<'a>(
-    projects: &'a [SharedProject],
-    identifier: &str,
-) -> Option<&'a SharedProject> {
-    if let Ok(uuid) = identifier.parse::<uuid::Uuid>() {
-        let pid = ProjectId::from_uuid(uuid);
-        return projects.iter().find(|p| p.id == pid);
-    }
-    let lower = identifier.to_lowercase();
-    projects.iter().find(|p| p.name.to_lowercase() == lower)
-}
-
-/// Look up a project by name/UUID, returning a JSON error string on failure.
-///
-/// Returns the full project list and the index of the matched project so the
-/// caller can borrow freely without lifetime issues.
-fn require_project(db: &Database, identifier: &str) -> Result<(Vec<SharedProject>, usize), String> {
-    let projects = db
-        .list_active_projects()
-        .map_err(|e| error_json(&e.to_string()))?;
-    let id = resolve_project(&projects, identifier)
-        .map(|p| p.id)
-        .ok_or_else(|| error_json(&format!("Project not found: {identifier}")))?;
-    let idx = projects.iter().position(|p| p.id == id).unwrap();
-    Ok((projects, idx))
-}
 
 /// Resolve a session UUID against the database, returning the session or a JSON error.
 fn resolve_session(db: &Database, identifier: &str) -> Result<SharedSession, String> {
@@ -70,16 +33,6 @@ fn resolve_session(db: &Database, identifier: &str) -> Result<SharedSession, Str
     db.get_session_by_id(session_id)
         .map_err(|e| error_json(&e.to_string()))?
         .ok_or_else(|| error_json(&format!("Session not found: {identifier}")))
-}
-
-fn project_to_response(p: &SharedProject) -> ProjectResponse {
-    ProjectResponse {
-        id: p.id.to_string(),
-        name: p.name.clone(),
-        repos: p.repos.clone(),
-        roles: p.roles.iter().map(role_to_response).collect(),
-        mcp_servers: p.mcp_servers.iter().map(mcp_server_to_response).collect(),
-    }
 }
 
 fn mcp_server_to_response(s: &McpServerConfig) -> McpServerResponse {
@@ -108,7 +61,6 @@ fn session_to_response(s: &SharedSession) -> SessionResponse {
     SessionResponse {
         id: s.id.to_string(),
         name: s.name.clone(),
-        project_id: s.project_id.map(|p| p.to_string()).unwrap_or_default(),
         role: s.role.clone(),
         backend_type: s.backend_type.clone(),
         agent_session_id: s.agent_session_id.clone(),
@@ -129,7 +81,6 @@ fn vm_to_response(r: &VmRecord) -> VmResponse {
     VmResponse {
         id: r.id.clone(),
         session_id: r.session_id.clone(),
-        project_id: r.project_id.clone(),
         state: r.state.to_string(),
         ssh_port: r.ssh_port,
         base_image: r.base_image.clone(),
@@ -170,177 +121,10 @@ fn validate_safe_name(name: &str) -> Result<(), String> {
 
 #[tool_router(vis = "pub(super)")]
 impl ThurboxMcp {
-    #[tool(description = "List all active projects")]
-    fn list_projects(&self) -> String {
-        let db = self.db.lock().unwrap();
-        match db.list_active_projects() {
-            Ok(projects) => {
-                let resp: Vec<ProjectResponse> = projects.iter().map(project_to_response).collect();
-                json_text(&resp)
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(description = "Get a project by name or UUID")]
-    fn get_project(&self, Parameters(params): Parameters<GetProjectParams>) -> String {
-        let db = self.db.lock().unwrap();
-        match require_project(&db, &params.project) {
-            Ok((projects, idx)) => json_text(&project_to_response(&projects[idx])),
-            Err(e) => e,
-        }
-    }
-
-    #[tool(description = "Create a new project with the given name and repository paths")]
-    fn create_project(&self, Parameters(params): Parameters<CreateProjectParams>) -> String {
-        let repos: Vec<PathBuf> = params
-            .repos
-            .iter()
-            .map(|r| paths::expand_tilde(r))
-            .collect();
-        let config = ProjectConfig {
-            name: params.name.clone(),
-            repos: repos.clone(),
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let id = config.deterministic_id();
-
-        let db = self.db.lock().unwrap();
-        if let Err(e) = db.insert_project(id, &params.name, &repos) {
-            return error_json(&e.to_string());
-        }
-
-        // Return the freshly created project (roles may have been inherited).
-        match db.list_active_projects() {
-            Ok(projects) => match projects.iter().find(|p| p.id == id) {
-                Some(p) => json_text(&project_to_response(p)),
-                None => json_text(&ProjectResponse {
-                    id: id.to_string(),
-                    name: params.name,
-                    repos,
-                    roles: vec![],
-                    mcp_servers: vec![],
-                }),
-            },
-            Err(_) => json_text(&ProjectResponse {
-                id: id.to_string(),
-                name: params.name,
-                repos,
-                roles: vec![],
-                mcp_servers: vec![],
-            }),
-        }
-    }
-
-    #[tool(description = "Update an existing project's name and/or repository paths")]
-    fn update_project(&self, Parameters(params): Parameters<UpdateProjectParams>) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let project = &projects[idx];
-
-        let new_name = params.name.as_deref().unwrap_or(&project.name);
-        let new_repos: Vec<PathBuf> = match params.repos {
-            Some(ref r) => r.iter().map(|p| paths::expand_tilde(p)).collect(),
-            None => project.repos.clone(),
-        };
-
-        if let Err(e) = db.update_project(project.id, new_name, &new_repos) {
-            return error_json(&e.to_string());
-        }
-
-        match db.list_active_projects() {
-            Ok(updated) => match updated.iter().find(|p| p.id == project.id) {
-                Some(p) => json_text(&project_to_response(p)),
-                None => error_json("Project not found after update"),
-            },
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(description = "Delete a project (soft delete)")]
-    fn delete_project(&self, Parameters(params): Parameters<DeleteProjectParams>) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let project = &projects[idx];
-
-        match db.soft_delete_project(project.id) {
-            Ok(()) => serde_json::json!({
-                "deleted": true,
-                "id": project.id.to_string(),
-                "name": project.name,
-            })
-            .to_string(),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
     #[tool(
-        description = "List all roles configured for a project. Returns a JSON array of role objects with name, description, permission_mode, allowed_tools, disallowed_tools, tools, and append_system_prompt fields. See docs/MCP_ROLES.md for field details."
+        description = "List all global roles. Returns a JSON array of role objects with name, description, permission_mode, allowed_tools, disallowed_tools, tools, append_system_prompt, and env fields. See docs/MCP_ROLES.md for field details."
     )]
-    fn list_roles(&self, Parameters(params): Parameters<ListRolesParams>) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        match db.list_roles(projects[idx].id) {
-            Ok(roles) => {
-                let resp: Vec<RoleResponse> = roles.iter().map(role_to_response).collect();
-                json_text(&resp)
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Atomically replace all roles for a project. Deletes existing roles and inserts the provided list in a single transaction. To add a role, include all existing roles plus the new one. To clear all roles, pass an empty array. Each role has: name (1-64 chars, unique), description, permission_mode (default/plan/acceptEdits/dontAsk/bypassPermissions), allowed_tools, disallowed_tools, tools, append_system_prompt, env (object of key-value environment variables injected into sessions). See docs/MCP_ROLES.md for the complete guide."
-    )]
-    fn set_roles(&self, Parameters(params): Parameters<SetRolesParams>) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        let roles: Vec<RoleConfig> = params
-            .roles
-            .into_iter()
-            .map(|r| RoleConfig {
-                name: r.name,
-                description: r.description,
-                permissions: RolePermissions {
-                    permission_mode: r.permission_mode,
-                    allowed_tools: r.allowed_tools,
-                    disallowed_tools: r.disallowed_tools,
-                    tools: r.tools,
-                    append_system_prompt: r.append_system_prompt,
-                    env: r.env,
-                },
-            })
-            .collect();
-
-        match db.replace_roles(projects[idx].id, &roles) {
-            Ok(()) => {
-                let resp: Vec<RoleResponse> = roles.iter().map(role_to_response).collect();
-                json_text(&resp)
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "List all global roles. Global roles are shared across all projects and sessions. Returns a JSON array of role objects with name, description, permission_mode, allowed_tools, disallowed_tools, tools, append_system_prompt, and env fields."
-    )]
-    fn list_global_roles(&self) -> String {
+    fn list_roles(&self) -> String {
         let db = self.db.lock().unwrap();
         match db.list_global_roles() {
             Ok(roles) => {
@@ -352,9 +136,9 @@ impl ThurboxMcp {
     }
 
     #[tool(
-        description = "Atomically replace all global roles. Deletes existing global roles and inserts the provided list in a single transaction. To add a role, include all existing roles plus the new one. To clear all roles, pass an empty array. Each role has: name (1-64 chars, unique), description, permission_mode (default/plan/acceptEdits/dontAsk/bypassPermissions), allowed_tools, disallowed_tools, tools, append_system_prompt, env (object of key-value environment variables). See docs/MCP_ROLES.md for the complete guide."
+        description = "Atomically replace all global roles. Deletes existing roles and inserts the provided list in a single transaction. To add a role, include all existing roles plus the new one. To clear all roles, pass an empty array. Each role has: name (1-64 chars, unique), description, permission_mode (default/plan/acceptEdits/dontAsk/bypassPermissions), allowed_tools, disallowed_tools, tools, append_system_prompt, env (object of key-value environment variables injected into sessions). See docs/MCP_ROLES.md for the complete guide."
     )]
-    fn set_global_roles(&self, Parameters(params): Parameters<SetGlobalRolesParams>) -> String {
+    fn set_roles(&self, Parameters(params): Parameters<SetRolesParams>) -> String {
         let db = self.db.lock().unwrap();
 
         let roles: Vec<RoleConfig> = params
@@ -383,59 +167,10 @@ impl ThurboxMcp {
         }
     }
 
-    #[tool(description = "List MCP servers for a project")]
-    fn list_mcp_servers(&self, Parameters(params): Parameters<ListMcpServersParams>) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        match db.list_mcp_servers(projects[idx].id) {
-            Ok(servers) => {
-                let resp: Vec<McpServerResponse> =
-                    servers.iter().map(mcp_server_to_response).collect();
-                json_text(&resp)
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
     #[tool(
-        description = "Set MCP servers for a project (atomically replaces all existing servers)"
+        description = "List all global MCP servers. Returns a JSON array of server objects with name, command, args, and env fields."
     )]
-    fn set_mcp_servers(&self, Parameters(params): Parameters<SetMcpServersParams>) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        let servers: Vec<McpServerConfig> = params
-            .servers
-            .into_iter()
-            .map(|s| McpServerConfig {
-                name: s.name,
-                command: s.command,
-                args: s.args,
-                env: s.env,
-            })
-            .collect();
-
-        match db.replace_mcp_servers(projects[idx].id, &servers) {
-            Ok(()) => {
-                let resp: Vec<McpServerResponse> =
-                    servers.iter().map(mcp_server_to_response).collect();
-                json_text(&resp)
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "List all global MCP servers. Global servers are shared across all projects and sessions. Returns a JSON array of server objects with name, command, args, and env fields."
-    )]
-    fn list_global_mcp_servers(&self) -> String {
+    fn list_mcp_servers(&self) -> String {
         let db = self.db.lock().unwrap();
         match db.list_global_mcp_servers() {
             Ok(servers) => {
@@ -448,12 +183,9 @@ impl ThurboxMcp {
     }
 
     #[tool(
-        description = "Atomically replace all global MCP servers. Deletes existing global servers and inserts the provided list in a single transaction. To add a server, include all existing servers plus the new one. To clear all servers, pass an empty array."
+        description = "Atomically replace all global MCP servers. Deletes existing servers and inserts the provided list in a single transaction. To add a server, include all existing servers plus the new one. To clear all servers, pass an empty array."
     )]
-    fn set_global_mcp_servers(
-        &self,
-        Parameters(params): Parameters<SetGlobalMcpServersParams>,
-    ) -> String {
+    fn set_mcp_servers(&self, Parameters(params): Parameters<SetMcpServersParams>) -> String {
         let db = self.db.lock().unwrap();
 
         let servers: Vec<McpServerConfig> = params
@@ -477,22 +209,11 @@ impl ThurboxMcp {
         }
     }
 
-    #[tool(description = "List active sessions, optionally filtered by project name or UUID")]
-    fn list_sessions(&self, Parameters(params): Parameters<ListSessionsParams>) -> String {
+    #[tool(description = "List all active sessions")]
+    fn list_sessions(&self, Parameters(_params): Parameters<ListSessionsParams>) -> String {
         let db = self.db.lock().unwrap();
 
-        let sessions = match &params.project {
-            Some(filter) => {
-                let (projects, idx) = match require_project(&db, filter) {
-                    Ok(v) => v,
-                    Err(e) => return e,
-                };
-                db.list_sessions_for_project(projects[idx].id)
-            }
-            None => db.list_active_sessions(),
-        };
-
-        match sessions {
+        match db.list_active_sessions() {
             Ok(sessions) => {
                 let resp: Vec<SessionResponse> = sessions.iter().map(session_to_response).collect();
                 json_text(&resp)
@@ -553,22 +274,11 @@ impl ThurboxMcp {
         }
     }
 
-    #[tool(description = "List all active VMs, optionally filtered by project name or UUID")]
-    fn list_vms(&self, Parameters(params): Parameters<ListVmsParams>) -> String {
+    #[tool(description = "List all active VMs")]
+    fn list_vms(&self, Parameters(_params): Parameters<ListVmsParams>) -> String {
         let db = self.db.lock().unwrap();
 
-        let project_id = match &params.project {
-            Some(filter) => {
-                let (projects, idx) = match require_project(&db, filter) {
-                    Ok(v) => v,
-                    Err(e) => return e,
-                };
-                Some(projects[idx].id.to_string())
-            }
-            None => None,
-        };
-
-        match db.list_vms(project_id.as_deref()) {
+        match db.list_vms() {
             Ok(vms) => {
                 let resp: Vec<VmResponse> = vms.iter().map(vm_to_response).collect();
                 json_text(&resp)
@@ -583,49 +293,6 @@ impl ThurboxMcp {
         match db.get_vm(&params.vm) {
             Ok(Some(vm)) => json_text(&vm_to_response(&vm)),
             Ok(None) => error_json(&format!("VM not found: {}", params.vm)),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Configure default VM settings for a project. These settings apply to new VM sessions created for the project."
-    )]
-    fn configure_project_vm(
-        &self,
-        Parameters(params): Parameters<ConfigureProjectVmParams>,
-    ) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let project = &projects[idx];
-
-        let config = VmConfig {
-            base_image: params
-                .base_image
-                .unwrap_or_else(|| VmConfig::default().base_image),
-            cpus: params.cpus.unwrap_or(VmConfig::default().cpus),
-            memory_mb: params.memory_mb.unwrap_or(VmConfig::default().memory_mb),
-            disk_gb: params.disk_gb.unwrap_or(VmConfig::default().disk_gb),
-            setup_script: params.setup_script,
-        };
-
-        if let Err(e) = db.set_project_vm_config(&project.id.to_string(), &config) {
-            return error_json(&e.to_string());
-        }
-
-        // Read back the saved config
-        match db.get_project_vm_config(&project.id.to_string()) {
-            Ok(Some(cfg)) => json_text(&ProjectVmConfigResponse {
-                project_id: cfg.project_id,
-                base_image: cfg.base_image,
-                cpus: cfg.cpus,
-                memory_mb: cfg.memory_mb,
-                disk_gb: cfg.disk_gb,
-                setup_script: cfg.setup_script,
-            }),
-            Ok(None) => error_json("Config not found after save"),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -825,78 +492,6 @@ impl ThurboxMcp {
             "name": params.name,
         })
         .to_string()
-    }
-
-    // ── Project Container Config Tools ──────────────────────────
-
-    #[tool(
-        description = "Configure default container settings for a project. These settings apply to new container sessions created for the project."
-    )]
-    fn configure_project_container(
-        &self,
-        Parameters(params): Parameters<ConfigureProjectContainerParams>,
-    ) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let project = &projects[idx];
-
-        let defaults = ContainerConfig::default();
-        let config = ContainerConfig {
-            image: params.image.or(defaults.image),
-            cpus: params.cpus.unwrap_or(defaults.cpus),
-            memory_mb: params.memory_mb.unwrap_or(defaults.memory_mb),
-            firewall_enabled: params.firewall_enabled.unwrap_or(defaults.firewall_enabled),
-            containerfile: params.containerfile.or(defaults.containerfile),
-        };
-
-        if let Err(e) = db.set_project_container_config(&project.id.to_string(), &config) {
-            return error_json(&e.to_string());
-        }
-
-        match db.get_project_container_config(&project.id.to_string()) {
-            Ok(Some(cfg)) => json_text(&ProjectContainerConfigResponse {
-                project_id: cfg.project_id,
-                image: cfg.image,
-                cpus: cfg.cpus,
-                memory_mb: cfg.memory_mb,
-                firewall_enabled: cfg.firewall_enabled,
-                containerfile: cfg.containerfile,
-            }),
-            Ok(None) => error_json("Config not found after save"),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(description = "Get the current container configuration for a project")]
-    fn get_project_container_config(
-        &self,
-        Parameters(params): Parameters<GetProjectContainerConfigParams>,
-    ) -> String {
-        let db = self.db.lock().unwrap();
-        let (projects, idx) = match require_project(&db, &params.project) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let project = &projects[idx];
-
-        match db.get_project_container_config(&project.id.to_string()) {
-            Ok(Some(cfg)) => json_text(&ProjectContainerConfigResponse {
-                project_id: cfg.project_id,
-                image: cfg.image,
-                cpus: cfg.cpus,
-                memory_mb: cfg.memory_mb,
-                firewall_enabled: cfg.firewall_enabled,
-                containerfile: cfg.containerfile,
-            }),
-            Ok(None) => json_text(&serde_json::json!({
-                "project_id": project.id.to_string(),
-                "message": "No container config set (using defaults)"
-            })),
-            Err(e) => error_json(&e.to_string()),
-        }
     }
 
     // ── VM Image Tools ──────────────────────────────────────────
@@ -1183,9 +778,9 @@ mod tests {
 
     use super::*;
     use crate::mcp::types::{McpServerInput, RoleInput};
-    use crate::session::RoleConfig;
     use crate::storage::Database;
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
     fn test_server() -> ThurboxMcp {
         let db = Database::open_in_memory().unwrap();
@@ -1196,60 +791,8 @@ mod tests {
         }
     }
 
-    fn test_project_id(name: &str) -> ProjectId {
-        let config = ProjectConfig {
-            name: name.to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        config.deterministic_id()
-    }
-
     fn parse_json(s: &str) -> serde_json::Value {
         serde_json::from_str(s).unwrap()
-    }
-
-    // ── resolve_project tests ───────────────────────────────────
-
-    #[test]
-    fn resolve_by_name_case_insensitive() {
-        let projects = vec![SharedProject {
-            id: test_project_id("MyProject"),
-            name: "MyProject".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-        }];
-        assert!(resolve_project(&projects, "myproject").is_some());
-        assert!(resolve_project(&projects, "MYPROJECT").is_some());
-        assert!(resolve_project(&projects, "MyProject").is_some());
-    }
-
-    #[test]
-    fn resolve_by_uuid() {
-        let pid = test_project_id("test");
-        let projects = vec![SharedProject {
-            id: pid,
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-        }];
-        assert!(resolve_project(&projects, &pid.to_string()).is_some());
-    }
-
-    #[test]
-    fn resolve_not_found() {
-        let projects = vec![SharedProject {
-            id: test_project_id("test"),
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-        }];
-        assert!(resolve_project(&projects, "nonexistent").is_none());
     }
 
     // ── error_json tests ────────────────────────────────────────
@@ -1268,166 +811,21 @@ mod tests {
         assert_eq!(v["error"], "has \"quotes\" and \\backslash");
     }
 
-    // ── Tool function tests (via ThurboxMcp) ────────────────────
+    // ── Role tool tests (global) ─────────────────────────────────
 
     #[test]
-    fn list_projects_empty() {
+    fn list_roles_empty() {
         let server = test_server();
-        let result = server.list_projects();
+        let result = server.list_roles();
         let v = parse_json(&result);
         assert_eq!(v, serde_json::json!([]));
     }
 
     #[test]
-    fn create_and_list_projects() {
-        let server = test_server();
-
-        let result = server.create_project(Parameters(CreateProjectParams {
-            name: "myapp".to_string(),
-            repos: vec!["/home/user/myapp".to_string()],
-        }));
-        let created = parse_json(&result);
-        assert_eq!(created["name"], "myapp");
-        assert!(created["id"].is_string());
-
-        let result = server.list_projects();
-        let list: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0]["name"], "myapp");
-    }
-
-    #[test]
-    fn get_project_by_name() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "findme".to_string(),
-            repos: vec![],
-        }));
-
-        let result = server.get_project(Parameters(GetProjectParams {
-            project: "findme".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["name"], "findme");
-    }
-
-    #[test]
-    fn get_project_by_uuid() {
-        let server = test_server();
-        let create_result = server.create_project(Parameters(CreateProjectParams {
-            name: "byid".to_string(),
-            repos: vec![],
-        }));
-        let created = parse_json(&create_result);
-        let id = created["id"].as_str().unwrap();
-
-        let result = server.get_project(Parameters(GetProjectParams {
-            project: id.to_string(),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["name"], "byid");
-    }
-
-    #[test]
-    fn get_project_not_found() {
-        let server = test_server();
-        let result = server.get_project(Parameters(GetProjectParams {
-            project: "ghost".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    #[test]
-    fn update_project_name() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "oldname".to_string(),
-            repos: vec!["/repo".to_string()],
-        }));
-
-        let result = server.update_project(Parameters(UpdateProjectParams {
-            project: "oldname".to_string(),
-            name: Some("newname".to_string()),
-            repos: None,
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["name"], "newname");
-        // Repos should be preserved.
-        assert_eq!(v["repos"][0], "/repo");
-    }
-
-    #[test]
-    fn update_project_repos() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "proj".to_string(),
-            repos: vec!["/old".to_string()],
-        }));
-
-        let result = server.update_project(Parameters(UpdateProjectParams {
-            project: "proj".to_string(),
-            name: None,
-            repos: Some(vec!["/new1".to_string(), "/new2".to_string()]),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["name"], "proj");
-        assert_eq!(v["repos"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn update_nonexistent_project() {
-        let server = test_server();
-        let result = server.update_project(Parameters(UpdateProjectParams {
-            project: "nope".to_string(),
-            name: Some("renamed".to_string()),
-            repos: None,
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    #[test]
-    fn delete_project_soft() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "deleteme".to_string(),
-            repos: vec![],
-        }));
-
-        let result = server.delete_project(Parameters(DeleteProjectParams {
-            project: "deleteme".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["deleted"], true);
-        assert_eq!(v["name"], "deleteme");
-
-        // Should no longer appear in list.
-        let list_result = server.list_projects();
-        let list = parse_json(&list_result);
-        assert_eq!(list, serde_json::json!([]));
-    }
-
-    #[test]
-    fn delete_nonexistent_project() {
-        let server = test_server();
-        let result = server.delete_project(Parameters(DeleteProjectParams {
-            project: "ghost".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    #[test]
     fn set_and_list_roles() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "roletest".to_string(),
-            repos: vec![],
-        }));
 
         let result = server.set_roles(Parameters(SetRolesParams {
-            project: "roletest".to_string(),
             roles: vec![
                 RoleInput {
                     name: "developer".to_string(),
@@ -1454,9 +852,7 @@ mod tests {
         let set_result = parse_json(&result);
         assert_eq!(set_result.as_array().unwrap().len(), 2);
 
-        let result = server.list_roles(Parameters(ListRolesParams {
-            project: "roletest".to_string(),
-        }));
+        let result = server.list_roles();
         let roles = parse_json(&result);
         assert_eq!(roles.as_array().unwrap().len(), 2);
         assert_eq!(roles[0]["name"], "developer");
@@ -1468,36 +864,11 @@ mod tests {
     }
 
     #[test]
-    fn set_roles_for_nonexistent_project() {
-        let server = test_server();
-        let result = server.set_roles(Parameters(SetRolesParams {
-            project: "ghost".to_string(),
-            roles: vec![RoleInput {
-                name: "dev".to_string(),
-                description: "Dev".to_string(),
-                permission_mode: None,
-                allowed_tools: vec![],
-                disallowed_tools: vec![],
-                tools: None,
-                append_system_prompt: None,
-                env: HashMap::new(),
-            }],
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    #[test]
     fn set_roles_empty_clears_all() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "cleartest".to_string(),
-            repos: vec![],
-        }));
 
         // Set one role.
         server.set_roles(Parameters(SetRolesParams {
-            project: "cleartest".to_string(),
             roles: vec![RoleInput {
                 name: "dev".to_string(),
                 description: "Dev".to_string(),
@@ -1511,17 +882,12 @@ mod tests {
         }));
 
         // Clear all roles with empty array.
-        let result = server.set_roles(Parameters(SetRolesParams {
-            project: "cleartest".to_string(),
-            roles: vec![],
-        }));
+        let result = server.set_roles(Parameters(SetRolesParams { roles: vec![] }));
         let v = parse_json(&result);
         assert_eq!(v, serde_json::json!([]));
 
         // Verify list_roles also returns empty.
-        let list_result = server.list_roles(Parameters(ListRolesParams {
-            project: "cleartest".to_string(),
-        }));
+        let list_result = server.list_roles();
         let roles = parse_json(&list_result);
         assert_eq!(roles, serde_json::json!([]));
     }
@@ -1529,14 +895,9 @@ mod tests {
     #[test]
     fn set_roles_replaces_existing() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "replacetest".to_string(),
-            repos: vec![],
-        }));
 
         // Set initial roles.
         server.set_roles(Parameters(SetRolesParams {
-            project: "replacetest".to_string(),
             roles: vec![
                 RoleInput {
                     name: "alpha".to_string(),
@@ -1563,7 +924,6 @@ mod tests {
 
         // Replace with a single different role.
         let result = server.set_roles(Parameters(SetRolesParams {
-            project: "replacetest".to_string(),
             roles: vec![RoleInput {
                 name: "gamma".to_string(),
                 description: "Replacement".to_string(),
@@ -1584,13 +944,8 @@ mod tests {
     #[test]
     fn set_roles_with_tools_field() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "toolstest".to_string(),
-            repos: vec![],
-        }));
 
         let result = server.set_roles(Parameters(SetRolesParams {
-            project: "toolstest".to_string(),
             roles: vec![RoleInput {
                 name: "limited".to_string(),
                 description: "Limited tools".to_string(),
@@ -1609,17 +964,12 @@ mod tests {
     #[test]
     fn set_roles_with_env() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "envtest".to_string(),
-            repos: vec![],
-        }));
 
         let mut env = HashMap::new();
         env.insert("API_KEY".to_string(), "sk-secret".to_string());
         env.insert("DEBUG".to_string(), "1".to_string());
 
         let result = server.set_roles(Parameters(SetRolesParams {
-            project: "envtest".to_string(),
             roles: vec![RoleInput {
                 name: "with-env".to_string(),
                 description: "Has env vars".to_string(),
@@ -1637,234 +987,26 @@ mod tests {
         assert_eq!(roles[0]["env"]["DEBUG"], "1");
 
         // Verify persistence via list_roles
-        let list_result = server.list_roles(Parameters(ListRolesParams {
-            project: "envtest".to_string(),
-        }));
+        let list_result = server.list_roles();
         let listed = parse_json(&list_result);
         assert_eq!(listed[0]["env"]["API_KEY"], "sk-secret");
     }
 
-    #[test]
-    fn list_roles_empty_project() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "noroles".to_string(),
-            repos: vec![],
-        }));
+    // ── MCP server tool tests ─────────────────────────────────────
 
-        let result = server.list_roles(Parameters(ListRolesParams {
-            project: "noroles".to_string(),
-        }));
+    #[test]
+    fn list_mcp_servers_empty() {
+        let server = test_server();
+        let result = server.list_mcp_servers();
         let v = parse_json(&result);
         assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn list_roles_for_nonexistent_project() {
-        let server = test_server();
-        let result = server.list_roles(Parameters(ListRolesParams {
-            project: "nope".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    // ── Global roles MCP tool tests ──────────────────────────────
-
-    #[test]
-    fn list_global_roles_empty() {
-        let server = test_server();
-        let result = server.list_global_roles();
-        let v = parse_json(&result);
-        assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn set_global_roles_and_list() {
-        let server = test_server();
-        let result = server.set_global_roles(Parameters(SetGlobalRolesParams {
-            roles: vec![RoleInput {
-                name: "architect".to_string(),
-                description: "Architecture role".to_string(),
-                permission_mode: Some("plan".to_string()),
-                allowed_tools: vec!["Read".to_string()],
-                disallowed_tools: vec![],
-                tools: None,
-                append_system_prompt: Some("You are an architect.".to_string()),
-                env: HashMap::new(),
-            }],
-        }));
-        let roles = parse_json(&result);
-        assert_eq!(roles[0]["name"], "architect");
-        assert_eq!(roles[0]["permission_mode"], "plan");
-
-        // Verify persistence via list
-        let list_result = server.list_global_roles();
-        let listed = parse_json(&list_result);
-        assert_eq!(listed.as_array().unwrap().len(), 1);
-        assert_eq!(listed[0]["name"], "architect");
-    }
-
-    #[test]
-    fn set_global_roles_replaces_existing() {
-        let server = test_server();
-        server.set_global_roles(Parameters(SetGlobalRolesParams {
-            roles: vec![RoleInput {
-                name: "old".to_string(),
-                description: "Old role".to_string(),
-                permission_mode: None,
-                allowed_tools: vec![],
-                disallowed_tools: vec![],
-                tools: None,
-                append_system_prompt: None,
-                env: HashMap::new(),
-            }],
-        }));
-
-        // Replace with different role
-        server.set_global_roles(Parameters(SetGlobalRolesParams {
-            roles: vec![RoleInput {
-                name: "new".to_string(),
-                description: "New role".to_string(),
-                permission_mode: None,
-                allowed_tools: vec![],
-                disallowed_tools: vec![],
-                tools: None,
-                append_system_prompt: None,
-                env: HashMap::new(),
-            }],
-        }));
-
-        let listed = parse_json(&server.list_global_roles());
-        assert_eq!(listed.as_array().unwrap().len(), 1);
-        assert_eq!(listed[0]["name"], "new");
-    }
-
-    #[test]
-    fn set_global_roles_empty_clears_all() {
-        let server = test_server();
-        server.set_global_roles(Parameters(SetGlobalRolesParams {
-            roles: vec![RoleInput {
-                name: "temp".to_string(),
-                description: "Temporary".to_string(),
-                permission_mode: None,
-                allowed_tools: vec![],
-                disallowed_tools: vec![],
-                tools: None,
-                append_system_prompt: None,
-                env: HashMap::new(),
-            }],
-        }));
-
-        // Clear
-        server.set_global_roles(Parameters(SetGlobalRolesParams { roles: vec![] }));
-
-        let listed = parse_json(&server.list_global_roles());
-        assert_eq!(listed, serde_json::json!([]));
-    }
-
-    #[test]
-    fn set_global_roles_with_env() {
-        let server = test_server();
-        let mut env = HashMap::new();
-        env.insert("SECRET".to_string(), "value".to_string());
-
-        server.set_global_roles(Parameters(SetGlobalRolesParams {
-            roles: vec![RoleInput {
-                name: "env-role".to_string(),
-                description: "Has env".to_string(),
-                permission_mode: None,
-                allowed_tools: vec![],
-                disallowed_tools: vec![],
-                tools: None,
-                append_system_prompt: None,
-                env,
-            }],
-        }));
-
-        let listed = parse_json(&server.list_global_roles());
-        assert_eq!(listed[0]["env"]["SECRET"], "value");
-    }
-
-    #[test]
-    fn list_sessions_empty() {
-        let server = test_server();
-        let result = server.list_sessions(Parameters(ListSessionsParams { project: None }));
-        let v = parse_json(&result);
-        assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn list_sessions_filtered_nonexistent_project() {
-        let server = test_server();
-        let result = server.list_sessions(Parameters(ListSessionsParams {
-            project: Some("ghost".to_string()),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    #[test]
-    fn create_project_deterministic_id() {
-        let server = test_server();
-
-        let r1 = server.create_project(Parameters(CreateProjectParams {
-            name: "stable".to_string(),
-            repos: vec![],
-        }));
-        let id1 = parse_json(&r1)["id"].as_str().unwrap().to_string();
-
-        // Delete and recreate — same name should produce same ID.
-        server.delete_project(Parameters(DeleteProjectParams {
-            project: "stable".to_string(),
-        }));
-
-        // Recreating with same name should produce the same deterministic ID.
-        let expected_id = test_project_id("stable").to_string();
-        assert_eq!(id1, expected_id);
-    }
-
-    #[test]
-    fn get_project_includes_roles() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "with-roles".to_string(),
-            repos: vec![],
-        }));
-
-        // Set roles directly via DB to test the response includes them.
-        {
-            let db = server.db.lock().unwrap();
-            let pid = test_project_id("with-roles");
-            db.replace_roles(
-                pid,
-                &[RoleConfig {
-                    name: "dev".to_string(),
-                    description: "Dev role".to_string(),
-                    permissions: RolePermissions::default(),
-                }],
-            )
-            .unwrap();
-        }
-
-        let result = server.get_project(Parameters(GetProjectParams {
-            project: "with-roles".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["roles"].as_array().unwrap().len(), 1);
-        assert_eq!(v["roles"][0]["name"], "dev");
     }
 
     #[test]
     fn set_and_list_mcp_servers() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "mcptest".to_string(),
-            repos: vec![],
-        }));
 
         let result = server.set_mcp_servers(Parameters(SetMcpServersParams {
-            project: "mcptest".to_string(),
             servers: vec![
                 McpServerInput {
                     name: "filesystem".to_string(),
@@ -1886,93 +1028,15 @@ mod tests {
         let set_result = parse_json(&result);
         assert_eq!(set_result.as_array().unwrap().len(), 2);
 
-        let result = server.list_mcp_servers(Parameters(ListMcpServersParams {
-            project: "mcptest".to_string(),
-        }));
+        let result = server.list_mcp_servers();
         let servers = parse_json(&result);
         assert_eq!(servers.as_array().unwrap().len(), 2);
     }
 
     #[test]
-    fn list_mcp_servers_nonexistent_project() {
+    fn set_mcp_servers_replaces_existing() {
         let server = test_server();
-        let result = server.list_mcp_servers(Parameters(ListMcpServersParams {
-            project: "nope".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    #[test]
-    fn get_project_includes_mcp_servers() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "with-mcp".to_string(),
-            repos: vec![],
-        }));
-
-        // Set MCP servers directly via DB to test the response includes them.
-        {
-            let db = server.db.lock().unwrap();
-            let pid = test_project_id("with-mcp");
-            db.replace_mcp_servers(
-                pid,
-                &[McpServerConfig {
-                    name: "test-server".to_string(),
-                    command: "test-cmd".to_string(),
-                    args: vec!["--flag".to_string()],
-                    env: HashMap::from([("KEY".to_string(), "VAL".to_string())]),
-                }],
-            )
-            .unwrap();
-        }
-
-        let result = server.get_project(Parameters(GetProjectParams {
-            project: "with-mcp".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["mcp_servers"].as_array().unwrap().len(), 1);
-        assert_eq!(v["mcp_servers"][0]["name"], "test-server");
-        assert_eq!(v["mcp_servers"][0]["command"], "test-cmd");
-        assert_eq!(v["mcp_servers"][0]["args"][0], "--flag");
-        assert_eq!(v["mcp_servers"][0]["env"]["KEY"], "VAL");
-    }
-
-    // ── Global MCP server tool tests ─────────────────────────────
-
-    #[test]
-    fn list_global_mcp_servers_empty() {
-        let server = test_server();
-        let result = server.list_global_mcp_servers();
-        let v = parse_json(&result);
-        assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn set_global_mcp_servers_and_list() {
-        let server = test_server();
-        let result = server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
-            servers: vec![McpServerInput {
-                name: "filesystem".to_string(),
-                command: "npx".to_string(),
-                args: vec!["-y".to_string(), "server-fs".to_string()],
-                env: HashMap::from([("TOKEN".to_string(), "abc".to_string())]),
-            }],
-        }));
-        let servers = parse_json(&result);
-        assert_eq!(servers[0]["name"], "filesystem");
-        assert_eq!(servers[0]["command"], "npx");
-
-        let listed = parse_json(&server.list_global_mcp_servers());
-        assert_eq!(listed.as_array().unwrap().len(), 1);
-        assert_eq!(listed[0]["name"], "filesystem");
-        assert_eq!(listed[0]["env"]["TOKEN"], "abc");
-    }
-
-    #[test]
-    fn set_global_mcp_servers_replaces_existing() {
-        let server = test_server();
-        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
+        server.set_mcp_servers(Parameters(SetMcpServersParams {
             servers: vec![McpServerInput {
                 name: "old".to_string(),
                 command: "old-cmd".to_string(),
@@ -1980,7 +1044,7 @@ mod tests {
                 env: HashMap::new(),
             }],
         }));
-        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
+        server.set_mcp_servers(Parameters(SetMcpServersParams {
             servers: vec![McpServerInput {
                 name: "new".to_string(),
                 command: "new-cmd".to_string(),
@@ -1989,15 +1053,15 @@ mod tests {
             }],
         }));
 
-        let listed = parse_json(&server.list_global_mcp_servers());
+        let listed = parse_json(&server.list_mcp_servers());
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert_eq!(listed[0]["name"], "new");
     }
 
     #[test]
-    fn set_global_mcp_servers_empty_clears() {
+    fn set_mcp_servers_empty_clears() {
         let server = test_server();
-        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams {
+        server.set_mcp_servers(Parameters(SetMcpServersParams {
             servers: vec![McpServerInput {
                 name: "temp".to_string(),
                 command: "cmd".to_string(),
@@ -2005,21 +1069,19 @@ mod tests {
                 env: HashMap::new(),
             }],
         }));
-        server.set_global_mcp_servers(Parameters(SetGlobalMcpServersParams { servers: vec![] }));
+        server.set_mcp_servers(Parameters(SetMcpServersParams { servers: vec![] }));
 
-        let listed = parse_json(&server.list_global_mcp_servers());
+        let listed = parse_json(&server.list_mcp_servers());
         assert_eq!(listed, serde_json::json!([]));
     }
 
     // ── Session tool tests ─────────────────────────────────────
 
-    fn insert_test_session(server: &ThurboxMcp, project_name: &str) -> SessionId {
+    fn insert_test_session(server: &ThurboxMcp) -> SessionId {
         let db = server.db.lock().unwrap();
-        let pid = test_project_id(project_name);
         let session = SharedSession {
             id: SessionId::default(),
             name: "1".to_string(),
-            project_id: Some(pid),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -2037,13 +1099,17 @@ mod tests {
     }
 
     #[test]
+    fn list_sessions_empty() {
+        let server = test_server();
+        let result = server.list_sessions(Parameters(ListSessionsParams {}));
+        let v = parse_json(&result);
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
     fn get_session_by_uuid() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "sesstest".to_string(),
-            repos: vec![],
-        }));
-        let sid = insert_test_session(&server, "sesstest");
+        let sid = insert_test_session(&server);
 
         let result = server.get_session(Parameters(GetSessionParams {
             session: sid.to_string(),
@@ -2080,11 +1146,7 @@ mod tests {
     #[test]
     fn delete_session_soft() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "deltest".to_string(),
-            repos: vec![],
-        }));
-        let sid = insert_test_session(&server, "deltest");
+        let sid = insert_test_session(&server);
 
         let result = server.delete_session(Parameters(DeleteSessionParams {
             session: sid.to_string(),
@@ -2124,11 +1186,7 @@ mod tests {
     #[test]
     fn restart_session_queues_command() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "resttest".to_string(),
-            repos: vec![],
-        }));
-        let sid = insert_test_session(&server, "resttest");
+        let sid = insert_test_session(&server);
 
         let result = server.restart_session(Parameters(RestartSessionParams {
             session: sid.to_string(),
@@ -2151,11 +1209,7 @@ mod tests {
     #[test]
     fn restore_session_success() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "restoretest".to_string(),
-            repos: vec![],
-        }));
-        let sid = insert_test_session(&server, "restoretest");
+        let sid = insert_test_session(&server);
 
         // Delete first
         server.delete_session(Parameters(DeleteSessionParams {
@@ -2208,11 +1262,7 @@ mod tests {
     #[test]
     fn restore_session_rejects_active_session() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "activetest".to_string(),
-            repos: vec![],
-        }));
-        let sid = insert_test_session(&server, "activetest");
+        let sid = insert_test_session(&server);
 
         // Try to restore an active (non-deleted) session
         let result = server.restore_session(Parameters(RestoreSessionParams {
@@ -2230,33 +1280,9 @@ mod tests {
     #[test]
     fn list_vms_empty() {
         let server = test_server();
-        let result = server.list_vms(Parameters(ListVmsParams { project: None }));
+        let result = server.list_vms(Parameters(ListVmsParams {}));
         let v = parse_json(&result);
         assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn list_vms_with_project_filter() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "vmproj".to_string(),
-            repos: vec![],
-        }));
-        let result = server.list_vms(Parameters(ListVmsParams {
-            project: Some("vmproj".to_string()),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn list_vms_nonexistent_project() {
-        let server = test_server();
-        let result = server.list_vms(Parameters(ListVmsParams {
-            project: Some("ghost".to_string()),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
     }
 
     #[test]
@@ -2272,11 +1298,6 @@ mod tests {
     #[test]
     fn get_vm_exists() {
         let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "vmtest".to_string(),
-            repos: vec![],
-        }));
-        let pid = test_project_id("vmtest").to_string();
         let config = crate::session::VmConfig::default();
 
         {
@@ -2284,7 +1305,6 @@ mod tests {
             db.insert_vm(
                 "vm-1",
                 None,
-                Some(&pid),
                 &crate::session::VmState::Ready,
                 22200,
                 &config,
@@ -2300,45 +1320,6 @@ mod tests {
         assert_eq!(v["state"], "Ready");
         assert_eq!(v["ssh_port"], 22200);
         assert_eq!(v["cpus"], 2);
-    }
-
-    #[test]
-    fn configure_project_vm_creates_config() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "vmcfg".to_string(),
-            repos: vec![],
-        }));
-
-        let result = server.configure_project_vm(Parameters(ConfigureProjectVmParams {
-            project: "vmcfg".to_string(),
-            base_image: Some("custom.img".to_string()),
-            cpus: Some(4),
-            memory_mb: Some(8192),
-            disk_gb: None,
-            setup_script: Some("apt install nodejs".to_string()),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["base_image"], "custom.img");
-        assert_eq!(v["cpus"], 4);
-        assert_eq!(v["memory_mb"], 8192);
-        assert_eq!(v["disk_gb"], 10); // default
-        assert_eq!(v["setup_script"], "apt install nodejs");
-    }
-
-    #[test]
-    fn configure_project_vm_nonexistent_project() {
-        let server = test_server();
-        let result = server.configure_project_vm(Parameters(ConfigureProjectVmParams {
-            project: "ghost".to_string(),
-            base_image: None,
-            cpus: None,
-            memory_mb: None,
-            disk_gb: None,
-            setup_script: None,
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
     }
 
     // ── validate_safe_name tests ───────────────────────────────
@@ -2499,22 +1480,29 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("build.sh")));
+    }
 
-        // Verify files on disk
+    #[test]
+    fn delete_containerfile_template_success() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let server = test_server();
+
         let cf_dir = temp
             .path()
             .join("admin")
             .join("containerfiles")
-            .join("rust");
-        assert!(cf_dir.join("Containerfile").exists());
-        assert_eq!(
-            std::fs::read_to_string(cf_dir.join("Containerfile")).unwrap(),
-            "FROM rust:latest"
-        );
-        assert_eq!(
-            std::fs::read_to_string(cf_dir.join("build.sh")).unwrap(),
-            "cargo build"
-        );
+            .join("custom");
+        std::fs::create_dir_all(&cf_dir).unwrap();
+        std::fs::write(cf_dir.join("Containerfile"), "FROM alpine").unwrap();
+
+        let result = server.delete_containerfile_template(Parameters(
+            super::super::types::DeleteContainerfileTemplateParams {
+                name: "custom".to_string(),
+            },
+        ));
+        let v = parse_json(&result);
+        assert_eq!(v["deleted"], true);
     }
 
     #[test]
@@ -2530,246 +1518,5 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Cannot delete the 'default' template"));
-    }
-
-    #[test]
-    fn delete_containerfile_template_not_found() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let result = server.delete_containerfile_template(Parameters(
-            super::super::types::DeleteContainerfileTemplateParams {
-                name: "ghost".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Template not found"));
-    }
-
-    #[test]
-    fn delete_containerfile_template_success() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let cf_dir = temp
-            .path()
-            .join("admin")
-            .join("containerfiles")
-            .join("custom");
-        std::fs::create_dir_all(&cf_dir).unwrap();
-        std::fs::write(cf_dir.join("Containerfile"), "FROM ubuntu").unwrap();
-
-        let result = server.delete_containerfile_template(Parameters(
-            super::super::types::DeleteContainerfileTemplateParams {
-                name: "custom".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert_eq!(v["deleted"], true);
-        assert_eq!(v["name"], "custom");
-        assert!(!cf_dir.exists());
-    }
-
-    // ── Project container config tool tests ────────────────────
-
-    #[test]
-    fn configure_project_container_happy_path() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "myapp".to_string(),
-            repos: vec![],
-        }));
-
-        let result = server.configure_project_container(Parameters(
-            super::super::types::ConfigureProjectContainerParams {
-                project: "myapp".to_string(),
-                image: Some("ubuntu:24.04".to_string()),
-                cpus: Some(4),
-                memory_mb: None,
-                firewall_enabled: Some(false),
-                containerfile: None,
-            },
-        ));
-        let v = parse_json(&result);
-        assert!(v["project_id"].is_string());
-        assert_eq!(v["image"], "ubuntu:24.04");
-        assert_eq!(v["cpus"], 4);
-        assert_eq!(v["firewall_enabled"], false);
-    }
-
-    #[test]
-    fn configure_project_container_nonexistent_project() {
-        let server = test_server();
-        let result = server.configure_project_container(Parameters(
-            super::super::types::ConfigureProjectContainerParams {
-                project: "ghost".to_string(),
-                image: None,
-                cpus: None,
-                memory_mb: None,
-                firewall_enabled: None,
-                containerfile: None,
-            },
-        ));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Project not found"));
-    }
-
-    #[test]
-    fn get_project_container_config_no_config() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "myapp".to_string(),
-            repos: vec![],
-        }));
-
-        let result = server.get_project_container_config(Parameters(
-            super::super::types::GetProjectContainerConfigParams {
-                project: "myapp".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert!(v["message"].as_str().unwrap().contains("using defaults"));
-    }
-
-    #[test]
-    fn get_project_container_config_with_config() {
-        let server = test_server();
-        server.create_project(Parameters(CreateProjectParams {
-            name: "myapp".to_string(),
-            repos: vec![],
-        }));
-        server.configure_project_container(Parameters(
-            super::super::types::ConfigureProjectContainerParams {
-                project: "myapp".to_string(),
-                image: Some("node:20".to_string()),
-                cpus: Some(2),
-                memory_mb: Some(4096),
-                firewall_enabled: Some(true),
-                containerfile: Some("default".to_string()),
-            },
-        ));
-
-        let result = server.get_project_container_config(Parameters(
-            super::super::types::GetProjectContainerConfigParams {
-                project: "myapp".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert_eq!(v["image"], "node:20");
-        assert_eq!(v["cpus"], 2);
-        assert_eq!(v["memory_mb"], 4096);
-        assert_eq!(v["firewall_enabled"], true);
-        assert_eq!(v["containerfile"], "default");
-    }
-
-    // ── VM image tool tests ────────────────────────────────────
-
-    #[test]
-    fn list_vm_images_empty() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let result = server.list_vm_images();
-        let v = parse_json(&result);
-        assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn list_vm_images_skips_partial() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let img_dir = temp.path().join("admin").join("images");
-        std::fs::create_dir_all(&img_dir).unwrap();
-        std::fs::write(img_dir.join("debian.qcow2"), "image data").unwrap();
-        std::fs::write(img_dir.join("ubuntu.qcow2.partial"), "downloading").unwrap();
-
-        let result = server.list_vm_images();
-        let v = parse_json(&result);
-        let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["filename"], "debian.qcow2");
-        assert!(arr[0]["size_bytes"].as_u64().unwrap() > 0);
-    }
-
-    #[test]
-    fn delete_vm_image_not_found() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let result = server.delete_vm_image(Parameters(super::super::types::DeleteVmImageParams {
-            filename: "ghost.qcow2".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Image not found"));
-    }
-
-    #[test]
-    fn delete_vm_image_invalid_name() {
-        let server = test_server();
-        let result = server.delete_vm_image(Parameters(super::super::types::DeleteVmImageParams {
-            filename: "../etc/passwd".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].is_string());
-    }
-
-    #[test]
-    fn delete_vm_image_success() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let img_dir = temp.path().join("admin").join("images");
-        std::fs::create_dir_all(&img_dir).unwrap();
-        std::fs::write(img_dir.join("old.qcow2"), "data").unwrap();
-
-        let result = server.delete_vm_image(Parameters(super::super::types::DeleteVmImageParams {
-            filename: "old.qcow2".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["deleted"], true);
-        assert!(!img_dir.join("old.qcow2").exists());
-    }
-
-    #[test]
-    fn download_vm_image_rejects_non_https() {
-        let server = test_server();
-        let result =
-            server.download_vm_image(Parameters(super::super::types::DownloadVmImageParams {
-                url: "http://example.com/image.qcow2".to_string(),
-                filename: None,
-            }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("HTTPS"));
-    }
-
-    #[test]
-    fn download_vm_image_rejects_file_url() {
-        let server = test_server();
-        let result =
-            server.download_vm_image(Parameters(super::super::types::DownloadVmImageParams {
-                url: "file:///etc/passwd".to_string(),
-                filename: None,
-            }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("HTTPS"));
-    }
-
-    #[test]
-    fn download_vm_image_rejects_unsafe_filename() {
-        let server = test_server();
-        let result =
-            server.download_vm_image(Parameters(super::super::types::DownloadVmImageParams {
-                url: "https://example.com/image.qcow2".to_string(),
-                filename: Some("../escape.qcow2".to_string()),
-            }));
-        let v = parse_json(&result);
-        assert!(v["error"].is_string());
     }
 }

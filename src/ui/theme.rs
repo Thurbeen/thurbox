@@ -125,11 +125,6 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Style for project metadata lines (repo info, role count).
-    pub fn project_meta() -> Style {
-        Style::default().fg(Self::TEXT_MUTED)
-    }
-
     /// Style for modal titles: bold black on accent background (same as focused panels).
     pub fn modal_title() -> Style {
         Self::focused_title()

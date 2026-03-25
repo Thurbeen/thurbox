@@ -1,8 +1,8 @@
 //! MCP (Model Context Protocol) server for Thurbox.
 //!
-//! Provides programmatic access to Thurbox configuration — projects, roles,
-//! and session listing — so external agents can set up workspaces without
-//! manual TUI interaction.
+//! Provides programmatic access to Thurbox configuration — roles, sessions,
+//! and MCP servers — so external agents can set up workspaces without manual
+//! TUI interaction.
 
 mod tools;
 pub mod types;
@@ -43,7 +43,7 @@ impl ServerHandler for ThurboxMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Thurbox MCP server — manage projects, roles, and list sessions.".to_string(),
+                "Thurbox MCP server — manage roles, MCP servers, and sessions.".to_string(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()

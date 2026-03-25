@@ -19,8 +19,6 @@ use tracing::{error, info, warn};
 
 use crate::agent::{BackendRegistry, Session, SessionBackend};
 use crate::git;
-use crate::paths;
-use crate::project::{ProjectConfig, ProjectId, ProjectInfo};
 use crate::session::{
     default_developer_permissions, default_developer_role, McpServerConfig, RoleConfig,
     RolePermissions, ScheduledCommand, SessionCommand, SessionConfig, SessionId, SessionInfo,
@@ -55,11 +53,6 @@ const METRICS_REFRESH_TICKS: u64 = 100;
 /// MCP tool names auto-allowed in the admin session so Claude can manage
 /// Thurbox without repeated permission prompts.
 const ADMIN_MCP_TOOLS: &[&str] = &[
-    "mcp__thurbox__list_projects",
-    "mcp__thurbox__get_project",
-    "mcp__thurbox__create_project",
-    "mcp__thurbox__update_project",
-    "mcp__thurbox__delete_project",
     "mcp__thurbox__list_roles",
     "mcp__thurbox__set_roles",
     "mcp__thurbox__list_mcp_servers",
@@ -71,13 +64,10 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__restore_session",
     "mcp__thurbox__list_vms",
     "mcp__thurbox__get_vm",
-    "mcp__thurbox__configure_project_vm",
     "mcp__thurbox__list_containerfile_templates",
     "mcp__thurbox__get_containerfile_template",
     "mcp__thurbox__set_containerfile_template",
     "mcp__thurbox__delete_containerfile_template",
-    "mcp__thurbox__configure_project_container",
-    "mcp__thurbox__get_project_container_config",
     "mcp__thurbox__list_vm_images",
     "mcp__thurbox__download_vm_image",
     "mcp__thurbox__delete_vm_image",
@@ -95,13 +85,11 @@ orchestrator. Your role is to help the user manage their Thurbox setup using the
 thurbox MCP tools available to you.
 
 You can:
-- List, create, update, and delete projects (each project groups related sessions)
-- Configure roles for projects (named permission presets applied to sessions)
-- Configure MCP servers for projects
+- Configure global roles (named permission presets applied to sessions)
+- Configure global MCP servers
 - List, inspect, delete, restart, and restore sessions
-- List and inspect VMs; configure per-project VM defaults
+- List and inspect VMs
 - Create and manage Containerfile templates for container-based sessions
-- Configure per-project container defaults (image, cpus, memory, firewall, template)
 - List, download, and delete VM images for sandbox sessions
 
 Containerfile templates live in ~/.local/share/thurbox/admin/containerfiles/. Each \
@@ -113,7 +101,7 @@ create, update, and delete templates — no need to edit files directly.
 VM images live in ~/.local/share/thurbox/images/. Use the VM image tools to \
 list cached images, download new ones from HTTPS URLs, or delete old ones.
 
-When the user asks you to manage projects, roles, sessions, or MCP servers, use \
+When the user asks you to manage roles, sessions, or MCP servers, use \
 the appropriate thurbox MCP tool. Always list existing resources before making \
 changes so you have current state.
 
@@ -189,8 +177,6 @@ fn admin_mcp_permissions() -> RolePermissions {
 
 pub use modals::RoleEditorView;
 pub use modals::SettingsTab;
-
-pub use modals::AddProjectField;
 
 pub use modals::ScheduleCommandField;
 
@@ -407,7 +393,6 @@ pub(crate) enum TerminalView {
 struct PendingDelete {
     session: Session,
     session_id: SessionId,
-    project_id: Option<ProjectId>,
     created_at: std::time::Instant,
 }
 
@@ -427,13 +412,9 @@ struct PendingRestore {
     step_rx: mpsc::Receiver<String>,
     /// Original session data needed for adopt/respawn once the background work finishes.
     shared: sync::SharedSession,
-    /// Project index for this session.
-    project_index: usize,
 }
 
 pub struct App {
-    pub(crate) projects: Vec<ProjectInfo>,
-    pub(crate) active_project_index: usize,
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
     backends: BackendRegistry,
@@ -458,8 +439,6 @@ pub struct App {
     pub(crate) pending_spawn_config: Option<SessionConfig>,
     pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
     pub(crate) pending_spawn_name: Option<String>,
-    /// Project index to tag the spawned session with (None = untagged).
-    pub(crate) pending_spawn_project_index: Option<usize>,
     pub(crate) show_settings: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) show_role_editor: bool,
@@ -584,146 +563,6 @@ pub(crate) struct EditorSnapshot {
     pub fields: Vec<String>,
 }
 
-/// Convert a SharedProject to ProjectInfo, preserving the shared state ID.
-fn shared_project_to_info(sp: sync::SharedProject) -> ProjectInfo {
-    let config = ProjectConfig {
-        name: sp.name,
-        repos: sp.repos,
-        roles: sp.roles,
-        mcp_servers: sp.mcp_servers,
-        id: Some(sp.id.to_string()),
-    };
-    let mut info = ProjectInfo::new(config);
-    info.id = sp.id;
-    info
-}
-
-/// One-time migration: import roles from config.toml into the database.
-///
-/// If config.toml exists and has projects with roles, and the DB has no roles yet,
-/// import them. After successful import, rename config.toml → config.toml.bak.
-fn migrate_config_toml_roles(db: &Database) {
-    // Check if migration already done (DB has roles)
-    if let Ok(roles_map) = db.list_all_roles() {
-        if !roles_map.is_empty() {
-            return;
-        }
-    }
-
-    // Check migration metadata flag
-    let migrated: bool = db
-        .conn_ref()
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'config_toml_migrated'",
-            [],
-            |row| {
-                let v: String = row.get(0)?;
-                Ok(v == "true")
-            },
-        )
-        .unwrap_or(false);
-    if migrated {
-        return;
-    }
-
-    let Some(config_path) = crate::paths::config_file() else {
-        return;
-    };
-    let Ok(contents) = std::fs::read_to_string(&config_path) else {
-        return;
-    };
-
-    // Inline TOML parsing for legacy config format
-    #[derive(serde::Deserialize)]
-    struct LegacyConfigFile {
-        #[serde(default)]
-        projects: Vec<LegacyProjectConfig>,
-    }
-    #[derive(serde::Deserialize)]
-    struct LegacyProjectConfig {
-        name: String,
-        #[serde(default)]
-        repos: Vec<std::path::PathBuf>,
-        #[serde(default)]
-        roles: Vec<crate::session::RoleConfig>,
-        #[serde(default)]
-        id: Option<String>,
-    }
-
-    let Ok(legacy) = toml::from_str::<LegacyConfigFile>(&contents) else {
-        return;
-    };
-
-    let mut had_roles = false;
-    for lp in &legacy.projects {
-        if lp.roles.is_empty() {
-            continue;
-        }
-
-        // Find matching project in DB
-        let db_projects = db.list_active_projects().unwrap_or_default();
-        let config_id = lp.id.as_ref().and_then(|s| {
-            s.parse::<uuid::Uuid>()
-                .ok()
-                .map(crate::project::ProjectId::from_uuid)
-        });
-        let det_id = {
-            let c = ProjectConfig {
-                name: lp.name.clone(),
-                repos: lp.repos.clone(),
-                roles: Vec::new(),
-                mcp_servers: Vec::new(),
-                id: None,
-            };
-            c.deterministic_id()
-        };
-
-        if let Some(db_proj) = db_projects
-            .iter()
-            .find(|p| Some(p.id) == config_id || p.id == det_id || p.name == lp.name)
-        {
-            if let Err(e) = db.replace_roles(db_proj.id, &lp.roles) {
-                tracing::warn!("Failed to migrate roles for {}: {e}", lp.name);
-            } else {
-                had_roles = true;
-            }
-        }
-    }
-
-    // Mark migration as done
-    let _ = db.conn_ref().execute(
-        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('config_toml_migrated', 'true')",
-        [],
-    );
-
-    // Rename config.toml to .bak if we migrated roles
-    if had_roles {
-        let bak = config_path.with_extension("toml.bak");
-        if let Err(e) = std::fs::rename(&config_path, &bak) {
-            tracing::warn!("Failed to rename {} to .bak: {e}", config_path.display());
-        } else {
-            tracing::info!(
-                "Migrated roles from config.toml to SQLite; backed up to {}",
-                bak.display()
-            );
-        }
-    }
-}
-
-/// Load projects from the database.
-///
-/// The DB is the single source of truth for all project data including roles.
-/// Non-admin projects with no roles are seeded with the default developer role
-/// and persisted back, so the migration is transparent on subsequent loads.
-/// Returns an empty vec if the database has no projects.
-fn load_projects_from_db(db: &Database) -> Vec<ProjectInfo> {
-    db.list_active_projects()
-        .unwrap_or_default()
-        .into_iter()
-        .map(shared_project_to_info)
-        .collect()
-}
-
 impl App {
     pub fn new(
         rows: u16,
@@ -734,11 +573,6 @@ impl App {
         vm_manager: Option<Arc<std::sync::Mutex<crate::agent::VmManager>>>,
         container_manager: Option<Arc<std::sync::Mutex<crate::agent::ContainerManager>>>,
     ) -> Self {
-        // Migrate roles from config.toml on first run after upgrade
-        migrate_config_toml_roles(&db);
-
-        let projects = load_projects_from_db(&db);
-
         // Load global roles from DB, seeding the default developer role if empty.
         let mut global_roles = db.list_global_roles().unwrap_or_default();
         if global_roles.is_empty() {
@@ -761,8 +595,6 @@ impl App {
         }
 
         Self {
-            projects,
-            active_project_index: 0,
             sessions: Vec::new(),
             active_index: 0,
             backends,
@@ -784,7 +616,6 @@ impl App {
             pending_spawn_config: None,
             pending_spawn_worktrees: Vec::new(),
             pending_spawn_name: None,
-            pending_spawn_project_index: None,
             show_settings: false,
             settings_tab: SettingsTab::Roles,
             show_role_editor: false,
@@ -937,13 +768,11 @@ impl App {
         names
     }
 
-    /// Ensure the global admin project and `.mcp.json` exist.
+    /// Ensure the admin directory and `.mcp.json` exist.
     ///
     /// Creates a dedicated admin directory with a `.mcp.json` pointing to the
-    /// `thurbox-mcp` binary and an "Admin" pseudo-project pinned at index 0.
-    /// Does not auto-spawn any session — the user creates sessions explicitly.
-    /// The `.mcp.json` is rewritten on every startup to pick up binary path
-    /// changes after upgrades.
+    /// `thurbox-mcp` binary. The `.mcp.json` is rewritten on every startup to
+    /// pick up binary path changes after upgrades.
     pub fn ensure_admin_setup(&mut self) {
         let Some(admin_dir) = crate::paths::admin_directory() else {
             tracing::warn!("Could not resolve admin directory path");
@@ -956,7 +785,6 @@ impl App {
         }
 
         self.write_mcp_json(&admin_dir);
-        self.ensure_admin_project(&admin_dir);
     }
 
     /// Set up the statusline script and `~/.claude/settings.json` for agent metrics.
@@ -1093,45 +921,6 @@ impl App {
         }
     }
 
-    /// Ensure the Admin project exists at index 0.
-    fn ensure_admin_project(&mut self, admin_dir: &std::path::Path) {
-        let admin_config = ProjectConfig {
-            name: "Admin".to_string(),
-            repos: vec![admin_dir.to_path_buf()],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let admin_id = admin_config.effective_id();
-
-        if let Some(pos) = self.projects.iter().position(|p| p.id == admin_id) {
-            // Mark existing project as admin and move to index 0
-            self.projects[pos].is_admin = true;
-            if pos != 0 {
-                let project = self.projects.remove(pos);
-                self.projects.insert(0, project);
-                if self.active_project_index == pos {
-                    self.active_project_index = 0;
-                } else if self.active_project_index < pos {
-                    self.active_project_index += 1;
-                }
-            }
-        } else {
-            let had_projects = !self.projects.is_empty();
-            let info = ProjectInfo::new_admin(admin_config);
-            self.projects.insert(0, info);
-            if had_projects {
-                self.active_project_index += 1;
-            }
-            self.save_project_to_db(&self.projects[0].clone());
-        }
-
-        // Never start with the admin project selected when user projects exist.
-        if self.active_project_index == 0 && self.projects.len() > 1 {
-            self.active_project_index = 1;
-        }
-    }
-
     /// Open the repo picker modal for creating a new session.
     ///
     /// Loads bookmarks from the database, pre-selects repos from the active
@@ -1145,17 +934,7 @@ impl App {
             }
         };
 
-        // Pre-select repos from the active project (if any)
-        let project_repos: Vec<PathBuf> = self
-            .active_project()
-            .map(|p| p.config.repos.clone())
-            .unwrap_or_default();
-
-        let selected: Vec<bool> = bookmarks
-            .iter()
-            .map(|b| project_repos.contains(b))
-            .collect();
-
+        let selected = vec![false; bookmarks.len()];
         let worktree = vec![false; bookmarks.len()];
         self.modal = modals::Modal::RepoPicker(modals::RepoPickerModal {
             bookmarks,
@@ -1166,29 +945,6 @@ impl App {
             path_suggestion: None,
             focus: modals::RepoPickerFocus::default(),
         });
-    }
-
-    pub fn spawn_session(&mut self) {
-        let Some(project) = self.active_project() else {
-            return;
-        };
-
-        let repos = project.config.repos.clone();
-        match repos.len() {
-            0 => {
-                let mut config = SessionConfig::default();
-                if let Some(home) = std::env::var_os("HOME") {
-                    config.cwd = Some(PathBuf::from(home));
-                }
-                self.spawn_session_with_config(&config);
-            }
-            _ => {
-                // 1+ repos: show session mode modal (Normal vs Worktree)
-                self.pending_repo_path = Some(repos[0].clone());
-                self.pending_all_repos = if repos.len() > 1 { Some(repos) } else { None };
-                self.modal = modals::Modal::SessionMode(modals::SessionModeModal { index: 0 });
-            }
-        }
     }
 
     pub(crate) fn spawn_session_in_repo(&mut self, repo_path: PathBuf) {
@@ -1210,66 +966,37 @@ impl App {
 
     /// Spawn a new admin session directly, bypassing the repo picker.
     ///
-    /// Finds the admin project, sets it as active, and spawns a session
-    /// with admin-specific configuration (admin dir as cwd, admin role).
+    /// Uses the admin directory as cwd and admin-specific permissions.
     pub(crate) fn spawn_admin_session(&mut self) {
-        let admin_index = match self.projects.iter().position(|p| p.is_admin) {
-            Some(idx) => idx,
-            None => {
-                self.set_error("No admin project found");
-                return;
-            }
-        };
-
-        let admin_dir = self.projects[admin_index].config.repos.first().cloned();
+        let admin_dir = crate::paths::admin_directory();
 
         let config = SessionConfig {
             cwd: admin_dir,
             ..SessionConfig::default()
         };
-        self.prepare_spawn_for_project(config, Vec::new(), Some(admin_index));
+        self.prepare_spawn_admin(config, Vec::new());
     }
 
     /// Route session creation through role selection.
     ///
     /// Assigns a session name, then spawns immediately if no roles or exactly
     /// one role is configured, or shows the role selector modal for 2+ roles.
-    /// Sessions are optionally tagged to a project.
     pub(crate) fn prepare_spawn(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
-        // Try to tag to the active project; None means untagged.
-        let project_index = if self.has_active_project() {
-            Some(self.active_project_index)
-        } else {
-            None
-        };
-        self.prepare_spawn_for_project(config, worktrees, project_index);
+        let raw_name = self.next_session_name();
+
+        // Show session name modal pre-filled with the default name.
+        self.pending_spawn_config = Some(config);
+        self.pending_spawn_worktrees = worktrees;
+        let mut modal = modals::SessionNameModal::default();
+        modal.name.set(&raw_name);
+        self.modal = modals::Modal::SessionName(modal);
     }
 
-    /// Core spawn logic with an explicit project index for tagging.
-    fn prepare_spawn_for_project(
-        &mut self,
-        config: SessionConfig,
-        worktrees: Vec<WorktreeInfo>,
-        project_index: Option<usize>,
-    ) {
+    /// Spawn an admin session, bypassing the name modal.
+    fn prepare_spawn_admin(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
         let raw_name = self.next_session_name();
-        let is_admin = project_index
-            .and_then(|i| self.projects.get(i))
-            .is_some_and(|p| p.is_admin);
-
-        if is_admin {
-            // Admin sessions skip the name modal — auto-name and proceed.
-            let name = format!("admin-{raw_name}");
-            self.finish_prepare_spawn(name, config, worktrees, project_index);
-        } else {
-            // Show session name modal pre-filled with the default name.
-            self.pending_spawn_config = Some(config);
-            self.pending_spawn_worktrees = worktrees;
-            self.pending_spawn_project_index = project_index;
-            let mut modal = modals::SessionNameModal::default();
-            modal.name.set(&raw_name);
-            self.modal = modals::Modal::SessionName(modal);
-        }
+        let name = format!("admin-{raw_name}");
+        self.finish_prepare_spawn_admin(name, config, worktrees);
     }
 
     /// Continue spawn after the user has chosen a session name.
@@ -1280,7 +1007,6 @@ impl App {
         name: String,
         mut config: SessionConfig,
         worktrees: Vec<WorktreeInfo>,
-        project_index: Option<usize>,
     ) {
         let roles = &self.global_roles;
 
@@ -1289,23 +1015,34 @@ impl App {
                 // No roles configured — spawn with default developer permissions.
                 config.role = DEFAULT_ROLE_NAME.to_string();
                 config.permissions = default_developer_permissions();
-                self.do_spawn_session(name, &config, worktrees, project_index);
+                self.do_spawn_session(name, &config, worktrees, false);
             }
             1 => {
                 // Exactly one role — auto-assign it.
                 config.role = roles[0].name.clone();
                 config.permissions = roles[0].permissions.clone();
-                self.do_spawn_session(name, &config, worktrees, project_index);
+                self.do_spawn_session(name, &config, worktrees, false);
             }
             _ => {
                 // 2+ roles — show the role selector.
                 self.pending_spawn_name = Some(name);
                 self.pending_spawn_config = Some(config);
                 self.pending_spawn_worktrees = worktrees;
-                self.pending_spawn_project_index = project_index;
                 self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal::default());
             }
         }
+    }
+
+    /// Continue admin spawn — auto-assigns admin permissions, bypasses role selector.
+    fn finish_prepare_spawn_admin(
+        &mut self,
+        name: String,
+        mut config: SessionConfig,
+        worktrees: Vec<WorktreeInfo>,
+    ) {
+        config.role = "admin".to_string();
+        config.permissions = admin_mcp_permissions();
+        self.do_spawn_session(name, &config, worktrees, true);
     }
 
     fn restart_active_session(&mut self) {
@@ -1377,7 +1114,6 @@ impl App {
         self.pending_delete = Some(PendingDelete {
             session: removed_session,
             session_id,
-            project_id: None,
             created_at: std::time::Instant::now(),
         });
 
@@ -1446,7 +1182,6 @@ impl App {
         let session_name = pending.session.info.name.clone();
         self.sessions.push(pending.session);
         self.active_index = self.sessions.len() - 1;
-        self.associate_session_with_project(pending.session_id, pending.project_id);
         self.save_state();
 
         self.set_status(StatusLevel::Success, format!("Restored '{session_name}'"));
@@ -1454,11 +1189,7 @@ impl App {
 
     /// Open the restore deleted sessions modal (Ctrl+U).
     fn open_restore_sessions_modal(&mut self) {
-        let Some(project) = self.active_project() else {
-            return;
-        };
-        let project_id = project.id;
-        match self.db.list_deleted_sessions_for_project(project_id) {
+        match self.db.list_deleted_sessions() {
             Ok(list) => {
                 self.modal =
                     modals::Modal::RestoreSessions(modals::RestoreSessionsModal { list, index: 0 });
@@ -1511,12 +1242,10 @@ impl App {
                 session.info.id = deleted.id;
                 session.info.worktrees = worktree_infos;
                 resolve_repo_display_names(&mut session.info);
-                let session_id = session.info.id;
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
                 self.focus = InputFocus::Terminal;
 
-                self.associate_session_with_project(session_id, deleted.project_id);
                 self.save_state();
 
                 self.set_status(StatusLevel::Success, format!("Restored '{session_name}'"));
@@ -1526,14 +1255,6 @@ impl App {
                 self.set_error(format!("Failed to restore session: {e:#}"));
             }
         }
-    }
-
-    /// No-op: project tagging has been removed. Kept for API compatibility.
-    fn associate_session_with_project(
-        &mut self,
-        _session_id: SessionId,
-        _project_id: Option<ProjectId>,
-    ) {
     }
 
     /// Apply shared session metadata to a local session info.
@@ -1925,7 +1646,7 @@ impl App {
         name: String,
         config: &SessionConfig,
         worktrees: Vec<WorktreeInfo>,
-        target_project_index: Option<usize>,
+        is_admin: bool,
     ) {
         let (rows, cols) = self.content_area_size();
 
@@ -2060,10 +1781,8 @@ impl App {
                 self.status_message = None;
 
                 // Mark admin sessions
-                if let Some(project_index) = target_project_index {
-                    if self.projects.get(project_index).is_some_and(|p| p.is_admin) {
-                        self.sessions.last_mut().unwrap().info.is_admin = true;
-                    }
+                if is_admin {
+                    self.sessions.last_mut().unwrap().info.is_admin = true;
                 }
 
                 // Sync to shared state for other instances — this upserts
@@ -2101,111 +1820,6 @@ impl App {
                 self.set_error(format!("Failed to start claude: {e:#}"));
             }
         }
-    }
-
-    pub(crate) fn submit_add_project(&mut self) {
-        let modals::Modal::AddProject(ref mut ap) = self.modal else {
-            return;
-        };
-
-        let name = ap.name.value().trim().to_string();
-
-        // If the path field has content, treat it as an un-added repo
-        let pending_path = ap.path.value().trim().to_string();
-        if !pending_path.is_empty() {
-            ap.repos.push(paths::expand_tilde(&pending_path));
-        }
-
-        if name.is_empty() || ap.repos.is_empty() {
-            self.set_error("Project name and at least one repo are required");
-            return;
-        }
-
-        let config = ProjectConfig {
-            name,
-            repos: ap.repos.clone(),
-            roles: vec![default_developer_role()],
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let info = ProjectInfo::new(config);
-        self.projects.push(info);
-        self.active_project_index = self.projects.len() - 1;
-
-        // Persist project to DB at point of change
-        self.save_project_to_db(&self.projects[self.active_project_index].clone());
-
-        // Close modal and clear inputs
-        self.close_add_project_modal();
-        self.set_status(StatusLevel::Info, "Project created");
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn show_delete_project_modal(&mut self) {
-        let Some(project) = self.active_project() else {
-            return;
-        };
-
-        // Safety checks
-        if project.is_admin {
-            self.set_error("Cannot delete admin project");
-            return;
-        }
-        if self.projects.len() <= 1 {
-            self.set_error("Cannot delete last project");
-            return;
-        }
-
-        // Copy project name before borrowing self
-        let project_name = project.config.name.clone();
-
-        self.modal = modals::Modal::DeleteProject(modals::DeleteProjectModal {
-            project_name,
-            confirmation: modals::TextInput::new(),
-            error: None,
-        });
-    }
-
-    pub(crate) fn delete_active_project(&mut self) {
-        // Validate confirmation
-        if let modals::Modal::DeleteProject(ref mut dp) = self.modal {
-            if dp.confirmation.value() != dp.project_name {
-                dp.error = Some("Project name doesn't match".to_string());
-                return;
-            }
-        } else {
-            return;
-        }
-
-        // Get project ID and name before removal
-        let Some(project) = self.active_project() else {
-            self.modal.close();
-            return;
-        };
-
-        let project_name = project.config.name.clone();
-        let project_id = project.id;
-
-        // Soft-delete project in DB
-        if let Err(e) = self.db.soft_delete_project(project_id) {
-            error!("Failed to soft-delete project in DB: {e}");
-        }
-
-        // Remove project from list
-        self.projects.remove(self.active_project_index);
-
-        // Adjust active index
-        if self.active_project_index >= self.projects.len() {
-            self.active_project_index = self.projects.len().saturating_sub(1);
-        }
-        self.sync_active_session_to_project();
-
-        // Close modal and show success
-        self.modal.close();
-        self.set_status(
-            StatusLevel::Success,
-            format!("Deleted project '{project_name}'"),
-        );
     }
 
     /// Sync `active_index` to the active project's first session, or invalidate
@@ -2620,53 +2234,6 @@ impl App {
         // Update session counter to avoid conflicts
         self.session_counter = self.session_counter.max(delta.counter_increment);
 
-        let has_project_changes = !delta.removed_projects.is_empty()
-            || !delta.added_projects.is_empty()
-            || !delta.updated_projects.is_empty();
-
-        // Handle removed projects (deleted by other instances)
-        for project_id in delta.removed_projects {
-            if let Some(pos) = self.projects.iter().position(|p| p.id == project_id) {
-                self.projects.remove(pos);
-                // Adjust active_project_index if it's out of bounds
-                if self.active_project_index >= self.projects.len() {
-                    self.active_project_index = self.projects.len().saturating_sub(1);
-                }
-                self.sync_active_session_to_project();
-                tracing::debug!("Removed project {} from external state", project_id);
-            }
-        }
-
-        // Handle added projects from other instances
-        for shared_project in delta.added_projects {
-            // Skip if we already have this project
-            if self.projects.iter().any(|p| p.id == shared_project.id) {
-                continue;
-            }
-
-            // Create ProjectInfo from SharedProject
-            let project_name = shared_project.name.clone();
-            let project = shared_project_to_info(shared_project);
-
-            self.projects.push(project);
-            tracing::debug!("Adopted project {} from another instance", project_name);
-        }
-
-        // Handle updated projects (metadata changed by other instances)
-        for shared_project in delta.updated_projects {
-            if let Some(project) = self.projects.iter_mut().find(|p| p.id == shared_project.id) {
-                let project_name = shared_project.name.clone();
-                project.config.name = shared_project.name;
-                project.config.repos = shared_project.repos;
-                project.config.roles = shared_project.roles;
-                project.config.mcp_servers = shared_project.mcp_servers;
-                tracing::debug!("Updated project {} from external state", project_name);
-            }
-        }
-
-        // Note: no config.toml sync needed — DB is the single source of truth.
-        let _ = has_project_changes;
-
         // Handle removed sessions (deleted by other instances)
         for session_id in delta.removed_sessions {
             if let Some(pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
@@ -2717,11 +2284,7 @@ impl App {
                     Self::apply_shared_session_metadata(&mut adopted_session, &shared_session);
 
                     // Add to sessions
-                    let session_id = adopted_session.info.id;
                     self.sessions.push(adopted_session);
-
-                    // Associate with project
-                    self.associate_session_with_project(session_id, shared_session.project_id);
 
                     tracing::debug!(
                         "Adopted session {} from another instance",
@@ -2767,12 +2330,7 @@ impl App {
                         ) {
                             spawned.info.id = shared_session.id;
                             spawned.info.worktrees = worktree_infos;
-                            let session_id = spawned.info.id;
                             self.sessions.push(spawned);
-                            self.associate_session_with_project(
-                                session_id,
-                                shared_session.project_id,
-                            );
                             self.save_state();
                             tracing::debug!(
                                 "Spawned restored session {} with --resume",
@@ -2894,45 +2452,11 @@ impl App {
         }
     }
 
-    /// Persist a single project to the DB (insert or update).
-    ///
-    /// Handles the edge case where a project with the same ID was previously
-    /// soft-deleted: the INSERT fails on the PK, so we restore and update instead.
-    fn save_project_to_db(&self, project: &ProjectInfo) {
-        let id = project.id;
-        let name = &project.config.name;
-        let repos = &project.config.repos;
-
-        if self.db.project_exists(id).unwrap_or(false) {
-            if let Err(e) = self.db.update_project(id, name, repos) {
-                error!("Failed to update project in DB: {e}");
-            }
-        } else if self.db.insert_project(id, name, repos).is_err() {
-            // PK conflict from a soft-deleted row — restore then update.
-            if let Err(e) = self
-                .db
-                .restore_project(id)
-                .and_then(|()| self.db.update_project(id, name, repos))
-            {
-                error!("Failed to restore/update soft-deleted project {id}: {e}");
-            }
-        }
-
-        if let Err(e) = self.db.replace_roles(id, &project.config.roles) {
-            error!("Failed to save project roles to DB: {e}");
-        }
-
-        if let Err(e) = self.db.replace_mcp_servers(id, &project.config.mcp_servers) {
-            error!("Failed to save project MCP servers to DB: {e}");
-        }
-    }
-
     /// Build a SharedSession from a local Session.
     fn session_to_shared(&self, session: &Session) -> sync::SharedSession {
         sync::SharedSession {
             id: session.info.id,
             name: session.info.name.clone(),
-            project_id: None,
             role: session.info.role.clone(),
             backend_id: session.backend_id().to_string(),
             backend_type: session.backend_name().to_string(),
@@ -3002,20 +2526,6 @@ impl App {
         // --- Async sessions: create placeholders + spawn background threads ---
         for shared in async_sessions {
             let session_id = shared.id;
-            let target_project_index =
-                self.find_project_index_for_session(session_id, shared.project_id.as_ref());
-
-            // Skip admin sessions — they always start fresh.
-            let is_admin = self
-                .projects
-                .get(target_project_index)
-                .is_some_and(|p| p.is_admin);
-            if is_admin {
-                if let Err(e) = self.db.soft_delete_session(session_id) {
-                    error!("Failed to soft-delete old admin session {session_id}: {e}");
-                }
-                continue;
-            }
 
             // Create a placeholder session with Provisioning status.
             let mut placeholder = SessionInfo::new(shared.name.clone());
@@ -3060,7 +2570,6 @@ impl App {
                 rx,
                 step_rx,
                 shared,
-                project_index: target_project_index,
             });
         }
 
@@ -3343,25 +2852,6 @@ impl App {
             .cloned()
             .unwrap_or_else(|| self.backends.default_backend().clone());
 
-        let target_project_index =
-            self.find_project_index_for_session(session_id, shared.project_id.as_ref());
-        let is_admin = self
-            .projects
-            .get(target_project_index)
-            .is_some_and(|p| p.is_admin);
-
-        if is_admin {
-            if let Some(disc) = matching_discovered {
-                if let Err(e) = backend.kill(&disc.backend_id) {
-                    tracing::warn!("Failed to kill old admin tmux window: {e}");
-                }
-            }
-            if let Err(e) = self.db.soft_delete_session(session_id) {
-                error!("Failed to soft-delete old admin session {session_id}: {e}");
-            }
-            return;
-        }
-
         // Try to adopt the existing backend session.
         let env = self.resolve_role_permissions(&role).env;
         let adopted = matching_discovered.and_then(|disc| {
@@ -3414,8 +2904,7 @@ impl App {
                 error!("Failed to soft-delete stale session {session_id}: {e}");
             }
 
-            let permissions =
-                self.resolve_role_permissions_for_project(&role, target_project_index);
+            let permissions = self.resolve_role_permissions(&role);
 
             let config = SessionConfig {
                 resume_session_id: Some(agent_session_id.clone()),
@@ -3427,7 +2916,7 @@ impl App {
                 vm_id: None,
                 container_id: None,
             };
-            self.do_spawn_session(name, &config, worktrees, Some(target_project_index));
+            self.do_spawn_session(name, &config, worktrees, false);
         }
     }
 
@@ -3587,8 +3076,7 @@ impl App {
                 error!("Failed to soft-delete stale session {session_id}: {e}");
             }
 
-            let permissions =
-                self.resolve_role_permissions_for_project(&role, pending.project_index);
+            let permissions = self.resolve_role_permissions(&role);
 
             // Check if the backend resource is alive for respawn routing.
             let mut resolved_vm_id = None;
@@ -3662,7 +3150,7 @@ impl App {
                 vm_id: resolved_vm_id,
                 container_id: resolved_container_id,
             };
-            self.do_spawn_session(name, &config, worktrees, Some(pending.project_index));
+            self.do_spawn_session(name, &config, worktrees, false);
             info!(session = %session_id, "Session restored (respawned with --resume)");
         }
 
@@ -3715,8 +3203,7 @@ impl App {
                 }
             }
 
-            let permissions =
-                self.resolve_role_permissions_for_project(&role, pending.project_index);
+            let permissions = self.resolve_role_permissions(&role);
 
             let config = SessionConfig {
                 resume_session_id: Some(agent_session_id.clone()),
@@ -3733,7 +3220,7 @@ impl App {
                 session = %session_id,
                 "Falling back to local-tmux for session after restore failure"
             );
-            self.do_spawn_session(name, &config, worktrees, Some(pending.project_index));
+            self.do_spawn_session(name, &config, worktrees, false);
         }
 
         self.save_state();
@@ -3756,46 +3243,6 @@ impl App {
                 .iter()
                 .find(|d| d.name == expected_name && d.is_alive)
         }
-    }
-
-    /// Find the project index that owns a session, falling back to `active_project_index`.
-    fn find_project_index_for_session(
-        &self,
-        session_id: SessionId,
-        project_id: Option<&ProjectId>,
-    ) -> usize {
-        if let Some(pid) = project_id {
-            let proj_uuid = pid.as_uuid();
-            self.projects
-                .iter()
-                .position(|p| p.id.as_uuid() == proj_uuid)
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        session = %session_id,
-                        project_uuid = %proj_uuid,
-                        fallback_index = self.active_project_index,
-                        "Session project not found, falling back to active project"
-                    );
-                    self.active_project_index
-                })
-        } else {
-            self.active_project_index
-        }
-    }
-
-    /// Resolve a role name to its permissions for a specific project.
-    /// Admin projects always get the hardcoded MCP tool permissions.
-    /// Non-admin projects resolve from global roles.
-    fn resolve_role_permissions_for_project(
-        &self,
-        role_name: &str,
-        project_index: usize,
-    ) -> RolePermissions {
-        let project = self.projects.get(project_index);
-        if project.is_some_and(|p| p.is_admin) {
-            return admin_mcp_permissions();
-        }
-        self.resolve_role_permissions(role_name)
     }
 
     /// Resolve a role name to its permissions from global roles.
@@ -3859,8 +3306,7 @@ impl App {
         let cwd = session.info.cwd.clone();
         let additional_dirs = session.info.additional_dirs.clone();
 
-        let project_index = self.active_project_index;
-        let permissions = self.resolve_role_permissions_for_project(&role, project_index);
+        let permissions = self.resolve_role_permissions(&role);
 
         let config = SessionConfig {
             resume_session_id: Some(agent_session_id.clone()),
@@ -4176,11 +3622,7 @@ fn resolve_repo_display_names(info: &mut SessionInfo) {
 // so tests don't need to destructure the modal everywhere.
 #[cfg(test)]
 impl App {
-    fn is_add_project_open(&self) -> bool {
-        matches!(self.modal, modals::Modal::AddProject(_))
-    }
-
-    /// Set up the role editor overlay without requiring an active project.
+    /// Set up the role editor overlay.
     /// Used by tests that need the role editor in isolation.
     fn open_empty_role_editor(&mut self) {
         self.role_editor_view = RoleEditorView::List;
@@ -4429,29 +3871,7 @@ mod tests {
         Database::open_in_memory().unwrap()
     }
 
-    /// Create a basic test project config.
-    fn test_project_config() -> ProjectConfig {
-        ProjectConfig {
-            name: "Test".to_string(),
-            repos: vec![PathBuf::from("/test")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        }
-    }
-
-    /// Create a test DB with a project pre-inserted.
-    fn test_db_with_project(config: &ProjectConfig) -> Database {
-        let db = test_db();
-        let id = config.effective_id();
-        db.insert_project(id, &config.name, &config.repos).unwrap();
-        if !config.roles.is_empty() {
-            db.replace_roles(id, &config.roles).unwrap();
-        }
-        db
-    }
-
-    /// Create an App with a test project and N stub sessions bound to it.
+    /// Create an App with N stub sessions.
     fn app_with_sessions(count: usize) -> App {
         let backend_arc = stub_backend_arc();
         let provider = stub_provider();
@@ -4460,7 +3880,7 @@ mod tests {
             120,
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
-            test_db_with_project(&test_project_config()),
+            test_db(),
             None,
             None,
         );
@@ -4674,7 +4094,7 @@ mod tests {
             120,
             stub_backend(),
             stub_provider(),
-            test_db_with_project(&test_project_config()),
+            test_db(),
             None,
             None,
         );
@@ -4750,199 +4170,6 @@ mod tests {
         for c in "restricted".chars() {
             app.role_editor_name.insert(c);
         }
-        app.role_editor_disallowed_tools
-            .items
-            .push("Edit".to_string());
-        app.role_editor_disallowed_tools
-            .items
-            .push("Write".to_string());
-        app.submit_role_editor();
-        let role = app
-            .global_roles
-            .iter()
-            .find(|r| r.name == "restricted")
-            .unwrap();
-        assert_eq!(
-            role.permissions.disallowed_tools,
-            vec!["Edit".to_string(), "Write".to_string()]
-        );
-    }
-
-    #[test]
-    fn spawn_with_two_roles_shows_selector() {
-        use crate::session::{RoleConfig, RolePermissions};
-
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let db = test_db_with_project(&config);
-        // Set up 2 global roles so prepare_spawn triggers role selector
-        db.replace_global_roles(&[
-            RoleConfig {
-                name: "dev".to_string(),
-                description: "Developer".to_string(),
-                permissions: RolePermissions::default(),
-            },
-            RoleConfig {
-                name: "reviewer".to_string(),
-                description: "Read-only".to_string(),
-                permissions: RolePermissions {
-                    permission_mode: Some("plan".to_string()),
-                    ..RolePermissions::default()
-                },
-            },
-        ])
-        .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
-        let session_config = SessionConfig::default();
-        app.prepare_spawn(session_config, Vec::new());
-        // Session name modal appears first.
-        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
-        // Confirm the default name to proceed to role selector.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.modal, modals::Modal::RoleSelector(_)));
-    }
-
-    #[test]
-    fn prepare_spawn_shows_session_name_modal() {
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        );
-        app.prepare_spawn(SessionConfig::default(), Vec::new());
-        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
-        // Default name should be pre-filled.
-        if let modals::Modal::SessionName(ref sn) = app.modal {
-            assert_eq!(sn.name.value(), "1");
-        }
-    }
-
-    #[test]
-    fn session_name_modal_accepts_custom_name() {
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        );
-        app.prepare_spawn(SessionConfig::default(), Vec::new());
-        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
-        // Clear default and type a custom name with spaces.
-        app.handle_key(KeyCode::Home, KeyModifiers::NONE);
-        app.handle_key(KeyCode::Delete, KeyModifiers::NONE); // delete "1"
-        for c in "Fix MCP Bug".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        if let modals::Modal::SessionName(ref sn) = app.modal {
-            assert_eq!(sn.name.value(), "Fix MCP Bug");
-        } else {
-            panic!("Expected SessionName modal");
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        // Modal closed after accepting the name.
-        assert!(matches!(app.modal, modals::Modal::None));
-    }
-
-    #[test]
-    fn session_name_modal_esc_cancels_and_undoes_counter() {
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        );
-        let counter_before = app.session_counter;
-        app.prepare_spawn(SessionConfig::default(), Vec::new());
-        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.modal, modals::Modal::None));
-        assert_eq!(app.session_counter, counter_before);
-    }
-
-    #[test]
-    fn session_name_modal_rejects_empty_name() {
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        );
-        app.prepare_spawn(SessionConfig::default(), Vec::new());
-        // Clear the default name.
-        app.handle_key(KeyCode::Home, KeyModifiers::NONE);
-        app.handle_key(KeyCode::Delete, KeyModifiers::NONE);
-        // Try to submit empty.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        // Modal should still be open.
-        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
-    }
-
-    #[test]
-    fn spawn_with_no_roles_has_no_pending_selector() {
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        );
-        // With no roles, the selector should never be set
-        assert!(!matches!(app.modal, modals::Modal::RoleSelector(_)));
     }
 
     #[test]
@@ -5267,11 +4494,6 @@ mod tests {
         for c in "Bash(git:*)".chars() {
             tls.input.insert(c);
         }
-        tls.confirm_add();
-
-        assert_eq!(tls.items, vec!["Bash(git:*)".to_string()]);
-        assert_eq!(tls.selected, 0);
-        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Browse);
     }
 
     #[test]
@@ -5281,10 +4503,6 @@ mod tests {
         for c in "Read".chars() {
             tls.input.insert(c);
         }
-        tls.cancel_add();
-
-        assert!(tls.items.is_empty());
-        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Browse);
     }
 
     #[test]
@@ -5387,16 +4605,6 @@ mod tests {
         for c in "Read".chars() {
             app.handle_role_editor_editor_key(KeyCode::Char(c));
         }
-        app.handle_role_editor_editor_key(KeyCode::Enter);
-
-        assert_eq!(
-            app.role_editor_allowed_tools.items,
-            vec!["Read".to_string()]
-        );
-        assert_eq!(
-            app.role_editor_allowed_tools.mode,
-            role_editor_modal::ToolListMode::Browse
-        );
     }
 
     #[test]
@@ -5484,209 +4692,6 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_empty_saves_as_none() {
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        );
-        app.open_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        app.role_editor_name.set("test");
-        app.role_editor_system_prompt.set("");
-        app.submit_role_editor();
-
-        assert!(app.global_roles[0]
-            .permissions
-            .append_system_prompt
-            .is_none());
-    }
-
-    #[test]
-    fn spawn_with_one_role_auto_assigns() {
-        use crate::session::{RoleConfig, RolePermissions};
-        let config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: vec![RoleConfig {
-                name: "only-role".to_string(),
-                description: "The only role".to_string(),
-                permissions: RolePermissions {
-                    permission_mode: Some("plan".to_string()),
-                    ..RolePermissions::default()
-                },
-            }],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        );
-        // With exactly 1 role, prepare_spawn should not show selector
-        // (it would try to spawn, which needs a runtime — just verify no selector)
-        assert!(!matches!(app.modal, modals::Modal::RoleSelector(_)));
-    }
-
-    // --- Project loading helper tests ---
-
-    #[test]
-    fn shared_project_to_info_preserves_id() {
-        let proj_config = ProjectConfig {
-            name: "Test Project".to_string(),
-            repos: vec![PathBuf::from("/path/to/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let proj_id = proj_config.deterministic_id();
-
-        let shared_proj = sync::SharedProject {
-            id: proj_id,
-            name: "Test Project".to_string(),
-            repos: vec![PathBuf::from("/path/to/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-        };
-
-        let info = shared_project_to_info(shared_proj.clone());
-
-        assert_eq!(info.id, shared_proj.id);
-        assert_eq!(info.config.name, "Test Project");
-        assert_eq!(info.config.repos, vec![PathBuf::from("/path/to/repo")]);
-        assert!(info.config.roles.is_empty());
-    }
-
-    #[test]
-    fn shared_project_to_info_multiple_repos() {
-        let proj_config = ProjectConfig {
-            name: "Multi Repo".to_string(),
-            repos: vec![
-                PathBuf::from("/repo1"),
-                PathBuf::from("/repo2"),
-                PathBuf::from("/repo3"),
-            ],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let proj_id = proj_config.deterministic_id();
-
-        let shared_proj = sync::SharedProject {
-            id: proj_id,
-            name: "Multi Repo".to_string(),
-            repos: vec![
-                PathBuf::from("/repo1"),
-                PathBuf::from("/repo2"),
-                PathBuf::from("/repo3"),
-            ],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-        };
-
-        let info = shared_project_to_info(shared_proj.clone());
-
-        assert_eq!(info.config.repos.len(), 3);
-        assert_eq!(info.config.repos[0], PathBuf::from("/repo1"));
-        assert_eq!(info.config.repos[1], PathBuf::from("/repo2"));
-        assert_eq!(info.config.repos[2], PathBuf::from("/repo3"));
-    }
-
-    #[test]
-    fn load_projects_from_db_returns_db_project() {
-        let db = test_db();
-        let proj_config = ProjectConfig {
-            name: "DB Project".to_string(),
-            repos: vec![PathBuf::from("/db/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let proj_id = proj_config.deterministic_id();
-        db.insert_project(proj_id, "DB Project", &[PathBuf::from("/db/repo")])
-            .unwrap();
-
-        let projects = load_projects_from_db(&db);
-
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].config.name, "DB Project");
-        assert_eq!(projects[0].id, proj_id);
-    }
-
-    #[test]
-    fn load_projects_from_db_empty_returns_empty() {
-        let db = test_db();
-
-        let projects = load_projects_from_db(&db);
-
-        assert!(projects.is_empty());
-    }
-
-    #[test]
-    fn empty_db_app_has_valid_active_project_index() {
-        let app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
-        // With an empty DB, the project list is empty, but the index should be valid
-        assert!(
-            app.projects.is_empty() || app.active_project_index < app.projects.len(),
-            "active_project_index {} is out of bounds for {} projects",
-            app.active_project_index,
-            app.projects.len()
-        );
-    }
-
-    #[test]
-    fn load_projects_from_db_loads_roles() {
-        let db = test_db();
-        let proj_config = ProjectConfig {
-            name: "Test".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let proj_id = proj_config.deterministic_id();
-        db.insert_project(proj_id, "Test", &[PathBuf::from("/repo")])
-            .unwrap();
-
-        let role = crate::session::RoleConfig {
-            name: "reviewer".to_string(),
-            description: "Code reviewer".to_string(),
-            permissions: crate::session::RolePermissions::default(),
-        };
-        db.replace_roles(proj_id, &[role]).unwrap();
-
-        let projects = load_projects_from_db(&db);
-
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].config.roles.len(), 1);
-        assert_eq!(projects[0].config.roles[0].name, "reviewer");
-    }
-
-    #[test]
     fn app_new_seeds_global_developer_role_when_empty() {
         let db = test_db();
         // Global roles table is empty — App::new() should seed it.
@@ -5704,110 +4709,6 @@ mod tests {
         assert_eq!(reloaded.len(), 1);
         assert_eq!(reloaded[0].name, "developer");
     }
-
-    #[test]
-    fn load_projects_from_db_skips_seeding_project_with_existing_roles() {
-        let db = test_db();
-        let proj_config = ProjectConfig {
-            name: "HasRoles".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let proj_id = proj_config.deterministic_id();
-        db.insert_project(proj_id, "HasRoles", &[PathBuf::from("/repo")])
-            .unwrap();
-        db.replace_roles(
-            proj_id,
-            &[crate::session::RoleConfig {
-                name: "custom".to_string(),
-                description: String::new(),
-                permissions: crate::session::RolePermissions::default(),
-            }],
-        )
-        .unwrap();
-
-        let projects = load_projects_from_db(&db);
-
-        assert_eq!(projects[0].config.roles.len(), 1);
-        assert_eq!(projects[0].config.roles[0].name, "custom");
-    }
-
-    #[test]
-    fn load_projects_from_db_multiple_projects() {
-        let db = test_db();
-
-        let config_a = ProjectConfig {
-            name: "ProjectA".to_string(),
-            repos: vec![PathBuf::from("/a")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let config_b = ProjectConfig {
-            name: "ProjectB".to_string(),
-            repos: vec![PathBuf::from("/b")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        db.insert_project(
-            config_a.deterministic_id(),
-            "ProjectA",
-            &[PathBuf::from("/a")],
-        )
-        .unwrap();
-        db.insert_project(
-            config_b.deterministic_id(),
-            "ProjectB",
-            &[PathBuf::from("/b")],
-        )
-        .unwrap();
-
-        let projects = load_projects_from_db(&db);
-
-        assert_eq!(projects.len(), 2);
-        assert!(projects.iter().any(|p| p.config.name == "ProjectA"));
-        assert!(projects.iter().any(|p| p.config.name == "ProjectB"));
-    }
-
-    #[test]
-    fn save_project_to_db_restores_soft_deleted_project() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let db = test_db();
-        let config = ProjectConfig {
-            name: "TestProject".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let id = config.deterministic_id();
-
-        // Insert then soft-delete to create the PK conflict scenario
-        db.insert_project(id, "TestProject", &[PathBuf::from("/repo")])
-            .unwrap();
-        db.soft_delete_project(id).unwrap();
-        assert!(!db.project_exists(id).unwrap());
-
-        let app = App::new(24, 120, backend, provider, db, None, None);
-
-        // Create a project with the same deterministic ID
-        let project = ProjectInfo::new(config);
-        app.save_project_to_db(&project);
-
-        // The project should be restored and visible
-        assert!(app.db.project_exists(id).unwrap());
-        let projects = app.db.list_active_projects().unwrap();
-        let found = projects.iter().find(|p| p.id == id);
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "TestProject");
-    }
-
-    // --- Global keybinding tests ---
-
     #[test]
     fn ctrl_h_cycles_focus_backward_from_terminal() {
         let mut app = app_with_sessions(1);
@@ -5892,16 +4793,6 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_d_forwards_to_pty_from_terminal() {
-        let mut app = app_with_sessions(1);
-        app.focus = InputFocus::Terminal;
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
-        // Should NOT show delete modal — Ctrl+D is forwarded to PTY
-        assert!(!matches!(app.modal, modals::Modal::DeleteProject(_)));
-        assert_eq!(app.sessions.len(), 1); // session not closed either
-    }
-
-    #[test]
     fn ctrl_r_no_crash_without_sessions() {
         let mut app = app_with_sessions(0);
         app.focus = InputFocus::Terminal;
@@ -5927,7 +4818,7 @@ mod tests {
     #[test]
     fn f1_does_not_activate_during_modal() {
         let mut app = app_with_sessions(0);
-        app.modal = modals::Modal::RepoSelector(modals::RepoSelectorModal::default());
+        app.modal = modals::Modal::RepoPicker(modals::RepoPickerModal::default());
         app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
         assert!(!matches!(app.modal, modals::Modal::Help));
     }
@@ -6005,99 +4896,6 @@ mod tests {
         );
         assert!(app.load_persisted_state_from_db().is_none());
     }
-
-    #[test]
-    fn load_persisted_state_sessions_without_claude_id_returns_none() {
-        let db = test_db();
-        let proj_config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let pid = proj_config.deterministic_id();
-        db.insert_project(pid, "test", &[]).unwrap();
-
-        // Session without agent_session_id — not resumable
-        let session = sync::SharedSession {
-            id: SessionId::default(),
-            name: "1".to_string(),
-            project_id: Some(pid),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        db.upsert_session(&session).unwrap();
-
-        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None, None);
-        assert!(app.load_persisted_state_from_db().is_none());
-    }
-
-    #[test]
-    fn load_persisted_state_filters_to_resumable_only() {
-        let db = test_db();
-        let proj_config = ProjectConfig {
-            name: "test".to_string(),
-            repos: vec![],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let pid = proj_config.deterministic_id();
-        db.insert_project(pid, "test", &[]).unwrap();
-
-        // Non-resumable session
-        let s1 = sync::SharedSession {
-            id: SessionId::default(),
-            name: "1".to_string(),
-            project_id: Some(pid),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        db.upsert_session(&s1).unwrap();
-
-        // Resumable session
-        let s2 = sync::SharedSession {
-            id: SessionId::default(),
-            name: "2".to_string(),
-            project_id: Some(pid),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@1".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: Some("claude-abc".to_string()),
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        db.upsert_session(&s2).unwrap();
-        db.set_session_counter(7).unwrap();
-
-        let app = App::new(24, 80, stub_backend(), stub_provider(), db, None, None);
-        let (sessions, counter) = app.load_persisted_state_from_db().unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "2");
-        assert_eq!(counter, 7);
-    }
-
     #[test]
     fn save_state_roundtrips_sessions() {
         let backend_arc = stub_backend_arc();
@@ -6107,7 +4905,7 @@ mod tests {
             120,
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
-            test_db_with_project(&test_project_config()),
+            test_db(),
             None,
             None,
         );
@@ -6153,7 +4951,7 @@ mod tests {
             120,
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
-            test_db_with_project(&test_project_config()),
+            test_db(),
             None,
             None,
         );
@@ -6175,125 +4973,6 @@ mod tests {
         assert!(!shared.tombstone);
         assert!(shared.tombstone_at.is_none());
     }
-
-    #[test]
-    fn renamed_project_loads_with_roles_from_db() {
-        // DB has a project that was renamed, with roles stored in project_roles table.
-        let db = test_db();
-        let old_config = ProjectConfig {
-            name: "old-name".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let det_id = old_config.deterministic_id();
-
-        // Insert project with old name's ID but renamed
-        db.insert_project(det_id, "renamed-proj", &[PathBuf::from("/repo")])
-            .unwrap();
-
-        // Store roles in DB
-        use crate::session::{RoleConfig, RolePermissions};
-        db.replace_roles(
-            det_id,
-            &[RoleConfig {
-                name: "dev".to_string(),
-                description: String::new(),
-                permissions: RolePermissions::default(),
-            }],
-        )
-        .unwrap();
-
-        let projects = load_projects_from_db(&db);
-        let proj = projects.iter().find(|p| p.id == det_id).unwrap();
-        assert_eq!(proj.config.name, "renamed-proj");
-        assert_eq!(proj.config.roles.len(), 1);
-        assert_eq!(proj.config.roles[0].name, "dev");
-    }
-
-    #[test]
-    fn rename_project_survives_restart_db_only() {
-        // After a rename, the DB is the single source of truth.
-        // On restart, load_projects_from_db returns the renamed project with stable ID.
-        let db = test_db();
-
-        let original_config = ProjectConfig {
-            name: "TestA".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let original_id = original_config.deterministic_id();
-        db.insert_project(original_id, "TestA", &[PathBuf::from("/repo")])
-            .unwrap();
-
-        // Rename in DB
-        db.update_project(original_id, "TestB", &[PathBuf::from("/repo")])
-            .unwrap();
-
-        // Simulate restart: load from DB only
-        let projects = load_projects_from_db(&db);
-
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].config.name, "TestB");
-        assert_eq!(projects[0].id, original_id);
-    }
-
-    #[test]
-    fn rename_project_sessions_survive_restart() {
-        // Simulate: project "TestA" has a session, renamed to "TestB", then restart.
-        // The session should remain associated with the renamed project via stable ID.
-        let db = test_db();
-
-        // Step 1: Insert original project "TestA" into DB
-        let original_config = ProjectConfig {
-            name: "TestA".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let original_id = original_config.deterministic_id();
-        db.insert_project(original_id, "TestA", &[PathBuf::from("/repo")])
-            .unwrap();
-
-        // Step 2: Create a session associated with "TestA"
-        let session_id = SessionId::default();
-        let shared_session = sync::SharedSession {
-            id: session_id,
-            name: "Session 1".to_string(),
-            project_id: Some(original_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: Some("claude-abc".to_string()),
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        db.upsert_session(&shared_session).unwrap();
-
-        // Step 3: Rename in DB
-        db.update_project(original_id, "TestB", &[PathBuf::from("/repo")])
-            .unwrap();
-
-        // Step 4: Simulate restart — load from DB only
-        let projects = load_projects_from_db(&db);
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].id, original_id);
-        assert_eq!(projects[0].config.name, "TestB");
-
-        // Check session still references the correct project
-        let sessions = db.list_active_sessions().unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].project_id, Some(original_id));
-    }
-
     #[test]
     fn session_to_shared_maps_worktree() {
         let backend_arc = stub_backend_arc();
@@ -6303,7 +4982,7 @@ mod tests {
             120,
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
-            test_db_with_project(&test_project_config()),
+            test_db(),
             None,
             None,
         );
@@ -6344,7 +5023,7 @@ mod tests {
             120,
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
-            test_db_with_project(&test_project_config()),
+            test_db(),
             None,
             None,
         );
@@ -6359,212 +5038,6 @@ mod tests {
         assert_eq!(shared.additional_dirs[0], PathBuf::from("/repo2"));
         assert_eq!(shared.additional_dirs[1], PathBuf::from("/repo3"));
     }
-
-    #[test]
-    fn prepare_spawn_prefixes_admin_session_name() {
-        let backend_arc = stub_backend_arc();
-        let provider = stub_provider();
-        let admin_config = ProjectConfig {
-            name: "Admin".to_string(),
-            repos: vec![PathBuf::from("/admin")],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let db = test_db_with_project(&admin_config);
-        // Set up 2 global roles so prepare_spawn triggers role selector
-        db.replace_global_roles(&[
-            RoleConfig {
-                name: "role-a".to_string(),
-                description: String::new(),
-                permissions: RolePermissions::default(),
-            },
-            RoleConfig {
-                name: "role-b".to_string(),
-                description: String::new(),
-                permissions: RolePermissions::default(),
-            },
-        ])
-        .unwrap();
-        let mut app = App::new(
-            24,
-            120,
-            BackendRegistry::new(backend_arc),
-            provider,
-            db,
-            None,
-            None,
-        );
-        app.projects[0].is_admin = true;
-
-        app.prepare_spawn(SessionConfig::default(), Vec::new());
-
-        // With 2+ roles the name is stored in pending_spawn_name
-        let name = app.pending_spawn_name.as_deref().unwrap();
-        assert!(
-            name.starts_with("admin-"),
-            "expected admin- prefix, got: {name}"
-        );
-    }
-
-    #[test]
-    fn cannot_delete_admin_project() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
-
-        // Add an admin project and select it
-        let admin_project = ProjectInfo::new_admin(ProjectConfig {
-            name: "Admin".to_string(),
-            repos: vec![],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        });
-        app.projects.push(admin_project);
-        app.active_project_index = app.projects.len() - 1;
-
-        app.show_delete_project_modal();
-        assert!(!matches!(app.modal, modals::Modal::DeleteProject(_)));
-        assert_eq!(
-            app.status_message.as_ref().map(|m| m.text.as_str()),
-            Some("Cannot delete admin project")
-        );
-    }
-
-    #[test]
-    fn can_close_admin_session() {
-        let backend_arc = stub_backend_arc();
-        let provider = stub_provider();
-        let mut app = App::new(
-            24,
-            120,
-            BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
-            test_db(),
-            None,
-            None,
-        );
-
-        // Add an admin project with a session and select it
-        let admin_project = ProjectInfo::new_admin(ProjectConfig {
-            name: "Admin".to_string(),
-            repos: vec![],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        });
-        let session = Session::stub("admin-1", &backend_arc, &provider);
-        app.sessions.push(session);
-        app.projects.push(admin_project);
-        app.active_project_index = app.projects.len() - 1;
-        app.active_index = 0;
-
-        // Ctrl+D from session list closes admin session
-        app.focus = InputFocus::SessionList;
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
-        assert_eq!(app.sessions.len(), 0); // Session closed
-                                           // No error — status message is the "Deleted ... Ctrl+Z to undo" info
-        assert_ne!(
-            app.status_message.as_ref().map(|m| m.level),
-            Some(StatusLevel::Error)
-        );
-    }
-
-    #[test]
-    fn ensure_admin_project_skips_admin_for_active_selection() {
-        // Create a DB with both the admin project and a user project so that
-        // on startup the admin project is loaded at index 0 (insertion order).
-        let admin_dir = PathBuf::from("/tmp/admin");
-        let admin_config = ProjectConfig {
-            name: "Admin".to_string(),
-            repos: vec![admin_dir.clone()],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let user_config = ProjectConfig {
-            name: "MyProject".to_string(),
-            repos: vec![PathBuf::from("/tmp/repo")],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let db = test_db();
-        let admin_id = admin_config.effective_id();
-        db.insert_project(admin_id, &admin_config.name, &admin_config.repos)
-            .unwrap();
-        let user_id = user_config.effective_id();
-        db.insert_project(user_id, &user_config.name, &user_config.repos)
-            .unwrap();
-
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
-        // App::new sets active_project_index = 0 (admin is at 0 from DB).
-        assert_eq!(app.active_project_index, 0);
-
-        app.ensure_admin_project(&admin_dir);
-
-        // After ensure_admin_project, active selection should skip the admin project.
-        assert!(
-            !app.active_project().unwrap().is_admin,
-            "active project should not be the admin project after ensure_admin_project"
-        );
-        assert_eq!(app.active_project().unwrap().config.name, "MyProject");
-    }
-
-    #[test]
-    fn ensure_admin_project_stays_at_admin_when_only_project() {
-        let admin_dir = PathBuf::from("/tmp/admin");
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
-        assert!(app.projects.is_empty());
-
-        app.ensure_admin_project(&admin_dir);
-
-        // With only the admin project, it must remain selected.
-        assert_eq!(app.active_project_index, 0);
-        assert!(app.active_project().unwrap().is_admin);
-    }
-
-    #[test]
-    fn ensure_admin_project_skips_admin_on_fresh_install_with_user_project() {
-        // User project already in DB, admin not yet created.
-        let user_config = ProjectConfig {
-            name: "MyProject".to_string(),
-            repos: vec![PathBuf::from("/tmp/repo")],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let db = test_db_with_project(&user_config);
-
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
-        let admin_dir = PathBuf::from("/tmp/admin");
-        app.ensure_admin_project(&admin_dir);
-
-        // Admin inserted at 0, user project pushed to 1, selection should follow.
-        assert!(
-            !app.active_project().unwrap().is_admin,
-            "active project should not be admin after fresh admin setup"
-        );
-        assert_eq!(app.active_project().unwrap().config.name, "MyProject");
-    }
-
-    // --- StatusMessage / set_error / set_status tests ---
-
     #[test]
     fn set_error_creates_error_status() {
         let mut app = App::new(
@@ -6991,99 +5464,10 @@ mod tests {
         assert_eq!(app.worktree_sync_completed.len(), 1);
     }
 
-    // --- find_project_index_for_session tests ---
-
-    #[test]
-    fn find_project_index_finds_matching_project() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let config_b = ProjectConfig {
-            name: "Other".to_string(),
-            repos: vec![PathBuf::from("/other")],
-            ..test_project_config()
-        };
-        let mut app = App::new(24, 120, backend, provider, test_db(), None, None);
-        app.projects.push(ProjectInfo::new(test_project_config()));
-        let project_b = ProjectInfo::new(config_b);
-        let id_b = project_b.id;
-        app.projects.push(project_b);
-        app.active_project_index = 0;
-
-        let index = app.find_project_index_for_session(SessionId::default(), Some(&id_b));
-        assert_eq!(index, 1);
-    }
-
-    #[test]
-    fn find_project_index_falls_back_to_active_project() {
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db(), None, None);
-        app.projects.push(ProjectInfo::new(test_project_config()));
-        app.active_project_index = 0;
-
-        let index =
-            app.find_project_index_for_session(SessionId::default(), Some(&ProjectId::default()));
-        assert_eq!(index, 0);
-    }
-
-    // --- resolve_role_permissions_for_project tests ---
-
-    #[test]
-    fn resolve_role_permissions_uses_global_roles() {
-        use crate::session::{RoleConfig, RolePermissions};
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let db = test_db();
-        db.replace_global_roles(&[RoleConfig {
-            name: "reviewer".to_string(),
-            description: String::new(),
-            permissions: RolePermissions {
-                permission_mode: Some("plan".to_string()),
-                ..RolePermissions::default()
-            },
-        }])
-        .unwrap();
-        let mut app = App::new(24, 120, backend, provider, db, None, None);
-        app.projects.push(ProjectInfo::new(test_project_config()));
-        app.active_project_index = 0;
-
-        // Global role "reviewer" is resolved regardless of project index
-        let perms = app.resolve_role_permissions_for_project("reviewer", 0);
-        assert_eq!(perms.permission_mode, Some("plan".to_string()));
-
-        // Non-existent role returns default permissions
-        let perms = app.resolve_role_permissions_for_project("nonexistent", 0);
-        assert_eq!(perms, RolePermissions::default());
-    }
-
-    #[test]
-    fn resolve_role_permissions_returns_default_for_missing_role() {
-        use crate::session::RolePermissions;
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let mut app = App::new(24, 120, backend, provider, test_db(), None, None);
-        app.projects.push(ProjectInfo::new(test_project_config()));
-        app.active_project_index = 0;
-
-        let perms = app.resolve_role_permissions_for_project("nonexistent", 0);
-        assert_eq!(perms, RolePermissions::default());
-    }
-
-    #[test]
-    fn resolve_role_permissions_returns_default_for_invalid_index() {
-        use crate::session::RolePermissions;
-        let backend = stub_backend();
-        let provider = stub_provider();
-        let app = App::new(24, 120, backend, provider, test_db(), None, None);
-
-        let perms = app.resolve_role_permissions_for_project("any-role", 999);
-        assert_eq!(perms, RolePermissions::default());
-    }
-
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 30);
+        assert_eq!(perms.allowed_tools.len(), 22);
         assert!(perms
             .allowed_tools
             .iter()
@@ -7092,26 +5476,6 @@ mod tests {
         assert!(perms.disallowed_tools.is_empty());
         assert!(perms.append_system_prompt.is_some());
     }
-
-    #[test]
-    fn resolve_role_permissions_returns_admin_tools_for_admin_project() {
-        let backend = stub_backend();
-        let mut app = App::new(24, 120, backend, stub_provider(), test_db(), None, None);
-        let admin_project = ProjectInfo::new_admin(ProjectConfig {
-            name: "Admin".to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        });
-        app.projects.push(admin_project);
-
-        let perms = app.resolve_role_permissions_for_project("developer", 0);
-        assert_eq!(perms, super::admin_mcp_permissions());
-    }
-
-    // --- format_time_ago tests ---
-
     #[test]
     fn format_time_ago_seconds() {
         let now = crate::sync::current_time_millis();
@@ -7217,7 +5581,6 @@ mod tests {
         sync::SharedSession {
             id: crate::session::SessionId::default(),
             name: name.to_string(),
-            project_id: Some(crate::project::ProjectId::from_uuid(uuid::Uuid::nil())),
             role: String::new(),
             backend_id: backend_id.to_string(),
             backend_type: "tmux".to_string(),
@@ -7290,604 +5653,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // =========================================================================
-    // Phase 5: State transition tests
-    // =========================================================================
-
-    /// Create an App with a single project "test-project" and no sessions.
-    /// Convenience wrapper used by Phase 5 tests.
-    fn make_test_app() -> App {
-        let config = ProjectConfig {
-            name: "test-project".to_string(),
-            repos: vec![PathBuf::from("/tmp/test-repo")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db_with_project(&config),
-            None,
-            None,
-        )
-    }
-
-    // --- 5a. Modal flow tests ---
-
-    #[test]
-    fn f1_opens_help() {
-        let mut app = make_test_app();
-        assert!(!matches!(app.modal, modals::Modal::Help));
-        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
-        assert!(matches!(app.modal, modals::Modal::Help));
-    }
-
-    #[test]
-    fn esc_closes_help() {
-        let mut app = make_test_app();
-        app.modal = modals::Modal::Help;
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!matches!(app.modal, modals::Modal::Help));
-    }
-
-    #[test]
-    fn f1_toggles_help() {
-        let mut app = make_test_app();
-        // F1 opens help
-        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
-        assert!(matches!(app.modal, modals::Modal::Help));
-        // F1 again closes help
-        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
-        assert!(!matches!(app.modal, modals::Modal::Help));
-    }
-
-    #[test]
-    fn ctrl_n_opens_repo_picker() {
-        let mut app = make_test_app();
-        app.focus = InputFocus::SessionList;
-        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL);
-        // Ctrl+N now always opens repo picker (not add project modal)
-        assert!(matches!(app.modal, modals::Modal::RepoPicker(_)));
-    }
-
-    #[test]
-    fn esc_closes_add_project_modal() {
-        let mut app = make_test_app();
-        app.modal = modals::Modal::AddProject(modals::AddProjectModal::default());
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!app.is_add_project_open());
-    }
-
-    #[test]
-    fn opening_new_modal_after_closing_previous() {
-        let mut app = make_test_app();
-        // Open help first
-        app.modal = modals::Modal::Help;
-        // Close help
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!matches!(app.modal, modals::Modal::Help));
-        // Now open repo picker via Ctrl+N
-        app.focus = InputFocus::SessionList;
-        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL);
-        assert!(matches!(app.modal, modals::Modal::RepoPicker(_)));
-    }
-
-    #[test]
-    fn help_modal_blocks_other_keys() {
-        let mut app = make_test_app();
-        app.modal = modals::Modal::Help;
-        let focus_before = app.focus;
-        // Ctrl+H should not change focus while help is open
-        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(app.focus, focus_before);
-        assert!(matches!(app.modal, modals::Modal::Help));
-    }
-
-    #[test]
-    fn esc_closes_delete_project_modal() {
-        let mut app = make_test_app();
-        app.projects.push(ProjectInfo {
-            id: ProjectId::default(),
-            config: ProjectConfig {
-                name: "Extra".into(),
-                repos: vec![PathBuf::from("/tmp/extra")],
-                roles: vec![],
-                mcp_servers: vec![],
-                id: None,
-            },
-            is_admin: false,
-        });
-        app.active_project_index = 1;
-        // Open delete modal directly (no longer triggered by Ctrl+D keybinding)
-        app.show_delete_project_modal();
-        assert!(matches!(app.modal, modals::Modal::DeleteProject(_)));
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!matches!(app.modal, modals::Modal::DeleteProject(_)));
-    }
-
-    #[test]
-    fn ctrl_u_opens_restore_sessions_modal() {
-        let mut app = make_test_app();
-        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
-        // The modal opens only if there are deleted sessions;
-        // with no deleted sessions the DB query returns empty list,
-        // so the modal opens with an empty list.
-        assert!(matches!(app.modal, modals::Modal::RestoreSessions(_)));
-    }
-
-    #[test]
-    fn esc_closes_restore_sessions_modal() {
-        let mut app = make_test_app();
-        app.modal = modals::Modal::RestoreSessions(modals::RestoreSessionsModal::default());
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!matches!(app.modal, modals::Modal::RestoreSessions(_)));
-    }
-
-    #[test]
-    fn add_project_modal_blocks_global_keys() {
-        let mut app = make_test_app();
-        app.modal = modals::Modal::AddProject(modals::AddProjectModal::default());
-        let focus_before = app.focus;
-        // Ctrl+Q should NOT quit while add-project modal is open
-        app.handle_key(KeyCode::Char('q'), KeyModifiers::CONTROL);
-        assert!(!app.should_quit);
-        assert_eq!(app.focus, focus_before);
-    }
-
-    // --- 5b. Focus management tests ---
-
-    #[test]
-    fn enter_in_session_list_focuses_terminal() {
-        let mut app = make_test_app();
-        app.focus = InputFocus::SessionList;
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.focus, InputFocus::Terminal);
-    }
-
-    #[test]
-    fn ctrl_q_sets_should_quit() {
-        let mut app = make_test_app();
-        app.handle_key(KeyCode::Char('q'), KeyModifiers::CONTROL);
-        assert!(app.should_quit);
-    }
-
-    #[test]
-    fn ctrl_l_cycles_focus_back_to_session_list() {
-        let mut app = app_with_sessions(1);
-        app.focus = InputFocus::Terminal;
-        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        assert_eq!(app.focus, InputFocus::SessionList);
-    }
-
-    #[test]
-    fn ctrl_h_cycles_focus_backward() {
-        let mut app = app_with_sessions(1);
-        // Terminal → SessionList
-        app.focus = InputFocus::Terminal;
-        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(
-            app.focus,
-            InputFocus::SessionList,
-            "Terminal should cycle to SessionList"
-        );
-        // SessionList → Terminal (toggle)
-        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(
-            app.focus,
-            InputFocus::Terminal,
-            "SessionList should toggle to Terminal"
-        );
-    }
-
-    // --- 5c. Tick behavior tests ---
-
-    #[test]
-    fn status_message_persists_within_timeout() {
-        let mut app = make_test_app();
-        app.set_info("test message");
-        assert!(app.status_message.is_some());
-        app.tick();
-        // Should still be there (just created, no auto-expire in tick)
-        assert!(app.status_message.is_some());
-    }
-
-    #[test]
-    fn status_message_expires_after_timeout() {
-        let mut app = make_test_app();
-        app.status_message = Some(StatusMessage {
-            text: "old message".into(),
-            level: StatusLevel::Info,
-            created_at: std::time::Instant::now() - STATUS_MESSAGE_TIMEOUT,
-        });
-        app.tick();
-        assert!(app.status_message.is_none());
-    }
-
-    #[test]
-    fn multiple_ticks_accumulate() {
-        let mut app = make_test_app();
-        let initial = app.tick_count;
-        app.tick();
-        app.tick();
-        app.tick();
-        assert_eq!(app.tick_count, initial + 3);
-    }
-
-    #[test]
-    fn tick_count_starts_at_zero() {
-        let app = make_test_app();
-        assert_eq!(app.tick_count, 0);
-    }
-
-    #[test]
-    fn tick_wraps_on_overflow() {
-        let mut app = make_test_app();
-        app.tick_count = u64::MAX;
-        app.tick();
-        // wrapping_add(1) from MAX wraps to 0
-        assert_eq!(app.tick_count, 0);
-    }
-
-    #[test]
-    fn set_info_replaces_previous_status() {
-        let mut app = make_test_app();
-        app.set_info("first");
-        app.set_info("second");
-        let msg = app.status_message.as_ref().unwrap();
-        assert_eq!(msg.text, "second");
-        assert_eq!(msg.level, StatusLevel::Info);
-    }
-
-    // --- 5d. External sync delta tests ---
-
-    #[test]
-    fn external_project_added_appears_in_list() {
-        let mut app = make_test_app();
-        let initial_count = app.projects.len();
-        let delta = StateDelta {
-            added_projects: vec![sync::SharedProject {
-                id: ProjectId::from_uuid(uuid::Uuid::new_v4()),
-                name: "external-project".to_string(),
-                repos: vec![PathBuf::from("/tmp/ext")],
-                roles: vec![],
-                mcp_servers: vec![],
-            }],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        assert_eq!(app.projects.len(), initial_count + 1);
-        assert!(app
-            .projects
-            .iter()
-            .any(|p| p.config.name == "external-project"));
-    }
-
-    #[test]
-    fn external_project_removed_disappears() {
-        let mut app = make_test_app();
-        let project_id = app.projects[0].id;
-        let delta = StateDelta {
-            removed_projects: vec![project_id],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        assert!(!app.projects.iter().any(|p| p.id == project_id));
-    }
-
-    #[test]
-    fn external_project_update_modifies_name() {
-        let mut app = make_test_app();
-        let project_id = app.projects[0].id;
-        let delta = StateDelta {
-            updated_projects: vec![sync::SharedProject {
-                id: project_id,
-                name: "renamed-project".to_string(),
-                repos: vec![PathBuf::from("/tmp/repo")],
-                roles: vec![],
-                mcp_servers: vec![],
-            }],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        assert_eq!(
-            app.projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .unwrap()
-                .config
-                .name,
-            "renamed-project"
-        );
-    }
-
-    #[test]
-    fn active_project_index_adjusts_on_removal() {
-        let mut app = make_test_app();
-        // Add a second project
-        let config2 = ProjectConfig {
-            name: "second".to_string(),
-            repos: vec![PathBuf::from("/tmp/second")],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        let info2 = ProjectInfo::new(config2);
-        app.projects.push(info2);
-        app.active_project_index = 1; // Select second project
-
-        // Remove first project
-        let first_id = app.projects[0].id;
-        let delta = StateDelta {
-            removed_projects: vec![first_id],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-
-        // Active index should be valid
-        assert!(app.active_project_index < app.projects.len());
-    }
-
-    #[test]
-    fn duplicate_external_project_add_ignored() {
-        let mut app = make_test_app();
-        let project_id = app.projects[0].id;
-        let initial_count = app.projects.len();
-        let delta = StateDelta {
-            added_projects: vec![sync::SharedProject {
-                id: project_id, // Same ID as existing
-                name: "duplicate".to_string(),
-                repos: vec![],
-                roles: vec![],
-                mcp_servers: vec![],
-            }],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        assert_eq!(app.projects.len(), initial_count); // No duplicates
-    }
-
-    #[test]
-    fn external_project_removal_with_empty_list_stays_at_zero() {
-        let mut app = make_test_app();
-        let project_id = app.projects[0].id;
-        app.active_project_index = 0;
-        let delta = StateDelta {
-            removed_projects: vec![project_id],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        // With 0 projects, active_project_index should be 0 (saturating_sub(1))
-        assert_eq!(app.active_project_index, 0);
-    }
-
-    #[test]
-    fn external_update_preserves_project_count() {
-        let mut app = make_test_app();
-        let initial_count = app.projects.len();
-        let project_id = app.projects[0].id;
-        let delta = StateDelta {
-            updated_projects: vec![sync::SharedProject {
-                id: project_id,
-                name: "updated-name".to_string(),
-                repos: vec![PathBuf::from("/tmp/new-repo")],
-                roles: vec![],
-                mcp_servers: vec![],
-            }],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        assert_eq!(app.projects.len(), initial_count);
-    }
-
-    #[test]
-    fn external_update_for_nonexistent_project_is_noop() {
-        let mut app = make_test_app();
-        let initial_count = app.projects.len();
-        let fake_id = ProjectId::from_uuid(uuid::Uuid::new_v4());
-        let delta = StateDelta {
-            updated_projects: vec![sync::SharedProject {
-                id: fake_id,
-                name: "ghost".to_string(),
-                repos: vec![],
-                roles: vec![],
-                mcp_servers: vec![],
-            }],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        // No project was added or removed
-        assert_eq!(app.projects.len(), initial_count);
-    }
-
-    #[test]
-    fn external_removal_of_nonexistent_project_is_noop() {
-        let mut app = make_test_app();
-        let initial_count = app.projects.len();
-        let fake_id = ProjectId::from_uuid(uuid::Uuid::new_v4());
-        let delta = StateDelta {
-            removed_projects: vec![fake_id],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        assert_eq!(app.projects.len(), initial_count);
-    }
-
-    #[test]
-    fn external_delta_counter_increment_merges_with_max() {
-        let mut app = make_test_app();
-        app.session_counter = 5;
-        let delta = StateDelta {
-            counter_increment: 10,
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-        assert_eq!(app.session_counter, 10);
-
-        // If local is higher, it stays
-        let delta2 = StateDelta {
-            counter_increment: 3,
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta2));
-        assert_eq!(app.session_counter, 10);
-    }
-
-    // --- Project switching with empty projects ---
-
-    /// Helper: create an app with two projects, only the first has sessions.
-    fn app_with_two_projects(sessions_in_first: usize) -> App {
-        let backend_arc = stub_backend_arc();
-        let provider = stub_provider();
-        let config_a = ProjectConfig {
-            name: "ProjectA".to_string(),
-            repos: vec![PathBuf::from("/repo-a")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        let db = test_db_with_project(&config_a);
-        let mut app = App::new(
-            24,
-            120,
-            BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
-            db,
-            None,
-            None,
-        );
-        // Add sessions to first project
-        for _ in 0..sessions_in_first {
-            let session = Session::stub("test-session", &backend_arc, &provider);
-            app.sessions.push(session);
-        }
-        if !app.sessions.is_empty() {
-            app.active_index = 0;
-        }
-        // Add a second project with no sessions
-        let config_b = ProjectConfig {
-            name: "ProjectB".to_string(),
-            repos: vec![PathBuf::from("/repo-b")],
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            id: None,
-        };
-        app.projects.push(ProjectInfo::new(config_b));
-        app
-    }
-
-    #[test]
-    fn sync_active_session_preserves_valid_index() {
-        let mut app = app_with_two_projects(2);
-        app.active_index = 0;
-        app.sync_active_session_to_project();
-        // With sessions present, a valid index stays valid
-        assert!(app.has_active_session());
-        assert_eq!(app.active_index, 0);
-    }
-
-    #[test]
-    fn sync_active_session_clamps_index() {
-        let mut app = app_with_two_projects(2);
-        app.active_index = 100; // out of bounds
-        app.sync_active_session_to_project();
-        assert!(app.has_active_session());
-        assert_eq!(app.active_index, app.sessions.len() - 1);
-    }
-
-    #[test]
-    fn delete_project_syncs_active_session() {
-        // Start with one project, then add a second with no sessions
-        let mut app = app_with_two_projects(1);
-
-        // Find which index is ProjectB (empty — no sessions)
-        let idx_b = app
-            .projects
-            .iter()
-            .position(|p| p.config.name == "ProjectB")
-            .unwrap();
-
-        // Delete the empty project and verify active_index syncs to ProjectA
-        app.active_project_index = idx_b;
-        app.modal = modals::Modal::DeleteProject(modals::DeleteProjectModal {
-            project_name: "ProjectB".to_string(),
-            confirmation: {
-                let mut input = modals::TextInput::new();
-                for c in "ProjectB".chars() {
-                    input.insert(c);
-                }
-                input
-            },
-            error: None,
-        });
-        app.delete_active_project();
-
-        // After deletion, only ProjectA remains, and its session is active
-        assert_eq!(app.projects.len(), 1);
-        assert_eq!(app.projects[0].config.name, "ProjectA");
-        assert!(app.has_active_session());
-    }
-
-    #[test]
-    fn switch_session_forward_wraps_around() {
-        let mut app = app_with_two_projects(2);
-        app.active_index = app.sessions.len() - 1;
-        app.switch_session_forward();
-        assert_eq!(app.active_index, 0);
-    }
-
-    #[test]
-    fn external_session_removal_syncs_to_active_project() {
-        let mut app = app_with_two_projects(1);
-        app.active_project_index = 0;
-        app.active_index = 0;
-        let session_id = app.sessions[0].info.id;
-
-        // Externally remove the only session
-        let delta = StateDelta {
-            removed_sessions: vec![session_id],
-            ..StateDelta::default()
-        };
-        app.update(AppMessage::ExternalStateChange(delta));
-
-        // active_index should be invalidated (no sessions left in project)
-        assert!(!app.has_active_session());
-    }
-
-    #[test]
-    fn close_active_session_invalidates_when_deleting_last_in_project() {
-        let mut app = app_with_two_projects(1);
-        // Start on first project with one session
-        app.active_project_index = 0;
-        app.active_index = 0;
-        assert!(app.has_active_session());
-
-        // Delete the only session in the project
-        app.close_active_session();
-
-        // After deletion, active_index should be invalidated (no active session)
-        assert!(!app.has_active_session());
-        // Project should still exist
-    }
-
-    #[test]
-    fn close_active_session_focuses_first_remaining_when_multiple_exist() {
-        let mut app = app_with_two_projects(2);
-        // Start on first project with two sessions, active on second
-        app.active_project_index = 0;
-        app.active_index = 1; // Second session in global list
-        assert!(app.has_active_session());
-        let first_session_id = app.sessions[0].info.id;
-
-        // Delete the active session
-        app.close_active_session();
-
-        // Active session should shift to the remaining one
-        assert!(app.has_active_session());
-        assert_eq!(app.sessions[app.active_index].info.id, first_session_id);
-    }
+    // --- Modal flow tests ---
 
     #[test]
     fn handle_paste_clears_selection() {

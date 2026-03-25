@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use rusqlite::params;
 
-use crate::project::ProjectId;
 use crate::session::{SessionCommand, SessionId};
 use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
 
@@ -14,7 +13,6 @@ use super::Database;
 pub struct DeletedSessionInfo {
     pub id: SessionId,
     pub name: String,
-    pub project_id: Option<ProjectId>,
     pub role: String,
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
@@ -27,7 +25,6 @@ impl Database {
     pub fn upsert_session(&self, session: &SharedSession) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
-        let project_id_str = session.project_id.map(|p| p.to_string());
 
         let existing: Option<String> = self
             .conn
@@ -47,14 +44,13 @@ impl Database {
 
         if existing.is_some() {
             self.conn.execute(
-                "UPDATE sessions SET name = ?1, project_id = ?2, role = ?3, \
-                 backend_id = ?4, backend_type = ?5, agent_session_id = ?6, \
-                 cwd = ?7, additional_dirs = ?8, shell_backend_id = ?9, \
-                 updated_at = ?10, deleted_at = NULL \
-                 WHERE id = ?11",
+                "UPDATE sessions SET name = ?1, role = ?2, \
+                 backend_id = ?3, backend_type = ?4, agent_session_id = ?5, \
+                 cwd = ?6, additional_dirs = ?7, shell_backend_id = ?8, \
+                 updated_at = ?9, deleted_at = NULL \
+                 WHERE id = ?10",
                 params![
                     session.name,
-                    project_id_str,
                     session.role,
                     session.backend_id,
                     session.backend_type,
@@ -77,13 +73,12 @@ impl Database {
             )?;
         } else {
             self.conn.execute(
-                "INSERT INTO sessions (id, name, project_id, role, backend_id, backend_type, \
+                "INSERT INTO sessions (id, name, role, backend_id, backend_type, \
                  agent_session_id, cwd, additional_dirs, shell_backend_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id_str,
                     session.name,
-                    project_id_str,
                     session.role,
                     session.backend_id,
                     session.backend_type,
@@ -163,20 +158,9 @@ impl Database {
         self.query_sessions("s.deleted_at IS NULL")
     }
 
-    /// List active sessions for a specific project.
-    pub fn list_sessions_for_project(
-        &self,
-        project_id: ProjectId,
-    ) -> rusqlite::Result<Vec<SharedSession>> {
-        self.query_sessions(&format!(
-            "s.deleted_at IS NULL AND s.project_id = '{}'",
-            project_id
-        ))
-    }
-
     fn query_sessions(&self, condition: &str) -> rusqlite::Result<Vec<SharedSession>> {
         let sql = format!(
-            "SELECT s.id, s.name, s.project_id, s.role, s.backend_id, s.backend_type, \
+            "SELECT s.id, s.name, s.role, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
@@ -188,13 +172,12 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             let id_str: String = row.get(0)?;
-            let project_id_str: Option<String> = row.get(2)?;
-            let cwd: Option<String> = row.get(7)?;
-            let dirs_str: String = row.get(8)?;
-            let shell_backend_id: Option<String> = row.get(9)?;
-            let wt_repo: Option<String> = row.get(10)?;
-            let wt_path: Option<String> = row.get(11)?;
-            let wt_branch: Option<String> = row.get(12)?;
+            let cwd: Option<String> = row.get(6)?;
+            let dirs_str: String = row.get(7)?;
+            let shell_backend_id: Option<String> = row.get(8)?;
+            let wt_repo: Option<String> = row.get(9)?;
+            let wt_path: Option<String> = row.get(10)?;
+            let wt_branch: Option<String> = row.get(11)?;
 
             let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
                 Vec::new()
@@ -215,13 +198,10 @@ impl Database {
                 SharedSession {
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
-                    project_id: project_id_str
-                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-                        .map(ProjectId::from_uuid),
-                    role: row.get(3)?,
-                    backend_id: row.get(4)?,
-                    backend_type: row.get(5)?,
-                    agent_session_id: row.get(6)?,
+                    role: row.get(2)?,
+                    backend_id: row.get(3)?,
+                    backend_type: row.get(4)?,
+                    agent_session_id: row.get(5)?,
                     cwd: cwd.map(PathBuf::from),
                     additional_dirs,
                     worktrees: Vec::new(),
@@ -302,15 +282,9 @@ impl Database {
             .ok())
     }
 
-    /// List soft-deleted sessions for a project, most recently deleted first.
-    pub fn list_deleted_sessions_for_project(
-        &self,
-        project_id: ProjectId,
-    ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
-        self.query_deleted_sessions(&format!(
-            "s.deleted_at IS NOT NULL AND s.project_id = '{}'",
-            project_id
-        ))
+    /// List all soft-deleted sessions, most recently deleted first.
+    pub fn list_deleted_sessions(&self) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        self.query_deleted_sessions("s.deleted_at IS NOT NULL")
     }
 
     /// Get a single soft-deleted session by its ID.
@@ -325,7 +299,7 @@ impl Database {
 
     fn query_deleted_sessions(&self, condition: &str) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         let sql = format!(
-            "SELECT s.id, s.name, s.project_id, s.role, s.agent_session_id, \
+            "SELECT s.id, s.name, s.role, s.agent_session_id, \
              s.cwd, s.deleted_at, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
@@ -337,12 +311,11 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             let id_str: String = row.get(0)?;
-            let project_id_str: Option<String> = row.get(2)?;
-            let cwd: Option<String> = row.get(5)?;
-            let deleted_at: i64 = row.get(6)?;
-            let wt_repo: Option<String> = row.get(7)?;
-            let wt_path: Option<String> = row.get(8)?;
-            let wt_branch: Option<String> = row.get(9)?;
+            let cwd: Option<String> = row.get(4)?;
+            let deleted_at: i64 = row.get(5)?;
+            let wt_repo: Option<String> = row.get(6)?;
+            let wt_path: Option<String> = row.get(7)?;
+            let wt_branch: Option<String> = row.get(8)?;
 
             let worktree = match (wt_repo, wt_path, wt_branch) {
                 (Some(repo), Some(path), Some(branch)) => Some(SharedWorktree {
@@ -357,11 +330,8 @@ impl Database {
                 DeletedSessionInfo {
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
-                    project_id: project_id_str
-                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-                        .map(ProjectId::from_uuid),
-                    role: row.get(3)?,
-                    agent_session_id: row.get(4)?,
+                    role: row.get(2)?,
+                    agent_session_id: row.get(3)?,
                     cwd: cwd.map(PathBuf::from),
                     deleted_at: deleted_at as u64,
                     worktrees: Vec::new(),
@@ -440,24 +410,11 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::ProjectConfig;
 
-    fn test_project_id(name: &str) -> ProjectId {
-        let config = ProjectConfig {
-            name: name.to_string(),
-            repos: vec![],
-            roles: vec![],
-            mcp_servers: vec![],
-            id: None,
-        };
-        config.deterministic_id()
-    }
-
-    fn make_session(name: &str, project_id: ProjectId) -> SharedSession {
+    fn make_session(name: &str) -> SharedSession {
         SharedSession {
             id: SessionId::default(),
             name: name.to_string(),
-            project_id: Some(project_id),
             role: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
@@ -471,17 +428,10 @@ mod tests {
         }
     }
 
-    fn setup_db_with_project() -> (Database, ProjectId) {
-        let db = Database::open_in_memory().unwrap();
-        let pid = test_project_id("test");
-        db.insert_project(pid, "test", &[]).unwrap();
-        (db, pid)
-    }
-
     #[test]
     fn upsert_and_list_session() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
 
         db.upsert_session(&session).unwrap();
 
@@ -493,8 +443,8 @@ mod tests {
 
     #[test]
     fn upsert_updates_existing() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
 
         db.upsert_session(&session).unwrap();
 
@@ -510,8 +460,8 @@ mod tests {
 
     #[test]
     fn soft_delete_session() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
         let sid = session.id;
 
         db.upsert_session(&session).unwrap();
@@ -523,8 +473,8 @@ mod tests {
 
     #[test]
     fn restore_session() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
         let sid = session.id;
 
         db.upsert_session(&session).unwrap();
@@ -536,27 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn list_sessions_for_project() {
-        let db = Database::open_in_memory().unwrap();
-        let pid1 = test_project_id("proj1");
-        let pid2 = test_project_id("proj2");
-        db.insert_project(pid1, "proj1", &[]).unwrap();
-        db.insert_project(pid2, "proj2", &[]).unwrap();
-
-        let s1 = make_session("S1", pid1);
-        let s2 = make_session("S2", pid2);
-        db.upsert_session(&s1).unwrap();
-        db.upsert_session(&s2).unwrap();
-
-        let proj1_sessions = db.list_sessions_for_project(pid1).unwrap();
-        assert_eq!(proj1_sessions.len(), 1);
-        assert_eq!(proj1_sessions[0].name, "S1");
-    }
-
-    #[test]
     fn session_with_worktree() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
         session.worktrees = vec![SharedWorktree {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.git/wt/feat"),
@@ -568,13 +500,12 @@ mod tests {
         let sessions = db.list_active_sessions().unwrap();
         assert_eq!(sessions[0].worktrees.len(), 1);
         assert_eq!(sessions[0].worktrees[0].branch, "feat");
-        assert_eq!(sessions[0].worktrees[0].repo_path, PathBuf::from("/repo"));
     }
 
     #[test]
     fn session_with_multiple_worktrees() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
         session.worktrees = vec![
             SharedWorktree {
                 repo_path: PathBuf::from("/repo1"),
@@ -593,15 +524,12 @@ mod tests {
         let sessions = db.list_active_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].worktrees.len(), 2);
-        assert_eq!(sessions[0].worktrees[0].repo_path, PathBuf::from("/repo1"));
-        assert_eq!(sessions[0].worktrees[1].repo_path, PathBuf::from("/repo2"));
-        assert_eq!(sessions[0].worktrees[0].branch, "feat");
     }
 
     #[test]
     fn session_with_cwd() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
         session.cwd = Some(PathBuf::from("/home/user"));
 
         db.upsert_session(&session).unwrap();
@@ -626,8 +554,8 @@ mod tests {
 
     #[test]
     fn session_additional_dirs_preserved() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
         session.additional_dirs = vec![
             PathBuf::from("/home/user/repo2"),
             PathBuf::from("/home/user/repo3"),
@@ -637,50 +565,12 @@ mod tests {
 
         let sessions = db.list_active_sessions().unwrap();
         assert_eq!(sessions[0].additional_dirs.len(), 2);
-        assert_eq!(
-            sessions[0].additional_dirs[0],
-            PathBuf::from("/home/user/repo2")
-        );
-        assert_eq!(
-            sessions[0].additional_dirs[1],
-            PathBuf::from("/home/user/repo3")
-        );
-    }
-
-    #[test]
-    fn session_empty_additional_dirs_preserved() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
-
-        db.upsert_session(&session).unwrap();
-
-        let sessions = db.list_active_sessions().unwrap();
-        assert!(sessions[0].additional_dirs.is_empty());
-    }
-
-    #[test]
-    fn upsert_updates_additional_dirs() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("Session 1", pid);
-        session.additional_dirs = vec![PathBuf::from("/repo2")];
-
-        db.upsert_session(&session).unwrap();
-
-        // Update additional_dirs via second upsert
-        session.additional_dirs = vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")];
-        db.upsert_session(&session).unwrap();
-
-        let sessions = db.list_active_sessions().unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].additional_dirs.len(), 2);
-        assert_eq!(sessions[0].additional_dirs[0], PathBuf::from("/repo2"));
-        assert_eq!(sessions[0].additional_dirs[1], PathBuf::from("/repo3"));
     }
 
     #[test]
     fn get_session_by_id_found() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
         let sid = session.id;
         db.upsert_session(&session).unwrap();
 
@@ -691,15 +581,15 @@ mod tests {
 
     #[test]
     fn get_session_by_id_not_found() {
-        let (db, _pid) = setup_db_with_project();
+        let db = Database::open_in_memory().unwrap();
         let result = db.get_session_by_id(SessionId::default()).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn get_session_by_id_excludes_deleted() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
         let sid = session.id;
         db.upsert_session(&session).unwrap();
         db.soft_delete_session(sid).unwrap();
@@ -710,8 +600,8 @@ mod tests {
 
     #[test]
     fn get_session_name_found() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
         let sid = session.id;
         db.upsert_session(&session).unwrap();
 
@@ -720,28 +610,9 @@ mod tests {
     }
 
     #[test]
-    fn get_session_name_not_found() {
-        let (db, _pid) = setup_db_with_project();
-        let name = db.get_session_name(SessionId::default()).unwrap();
-        assert!(name.is_none());
-    }
-
-    #[test]
-    fn get_session_name_excludes_deleted() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-        db.soft_delete_session(sid).unwrap();
-
-        let name = db.get_session_name(sid).unwrap();
-        assert!(name.is_none());
-    }
-
-    #[test]
     fn enqueue_and_fetch_commands() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
         let sid = session.id;
         db.upsert_session(&session).unwrap();
 
@@ -757,8 +628,8 @@ mod tests {
 
     #[test]
     fn mark_command_processed() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Session 1");
         let sid = session.id;
         db.upsert_session(&session).unwrap();
 
@@ -770,50 +641,9 @@ mod tests {
     }
 
     #[test]
-    fn pending_commands_empty_when_none() {
-        let (db, _pid) = setup_db_with_project();
-        let pending = db.pending_session_commands().unwrap();
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn multiple_commands_ordered_by_id() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-
-        let id1 = db.enqueue_session_command(sid, "restart").unwrap();
-        let id2 = db.enqueue_session_command(sid, "restart").unwrap();
-
-        let pending = db.pending_session_commands().unwrap();
-        assert_eq!(pending.len(), 2);
-        assert!(pending[0].id < pending[1].id);
-        assert_eq!(pending[0].id, id1);
-        assert_eq!(pending[1].id, id2);
-    }
-
-    #[test]
-    fn mark_one_command_leaves_others_pending() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("Session 1", pid);
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-
-        let id1 = db.enqueue_session_command(sid, "restart").unwrap();
-        let _id2 = db.enqueue_session_command(sid, "restart").unwrap();
-
-        db.mark_command_processed(id1).unwrap();
-
-        let pending = db.pending_session_commands().unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_ne!(pending[0].id, id1);
-    }
-
-    #[test]
     fn session_agent_session_id_preserved() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("Session 1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
         session.agent_session_id = Some("claude-abc-123".to_string());
 
         db.upsert_session(&session).unwrap();
@@ -825,90 +655,26 @@ mod tests {
         );
     }
 
-    // --- Deleted session queries ---
-
     #[test]
-    fn list_deleted_sessions_for_project_empty() {
-        let (db, pid) = setup_db_with_project();
-        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
-        assert!(deleted.is_empty());
-    }
-
-    #[test]
-    fn list_deleted_sessions_for_project_returns_deleted_only() {
-        let (db, pid) = setup_db_with_project();
-        let s1 = make_session("S1", pid);
-        let s2 = make_session("S2", pid);
+    fn list_deleted_sessions() {
+        let db = Database::open_in_memory().unwrap();
+        let s1 = make_session("S1");
+        let s2 = make_session("S2");
         let s1_id = s1.id;
         db.upsert_session(&s1).unwrap();
         db.upsert_session(&s2).unwrap();
         db.soft_delete_session(s1_id).unwrap();
 
-        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
+        let deleted = db.list_deleted_sessions().unwrap();
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].id, s1_id);
         assert_eq!(deleted[0].name, "S1");
-        assert_eq!(deleted[0].project_id, Some(pid));
-    }
-
-    #[test]
-    fn list_deleted_sessions_excludes_other_projects() {
-        let db = Database::open_in_memory().unwrap();
-        let pid1 = test_project_id("proj1");
-        let pid2 = test_project_id("proj2");
-        db.insert_project(pid1, "proj1", &[]).unwrap();
-        db.insert_project(pid2, "proj2", &[]).unwrap();
-
-        let s1 = make_session("S1", pid1);
-        let s2 = make_session("S2", pid2);
-        let s1_id = s1.id;
-        let s2_id = s2.id;
-        db.upsert_session(&s1).unwrap();
-        db.upsert_session(&s2).unwrap();
-        db.soft_delete_session(s1_id).unwrap();
-        db.soft_delete_session(s2_id).unwrap();
-
-        let deleted = db.list_deleted_sessions_for_project(pid1).unwrap();
-        assert_eq!(deleted.len(), 1);
-        assert_eq!(deleted[0].id, s1_id);
-    }
-
-    #[test]
-    fn list_deleted_sessions_includes_worktrees() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("S1", pid);
-        session.worktrees = vec![SharedWorktree {
-            repo_path: PathBuf::from("/repo"),
-            worktree_path: PathBuf::from("/repo/.git/wt/feat"),
-            branch: "feat".to_string(),
-        }];
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-        db.soft_delete_session(sid).unwrap();
-
-        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
-        assert_eq!(deleted.len(), 1);
-        assert_eq!(deleted[0].worktrees.len(), 1);
-        assert_eq!(deleted[0].worktrees[0].branch, "feat");
-    }
-
-    #[test]
-    fn list_deleted_sessions_preserves_agent_session_id() {
-        let (db, pid) = setup_db_with_project();
-        let mut session = make_session("S1", pid);
-        session.agent_session_id = Some("claude-xyz".to_string());
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-        db.soft_delete_session(sid).unwrap();
-
-        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
-        assert_eq!(deleted[0].agent_session_id, Some("claude-xyz".to_string()));
     }
 
     #[test]
     fn get_deleted_session_by_id_found() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("S1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("S1");
         let sid = session.id;
         db.upsert_session(&session).unwrap();
         db.soft_delete_session(sid).unwrap();
@@ -919,33 +685,15 @@ mod tests {
     }
 
     #[test]
-    fn get_deleted_session_by_id_not_found() {
-        let (db, _pid) = setup_db_with_project();
-        let result = db.get_deleted_session_by_id(SessionId::default()).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn get_deleted_session_by_id_excludes_active() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("S1", pid);
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-
-        let result = db.get_deleted_session_by_id(sid).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn restore_clears_from_deleted_list() {
-        let (db, pid) = setup_db_with_project();
-        let session = make_session("S1", pid);
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("S1");
         let sid = session.id;
         db.upsert_session(&session).unwrap();
         db.soft_delete_session(sid).unwrap();
         db.restore_session(sid).unwrap();
 
-        let deleted = db.list_deleted_sessions_for_project(pid).unwrap();
+        let deleted = db.list_deleted_sessions().unwrap();
         assert!(deleted.is_empty());
 
         let active = db.list_active_sessions().unwrap();

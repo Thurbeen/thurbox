@@ -4,17 +4,15 @@
 /// database file and verify that session changes are properly shared.
 use std::path::PathBuf;
 
-use thurbox::project::{ProjectConfig, ProjectId};
-use thurbox::session::{RoleConfig, RolePermissions, SessionId};
+use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::{self, SharedSession, SharedState, SharedWorktree};
 
 /// Helper to create a test session.
-fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSession {
+fn make_session(id: SessionId, name: &str) -> SharedSession {
     SharedSession {
         id,
         name: name.to_string(),
-        project_id: Some(project_id),
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
@@ -28,24 +26,12 @@ fn make_session(id: SessionId, name: &str, project_id: ProjectId) -> SharedSessi
     }
 }
 
-fn test_project_id(name: &str) -> ProjectId {
-    let config = ProjectConfig {
-        name: name.to_string(),
-        repos: vec![],
-        roles: vec![],
-        mcp_servers: vec![],
-        id: None,
-    };
-    config.deterministic_id()
-}
-
 // ============================================================================
 // Pure delta computation tests (no DB or file I/O)
 // ============================================================================
 
 #[test]
 fn delta_detects_new_session_from_other_instance() {
-    let project_id = ProjectId::default();
     let session_a_id = SessionId::default();
     let session_b_id = SessionId::default();
 
@@ -53,16 +39,16 @@ fn delta_detects_new_session_from_other_instance() {
     let mut state_a = SharedState::new();
     state_a
         .sessions
-        .push(make_session(session_a_id, "Session A", project_id));
+        .push(make_session(session_a_id, "Session A"));
 
     // Shared state: has sessions A and B
     let mut state_shared = SharedState::new();
     state_shared
         .sessions
-        .push(make_session(session_a_id, "Session A", project_id));
+        .push(make_session(session_a_id, "Session A"));
     state_shared
         .sessions
-        .push(make_session(session_b_id, "Session B", project_id));
+        .push(make_session(session_b_id, "Session B"));
 
     let delta = sync::StateDelta::compute(&state_a, &state_shared);
 
@@ -78,7 +64,6 @@ fn delta_detects_new_session_from_other_instance() {
 
 #[test]
 fn delta_detects_deleted_session() {
-    let project_id = ProjectId::default();
     let session_a_id = SessionId::default();
     let session_b_id = SessionId::default();
 
@@ -86,17 +71,17 @@ fn delta_detects_deleted_session() {
     let mut state_a = SharedState::new();
     state_a
         .sessions
-        .push(make_session(session_a_id, "Session A", project_id));
+        .push(make_session(session_a_id, "Session A"));
     state_a
         .sessions
-        .push(make_session(session_b_id, "Session B", project_id));
+        .push(make_session(session_b_id, "Session B"));
 
     // Shared state: only A (B was deleted/tombstoned)
     let mut state_shared = SharedState::new();
     state_shared
         .sessions
-        .push(make_session(session_a_id, "Session A", project_id));
-    let mut session_b_tombstone = make_session(session_b_id, "Session B", project_id);
+        .push(make_session(session_a_id, "Session A"));
+    let mut session_b_tombstone = make_session(session_b_id, "Session B");
     session_b_tombstone.tombstone = true;
     state_shared.sessions.push(session_b_tombstone);
 
@@ -123,10 +108,7 @@ fn db_instance_a_creates_session_visible_to_instance_b() {
     let db_a = Database::open(path).unwrap();
     let db_b = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db_a.insert_project(pid, "test", &[]).unwrap();
-
-    let session = make_session(SessionId::default(), "Session from A", pid);
+    let session = make_session(SessionId::default(), "Session from A");
     let sid = session.id;
     db_a.upsert_session(&session).unwrap();
 
@@ -145,16 +127,13 @@ fn db_instance_b_creates_session_without_erasing_instance_a() {
     let db_a = Database::open(path).unwrap();
     let db_b = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db_a.insert_project(pid, "test", &[]).unwrap();
-
     // Instance A creates session
-    let session_a = make_session(SessionId::default(), "Session A", pid);
+    let session_a = make_session(SessionId::default(), "Session A");
     let sid_a = session_a.id;
     db_a.upsert_session(&session_a).unwrap();
 
     // Instance B creates session
-    let session_b = make_session(SessionId::default(), "Session B", pid);
+    let session_b = make_session(SessionId::default(), "Session B");
     let sid_b = session_b.id;
     db_b.upsert_session(&session_b).unwrap();
 
@@ -178,10 +157,7 @@ fn db_soft_delete_propagates_across_instances() {
     let db_a = Database::open(path).unwrap();
     let db_b = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db_a.insert_project(pid, "test", &[]).unwrap();
-
-    let session = make_session(SessionId::default(), "Session to Delete", pid);
+    let session = make_session(SessionId::default(), "Session to Delete");
     let sid = session.id;
     db_a.upsert_session(&session).unwrap();
 
@@ -206,8 +182,8 @@ fn db_change_detection_across_instances() {
     // Initialize change tracking
     let _ = db_a.has_external_changes().unwrap();
 
-    let pid = test_project_id("test");
-    db_b.insert_project(pid, "test", &[]).unwrap();
+    let session = make_session(SessionId::default(), "External Session");
+    db_b.upsert_session(&session).unwrap();
 
     // Instance A should detect external change
     assert!(db_a.has_external_changes().unwrap());
@@ -223,14 +199,11 @@ fn db_compute_delta_detects_added_session() {
 
     let db = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db.insert_project(pid, "test", &[]).unwrap();
-
     // Local snapshot is empty
     let local = SharedState::new();
 
     // Add session to DB
-    let session = make_session(SessionId::default(), "New Session", pid);
+    let session = make_session(SessionId::default(), "New Session");
     db.upsert_session(&session).unwrap();
 
     let delta = db.compute_delta(&local).unwrap();
@@ -245,10 +218,7 @@ fn db_compute_delta_detects_removed_session() {
 
     let db = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db.insert_project(pid, "test", &[]).unwrap();
-
-    let session = make_session(SessionId::default(), "Session to Remove", pid);
+    let session = make_session(SessionId::default(), "Session to Remove");
     let sid = session.id;
     db.upsert_session(&session).unwrap();
 
@@ -264,43 +234,15 @@ fn db_compute_delta_detects_removed_session() {
 }
 
 #[test]
-fn db_project_soft_delete_propagates() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db_a = Database::open(path).unwrap();
-    let db_b = Database::open(path).unwrap();
-
-    let pid = test_project_id("Shared Project");
-    db_a.insert_project(pid, "Shared Project", &[PathBuf::from("/repo")])
-        .unwrap();
-
-    // Both see the project
-    assert_eq!(db_b.list_active_projects().unwrap().len(), 1);
-
-    // Instance A deletes the project
-    db_a.soft_delete_project(pid).unwrap();
-
-    // Instance B should no longer see it
-    assert_eq!(db_b.list_active_projects().unwrap().len(), 0);
-}
-
-#[test]
 fn db_audit_trail_records_operations() {
     let db = Database::open_in_memory().unwrap();
 
-    let pid = test_project_id("test");
-    db.insert_project(pid, "test", &[]).unwrap();
-
-    let session = make_session(SessionId::default(), "Audited Session", pid);
+    let session = make_session(SessionId::default(), "Audited Session");
     db.upsert_session(&session).unwrap();
 
     // Check audit log has entries
     let log = db.get_audit_log(None, None, 100).unwrap();
-    assert!(
-        log.len() >= 2,
-        "Should have at least project + session audit entries"
-    );
+    assert!(!log.is_empty(), "Should have at least session audit entry");
 }
 
 #[test]
@@ -329,10 +271,7 @@ fn db_session_counter_synchronized() {
 fn db_worktree_persisted_with_session() {
     let db = Database::open_in_memory().unwrap();
 
-    let pid = test_project_id("test");
-    db.insert_project(pid, "test", &[]).unwrap();
-
-    let mut session = make_session(SessionId::default(), "WT Session", pid);
+    let mut session = make_session(SessionId::default(), "WT Session");
     session.worktrees = vec![SharedWorktree {
         repo_path: PathBuf::from("/repo"),
         worktree_path: PathBuf::from("/repo/.git/wt/feat"),
@@ -350,10 +289,7 @@ fn db_worktree_persisted_with_session() {
 fn db_multi_worktree_persisted_and_loaded_via_sessions() {
     let db = Database::open_in_memory().unwrap();
 
-    let pid = test_project_id("test");
-    db.insert_project(pid, "test", &[]).unwrap();
-
-    let mut session = make_session(SessionId::default(), "Multi-WT", pid);
+    let mut session = make_session(SessionId::default(), "Multi-WT");
     session.worktrees = vec![
         SharedWorktree {
             repo_path: PathBuf::from("/repo1"),
@@ -389,10 +325,7 @@ fn db_multi_worktree_propagates_across_instances() {
     let db_a = Database::open(path).unwrap();
     let db_b = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db_a.insert_project(pid, "test", &[]).unwrap();
-
-    let mut session = make_session(SessionId::default(), "Multi-WT", pid);
+    let mut session = make_session(SessionId::default(), "Multi-WT");
     session.worktrees = vec![
         SharedWorktree {
             repo_path: PathBuf::from("/repo1"),
@@ -421,14 +354,10 @@ fn db_session_metadata_preserved_across_instances() {
     let db_a = Database::open(path).unwrap();
     let db_b = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db_a.insert_project(pid, "test", &[]).unwrap();
-
     let session_id = SessionId::default();
     let session = SharedSession {
         id: session_id,
         name: "Dev Session".to_string(),
-        project_id: Some(pid),
         role: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
@@ -455,26 +384,23 @@ fn db_session_metadata_preserved_across_instances() {
 }
 
 #[test]
-fn db_multiple_sessions_per_project() {
+fn db_multiple_sessions_created_and_deleted() {
     let temp = tempfile::NamedTempFile::new().unwrap();
     let path = temp.path();
 
     let db_a = Database::open(path).unwrap();
     let db_b = Database::open(path).unwrap();
 
-    let pid = test_project_id("test");
-    db_a.insert_project(pid, "test", &[]).unwrap();
-
     // Instance A creates 2 sessions
-    let s1 = make_session(SessionId::default(), "Session 1", pid);
-    let s2 = make_session(SessionId::default(), "Session 2", pid);
+    let s1 = make_session(SessionId::default(), "Session 1");
+    let s2 = make_session(SessionId::default(), "Session 2");
     let sid1 = s1.id;
     let sid2 = s2.id;
     db_a.upsert_session(&s1).unwrap();
     db_a.upsert_session(&s2).unwrap();
 
     // Instance B creates 1 session
-    let s3 = make_session(SessionId::default(), "Session 3", pid);
+    let s3 = make_session(SessionId::default(), "Session 3");
     let sid3 = s3.id;
     db_b.upsert_session(&s3).unwrap();
 
@@ -534,9 +460,7 @@ fn poll_for_changes_detects_external_session_add() {
     let _ = db_poller.has_external_changes().unwrap();
 
     // External writer adds a session
-    let pid = test_project_id("test");
-    db_writer.insert_project(pid, "test", &[]).unwrap();
-    let session = make_session(SessionId::default(), "External Session", pid);
+    let session = make_session(SessionId::default(), "External Session");
     db_writer.upsert_session(&session).unwrap();
 
     // Poll should detect the change
@@ -559,156 +483,4 @@ fn poll_for_changes_respects_interval() {
 
     let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
     assert!(result.is_none());
-}
-
-// ============================================================================
-// Multi-instance project rename and role sync tests
-// ============================================================================
-
-#[test]
-fn db_project_rename_propagates_across_instances() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db_a = Database::open(path).unwrap();
-    let db_b = Database::open(path).unwrap();
-
-    let pid = test_project_id("OriginalName");
-    db_a.insert_project(pid, "OriginalName", &[PathBuf::from("/repo")])
-        .unwrap();
-
-    // Instance A renames the project
-    db_a.update_project(pid, "RenamedProject", &[PathBuf::from("/repo")])
-        .unwrap();
-
-    // Instance B should see the renamed project with same ID
-    let projects = db_b.list_active_projects().unwrap();
-    assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].id, pid);
-    assert_eq!(projects[0].name, "RenamedProject");
-}
-
-#[test]
-fn db_project_rename_does_not_affect_sessions() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db_a = Database::open(path).unwrap();
-    let db_b = Database::open(path).unwrap();
-
-    let pid = test_project_id("TestProject");
-    db_a.insert_project(pid, "TestProject", &[PathBuf::from("/repo")])
-        .unwrap();
-
-    // Create a session tied to the project
-    let session = make_session(SessionId::default(), "MySession", pid);
-    let sid = session.id;
-    db_a.upsert_session(&session).unwrap();
-
-    // Instance A renames the project
-    db_a.update_project(pid, "NewName", &[PathBuf::from("/repo")])
-        .unwrap();
-
-    // Instance B should see the session still tied to the same project ID
-    let sessions = db_b.list_active_sessions().unwrap();
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].id, sid);
-    assert_eq!(sessions[0].project_id, Some(pid));
-}
-
-#[test]
-fn db_role_sync_across_instances() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db_a = Database::open(path).unwrap();
-    let db_b = Database::open(path).unwrap();
-
-    let pid = test_project_id("RoleProject");
-    db_a.insert_project(pid, "RoleProject", &[]).unwrap();
-
-    // Instance A adds roles
-    let roles = vec![
-        RoleConfig {
-            name: "developer".to_string(),
-            description: "Full access".to_string(),
-            permissions: RolePermissions::default(),
-        },
-        RoleConfig {
-            name: "reviewer".to_string(),
-            description: "Read only".to_string(),
-            permissions: RolePermissions::default(),
-        },
-    ];
-    db_a.replace_roles(pid, &roles).unwrap();
-
-    // Instance B should see the roles via list_active_projects
-    let projects = db_b.list_active_projects().unwrap();
-    assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].roles.len(), 2);
-    assert!(projects[0].roles.iter().any(|r| r.name == "developer"));
-    assert!(projects[0].roles.iter().any(|r| r.name == "reviewer"));
-}
-
-#[test]
-fn db_delta_detects_role_change() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db = Database::open(path).unwrap();
-
-    let pid = test_project_id("DeltaRoleProject");
-    db.insert_project(pid, "DeltaRoleProject", &[]).unwrap();
-
-    // Take initial snapshot (no roles)
-    let initial = db.load_shared_state().unwrap();
-    assert_eq!(initial.projects.len(), 1);
-    assert_eq!(initial.projects[0].roles.len(), 0);
-
-    // Add a role
-    db.replace_roles(
-        pid,
-        &[RoleConfig {
-            name: "admin".to_string(),
-            description: "Admin role".to_string(),
-            permissions: RolePermissions::default(),
-        }],
-    )
-    .unwrap();
-
-    // Delta should detect the project as updated
-    let delta = db.compute_delta(&initial).unwrap();
-    assert_eq!(
-        delta.updated_projects.len(),
-        1,
-        "Should detect role change as project update"
-    );
-    assert_eq!(delta.updated_projects[0].roles.len(), 1);
-    assert_eq!(delta.updated_projects[0].roles[0].name, "admin");
-}
-
-#[test]
-fn db_delta_detects_project_rename() {
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let db = Database::open(path).unwrap();
-
-    let pid = test_project_id("BeforeRename");
-    db.insert_project(pid, "BeforeRename", &[PathBuf::from("/repo")])
-        .unwrap();
-
-    // Take snapshot
-    let before = db.load_shared_state().unwrap();
-    assert_eq!(before.projects[0].name, "BeforeRename");
-
-    // Rename
-    db.update_project(pid, "AfterRename", &[PathBuf::from("/repo")])
-        .unwrap();
-
-    // Delta should detect the rename
-    let delta = db.compute_delta(&before).unwrap();
-    assert_eq!(delta.updated_projects.len(), 1);
-    assert_eq!(delta.updated_projects[0].name, "AfterRename");
-    assert_eq!(delta.updated_projects[0].id, pid);
 }

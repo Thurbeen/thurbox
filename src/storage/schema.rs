@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -15,25 +15,9 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             value TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS projects (
-            id         TEXT PRIMARY KEY,
-            name       TEXT NOT NULL,
-            is_default INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            deleted_at INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS project_repos (
-            project_id TEXT NOT NULL REFERENCES projects(id),
-            repo_path  TEXT NOT NULL,
-            PRIMARY KEY (project_id, repo_path)
-        );
-
         CREATE TABLE IF NOT EXISTS sessions (
             id                TEXT PRIMARY KEY,
             name              TEXT NOT NULL,
-            project_id        TEXT REFERENCES projects(id),
             role              TEXT NOT NULL DEFAULT 'developer',
             backend_id        TEXT NOT NULL DEFAULT '',
             backend_type      TEXT NOT NULL DEFAULT 'tmux',
@@ -72,27 +56,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON audit_log(entity_type, entity_id);
         CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
             ON audit_log(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_sessions_project
-            ON sessions(project_id) WHERE deleted_at IS NULL;
         CREATE INDEX IF NOT EXISTS idx_sessions_active
             ON sessions(id) WHERE deleted_at IS NULL;
-        CREATE INDEX IF NOT EXISTS idx_projects_active
-            ON projects(id) WHERE deleted_at IS NULL;
-
-        CREATE TABLE IF NOT EXISTS project_roles (
-            project_id          TEXT NOT NULL REFERENCES projects(id),
-            role_name           TEXT NOT NULL,
-            description         TEXT NOT NULL DEFAULT '',
-            permission_mode     TEXT,
-            allowed_tools       TEXT NOT NULL DEFAULT '',
-            disallowed_tools    TEXT NOT NULL DEFAULT '',
-            tools               TEXT,
-            append_system_prompt TEXT,
-            env                 TEXT NOT NULL DEFAULT '',
-            created_at          INTEGER NOT NULL,
-            updated_at          INTEGER NOT NULL,
-            PRIMARY KEY (project_id, role_name)
-        );
 
         CREATE TABLE IF NOT EXISTS roles (
             role_name           TEXT PRIMARY KEY,
@@ -116,17 +81,6 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             updated_at  INTEGER NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS project_mcp_servers (
-            project_id  TEXT NOT NULL REFERENCES projects(id),
-            server_name TEXT NOT NULL,
-            command     TEXT NOT NULL DEFAULT '',
-            args        TEXT NOT NULL DEFAULT '',
-            env         TEXT NOT NULL DEFAULT '',
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL,
-            PRIMARY KEY (project_id, server_name)
-        );
-
         CREATE TABLE IF NOT EXISTS session_commands (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id   TEXT NOT NULL,
@@ -140,7 +94,6 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS vms (
             id          TEXT PRIMARY KEY,
             session_id  TEXT REFERENCES sessions(id),
-            project_id  TEXT REFERENCES projects(id),
             state       TEXT NOT NULL DEFAULT 'stopped',
             ssh_port    INTEGER NOT NULL,
             base_image  TEXT NOT NULL,
@@ -154,25 +107,12 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             deleted_at  INTEGER
         );
 
-        CREATE TABLE IF NOT EXISTS project_vm_config (
-            project_id   TEXT PRIMARY KEY REFERENCES projects(id),
-            base_image   TEXT,
-            cpus         INTEGER,
-            memory_mb    INTEGER,
-            disk_gb      INTEGER,
-            setup_script TEXT,
-            updated_at   INTEGER NOT NULL
-        );
-
         CREATE INDEX IF NOT EXISTS idx_vms_session
             ON vms(session_id) WHERE deleted_at IS NULL;
-        CREATE INDEX IF NOT EXISTS idx_vms_project
-            ON vms(project_id) WHERE deleted_at IS NULL;
 
         CREATE TABLE IF NOT EXISTS containers (
             id                  TEXT PRIMARY KEY,
             session_id          TEXT REFERENCES sessions(id),
-            project_id          TEXT REFERENCES projects(id),
             state               TEXT NOT NULL DEFAULT 'stopped',
             docker_container_id TEXT,
             image               TEXT,
@@ -186,20 +126,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             deleted_at          INTEGER
         );
 
-        CREATE TABLE IF NOT EXISTS project_container_config (
-            project_id       TEXT PRIMARY KEY REFERENCES projects(id),
-            image            TEXT,
-            cpus             INTEGER,
-            memory_mb        INTEGER,
-            firewall_enabled INTEGER,
-            containerfile    TEXT,
-            updated_at       INTEGER NOT NULL
-        );
-
         CREATE INDEX IF NOT EXISTS idx_containers_session
             ON containers(session_id) WHERE deleted_at IS NULL;
-        CREATE INDEX IF NOT EXISTS idx_containers_project
-            ON containers(project_id) WHERE deleted_at IS NULL;
 
         CREATE TABLE IF NOT EXISTS scheduled_commands (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -292,7 +220,6 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
     if version < 6 {
         // v5 → v6: change worktrees PK from session_id to (session_id, repo_path)
-        // to support multiple worktrees per session (multi-repo projects).
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS worktrees_new (
                 session_id    TEXT NOT NULL REFERENCES sessions(id),
@@ -475,7 +402,6 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
     if version < 15 {
         // v14 → v15: make project_id nullable on sessions, add repo_bookmarks table
-        // SQLite doesn't support ALTER COLUMN, so recreate the sessions table.
         conn.execute_batch(
             "DROP TABLE IF EXISTS sessions_new;
             CREATE TABLE sessions_new (
@@ -532,6 +458,109 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 16 {
+        // v15 → v16: remove project tables and project_id columns from sessions/vms/containers
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+
+            -- Recreate sessions without project_id
+            DROP TABLE IF EXISTS sessions_new;
+            CREATE TABLE sessions_new (
+                id                TEXT PRIMARY KEY,
+                name              TEXT NOT NULL,
+                role              TEXT NOT NULL DEFAULT 'developer',
+                backend_id        TEXT NOT NULL DEFAULT '',
+                backend_type      TEXT NOT NULL DEFAULT 'tmux',
+                agent_session_id  TEXT,
+                cwd               TEXT,
+                additional_dirs   TEXT NOT NULL DEFAULT '',
+                shell_backend_id  TEXT,
+                created_at        INTEGER NOT NULL,
+                updated_at        INTEGER NOT NULL,
+                deleted_at        INTEGER
+            );
+            INSERT INTO sessions_new (id, name, role, backend_id, backend_type,
+                agent_session_id, cwd, additional_dirs, shell_backend_id,
+                created_at, updated_at, deleted_at)
+                SELECT id, name, role, backend_id, backend_type,
+                    agent_session_id, cwd, additional_dirs, shell_backend_id,
+                    created_at, updated_at, deleted_at
+                FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_new RENAME TO sessions;
+            CREATE INDEX IF NOT EXISTS idx_sessions_active
+                ON sessions(id) WHERE deleted_at IS NULL;
+
+            -- Recreate vms without project_id
+            DROP TABLE IF EXISTS vms_new;
+            CREATE TABLE vms_new (
+                id          TEXT PRIMARY KEY,
+                session_id  TEXT REFERENCES sessions(id),
+                state       TEXT NOT NULL DEFAULT 'stopped',
+                ssh_port    INTEGER NOT NULL,
+                base_image  TEXT NOT NULL,
+                cpus        INTEGER NOT NULL DEFAULT 2,
+                memory_mb   INTEGER NOT NULL DEFAULT 2048,
+                disk_gb     INTEGER NOT NULL DEFAULT 10,
+                qemu_pid    INTEGER,
+                error_msg   TEXT,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                deleted_at  INTEGER
+            );
+            INSERT INTO vms_new (id, session_id, state, ssh_port, base_image,
+                cpus, memory_mb, disk_gb, qemu_pid, error_msg,
+                created_at, updated_at, deleted_at)
+                SELECT id, session_id, state, ssh_port, base_image,
+                    cpus, memory_mb, disk_gb, qemu_pid, error_msg,
+                    created_at, updated_at, deleted_at
+                FROM vms;
+            DROP TABLE IF EXISTS vms;
+            ALTER TABLE vms_new RENAME TO vms;
+            CREATE INDEX IF NOT EXISTS idx_vms_session
+                ON vms(session_id) WHERE deleted_at IS NULL;
+
+            -- Recreate containers without project_id
+            DROP TABLE IF EXISTS containers_new;
+            CREATE TABLE containers_new (
+                id                  TEXT PRIMARY KEY,
+                session_id          TEXT REFERENCES sessions(id),
+                state               TEXT NOT NULL DEFAULT 'stopped',
+                docker_container_id TEXT,
+                image               TEXT,
+                cpus                INTEGER NOT NULL DEFAULT 2,
+                memory_mb           INTEGER NOT NULL DEFAULT 2048,
+                firewall_enabled    INTEGER NOT NULL DEFAULT 1,
+                containerfile       TEXT,
+                error_msg           TEXT,
+                created_at          INTEGER NOT NULL,
+                updated_at          INTEGER NOT NULL,
+                deleted_at          INTEGER
+            );
+            INSERT INTO containers_new (id, session_id, state, docker_container_id,
+                image, cpus, memory_mb, firewall_enabled, containerfile,
+                error_msg, created_at, updated_at, deleted_at)
+                SELECT id, session_id, state, docker_container_id,
+                    image, cpus, memory_mb, firewall_enabled, containerfile,
+                    error_msg, created_at, updated_at, deleted_at
+                FROM containers;
+            DROP TABLE IF EXISTS containers;
+            ALTER TABLE containers_new RENAME TO containers;
+            CREATE INDEX IF NOT EXISTS idx_containers_session
+                ON containers(session_id) WHERE deleted_at IS NULL;
+
+            -- Drop project tables
+            DROP TABLE IF EXISTS project_container_config;
+            DROP TABLE IF EXISTS project_vm_config;
+            DROP TABLE IF EXISTS project_mcp_servers;
+            DROP TABLE IF EXISTS project_roles;
+            DROP TABLE IF EXISTS project_repos;
+            DROP TABLE IF EXISTS projects;
+
+            PRAGMA foreign_keys = ON;",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -560,20 +589,21 @@ mod tests {
             .unwrap();
 
         assert!(tables.contains(&"metadata".to_string()));
-        assert!(tables.contains(&"projects".to_string()));
-        assert!(tables.contains(&"project_repos".to_string()));
-        assert!(tables.contains(&"project_roles".to_string()));
         assert!(tables.contains(&"roles".to_string()));
         assert!(tables.contains(&"mcp_servers".to_string()));
-        assert!(tables.contains(&"project_mcp_servers".to_string()));
         assert!(tables.contains(&"sessions".to_string()));
         assert!(tables.contains(&"worktrees".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
         assert!(tables.contains(&"session_commands".to_string()));
         assert!(tables.contains(&"containers".to_string()));
-        assert!(tables.contains(&"project_container_config".to_string()));
         assert!(tables.contains(&"scheduled_commands".to_string()));
         assert!(tables.contains(&"repo_bookmarks".to_string()));
+        // Project tables should NOT exist
+        assert!(!tables.contains(&"projects".to_string()));
+        assert!(!tables.contains(&"project_repos".to_string()));
+        assert!(!tables.contains(&"project_roles".to_string()));
+        assert!(!tables.contains(&"project_mcp_servers".to_string()));
+        assert!(!tables.contains(&"project_container_config".to_string()));
     }
 
     #[test]
@@ -608,15 +638,23 @@ mod tests {
     }
 
     #[test]
-    fn foreign_keys_enforced() {
+    fn sessions_have_no_project_id() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
 
-        let result = conn.execute(
-            "INSERT INTO sessions (id, name, project_id, created_at, updated_at) \
-             VALUES ('s1', 'test', 'nonexistent', 0, 0)",
+        // Insert a session without project_id (which no longer exists)
+        conn.execute(
+            "INSERT INTO sessions (id, name, created_at, updated_at) \
+             VALUES ('s1', 'test', 0, 0)",
             [],
-        );
-        assert!(result.is_err());
+        )
+        .unwrap();
+
+        let name: String = conn
+            .query_row("SELECT name FROM sessions WHERE id = 's1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "test");
     }
 }

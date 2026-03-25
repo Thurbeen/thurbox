@@ -6,7 +6,6 @@ pub(crate) mod fuzzy;
 pub mod git;
 pub mod mcp;
 pub mod paths;
-pub mod project;
 pub mod session;
 pub mod storage;
 pub mod sync;

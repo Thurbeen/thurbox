@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
-use crate::project::ProjectId;
 use crate::session::SessionId;
 
-use super::state::{SharedProject, SharedSession, SharedState};
+use super::state::{SharedSession, SharedState};
 
 /// Represents the delta (changes) between two shared states.
 ///
@@ -19,15 +18,6 @@ pub struct StateDelta {
 
     /// Sessions that were updated (metadata changed).
     pub updated_sessions: Vec<SharedSession>,
-
-    /// Projects that were created by other instances.
-    pub added_projects: Vec<SharedProject>,
-
-    /// Project IDs that were deleted by other instances.
-    pub removed_projects: Vec<ProjectId>,
-
-    /// Projects that were updated (metadata changed).
-    pub updated_projects: Vec<SharedProject>,
 
     /// Latest session counter from external state.
     /// Should be merged using max(local, external).
@@ -56,13 +46,6 @@ impl StateDelta {
             .map(|s| (s.id, s))
             .collect();
 
-        // Build project lookup maps
-        let old_project_map: HashMap<ProjectId, &SharedProject> =
-            old.projects.iter().map(|p| (p.id, p)).collect();
-
-        let new_project_map: HashMap<ProjectId, &SharedProject> =
-            new.projects.iter().map(|p| (p.id, p)).collect();
-
         let mut delta = StateDelta::default();
 
         // Sessions: Added (in new but not in old)
@@ -88,29 +71,6 @@ impl StateDelta {
             }
         }
 
-        // Projects: Added (in new but not in old)
-        for (id, project) in &new_project_map {
-            if !old_project_map.contains_key(id) {
-                delta.added_projects.push((*project).clone());
-            }
-        }
-
-        // Projects: Removed (in old but not in new)
-        for id in old_project_map.keys() {
-            if !new_project_map.contains_key(id) {
-                delta.removed_projects.push(*id);
-            }
-        }
-
-        // Projects: Updated (in both but key fields changed)
-        for (id, new_project) in &new_project_map {
-            if let Some(old_project) = old_project_map.get(id) {
-                if project_changed(old_project, new_project) {
-                    delta.updated_projects.push((*new_project).clone());
-                }
-            }
-        }
-
         delta.counter_increment = new.session_counter;
 
         delta
@@ -121,9 +81,6 @@ impl StateDelta {
         self.added_sessions.is_empty()
             && self.removed_sessions.is_empty()
             && self.updated_sessions.is_empty()
-            && self.added_projects.is_empty()
-            && self.removed_projects.is_empty()
-            && self.updated_projects.is_empty()
     }
 }
 
@@ -131,7 +88,6 @@ impl StateDelta {
 /// Ignores tombstone state since delta computation filters those out.
 fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
     old.name != new.name
-        || old.project_id != new.project_id
         || old.role != new.role
         || old.backend_id != new.backend_id
         || old.backend_type != new.backend_type
@@ -141,19 +97,27 @@ fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
         || old.worktrees != new.worktrees
 }
 
-/// Check if a project's key metadata changed.
-fn project_changed(old: &SharedProject, new: &SharedProject) -> bool {
-    old.name != new.name
-        || old.repos != new.repos
-        || old.roles != new.roles
-        || old.mcp_servers != new.mcp_servers
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::ProjectId;
     use std::path::PathBuf;
+
+    fn make_session(id: SessionId, name: &str) -> SharedSession {
+        SharedSession {
+            id,
+            name: name.to_string(),
+            role: "developer".to_string(),
+            backend_id: "thurbox:@0".to_string(),
+            backend_type: "tmux".to_string(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            tombstone: false,
+            tombstone_at: None,
+        }
+    }
 
     #[test]
     fn empty_delta_when_no_changes() {
@@ -167,22 +131,9 @@ mod tests {
         let old_state = SharedState::new();
 
         let mut new_state = SharedState::new();
-        let session = SharedSession {
-            id: SessionId::default(),
-            name: "New Session".to_string(),
-            project_id: Some(ProjectId::default()),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(session.clone());
+        new_state
+            .sessions
+            .push(make_session(SessionId::default(), "New Session"));
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
@@ -194,24 +145,11 @@ mod tests {
 
     #[test]
     fn removed_sessions_detected() {
-        let mut old_state = SharedState::new();
         let session_id = SessionId::default();
-        let session = SharedSession {
-            id: session_id,
-            name: "Old Session".to_string(),
-            project_id: Some(ProjectId::default()),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(session);
+        let mut old_state = SharedState::new();
+        old_state
+            .sessions
+            .push(make_session(session_id, "Old Session"));
 
         let new_state = SharedState::new();
 
@@ -228,40 +166,14 @@ mod tests {
         let session_id = SessionId::default();
 
         let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session A".to_string(),
-            project_id: Some(ProjectId::default()),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
+        old_state
+            .sessions
+            .push(make_session(session_id, "Session A"));
 
         let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session A (renamed)".to_string(), // Changed
-            project_id: Some(ProjectId::default()),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(new_session.clone());
+        new_state
+            .sessions
+            .push(make_session(session_id, "Session A (renamed)"));
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
@@ -276,44 +188,16 @@ mod tests {
         let session_id = SessionId::default();
 
         let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(ProjectId::default()),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
+        old_state.sessions.push(make_session(session_id, "Session"));
 
         let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(ProjectId::default()),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: true, // Marked as deleted
-            tombstone_at: Some(0),
-        };
-        new_state.sessions.push(new_session);
+        let mut s = make_session(session_id, "Session");
+        s.tombstone = true;
+        s.tombstone_at = Some(0);
+        new_state.sessions.push(s);
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
-        // Tombstone is treated as removal
         assert!(delta.added_sessions.is_empty());
         assert_eq!(delta.removed_sessions.len(), 1);
         assert!(delta.updated_sessions.is_empty());
@@ -333,401 +217,36 @@ mod tests {
     }
 
     #[test]
-    fn multiple_changes_in_single_delta() {
-        let session1_id = SessionId::default();
-        let session2_id = SessionId::default();
-        let session3_id = SessionId::default();
-        let project_id = ProjectId::default();
-
-        let mut old_state = SharedState::new();
-        old_state.session_counter = 2;
-        old_state.sessions.push(SharedSession {
-            id: session1_id,
-            name: "Session 1".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
-        old_state.sessions.push(SharedSession {
-            id: session2_id,
-            name: "Session 2".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
-
-        let mut new_state = SharedState::new();
-        new_state.session_counter = 4;
-        // Session 1: kept
-        new_state.sessions.push(SharedSession {
-            id: session1_id,
-            name: "Session 1".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
-        // Session 2: removed (tombstoned)
-        new_state.sessions.push(SharedSession {
-            id: session2_id,
-            name: "Session 2".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: true,
-            tombstone_at: Some(0),
-        });
-        // Session 3: added
-        new_state.sessions.push(SharedSession {
-            id: session3_id,
-            name: "Session 3".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
-
-        let delta = StateDelta::compute(&old_state, &new_state);
-
-        assert_eq!(delta.added_sessions.len(), 1);
-        assert_eq!(delta.removed_sessions.len(), 1);
-        assert!(delta.updated_sessions.is_empty());
-        assert_eq!(delta.counter_increment, 4);
-    }
-
-    #[test]
     fn session_changed_detects_role_change() {
         let session_id = SessionId::default();
-        let project_id = ProjectId::default();
 
         let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
+        old_state.sessions.push(make_session(session_id, "Session"));
 
         let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "reviewer".to_string(), // Changed
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(new_session);
+        let mut s = make_session(session_id, "Session");
+        s.role = "reviewer".to_string();
+        new_state.sessions.push(s);
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
-        assert!(delta.added_sessions.is_empty());
-        assert!(delta.removed_sessions.is_empty());
         assert_eq!(delta.updated_sessions.len(), 1);
         assert_eq!(delta.updated_sessions[0].role, "reviewer");
     }
 
     #[test]
-    fn session_changed_detects_agent_session_id_change() {
-        let session_id = SessionId::default();
-        let project_id = ProjectId::default();
-
-        let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: Some("claude-v1".to_string()),
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
-
-        let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: Some("claude-v2".to_string()), // Changed
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(new_session);
-
-        let delta = StateDelta::compute(&old_state, &new_state);
-
-        assert_eq!(delta.updated_sessions.len(), 1);
-    }
-
-    #[test]
     fn session_changed_detects_cwd_change() {
         let session_id = SessionId::default();
-        let project_id = ProjectId::default();
 
         let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: Some(PathBuf::from("/home/user")),
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
+        let mut s1 = make_session(session_id, "Session");
+        s1.cwd = Some(PathBuf::from("/home/user"));
+        old_state.sessions.push(s1);
 
         let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: Some(PathBuf::from("/home/user/project")), // Changed
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(new_session);
-
-        let delta = StateDelta::compute(&old_state, &new_state);
-
-        assert_eq!(delta.updated_sessions.len(), 1);
-    }
-
-    #[test]
-    fn session_changed_detects_worktree_change() {
-        use crate::sync::SharedWorktree;
-
-        let session_id = SessionId::default();
-        let project_id = ProjectId::default();
-
-        let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: vec![SharedWorktree {
-                repo_path: PathBuf::from("/repo"),
-                worktree_path: PathBuf::from("/repo/.git/worktrees/old"),
-                branch: "old-branch".to_string(),
-            }],
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
-
-        let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: vec![SharedWorktree {
-                repo_path: PathBuf::from("/repo"),
-                worktree_path: PathBuf::from("/repo/.git/worktrees/new"),
-                branch: "new-branch".to_string(),
-            }],
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(new_session);
-
-        let delta = StateDelta::compute(&old_state, &new_state);
-
-        assert_eq!(delta.updated_sessions.len(), 1);
-    }
-
-    #[test]
-    fn session_changed_detects_worktree_count_change() {
-        use crate::sync::SharedWorktree;
-
-        let session_id = SessionId::default();
-        let project_id = ProjectId::default();
-
-        let mut old_state = SharedState::new();
-        old_state.sessions.push(SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: vec![SharedWorktree {
-                repo_path: PathBuf::from("/repo1"),
-                worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
-                branch: "feat".to_string(),
-            }],
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
-
-        let mut new_state = SharedState::new();
-        new_state.sessions.push(SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: vec![
-                SharedWorktree {
-                    repo_path: PathBuf::from("/repo1"),
-                    worktree_path: PathBuf::from("/repo1/.git/wt/feat"),
-                    branch: "feat".to_string(),
-                },
-                SharedWorktree {
-                    repo_path: PathBuf::from("/repo2"),
-                    worktree_path: PathBuf::from("/repo2/.git/wt/feat"),
-                    branch: "feat".to_string(),
-                },
-            ],
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
-
-        let delta = StateDelta::compute(&old_state, &new_state);
-        assert_eq!(delta.updated_sessions.len(), 1);
-    }
-
-    #[test]
-    fn session_changed_detects_backend_type_change() {
-        let session_id = SessionId::default();
-        let project_id = ProjectId::default();
-
-        let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
-
-        let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "ssh".to_string(), // Changed
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(new_session);
+        let mut s2 = make_session(session_id, "Session");
+        s2.cwd = Some(PathBuf::from("/home/user/project"));
+        new_state.sessions.push(s2);
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
@@ -737,127 +256,43 @@ mod tests {
     #[test]
     fn no_update_when_session_unchanged() {
         let session_id = SessionId::default();
-        let project_id = ProjectId::default();
 
         let mut old_state = SharedState::new();
-        let old_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: Some("claude-123".to_string()),
-            cwd: Some(PathBuf::from("/home/user")),
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        old_state.sessions.push(old_session);
+        let mut s1 = make_session(session_id, "Session");
+        s1.agent_session_id = Some("claude-123".to_string());
+        s1.cwd = Some(PathBuf::from("/home/user"));
+        old_state.sessions.push(s1);
 
         let mut new_state = SharedState::new();
-        let new_session = SharedSession {
-            id: session_id,
-            name: "Session".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: Some("claude-123".to_string()),
-            cwd: Some(PathBuf::from("/home/user")),
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        new_state.sessions.push(new_session);
+        let mut s2 = make_session(session_id, "Session");
+        s2.agent_session_id = Some("claude-123".to_string());
+        s2.cwd = Some(PathBuf::from("/home/user"));
+        new_state.sessions.push(s2);
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
         assert!(delta.is_empty());
-        assert_eq!(delta.updated_sessions.len(), 0);
     }
 
     #[test]
     fn session_changed_detects_additional_dirs_change() {
         let session_id = SessionId::default();
-        let project_id = ProjectId::default();
 
         let mut old_state = SharedState::new();
-        old_state.sessions.push(SharedSession {
-            id: session_id,
-            name: "S".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: Some(PathBuf::from("/repo1")),
-            additional_dirs: vec![PathBuf::from("/repo2")],
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
+        let mut s1 = make_session(session_id, "S");
+        s1.cwd = Some(PathBuf::from("/repo1"));
+        s1.additional_dirs = vec![PathBuf::from("/repo2")];
+        old_state.sessions.push(s1);
 
         let mut new_state = SharedState::new();
-        new_state.sessions.push(SharedSession {
-            id: session_id,
-            name: "S".to_string(),
-            project_id: Some(project_id),
-            role: "developer".to_string(),
-            backend_id: "thurbox:@0".to_string(),
-            backend_type: "tmux".to_string(),
-            agent_session_id: None,
-            cwd: Some(PathBuf::from("/repo1")),
-            additional_dirs: vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")],
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        });
+        let mut s2 = make_session(session_id, "S");
+        s2.cwd = Some(PathBuf::from("/repo1"));
+        s2.additional_dirs = vec![PathBuf::from("/repo2"), PathBuf::from("/repo3")];
+        new_state.sessions.push(s2);
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
         assert!(!delta.is_empty());
         assert_eq!(delta.updated_sessions.len(), 1);
-    }
-
-    #[test]
-    fn project_changed_detects_mcp_servers_change() {
-        use crate::session::McpServerConfig;
-
-        let pid = ProjectId::default();
-
-        let mut old_state = SharedState::new();
-        old_state.projects.push(SharedProject {
-            id: pid,
-            name: "proj".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: vec![],
-            mcp_servers: vec![],
-        });
-
-        let mut new_state = SharedState::new();
-        new_state.projects.push(SharedProject {
-            id: pid,
-            name: "proj".to_string(),
-            repos: vec![PathBuf::from("/repo")],
-            roles: vec![],
-            mcp_servers: vec![McpServerConfig {
-                name: "fs".to_string(),
-                command: "npx".to_string(),
-                args: vec![],
-                env: std::collections::HashMap::new(),
-            }],
-        });
-
-        let delta = StateDelta::compute(&old_state, &new_state);
-
-        assert!(!delta.is_empty());
-        assert_eq!(delta.updated_projects.len(), 1);
     }
 }

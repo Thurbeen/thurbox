@@ -103,17 +103,6 @@ fn agent_module_isolation() {
 }
 
 #[test]
-fn project_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project");
-    let violations = check_no_imports(&module_dir, &["agent", "ui", "git", "app"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("project", &violations)
-    );
-}
-
-#[test]
 fn sync_module_isolation() {
     let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sync");
     let violations = check_no_imports(&module_dir, &["agent", "ui", "git", "app"]);
