@@ -6,9 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use super::focus_block;
 use super::theme::Theme;
-use super::FocusLevel;
+use super::{focus_block, status_color, FocusLevel};
 use crate::session::SessionInfo;
 
 /// Per-field fuzzy match positions for a session entry.
@@ -314,7 +313,20 @@ fn render_session_section(
     search_active: bool,
     search_query: &str,
 ) {
-    let block = focus_block(" Sessions ", level);
+    let mut block = focus_block(" Sessions ", level);
+
+    if !sessions.is_empty() {
+        let dots: Vec<Span> = sessions
+            .iter()
+            .map(|info| {
+                Span::styled(
+                    info.status.icon(),
+                    Style::default().fg(status_color(info.status)),
+                )
+            })
+            .collect();
+        block = block.title_top(Line::from(dots).right_aligned());
+    }
 
     if sessions.is_empty() {
         let text = Paragraph::new(vec![
