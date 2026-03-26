@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -218,13 +218,16 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
 
 // ── Tool list helpers ───────────────────────────────────────────────────────
 
+/// Maximum visible items in a tool list before scrolling kicks in.
+const TOOL_LIST_MAX_VISIBLE: u16 = 6;
+
 /// Compute the height needed for a tool list section.
-/// 2 (border) + max(items, 1 empty) + optional 1 for input row.
+/// 2 (border) + min(max(items, 1 empty), MAX_VISIBLE) + optional 1 for input row.
 pub fn tool_list_height(tools: &[String], mode: ToolListMode, focused: bool) -> u16 {
     let item_rows = if tools.is_empty() {
         1
     } else {
-        tools.len() as u16
+        (tools.len() as u16).min(TOOL_LIST_MAX_VISIBLE)
     };
     let input_row = if focused && mode == ToolListMode::Adding {
         1
@@ -294,7 +297,12 @@ pub fn render_tool_list(
                 ListItem::new(Line::from(Span::styled(format!("{prefix}{tool}"), style)))
             })
             .collect();
-        frame.render_widget(List::new(items), parts[0]);
+        // Use ListState so ratatui auto-scrolls to keep the selected item visible.
+        let mut list_state = ListState::default();
+        if focused && mode == ToolListMode::Browse {
+            list_state.select(Some(selected_index));
+        }
+        frame.render_stateful_widget(List::new(items), parts[0], &mut list_state);
     }
 
     // Render inline input row when adding.
@@ -328,4 +336,54 @@ fn render_inline_input(frame: &mut Frame, area: ratatui::layout::Rect, value: &s
     ]);
 
     frame.render_widget(Paragraph::new(line), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_list_height_empty() {
+        // Empty list: 1 placeholder row + 2 border = 3
+        assert_eq!(tool_list_height(&[], ToolListMode::Browse, false), 3);
+    }
+
+    #[test]
+    fn tool_list_height_few_items() {
+        let tools: Vec<String> = (0..3).map(|i| format!("tool_{i}")).collect();
+        // 3 items + 2 border = 5
+        assert_eq!(tool_list_height(&tools, ToolListMode::Browse, false), 5);
+    }
+
+    #[test]
+    fn tool_list_height_capped_at_max_visible() {
+        let tools: Vec<String> = (0..20).map(|i| format!("tool_{i}")).collect();
+        // Capped to TOOL_LIST_MAX_VISIBLE (6) + 2 border = 8
+        assert_eq!(tool_list_height(&tools, ToolListMode::Browse, false), 8);
+    }
+
+    #[test]
+    fn tool_list_height_exactly_max_visible() {
+        let tools: Vec<String> = (0..TOOL_LIST_MAX_VISIBLE)
+            .map(|i| format!("tool_{i}"))
+            .collect();
+        assert_eq!(
+            tool_list_height(&tools, ToolListMode::Browse, false),
+            TOOL_LIST_MAX_VISIBLE + 2
+        );
+    }
+
+    #[test]
+    fn tool_list_height_adding_mode_adds_input_row() {
+        let tools: Vec<String> = (0..3).map(|i| format!("tool_{i}")).collect();
+        // 3 items + 1 input + 2 border = 6
+        assert_eq!(tool_list_height(&tools, ToolListMode::Adding, true), 6);
+    }
+
+    #[test]
+    fn tool_list_height_adding_unfocused_no_input_row() {
+        let tools: Vec<String> = (0..3).map(|i| format!("tool_{i}")).collect();
+        // Input row only shown when focused
+        assert_eq!(tool_list_height(&tools, ToolListMode::Adding, false), 5);
+    }
 }
