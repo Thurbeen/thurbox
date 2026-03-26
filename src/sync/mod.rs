@@ -95,6 +95,16 @@ impl Default for SyncState {
     }
 }
 
+/// Result of polling for external state changes.
+pub struct PollResult {
+    /// Delta between local and DB state (may be empty).
+    pub delta: StateDelta,
+    /// Whether the database was modified externally (e.g. by the MCP server).
+    /// True even when the delta is empty, indicating that non-tracked state
+    /// (such as global roles or MCP servers) may have changed.
+    pub db_changed: bool,
+}
+
 /// Poll for external state changes using the SQLite database.
 ///
 /// Uses `PRAGMA data_version` for change detection, which increments
@@ -102,13 +112,13 @@ impl Default for SyncState {
 ///
 /// # Returns
 ///
-/// - `Ok(Some(delta))` - Changes detected, apply delta to local state
-/// - `Ok(None)` - No changes detected or not time to poll yet
+/// - `Ok(Some(result))` - Poll was executed; check `db_changed` and `delta`
+/// - `Ok(None)` - Not time to poll yet
 /// - `Err(e)` - Error querying database
 pub fn poll_for_changes(
     sync_state: &mut SyncState,
     db: &mut crate::storage::Database,
-) -> std::io::Result<Option<StateDelta>> {
+) -> std::io::Result<Option<PollResult>> {
     if !sync_state.should_poll() {
         return Ok(None);
     }
@@ -120,7 +130,10 @@ pub fn poll_for_changes(
         .map_err(|e| std::io::Error::other(format!("DB check failed: {e}")))?;
 
     if !changed {
-        return Ok(None);
+        return Ok(Some(PollResult {
+            delta: StateDelta::default(),
+            db_changed: false,
+        }));
     }
 
     debug!("External DB change detected via PRAGMA data_version");
@@ -133,7 +146,10 @@ pub fn poll_for_changes(
 
     sync_state.local_state_snapshot = new_state;
 
-    Ok(if delta.is_empty() { None } else { Some(delta) })
+    Ok(Some(PollResult {
+        delta,
+        db_changed: true,
+    }))
 }
 
 #[cfg(test)]

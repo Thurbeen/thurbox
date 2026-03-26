@@ -1999,8 +1999,23 @@ impl App {
         }
 
         // Poll for external state changes from other thurbox instances (DB-based)
-        if let Ok(Some(delta)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
-            self.handle_external_state_change(delta);
+        if let Ok(Some(result)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
+            if result.db_changed {
+                // Reload global state that lives outside the session/project delta.
+                if let Ok(roles) = self.db.list_global_roles() {
+                    if roles != self.global_roles {
+                        self.global_roles = roles;
+                    }
+                }
+                if let Ok(servers) = self.db.list_global_mcp_servers() {
+                    if servers != self.global_mcp_servers {
+                        self.global_mcp_servers = servers;
+                    }
+                }
+            }
+            if !result.delta.is_empty() {
+                self.handle_external_state_change(result.delta);
+            }
         }
 
         // Poll for VM provisioning results from background thread

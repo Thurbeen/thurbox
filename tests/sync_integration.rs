@@ -440,10 +440,11 @@ fn poll_for_changes_returns_none_when_no_external_changes() {
     // Initialize change tracking
     let _ = db.has_external_changes().unwrap();
 
-    // No external changes — should return None
+    // No external changes — db_changed should be false
     std::thread::sleep(std::time::Duration::from_millis(1));
     let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
-    assert!(result.is_none());
+    assert!(result.is_some());
+    assert!(!result.unwrap().db_changed);
 }
 
 #[test]
@@ -467,9 +468,10 @@ fn poll_for_changes_detects_external_session_add() {
     std::thread::sleep(std::time::Duration::from_millis(1));
     let result = sync::poll_for_changes(&mut sync_state, &mut db_poller).unwrap();
     assert!(result.is_some());
-    let delta = result.unwrap();
-    assert_eq!(delta.added_sessions.len(), 1);
-    assert_eq!(delta.added_sessions[0].name, "External Session");
+    let result = result.unwrap();
+    assert!(result.db_changed);
+    assert_eq!(result.delta.added_sessions.len(), 1);
+    assert_eq!(result.delta.added_sessions[0].name, "External Session");
 }
 
 #[test]
@@ -483,4 +485,53 @@ fn poll_for_changes_respects_interval() {
 
     let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
     assert!(result.is_none());
+}
+
+#[test]
+fn poll_detects_global_role_change_even_when_delta_empty() {
+    use thurbox::session::{RoleConfig, RolePermissions};
+
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let path = temp.path();
+
+    let mut db_poller = Database::open(path).unwrap();
+    let db_writer = Database::open(path).unwrap();
+
+    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_millis(0));
+
+    // Initialize change tracking
+    let _ = db_poller.has_external_changes().unwrap();
+    // Set initial snapshot so first poll doesn't see false positives
+    let initial = db_poller.load_shared_state().unwrap();
+    sync_state.set_initial_snapshot(initial);
+
+    // External writer modifies only the global roles table
+    db_writer
+        .replace_global_roles(&[RoleConfig {
+            name: "ops".to_string(),
+            description: "Operations".to_string(),
+            permissions: RolePermissions {
+                allowed_tools: vec!["Bash".to_string(), "Read".to_string()],
+                ..RolePermissions::default()
+            },
+        }])
+        .unwrap();
+
+    // Poll should detect the DB change even though session/project delta is empty
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    let result = sync::poll_for_changes(&mut sync_state, &mut db_poller).unwrap();
+    assert!(result.is_some());
+    let result = result.unwrap();
+    assert!(result.db_changed);
+    // The session/project delta is empty — only global roles changed
+    assert!(result.delta.is_empty());
+
+    // Verify the poller can read the updated global roles
+    let roles = db_poller.list_global_roles().unwrap();
+    assert_eq!(roles.len(), 1);
+    assert_eq!(roles[0].name, "ops");
+    assert_eq!(
+        roles[0].permissions.allowed_tools,
+        vec!["Bash".to_string(), "Read".to_string()]
+    );
 }
