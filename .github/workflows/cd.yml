@@ -26,7 +26,7 @@ jobs:
 
       - name: Check for releasable commits
         # Use latest main branch of cocogitto-action to get install-only feature
-        uses: cocogitto/cocogitto-action@fe8ace544dfe3291b84b665f242f79a4f206b2a2 # main
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # main
         id: check
         with:
           install-only: true
