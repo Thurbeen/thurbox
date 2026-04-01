@@ -59,7 +59,7 @@ jobs:
           fetch-depth: 0
 
       - name: Create version tag
-        uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         id: bump
         with:
           command: bump
@@ -182,7 +182,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate changelog for release
-        uses: cocogitto/cocogitto-action@9a9fe03b31c47444290c0d7f9b1ee1b44ee13f20 # v4.1.0
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         id: changelog
         with:
           command: changelog
