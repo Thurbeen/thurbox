@@ -45,7 +45,7 @@ toml = "0.8"
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 # System metrics
-sysinfo = "0.34"
+sysinfo = "0.38"
 
 # Error handling
 anyhow = "1.0"
