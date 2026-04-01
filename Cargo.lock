@@ -3081,9 +3081,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tui-term"
-version = "0.3.1"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16f4d2473af6ae50523181a971dd8c8557416ece8ba4fcd2d63331be6f73759c"
+checksum = "6e676ed380f3015b1bbc07ce94c3fa7d7a450a4994b4ea2e1eca531e652bf6c4"
 dependencies = [
  "ratatui-core",
  "ratatui-widgets",
