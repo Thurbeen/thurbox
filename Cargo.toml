@@ -54,7 +54,7 @@ anyhow = "1.0"
 arboard = "3"
 
 # MCP server
-rmcp = { version = "0.15", features = ["server", "transport-io", "transport-streamable-http-server", "schemars"] }
+rmcp = { version = "0.17", features = ["server", "transport-io", "transport-streamable-http-server", "schemars"] }
 serde_json = "1"
 
 # MCP HTTP transport + CLI
