@@ -3,6 +3,8 @@
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
   "automerge": true,
+  "semanticCommitType": "fix",
+  "semanticCommitScope": "deps",
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
