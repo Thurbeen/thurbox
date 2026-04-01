@@ -205,16 +205,23 @@ pub fn format_send_keys(pane_id: &str, bytes: &[u8]) -> String {
     cmd
 }
 
-/// Shell-escape a string for safe inclusion in a tmux command.
+/// Shell-escape a string for safe inclusion in a tmux control mode command.
+///
+/// Tmux control mode is line-delimited — each `\n` starts a new command.
+/// Literal newlines in arguments (e.g. `--append-system-prompt`) would split
+/// the command and corrupt the protocol, so they are replaced with spaces.
 pub fn shell_escape(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
+    // Replace newlines with spaces — tmux control mode is line-delimited,
+    // so embedded newlines would break the protocol.
+    let s = s.replace('\n', " ");
     // If the string contains no special characters, return as-is.
     if s.chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | ','))
     {
-        return s.to_string();
+        return s;
     }
     // Wrap in single quotes, escaping existing single quotes.
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -266,6 +273,21 @@ mod tests {
     #[test]
     fn shell_escape_allows_equals_comma() {
         assert_eq!(shell_escape("key=val,other"), "key=val,other");
+    }
+
+    #[test]
+    fn shell_escape_replaces_newlines() {
+        // Newlines in tmux control mode commands would split the command,
+        // corrupting the protocol. They must be replaced with spaces.
+        assert_eq!(
+            shell_escape("line one\nline two\nline three"),
+            "'line one line two line three'"
+        );
+    }
+
+    #[test]
+    fn shell_escape_newline_only() {
+        assert_eq!(shell_escape("\n"), "' '");
     }
 
     // --- decode_octal tests ---
