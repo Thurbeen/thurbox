@@ -68,7 +68,7 @@ path = "src/bin/thurbox-mcp.rs"
 
 [dev-dependencies]
 tempfile = "3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-tls"] }
 
 # Development tool requirements (install with `cargo binstall` or `cargo install`)
 [package.metadata.dev-tools]
