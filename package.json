@@ -10,7 +10,7 @@
     "fmt:website": "prettier --write 'website/**/*.{html,css,js}'"
   },
   "devDependencies": {
-    "eslint": "^9.0.0",
+    "eslint": "^10.0.0",
     "htmlhint": "^1.1.4",
     "prettier": "^3.0.0",
     "stylelint": "^16.0.0",
