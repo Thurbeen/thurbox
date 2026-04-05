@@ -436,6 +436,7 @@ pub struct App {
     /// Repo paths collected for rsync into the VM (set during provisioning).
     pub(crate) pending_vm_repo_paths: Option<Vec<PathBuf>>,
     pub(crate) pending_base_branch: Option<String>,
+    pub(crate) pending_session_name: Option<String>,
     pub(crate) pending_spawn_config: Option<SessionConfig>,
     pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
     pub(crate) pending_spawn_name: Option<String>,
@@ -613,6 +614,7 @@ impl App {
             pending_normal_repos: Vec::new(),
             pending_vm_repo_paths: None,
             pending_base_branch: None,
+            pending_session_name: None,
             pending_spawn_config: None,
             pending_spawn_worktrees: Vec::new(),
             pending_spawn_name: None,
@@ -977,19 +979,16 @@ impl App {
         self.prepare_spawn_admin(config, Vec::new());
     }
 
-    /// Route session creation through role selection.
+    /// Route session creation through the name modal, then role selection.
     ///
-    /// Assigns a session name, then spawns immediately if no roles or exactly
-    /// one role is configured, or shows the role selector modal for 2+ roles.
+    /// Shows an empty session-name modal. After the user enters a name, spawns
+    /// immediately if no roles or exactly one role is configured, or shows the
+    /// role selector modal for 2+ roles.
     pub(crate) fn prepare_spawn(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
-        let raw_name = self.next_session_name();
-
-        // Show session name modal pre-filled with the default name.
+        // Show session name modal (empty — user types from scratch).
         self.pending_spawn_config = Some(config);
         self.pending_spawn_worktrees = worktrees;
-        let mut modal = modals::SessionNameModal::default();
-        modal.name.set(&raw_name);
-        self.modal = modals::Modal::SessionName(modal);
+        self.modal = modals::Modal::SessionName(modals::SessionNameModal::default());
     }
 
     /// Spawn an admin session, bypassing the name modal.
@@ -1600,6 +1599,7 @@ impl App {
         repo_paths: &[PathBuf],
         new_branch: &str,
         base_branch: &str,
+        session_name: Option<String>,
     ) {
         let mut worktree_infos = Vec::new();
         let mut worktree_paths = Vec::new();
@@ -1638,7 +1638,13 @@ impl App {
             additional_dirs,
             ..SessionConfig::default()
         };
-        self.prepare_spawn(config, worktree_infos);
+
+        if let Some(name) = session_name {
+            // Session name already known (worktree flow) — skip name modal.
+            self.finish_prepare_spawn(name, config, worktree_infos);
+        } else {
+            self.prepare_spawn(config, worktree_infos);
+        }
     }
 
     pub(crate) fn do_spawn_session(

@@ -14,6 +14,23 @@ use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
 use tracing::error;
 
+/// Convert a session name into a git-branch-friendly name.
+///
+/// Lowercases, replaces spaces/underscores with hyphens, drops other
+/// non-alphanumeric chars, collapses consecutive hyphens, and trims
+/// leading/trailing hyphens.
+fn session_name_to_branch(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+        } else if (c == ' ' || c == '-' || c == '_') && !result.ends_with('-') {
+            result.push('-');
+        }
+    }
+    result.trim_matches('-').to_string()
+}
+
 impl App {
     /// Main key handler dispatcher.
     ///
@@ -581,7 +598,7 @@ impl App {
                 let base_branch = bs.branches[bs.index].clone();
                 self.pending_base_branch = Some(base_branch);
                 self.modal =
-                    super::modals::Modal::WorktreeName(super::modals::WorktreeNameModal::default());
+                    super::modals::Modal::SessionName(super::modals::SessionNameModal::default());
             }
             _ => {}
         }
@@ -598,6 +615,7 @@ impl App {
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
                 self.pending_normal_repos.clear();
+                self.pending_session_name = None;
             }
             KeyCode::Enter => {
                 let new_branch = wn.name.value().trim().to_string();
@@ -616,7 +634,13 @@ impl App {
                     } else {
                         return;
                     };
-                    self.spawn_worktree_session(&repo_paths, &new_branch, &base_branch);
+                    let session_name = self.pending_session_name.take();
+                    self.spawn_worktree_session(
+                        &repo_paths,
+                        &new_branch,
+                        &base_branch,
+                        session_name,
+                    );
                 }
             }
             KeyCode::Backspace => wn.name.backspace(),
@@ -637,11 +661,18 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                self.pending_spawn_config = None;
-                self.pending_spawn_worktrees.clear();
-                self.pending_vm_id = None;
-                // Undo the counter increment from prepare_spawn().
-                self.session_counter = self.session_counter.saturating_sub(1);
+                if self.pending_base_branch.is_some() {
+                    // Worktree flow — clean up worktree-specific pending state.
+                    self.pending_base_branch = None;
+                    self.pending_repo_path = None;
+                    self.pending_all_repos = None;
+                    self.pending_normal_repos.clear();
+                } else {
+                    // Normal flow — clean up spawn state.
+                    self.pending_spawn_config = None;
+                    self.pending_spawn_worktrees.clear();
+                    self.pending_vm_id = None;
+                }
             }
             KeyCode::Enter => {
                 let name = sn.name.value().trim().to_string();
@@ -650,7 +681,15 @@ impl App {
                     return;
                 }
                 self.modal.close();
-                if let Some(config) = self.pending_spawn_config.take() {
+                if self.pending_base_branch.is_some() {
+                    // Worktree flow — proceed to branch name input.
+                    let branch = session_name_to_branch(&name);
+                    self.pending_session_name = Some(name);
+                    let mut modal = super::modals::WorktreeNameModal::default();
+                    modal.name.set(&branch);
+                    self.modal = super::modals::Modal::WorktreeName(modal);
+                } else if let Some(config) = self.pending_spawn_config.take() {
+                    // Normal flow — proceed to role selection / spawn.
                     let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
                     self.finish_prepare_spawn(name, config, worktrees);
                 }
@@ -782,8 +821,6 @@ impl App {
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
                 self.pending_vm_id = None;
-                // Undo the counter increment from prepare_spawn()
-                self.session_counter = self.session_counter.saturating_sub(1);
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if rsel.index + 1 < role_count {
@@ -1513,5 +1550,65 @@ fn handle_tool_list_adding_key(list: &mut super::ToolListState, code: KeyCode) {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_name_to_branch;
+
+    #[test]
+    fn basic_conversion() {
+        assert_eq!(session_name_to_branch("My Feature"), "my-feature");
+    }
+
+    #[test]
+    fn multiple_spaces() {
+        assert_eq!(session_name_to_branch("hello   world"), "hello-world");
+    }
+
+    #[test]
+    fn uppercase() {
+        assert_eq!(session_name_to_branch("FOO"), "foo");
+    }
+
+    #[test]
+    fn consecutive_hyphens() {
+        assert_eq!(session_name_to_branch("a--b"), "a-b");
+    }
+
+    #[test]
+    fn trims_hyphens() {
+        assert_eq!(session_name_to_branch(" -trim- "), "trim");
+    }
+
+    #[test]
+    fn underscores_become_hyphens() {
+        assert_eq!(session_name_to_branch("foo_bar"), "foo-bar");
+    }
+
+    #[test]
+    fn strips_special_chars() {
+        assert_eq!(session_name_to_branch("foo@bar!baz"), "foobarbaz");
+    }
+
+    #[test]
+    fn empty_string() {
+        assert_eq!(session_name_to_branch(""), "");
+    }
+
+    #[test]
+    fn mixed_separators() {
+        assert_eq!(session_name_to_branch("a - b _ c"), "a-b-c");
+    }
+
+    #[test]
+    fn only_special_chars() {
+        assert_eq!(session_name_to_branch("@#$%"), "");
+    }
+
+    #[test]
+    fn unicode_alphanumeric() {
+        assert_eq!(session_name_to_branch("café"), "café");
     }
 }

@@ -65,7 +65,6 @@ impl TextInput {
         self.cursor = 0;
     }
 
-    #[allow(dead_code)] // used in tests
     pub fn set(&mut self, value: &str) {
         self.buffer = value.to_string();
         self.cursor = value.chars().count();
