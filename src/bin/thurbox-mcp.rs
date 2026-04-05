@@ -71,8 +71,7 @@ async fn main() -> anyhow::Result<()> {
             let service = StreamableHttpService::new(
                 move || thurbox::mcp::ThurboxMcp::new(&db_path).map_err(std::io::Error::other),
                 Arc::new(LocalSessionManager::default()),
-                StreamableHttpServerConfig::default()
-                    .with_cancellation_token(ct.child_token()),
+                StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
             );
 
             let router = axum::Router::new().nest_service("/mcp", service);
