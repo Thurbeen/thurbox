@@ -5,7 +5,7 @@
   --bg-card: #21262d;
   --bg-code: #0a0e14;
   --bg-hover: #30363d;
-  --bg-nav: rgba(13, 17, 23, 0.95);
+  --bg-nav: rgb(13, 17, 23, 0.95);
 
   /* Text */
   --text-primary: #e6edf3;
@@ -28,7 +28,7 @@
   --term-dot-red: #ff5f57;
   --term-dot-yellow: #febc2e;
   --term-dot-green: #28c840;
-  --term-glow: rgba(86, 212, 221, 0.15);
+  --term-glow: rgb(86, 212, 221, 0.15);
 
   /* Typography */
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;

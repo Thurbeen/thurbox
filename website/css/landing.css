@@ -45,7 +45,7 @@
 .hero-demo .terminal-frame {
   box-shadow:
     0 0 60px var(--term-glow),
-    0 20px 60px rgba(0, 0, 0, 0.5);
+    0 20px 60px rgb(0, 0, 0, 0.5);
 }
 
 .hero-demo video {

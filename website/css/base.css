@@ -134,6 +134,6 @@ hr {
 }
 
 ::selection {
-  background: rgba(86, 212, 221, 0.3);
+  background: rgb(86, 212, 221, 0.3);
   color: var(--text-primary);
 }
