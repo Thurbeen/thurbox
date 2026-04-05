@@ -41,12 +41,9 @@ impl ThurboxMcp {
 #[tool_handler]
 impl ServerHandler for ThurboxMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "Thurbox MCP server — manage roles, MCP servers, and sessions.".to_string(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(
+                "Thurbox MCP server — manage roles, MCP servers, and sessions.",
+            )
     }
 }
