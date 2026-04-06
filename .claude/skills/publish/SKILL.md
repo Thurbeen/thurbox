@@ -1,15 +1,17 @@
 ---
 name: publish
-description: Refactor recent changes then ship as a PR with auto-merge.
+description: Refactor recent changes, ship as a PR with auto-merge, then monitor CI and auto-fix failures until merged.
 user-invocable: true
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep, Agent
+allowed-tools: Read, Edit, Write, Bash, Glob, Grep, Agent, WebFetch
 ---
 
 ## Publish
 
 Sync, refactor recent changes, sync again, then ship the
-current branch as a PR with auto-merge enabled. Be thorough
-on refactoring but efficient on shipping.
+current branch as a PR with auto-merge enabled. After
+shipping, monitor CI checks and proactively fix any failures
+until the PR merges. Be thorough on refactoring but efficient
+on shipping.
 
 **Input:** `$ARGUMENTS` optionally describes what was done
 (used for the commit message and PR description).
@@ -129,11 +131,99 @@ If conflicts, STOP and show files. Otherwise, in parallel:
 
 ---
 
+### Phase 3 — Monitor & Validate
+
+After shipping, monitor the PR until it merges or a hard-stop
+condition is reached. Be proactive: if CI fails, diagnose and
+fix the issue, then push again.
+
+This phase adapts to the project: not all repos have CI
+checks, deployments, or auto-merge. Detect what applies and
+skip what doesn't.
+
+#### Step 0 — Detect project capabilities
+
+```text
+Run in parallel:
+- gh pr checks --json name,state  → HAS_CHECKS (non-empty list)
+- gh pr view --json autoMergeRequest → HAS_AUTO_MERGE (non-null)
+
+If no checks and no auto-merge:
+    Skip monitoring entirely → go to Final Output
+If no checks but auto-merge is set:
+    Wait for merge only (skip Fix step entirely)
+```
+
+#### Monitor loop
+
+```text
+fix_count = 0
+wait = 30  # seconds
+round = 0
+
+while round < 10:
+    round += 1
+    sleep <wait> seconds
+    wait = min(wait * 1.5, 120)
+
+    Run in parallel:
+    - gh pr view --json state,mergeStateStatus,mergeable
+    - gh pr checks --json name,state,conclusion,detailsUrl
+
+    Evaluate:
+
+    A) PR state == MERGED → go to Validate step
+    B) All checks passing, merge pending → continue loop
+    C) One or more checks failed → go to Fix step
+    D) PR closed (not merged) → STOP: "PR was closed"
+    E) Merge conflicts → STOP: "Merge conflicts — rebase manually"
+```
+
+#### Fix step
+
+```text
+if fix_count >= 3:
+    STOP: "CI still failing after 3 fix attempts.
+    Failing checks: <list>. Manual intervention required."
+
+fix_count += 1
+
+1. Identify failed check(s) from gh pr checks output
+2. For each failed check:
+   a. Extract run-id from the details URL
+   b. Get log: gh run view <run-id> --log-failed
+   c. Read error output and diagnose root cause
+3. Apply fixes to the codebase
+4. Stage and commit:
+   fix: resolve CI failure in <check-name>
+5. Fetch + rebase:
+   git fetch origin && git rebase origin/<DEFAULT_BRANCH>
+6. Push: git push --force-with-lease origin HEAD
+7. Reset wait = 30
+8. Continue monitor loop
+```
+
+#### Validate step
+
+After the PR merges:
+
+1. Confirm merge: `gh pr view --json state` → assert MERGED
+2. Check for deployment workflows:
+   `gh run list --branch <DEFAULT_BRANCH> --limit 5 --json name,status,conclusion`
+3. If a deployment run is found and in progress, poll every
+   30s (max 5 times) until it completes
+4. If no deployment runs exist, skip — not all projects deploy
+
+---
+
 ### Final Output
 
-Print a short summary (max 5 lines):
+Print a summary (max 8 lines):
 
 - Refactor: Pass 1 + Pass 2 changes (counts)
 - Commit: new or amended, with message
 - PR: URL
-- Auto-merge: enabled
+- Auto-merge: enabled / not configured
+- CI: passed (or fixed N times) / no checks
+- Merge: confirmed / pending
+- Deploy: status / no deployment detected
