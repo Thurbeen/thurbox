@@ -329,6 +329,11 @@ pub struct SessionConfig {
     /// When set, the devcontainer backend uses this to spawn the session on the
     /// specific container. Ensures each session is tied to its own container.
     pub container_id: Option<String>,
+    /// Fork from an existing session's conversation.
+    ///
+    /// When set, the CLI is invoked with `--resume <fork_session_id> --fork-session`
+    /// to create a new session that branches from the parent's conversation history.
+    pub fork_session_id: Option<String>,
 }
 
 /// VM state machine for sandboxed sessions.

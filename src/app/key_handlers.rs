@@ -193,6 +193,13 @@ impl App {
                     self.open_settings();
                     return;
                 }
+                KeyCode::Char('f') => match self.focus {
+                    InputFocus::Terminal => {} // forward to PTY (shell forward-search)
+                    _ => {
+                        self.fork_active_session();
+                        return;
+                    }
+                },
                 KeyCode::Char('r') => match self.focus {
                     InputFocus::Terminal => {} // forward to PTY (e.g. bash reverse search)
                     _ => {
@@ -672,6 +679,7 @@ impl App {
                     self.pending_spawn_config = None;
                     self.pending_spawn_worktrees.clear();
                     self.pending_vm_id = None;
+                    self.pending_fork = false;
                 }
             }
             KeyCode::Enter => {
@@ -689,9 +697,15 @@ impl App {
                     modal.name.set(&branch);
                     self.modal = super::modals::Modal::WorktreeName(modal);
                 } else if let Some(config) = self.pending_spawn_config.take() {
-                    // Normal flow — proceed to role selection / spawn.
                     let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                    self.finish_prepare_spawn(name, config, worktrees);
+                    if self.pending_fork {
+                        // Fork flow — role already set, spawn directly.
+                        self.pending_fork = false;
+                        self.do_spawn_session(name, &config, worktrees, false);
+                    } else {
+                        // Normal flow — proceed to role selection / spawn.
+                        self.finish_prepare_spawn(name, config, worktrees);
+                    }
                 }
             }
             KeyCode::Backspace => sn.name.backspace(),

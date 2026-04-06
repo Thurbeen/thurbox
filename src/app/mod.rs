@@ -439,6 +439,7 @@ pub struct App {
     pub(crate) pending_session_name: Option<String>,
     pub(crate) pending_spawn_config: Option<SessionConfig>,
     pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
+    pub(crate) pending_fork: bool,
     pub(crate) pending_spawn_name: Option<String>,
     pub(crate) show_settings: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -617,6 +618,7 @@ impl App {
             pending_session_name: None,
             pending_spawn_config: None,
             pending_spawn_worktrees: Vec::new(),
+            pending_fork: false,
             pending_spawn_name: None,
             show_settings: false,
             settings_tab: SettingsTab::Roles,
@@ -1066,6 +1068,7 @@ impl App {
             permissions,
             vm_id: session.info.vm_id.clone(),
             container_id: session.info.container_id.clone(),
+            fork_session_id: None,
         };
 
         let (rows, cols) = self.content_area_size();
@@ -1080,6 +1083,42 @@ impl App {
                 self.set_error(format!("Failed to restart session: {e:#}"));
             }
         }
+    }
+
+    fn fork_active_session(&mut self) {
+        let Some(session) = self.sessions.get(self.active_index) else {
+            return;
+        };
+
+        let role = session.info.role.clone();
+        let cwd = session.info.cwd.clone();
+        let additional_dirs = session.info.additional_dirs.clone();
+        let worktrees = session.info.worktrees.clone();
+        let vm_id = session.info.vm_id.clone();
+        let container_id = session.info.container_id.clone();
+        let source_name = session.info.name.clone();
+        let fork_session_id = session.info.agent_session_id.clone();
+
+        let permissions = self.resolve_role_permissions(&role);
+        let config = SessionConfig {
+            resume_session_id: None,
+            agent_session_id: None,
+            cwd,
+            additional_dirs,
+            role,
+            permissions,
+            vm_id,
+            container_id,
+            fork_session_id,
+        };
+
+        self.pending_spawn_config = Some(config);
+        self.pending_spawn_worktrees = worktrees;
+        self.pending_fork = true;
+
+        let mut sn = modals::SessionNameModal::default();
+        sn.name.set(&format!("{source_name}-fork"));
+        self.modal = modals::Modal::SessionName(sn);
     }
 
     fn close_active_session(&mut self) {
@@ -1224,6 +1263,7 @@ impl App {
             permissions,
             vm_id: None,
             container_id: None,
+            fork_session_id: None,
         };
 
         let session_name = deleted.name.clone();
@@ -2338,6 +2378,7 @@ impl App {
                             permissions,
                             vm_id: None,
                             container_id: None,
+                            fork_session_id: None,
                         };
 
                         let (rows, cols) = self.content_area_size();
@@ -2936,6 +2977,7 @@ impl App {
                 permissions,
                 vm_id: None,
                 container_id: None,
+                fork_session_id: None,
             };
             self.do_spawn_session(name, &config, worktrees, false);
         }
@@ -3170,6 +3212,7 @@ impl App {
                 permissions,
                 vm_id: resolved_vm_id,
                 container_id: resolved_container_id,
+                fork_session_id: None,
             };
             self.do_spawn_session(name, &config, worktrees, false);
             info!(session = %session_id, "Session restored (respawned with --resume)");
@@ -3235,6 +3278,7 @@ impl App {
                 permissions,
                 vm_id: None,
                 container_id: None,
+                fork_session_id: None,
             };
 
             warn!(
@@ -3338,6 +3382,7 @@ impl App {
             permissions,
             vm_id: session.info.vm_id.clone(),
             container_id: session.info.container_id.clone(),
+            fork_session_id: None,
         };
 
         let (rows, cols) = self.content_area_size();

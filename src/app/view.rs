@@ -474,6 +474,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+A", "Create admin session"),
         help_line("Ctrl+D", "Delete focused session"),
         help_line("Ctrl+R", "Restart active session"),
+        help_line("Ctrl+F", "Fork active session"),
         help_line("Ctrl+P", "Scheduled commands (list/cancel/new)"),
         help_line("Ctrl+Z", "Undo last delete"),
         help_line("Ctrl+U", "Restore deleted sessions"),

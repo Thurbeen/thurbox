@@ -332,6 +332,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
 | `Ctrl+E` | Edit settings (roles, MCP servers) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
+| `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |

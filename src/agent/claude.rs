@@ -23,7 +23,11 @@ impl AgentProvider for ClaudeProvider {
 fn build_claude_args(config: &SessionConfig) -> Vec<String> {
     let mut args = Vec::new();
 
-    if let Some(ref session_id) = config.resume_session_id {
+    if let Some(ref fork_id) = config.fork_session_id {
+        args.push("--resume".to_string());
+        args.push(fork_id.clone());
+        args.push("--fork-session".to_string());
+    } else if let Some(ref session_id) = config.resume_session_id {
         args.push("--resume".to_string());
         args.push(session_id.clone());
     } else if let Some(ref session_id) = config.agent_session_id {
@@ -102,6 +106,46 @@ mod tests {
         assert_eq!(
             args,
             vec!["--resume", "resume-id", "--permission-mode", "default"]
+        );
+    }
+
+    #[test]
+    fn build_args_fork_session() {
+        let config = SessionConfig {
+            fork_session_id: Some("parent-id".to_string()),
+            agent_session_id: Some("new-id".to_string()),
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec![
+                "--resume",
+                "parent-id",
+                "--fork-session",
+                "--permission-mode",
+                "default"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_args_fork_takes_precedence_over_resume() {
+        let config = SessionConfig {
+            fork_session_id: Some("fork-id".to_string()),
+            resume_session_id: Some("resume-id".to_string()),
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        assert_eq!(
+            args,
+            vec![
+                "--resume",
+                "fork-id",
+                "--fork-session",
+                "--permission-mode",
+                "default"
+            ]
         );
     }
 
