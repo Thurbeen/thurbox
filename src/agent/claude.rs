@@ -65,6 +65,12 @@ fn build_claude_args(config: &SessionConfig) -> Vec<String> {
         args.push(dir.display().to_string());
     }
 
+    if !config.mcp_servers.is_empty() {
+        let doc = crate::session::McpServerConfig::to_mcp_json(&config.mcp_servers);
+        args.push("--mcp-config".to_string());
+        args.push(doc.to_string());
+    }
+
     args
 }
 
@@ -291,6 +297,33 @@ mod tests {
                 "/extra",
             ]
         );
+    }
+
+    #[test]
+    fn build_args_with_mcp_servers() {
+        use crate::session::McpServerConfig;
+
+        let config = SessionConfig {
+            mcp_servers: vec![McpServerConfig {
+                name: "test-server".to_string(),
+                command: "cmd".to_string(),
+                args: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            ..SessionConfig::default()
+        };
+        let args = build_claude_args(&config);
+        let idx = args.iter().position(|a| a == "--mcp-config").unwrap();
+        let json: serde_json::Value = serde_json::from_str(&args[idx + 1]).unwrap();
+        // JSON structure correctness is tested in McpServerConfig::to_mcp_json tests.
+        assert!(json["mcpServers"]["test-server"].is_object());
+    }
+
+    #[test]
+    fn build_args_empty_mcp_servers_no_flag() {
+        let config = SessionConfig::default();
+        let args = build_claude_args(&config);
+        assert!(!args.contains(&"--mcp-config".to_string()));
     }
 
     #[test]

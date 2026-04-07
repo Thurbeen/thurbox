@@ -122,6 +122,12 @@ pub struct RoleSelectorModal {
     pub index: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct McpServerPickerModal {
+    pub index: usize,
+    pub selected: Vec<bool>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleEditorView {
     List,
@@ -257,6 +263,7 @@ pub enum Modal {
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
     RoleSelector(RoleSelectorModal),
+    McpServerPicker(McpServerPickerModal),
     ContainerfilePicker(ContainerfilePickerModal),
     RestoreSessions(RestoreSessionsModal),
     ScheduleCommand(ScheduleCommandModal),

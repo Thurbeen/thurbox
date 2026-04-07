@@ -440,6 +440,7 @@ pub struct App {
     pub(crate) pending_spawn_config: Option<SessionConfig>,
     pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
     pub(crate) pending_fork: bool,
+    pub(crate) pending_restart: bool,
     pub(crate) pending_spawn_name: Option<String>,
     pub(crate) show_settings: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -619,6 +620,7 @@ impl App {
             pending_spawn_config: None,
             pending_spawn_worktrees: Vec::new(),
             pending_fork: false,
+            pending_restart: false,
             pending_spawn_name: None,
             show_settings: false,
             settings_tab: SettingsTab::Roles,
@@ -1016,13 +1018,13 @@ impl App {
                 // No roles configured — spawn with default developer permissions.
                 config.role = DEFAULT_ROLE_NAME.to_string();
                 config.permissions = default_developer_permissions();
-                self.do_spawn_session(name, &config, worktrees, false);
+                self.maybe_show_mcp_picker(name, config, worktrees, false);
             }
             1 => {
                 // Exactly one role — auto-assign it.
                 config.role = roles[0].name.clone();
                 config.permissions = roles[0].permissions.clone();
-                self.do_spawn_session(name, &config, worktrees, false);
+                self.maybe_show_mcp_picker(name, config, worktrees, false);
             }
             _ => {
                 // 2+ roles — show the role selector.
@@ -1032,6 +1034,36 @@ impl App {
                 self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal::default());
             }
         }
+    }
+
+    /// Route through MCP server picker if global MCP servers exist, otherwise spawn directly.
+    ///
+    /// Skipped for admin sessions and VM/container sessions (which get MCP servers
+    /// via `.mcp.json` written during provisioning).
+    fn maybe_show_mcp_picker(
+        &mut self,
+        name: String,
+        config: SessionConfig,
+        worktrees: Vec<WorktreeInfo>,
+        is_admin: bool,
+    ) {
+        let is_vm_or_container =
+            self.pending_vm_id.is_some() || self.pending_container_id.is_some();
+        if is_admin || is_vm_or_container || self.global_mcp_servers.is_empty() {
+            self.do_spawn_session(name, &config, worktrees, is_admin);
+        } else {
+            self.pending_spawn_name = Some(name);
+            self.pending_spawn_config = Some(config);
+            self.pending_spawn_worktrees = worktrees;
+            self.open_mcp_picker();
+        }
+    }
+
+    /// Show the MCP server picker modal with all servers selected by default.
+    fn open_mcp_picker(&mut self) {
+        let selected = vec![true; self.global_mcp_servers.len()];
+        self.modal =
+            modals::Modal::McpServerPicker(modals::McpServerPickerModal { index: 0, selected });
     }
 
     /// Continue admin spawn — auto-assigns admin permissions, bypasses role selector.
@@ -1069,8 +1101,20 @@ impl App {
             vm_id: session.info.vm_id.clone(),
             container_id: session.info.container_id.clone(),
             fork_session_id: None,
+            mcp_servers: vec![],
         };
 
+        if self.global_mcp_servers.is_empty() {
+            self.do_restart(config);
+        } else {
+            self.pending_spawn_config = Some(config);
+            self.pending_restart = true;
+            self.open_mcp_picker();
+        }
+    }
+
+    /// Execute the actual restart with the finalized config.
+    fn do_restart(&mut self, config: SessionConfig) {
         let (rows, cols) = self.content_area_size();
         let session = &mut self.sessions[self.active_index];
         match session.restart(&config, rows, cols) {
@@ -1083,6 +1127,7 @@ impl App {
                 self.set_error(format!("Failed to restart session: {e:#}"));
             }
         }
+        self.pending_restart = false;
     }
 
     fn fork_active_session(&mut self) {
@@ -1110,6 +1155,7 @@ impl App {
             vm_id,
             container_id,
             fork_session_id,
+            mcp_servers: vec![],
         };
 
         self.pending_spawn_config = Some(config);
@@ -1264,6 +1310,7 @@ impl App {
             vm_id: None,
             container_id: None,
             fork_session_id: None,
+            mcp_servers: vec![],
         };
 
         let session_name = deleted.name.clone();
@@ -2379,6 +2426,7 @@ impl App {
                             vm_id: None,
                             container_id: None,
                             fork_session_id: None,
+                            mcp_servers: vec![],
                         };
 
                         let (rows, cols) = self.content_area_size();
@@ -2978,6 +3026,7 @@ impl App {
                 vm_id: None,
                 container_id: None,
                 fork_session_id: None,
+                mcp_servers: vec![],
             };
             self.do_spawn_session(name, &config, worktrees, false);
         }
@@ -3213,6 +3262,7 @@ impl App {
                 vm_id: resolved_vm_id,
                 container_id: resolved_container_id,
                 fork_session_id: None,
+                mcp_servers: vec![],
             };
             self.do_spawn_session(name, &config, worktrees, false);
             info!(session = %session_id, "Session restored (respawned with --resume)");
@@ -3279,6 +3329,7 @@ impl App {
                 vm_id: None,
                 container_id: None,
                 fork_session_id: None,
+                mcp_servers: vec![],
             };
 
             warn!(
@@ -3383,6 +3434,7 @@ impl App {
             vm_id: session.info.vm_id.clone(),
             container_id: session.info.container_id.clone(),
             fork_session_id: None,
+            mcp_servers: vec![],
         };
 
         let (rows, cols) = self.content_area_size();

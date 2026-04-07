@@ -28,23 +28,7 @@ pub(super) fn write_vm_mcp_json(
         return Ok(());
     }
 
-    // Build the .mcp.json structure Claude Code expects.
-    let mut servers = serde_json::Map::new();
-    for srv in mcp_servers {
-        let mut entry = serde_json::Map::new();
-        entry.insert(
-            "command".to_string(),
-            serde_json::Value::String(srv.command.clone()),
-        );
-        if !srv.args.is_empty() {
-            entry.insert("args".to_string(), serde_json::json!(srv.args));
-        }
-        if !srv.env.is_empty() {
-            entry.insert("env".to_string(), serde_json::json!(srv.env));
-        }
-        servers.insert(srv.name.clone(), serde_json::Value::Object(entry));
-    }
-    let doc = serde_json::json!({ "mcpServers": servers });
+    let doc = crate::session::McpServerConfig::to_mcp_json(mcp_servers);
     let json_str = serde_json::to_string_pretty(&doc)?;
 
     let key_path = instance.ssh_key_path();
@@ -105,23 +89,7 @@ pub(super) fn write_container_mcp_json(
 
     let docker_id = docker_container_id;
 
-    // Build the .mcp.json structure Claude Code expects.
-    let mut servers = serde_json::Map::new();
-    for srv in mcp_servers {
-        let mut entry = serde_json::Map::new();
-        entry.insert(
-            "command".to_string(),
-            serde_json::Value::String(srv.command.clone()),
-        );
-        if !srv.args.is_empty() {
-            entry.insert("args".to_string(), serde_json::json!(srv.args));
-        }
-        if !srv.env.is_empty() {
-            entry.insert("env".to_string(), serde_json::json!(srv.env));
-        }
-        servers.insert(srv.name.clone(), serde_json::Value::Object(entry));
-    }
-    let doc = serde_json::json!({ "mcpServers": servers });
+    let doc = crate::session::McpServerConfig::to_mcp_json(mcp_servers);
     let json_str = serde_json::to_string_pretty(&doc)?;
 
     let dest = container_cwd.join(".mcp.json");

@@ -4,6 +4,7 @@ pub mod info_panel;
 pub mod layout;
 pub mod links;
 pub mod mcp_editor_modal;
+pub mod mcp_server_picker_modal;
 pub mod project_list;
 pub mod repo_picker_modal;
 pub mod repo_selector_modal;

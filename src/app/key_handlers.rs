@@ -137,6 +137,12 @@ impl App {
             return;
         }
 
+        // MCP server picker modal captures all input
+        if matches!(self.modal, super::modals::Modal::McpServerPicker(_)) {
+            self.handle_mcp_server_picker_key(code);
+            return;
+        }
+
         // Repo picker modal captures all input
         if matches!(self.modal, super::modals::Modal::RepoPicker(_)) {
             self.handle_repo_picker_key(code);
@@ -854,6 +860,66 @@ impl App {
                     if let Some(role) = self.global_roles.get(role_index) {
                         config.role = role.name.clone();
                         config.permissions = role.permissions.clone();
+                        let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                        self.maybe_show_mcp_picker(name, config, worktrees, false);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mcp_server_picker_key(&mut self, code: KeyCode) {
+        let server_count = self.global_mcp_servers.len();
+        let super::modals::Modal::McpServerPicker(ref mut msp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+                self.pending_spawn_config = None;
+                self.pending_spawn_worktrees.clear();
+                self.pending_spawn_name = None;
+                self.pending_restart = false;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if msp.index + 1 < server_count {
+                    msp.index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                msp.index = msp.index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') => {
+                if let Some(sel) = msp.selected.get_mut(msp.index) {
+                    *sel = !*sel;
+                }
+            }
+            KeyCode::Enter => {
+                // Collect selected MCP servers.
+                let selected_servers: Vec<_> = self
+                    .global_mcp_servers
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| msp.selected.get(*i).copied().unwrap_or(false))
+                    .map(|(_, s)| s.clone())
+                    .collect();
+                self.modal.close();
+
+                if self.pending_restart {
+                    // Restart flow
+                    if let Some(mut config) = self.pending_spawn_config.take() {
+                        config.mcp_servers = selected_servers;
+                        self.do_restart(config);
+                    }
+                    self.pending_restart = false;
+                } else {
+                    // New session / fork flow
+                    if let (Some(mut config), Some(name)) = (
+                        self.pending_spawn_config.take(),
+                        self.pending_spawn_name.take(),
+                    ) {
+                        config.mcp_servers = selected_servers;
                         let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
                         self.do_spawn_session(name, &config, worktrees, false);
                     }

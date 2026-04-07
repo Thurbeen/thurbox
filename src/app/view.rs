@@ -15,10 +15,10 @@ use crate::session::SessionInfo;
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
-    branch_selector_modal, containerfile_picker, info_panel, layout, project_list,
-    restore_sessions_modal, role_editor_modal, role_selector_modal, schedule_command_modal,
-    scheduled_commands_list_modal, session_mode_modal, session_name_modal, status_bar,
-    terminal_view, worktree_name_modal,
+    branch_selector_modal, containerfile_picker, info_panel, layout, mcp_server_picker_modal,
+    project_list, restore_sessions_modal, role_editor_modal, role_selector_modal,
+    schedule_command_modal, scheduled_commands_list_modal, session_mode_modal, session_name_modal,
+    status_bar, terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -256,6 +256,18 @@ impl App {
                 &role_selector_modal::RoleSelectorState {
                     roles: &self.global_roles,
                     selected_index: rsel.index,
+                },
+            );
+        }
+
+        // MCP server picker modal
+        if let super::modals::Modal::McpServerPicker(ref msp) = self.modal {
+            mcp_server_picker_modal::render_mcp_server_picker_modal(
+                frame,
+                &mcp_server_picker_modal::McpServerPickerState {
+                    servers: &self.global_mcp_servers,
+                    selected: &msp.selected,
+                    index: msp.index,
                 },
             );
         }

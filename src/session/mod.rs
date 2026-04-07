@@ -156,6 +156,31 @@ pub struct McpServerConfig {
     pub env: HashMap<String, String>,
 }
 
+impl McpServerConfig {
+    /// Build the `{"mcpServers": { ... }}` JSON document that Claude Code expects.
+    ///
+    /// Used by `--mcp-config` CLI flag (local sessions) and `.mcp.json` file
+    /// generation (VM/container sessions).
+    pub fn to_mcp_json(servers: &[Self]) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for srv in servers {
+            let mut entry = serde_json::Map::new();
+            entry.insert(
+                "command".into(),
+                serde_json::Value::String(srv.command.clone()),
+            );
+            if !srv.args.is_empty() {
+                entry.insert("args".into(), serde_json::json!(srv.args));
+            }
+            if !srv.env.is_empty() {
+                entry.insert("env".into(), serde_json::json!(srv.env));
+            }
+            map.insert(srv.name.clone(), serde_json::Value::Object(entry));
+        }
+        serde_json::json!({ "mcpServers": map })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub repo_path: PathBuf,
@@ -334,6 +359,12 @@ pub struct SessionConfig {
     /// When set, the CLI is invoked with `--resume <fork_session_id> --fork-session`
     /// to create a new session that branches from the parent's conversation history.
     pub fork_session_id: Option<String>,
+    /// MCP servers to pass to Claude Code via `--mcp-config`.
+    ///
+    /// Populated from the MCP server picker during session creation/restart/fork.
+    /// For local sessions these are passed as a CLI flag; for VM/container sessions
+    /// they are written to `.mcp.json` in the remote working directory.
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 /// VM state machine for sandboxed sessions.
@@ -837,5 +868,70 @@ mod tests {
             PathBuf::from("/repo/.git/thurbox-worktrees/feat")
         );
         assert_eq!(wt.branch, "feat");
+    }
+
+    #[test]
+    fn to_mcp_json_with_all_fields() {
+        let servers = vec![McpServerConfig {
+            name: "github".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "server-github".to_string()],
+            env: HashMap::from([("TOKEN".to_string(), "ghp_xxx".to_string())]),
+        }];
+        let doc = McpServerConfig::to_mcp_json(&servers);
+        assert_eq!(doc["mcpServers"]["github"]["command"], "npx");
+        assert_eq!(
+            doc["mcpServers"]["github"]["args"],
+            serde_json::json!(["-y", "server-github"])
+        );
+        assert_eq!(
+            doc["mcpServers"]["github"]["env"],
+            serde_json::json!({"TOKEN": "ghp_xxx"})
+        );
+    }
+
+    #[test]
+    fn to_mcp_json_omits_empty_args_and_env() {
+        let servers = vec![McpServerConfig {
+            name: "simple".to_string(),
+            command: "/usr/bin/server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+        }];
+        let doc = McpServerConfig::to_mcp_json(&servers);
+        assert_eq!(doc["mcpServers"]["simple"]["command"], "/usr/bin/server");
+        assert!(doc["mcpServers"]["simple"].get("args").is_none());
+        assert!(doc["mcpServers"]["simple"].get("env").is_none());
+    }
+
+    #[test]
+    fn to_mcp_json_empty_servers() {
+        let doc = McpServerConfig::to_mcp_json(&[]);
+        assert_eq!(doc["mcpServers"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn to_mcp_json_multiple_servers() {
+        let servers = vec![
+            McpServerConfig {
+                name: "a".to_string(),
+                command: "cmd-a".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            McpServerConfig {
+                name: "b".to_string(),
+                command: "cmd-b".to_string(),
+                args: vec!["--flag".to_string()],
+                env: HashMap::new(),
+            },
+        ];
+        let doc = McpServerConfig::to_mcp_json(&servers);
+        assert_eq!(doc["mcpServers"]["a"]["command"], "cmd-a");
+        assert_eq!(doc["mcpServers"]["b"]["command"], "cmd-b");
+        assert_eq!(
+            doc["mcpServers"]["b"]["args"],
+            serde_json::json!(["--flag"])
+        );
     }
 }
