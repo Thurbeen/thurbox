@@ -145,6 +145,18 @@ pub struct RoleConfig {
     pub permissions: RolePermissions,
 }
 
+/// Skill configuration — a named reference to a local skill directory.
+///
+/// Skills are directories containing a `SKILL.md` file that Claude Code
+/// auto-discovers from `~/.claude/skills/` (global) or `.claude/skills/`
+/// (project-level). Thurbox symlinks selected skills into the session's
+/// `.claude/skills/` before spawning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillConfig {
+    pub name: String,
+    pub path: PathBuf,
+}
+
 /// MCP server configuration matching Claude Code's `mcpServers` format.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerConfig {
@@ -365,6 +377,12 @@ pub struct SessionConfig {
     /// For local sessions these are passed as a CLI flag; for VM/container sessions
     /// they are written to `.mcp.json` in the remote working directory.
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Skills to symlink into the session's `.claude/skills/` directory.
+    ///
+    /// Populated from the skill picker during session creation. Each skill
+    /// directory is symlinked into the working directory before spawning
+    /// so Claude Code auto-discovers them.
+    pub skills: Vec<SkillConfig>,
 }
 
 /// VM state machine for sandboxed sessions.

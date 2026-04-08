@@ -1,4 +1,4 @@
-//! Settings overlay: tabbed list of global Roles and MCP Servers.
+//! Settings overlay: tabbed list of global Roles, MCP Servers, and Skills.
 
 use ratatui::{
     style::Style,
@@ -11,7 +11,7 @@ use super::centered_fixed_height_rect;
 use super::render_modal_frame;
 use super::theme::Theme;
 use crate::app::SettingsTab;
-use crate::session::{McpServerConfig, RoleConfig};
+use crate::session::{McpServerConfig, RoleConfig, SkillConfig};
 
 /// State needed to render the settings overlay.
 pub struct SettingsOverlayState<'a> {
@@ -20,6 +20,8 @@ pub struct SettingsOverlayState<'a> {
     pub role_index: usize,
     pub mcp_servers: &'a [McpServerConfig],
     pub mcp_index: usize,
+    pub skills: &'a [SkillConfig],
+    pub skill_index: usize,
 }
 
 pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) {
@@ -43,11 +45,18 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
     } else {
         Style::default().fg(Theme::TEXT_MUTED)
     };
+    let skills_style = if state.tab == SettingsTab::Skills {
+        Theme::focused_title()
+    } else {
+        Style::default().fg(Theme::TEXT_MUTED)
+    };
 
     let tab_line = Line::from(vec![
         Span::styled(" [Roles] ", roles_style),
         Span::styled("  ", Style::default()),
         Span::styled("[MCP Servers] ", mcp_style),
+        Span::styled("  ", Style::default()),
+        Span::styled("[Skills] ", skills_style),
     ]);
     frame.render_widget(Paragraph::new(tab_line), tab_area);
 
@@ -110,6 +119,37 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
                             format!("{prefix}{}", server.name),
                             style,
                         )))
+                    })
+                    .collect();
+                frame.render_widget(List::new(items), list_area);
+            }
+        }
+        SettingsTab::Skills => {
+            if state.skills.is_empty() {
+                let empty = Paragraph::new(Line::from(Span::styled(
+                    "  No skills configured. Press 'a' to add.",
+                    Style::default().fg(Theme::TEXT_MUTED),
+                )));
+                frame.render_widget(empty, list_area);
+            } else {
+                let items: Vec<ListItem> = state
+                    .skills
+                    .iter()
+                    .enumerate()
+                    .map(|(i, skill)| {
+                        let style = if i == state.skill_index {
+                            Theme::focused_title()
+                        } else {
+                            Style::default().fg(Theme::TEXT_PRIMARY)
+                        };
+                        let prefix = if i == state.skill_index { "▸ " } else { "  " };
+                        ListItem::new(Line::from(vec![
+                            Span::styled(format!("{prefix}{}", skill.name), style),
+                            Span::styled(
+                                format!("  {}", skill.path.display()),
+                                Style::default().fg(Theme::TEXT_MUTED),
+                            ),
+                        ]))
                     })
                     .collect();
                 frame.render_widget(List::new(items), list_area);

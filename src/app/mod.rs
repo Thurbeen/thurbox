@@ -22,7 +22,7 @@ use crate::git;
 use crate::session::{
     default_developer_permissions, default_developer_role, McpServerConfig, RoleConfig,
     RolePermissions, ScheduledCommand, SessionCommand, SessionConfig, SessionId, SessionInfo,
-    SessionStatus, WorktreeInfo, DEFAULT_ROLE_NAME,
+    SessionStatus, SkillConfig, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
@@ -389,6 +389,14 @@ pub(crate) enum TerminalView {
     Shell,
 }
 
+/// Which field is focused in the skill editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SkillEditorField {
+    #[default]
+    Name,
+    Path,
+}
+
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
 struct PendingDelete {
     session: Session,
@@ -463,6 +471,12 @@ pub struct App {
     pub(crate) mcp_editor_args: ToolListState,
     pub(crate) mcp_editor_env: ToolListState,
     pub(crate) mcp_editor_editing_index: Option<usize>,
+    pub(crate) show_skill_editor: bool,
+    pub(crate) skill_editor_name: TextInput,
+    pub(crate) skill_editor_path: TextInput,
+    pub(crate) skill_editor_field: SkillEditorField,
+    pub(crate) skill_editor_editing_index: Option<usize>,
+    pub(crate) skill_editor_path_suggestion: Option<String>,
     /// Snapshot of role editor fields at open time for dirty detection.
     pub(crate) role_editor_snapshot: Option<EditorSnapshot>,
     /// Snapshot of MCP editor fields at open time for dirty detection.
@@ -556,6 +570,10 @@ pub struct App {
     pub(crate) global_mcp_servers: Vec<McpServerConfig>,
     /// Index into global_mcp_servers for the MCP server list in the edit modal.
     pub(crate) mcp_server_list_index: usize,
+    /// Cached global skills (loaded from DB, used for session spawning and editing).
+    pub(crate) global_skills: Vec<SkillConfig>,
+    /// Index into global_skills for the skill list in the edit modal.
+    pub(crate) skill_list_index: usize,
     /// Cached pending scheduled commands, refreshed every ~1 second.
     pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
 }
@@ -585,6 +603,9 @@ impl App {
 
         // Load global MCP servers from DB.
         let global_mcp_servers = db.list_global_mcp_servers().unwrap_or_default();
+
+        // Load global skills from DB.
+        let global_skills = db.list_global_skills().unwrap_or_default();
 
         // Load session counter from DB
         let session_counter = db.get_session_counter().unwrap_or(0);
@@ -642,6 +663,12 @@ impl App {
             mcp_editor_args: ToolListState::new(),
             mcp_editor_env: ToolListState::new(),
             mcp_editor_editing_index: None,
+            show_skill_editor: false,
+            skill_editor_name: TextInput::new(),
+            skill_editor_path: TextInput::new(),
+            skill_editor_field: SkillEditorField::Name,
+            skill_editor_editing_index: None,
+            skill_editor_path_suggestion: None,
             role_editor_snapshot: None,
             mcp_editor_snapshot: None,
             show_discard_confirmation: false,
@@ -695,6 +722,8 @@ impl App {
             global_roles,
             global_mcp_servers,
             mcp_server_list_index: 0,
+            global_skills,
+            skill_list_index: 0,
             cached_pending_commands: Vec::new(),
         }
     }
@@ -1050,7 +1079,7 @@ impl App {
         let is_vm_or_container =
             self.pending_vm_id.is_some() || self.pending_container_id.is_some();
         if is_admin || is_vm_or_container || self.global_mcp_servers.is_empty() {
-            self.do_spawn_session(name, &config, worktrees, is_admin);
+            self.maybe_show_skill_picker(name, config, worktrees, is_admin);
         } else {
             self.pending_spawn_name = Some(name);
             self.pending_spawn_config = Some(config);
@@ -1064,6 +1093,33 @@ impl App {
         let selected = vec![true; self.global_mcp_servers.len()];
         self.modal =
             modals::Modal::McpServerPicker(modals::McpServerPickerModal { index: 0, selected });
+    }
+
+    /// Show the skill picker if skills are configured, otherwise spawn directly.
+    ///
+    /// Inserted between MCP picker and `do_spawn_session()` in the creation chain.
+    /// Skipped for admin sessions (which don't need skill customization).
+    fn maybe_show_skill_picker(
+        &mut self,
+        name: String,
+        config: SessionConfig,
+        worktrees: Vec<WorktreeInfo>,
+        is_admin: bool,
+    ) {
+        if is_admin || self.global_skills.is_empty() {
+            self.do_spawn_session(name, &config, worktrees, is_admin);
+        } else {
+            self.pending_spawn_name = Some(name);
+            self.pending_spawn_config = Some(config);
+            self.pending_spawn_worktrees = worktrees;
+            self.open_skill_picker();
+        }
+    }
+
+    /// Show the skill picker modal with all skills selected by default.
+    fn open_skill_picker(&mut self) {
+        let selected = vec![true; self.global_skills.len()];
+        self.modal = modals::Modal::SkillPicker(modals::SkillPickerModal { index: 0, selected });
     }
 
     /// Continue admin spawn — auto-assigns admin permissions, bypasses role selector.
@@ -1102,6 +1158,7 @@ impl App {
             container_id: session.info.container_id.clone(),
             fork_session_id: None,
             mcp_servers: vec![],
+            skills: vec![],
         };
 
         if self.global_mcp_servers.is_empty() {
@@ -1156,6 +1213,7 @@ impl App {
             container_id,
             fork_session_id,
             mcp_servers: vec![],
+            skills: vec![],
         };
 
         self.pending_spawn_config = Some(config);
@@ -1311,6 +1369,7 @@ impl App {
             container_id: None,
             fork_session_id: None,
             mcp_servers: vec![],
+            skills: vec![],
         };
 
         let session_name = deleted.name.clone();
@@ -1808,6 +1867,29 @@ impl App {
             (Arc::clone(self.backends.default_backend()), name)
         };
 
+        // Symlink selected skills into .claude/skills/ before spawning so
+        // Claude Code auto-discovers them on startup.
+        if !config.skills.is_empty() {
+            if let Some(ref cwd) = config.cwd {
+                let skills_dir = cwd.join(".claude").join("skills");
+                if let Err(e) = std::fs::create_dir_all(&skills_dir) {
+                    warn!("Failed to create .claude/skills/: {e}");
+                } else {
+                    for skill in &config.skills {
+                        let link_path = skills_dir.join(&skill.name);
+                        if link_path.exists() || link_path.symlink_metadata().is_ok() {
+                            tracing::debug!(skill = %skill.name, "Skill already exists, skipping");
+                            continue;
+                        }
+                        #[cfg(unix)]
+                        if let Err(e) = std::os::unix::fs::symlink(&skill.path, &link_path) {
+                            warn!(skill = %skill.name, "Failed to symlink skill: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
         match Session::spawn(spawn_name, rows, cols, &config, &backend, &self.provider) {
             Ok(mut session) => {
                 session.info.worktrees = worktrees;
@@ -2103,6 +2185,11 @@ impl App {
                 if let Ok(servers) = self.db.list_global_mcp_servers() {
                     if servers != self.global_mcp_servers {
                         self.global_mcp_servers = servers;
+                    }
+                }
+                if let Ok(skills) = self.db.list_global_skills() {
+                    if skills != self.global_skills {
+                        self.global_skills = skills;
                     }
                 }
             }
@@ -2427,6 +2514,7 @@ impl App {
                             container_id: None,
                             fork_session_id: None,
                             mcp_servers: vec![],
+                            skills: vec![],
                         };
 
                         let (rows, cols) = self.content_area_size();
@@ -2540,6 +2628,66 @@ impl App {
         self.mcp_editor_snapshot = None;
         self.show_discard_confirmation = false;
         self.mcp_editor_field = crate::app::mcp_editor_modal::McpEditorField::Name;
+    }
+
+    /// Open the skill editor for a new skill.
+    fn open_new_skill_editor(&mut self) {
+        self.skill_editor_name.set("");
+        self.skill_editor_path.set("");
+        self.skill_editor_field = SkillEditorField::Name;
+        self.skill_editor_editing_index = None;
+        self.skill_editor_path_suggestion = None;
+        self.show_skill_editor = true;
+    }
+
+    /// Open the skill editor for an existing skill at the given index.
+    fn open_skill_for_editing(&mut self, idx: usize) {
+        if let Some(skill) = self.global_skills.get(idx) {
+            self.skill_editor_name.set(&skill.name);
+            self.skill_editor_path.set(&skill.path.to_string_lossy());
+            self.skill_editor_field = SkillEditorField::Name;
+            self.skill_editor_editing_index = Some(idx);
+            self.skill_editor_path_suggestion = None;
+            self.show_skill_editor = true;
+        }
+    }
+
+    /// Save the current skill editor state and close.
+    fn submit_skill_editor(&mut self) {
+        let name = self.skill_editor_name.value().trim().to_string();
+        let path = self.skill_editor_path.value().trim().to_string();
+        if name.is_empty() || path.is_empty() {
+            return;
+        }
+        let skill = SkillConfig {
+            name,
+            path: PathBuf::from(path),
+        };
+        if let Some(idx) = self.skill_editor_editing_index {
+            if idx < self.global_skills.len() {
+                self.global_skills[idx] = skill;
+            }
+        } else {
+            self.global_skills.push(skill);
+        }
+        self.show_skill_editor = false;
+    }
+
+    /// Close the skill editor without saving.
+    fn close_skill_editor(&mut self) {
+        self.show_skill_editor = false;
+        self.skill_editor_path_suggestion = None;
+    }
+
+    /// Recompute the path suggestion for the skill editor's path field.
+    fn update_skill_editor_path_suggestion(&mut self) {
+        let value = self.skill_editor_path.value().to_string();
+        let at_end = self.skill_editor_path.cursor_pos() == value.chars().count();
+        if at_end && !value.is_empty() {
+            self.skill_editor_path_suggestion = crate::paths::complete_directory_path(&value);
+        } else {
+            self.skill_editor_path_suggestion = None;
+        }
     }
 
     /// Persist session state to the SQLite database.
@@ -3027,6 +3175,7 @@ impl App {
                 container_id: None,
                 fork_session_id: None,
                 mcp_servers: vec![],
+                skills: vec![],
             };
             self.do_spawn_session(name, &config, worktrees, false);
         }
@@ -3263,6 +3412,7 @@ impl App {
                 container_id: resolved_container_id,
                 fork_session_id: None,
                 mcp_servers: vec![],
+                skills: vec![],
             };
             self.do_spawn_session(name, &config, worktrees, false);
             info!(session = %session_id, "Session restored (respawned with --resume)");
@@ -3330,6 +3480,7 @@ impl App {
                 container_id: None,
                 fork_session_id: None,
                 mcp_servers: vec![],
+                skills: vec![],
             };
 
             warn!(
@@ -3435,6 +3586,7 @@ impl App {
             container_id: session.info.container_id.clone(),
             fork_session_id: None,
             mcp_servers: vec![],
+            skills: vec![],
         };
 
         let (rows, cols) = self.content_area_size();

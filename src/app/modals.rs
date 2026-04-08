@@ -128,6 +128,12 @@ pub struct McpServerPickerModal {
     pub selected: Vec<bool>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SkillPickerModal {
+    pub index: usize,
+    pub selected: Vec<bool>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleEditorView {
     List,
@@ -242,6 +248,7 @@ pub enum SettingsTab {
     #[default]
     Roles,
     McpServers,
+    Skills,
 }
 
 // ── Main Modal Enum ────────────────────────────────────────────────────────
@@ -264,6 +271,7 @@ pub enum Modal {
     WorktreeName(WorktreeNameModal),
     RoleSelector(RoleSelectorModal),
     McpServerPicker(McpServerPickerModal),
+    SkillPicker(SkillPickerModal),
     ContainerfilePicker(ContainerfilePickerModal),
     RestoreSessions(RestoreSessionsModal),
     ScheduleCommand(ScheduleCommandModal),

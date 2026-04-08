@@ -125,6 +125,12 @@ impl App {
             return;
         }
 
+        // Skill editor detail form captures all input
+        if self.show_skill_editor {
+            self.handle_skill_editor_key(code);
+            return;
+        }
+
         // Settings overlay (tabbed list of roles / MCP servers) captures all input
         if self.show_settings {
             self.handle_settings_key(code);
@@ -140,6 +146,12 @@ impl App {
         // MCP server picker modal captures all input
         if matches!(self.modal, super::modals::Modal::McpServerPicker(_)) {
             self.handle_mcp_server_picker_key(code);
+            return;
+        }
+
+        // Skill picker modal captures all input
+        if matches!(self.modal, super::modals::Modal::SkillPicker(_)) {
+            self.handle_skill_picker_key(code);
             return;
         }
 
@@ -914,15 +926,64 @@ impl App {
                     }
                     self.pending_restart = false;
                 } else {
-                    // New session / fork flow
+                    // New session / fork flow → chain to skill picker
                     if let (Some(mut config), Some(name)) = (
                         self.pending_spawn_config.take(),
                         self.pending_spawn_name.take(),
                     ) {
                         config.mcp_servers = selected_servers;
                         let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                        self.do_spawn_session(name, &config, worktrees, false);
+                        self.maybe_show_skill_picker(name, config, worktrees, false);
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_skill_picker_key(&mut self, code: KeyCode) {
+        let skill_count = self.global_skills.len();
+        let super::modals::Modal::SkillPicker(ref mut sp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+                self.pending_spawn_config = None;
+                self.pending_spawn_worktrees.clear();
+                self.pending_spawn_name = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if sp.index + 1 < skill_count {
+                    sp.index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                sp.index = sp.index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') => {
+                if let Some(sel) = sp.selected.get_mut(sp.index) {
+                    *sel = !*sel;
+                }
+            }
+            KeyCode::Enter => {
+                // Collect selected skills.
+                let selected_skills: Vec<_> = self
+                    .global_skills
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| sp.selected.get(*i).copied().unwrap_or(false))
+                    .map(|(_, s)| s.clone())
+                    .collect();
+                self.modal.close();
+
+                if let (Some(mut config), Some(name)) = (
+                    self.pending_spawn_config.take(),
+                    self.pending_spawn_name.take(),
+                ) {
+                    config.skills = selected_skills;
+                    let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                    self.do_spawn_session(name, &config, worktrees, false);
                 }
             }
             _ => {}
@@ -1098,17 +1159,22 @@ impl App {
                 if let Err(e) = self.db.replace_global_mcp_servers(&self.global_mcp_servers) {
                     tracing::error!("Failed to save global MCP servers: {e}");
                 }
+                if let Err(e) = self.db.replace_global_skills(&self.global_skills) {
+                    tracing::error!("Failed to save global skills: {e}");
+                }
                 self.show_settings = false;
             }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.settings_tab = match self.settings_tab {
                     super::SettingsTab::Roles => super::SettingsTab::McpServers,
-                    super::SettingsTab::McpServers => super::SettingsTab::Roles,
+                    super::SettingsTab::McpServers => super::SettingsTab::Skills,
+                    super::SettingsTab::Skills => super::SettingsTab::Roles,
                 };
             }
             _ => match self.settings_tab {
                 super::SettingsTab::Roles => self.handle_settings_roles_key(code),
                 super::SettingsTab::McpServers => self.handle_settings_mcp_key(code),
+                super::SettingsTab::Skills => self.handle_settings_skills_key(code),
             },
         }
     }
@@ -1187,6 +1253,41 @@ impl App {
         }
     }
 
+    fn handle_settings_skills_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.global_skills.is_empty()
+                    && self.skill_list_index + 1 < self.global_skills.len()
+                {
+                    self.skill_list_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.skill_list_index = self.skill_list_index.saturating_sub(1);
+            }
+            KeyCode::Char('a') => {
+                self.open_new_skill_editor();
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if !self.global_skills.is_empty() {
+                    let idx = self.skill_list_index;
+                    self.open_skill_for_editing(idx);
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.global_skills.is_empty() {
+                    self.global_skills.remove(self.skill_list_index);
+                    if self.skill_list_index >= self.global_skills.len()
+                        && self.skill_list_index > 0
+                    {
+                        self.skill_list_index -= 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Open the MCP editor for a new server.
     fn open_new_mcp_editor(&mut self) {
         self.prepare_new_mcp_editor();
@@ -1197,6 +1298,79 @@ impl App {
     fn open_mcp_for_editing(&mut self, idx: usize) {
         self.open_mcp_server_for_editing(idx);
         self.show_mcp_editor = true;
+    }
+
+    fn handle_skill_editor_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.close_skill_editor();
+                return;
+            }
+            KeyCode::Tab => {
+                // On path field: accept suggestion if available, else switch field.
+                if self.skill_editor_field == super::SkillEditorField::Path {
+                    if let Some(suggestion) = self.skill_editor_path_suggestion.take() {
+                        for c in suggestion.chars() {
+                            self.skill_editor_path.insert(c);
+                        }
+                    } else {
+                        self.skill_editor_field = super::SkillEditorField::Name;
+                        return;
+                    }
+                } else {
+                    self.skill_editor_field = super::SkillEditorField::Path;
+                    self.update_skill_editor_path_suggestion();
+                    return;
+                }
+            }
+            KeyCode::BackTab => {
+                self.skill_editor_field = match self.skill_editor_field {
+                    super::SkillEditorField::Name => super::SkillEditorField::Path,
+                    super::SkillEditorField::Path => super::SkillEditorField::Name,
+                };
+                if self.skill_editor_field == super::SkillEditorField::Path {
+                    self.update_skill_editor_path_suggestion();
+                }
+                return;
+            }
+            KeyCode::Enter => {
+                self.submit_skill_editor();
+                return;
+            }
+            KeyCode::Backspace => match self.skill_editor_field {
+                super::SkillEditorField::Name => self.skill_editor_name.backspace(),
+                super::SkillEditorField::Path => self.skill_editor_path.backspace(),
+            },
+            KeyCode::Delete => match self.skill_editor_field {
+                super::SkillEditorField::Name => self.skill_editor_name.delete(),
+                super::SkillEditorField::Path => self.skill_editor_path.delete(),
+            },
+            KeyCode::Left => match self.skill_editor_field {
+                super::SkillEditorField::Name => self.skill_editor_name.move_left(),
+                super::SkillEditorField::Path => self.skill_editor_path.move_left(),
+            },
+            KeyCode::Right => match self.skill_editor_field {
+                super::SkillEditorField::Name => self.skill_editor_name.move_right(),
+                super::SkillEditorField::Path => self.skill_editor_path.move_right(),
+            },
+            KeyCode::Home => match self.skill_editor_field {
+                super::SkillEditorField::Name => self.skill_editor_name.home(),
+                super::SkillEditorField::Path => self.skill_editor_path.home(),
+            },
+            KeyCode::End => match self.skill_editor_field {
+                super::SkillEditorField::Name => self.skill_editor_name.end(),
+                super::SkillEditorField::Path => self.skill_editor_path.end(),
+            },
+            KeyCode::Char(c) => match self.skill_editor_field {
+                super::SkillEditorField::Name => self.skill_editor_name.insert(c),
+                super::SkillEditorField::Path => self.skill_editor_path.insert(c),
+            },
+            _ => return,
+        }
+        // After any path input change, recompute the suggestion.
+        if self.skill_editor_field == super::SkillEditorField::Path {
+            self.update_skill_editor_path_suggestion();
+        }
     }
 
     /// Open the global role editor (list view).

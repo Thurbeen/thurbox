@@ -18,7 +18,7 @@ use crate::ui::{
     branch_selector_modal, containerfile_picker, info_panel, layout, mcp_server_picker_modal,
     project_list, restore_sessions_modal, role_editor_modal, role_selector_modal,
     schedule_command_modal, scheduled_commands_list_modal, session_mode_modal, session_name_modal,
-    status_bar, terminal_view, worktree_name_modal,
+    skill_picker_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -272,8 +272,24 @@ impl App {
             );
         }
 
-        // Settings overlay (tabbed list of roles / MCP servers)
-        if self.show_settings && !self.show_role_editor && !self.show_mcp_editor {
+        // Skill picker modal
+        if let super::modals::Modal::SkillPicker(ref sp) = self.modal {
+            skill_picker_modal::render_skill_picker_modal(
+                frame,
+                &skill_picker_modal::SkillPickerState {
+                    skills: &self.global_skills,
+                    selected: &sp.selected,
+                    index: sp.index,
+                },
+            );
+        }
+
+        // Settings overlay (tabbed list of roles / MCP servers / skills)
+        if self.show_settings
+            && !self.show_role_editor
+            && !self.show_mcp_editor
+            && !self.show_skill_editor
+        {
             crate::ui::settings_overlay::render_settings_overlay(
                 frame,
                 &crate::ui::settings_overlay::SettingsOverlayState {
@@ -282,6 +298,8 @@ impl App {
                     role_index: self.role_editor_list_index,
                     mcp_servers: &self.global_mcp_servers,
                     mcp_index: self.mcp_server_list_index,
+                    skills: &self.global_skills,
+                    skill_index: self.skill_list_index,
                 },
             );
         }
@@ -318,6 +336,43 @@ impl App {
                     focused_field: self.role_editor_field,
                 },
             );
+        }
+
+        // Skill editor modal (detail form for global skills)
+        if self.show_skill_editor {
+            use crate::ui::{
+                centered_fixed_height_rect, render_modal_frame, render_text_field,
+                render_text_field_with_suggestion,
+            };
+            let area = centered_fixed_height_rect(50, 8, frame.area());
+            let inner = render_modal_frame(frame, area, "Skill Editor");
+            if inner.height >= 4 && inner.width >= 10 {
+                let chunks = ratatui::layout::Layout::default()
+                    .direction(ratatui::layout::Direction::Vertical)
+                    .constraints([
+                        ratatui::layout::Constraint::Length(3),
+                        ratatui::layout::Constraint::Length(3),
+                    ])
+                    .split(inner);
+
+                render_text_field(
+                    frame,
+                    chunks[0],
+                    "Name",
+                    self.skill_editor_name.value(),
+                    self.skill_editor_name.cursor_pos(),
+                    self.skill_editor_field == super::SkillEditorField::Name,
+                );
+                render_text_field_with_suggestion(
+                    frame,
+                    chunks[1],
+                    "Path",
+                    self.skill_editor_path.value(),
+                    self.skill_editor_path.cursor_pos(),
+                    self.skill_editor_field == super::SkillEditorField::Path,
+                    self.skill_editor_path_suggestion.as_deref(),
+                );
+            }
         }
 
         // MCP editor modal (detail form for global MCP servers)

@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -79,6 +79,13 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             env         TEXT NOT NULL DEFAULT '',
             created_at  INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS skills (
+            skill_name TEXT PRIMARY KEY,
+            path       TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS session_commands (
@@ -561,6 +568,18 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 17 {
+        // v16 → v17: add skills table for global skill management
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS skills (
+                skill_name TEXT PRIMARY KEY,
+                path       TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -598,6 +617,7 @@ mod tests {
         assert!(tables.contains(&"containers".to_string()));
         assert!(tables.contains(&"scheduled_commands".to_string()));
         assert!(tables.contains(&"repo_bookmarks".to_string()));
+        assert!(tables.contains(&"skills".to_string()));
         // Project tables should NOT exist
         assert!(!tables.contains(&"projects".to_string()));
         assert!(!tables.contains(&"project_repos".to_string()));

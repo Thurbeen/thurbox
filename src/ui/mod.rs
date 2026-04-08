@@ -17,6 +17,7 @@ pub mod selection;
 pub mod session_mode_modal;
 pub mod session_name_modal;
 pub mod settings_overlay;
+pub mod skill_picker_modal;
 pub mod status_bar;
 pub mod terminal_view;
 pub mod theme;
