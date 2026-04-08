@@ -12,7 +12,7 @@ use super::{App, InputFocus, RoleEditorView, TerminalView};
 use crate::agent::input;
 use crate::paths;
 use crossterm::event::{KeyCode, KeyModifiers};
-use tracing::error;
+use tracing::{error, warn};
 
 /// Convert a session name into a git-branch-friendly name.
 ///
@@ -1389,6 +1389,22 @@ impl App {
         let Some(repo_path) = self.pending_repo_path.as_ref() else {
             return;
         };
+
+        // Fetch origin so branches are up-to-date. Non-fatal on failure.
+        if let Err(e) = crate::git::git_fetch(repo_path) {
+            warn!("git fetch origin failed (continuing): {e:#}");
+        }
+        if let Some(ref all_repos) = self.pending_all_repos {
+            for extra_repo in all_repos.iter().skip(1) {
+                if let Err(e) = crate::git::git_fetch(extra_repo) {
+                    warn!(
+                        "git fetch origin failed for {} (continuing): {e:#}",
+                        extra_repo.display()
+                    );
+                }
+            }
+        }
+
         match crate::git::list_branches(repo_path) {
             Ok(branches) if branches.is_empty() => {
                 self.set_error("No branches found in repository");
@@ -1402,6 +1418,24 @@ impl App {
                         branches.insert(0, branch);
                     }
                 }
+
+                // Insert origin/<default> at position 0 for remote-based branching.
+                let remote_ref = crate::git::default_branch_from_remote(repo_path)
+                    .map(|name| format!("origin/{name}"))
+                    .or_else(|| {
+                        for candidate in ["origin/main", "origin/master"] {
+                            if crate::git::branch_exists(repo_path, candidate) {
+                                return Some(candidate.to_string());
+                            }
+                        }
+                        None
+                    });
+                if let Some(ref remote) = remote_ref {
+                    if !branches.contains(remote) {
+                        branches.insert(0, remote.clone());
+                    }
+                }
+
                 self.modal =
                     super::modals::Modal::BranchSelector(super::modals::BranchSelectorModal {
                         index: 0,

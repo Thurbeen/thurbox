@@ -174,7 +174,7 @@ pub fn default_branch(repo_path: &Path, local_branches: &[String]) -> Option<Str
 }
 
 /// Query the remote's default branch via `git symbolic-ref`.
-fn default_branch_from_remote(repo_path: &Path) -> Option<String> {
+pub fn default_branch_from_remote(repo_path: &Path) -> Option<String> {
     let output = Command::new("git")
         .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
         .current_dir(repo_path)
@@ -274,7 +274,7 @@ fn git_stash(worktree_path: &Path) -> Result<bool> {
 }
 
 /// Fetch from origin.
-fn git_fetch(worktree_path: &Path) -> Result<()> {
+pub fn git_fetch(worktree_path: &Path) -> Result<()> {
     let output = Command::new("git")
         .args(["fetch", "origin"])
         .current_dir(worktree_path)
