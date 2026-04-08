@@ -48,18 +48,19 @@ are shown in the session list.
 
 Projects (name, repos, roles) are stored in the SQLite database
 at `~/.local/share/thurbox/thurbox.db` (`$XDG_DATA_HOME` respected).
-Projects are created and edited via the TUI (add-project modal
-with `Ctrl+N`, edit with `Ctrl+E`).
+Projects are created via `Ctrl+N`. Global settings (roles,
+MCP servers, skills) are edited via `Ctrl+E`.
 
 If the database is empty on first launch, only the built-in
 Admin project is present. Users create their first project via
 `Ctrl+N` or through the Admin session.
 
-### Edit project modal
+### Settings overlay
 
-`Ctrl+E` opens a pre-populated modal for editing the active
-project's name and repositories. Roles and MCP servers are
-managed globally (see Role Editor and MCP Server sections).
+`Ctrl+E` opens the settings overlay with three tabs: **Roles**,
+**MCP Servers**, and **Skills**. Use `Tab` to cycle between tabs.
+Roles and MCP servers are global presets shared across all
+sessions. Skills are symlinked into sessions at creation time.
 
 **Why not just delete and recreate?**
 
@@ -82,8 +83,11 @@ managed globally (see Role Editor and MCP Server sections).
    If any repo is marked as worktree, skips directly to branch
    selection.
 3. **Branch selector** — pick base branch (worktree mode only).
-4. **Branch name** — enter new branch name (worktree mode only).
-5. **Role selector** — pick from global roles (if 2+ defined).
+4. **Session name** — enter a name for the session.
+5. **Branch name** — enter new branch name (worktree mode only).
+6. **Role selector** — pick from global roles (if 2+ defined).
+7. **MCP server picker** — select MCP servers to attach.
+8. **Skill picker** — select skills to attach to the session.
 
 Mixed sessions are supported: worktree repos get a new branch
 while normal repos are added as-is via `--add-dir`.
@@ -131,8 +135,9 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+L` | Global | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
 | `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
-| `Ctrl+E` | Global | Edit active project (name, repos) | **E**dit |
+| `Ctrl+E` | Global | Edit settings (roles, MCP servers, skills) | **E**dit |
 | `Ctrl+R` | Global | Restart active session | **R**estart |
+| `Ctrl+F` | Global | Fork active session | **F**ork |
 | `Ctrl+S` | Global | Sync all worktree sessions with origin/main | **S**ync |
 | `Ctrl+Z` | Global | Undo session/project delete | **Z** = undo |
 | `Ctrl+U` | Global | Restore deleted sessions | **U**ndelete |

@@ -77,6 +77,8 @@
             <li><a href="#container-sessions">Container Sessions</a></li>
             <li><a href="#vm-sessions">VM Sessions</a></li>
             <li><a href="#role-system">Role System</a></li>
+            <li><a href="#skill-management">Skill Management</a></li>
+            <li><a href="#session-forking">Session Forking</a></li>
             <li><a href="#fuzzy-search">Fuzzy Search</a></li>
             <li><a href="#responsive-ui">Responsive UI</a></li>
             <li><a href="#session-persistence">Session Persistence</a></li>
@@ -150,9 +152,9 @@
               <code>--add-dir</code>
             </li>
             <li>
-              Edit projects on the fly with
+              Edit global settings with
               <code>Ctrl+E</code>
-              (name, repos) without losing running sessions
+              (roles, MCP servers, skills)
             </li>
             <li>Soft-deleted projects and sessions can be restored via Admin session or MCP API</li>
             <li>
@@ -305,19 +307,14 @@
 
           <h3>Template management via MCP</h3>
           <p>
-            Six MCP tools provide programmatic access to templates and per-project container
-            configuration:
+            Four MCP tools provide programmatic access to templates:
             <code>list_containerfile_templates</code>
             ,
             <code>get_containerfile_template</code>
             ,
             <code>set_containerfile_template</code>
-            ,
-            <code>delete_containerfile_template</code>
-            ,
-            <code>configure_project_container</code>
             , and
-            <code>get_project_container_config</code>
+            <code>delete_containerfile_template</code>
             . Template names are validated to prevent path traversal.
           </p>
 
@@ -503,6 +500,38 @@
             . See
             <a href="roles.html">Role Configuration</a>
             for the full guide.
+          </p>
+
+          <h2 id="skill-management">
+            Skill Management
+            <a href="#skill-management" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Attach Claude Code skills to sessions at creation time. Skills are symlinked into each
+            session's
+            <code>.claude/skills/</code>
+            directory and auto-discovered by Claude Code.
+          </p>
+          <ul>
+            <li>
+              Manage skills globally via
+              <code>Ctrl+E</code>
+              (Settings &rarr; Skills tab)
+            </li>
+            <li>Select which skills to attach during session creation flow</li>
+            <li>Skills are shared across all projects</li>
+          </ul>
+
+          <h2 id="session-forking">
+            Session Forking
+            <a href="#session-forking" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Press
+            <code>Ctrl+F</code>
+            to fork the active session. This creates a new session that resumes from the same
+            conversation history, allowing you to explore alternative approaches without losing the
+            original session's context.
           </p>
 
           <h2 id="fuzzy-search">

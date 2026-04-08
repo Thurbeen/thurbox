@@ -158,25 +158,32 @@ specifically for `perf` / `flamegraph` workflows.
 
 ---
 
-## ADR-8: Config file format — TOML
+## ADR-8: State storage — SQLite
 
-**Choice**: Project configuration uses TOML format, loaded from
-`~/.config/thurbox/config.toml` (respects `$XDG_CONFIG_HOME`).
+**Choice**: All persistent state (projects, sessions, roles,
+MCP servers, worktrees, VMs, containers, scheduled commands)
+is stored in a single SQLite database at
+`~/.local/share/thurbox/thurbox.db` (respects `$XDG_DATA_HOME`).
+WAL mode enables concurrent multi-instance access.
 
-**Why**: TOML is human-readable, easy to hand-edit, and has
-first-class Rust support via the `toml` crate (already a
-transitive dependency). The XDG convention is standard on Linux
-and avoids cluttering `$HOME` with dotfiles.
+*This supersedes the original TOML file-based approach
+(`~/.config/thurbox/config.toml`), which was eliminated after
+the SQLite migration.*
+
+**Why**: SQLite provides atomic transactions, concurrent access
+via WAL mode, and a single source of truth. Multi-instance sync
+uses `PRAGMA data_version` polling (see ADR-7b). The TUI provides
+all editing UI — there is no need for a human-editable config file.
 
 **Rejected**:
 
-- *JSON* — verbose for config (requires quoting keys, no comments),
-  though great for machine interchange.
-- *YAML* — indentation-sensitive, surprising edge cases
-  (the Norway problem: `NO` parses as boolean `false`).
-  Not worth the risk for a config file.
+- *TOML config file (previous)* — race conditions when multiple
+  instances write concurrently; split source of truth between
+  config.toml (roles) and state files (sessions); no atomic
+  multi-key updates.
+- *JSON* — verbose for config, no atomic writes without
+  temp-file-rename pattern.
 - *CLI flags only* — doesn't scale to multiple projects.
-  Users would need wrapper scripts or shell aliases.
 - *Embedded in CLAUDE.md* — mixes project-specific AI guidance
   with application configuration; wrong separation of concerns.
 

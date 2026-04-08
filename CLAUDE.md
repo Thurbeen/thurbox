@@ -330,7 +330,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
-| `Ctrl+E` | Edit settings (roles, MCP servers) | **E**dit |
+| `Ctrl+E` | Edit settings (roles, MCP servers, skills) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |

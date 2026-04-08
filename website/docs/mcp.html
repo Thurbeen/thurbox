@@ -152,38 +152,6 @@
             <a href="#available-tools" class="heading-anchor">#</a>
           </h2>
 
-          <h3>Project management</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Tool</th>
-                <th>Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>list_projects</code></td>
-                <td>List all active projects</td>
-              </tr>
-              <tr>
-                <td><code>get_project</code></td>
-                <td>Get a project by name or UUID</td>
-              </tr>
-              <tr>
-                <td><code>create_project</code></td>
-                <td>Create a new project with name and repo paths</td>
-              </tr>
-              <tr>
-                <td><code>update_project</code></td>
-                <td>Update project name and/or repos (partial update)</td>
-              </tr>
-              <tr>
-                <td><code>delete_project</code></td>
-                <td>Soft-delete a project (preserves for undo)</td>
-              </tr>
-            </tbody>
-          </table>
-
           <h3>Role management</h3>
           <table>
             <thead>
@@ -312,7 +280,7 @@
             </tbody>
           </table>
 
-          <h3>Container configuration</h3>
+          <h3>Containerfile templates</h3>
           <table>
             <thead>
               <tr>
@@ -327,23 +295,15 @@
               </tr>
               <tr>
                 <td><code>get_containerfile_template</code></td>
-                <td>Read a template's Containerfile content</td>
+                <td>Read a template's Containerfile content and list support files</td>
               </tr>
               <tr>
                 <td><code>set_containerfile_template</code></td>
-                <td>Create/update a template</td>
+                <td>Create/update a template (Containerfile + optional support files)</td>
               </tr>
               <tr>
                 <td><code>delete_containerfile_template</code></td>
-                <td>Delete a template (refuses "default")</td>
-              </tr>
-              <tr>
-                <td><code>configure_project_container</code></td>
-                <td>Set project container defaults</td>
-              </tr>
-              <tr>
-                <td><code>get_project_container_config</code></td>
-                <td>Read current project container config</td>
+                <td>Delete a template (refuses to delete "default")</td>
               </tr>
             </tbody>
           </table>

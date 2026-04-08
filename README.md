@@ -34,10 +34,9 @@ settings. The two-section left sidebar shows all projects on top
 and the active project's sessions below. Projects support
 multiple repositories — the first repo becomes the working
 directory and the rest are passed via `--add-dir`. Edit
-projects on the fly with `Ctrl+E` (name, repos) without
-losing running sessions. Soft-deleted
-projects and sessions can be restored via the Admin session
-or MCP API. A built-in Admin project (pinned at index 0)
+global settings with `Ctrl+E` (roles, MCP servers, skills).
+Soft-deleted projects and sessions can be restored via the Admin
+session or MCP API. A built-in Admin project (pinned at index 0)
 provides conversational access to Thurbox management via MCP.
 
 ### Git Worktree Support
@@ -91,14 +90,22 @@ optional system prompt text. Manage roles programmatically through
 the MCP server. When two or more roles exist, a role selector
 appears at session creation.
 
+### Skill Management
+
+Attach Claude Code skills to sessions at creation time. Skills
+are symlinked into the session's `.claude/skills/` directory
+and auto-discovered by Claude Code. Manage skills globally via
+`Ctrl+E` (Settings → Skills tab).
+
 ### MCP Server
 
-The `thurbox-mcp` binary exposes 16 tools over the Model Context
-Protocol for managing projects, roles, sessions, VMs, and MCP
-server configurations. The Admin session auto-configures `thurbox-mcp`,
-so you can manage everything conversationally — "create a
-reviewer role for my-app with read-only access." See
-[MCP Server](#mcp-server-1) below for the full tool reference.
+The `thurbox-mcp` binary exposes 22 tools over the Model Context
+Protocol for managing roles, sessions, VMs, containers, scheduled
+commands, and MCP server configurations. The Admin session
+auto-configures `thurbox-mcp`, so you can manage everything
+conversationally — "create a reviewer role with read-only
+access." See [MCP Server](#mcp-server-1) below for the full
+tool reference.
 
 ### Responsive UI
 
@@ -165,14 +172,15 @@ The binary will be available at `target/release/thurbox`.
    session appears automatically in the sidebar.
 2. **Create a session** — press `Ctrl+N` to open the repo picker.
    Select repos from bookmarks (Space to toggle, `w` to mark as
-   worktree), then choose a session mode and optionally a role.
+   worktree), then choose a session mode, optionally a role,
+   MCP servers, and skills.
 3. **Work with Claude** — the terminal panel shows the live
    Claude Code session. All keys are forwarded to the PTY.
 4. **Navigate** — `Ctrl+L` cycles focus (project list → session
    list → terminal). `Ctrl+H` jumps to the project list.
    `Ctrl+J` / `Ctrl+K` switch projects or sessions.
-5. **Manage projects** — `Ctrl+E` edits the active project
-   (name, repos). `Ctrl+D` deletes a session or project.
+5. **Manage settings** — `Ctrl+E` opens settings (roles, MCP
+   servers, skills). `Ctrl+D` deletes a session.
 6. **Restart a session** — `Ctrl+R` restarts with `--resume` to
    preserve conversation history while picking up new
    role permissions.
@@ -187,18 +195,20 @@ The binary will be available at `target/release/thurbox`.
 |-----|--------|----------|
 | `Ctrl+Q` | Quit (detach sessions) | **Q**uit |
 | `Ctrl+N` | New session (opens repo picker) | **N**ew |
-| `Ctrl+C` | Close session / copy selection | **C**lose / **C**opy |
+| `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
+| `Ctrl+P` | Scheduled commands (list/cancel/new) | **P**rogram |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
-| `Ctrl+H` | Focus project list | Vim: **h** = left |
-| `Ctrl+J` | Next project (project list) / session | Vim: **j** = down |
-| `Ctrl+K` | Previous project (project list) / session | Vim: **k** = up |
-| `Ctrl+L` | Cycle focus | Vim: **l** = right |
-| `Ctrl+D` | Delete session or project | Vim: **d** = delete |
-| `Ctrl+E` | Edit active project | **E**dit |
+| `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
+| `Ctrl+J` | Select next session | Vim: **j** = down |
+| `Ctrl+K` | Select previous session | Vim: **k** = up |
+| `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
+| `Ctrl+D` | Delete session | Vim: **d** = delete |
+| `Ctrl+E` | Edit settings (roles, MCP servers, skills) | **E**dit |
 | `Ctrl+R` | Restart active session | **R**estart |
+| `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
-| `Ctrl+Z` | Undo session/project delete | **Z** = undo |
+| `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `F1` | Help overlay | Universal |
 | `F2` | Toggle info panel | Next to F1 |
@@ -242,22 +252,28 @@ thurbox-mcp --transport streamable-http --port 9090  # custom port
 
 | Tool | Description |
 |------|-------------|
-| `list_projects` | List all active projects |
-| `get_project` | Get a project by name or UUID |
-| `create_project` | Create a new project with name and repo paths |
-| `update_project` | Update project name and/or repos |
-| `delete_project` | Soft-delete a project |
-| `list_roles` | List all roles for a project |
-| `set_roles` | Atomically replace all roles for a project |
-| `list_mcp_servers` | List MCP servers for a project |
-| `set_mcp_servers` | Set MCP servers for a project |
-| `list_sessions` | List sessions, optionally filtered by project |
+| `list_roles` | List all global roles |
+| `set_roles` | Atomically replace all global roles |
+| `list_mcp_servers` | List all global MCP servers |
+| `set_mcp_servers` | Set global MCP servers |
+| `list_sessions` | List all active sessions |
 | `get_session` | Get a session by UUID |
-| `delete_session` | Soft-delete a session |
-| `restart_session` | Queue a session restart |
+| `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
+| `restart_session` | Queue a session restart (TUI processes the command) |
 | `restore_session` | Restore a soft-deleted session |
-| `list_vms` | List active VMs, optionally by project |
+| `list_vms` | List active VMs |
 | `get_vm` | Get a VM by UUID |
+| `list_containerfile_templates` | List template names + files in each |
+| `get_containerfile_template` | Read a template's Containerfile content and list support files |
+| `set_containerfile_template` | Create/update a template (Containerfile + optional support files) |
+| `delete_containerfile_template` | Delete a template (refuses to delete "default") |
+| `list_vm_images` | List downloaded VM images with file sizes |
+| `download_vm_image` | Download a VM image from an HTTPS URL |
+| `delete_vm_image` | Delete a cached VM image |
+| `schedule_command` | Schedule text to be sent to a session at a future time |
+| `list_scheduled_commands` | List pending scheduled commands, optionally by session |
+| `get_scheduled_command` | Get a scheduled command by ID |
+| `cancel_scheduled_command` | Cancel a pending scheduled command |
 
 ### Admin Session
 
