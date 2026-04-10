@@ -107,7 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Lint markdown files
-        uses: rvben/rumdl@8d6f2a035b25c63136883aabc0a1872e02de3d3a # v0.1.68
+        uses: rvben/rumdl@d81181d8fb04ef01bf9c612812644362533dce1c # v0.1.69
         with:
           report-type: annotations
 
