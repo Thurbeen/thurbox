@@ -787,7 +787,6 @@ mod tests {
         ThurboxMcp {
             db: Mutex::new(db),
             db_path: PathBuf::from(":memory:"),
-            tool_router: ThurboxMcp::tool_router(),
         }
     }
 
