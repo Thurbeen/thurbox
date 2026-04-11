@@ -1,5 +1,6 @@
 //! Miscellaneous helper functions used by the app module.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use tracing::info;
@@ -156,7 +157,6 @@ pub(super) fn build_session_context_prompt(
         out.push_str("\n## Accessible Directories\n");
 
         if !worktrees.is_empty() {
-            // Primary working directory is the first worktree checkout.
             for wt in worktrees {
                 let name = git::repo_display_name(&wt.repo_path)
                     .unwrap_or_else(|| wt.repo_path.display().to_string());
@@ -174,7 +174,7 @@ pub(super) fn build_session_context_prompt(
             out.push_str(&format!("- `{}`{label} (primary)\n", cwd.display()));
         }
 
-        let wt_paths: std::collections::HashSet<&Path> =
+        let wt_paths: HashSet<&Path> =
             worktrees.iter().map(|wt| wt.worktree_path.as_path()).collect();
         for dir in additional_dirs {
             if !wt_paths.contains(dir.as_path()) && cwd.map_or(true, |c| c != dir) {
@@ -191,7 +191,7 @@ pub(super) fn build_session_context_prompt(
         out.push_str("\n## Other Active Sessions\n");
 
         // Collect this session's repo display names for overlap detection.
-        let my_repos: std::collections::HashSet<String> = repo_display_names(worktrees, cwd);
+        let my_repos: HashSet<String> = collect_my_repo_names(worktrees, cwd);
 
         let mut has_overlap = false;
         for sess in other_sessions {
@@ -229,11 +229,11 @@ pub(super) fn build_session_context_prompt(
 }
 
 /// Collect display names of repos for this session (for overlap detection).
-fn repo_display_names(
+fn collect_my_repo_names(
     worktrees: &[WorktreeInfo],
     cwd: Option<&Path>,
-) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
+) -> HashSet<String> {
+    let mut names = HashSet::new();
     for wt in worktrees {
         if let Some(name) = git::repo_display_name(&wt.repo_path) {
             names.insert(name);
@@ -387,5 +387,50 @@ mod tests {
         let result =
             build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
         assert!(!result.contains("avoid modifying overlapping files"));
+    }
+
+    #[test]
+    fn additional_dir_deduped_with_cwd() {
+        let cwd = Path::new("/home/user/repo");
+        let extra = vec![PathBuf::from("/home/user/repo")];
+        let result = build_session_context_prompt("s1", "dev", &[], Some(cwd), &extra, &[]);
+        // The cwd path should appear exactly once.
+        assert_eq!(result.matches("/home/user/repo").count(), 1);
+    }
+
+    #[test]
+    fn additional_dir_deduped_with_worktree() {
+        let wt = make_worktree("/repo", "/wt/checkout", "main");
+        let extra = vec![PathBuf::from("/wt/checkout")];
+        let result = build_session_context_prompt("s1", "dev", &[wt], None, &extra, &[]);
+        // The worktree path should appear exactly once (in the worktree line).
+        assert_eq!(result.matches("/wt/checkout").count(), 1);
+    }
+
+    #[test]
+    fn multiple_worktrees_all_listed() {
+        let wt1 = make_worktree("/repo-a", "/wt/a", "feat-a");
+        let wt2 = make_worktree("/repo-b", "/wt/b", "feat-b");
+        let result =
+            build_session_context_prompt("s1", "dev", &[wt1, wt2], None, &[], &[]);
+        assert!(result.contains("`/wt/a`"));
+        assert!(result.contains("(branch: `feat-a`)"));
+        assert!(result.contains("`/wt/b`"));
+        assert!(result.contains("(branch: `feat-b`)"));
+    }
+
+    #[test]
+    fn other_session_shows_branch_from_worktrees() {
+        let wt = make_worktree("/repo", "/wt", "main");
+        let other = make_session(
+            "peer",
+            "dev",
+            vec![make_worktree("/repo", "/wt2", "hotfix")],
+            vec![],
+        );
+        let others = vec![&other];
+        let result =
+            build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
+        assert!(result.contains("(branch: `hotfix`)"));
     }
 }
