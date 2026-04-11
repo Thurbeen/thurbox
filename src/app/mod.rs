@@ -1823,8 +1823,7 @@ impl App {
 
         // Inject session context into the system prompt for new sessions so the
         // agent is aware of its repos, worktrees, branches, and sibling sessions.
-        let is_new_session =
-            config.resume_session_id.is_none() && config.fork_session_id.is_none();
+        let is_new_session = config.resume_session_id.is_none() && config.fork_session_id.is_none();
         if is_new_session && !is_admin {
             let other_sessions: Vec<&SessionInfo> = self
                 .sessions

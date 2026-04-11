@@ -174,8 +174,10 @@ pub(super) fn build_session_context_prompt(
             out.push_str(&format!("- `{}`{label} (primary)\n", cwd.display()));
         }
 
-        let wt_paths: HashSet<&Path> =
-            worktrees.iter().map(|wt| wt.worktree_path.as_path()).collect();
+        let wt_paths: HashSet<&Path> = worktrees
+            .iter()
+            .map(|wt| wt.worktree_path.as_path())
+            .collect();
         for dir in additional_dirs {
             if !wt_paths.contains(dir.as_path()) && cwd.map_or(true, |c| c != dir) {
                 let label = git::repo_display_name(dir)
@@ -211,10 +213,7 @@ pub(super) fn build_session_context_prompt(
                     .collect();
                 format!(" on {}", parts.join(", "))
             };
-            out.push_str(&format!(
-                "- \"{}\" [{}]{repo_part}\n",
-                sess.name, sess.role
-            ));
+            out.push_str(&format!("- \"{}\" [{}]{repo_part}\n", sess.name, sess.role));
         }
 
         if has_overlap {
@@ -229,10 +228,7 @@ pub(super) fn build_session_context_prompt(
 }
 
 /// Collect display names of repos for this session (for overlap detection).
-fn collect_my_repo_names(
-    worktrees: &[WorktreeInfo],
-    cwd: Option<&Path>,
-) -> HashSet<String> {
+fn collect_my_repo_names(worktrees: &[WorktreeInfo], cwd: Option<&Path>) -> HashSet<String> {
     let mut names = HashSet::new();
     for wt in worktrees {
         if let Some(name) = git::repo_display_name(&wt.repo_path) {
@@ -301,8 +297,7 @@ mod tests {
     #[test]
     fn includes_session_identity() {
         let wt = make_worktree("/repo", "/wt/repo", "main");
-        let result =
-            build_session_context_prompt("my-session", "architect", &[wt], None, &[], &[]);
+        let result = build_session_context_prompt("my-session", "architect", &[wt], None, &[], &[]);
         assert!(result.contains("**Name:** my-session"));
         assert!(result.contains("**Role:** architect"));
     }
@@ -338,8 +333,7 @@ mod tests {
     #[test]
     fn no_other_sessions_section_when_empty() {
         let wt = make_worktree("/repo", "/wt", "main");
-        let result =
-            build_session_context_prompt("s1", "dev", &[wt], None, &[], &[]);
+        let result = build_session_context_prompt("s1", "dev", &[wt], None, &[], &[]);
         assert!(!result.contains("## Other Active Sessions"));
     }
 
@@ -353,8 +347,7 @@ mod tests {
             vec!["some-repo".to_string()],
         );
         let others = vec![&other];
-        let result =
-            build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
+        let result = build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
         assert!(result.contains("## Other Active Sessions"));
         assert!(result.contains("\"other-sess\" [developer]"));
     }
@@ -369,8 +362,7 @@ mod tests {
             vec![],
         );
         let others = vec![&other];
-        let result =
-            build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
+        let result = build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
         assert!(result.contains("avoid modifying overlapping files"));
     }
 
@@ -384,8 +376,7 @@ mod tests {
             vec![],
         );
         let others = vec![&other];
-        let result =
-            build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
+        let result = build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
         assert!(!result.contains("avoid modifying overlapping files"));
     }
 
@@ -411,8 +402,7 @@ mod tests {
     fn multiple_worktrees_all_listed() {
         let wt1 = make_worktree("/repo-a", "/wt/a", "feat-a");
         let wt2 = make_worktree("/repo-b", "/wt/b", "feat-b");
-        let result =
-            build_session_context_prompt("s1", "dev", &[wt1, wt2], None, &[], &[]);
+        let result = build_session_context_prompt("s1", "dev", &[wt1, wt2], None, &[], &[]);
         assert!(result.contains("`/wt/a`"));
         assert!(result.contains("(branch: `feat-a`)"));
         assert!(result.contains("`/wt/b`"));
@@ -429,8 +419,7 @@ mod tests {
             vec![],
         );
         let others = vec![&other];
-        let result =
-            build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
+        let result = build_session_context_prompt("s1", "dev", &[wt], None, &[], &others);
         assert!(result.contains("(branch: `hotfix`)"));
     }
 }
