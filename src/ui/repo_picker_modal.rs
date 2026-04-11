@@ -149,10 +149,7 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
                     let mut last = 0;
                     for &pos in &positions {
                         if pos > last {
-                            result.push(Span::styled(
-                                display[last..pos].to_string(),
-                                style,
-                            ));
+                            result.push(Span::styled(display[last..pos].to_string(), style));
                         }
                         let end = display[pos..]
                             .chars()
