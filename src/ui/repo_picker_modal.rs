@@ -58,10 +58,15 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
         .constraints(constraints)
         .split(inner);
 
-    let mut chunk_idx = 0;
+    // Assign named chunk areas based on whether search bar is visible.
+    let (search_area, list_area, input_area, footer_area) = if state.search_active {
+        (Some(chunks[0]), chunks[1], chunks[2], chunks[3])
+    } else {
+        (None, chunks[0], chunks[1], chunks[2])
+    };
 
     // Search bar (when active)
-    if state.search_active {
+    if let Some(area) = search_area {
         let match_label = format!(
             "Search ({}/{})",
             state.filtered_indices.len(),
@@ -69,13 +74,12 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
         );
         render_text_field(
             frame,
-            chunks[chunk_idx],
+            area,
             &match_label,
             state.search_query,
             state.search_cursor,
             state.focus == RepoPickerFocus::Search,
         );
-        chunk_idx += 1;
     }
 
     // Bookmark list with checkboxes
@@ -86,24 +90,15 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
         Theme::BORDER_UNFOCUSED
     };
 
-    let title = if !state.search_query.is_empty() {
-        format!(
-            " Repos ({}/{}) ",
-            state.filtered_indices.len(),
-            state.bookmarks.len()
-        )
-    } else {
-        format!(" Repos ({}) ", state.bookmarks.len())
-    };
+    let title = format!(" Repos ({}) ", state.bookmarks.len());
 
     let list_block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
-    let list_inner_area = list_block.inner(chunks[chunk_idx]);
-    frame.render_widget(list_block, chunks[chunk_idx]);
-    chunk_idx += 1;
+    let list_inner_area = list_block.inner(list_area);
+    frame.render_widget(list_block, list_area);
 
     if state.filtered_indices.is_empty() {
         let msg = if state.search_query.is_empty() {
@@ -191,14 +186,13 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
     // Path input
     render_text_field_with_suggestion(
         frame,
-        chunks[chunk_idx],
+        input_area,
         "Add Repo Path",
         state.path_input,
         state.path_cursor,
         state.focus == RepoPickerFocus::Input,
         state.path_suggestion,
     );
-    chunk_idx += 1;
 
     // Footer
     let footer = match state.focus {
@@ -240,5 +234,5 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
             Span::styled(" clear  ", Theme::keybind_desc()),
         ]),
     };
-    frame.render_widget(Paragraph::new(footer), chunks[chunk_idx]);
+    frame.render_widget(Paragraph::new(footer), footer_area);
 }

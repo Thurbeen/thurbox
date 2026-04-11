@@ -1649,9 +1649,7 @@ impl App {
                 rp.focus = super::modals::RepoPickerFocus::Input;
             }
             KeyCode::Char('/') => {
-                rp.search_input.clear();
-                rp.filtered_indices = (0..rp.bookmarks.len()).collect();
-                rp.list_index = 0;
+                rp.clear_search();
                 rp.focus = super::modals::RepoPickerFocus::Search;
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1788,9 +1786,7 @@ impl App {
         };
         match code {
             KeyCode::Esc => {
-                rp.search_input.clear();
-                rp.filtered_indices = (0..rp.bookmarks.len()).collect();
-                rp.list_index = 0;
+                rp.clear_search();
                 rp.focus = super::modals::RepoPickerFocus::List;
             }
             KeyCode::Enter => {

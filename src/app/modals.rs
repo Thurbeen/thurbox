@@ -248,6 +248,15 @@ pub struct RepoPickerModal {
     pub filtered_indices: Vec<usize>,
 }
 
+impl RepoPickerModal {
+    /// Clear the search query and reset the filter to show all bookmarks.
+    pub fn clear_search(&mut self) {
+        self.search_input.clear();
+        self.filtered_indices = (0..self.bookmarks.len()).collect();
+        self.list_index = 0;
+    }
+}
+
 // ── SettingsTab ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -454,6 +463,41 @@ mod tests {
         let modal = ScheduledCommandsListModal::default();
         assert_eq!(modal.index, 0);
         assert!(modal.commands.is_empty());
+    }
+
+    #[test]
+    fn test_repo_picker_clear_search_resets_filter() {
+        let mut rp = RepoPickerModal {
+            bookmarks: vec!["/a".into(), "/b".into(), "/c".into()],
+            selected: vec![false, true, false],
+            worktree: vec![false, false, false],
+            list_index: 1,
+            filtered_indices: vec![1], // simulating an active filter
+            ..Default::default()
+        };
+        rp.search_input.set("b");
+
+        rp.clear_search();
+
+        assert_eq!(rp.search_input.value(), "");
+        assert_eq!(rp.filtered_indices, vec![0, 1, 2]);
+        assert_eq!(rp.list_index, 0);
+    }
+
+    #[test]
+    fn test_repo_picker_clear_search_empty_bookmarks() {
+        let mut rp = RepoPickerModal::default();
+        rp.clear_search();
+        assert!(rp.filtered_indices.is_empty());
+        assert_eq!(rp.list_index, 0);
+    }
+
+    #[test]
+    fn test_repo_picker_default_has_empty_search() {
+        let rp = RepoPickerModal::default();
+        assert_eq!(rp.search_input.value(), "");
+        assert!(rp.filtered_indices.is_empty());
+        assert_eq!(rp.focus, RepoPickerFocus::List);
     }
 
     #[test]
