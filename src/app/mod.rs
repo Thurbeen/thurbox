@@ -1821,6 +1821,41 @@ impl App {
             );
         }
 
+        // Inject session context into the system prompt for new sessions so the
+        // agent is aware of its repos, worktrees, branches, and sibling sessions.
+        let is_new_session =
+            config.resume_session_id.is_none() && config.fork_session_id.is_none();
+        if is_new_session && !is_admin {
+            let other_sessions: Vec<&SessionInfo> = self
+                .sessions
+                .iter()
+                .map(|s| &s.info)
+                .filter(|i| !i.is_admin)
+                .collect();
+
+            let context_prompt = helpers::build_session_context_prompt(
+                &name,
+                &config.role,
+                &worktrees,
+                config.cwd.as_deref(),
+                &config.additional_dirs,
+                &other_sessions,
+            );
+
+            if !context_prompt.is_empty() {
+                let existing = config
+                    .permissions
+                    .append_system_prompt
+                    .take()
+                    .unwrap_or_default();
+                config.permissions.append_system_prompt = Some(if existing.is_empty() {
+                    context_prompt
+                } else {
+                    format!("{context_prompt}\n\n{existing}")
+                });
+            }
+        }
+
         // When a VM was just provisioned, use the VM backend and take the
         // placeholder's name instead of generating a new one.
         let vm_id = self.pending_vm_id.take();
