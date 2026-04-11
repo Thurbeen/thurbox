@@ -10,7 +10,7 @@ use ratatui::{
 
 use super::render_modal_frame;
 use super::theme::Theme;
-use super::{centered_fixed_height_rect, render_text_field_with_suggestion};
+use super::{centered_fixed_height_rect, render_text_field, render_text_field_with_suggestion};
 use crate::app::modals::RepoPickerFocus;
 
 pub struct RepoPickerState<'a> {
@@ -22,31 +22,61 @@ pub struct RepoPickerState<'a> {
     pub path_cursor: usize,
     pub path_suggestion: Option<&'a str>,
     pub focus: RepoPickerFocus,
+    pub search_query: &'a str,
+    pub search_cursor: usize,
+    pub search_active: bool,
+    pub filtered_indices: &'a [usize],
 }
 
 pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) {
-    let list_inner = if state.bookmarks.is_empty() {
+    let visible_count = if state.filtered_indices.is_empty() {
         1
     } else {
-        state.bookmarks.len().min(10)
+        state.filtered_indices.len().min(10)
     };
-    let list_height = list_inner as u16 + 2; // +2 for borders
+    let list_height = visible_count as u16 + 2; // +2 for borders
 
-    // Layout: list + path input(3) + footer(1) + outer border(2)
-    let total_height = list_height + 3 + 1 + 2;
+    let search_height: u16 = if state.search_active { 3 } else { 0 };
+
+    // Layout: search(optional 3) + list + path input(3) + footer(1) + outer border(2)
+    let total_height = search_height + list_height + 3 + 1 + 2;
 
     let area = centered_fixed_height_rect(60, total_height, frame.area());
 
     let inner = render_modal_frame(frame, area, "Select Repos");
 
+    let mut constraints = Vec::new();
+    if state.search_active {
+        constraints.push(Constraint::Length(3)); // Search bar
+    }
+    constraints.push(Constraint::Length(list_height)); // Bookmark list
+    constraints.push(Constraint::Length(3)); // Path input
+    constraints.push(Constraint::Min(1)); // Footer
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(list_height), // Bookmark list
-            Constraint::Length(3),           // Path input
-            Constraint::Min(1),              // Footer
-        ])
+        .constraints(constraints)
         .split(inner);
+
+    let mut chunk_idx = 0;
+
+    // Search bar (when active)
+    if state.search_active {
+        let match_label = format!(
+            "Search ({}/{})",
+            state.filtered_indices.len(),
+            state.bookmarks.len()
+        );
+        render_text_field(
+            frame,
+            chunks[chunk_idx],
+            &match_label,
+            state.search_query,
+            state.search_cursor,
+            state.focus == RepoPickerFocus::Search,
+        );
+        chunk_idx += 1;
+    }
 
     // Bookmark list with checkboxes
     let list_focused = state.focus == RepoPickerFocus::List;
@@ -56,17 +86,33 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
         Theme::BORDER_UNFOCUSED
     };
 
+    let title = if !state.search_query.is_empty() {
+        format!(
+            " Repos ({}/{}) ",
+            state.filtered_indices.len(),
+            state.bookmarks.len()
+        )
+    } else {
+        format!(" Repos ({}) ", state.bookmarks.len())
+    };
+
     let list_block = Block::default()
-        .title(format!(" Repos ({}) ", state.bookmarks.len()))
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
-    let list_inner_area = list_block.inner(chunks[0]);
-    frame.render_widget(list_block, chunks[0]);
+    let list_inner_area = list_block.inner(chunks[chunk_idx]);
+    frame.render_widget(list_block, chunks[chunk_idx]);
+    chunk_idx += 1;
 
-    if state.bookmarks.is_empty() {
+    if state.filtered_indices.is_empty() {
+        let msg = if state.search_query.is_empty() {
+            "  No bookmarks — add via path input below"
+        } else {
+            "  No matches"
+        };
         let placeholder = Paragraph::new(Line::from(Span::styled(
-            "  No bookmarks — add via path input below",
+            msg,
             Style::default().fg(Theme::TEXT_MUTED),
         )));
         frame.render_widget(placeholder, list_inner_area);
@@ -79,23 +125,59 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
         };
 
         let items: Vec<ListItem<'_>> = state
-            .bookmarks
+            .filtered_indices
             .iter()
-            .zip(state.selected.iter())
-            .zip(state.worktree.iter())
             .enumerate()
             .skip(scroll_offset)
             .take(visible_count)
-            .map(|(i, ((path, &checked), &is_wt))| {
-                let is_cursor = i == state.list_index && list_focused;
+            .map(|(vi, &real_idx)| {
+                let path = &state.bookmarks[real_idx];
+                let checked = state.selected[real_idx];
+                let is_wt = state.worktree[real_idx];
+                let is_cursor = vi == state.list_index && list_focused;
+
                 let style = if is_cursor {
                     Theme::selected_item()
                 } else {
                     Theme::normal_item()
                 };
+
                 let check = if checked { "[x] " } else { "[ ] " };
                 let display = path.display().to_string();
-                let mut spans = vec![Span::styled(format!("{check}{display}"), style)];
+
+                let mut spans = if !state.search_query.is_empty() {
+                    // Build spans with fuzzy highlight
+                    let positions = crate::fuzzy::fuzzy_match(state.search_query, &display)
+                        .map(|m| m.positions)
+                        .unwrap_or_default();
+                    let mut result = vec![Span::styled(check, style)];
+                    let mut last = 0;
+                    for &pos in &positions {
+                        if pos > last {
+                            result.push(Span::styled(
+                                display[last..pos].to_string(),
+                                style,
+                            ));
+                        }
+                        let end = display[pos..]
+                            .chars()
+                            .next()
+                            .map(|c| pos + c.len_utf8())
+                            .unwrap_or(pos + 1);
+                        result.push(Span::styled(
+                            display[pos..end].to_string(),
+                            Style::default().fg(Theme::ACCENT),
+                        ));
+                        last = end;
+                    }
+                    if last < display.len() {
+                        result.push(Span::styled(display[last..].to_string(), style));
+                    }
+                    result
+                } else {
+                    vec![Span::styled(format!("{check}{display}"), style)]
+                };
+
                 if checked && is_wt {
                     spans.push(Span::styled(" [wt]", Style::default().fg(Theme::ACCENT)));
                 }
@@ -109,13 +191,14 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
     // Path input
     render_text_field_with_suggestion(
         frame,
-        chunks[1],
+        chunks[chunk_idx],
         "Add Repo Path",
         state.path_input,
         state.path_cursor,
         state.focus == RepoPickerFocus::Input,
         state.path_suggestion,
     );
+    chunk_idx += 1;
 
     // Footer
     let footer = match state.focus {
@@ -126,12 +209,14 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
             Span::styled(" toggle  ", Theme::keybind_desc()),
             Span::styled("w", Theme::keybind()),
             Span::styled(" worktree  ", Theme::keybind_desc()),
+            Span::styled("/", Theme::keybind()),
+            Span::styled(" search  ", Theme::keybind_desc()),
+            Span::styled("d", Theme::keybind()),
+            Span::styled(" delete  ", Theme::keybind_desc()),
             Span::styled("Tab", Theme::keybind()),
             Span::styled(" input  ", Theme::keybind_desc()),
             Span::styled("Enter", Theme::keybind()),
-            Span::styled(" ok  ", Theme::keybind_desc()),
-            Span::styled("Esc", Theme::keybind()),
-            Span::styled(" cancel", Theme::keybind_desc()),
+            Span::styled(" ok", Theme::keybind_desc()),
         ]),
         RepoPickerFocus::Input => {
             let tab_hint = if state.path_suggestion.is_some() {
@@ -148,6 +233,12 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
                 Span::styled(" cancel", Theme::keybind_desc()),
             ])
         }
+        RepoPickerFocus::Search => Line::from(vec![
+            Span::styled("Enter", Theme::keybind()),
+            Span::styled(" keep filter  ", Theme::keybind_desc()),
+            Span::styled("Esc", Theme::keybind()),
+            Span::styled(" clear  ", Theme::keybind_desc()),
+        ]),
     };
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    frame.render_widget(Paragraph::new(footer), chunks[chunk_idx]);
 }

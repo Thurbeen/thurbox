@@ -481,6 +481,11 @@ impl App {
                     path_cursor: rp.path_input.cursor_pos(),
                     path_suggestion: rp.path_suggestion.as_deref(),
                     focus: rp.focus,
+                    search_query: rp.search_input.value(),
+                    search_cursor: rp.search_input.cursor_pos(),
+                    search_active: rp.focus == super::modals::RepoPickerFocus::Search
+                        || !rp.search_input.value().is_empty(),
+                    filtered_indices: &rp.filtered_indices,
                 },
             );
         }

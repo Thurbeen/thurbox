@@ -971,6 +971,7 @@ impl App {
 
         let selected = vec![false; bookmarks.len()];
         let worktree = vec![false; bookmarks.len()];
+        let filtered_indices = (0..bookmarks.len()).collect();
         self.modal = modals::Modal::RepoPicker(modals::RepoPickerModal {
             bookmarks,
             selected,
@@ -979,6 +980,8 @@ impl App {
             path_input: modals::TextInput::new(),
             path_suggestion: None,
             focus: modals::RepoPickerFocus::default(),
+            search_input: modals::TextInput::new(),
+            filtered_indices,
         });
     }
 

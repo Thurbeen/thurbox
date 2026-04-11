@@ -1633,6 +1633,7 @@ impl App {
         match rp.focus {
             super::modals::RepoPickerFocus::List => self.handle_repo_picker_list_key(code),
             super::modals::RepoPickerFocus::Input => self.handle_repo_picker_input_key(code),
+            super::modals::RepoPickerFocus::Search => self.handle_repo_picker_search_key(code),
         }
     }
 
@@ -1647,8 +1648,14 @@ impl App {
             KeyCode::Tab => {
                 rp.focus = super::modals::RepoPickerFocus::Input;
             }
+            KeyCode::Char('/') => {
+                rp.search_input.clear();
+                rp.filtered_indices = (0..rp.bookmarks.len()).collect();
+                rp.list_index = 0;
+                rp.focus = super::modals::RepoPickerFocus::Search;
+            }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !rp.bookmarks.is_empty() && rp.list_index + 1 < rp.bookmarks.len() {
+                if rp.list_index + 1 < rp.filtered_indices.len() {
                     rp.list_index += 1;
                 }
             }
@@ -1656,20 +1663,38 @@ impl App {
                 rp.list_index = rp.list_index.saturating_sub(1);
             }
             KeyCode::Char(' ') => {
-                if let Some(sel) = rp.selected.get_mut(rp.list_index) {
-                    *sel = !*sel;
+                if let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) {
+                    if let Some(sel) = rp.selected.get_mut(real_idx) {
+                        *sel = !*sel;
+                    }
                 }
             }
             KeyCode::Char('w') => {
-                let idx = rp.list_index;
-                if let Some(wt) = rp.worktree.get_mut(idx) {
-                    *wt = !*wt;
-                    // Auto-select when toggling worktree on
-                    if *wt {
-                        if let Some(sel) = rp.selected.get_mut(idx) {
-                            *sel = true;
+                if let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) {
+                    if let Some(wt) = rp.worktree.get_mut(real_idx) {
+                        *wt = !*wt;
+                        // Auto-select when toggling worktree on
+                        if *wt {
+                            if let Some(sel) = rp.selected.get_mut(real_idx) {
+                                *sel = true;
+                            }
                         }
                     }
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) {
+                    let path = rp.bookmarks[real_idx].clone();
+                    if let Err(e) = self.db.delete_repo_bookmark(&path) {
+                        error!("Failed to delete repo bookmark: {e}");
+                    }
+                    let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+                        return;
+                    };
+                    rp.bookmarks.remove(real_idx);
+                    rp.selected.remove(real_idx);
+                    rp.worktree.remove(real_idx);
+                    self.recompute_repo_filter();
                 }
             }
             KeyCode::Enter => {
@@ -1729,6 +1754,7 @@ impl App {
                     rp.path_input.clear();
                     rp.path_suggestion = None;
                 }
+                self.recompute_repo_filter();
                 return;
             }
             KeyCode::Backspace => rp.path_input.backspace(),
@@ -1753,6 +1779,65 @@ impl App {
             rp.path_suggestion = paths::complete_directory_path(&value);
         } else {
             rp.path_suggestion = None;
+        }
+    }
+
+    fn handle_repo_picker_search_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                rp.search_input.clear();
+                rp.filtered_indices = (0..rp.bookmarks.len()).collect();
+                rp.list_index = 0;
+                rp.focus = super::modals::RepoPickerFocus::List;
+            }
+            KeyCode::Enter => {
+                rp.focus = super::modals::RepoPickerFocus::List;
+            }
+            KeyCode::Backspace => {
+                rp.search_input.backspace();
+                self.recompute_repo_filter();
+            }
+            KeyCode::Delete => {
+                rp.search_input.delete();
+                self.recompute_repo_filter();
+            }
+            KeyCode::Left => rp.search_input.move_left(),
+            KeyCode::Right => rp.search_input.move_right(),
+            KeyCode::Home => rp.search_input.home(),
+            KeyCode::End => rp.search_input.end(),
+            KeyCode::Char(c) => {
+                rp.search_input.insert(c);
+                self.recompute_repo_filter();
+            }
+            _ => {}
+        }
+    }
+
+    fn recompute_repo_filter(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let query = rp.search_input.value().to_string();
+        if query.is_empty() {
+            rp.filtered_indices = (0..rp.bookmarks.len()).collect();
+        } else {
+            rp.filtered_indices = rp
+                .bookmarks
+                .iter()
+                .enumerate()
+                .filter(|(_, path)| {
+                    crate::fuzzy::fuzzy_match(&query, &path.display().to_string()).is_some()
+                })
+                .map(|(i, _)| i)
+                .collect();
+        }
+        if rp.filtered_indices.is_empty() {
+            rp.list_index = 0;
+        } else {
+            rp.list_index = rp.list_index.min(rp.filtered_indices.len() - 1);
         }
     }
 

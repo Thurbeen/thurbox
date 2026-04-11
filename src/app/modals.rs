@@ -221,6 +221,8 @@ pub enum RepoPickerFocus {
     List,
     /// The text input for adding a new path.
     Input,
+    /// The fuzzy search filter input.
+    Search,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -231,14 +233,19 @@ pub struct RepoPickerModal {
     pub selected: Vec<bool>,
     /// Whether each selected repo should use worktree mode (parallel to `bookmarks`).
     pub worktree: Vec<bool>,
-    /// Cursor index in the bookmark list.
+    /// Cursor index in the bookmark list (indexes into `filtered_indices`).
     pub list_index: usize,
     /// Text input for adding a new repo path.
     pub path_input: TextInput,
     /// Autocomplete suggestion for the path input.
     pub path_suggestion: Option<String>,
-    /// Which section is focused (list vs input).
+    /// Which section is focused (list vs input vs search).
     pub focus: RepoPickerFocus,
+    /// Fuzzy search input for filtering bookmarks.
+    pub search_input: TextInput,
+    /// Indices into `bookmarks` that match the current search query.
+    /// When search is empty, contains `0..bookmarks.len()`.
+    pub filtered_indices: Vec<usize>,
 }
 
 // ── SettingsTab ─────────────────────────────────────────────────────────
