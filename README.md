@@ -205,6 +205,7 @@ The binary will be available at `target/release/thurbox`.
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
 | `Ctrl+E` | Edit settings (roles, MCP servers, skills) | **E**dit |
+| `Ctrl+O` | Open active session's repos in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |

@@ -1190,6 +1190,49 @@ impl App {
         self.pending_restart = false;
     }
 
+    /// Open the active session's worktree (or cwd) in the configured editor.
+    fn open_active_in_editor(&mut self) {
+        let Some(session) = self.sessions.get(self.active_index) else {
+            self.set_error("No active session");
+            return;
+        };
+
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        for wt in &session.info.worktrees {
+            if !paths.contains(&wt.worktree_path) {
+                paths.push(wt.worktree_path.clone());
+            }
+        }
+        if paths.is_empty() {
+            if let Some(cwd) = session.info.cwd.clone() {
+                paths.push(cwd);
+            }
+        }
+        for dir in &session.info.additional_dirs {
+            if !paths.contains(dir) {
+                paths.push(dir.clone());
+            }
+        }
+
+        if paths.is_empty() {
+            self.set_error("Active session has no worktree or cwd to open");
+            return;
+        }
+
+        let Some(editor) = helpers::resolve_editor_command(&self.db) else {
+            self.set_error(
+                "No editor configured — set `editor_command` via MCP or \
+                 export $EDITOR/$VISUAL",
+            );
+            return;
+        };
+
+        match helpers::open_in_editor(&paths, &editor) {
+            Ok(()) => self.set_info(format!("Opening {} path(s) in {editor}", paths.len())),
+            Err(e) => self.set_error(format!("Failed to launch editor `{editor}`: {e}")),
+        }
+    }
+
     fn fork_active_session(&mut self) {
         let Some(session) = self.sessions.get(self.active_index) else {
             return;

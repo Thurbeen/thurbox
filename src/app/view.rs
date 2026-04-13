@@ -553,6 +553,7 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from(""),
         help_section("Project"),
         help_line("Ctrl+E", "Settings (roles & MCP servers)"),
+        help_line("Ctrl+O", "Open active worktree in editor"),
         help_line("Ctrl+S", "Sync all worktrees with main"),
         Line::from(""),
         help_section("UI"),

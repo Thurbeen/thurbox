@@ -54,6 +54,15 @@ pub struct RoleInput {
 /// and the provided list is inserted in a single database transaction. To add
 /// a role, include all existing roles plus the new one. To clear all roles,
 /// pass an empty array.
+/// Parameters for the `set_editor_command` tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetEditorCommandParams {
+    #[schemars(
+        description = "Editor command to launch when opening a worktree (e.g. \"code --wait\", \"nvim\", \"zed --new\"). The target worktree path is appended as the final argument. Pass an empty string to clear the setting."
+    )]
+    pub command: String,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetRolesParams {
     #[schemars(

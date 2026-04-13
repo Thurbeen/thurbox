@@ -225,6 +225,10 @@ impl App {
                         return;
                     }
                 },
+                KeyCode::Char('o') => {
+                    self.open_active_in_editor();
+                    return;
+                }
                 KeyCode::Char('p') => {
                     self.open_scheduled_commands_list();
                     return;

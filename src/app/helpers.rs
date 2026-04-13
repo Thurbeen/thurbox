@@ -23,6 +23,57 @@ pub(super) fn open_url(url: &str) {
         .ok();
 }
 
+/// Spawn `editor_cmd` with `worktree` appended as the final argument.
+///
+/// `editor_cmd` is whitespace-split so callers can include flags
+/// (e.g. `"code --wait"` or `"nvim --server /tmp/s --remote"`). Returns an
+/// error if the command string is empty or fails to spawn.
+pub(super) fn open_in_editor(paths: &[PathBuf], editor_cmd: &str) -> std::io::Result<()> {
+    if paths.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "no paths to open",
+        ));
+    }
+    let mut parts = editor_cmd.split_whitespace();
+    let Some(program) = parts.next() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "editor command is empty",
+        ));
+    };
+    let extra_args: Vec<&str> = parts.collect();
+
+    std::process::Command::new(program)
+        .args(&extra_args)
+        .args(paths)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
+/// Resolve the editor command from the DB setting, falling back to
+/// `$VISUAL` then `$EDITOR`. Returns `None` if none are set.
+pub(super) fn resolve_editor_command(db: &crate::storage::Database) -> Option<String> {
+    if let Ok(Some(cmd)) = db.get_editor_command() {
+        let trimmed = cmd.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Write a `.mcp.json` file into a VM directory via SSH so Claude Code discovers
 /// the project's MCP servers when running inside the sandbox.
 pub(super) fn write_vm_mcp_json(

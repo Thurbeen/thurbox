@@ -18,8 +18,8 @@ use super::types::{
     GetSessionParams, GetVmParams, ListScheduledCommandsParams, ListSessionsParams, ListVmsParams,
     McpServerResponse, RestartSessionParams, RestoreSessionParams, RoleResponse,
     ScheduleCommandParams, ScheduledCommandResponse, SessionResponse,
-    SetContainerfileTemplateParams, SetMcpServersParams, SetRolesParams, VmImageResponse,
-    VmResponse, WorktreeResponse,
+    SetContainerfileTemplateParams, SetEditorCommandParams, SetMcpServersParams, SetRolesParams,
+    VmImageResponse, VmResponse, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -163,6 +163,34 @@ impl ThurboxMcp {
                 let resp: Vec<RoleResponse> = roles.iter().map(role_to_response).collect();
                 json_text(&resp)
             }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Get the configured editor command used by Ctrl+O to open a session's worktree. Returns {\"command\": \"...\"} or {\"command\": null} if unset (in which case $VISUAL/$EDITOR is used as fallback)."
+    )]
+    fn get_editor_command(&self) -> String {
+        let db = self.db.lock().unwrap();
+        match db.get_editor_command() {
+            Ok(cmd) => serde_json::json!({ "command": cmd }).to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Set the editor command used by Ctrl+O to open a session's worktree. The target worktree path is appended as the final argument (e.g. command \"code --wait\" runs `code --wait <worktree>`). Pass an empty string to clear and fall back to $VISUAL/$EDITOR."
+    )]
+    fn set_editor_command(
+        &self,
+        Parameters(params): Parameters<SetEditorCommandParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+        match db.set_editor_command(&params.command) {
+            Ok(()) => serde_json::json!({
+                "command": if params.command.is_empty() { None } else { Some(params.command) }
+            })
+            .to_string(),
             Err(e) => error_json(&e.to_string()),
         }
     }

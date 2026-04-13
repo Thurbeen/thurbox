@@ -195,6 +195,8 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `list_scheduled_commands` | List pending scheduled commands, optionally by session |
 | `get_scheduled_command` | Get a scheduled command by ID |
 | `cancel_scheduled_command` | Cancel a pending scheduled command |
+| `get_editor_command` | Get the editor command used by Ctrl+O |
+| `set_editor_command` | Set the editor command used by Ctrl+O |
 
 **Role Management**: Roles are global presets.
 `set_roles` performs an atomic replacement — all existing roles
@@ -331,6 +333,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
 | `Ctrl+E` | Edit settings (roles, MCP servers, skills) | **E**dit |
+| `Ctrl+O` | Open active session's worktree in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |

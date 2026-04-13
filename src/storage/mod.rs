@@ -18,6 +18,7 @@ mod roles;
 mod scheduled_commands;
 mod schema;
 mod sessions;
+mod settings;
 mod skills;
 pub use sessions::DeletedSessionInfo;
 pub mod sync;

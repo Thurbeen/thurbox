@@ -136,6 +136,7 @@ for actions (`C`=close, `D`=delete, `N`=new, `R`=restart, `Q`=quit).
 | `Ctrl+D` | Session list | Close active session | Vim: **d** = delete |
 | `Ctrl+D` | Project list | Delete selected project | Vim: **d** = delete |
 | `Ctrl+E` | Global | Edit settings (roles, MCP servers, skills) | **E**dit |
+| `Ctrl+O` | Global | Open active session's repos/worktrees in editor | **O**pen |
 | `Ctrl+R` | Global | Restart active session | **R**estart |
 | `Ctrl+F` | Global | Fork active session | **F**ork |
 | `Ctrl+S` | Global | Sync all worktree sessions with origin/main | **S**ync |
