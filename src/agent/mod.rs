@@ -5,6 +5,7 @@ pub mod devcontainer;
 pub mod input;
 pub mod provider;
 pub mod registry;
+pub mod skill_staging;
 pub mod tmux;
 pub mod vm;
 

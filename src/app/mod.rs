@@ -1248,6 +1248,11 @@ impl App {
         let removed_session = self.sessions.remove(self.active_index);
         let session_name = removed_session.info.name.clone();
 
+        // Clean up per-session claude-home staging dir.
+        if let Some(ref asid) = removed_session.info.agent_session_id {
+            crate::agent::skill_staging::cleanup(asid);
+        }
+
         // Clean up terminal view state
         self.session_terminal_views.remove(&session_id);
 
@@ -1904,10 +1909,31 @@ impl App {
             (Arc::clone(self.backends.default_backend()), name)
         };
 
-        // Symlink selected skills into .claude/skills/ before spawning so
-        // Claude Code auto-discovers them on startup.
+        // Stage selected skills so Claude Code auto-discovers them on startup.
+        //
+        // For local sessions we build a per-session claude-home directory OUTSIDE
+        // the worktree and point Claude at it via CLAUDE_CONFIG_DIR. This avoids
+        // polluting the repo with `.claude/skills/` symlinks that could be
+        // accidentally committed.
+        //
+        // For VM/container backends the staging dir would need to be mounted
+        // into the guest, which is not yet supported — fall back to the
+        // historical .claude/skills/ injection in the worktree cwd.
         if !config.skills.is_empty() {
-            if let Some(ref cwd) = config.cwd {
+            let is_local = vm_id.is_none() && container_id.is_none();
+            if is_local {
+                if let Some(ref sid) = config.agent_session_id {
+                    match crate::agent::skill_staging::prepare(sid, &config.skills) {
+                        Ok(path) => {
+                            config.permissions.env.insert(
+                                "CLAUDE_CONFIG_DIR".to_string(),
+                                path.display().to_string(),
+                            );
+                        }
+                        Err(e) => warn!("Failed to stage skills: {e}"),
+                    }
+                }
+            } else if let Some(ref cwd) = config.cwd {
                 let skills_dir = cwd.join(".claude").join("skills");
                 if let Err(e) = std::fs::create_dir_all(&skills_dir) {
                     warn!("Failed to create .claude/skills/: {e}");
