@@ -181,10 +181,7 @@ impl ThurboxMcp {
     #[tool(
         description = "Set the editor command used by Ctrl+O to open a session's worktree. The target worktree path is appended as the final argument (e.g. command \"code --wait\" runs `code --wait <worktree>`). Pass an empty string to clear and fall back to $VISUAL/$EDITOR."
     )]
-    fn set_editor_command(
-        &self,
-        Parameters(params): Parameters<SetEditorCommandParams>,
-    ) -> String {
+    fn set_editor_command(&self, Parameters(params): Parameters<SetEditorCommandParams>) -> String {
         let db = self.db.lock().unwrap();
         match db.set_editor_command(&params.command) {
             Ok(()) => serde_json::json!({

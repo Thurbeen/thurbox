@@ -38,3 +38,4 @@ temp/
 
 # Node (website linting tools)
 node_modules/
+.claude/scheduled_tasks.lock
