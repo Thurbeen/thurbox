@@ -44,14 +44,24 @@ pub(super) fn open_in_editor(paths: &[PathBuf], editor_cmd: &str) -> std::io::Re
     };
     let extra_args: Vec<&str> = parts.collect();
 
-    std::process::Command::new(program)
-        .args(&extra_args)
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(&extra_args)
         .args(paths)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
+        .stderr(std::process::Stdio::null());
+
+    // Detach from Thurbox's process group so signals to Thurbox
+    // don't reach the editor. Matters on WSL, where `code`/`zed` are
+    // launcher scripts that hand off to Windows via `/init` interop —
+    // without this, the interop bridge tears down before the GUI appears.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    cmd.spawn().map(|_| ())
 }
 
 /// Resolve the editor command from the DB setting, falling back to
