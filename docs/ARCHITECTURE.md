@@ -104,9 +104,7 @@ are handled in one place.
 - `>=80 cols` — two panels (left panel + terminal)
 - `>=120 cols` — three panels (left panel + terminal + info)
 
-The left panel is a vertically split two-section panel
-containing the project list (top 40%) and session list
-(bottom 60%).
+The left panel is a single session list.
 
 **Why**: 80 columns is the smallest usable terminal width. Below
 that, showing a sidebar wastes too much space. At 120+, there's
@@ -160,9 +158,9 @@ specifically for `perf` / `flamegraph` workflows.
 
 ## ADR-8: State storage — SQLite
 
-**Choice**: All persistent state (projects, sessions, roles,
-MCP servers, worktrees, VMs, containers, scheduled commands)
-is stored in a single SQLite database at
+**Choice**: All persistent state (sessions, roles, MCP servers,
+skills, worktrees, VMs, containers, scheduled commands) is stored
+in a single SQLite database at
 `~/.local/share/thurbox/thurbox.db` (respects `$XDG_DATA_HOME`).
 WAL mode enables concurrent multi-instance access.
 
@@ -183,58 +181,40 @@ all editing UI — there is no need for a human-editable config file.
   multi-key updates.
 - *JSON* — verbose for config, no atomic writes without
   temp-file-rename pattern.
-- *CLI flags only* — doesn't scale to multiple projects.
-- *Embedded in CLAUDE.md* — mixes project-specific AI guidance
-  with application configuration; wrong separation of concerns.
+- *CLI flags only* — doesn't scale to multiple sessions and
+  long-lived configuration.
+- *Embedded in CLAUDE.md* — mixes repo-specific AI guidance with
+  application configuration; wrong separation of concerns.
 
 ---
 
-## ADR-9: Two-section left panel
+## ADR-9: Flat session list (no project grouping)
 
-**Choice**: The left sidebar is a single panel split vertically
-into two sections — project list (top) and session list (bottom) —
-rather than two independent side-by-side panels.
+**Choice**: The sidebar is a single flat list of sessions. There
+is no "project" layer above sessions: roles, MCP servers, and
+skills are global presets attached to a session at creation time,
+and each session owns its own repo selection.
 
-**Why**: This reuses the existing 3-tier responsive layout
-(< 80, >= 80, >= 120 cols) without adding a 4th breakpoint.
-At 80 columns, showing two separate sidebar panels would leave
-< 40 cols for the terminal — unusable. The vertically stacked
-design mirrors the containment relationship (projects contain
-sessions) and works at all supported widths.
+**Why**: Earlier versions grouped sessions under projects (one
+project → many sessions, with shared repos and roles). In practice
+users created one session per task, so the project layer was pure
+overhead — an extra navigation level, an extra creation step, and
+an extra deletion guard. Storage migration v16 dropped the
+`projects`, `project_repos`, `project_roles`, `project_mcp_servers`,
+`project_vm_config`, and `project_container_config` tables and
+removed `project_id` columns from `sessions`, `vms`, and
+`containers`. The Admin session pinned at index 0 guarantees the
+list is never empty.
 
 **Rejected**:
 
-- *Separate project and session panels* — requires >= 160 cols
-  to show project + session + terminal simultaneously.
-  Most terminals are 80-120 cols wide.
-- *Modal/popup project selector* — hides project context while
-  working, forces re-opening to switch. Projects are persistent
-  context, not transient selections.
+- *Two-section sidebar (projects on top, sessions on bottom)* —
+  the previous design. Cost a navigation level and a creation
+  step for no gain in the typical one-session-per-task workflow.
+- *Modal/popup project selector* — hides context while working,
+  forces re-opening to switch.
 - *Tabs for projects* — horizontal tabs consume vertical space
-  and don't scale well past 4-5 projects. A vertical list
-  scrolls naturally.
-
----
-
-## ADR-10: No default project — Admin guarantees non-empty list
-
-**Choice**: There is no auto-created "Default" project. The
-built-in Admin project (always present) guarantees
-`projects.len() > 0`. On first launch with an empty DB, users
-see only the Admin project and create their first project via
-`Ctrl+N` or the Admin MCP session.
-
-**Why**: The original default project (created from CWD) was
-confusing — it couldn't be edited or deleted, and its CWD-based
-repo was often wrong. The Admin project already satisfies the
-non-empty invariant, so the default project added no value.
-Removing it simplifies the codebase (no `is_default` checks)
-and gives users full control over their project list.
-
-**Previous design**: An ephemeral "Default" project was
-auto-created from CWD when no projects existed. It was
-non-editable, non-deletable, and persisted to the DB for FK
-constraints. Superseded when the Admin project was introduced.
+  and don't scale well past 4-5 entries.
 
 ---
 
@@ -349,7 +329,8 @@ delivers pixel-perfect rendering with all original formatting.
 ## ADR-7b: Multi-Instance Sync — SQLite with PRAGMA data_version
 
 **Choice**: Multiple thurbox instances synchronize all state
-(projects, sessions, roles, worktrees) via a shared SQLite database
+(sessions, roles, MCP servers, skills, worktrees, VMs, containers)
+via a shared SQLite database
 (`~/.local/share/thurbox/thurbox.db`). Each instance polls
 `PRAGMA data_version` to detect external changes. SQLite's WAL mode
 handles concurrent access safely. Deletions use soft delete
@@ -357,7 +338,7 @@ handles concurrent access safely. Deletions use soft delete
 
 *This supersedes the original TOML file-based approach. The migration
 to SQLite resolved race conditions where concurrent `save_state()` calls
-could overwrite each other's project renames.*
+could overwrite each other's writes.*
 
 Session **I/O is NOT coordinated** via the database. Instead, each
 instance independently connects to tmux and adopts all visible sessions.
@@ -392,7 +373,8 @@ I/O coordination.
 **Trade-offs**:
 
 - **Not human-readable**: Unlike TOML, users cannot directly edit state.
-  The TUI provides all editing UI (add/edit/delete projects, role editor).
+  The TUI provides all editing UI (session creation, role editor, MCP
+  server editor, skill manager).
 - **Independent terminal state**: Each instance maintains its own
   `vt100::Parser`, so concurrent updates may briefly diverge. Instances
   converge quickly as output is replayed.
@@ -423,8 +405,9 @@ I/O coordination.
 
 **Choice**: The MCP (Model Context Protocol) server is a separate
 binary (`thurbox-mcp`) that shares the same SQLite database as the
-TUI. It exposes project, role, and session management over stdio
-JSON-RPC transport using the `rmcp` crate.
+TUI. It exposes role, session, VM, container, scheduled-command,
+and editor-command management over stdio JSON-RPC (and optionally
+Streamable HTTP — see ADR-17) using the `rmcp` crate.
 
 **Why**: A separate binary avoids coupling the MCP protocol stack
 to the TUI's event loop. The TUI already polls `PRAGMA data_version`
@@ -432,9 +415,9 @@ every 250ms (ADR-7b), so changes made by the MCP server appear
 automatically — no new synchronization mechanism is needed.
 
 The `mcp` module follows the same isolation rules as other modules:
-it imports `storage`, `session`, `project`, `sync`, and `paths`,
-but never `app`, `agent`, `ui`, or `git`. This ensures the MCP
-server can operate without a terminal or tmux.
+it imports `storage`, `session`, `sync`, and `paths`, but never
+`app`, `agent`, `ui`, or `git`. This ensures the MCP server can
+operate without a terminal or tmux.
 
 **Rejected**:
 

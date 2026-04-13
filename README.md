@@ -27,17 +27,19 @@ terminal output. Select text with mouse drag and copy with
 the Claude session with `Ctrl+T`. Recover sessions externally
 at any time with `tmux -L thurbox attach`.
 
-### Project Management
+### Session Management
 
-Organize work into projects, each with its own sessions and
-settings. The two-section left sidebar shows all projects on top
-and the active project's sessions below. Projects support
-multiple repositories — the first repo becomes the working
-directory and the rest are passed via `--add-dir`. Edit
-global settings with `Ctrl+E` (roles, MCP servers, skills).
-Soft-deleted projects and sessions can be restored via the Admin
-session or MCP API. A built-in Admin project (pinned at index 0)
+Sessions are listed in the left sidebar with repo and branch
+labels, and can be filtered with `/` (fuzzy search over name,
+role, branch, and cwd). Each session supports multiple
+repositories — the first repo becomes the working directory and
+the rest are passed via `--add-dir`. Edit global settings with
+`Ctrl+E` (roles, MCP servers, skills). Soft-deleted sessions can
+be restored with `Ctrl+Z` (undo) or `Ctrl+U` (restore list), or
+via the MCP API. A built-in Admin session (pinned at index 0)
 provides conversational access to Thurbox management via MCP.
+Press `Ctrl+O` to open the active session's worktrees in your
+configured editor.
 
 ### Git Worktree Support
 
@@ -99,9 +101,9 @@ and auto-discovered by Claude Code. Manage skills globally via
 
 ### MCP Server
 
-The `thurbox-mcp` binary exposes 22 tools over the Model Context
+The `thurbox-mcp` binary exposes 24 tools over the Model Context
 Protocol for managing roles, sessions, VMs, containers, scheduled
-commands, and MCP server configurations. The Admin session
+commands, editor command, and MCP server configurations. The Admin session
 auto-configures `thurbox-mcp`, so you can manage everything
 conversationally — "create a reviewer role with read-only
 access." See [MCP Server](#mcp-server-1) below for the full
@@ -114,7 +116,7 @@ Three layout tiers adapt to your terminal width:
 | Width | Layout |
 |-------|--------|
 | < 80 cols | Terminal only |
-| >= 80 cols | Project/session sidebar + terminal |
+| >= 80 cols | Session sidebar + terminal |
 | >= 120 cols | Sidebar + terminal + info panel |
 
 Scrollback with `Shift+arrows` / `PageUp` / `PageDown` / mouse
@@ -176,9 +178,9 @@ The binary will be available at `target/release/thurbox`.
    MCP servers, and skills.
 3. **Work with Claude** — the terminal panel shows the live
    Claude Code session. All keys are forwarded to the PTY.
-4. **Navigate** — `Ctrl+L` cycles focus (project list → session
-   list → terminal). `Ctrl+H` jumps to the project list.
-   `Ctrl+J` / `Ctrl+K` switch projects or sessions.
+4. **Navigate** — `Ctrl+L` / `Ctrl+H` cycle focus between the
+   session list and terminal. `Ctrl+J` / `Ctrl+K` move between
+   sessions.
 5. **Manage settings** — `Ctrl+E` opens settings (roles, MCP
    servers, skills). `Ctrl+D` deletes a session.
 6. **Restart a session** — `Ctrl+R` restarts with `--resume` to
@@ -275,14 +277,16 @@ thurbox-mcp --transport streamable-http --port 9090  # custom port
 | `list_scheduled_commands` | List pending scheduled commands, optionally by session |
 | `get_scheduled_command` | Get a scheduled command by ID |
 | `cancel_scheduled_command` | Cancel a pending scheduled command |
+| `get_editor_command` | Get the editor command used by Ctrl+O |
+| `set_editor_command` | Set the editor command used by Ctrl+O |
 
 ### Admin Session
 
 The TUI includes a built-in Admin session that auto-configures
 `thurbox-mcp` as an MCP server. Claude Code discovers the config
-automatically, enabling conversational project/role/session
-management inside the TUI. The Admin project is pinned at
-index 0 and cannot be edited or deleted.
+automatically, enabling conversational role/session management
+inside the TUI. The Admin session is pinned at index 0 and
+cannot be edited or deleted.
 
 For the complete role configuration guide including permission
 modes, tool name format, and example role patterns, see
@@ -298,16 +302,15 @@ manages multiple backends: local tmux (`tmux -L thurbox`),
 Docker/Podman containers (tmux over `exec`), and optional
 QEMU/KVM VMs (tmux over SSH). Terminal output is parsed
 by `vt100::Parser` and rendered by `tui_term`. All persistent
-state (projects, sessions, roles, VMs) is stored in SQLite.
+state (sessions, roles, VMs) is stored in SQLite.
 
 ### Module Dependency Rules
 
 ```text
-session  ← pure data types, no project-local imports
-project  ← imports session only
-agent    ← imports session only (NEVER ui, git, or project)
-ui       ← imports session and project only (NEVER agent or git)
-mcp      ← imports storage, session, project, sync, paths only
+session  ← pure data types, no local imports
+agent    ← imports session only (NEVER ui or git)
+ui       ← imports session only (NEVER agent or git)
+mcp      ← imports storage, session, sync, paths only
 app      ← coordinator, imports all modules
 ```
 

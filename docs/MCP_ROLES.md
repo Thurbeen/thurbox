@@ -6,7 +6,7 @@ control which tools are available, how they behave, and what
 system prompt text is appended.
 
 For TUI-based role editing, see the
-[Role Editor](FEATURES.md#role-editor) section in FEATURES.md.
+[Role Editor](FEATURES.md#role-editor-view) section in FEATURES.md.
 
 ---
 
