@@ -891,7 +891,15 @@ pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
 
     let output = Command::new("tmux")
         .args([
-            "-L", TMUX_SOCKET, "capture-pane", "-p", "-J", "-t", &target, "-S", &start,
+            "-L",
+            TMUX_SOCKET,
+            "capture-pane",
+            "-p",
+            "-J",
+            "-t",
+            &target,
+            "-S",
+            &start,
         ])
         .output()
         .context("Failed to run tmux capture-pane")?;

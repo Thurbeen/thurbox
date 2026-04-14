@@ -3682,7 +3682,11 @@ impl App {
             }
         };
 
-        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         let repo_path = v
             .get("repo_path")
             .and_then(|x| x.as_str())
@@ -3691,10 +3695,7 @@ impl App {
             error!("spawn command missing repo_path");
             return;
         };
-        let role = v
-            .get("role")
-            .and_then(|x| x.as_str())
-            .map(str::to_string);
+        let role = v.get("role").and_then(|x| x.as_str()).map(str::to_string);
         let worktree_branch = v
             .get("worktree_branch")
             .and_then(|x| x.as_str())

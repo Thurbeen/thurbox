@@ -218,9 +218,7 @@ pub struct CaptureSessionOutputParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CreateSessionParams {
-    #[schemars(
-        description = "Session name. Must be 1-64 chars, no slashes or leading '.'."
-    )]
+    #[schemars(description = "Session name. Must be 1-64 chars, no slashes or leading '.'.")]
     pub name: String,
     #[schemars(
         description = "Absolute path to the repository (or directory) the session should cwd into."
