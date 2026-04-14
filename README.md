@@ -1,8 +1,8 @@
 # Thurbox
 
 A multi-session Claude Code orchestrator for your terminal.
-Run parallel Claude instances in persistent tmux panes —
-sessions survive crashes and restarts.
+Run parallel Claude instances in persistent tmux panes — and let
+one of them drive the others.
 
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -11,183 +11,160 @@ sessions survive crashes and restarts.
 
 ![Thurbox Demo](./docs/media/thurbox-demo.gif)
 
-## Features
+## Why Thurbox
 
-### Session Orchestration
+Running `claude` in several terminals gets you far — until you want
+to keep sessions alive across crashes, isolate them per-branch, or
+have one Claude delegate work to others. Thurbox adds:
 
-Run multiple Claude Code instances side-by-side, each in its
-own tmux pane. Sessions persist across crashes, restarts, and
-even multiple concurrent Thurbox instances — tmux keeps them
-alive in the background. Restart a session with `Ctrl+R` to
-pick up new role permissions while preserving conversation
-history via `--resume`. Each session displays elapsed time
-("Waiting 45s", "Idle 2m") and highlights clickable URLs in
-terminal output. Select text with mouse drag and copy with
-`Ctrl+C`, paste with `Ctrl+V`. Toggle a shell pane alongside
-the Claude session with `Ctrl+T`. Recover sessions externally
-at any time with `tmux -L thurbox attach`.
+- **Persistence** — sessions live in tmux and survive Thurbox
+  crashes, restarts, and reboots. Reattach from any terminal with
+  `tmux -L thurbox attach`.
+- **Parallelism** — many Claudes side-by-side, each with its own
+  repo(s), branch, role, and skills.
+- **Git worktree isolation** — each session can spawn on a fresh
+  worktree; `Ctrl+S` syncs them with `origin/main` and asks Claude
+  to resolve rebase conflicts automatically.
+- **Orchestrator mode** — a built-in Admin session uses the
+  `thurbox-mcp` server to `create_session`, `send_prompt`, and
+  `capture_session_output` on other sessions. Say "spawn a reviewer
+  on the api repo and audit auth.rs" and Thurbox coordinates it.
 
-### Session Management
+## Main Features
 
-Sessions are listed in the left sidebar with repo and branch
-labels, and can be filtered with `/` (fuzzy search over name,
-role, branch, and cwd). Each session supports multiple
-repositories — the first repo becomes the working directory and
-the rest are passed via `--add-dir`. Edit global settings with
-`Ctrl+E` (roles, MCP servers, skills). Soft-deleted sessions can
-be restored with `Ctrl+Z` (undo) or `Ctrl+U` (restore list), or
-via the MCP API. A built-in Admin session (pinned at index 0)
-provides conversational access to Thurbox management via MCP.
-Press `Ctrl+O` to open the active session's worktrees in your
-configured editor.
+**Sessions**
 
-### Git Worktree Support
+- Persistent tmux-backed panes, parallel Claudes, per-session
+  working dirs (multi-repo via `--add-dir`).
+- `Ctrl+R` restart with `--resume` preserves conversation; `Ctrl+F`
+  forks a session; `Ctrl+T` toggles a shell pane.
+- Fuzzy session search (`/`), clickable URLs, mouse selection +
+  clipboard, scheduled commands (`Ctrl+P`), soft-delete with undo
+  (`Ctrl+Z`) and restore (`Ctrl+U`).
 
-Optionally spawn sessions inside git worktrees for branch
-isolation. When creating a session (`Ctrl+N`), choose "Worktree"
-mode to select a base branch and name a new branch — Thurbox
-creates the worktree and launches Claude inside it. Press
-`Ctrl+S` to sync all worktree sessions with `origin/main` —
-on rebase conflicts, Thurbox automatically sends a resolution
-prompt to Claude. Closing the session automatically removes
-the worktree. Worktree sessions show the branch name in the
-terminal title and session list.
+**Git worktrees**
 
-### Container Sessions
+- Pick "Worktree" in the new-session flow to branch off a base and
+  launch Claude inside the worktree. Closing the session removes
+  it. `Ctrl+S` syncs all worktree sessions with `origin/main`.
 
-Run sessions inside Docker or Podman containers for lightweight
-isolation. Choose "Container" in the session mode selector —
-Thurbox builds a container image from a Containerfile template,
-runs the container with optional firewall-restricted network
-egress (nftables/iptables allowlist), and spawns the Claude
-session inside it. Templates are stored at
-`~/.local/share/thurbox/admin/containerfiles/` — a `default/` template
-(Debian Bookworm-based) is seeded on first run. Add custom
-templates by creating folders with a `Containerfile` and any
-support files. Containers are auto-detected (Podman preferred,
-Docker fallback) and survive Thurbox restarts.
+**Roles & skills**
 
-### VM Sessions
+- Global role presets define permission mode and allowed/disallowed
+  tools (e.g. `Bash(git:*)`). Skills are symlinked into the
+  session's `.claude/skills/` and auto-discovered. Edit everything
+  with `Ctrl+E`.
 
-Run sessions inside QEMU/KVM virtual machines for full OS-level
-isolation. Choose "VM" in the session mode selector —
-Thurbox provisions a Debian 13 (Trixie) VM with 2 CPUs, 2 GB
-RAM, and a 10 GB qcow2 overlay disk, bootstrapped via
-cloud-init with tmux, git, rsync, and the Claude CLI
-pre-installed. SSH readiness is polled over user-mode networking
-(ports 22200+), then the Claude session is spawned inside the
-VM over SSH-tunneled tmux. VMs survive Thurbox restarts and are
-automatically re-adopted on next launch. If a VM has died,
-Thurbox re-provisions a new one with `--resume` to preserve
-conversation history. Requires `qemu-system-x86_64`, `/dev/kvm`,
-and `genisoimage` (or `mkisofs`).
+**Orchestrator mode**
 
-### Role System
+- The Admin session auto-configures `thurbox-mcp` and can spawn,
+  prompt, and observe other sessions — a multi-agent loop driven
+  conversationally. See
+  [docs/FEATURES.md#orchestrator-mode](docs/FEATURES.md#orchestrator-mode).
 
-Define global permission presets that control Claude's behavior.
-Each role specifies a permission mode (`default`, `plan`,
-`acceptEdits`, `dontAsk`, `bypassPermissions`), lists of allowed
-and disallowed tools with scope patterns like `Bash(git:*)`, and
-optional system prompt text. Manage roles programmatically through
-the MCP server. When two or more roles exist, a role selector
-appears at session creation.
+**MCP server (`thurbox-mcp`)**
 
-### Skill Management
+- 24 tools over stdio or Streamable HTTP for roles, sessions,
+  scheduled commands, editor config, and more. Shares the TUI's
+  SQLite DB so changes appear live.
 
-Attach Claude Code skills to sessions at creation time. Skills
-are symlinked into the session's `.claude/skills/` directory
-and auto-discovered by Claude Code. Manage skills globally via
-`Ctrl+E` (Settings → Skills tab).
+**Responsive UI**
 
-### MCP Server
+- `< 80` cols: terminal only · `>= 80`: sidebar + terminal ·
+  `>= 120`: sidebar + terminal + info panel. Vim-inspired keys
+  throughout.
 
-The `thurbox-mcp` binary exposes 24 tools over the Model Context
-Protocol for managing roles, sessions, VMs, containers, scheduled
-commands, editor command, and MCP server configurations. The Admin session
-auto-configures `thurbox-mcp`, so you can manage everything
-conversationally — "create a reviewer role with read-only
-access." See [MCP Server](#mcp-server-1) below for the full
-tool reference.
+> Optional sandboxing: Docker/Podman containers and QEMU/KVM VMs
+> are supported as alternative session backends but are
+> experimental — see [docs/FEATURES.md](docs/FEATURES.md).
 
-### Responsive UI
+## Prerequisites
 
-Three layout tiers adapt to your terminal width:
-
-| Width | Layout |
-|-------|--------|
-| < 80 cols | Terminal only |
-| >= 80 cols | Session sidebar + terminal |
-| >= 120 cols | Sidebar + terminal + info panel |
-
-Scrollback with `Shift+arrows` / `PageUp` / `PageDown` / mouse
-wheel. Non-modal error messages in the status bar. Vim-inspired
-keybindings throughout.
+- **tmux >= 3.2**
+- **claude CLI** — [anthropics/claude-code](https://github.com/anthropics/claude-code)
+- **git** (required for worktree features)
+- **Rust 1.75+** (only to build from source)
+- *Optional:* Docker/Podman for container sessions; QEMU/KVM
+  (`qemu-system-x86_64`, `/dev/kvm`, `genisoimage`) for VM sessions
 
 ## Installation
 
-### From Binary (Recommended)
+**One-liner (recommended):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
-This installs the latest release to `~/.local/bin`. The script
-automatically detects your platform, verifies checksums, and
-handles API rate limits gracefully.
+Installs the latest release to `~/.local/bin` with checksum
+verification and platform auto-detection.
 
-**Custom installation directory:**
+**Options:**
 
 ```bash
+# Custom directory
 INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-```
 
-**Specific version:**
-
-```bash
+# Pin a version
 VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
-### From Source
+**From source:**
 
 ```bash
 git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
 cargo build --release
+# binary at target/release/thurbox
 ```
 
-The binary will be available at `target/release/thurbox`.
+## Getting Started
 
-## Prerequisites
+1. **Launch** — run `thurbox`. You'll see a sidebar on the left
+   with a pinned **Admin** session at index 0 (that's your
+   conversational control plane), and an empty terminal on the
+   right.
+2. **Create your first session** — press `Ctrl+N` to open the repo
+   picker. Toggle repos with `Space`; press `w` on a repo to mark
+   it as worktree mode (you'll be prompted for a base branch and
+   new branch name). Confirm with `Enter`, then optionally pick a
+   role, MCP servers, and skills.
+3. **Work with Claude** — the right pane is a live Claude session.
+   All keys are forwarded to the PTY; `Ctrl+C` copies if you have
+   a selection, otherwise sends SIGINT.
+4. **Navigate** — `Ctrl+J` / `Ctrl+K` move between sessions in the
+   sidebar; `Ctrl+L` / `Ctrl+H` cycle focus between panes.
+   `Ctrl+O` opens the session's worktree in your editor; `Ctrl+E`
+   edits global settings.
+5. **Quit without killing** — `Ctrl+Q` detaches all sessions.
+   Tmux keeps them running; relaunch `thurbox` and they resume.
 
-- **tmux >= 3.2** — session backend
-- **claude CLI** — [github.com/anthropics/claude-code](https://github.com/anthropics/claude-code)
-- **git** — required for worktree features
-- **Docker or Podman** — optional, for devcontainer sessions
-  (Podman preferred, Docker fallback)
-- **QEMU/KVM** — optional, for sandbox VM sessions
-  (`qemu-system-x86_64`, `/dev/kvm`, `genisoimage` or `mkisofs`)
-- **Rust 1.75+** — only needed for building from source
+See the full [keybindings](#keybindings) below.
 
-## Quick Start
+## Orchestrator Mode in 30 Seconds
 
-1. **Launch Thurbox** — run `thurbox` in your terminal. The Admin
-   session appears automatically in the sidebar.
-2. **Create a session** — press `Ctrl+N` to open the repo picker.
-   Select repos from bookmarks (Space to toggle, `w` to mark as
-   worktree), then choose a session mode, optionally a role,
-   MCP servers, and skills.
-3. **Work with Claude** — the terminal panel shows the live
-   Claude Code session. All keys are forwarded to the PTY.
-4. **Navigate** — `Ctrl+L` / `Ctrl+H` cycle focus between the
-   session list and terminal. `Ctrl+J` / `Ctrl+K` move between
-   sessions.
-5. **Manage settings** — `Ctrl+E` opens settings (roles, MCP
-   servers, skills). `Ctrl+D` deletes a session.
-6. **Restart a session** — `Ctrl+R` restarts with `--resume` to
-   preserve conversation history while picking up new
-   role permissions.
-7. **Quit** — `Ctrl+Q` detaches all sessions (tmux keeps them
-   running). They resume automatically on next launch.
+The Admin session is already wired up to `thurbox-mcp`. Focus it
+and ask:
+
+> Spawn a worker session on the `api` repo using the `reviewer`
+> role, tell it to audit `src/auth.rs` for missing permission
+> checks, wait for it to finish, and summarize its findings.
+
+Under the hood the Admin Claude calls `create_session` → polls
+`get_session` until `Idle` → `send_prompt` → `capture_session_output`.
+You'll see the new session appear in the sidebar; you can watch
+it work or ignore it until Admin reports back. Full details:
+[docs/FEATURES.md#orchestrator-mode](docs/FEATURES.md#orchestrator-mode).
+
+## Common Workflows
+
+- **Parallel branches** — `Ctrl+N`, pick a repo in Worktree mode,
+  name a new branch. Repeat for a second branch. Two isolated
+  Claudes now work in parallel with no git contention.
+- **Conversational admin** — ask the Admin session "create a
+  `reviewer` role with read-only Bash and no Edit/Write". It calls
+  `set_roles` for you; the role appears in the `Ctrl+E` picker.
+- **Recover a crash** — if Thurbox dies, relaunch it: sessions
+  resume from tmux. Prefer raw tmux? `tmux -L thurbox attach`.
 
 ## Keybindings
 
@@ -261,6 +238,9 @@ thurbox-mcp --transport streamable-http --port 9090  # custom port
 | `set_mcp_servers` | Set global MCP servers |
 | `list_sessions` | List all active sessions |
 | `get_session` | Get a session by UUID |
+| `create_session` | Spawn a new local-tmux session (optionally on a fresh worktree) |
+| `send_prompt` | Send text to a session's terminal immediately (orchestrator mode) |
+| `capture_session_output` | Read rendered pane contents from a session |
 | `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
 | `restart_session` | Queue a session restart (TUI processes the command) |
 | `restore_session` | Restore a soft-deleted session |
@@ -325,7 +305,7 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architectural
   decisions with rationale
 - [docs/FEATURES.md](docs/FEATURES.md) — Feature-level design
-  choices
+  choices (including orchestrator mode, containers, VMs)
 - [docs/MCP_ROLES.md](docs/MCP_ROLES.md) — MCP role
   configuration guide
 

@@ -119,19 +119,19 @@
             </p>
           </div>
           <div class="card">
-            <div class="card-icon">&#x1f4e6;</div>
-            <h3>Container Sessions</h3>
+            <div class="card-icon">&#x1f916;</div>
+            <h3>Orchestrator Mode</h3>
             <p>
-              Run sessions inside Docker or Podman containers with customizable Containerfile
-              templates and optional firewall-restricted network egress.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f512;</div>
-            <h3>VM Sandbox</h3>
-            <p>
-              Full OS-level isolation via QEMU/KVM virtual machines. Debian 13 VMs with 2 CPUs, 2 GB
-              RAM, pre-installed Claude CLI, and automatic session restoration.
+              The built-in Admin session uses
+              <code>thurbox-mcp</code>
+              to spawn other sessions, dispatch prompts, and read their output &mdash; multi-agent
+              workflows driven conversationally with
+              <code>create_session</code>
+              ,
+              <code>send_prompt</code>
+              , and
+              <code>capture_session_output</code>
+              .
             </p>
           </div>
           <div class="card">
@@ -173,7 +173,7 @@
             <p>
               The
               <code>thurbox-mcp</code>
-              binary exposes 22 tools for managing roles, sessions, VMs, containers, and scheduled
+              binary exposes 24 tools for managing roles, sessions, VMs, containers, and scheduled
               commands over the Model Context Protocol. Manage everything conversationally via the
               Admin session.
             </p>
@@ -266,8 +266,8 @@
             <div class="step-content">
               <h3>Start Coding</h3>
               <p>
-                Create sessions, choose a mode (Normal, Worktree, Container, or VM), and start
-                working with Claude.
+                Create sessions (optionally on a fresh git worktree), pick a role, and start
+                working with Claude. Let the Admin session orchestrate others for you.
               </p>
               <div class="terminal-frame">
                 <div class="terminal-header">
