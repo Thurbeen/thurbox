@@ -859,6 +859,7 @@ impl App {
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
+                self.pending_spawn_is_admin = false;
                 self.pending_vm_id = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -880,7 +881,8 @@ impl App {
                         config.role = role.name.clone();
                         config.permissions = role.permissions.clone();
                         let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                        self.maybe_show_mcp_picker(name, config, worktrees, false);
+                        let is_admin = self.pending_spawn_is_admin;
+                        self.maybe_show_mcp_picker(name, config, worktrees, is_admin);
                     }
                 }
             }
@@ -899,6 +901,7 @@ impl App {
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
+                self.pending_spawn_is_admin = false;
                 self.pending_restart = false;
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -940,7 +943,8 @@ impl App {
                     ) {
                         config.mcp_servers = selected_servers;
                         let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                        self.maybe_show_skill_picker(name, config, worktrees, false);
+                        let is_admin = self.pending_spawn_is_admin;
+                        self.maybe_show_skill_picker(name, config, worktrees, is_admin);
                     }
                 }
             }
@@ -959,6 +963,7 @@ impl App {
                 self.pending_spawn_config = None;
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
+                self.pending_spawn_is_admin = false;
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if sp.index + 1 < skill_count {
@@ -990,7 +995,9 @@ impl App {
                 ) {
                     config.skills = selected_skills;
                     let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                    self.do_spawn_session(name, &config, worktrees, false);
+                    let is_admin = self.pending_spawn_is_admin;
+                    self.pending_spawn_is_admin = false;
+                    self.do_spawn_session(name, &config, worktrees, is_admin);
                 }
             }
             _ => {}

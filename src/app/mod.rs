@@ -189,6 +189,22 @@ fn admin_mcp_permissions() -> RolePermissions {
     }
 }
 
+/// The role name used for admin sessions. Seeded into `global_roles` so it
+/// appears in the role picker and is preselected when spawning via `Ctrl+A`.
+const ADMIN_ROLE_NAME: &str = "admin";
+
+/// MCP server name pre-checked in the admin-spawn MCP picker.
+const ADMIN_DEFAULT_MCP: &str = "thurbox";
+
+/// Build the `RoleConfig` stored under `ADMIN_ROLE_NAME`.
+fn admin_role() -> RoleConfig {
+    RoleConfig {
+        name: ADMIN_ROLE_NAME.to_string(),
+        description: "Thurbox admin assistant".to_string(),
+        permissions: admin_mcp_permissions(),
+    }
+}
+
 pub use modals::RoleEditorView;
 pub use modals::SettingsTab;
 
@@ -464,6 +480,10 @@ pub struct App {
     pub(crate) pending_fork: bool,
     pub(crate) pending_restart: bool,
     pub(crate) pending_spawn_name: Option<String>,
+    /// True while the current spawn originated from `Ctrl+A` (admin session).
+    /// Threaded through the picker chain so pickers open with admin-specific
+    /// defaults and the final `do_spawn_session` keeps `is_admin = true`.
+    pub(crate) pending_spawn_is_admin: bool,
     pub(crate) show_settings: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) show_role_editor: bool,
@@ -608,10 +628,21 @@ impl App {
         vm_manager: Option<Arc<std::sync::Mutex<crate::agent::VmManager>>>,
         container_manager: Option<Arc<std::sync::Mutex<crate::agent::ContainerManager>>>,
     ) -> Self {
-        // Load global roles from DB, seeding the default developer role if empty.
+        // Load global roles from DB, seeding the default developer role if empty
+        // and ensuring the admin role is always present (so Ctrl+A can preselect
+        // it and users can see/edit it alongside their own roles). Admin is
+        // appended so user-authored role positions are preserved.
         let mut global_roles = db.list_global_roles().unwrap_or_default();
+        let mut roles_changed = false;
         if global_roles.is_empty() {
             global_roles = vec![default_developer_role()];
+            roles_changed = true;
+        }
+        if !global_roles.iter().any(|r| r.name == ADMIN_ROLE_NAME) {
+            global_roles.push(admin_role());
+            roles_changed = true;
+        }
+        if roles_changed {
             let _ = db.replace_global_roles(&global_roles);
         }
 
@@ -657,6 +688,7 @@ impl App {
             pending_fork: false,
             pending_restart: false,
             pending_spawn_name: None,
+            pending_spawn_is_admin: false,
             show_settings: false,
             settings_tab: SettingsTab::Roles,
             show_role_editor: false,
@@ -1038,6 +1070,7 @@ impl App {
         // Show session name modal (empty — user types from scratch).
         self.pending_spawn_config = Some(config);
         self.pending_spawn_worktrees = worktrees;
+        self.pending_spawn_is_admin = false;
         self.modal = modals::Modal::SessionName(modals::SessionNameModal::default());
     }
 
@@ -1084,8 +1117,9 @@ impl App {
 
     /// Route through MCP server picker if global MCP servers exist, otherwise spawn directly.
     ///
-    /// Skipped for admin sessions and VM/container sessions (which get MCP servers
-    /// via `.mcp.json` written during provisioning).
+    /// VM/container sessions skip this picker (they get MCP servers via `.mcp.json`
+    /// written during provisioning). Admin sessions DO see the picker so the user
+    /// can tweak defaults — only "thurbox" is pre-checked in that case.
     fn maybe_show_mcp_picker(
         &mut self,
         name: String,
@@ -1095,19 +1129,29 @@ impl App {
     ) {
         let is_vm_or_container =
             self.pending_vm_id.is_some() || self.pending_container_id.is_some();
-        if is_admin || is_vm_or_container || self.global_mcp_servers.is_empty() {
+        if is_vm_or_container || self.global_mcp_servers.is_empty() {
             self.maybe_show_skill_picker(name, config, worktrees, is_admin);
         } else {
             self.pending_spawn_name = Some(name);
             self.pending_spawn_config = Some(config);
             self.pending_spawn_worktrees = worktrees;
-            self.open_mcp_picker();
+            self.open_mcp_picker(is_admin);
         }
     }
 
-    /// Show the MCP server picker modal with all servers selected by default.
-    fn open_mcp_picker(&mut self) {
-        let selected = vec![true; self.global_mcp_servers.len()];
+    /// Show the MCP server picker modal.
+    ///
+    /// Non-admin: all servers selected by default.
+    /// Admin: only `ADMIN_DEFAULT_MCP` pre-checked.
+    fn open_mcp_picker(&mut self, is_admin: bool) {
+        let selected: Vec<bool> = if is_admin {
+            self.global_mcp_servers
+                .iter()
+                .map(|s| s.name == ADMIN_DEFAULT_MCP)
+                .collect()
+        } else {
+            vec![true; self.global_mcp_servers.len()]
+        };
         self.modal =
             modals::Modal::McpServerPicker(modals::McpServerPickerModal { index: 0, selected });
     }
@@ -1115,7 +1159,8 @@ impl App {
     /// Show the skill picker if skills are configured, otherwise spawn directly.
     ///
     /// Inserted between MCP picker and `do_spawn_session()` in the creation chain.
-    /// Skipped for admin sessions (which don't need skill customization).
+    /// Admin sessions see the picker too (with nothing pre-checked) so the user
+    /// can opt into skills explicitly.
     fn maybe_show_skill_picker(
         &mut self,
         name: String,
@@ -1123,32 +1168,49 @@ impl App {
         worktrees: Vec<WorktreeInfo>,
         is_admin: bool,
     ) {
-        if is_admin || self.global_skills.is_empty() {
+        if self.global_skills.is_empty() {
+            self.pending_spawn_is_admin = false;
             self.do_spawn_session(name, &config, worktrees, is_admin);
         } else {
             self.pending_spawn_name = Some(name);
             self.pending_spawn_config = Some(config);
             self.pending_spawn_worktrees = worktrees;
-            self.open_skill_picker();
+            self.open_skill_picker(is_admin);
         }
     }
 
-    /// Show the skill picker modal with all skills selected by default.
-    fn open_skill_picker(&mut self) {
-        let selected = vec![true; self.global_skills.len()];
+    /// Show the skill picker modal.
+    ///
+    /// Non-admin: all skills selected by default.
+    /// Admin: nothing pre-checked — user opts in explicitly.
+    fn open_skill_picker(&mut self, is_admin: bool) {
+        let selected = if is_admin {
+            vec![false; self.global_skills.len()]
+        } else {
+            vec![true; self.global_skills.len()]
+        };
         self.modal = modals::Modal::SkillPicker(modals::SkillPickerModal { index: 0, selected });
     }
 
-    /// Continue admin spawn — auto-assigns admin permissions, bypasses role selector.
+    /// Continue admin spawn — routes through the normal picker chain (role →
+    /// MCP → skill) with admin-specific defaults preselected. The user can
+    /// override any default before the session spawns.
     fn finish_prepare_spawn_admin(
         &mut self,
         name: String,
-        mut config: SessionConfig,
+        config: SessionConfig,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        config.role = "admin".to_string();
-        config.permissions = admin_mcp_permissions();
-        self.do_spawn_session(name, &config, worktrees, true);
+        let admin_index = self
+            .global_roles
+            .iter()
+            .position(|r| r.name == ADMIN_ROLE_NAME)
+            .unwrap_or(0);
+        self.pending_spawn_is_admin = true;
+        self.pending_spawn_name = Some(name);
+        self.pending_spawn_config = Some(config);
+        self.pending_spawn_worktrees = worktrees;
+        self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal { index: admin_index });
     }
 
     fn restart_active_session(&mut self) {
@@ -1183,7 +1245,7 @@ impl App {
         } else {
             self.pending_spawn_config = Some(config);
             self.pending_restart = true;
-            self.open_mcp_picker();
+            self.open_mcp_picker(false);
         }
     }
 
@@ -4615,8 +4677,10 @@ mod tests {
         );
         app.open_role_editor();
         assert!(app.show_role_editor);
-        assert_eq!(app.global_roles.len(), 1);
+        // Seeded: developer + admin (admin appended).
+        assert_eq!(app.global_roles.len(), 2);
         assert_eq!(app.global_roles[0].name, "developer");
+        assert_eq!(app.global_roles[1].name, ADMIN_ROLE_NAME);
         assert_eq!(app.role_editor_view, RoleEditorView::List);
     }
 
@@ -4633,8 +4697,10 @@ mod tests {
         .unwrap();
         let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
         app.open_role_editor();
-        assert_eq!(app.global_roles.len(), 1);
+        // DB had "ops"; App::new appends "admin" to guarantee it exists.
+        assert_eq!(app.global_roles.len(), 2);
         assert_eq!(app.global_roles[0].name, "ops");
+        assert_eq!(app.global_roles[1].name, ADMIN_ROLE_NAME);
     }
 
     #[test]
@@ -4737,9 +4803,10 @@ mod tests {
             None,
             None,
         );
-        // App::new() seeds the developer role, so we start with 1.
+        // App::new() seeds the developer role and appends the admin role,
+        // so we start with 2.
         let initial_count = app.global_roles.len();
-        assert_eq!(initial_count, 1);
+        assert_eq!(initial_count, 2);
 
         app.open_empty_role_editor();
         // Add a new role
@@ -4961,12 +5028,12 @@ mod tests {
         .unwrap();
         let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
         app.open_role_editor();
-        // Select the last role
+        // After App::new appends admin, the list is [a, b, admin]. Select "b".
         app.role_editor_list_index = 1;
-        // Delete it
+        // Delete it → [a, admin].
         app.handle_role_editor_list_key(KeyCode::Char('d'));
-        assert_eq!(app.global_roles.len(), 1);
-        assert_eq!(app.role_editor_list_index, 0);
+        assert_eq!(app.global_roles.len(), 2);
+        assert_eq!(app.role_editor_list_index, 1);
     }
 
     #[test]
@@ -5209,20 +5276,23 @@ mod tests {
     #[test]
     fn app_new_seeds_global_developer_role_when_empty() {
         let db = test_db();
-        // Global roles table is empty — App::new() should seed it.
+        // Global roles table is empty — App::new() seeds the developer role
+        // and appends the admin role.
         let app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
 
-        assert_eq!(app.global_roles.len(), 1);
+        assert_eq!(app.global_roles.len(), 2);
         assert_eq!(app.global_roles[0].name, "developer");
         assert_eq!(
             app.global_roles[0].permissions.permission_mode,
             Some("acceptEdits".to_string())
         );
+        assert_eq!(app.global_roles[1].name, ADMIN_ROLE_NAME);
 
-        // Verify the role was persisted to DB.
+        // Verify both roles were persisted to DB (order is implementation-defined).
         let reloaded = app.db.list_global_roles().unwrap();
-        assert_eq!(reloaded.len(), 1);
-        assert_eq!(reloaded[0].name, "developer");
+        assert_eq!(reloaded.len(), 2);
+        assert!(reloaded.iter().any(|r| r.name == "developer"));
+        assert!(reloaded.iter().any(|r| r.name == ADMIN_ROLE_NAME));
     }
     #[test]
     fn ctrl_h_cycles_focus_backward_from_terminal() {
@@ -5977,6 +6047,178 @@ mod tests {
         assert!(app.worktree_sync_in_progress);
         assert!(app.worktree_sync_rx.is_some());
         assert_eq!(app.worktree_sync_completed.len(), 1);
+    }
+
+    #[test]
+    fn finish_prepare_spawn_admin_opens_role_picker_with_admin_preselected() {
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        // Seeded roles: developer at [0], admin at [1].
+        let admin_index = app
+            .global_roles
+            .iter()
+            .position(|r| r.name == ADMIN_ROLE_NAME)
+            .unwrap();
+
+        app.finish_prepare_spawn_admin("admin-1".to_string(), SessionConfig::default(), Vec::new());
+
+        match app.modal {
+            super::modals::Modal::RoleSelector(ref m) => assert_eq!(m.index, admin_index),
+            _ => panic!("expected RoleSelector modal"),
+        }
+        assert!(app.pending_spawn_is_admin);
+        assert_eq!(app.pending_spawn_name.as_deref(), Some("admin-1"));
+        assert!(app.pending_spawn_config.is_some());
+    }
+
+    #[test]
+    fn open_mcp_picker_admin_preselects_only_default_mcp() {
+        use crate::session::McpServerConfig;
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        app.global_mcp_servers = vec![
+            McpServerConfig {
+                name: "other".to_string(),
+                command: "x".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            McpServerConfig {
+                name: ADMIN_DEFAULT_MCP.to_string(),
+                command: "x".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            McpServerConfig {
+                name: "another".to_string(),
+                command: "x".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+        ];
+
+        app.open_mcp_picker(true);
+
+        match app.modal {
+            super::modals::Modal::McpServerPicker(ref m) => {
+                assert_eq!(m.selected, vec![false, true, false]);
+                assert_eq!(m.index, 0);
+            }
+            _ => panic!("expected McpServerPicker modal"),
+        }
+    }
+
+    #[test]
+    fn open_mcp_picker_non_admin_preselects_all() {
+        use crate::session::McpServerConfig;
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        app.global_mcp_servers = vec![
+            McpServerConfig {
+                name: "a".to_string(),
+                command: "x".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            McpServerConfig {
+                name: "b".to_string(),
+                command: "x".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+        ];
+
+        app.open_mcp_picker(false);
+
+        match app.modal {
+            super::modals::Modal::McpServerPicker(ref m) => {
+                assert_eq!(m.selected, vec![true, true]);
+            }
+            _ => panic!("expected McpServerPicker modal"),
+        }
+    }
+
+    #[test]
+    fn open_skill_picker_admin_preselects_none() {
+        use crate::session::SkillConfig;
+        use std::path::PathBuf;
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        app.global_skills = vec![
+            SkillConfig {
+                name: "a".to_string(),
+                path: PathBuf::from("/tmp/a"),
+            },
+            SkillConfig {
+                name: "b".to_string(),
+                path: PathBuf::from("/tmp/b"),
+            },
+        ];
+
+        app.open_skill_picker(true);
+
+        match app.modal {
+            super::modals::Modal::SkillPicker(ref m) => {
+                assert_eq!(m.selected, vec![false, false]);
+            }
+            _ => panic!("expected SkillPicker modal"),
+        }
+    }
+
+    #[test]
+    fn open_skill_picker_non_admin_preselects_all() {
+        use crate::session::SkillConfig;
+        use std::path::PathBuf;
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        app.global_skills = vec![SkillConfig {
+            name: "a".to_string(),
+            path: PathBuf::from("/tmp/a"),
+        }];
+
+        app.open_skill_picker(false);
+
+        match app.modal {
+            super::modals::Modal::SkillPicker(ref m) => {
+                assert_eq!(m.selected, vec![true]);
+            }
+            _ => panic!("expected SkillPicker modal"),
+        }
     }
 
     #[test]
