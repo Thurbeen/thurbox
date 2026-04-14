@@ -851,6 +851,60 @@ pub fn schedule_tmux_command(
     Ok(())
 }
 
+/// Send text immediately to a session pane (no scheduling), followed by Enter.
+///
+/// Used by the MCP `send_prompt` tool. Targets the tmux window named
+/// `tb-<session_name>` in the thurbox tmux session and uses the same
+/// "type text → brief delay → press Enter" sequence that `schedule_tmux_command`
+/// uses so the target app has time to process the typed input.
+pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
+    let target = format!("{TMUX_SESSION}:tb-{session_name}");
+
+    let status = Command::new("tmux")
+        .args(["-L", TMUX_SOCKET, "send-keys", "-t", &target, text])
+        .status()
+        .context("Failed to run tmux send-keys for prompt text")?;
+    if !status.success() {
+        bail!("tmux send-keys (text) exited with status {status}");
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let status = Command::new("tmux")
+        .args(["-L", TMUX_SOCKET, "send-keys", "-t", &target, "Enter"])
+        .status()
+        .context("Failed to run tmux send-keys for Enter")?;
+    if !status.success() {
+        bail!("tmux send-keys (Enter) exited with status {status}");
+    }
+    Ok(())
+}
+
+/// Capture the rendered contents of a session's pane.
+///
+/// Returns the visible terminal text. `lines` controls how many lines of
+/// scrollback to include before the visible region (capped to a sane max).
+pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
+    let target = format!("{TMUX_SESSION}:tb-{session_name}");
+    let lines = lines.min(10_000);
+    let start = format!("-{lines}");
+
+    let output = Command::new("tmux")
+        .args([
+            "-L", TMUX_SOCKET, "capture-pane", "-p", "-J", "-t", &target, "-S", &start,
+        ])
+        .output()
+        .context("Failed to run tmux capture-pane")?;
+    if !output.status.success() {
+        bail!(
+            "tmux capture-pane exited with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Read;

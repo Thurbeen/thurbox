@@ -194,6 +194,58 @@ pub struct GetScheduledCommandParams {
     pub id: i64,
 }
 
+// ── Orchestrator Parameters ────────────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SendPromptParams {
+    #[schemars(description = "Session UUID")]
+    pub session: String,
+    #[schemars(
+        description = "Text to type into the session terminal. Enter is pressed automatically after a short delay."
+    )]
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CaptureSessionOutputParams {
+    #[schemars(description = "Session UUID")]
+    pub session: String,
+    #[schemars(
+        description = "How many lines of scrollback to include before the visible region. Default 200, max 10000."
+    )]
+    pub lines: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateSessionParams {
+    #[schemars(
+        description = "Session name. Must be 1-64 chars, no slashes or leading '.'."
+    )]
+    pub name: String,
+    #[schemars(
+        description = "Absolute path to the repository (or directory) the session should cwd into."
+    )]
+    pub repo_path: String,
+    #[schemars(
+        description = "Optional role name. If omitted and there is exactly one global role it is used; otherwise the default developer role."
+    )]
+    pub role: Option<String>,
+    #[schemars(
+        description = "If set, creates a git worktree on this new branch off `base_branch` inside repo_path and uses the worktree as the session cwd."
+    )]
+    pub worktree_branch: Option<String>,
+    #[schemars(
+        description = "Base branch for the worktree (default: main). Only used when worktree_branch is set."
+    )]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional list of global MCP server names to attach.")]
+    pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional list of global skill names to stage into the session.")]
+    pub skills: Vec<String>,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CancelScheduledCommandParams {
     #[schemars(description = "Scheduled command ID")]

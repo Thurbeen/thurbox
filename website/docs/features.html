@@ -71,6 +71,7 @@
           <ul>
             <li><a href="#session-orchestration">Session Orchestration</a></li>
             <li><a href="#project-management">Project Management</a></li>
+            <li><a href="#orchestrator-mode">Orchestrator Mode</a></li>
             <li><a href="#scheduled-commands">Scheduled Commands</a></li>
             <li><a href="#git-worktrees">Git Worktrees</a></li>
             <li><a href="#worktree-sync">Worktree Sync</a></li>
@@ -160,6 +161,52 @@
             <li>
               Built-in Admin project (pinned at index 0) provides conversational Thurbox management
               via MCP
+            </li>
+          </ul>
+
+          <h2 id="orchestrator-mode">
+            Orchestrator Mode
+            <a href="#orchestrator-mode" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The built-in Admin session can act as a multi-agent coordinator &mdash; spawning other
+            sessions, dispatching prompts to them, and reading back their output &mdash; all through
+            the
+            <code>thurbox-mcp</code>
+            server.
+          </p>
+          <ul>
+            <li>
+              <code>create_session</code>
+              spawns a new local-tmux session (optionally on a fresh git worktree) with a chosen
+              role, per-session MCP servers, and skills. Returns a UUID immediately; the TUI
+              processes the queued spawn on its next tick.
+            </li>
+            <li>
+              <code>send_prompt</code>
+              types text into a session's pane and presses Enter after a short delay, so the target
+              Claude session receives it as a prompt.
+            </li>
+            <li>
+              <code>capture_session_output</code>
+              returns the rendered contents of a session's tmux pane (default 200 lines of
+              scrollback, capped at 10 000).
+            </li>
+            <li>
+              Typical loop: create a worker &rarr; poll
+              <code>get_session</code>
+              until status is
+              <code>Idle</code>
+              &rarr; send a prompt &rarr; poll again until idle &rarr; capture the output &rarr; act
+              on the response.
+            </li>
+            <li>
+              Scope: local-tmux backend only. VM and container backends are out of scope; provision
+              those from the TUI and drive them with
+              <code>send_prompt</code>
+              /
+              <code>capture_session_output</code>
+              .
             </li>
           </ul>
 

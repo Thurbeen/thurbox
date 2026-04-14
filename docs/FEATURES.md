@@ -299,6 +299,66 @@ Four MCP tools provide programmatic access:
 
 ---
 
+## Orchestrator Mode
+
+The Admin session can act as a coordinator that spawns other
+sessions, dispatches prompts to them, and reads back their
+output — turning the built-in MCP client into a multi-agent
+orchestrator.
+
+### The three orchestrator primitives
+
+| Tool | Purpose |
+|------|---------|
+| `create_session` | Spawn a new local-tmux session (optionally on a fresh git worktree) |
+| `send_prompt` | Send text to a session's terminal immediately, followed by Enter |
+| `capture_session_output` | Read the rendered contents of a session's pane |
+
+All three are exposed through `thurbox-mcp` and pre-allowed
+for the Admin session via `ADMIN_MCP_TOOLS`.
+
+### Typical loop
+
+1. `create_session(name, repo_path, role?, worktree_branch?,
+   mcp_servers?, skills?)` — returns a UUID immediately; the
+   TUI picks up the queued spawn on its next tick and boots
+   the session.
+2. Poll `get_session(id)` until the session exists and
+   `status` transitions to `Idle`/`Waiting` (meaning Claude
+   has finished its initial boot).
+3. `send_prompt(id, "your task here")` — text is typed into
+   the session's tmux pane; Enter is pressed after a short
+   delay so the app has time to process the typed input.
+4. Poll `get_session(id)` again; once the status returns to
+   `Idle` the agent has finished responding.
+5. `capture_session_output(id, lines?)` — returns the pane's
+   rendered text. Default 200 lines of scrollback before the
+   visible region; capped at 10 000.
+6. React: call `send_prompt` again, `delete_session`, or
+   spawn more workers.
+
+### How spawning works
+
+`create_session` writes a single row to the `session_commands`
+table with a `spawn:<json>` payload and a pre-generated session
+UUID. The TUI's existing DB-polled command queue (`process_session_commands`,
+~10 ms cadence) picks it up, resolves role/MCP servers/skills
+by name against the global config, optionally runs
+`git::create_worktree` off the requested base branch, and then
+calls `do_spawn_session` — the same code path as `Ctrl+N`.
+
+Because the UUID is generated up front, the caller can start
+polling immediately without waiting for the spawn to land.
+
+### Scope
+
+Orchestrator spawns are **local-tmux only**. VM and container
+backends are out of scope — if you need a sandboxed orchestrator
+worker, provision the VM/container through the TUI and drive
+it with `send_prompt`/`capture_session_output`.
+
+---
+
 ## Error Handling UX
 
 ### Rule: never crash, never modal

@@ -75,6 +75,9 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__list_scheduled_commands",
     "mcp__thurbox__get_scheduled_command",
     "mcp__thurbox__cancel_scheduled_command",
+    "mcp__thurbox__create_session",
+    "mcp__thurbox__send_prompt",
+    "mcp__thurbox__capture_session_output",
 ];
 
 /// System prompt appended to the admin session to give Claude context about its
@@ -107,7 +110,18 @@ changes so you have current state.
 
 Important: delete operations are soft-deletes (recoverable via undo in the TUI). \
 Role changes via set_roles are atomic replacements — include all desired roles, \
-not just new ones.";
+not just new ones.
+
+Orchestrator mode: you can act as a coordinator that spawns and drives other \
+Claude sessions. Use `create_session` to spawn a new local-tmux session in a \
+repo (optionally on a fresh git worktree), `send_prompt` to dispatch a task to \
+that session's terminal, and `capture_session_output` to read the rendered \
+pane contents back. To know when a dispatched task is finished, poll \
+`get_session` — session status transitions to Idle/Waiting once the agent \
+stops producing output. Typical loop: create_session → wait until visible \
+→ send_prompt → poll get_session until idle → capture_session_output → act \
+on the response (delete_session, send another prompt, spawn more workers, \
+etc.).";
 
 /// Parse agent metrics from a Claude CLI statusline JSON value.
 fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics {
@@ -3644,15 +3658,139 @@ impl App {
         };
 
         for cmd in commands {
-            match cmd.command.as_str() {
-                "restart" => self.handle_restart_command(&cmd),
-                other => error!("Unknown session command: {other}"),
+            if cmd.command == "restart" {
+                self.handle_restart_command(&cmd);
+            } else if let Some(payload) = cmd.command.strip_prefix("spawn:") {
+                self.handle_spawn_command(payload);
+            } else {
+                error!("Unknown session command: {}", cmd.command);
             }
 
             if let Err(e) = self.db.mark_command_processed(cmd.id) {
                 error!("Failed to mark command {} as processed: {e}", cmd.id);
             }
         }
+    }
+
+    /// Handle a spawn command enqueued by the MCP `create_session` tool.
+    fn handle_spawn_command(&mut self, payload: &str) {
+        let v: serde_json::Value = match serde_json::from_str(payload) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Invalid spawn payload: {e}");
+                return;
+            }
+        };
+
+        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let repo_path = v
+            .get("repo_path")
+            .and_then(|x| x.as_str())
+            .map(PathBuf::from);
+        let Some(repo_path) = repo_path else {
+            error!("spawn command missing repo_path");
+            return;
+        };
+        let role = v
+            .get("role")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        let worktree_branch = v
+            .get("worktree_branch")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        let base_branch = v
+            .get("base_branch")
+            .and_then(|x| x.as_str())
+            .unwrap_or("main")
+            .to_string();
+        let mcp_server_names: Vec<String> = v
+            .get("mcp_servers")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let skill_names: Vec<String> = v
+            .get("skills")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let agent_session_id = v
+            .get("agent_session_id")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+
+        // Resolve role permissions.
+        let (role_name, permissions) = match role.as_deref() {
+            Some(r) if !r.is_empty() => (r.to_string(), self.resolve_role_permissions(r)),
+            _ => match self.global_roles.len() {
+                1 => (
+                    self.global_roles[0].name.clone(),
+                    self.global_roles[0].permissions.clone(),
+                ),
+                _ => (
+                    DEFAULT_ROLE_NAME.to_string(),
+                    default_developer_permissions(),
+                ),
+            },
+        };
+
+        // Resolve MCP servers and skills by name.
+        let mcp_servers: Vec<McpServerConfig> = self
+            .global_mcp_servers
+            .iter()
+            .filter(|s| mcp_server_names.iter().any(|n| n == &s.name))
+            .cloned()
+            .collect();
+        let skills: Vec<SkillConfig> = self
+            .global_skills
+            .iter()
+            .filter(|s| skill_names.iter().any(|n| n == &s.name))
+            .cloned()
+            .collect();
+
+        // Optionally create a git worktree.
+        let (cwd, worktrees) = if let Some(branch) = worktree_branch {
+            match git::create_worktree(&repo_path, &branch, &base_branch) {
+                Ok(wt_path) => {
+                    let info = WorktreeInfo {
+                        repo_path: repo_path.clone(),
+                        worktree_path: wt_path.clone(),
+                        branch,
+                    };
+                    (wt_path, vec![info])
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to create worktree in {} off {}: {e}",
+                        repo_path.display(),
+                        base_branch
+                    );
+                    return;
+                }
+            }
+        } else {
+            (repo_path, Vec::new())
+        };
+
+        let config = SessionConfig {
+            agent_session_id,
+            cwd: Some(cwd),
+            role: role_name,
+            permissions,
+            mcp_servers,
+            skills,
+            ..SessionConfig::default()
+        };
+
+        self.do_spawn_session(name, &config, worktrees, false);
     }
 
     /// Handle a restart command from the session command queue.
@@ -5843,7 +5981,7 @@ mod tests {
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 22);
+        assert_eq!(perms.allowed_tools.len(), 25);
         assert!(perms
             .allowed_tools
             .iter()

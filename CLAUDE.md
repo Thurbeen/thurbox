@@ -191,6 +191,9 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `list_vm_images` | List downloaded VM images with file sizes |
 | `download_vm_image` | Download a VM image from an HTTPS URL |
 | `delete_vm_image` | Delete a cached VM image |
+| `create_session` | Spawn a new local-tmux session (optionally on a fresh worktree) |
+| `send_prompt` | Send text to a session's terminal immediately (orchestrator mode) |
+| `capture_session_output` | Read rendered pane contents from a session |
 | `schedule_command` | Schedule text to be sent to a session at a future time |
 | `list_scheduled_commands` | List pending scheduled commands, optionally by session |
 | `get_scheduled_command` | Get a scheduled command by ID |

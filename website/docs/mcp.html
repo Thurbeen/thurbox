@@ -232,6 +232,54 @@
             </tbody>
           </table>
 
+          <h3>Orchestrator mode</h3>
+          <p>
+            The Admin session can spawn, drive, and read back other sessions to act as a multi-agent
+            coordinator. Typical loop:
+            <code>create_session</code>
+            &rarr; poll
+            <code>get_session</code>
+            until idle &rarr;
+            <code>send_prompt</code>
+            &rarr; poll again &rarr;
+            <code>capture_session_output</code>
+            &rarr; react.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>create_session</code></td>
+                <td>
+                  Spawn a new local-tmux session. Supports role, optional git worktree on a fresh
+                  branch, per-session MCP servers and skills. Returns a UUID immediately; the TUI
+                  processes the queued spawn on its next tick.
+                </td>
+              </tr>
+              <tr>
+                <td><code>send_prompt</code></td>
+                <td>
+                  Send text to a session's terminal immediately (tmux
+                  <code>send-keys</code>
+                  ), followed by Enter after a short delay.
+                </td>
+              </tr>
+              <tr>
+                <td><code>capture_session_output</code></td>
+                <td>
+                  Return the rendered contents of a session's pane (tmux
+                  <code>capture-pane</code>
+                  ). Defaults to 200 lines of scrollback, capped at 10 000.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
           <h3>Scheduled commands</h3>
           <table>
             <thead>

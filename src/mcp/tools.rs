@@ -12,14 +12,15 @@ use crate::storage::vms::VmRecord;
 use crate::session::ScheduledCommand;
 
 use super::types::{
-    CancelScheduledCommandParams, ContainerfileTemplateResponse, ContainerfileTemplateSummary,
-    DeleteContainerfileTemplateParams, DeleteSessionParams, DeleteVmImageParams,
-    DownloadVmImageParams, GetContainerfileTemplateParams, GetScheduledCommandParams,
-    GetSessionParams, GetVmParams, ListScheduledCommandsParams, ListSessionsParams, ListVmsParams,
-    McpServerResponse, RestartSessionParams, RestoreSessionParams, RoleResponse,
-    ScheduleCommandParams, ScheduledCommandResponse, SessionResponse,
-    SetContainerfileTemplateParams, SetEditorCommandParams, SetMcpServersParams, SetRolesParams,
-    VmImageResponse, VmResponse, WorktreeResponse,
+    CancelScheduledCommandParams, CaptureSessionOutputParams, ContainerfileTemplateResponse,
+    ContainerfileTemplateSummary, CreateSessionParams, DeleteContainerfileTemplateParams,
+    DeleteSessionParams, DeleteVmImageParams, DownloadVmImageParams,
+    GetContainerfileTemplateParams, GetScheduledCommandParams, GetSessionParams, GetVmParams,
+    ListScheduledCommandsParams, ListSessionsParams, ListVmsParams, McpServerResponse,
+    RestartSessionParams, RestoreSessionParams, RoleResponse, ScheduleCommandParams,
+    ScheduledCommandResponse, SendPromptParams, SessionResponse, SetContainerfileTemplateParams,
+    SetEditorCommandParams, SetMcpServersParams, SetRolesParams, VmImageResponse, VmResponse,
+    WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -293,6 +294,97 @@ impl ThurboxMcp {
                 "command_id": command_id,
                 "session_id": session.id.to_string(),
                 "session_name": session.name,
+            })
+            .to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    // ── Orchestrator Tools ────────────────────────────────────
+
+    #[tool(
+        description = "Create a new local-tmux session programmatically. Optionally creates a git worktree off a base branch. The session spawn is queued via the session command queue; poll `list_sessions` or `get_session` with the returned UUID until the session appears. Returns `{id, name, queued: true}`."
+    )]
+    fn create_session(&self, Parameters(params): Parameters<CreateSessionParams>) -> String {
+        if let Err(e) = validate_safe_name(&params.name) {
+            return e;
+        }
+        if params.repo_path.is_empty() {
+            return error_json("repo_path must not be empty");
+        }
+        // Generate the session UUID up front so we can return it immediately.
+        let session_id = SessionId::default();
+        let payload = serde_json::json!({
+            "name": params.name,
+            "repo_path": params.repo_path,
+            "role": params.role,
+            "worktree_branch": params.worktree_branch,
+            "base_branch": params.base_branch,
+            "mcp_servers": params.mcp_servers,
+            "skills": params.skills,
+            "agent_session_id": session_id.to_string(),
+        });
+        let command = format!("spawn:{}", payload);
+
+        let db = self.db.lock().unwrap();
+        match db.enqueue_session_command(session_id, &command) {
+            Ok(command_id) => serde_json::json!({
+                "queued": true,
+                "command_id": command_id,
+                "session_id": session_id.to_string(),
+                "name": params.name,
+            })
+            .to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Send text to a session's terminal immediately, followed by Enter. Use this to dispatch a prompt to a Claude session. To read the response, wait briefly then call `capture_session_output` (and inspect session status via `get_session` to detect when the session is idle)."
+    )]
+    fn send_prompt(&self, Parameters(params): Parameters<SendPromptParams>) -> String {
+        let db = self.db.lock().unwrap();
+        let session = match resolve_session(&db, &params.session) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        if params.text.is_empty() {
+            return error_json("text must not be empty");
+        }
+        let name = session.name.clone();
+        drop(db);
+        match crate::agent::tmux::send_prompt_now(&name, &params.text) {
+            Ok(()) => serde_json::json!({
+                "sent": true,
+                "session_id": session.id.to_string(),
+                "session_name": name,
+            })
+            .to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Capture the rendered terminal contents of a session's tmux pane and return them as a single text string. Defaults to 200 lines of scrollback before the visible region."
+    )]
+    fn capture_session_output(
+        &self,
+        Parameters(params): Parameters<CaptureSessionOutputParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+        let session = match resolve_session(&db, &params.session) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let name = session.name.clone();
+        drop(db);
+        let lines = params.lines.unwrap_or(200);
+        match crate::agent::tmux::capture_pane_text(&name, lines) {
+            Ok(output) => serde_json::json!({
+                "session_id": session.id.to_string(),
+                "session_name": name,
+                "lines": lines,
+                "output": output,
             })
             .to_string(),
             Err(e) => error_json(&e.to_string()),
