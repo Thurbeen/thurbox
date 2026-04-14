@@ -32,7 +32,7 @@ have one Claude delegate work to others. Thurbox adds:
 
 ## Main Features
 
-**Sessions**
+### Sessions
 
 - Persistent tmux-backed panes, parallel Claudes, per-session
   working dirs (multi-repo via `--add-dir`).
@@ -42,33 +42,33 @@ have one Claude delegate work to others. Thurbox adds:
   clipboard, scheduled commands (`Ctrl+P`), soft-delete with undo
   (`Ctrl+Z`) and restore (`Ctrl+U`).
 
-**Git worktrees**
+### Git worktrees
 
 - Pick "Worktree" in the new-session flow to branch off a base and
   launch Claude inside the worktree. Closing the session removes
   it. `Ctrl+S` syncs all worktree sessions with `origin/main`.
 
-**Roles & skills**
+### Roles & skills
 
 - Global role presets define permission mode and allowed/disallowed
   tools (e.g. `Bash(git:*)`). Skills are symlinked into the
   session's `.claude/skills/` and auto-discovered. Edit everything
   with `Ctrl+E`.
 
-**Orchestrator mode**
+### Orchestrator mode
 
 - The Admin session auto-configures `thurbox-mcp` and can spawn,
   prompt, and observe other sessions — a multi-agent loop driven
   conversationally. See
   [docs/FEATURES.md#orchestrator-mode](docs/FEATURES.md#orchestrator-mode).
 
-**MCP server (`thurbox-mcp`)**
+### MCP server (`thurbox-mcp`)
 
 - 24 tools over stdio or Streamable HTTP for roles, sessions,
   scheduled commands, editor config, and more. Shares the TUI's
   SQLite DB so changes appear live.
 
-**Responsive UI**
+### Responsive UI
 
 - `< 80` cols: terminal only · `>= 80`: sidebar + terminal ·
   `>= 120`: sidebar + terminal + info panel. Vim-inspired keys
