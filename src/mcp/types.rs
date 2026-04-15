@@ -286,6 +286,11 @@ pub struct CreateSessionParams {
     #[serde(default)]
     #[schemars(description = "Optional list of global skill names to stage into the session.")]
     pub skills: Vec<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Model id passed via `claude --model` (e.g. \"opus\", \"sonnet\", \"haiku\"). Omit for the CLI default."
+    )]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

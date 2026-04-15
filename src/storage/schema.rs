@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -25,6 +25,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             cwd               TEXT,
             additional_dirs   TEXT NOT NULL DEFAULT '',
             shell_backend_id  TEXT,
+            model             TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -578,6 +579,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                 updated_at INTEGER NOT NULL
             );",
         )?;
+    }
+
+    if version < 18 {
+        // v17 → v18: add model column to sessions for per-session model selection
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT", []);
     }
 
     if version < SCHEMA_VERSION {

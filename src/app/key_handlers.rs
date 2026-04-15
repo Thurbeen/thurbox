@@ -143,6 +143,12 @@ impl App {
             return;
         }
 
+        // Model selector modal captures all input
+        if matches!(self.modal, super::modals::Modal::ModelSelector(_)) {
+            self.handle_model_selector_key(code);
+            return;
+        }
+
         // MCP server picker modal captures all input
         if matches!(self.modal, super::modals::Modal::McpServerPicker(_)) {
             self.handle_mcp_server_picker_key(code);
@@ -979,8 +985,49 @@ impl App {
                         config.permissions = role.permissions.clone();
                         let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
                         let is_admin = self.pending_spawn_is_admin;
-                        self.maybe_show_mcp_picker(name, config, worktrees, is_admin);
+                        self.maybe_show_model_picker(name, config, worktrees, is_admin);
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_model_selector_key(&mut self, code: KeyCode) {
+        let choice_count = crate::session::MODEL_CHOICES.len();
+        let super::modals::Modal::ModelSelector(ref mut msel) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+                self.pending_spawn_config = None;
+                self.pending_spawn_worktrees.clear();
+                self.pending_spawn_name = None;
+                self.pending_spawn_is_admin = false;
+                self.pending_vm_id = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if msel.index + 1 < choice_count {
+                    msel.index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                msel.index = msel.index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let idx = msel.index;
+                self.modal.close();
+                if let (Some(mut config), Some(name)) = (
+                    self.pending_spawn_config.take(),
+                    self.pending_spawn_name.take(),
+                ) {
+                    if let Some((id, _)) = crate::session::MODEL_CHOICES.get(idx) {
+                        config.model = id.map(|s| s.to_string());
+                    }
+                    let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                    let is_admin = self.pending_spawn_is_admin;
+                    self.maybe_show_mcp_picker(name, config, worktrees, is_admin);
                 }
             }
             _ => {}

@@ -78,6 +78,15 @@ pub fn render_info_panel(
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+    if let Some(ref model) = info.model {
+        lines.push(Line::from(vec![
+            Span::styled("Model: ", Theme::label()),
+            Span::styled(
+                crate::session::model_display_name(model),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
 
     // ── Repos ──
     append_repos_section(&mut lines, info);

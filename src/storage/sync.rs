@@ -58,6 +58,7 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
+            model: None,
         }
     }
 

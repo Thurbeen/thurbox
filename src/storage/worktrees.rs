@@ -134,6 +134,7 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
+            model: None,
         };
         let sid = session.id;
         db.upsert_session(&session).unwrap();

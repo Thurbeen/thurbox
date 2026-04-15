@@ -123,6 +123,11 @@ pub struct RoleSelectorModal {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ModelSelectorModal {
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct McpServerPickerModal {
     pub index: usize,
     pub selected: Vec<bool>,
@@ -286,6 +291,7 @@ pub enum Modal {
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
     RoleSelector(RoleSelectorModal),
+    ModelSelector(ModelSelectorModal),
     McpServerPicker(McpServerPickerModal),
     SkillPicker(SkillPickerModal),
     ContainerfilePicker(ContainerfilePickerModal),
