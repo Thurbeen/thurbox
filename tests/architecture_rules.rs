@@ -136,6 +136,33 @@ fn mcp_module_isolation() {
 }
 
 #[test]
+fn session_ops_module_isolation() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session_ops");
+    // session_ops must not pull in TUI state or the PTY-attached backend.
+    // It talks to tmux through the narrow helpers in `agent::tmux` via
+    // fully-qualified paths (not `use`), same pattern as the mcp module.
+    let violations = check_no_imports(&module_dir, &["app", "ui", "agent"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("session_ops", &violations)
+    );
+}
+
+#[test]
+fn cli_module_isolation() {
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    // cli is a thin argument parser — must not depend on TUI or the live
+    // session backend. Tmux helpers are reached via fully-qualified paths.
+    let violations = check_no_imports(&module_dir, &["app", "ui", "agent"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("cli", &violations)
+    );
+}
+
+#[test]
 fn app_module_structure() {
     // Verify that app/ module can be split into multiple files
     // Each file should maintain proper module organization

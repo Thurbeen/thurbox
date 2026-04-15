@@ -2676,7 +2676,10 @@ impl App {
                     );
 
                     // If adopt failed but session has an agent_session_id,
-                    // try spawning with --resume (e.g. restored via MCP).
+                    // spawn using `--session-id` so claude creates the
+                    // conversation if it doesn't yet exist (e.g. sessions
+                    // created via the CLI whose claude process never
+                    // persisted a conversation before we first adopt them).
                     if let Some(ref agent_sid) = shared_session.agent_session_id {
                         let worktree_infos = Self::recreate_worktrees(&shared_session.worktrees);
                         let cwd = worktree_infos
@@ -2686,7 +2689,7 @@ impl App {
 
                         let permissions = self.resolve_role_permissions(&shared_session.role);
                         let config = SessionConfig {
-                            resume_session_id: Some(agent_sid.clone()),
+                            resume_session_id: None,
                             agent_session_id: Some(agent_sid.clone()),
                             cwd,
                             additional_dirs: shared_session.additional_dirs.clone(),
@@ -3339,7 +3342,10 @@ impl App {
             self.active_index = self.sessions.len() - 1;
             self.focus = InputFocus::Terminal;
         } else {
-            // No matching backend session or adopt failed — spawn new with --resume.
+            // No matching backend session or adopt failed — spawn fresh using
+            // `--session-id` so claude creates the conversation if one doesn't
+            // yet exist for this agent_session_id (e.g. CLI-created sessions
+            // whose claude process never persisted a conversation).
             if let Err(e) = self.db.soft_delete_session(session_id) {
                 error!("Failed to soft-delete stale session {session_id}: {e}");
             }
@@ -3347,7 +3353,7 @@ impl App {
             let permissions = self.resolve_role_permissions(&role);
 
             let config = SessionConfig {
-                resume_session_id: Some(agent_session_id.clone()),
+                resume_session_id: None,
                 agent_session_id: Some(agent_session_id),
                 cwd: shared.cwd,
                 additional_dirs: shared.additional_dirs,
@@ -3584,7 +3590,7 @@ impl App {
             }
 
             let config = SessionConfig {
-                resume_session_id: Some(agent_session_id.clone()),
+                resume_session_id: None,
                 agent_session_id: Some(agent_session_id),
                 cwd: shared.cwd,
                 additional_dirs: shared.additional_dirs,
@@ -3597,7 +3603,7 @@ impl App {
                 skills: vec![],
             };
             self.do_spawn_session(name, &config, worktrees, false);
-            info!(session = %session_id, "Session restored (respawned with --resume)");
+            info!(session = %session_id, "Session restored (respawned with --session-id)");
         }
 
         self.save_state();
@@ -3652,7 +3658,7 @@ impl App {
             let permissions = self.resolve_role_permissions(&role);
 
             let config = SessionConfig {
-                resume_session_id: Some(agent_session_id.clone()),
+                resume_session_id: None,
                 agent_session_id: Some(agent_session_id.clone()),
                 cwd: shared.cwd,
                 additional_dirs: shared.additional_dirs,

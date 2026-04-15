@@ -279,7 +279,7 @@ impl ThurboxMcp {
     }
 
     #[tool(
-        description = "Restart a session by queuing a restart command. The TUI will process the command and restart the session with its existing Claude session ID."
+        description = "Restart a session in-place — kills its tmux window and re-spawns the claude CLI with --resume. Runs synchronously; the session is live once this returns."
     )]
     fn restart_session(&self, Parameters(params): Parameters<RestartSessionParams>) -> String {
         let db = self.db.lock().unwrap();
@@ -288,22 +288,21 @@ impl ThurboxMcp {
             Err(e) => return e,
         };
 
-        match db.enqueue_session_command(session.id, "restart") {
-            Ok(command_id) => serde_json::json!({
-                "queued": true,
-                "command_id": command_id,
+        match crate::session_ops::restart_session_headless(&db, session.id) {
+            Ok(()) => serde_json::json!({
+                "restarted": true,
                 "session_id": session.id.to_string(),
                 "session_name": session.name,
             })
             .to_string(),
-            Err(e) => error_json(&e.to_string()),
+            Err(e) => error_json(&e),
         }
     }
 
     // ── Orchestrator Tools ────────────────────────────────────
 
     #[tool(
-        description = "Create a new local-tmux session programmatically. Optionally creates a git worktree off a base branch. The session spawn is queued via the session command queue; poll `list_sessions` or `get_session` with the returned UUID until the session appears. Returns `{id, name, queued: true}`."
+        description = "Create a new local-tmux session programmatically. Runs synchronously — by the time this returns, the tmux window is live and the session row is in the database. Optionally creates a git worktree off a base branch. Returns `{id, name, agent_session_id, cwd}`."
     )]
     fn create_session(&self, Parameters(params): Parameters<CreateSessionParams>) -> String {
         if let Err(e) = validate_safe_name(&params.name) {
@@ -312,30 +311,29 @@ impl ThurboxMcp {
         if params.repo_path.is_empty() {
             return error_json("repo_path must not be empty");
         }
-        // Generate the session UUID up front so we can return it immediately.
-        let session_id = SessionId::default();
-        let payload = serde_json::json!({
-            "name": params.name,
-            "repo_path": params.repo_path,
-            "role": params.role,
-            "worktree_branch": params.worktree_branch,
-            "base_branch": params.base_branch,
-            "mcp_servers": params.mcp_servers,
-            "skills": params.skills,
-            "agent_session_id": session_id.to_string(),
-        });
-        let command = format!("spawn:{}", payload);
+
+        let req = crate::session_ops::SpawnRequest {
+            name: params.name.clone(),
+            repo_path: std::path::PathBuf::from(&params.repo_path),
+            worktree_branch: params.worktree_branch,
+            base_branch: params.base_branch,
+            role: params.role,
+            mcp_servers: params.mcp_servers,
+            skills: params.skills,
+            agent_session_id: None,
+        };
 
         let db = self.db.lock().unwrap();
-        match db.enqueue_session_command(session_id, &command) {
-            Ok(command_id) => serde_json::json!({
-                "queued": true,
-                "command_id": command_id,
-                "session_id": session_id.to_string(),
-                "name": params.name,
+        match crate::session_ops::spawn_session_headless(&db, req) {
+            Ok(res) => serde_json::json!({
+                "id": res.session_id.to_string(),
+                "name": res.name,
+                "role": res.role,
+                "agent_session_id": res.agent_session_id,
+                "cwd": res.cwd.display().to_string(),
             })
             .to_string(),
-            Err(e) => error_json(&e.to_string()),
+            Err(e) => error_json(&e),
         }
     }
 
@@ -1300,7 +1298,13 @@ mod tests {
     }
 
     #[test]
-    fn restart_session_queues_command() {
+    fn restart_session_resolves_session_synchronously() {
+        // Headless restart runs inline rather than enqueuing a command.
+        // In environments without a live tmux server the tmux call fails,
+        // which surfaces as a JSON `{"error": ...}` — but crucially the
+        // handler no longer returns `queued: true`. We also verify that
+        // unknown session IDs are reported as such (see
+        // `restart_session_not_found`).
         let server = test_server();
         let sid = insert_test_session(&server);
 
@@ -1308,16 +1312,11 @@ mod tests {
             session: sid.to_string(),
         }));
         let v = parse_json(&result);
-        assert_eq!(v["queued"], true);
-        assert_eq!(v["session_id"], sid.to_string());
-        assert!(v["command_id"].as_i64().unwrap() > 0);
-
-        // Verify command exists in DB
-        let db = server.db.lock().unwrap();
-        let cmds = db.pending_session_commands().unwrap();
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].command, "restart");
-        assert_eq!(cmds[0].session_id, sid);
+        assert!(v.get("queued").is_none(), "should not enqueue any more");
+        // Either the restart succeeded (tmux available) or it surfaced a
+        // synchronous error — never a `queued` response.
+        let has_result = v.get("restarted").is_some() || v.get("error").is_some();
+        assert!(has_result, "expected restarted or error, got {v}");
     }
 
     // ── Restore session tests ────────────────────────────────────

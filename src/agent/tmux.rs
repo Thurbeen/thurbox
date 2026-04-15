@@ -31,6 +31,15 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
     "thurbox"
 };
 
+/// Window-name prefix for thurbox-managed tmux windows. Combined with the
+/// session name (`{prefix}{session_name}`) to form the tmux window target.
+pub(crate) const WINDOW_PREFIX: &str = "tb-";
+
+/// Build the `session:window` tmux target for a thurbox session.
+fn window_target(session_name: &str) -> String {
+    format!("{TMUX_SESSION}:{WINDOW_PREFIX}{session_name}")
+}
+
 /// Minimum tmux version required.
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 
@@ -40,6 +49,12 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Delay (in seconds) between sending command text and pressing Enter via tmux,
 /// giving the target application time to process the input.
 const SEND_KEYS_ENTER_DELAY_SECS: &str = "0.2";
+
+/// Same delay as a `Duration`, used by the synchronous `send_prompt_now` path.
+const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Hard cap on the number of scrollback lines `capture_pane_text` will return.
+const MAX_CAPTURE_LINES: u32 = 10_000;
 
 /// Local tmux backend — sessions persist in `tmux -L thurbox`.
 ///
@@ -812,7 +827,7 @@ pub fn schedule_tmux_command(
 ) -> Result<()> {
     let escaped_text = shell_escape(command_text);
     let escaped_db = shell_escape(&db_path.display().to_string());
-    let target = format!("{TMUX_SESSION}:tb-{session_name}");
+    let target = window_target(session_name);
     let escaped_target = shell_escape(&target);
 
     // Shell script that checks cancellation before sending, then marks executed.
@@ -858,7 +873,7 @@ pub fn schedule_tmux_command(
 /// "type text → brief delay → press Enter" sequence that `schedule_tmux_command`
 /// uses so the target app has time to process the typed input.
 pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
-    let target = format!("{TMUX_SESSION}:tb-{session_name}");
+    let target = window_target(session_name);
 
     let status = Command::new("tmux")
         .args(["-L", TMUX_SOCKET, "send-keys", "-t", &target, text])
@@ -868,7 +883,7 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
         bail!("tmux send-keys (text) exited with status {status}");
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(SEND_KEYS_ENTER_DELAY);
 
     let status = Command::new("tmux")
         .args(["-L", TMUX_SOCKET, "send-keys", "-t", &target, "Enter"])
@@ -885,8 +900,8 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
 /// Returns the visible terminal text. `lines` controls how many lines of
 /// scrollback to include before the visible region (capped to a sane max).
 pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
-    let target = format!("{TMUX_SESSION}:tb-{session_name}");
-    let lines = lines.min(10_000);
+    let target = window_target(session_name);
+    let lines = lines.min(MAX_CAPTURE_LINES);
     let start = format!("-{lines}");
 
     let output = Command::new("tmux")
@@ -911,6 +926,149 @@ pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Session-level tmux options applied to the thurbox tmux session.
+///
+/// Mirrored by [`LocalTmuxBackend::apply_config`] for the TUI path; the
+/// headless path applies only this subset.
+const HEADLESS_SESSION_OPTS: &[(&str, &str)] = &[
+    ("remain-on-exit", "on"),
+    ("status", "off"),
+    ("history-limit", "5000"),
+    // Allow each window to size independently of the smallest attached client.
+    ("window-size", "manual"),
+];
+
+/// Run `tmux has-session -t <thurbox session>` and return whether it exists.
+fn tmux_session_exists() -> Result<bool> {
+    let status = Command::new("tmux")
+        .args(["-L", TMUX_SOCKET, "has-session", "-t", TMUX_SESSION])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("Failed to run tmux has-session")?;
+    Ok(status.success())
+}
+
+/// Create the thurbox tmux session (`-d -s <name>`) at a default 80x24 size.
+fn tmux_create_session() -> Result<()> {
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            TMUX_SOCKET,
+            "new-session",
+            "-d",
+            "-s",
+            TMUX_SESSION,
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .output()
+        .context("Failed to create tmux session")?;
+    if !output.status.success() {
+        bail!(
+            "Failed to create tmux session: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Ensure the thurbox tmux session exists (headless — no control mode).
+///
+/// Used by [`spawn_window`] so callers that don't hold a
+/// [`LocalTmuxBackend`] can still create sessions safely.
+fn ensure_tmux_session_headless() -> Result<()> {
+    if tmux_session_exists()? {
+        return Ok(());
+    }
+    tmux_create_session()?;
+    for (k, v) in HEADLESS_SESSION_OPTS {
+        let _ = Command::new("tmux")
+            .args(["-L", TMUX_SOCKET, "set-option", "-t", TMUX_SESSION, k, v])
+            .status();
+    }
+    Ok(())
+}
+
+/// Spawn a new tmux window running `command` with `args` in `cwd`.
+///
+/// Thin helper for headless callers (CLI, MCP) that don't need PTY I/O
+/// streams. Returns on success once the window exists; the command runs
+/// inside it. Window name is `tb-<session_name>`.
+pub fn spawn_window(
+    session_name: &str,
+    command: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    env: &HashMap<String, String>,
+) -> Result<()> {
+    ensure_tmux_session_headless()?;
+
+    let window_name = format!("{WINDOW_PREFIX}{session_name}");
+    let mut tmux = Command::new("tmux");
+    tmux.args([
+        "-L",
+        TMUX_SOCKET,
+        "new-window",
+        "-d",
+        "-t",
+        &format!("{TMUX_SESSION}:"),
+        "-n",
+        &window_name,
+    ]);
+    if let Some(dir) = cwd {
+        tmux.args(["-c", &dir.to_string_lossy()]);
+    }
+    for (k, v) in env {
+        tmux.args(["-e", &format!("{k}={v}")]);
+    }
+    // Pass the command + args as a single argv list. tmux treats trailing args
+    // as the command to run inside the window.
+    tmux.arg(command);
+    for a in args {
+        tmux.arg(a);
+    }
+
+    let output = tmux
+        .output()
+        .context("Failed to run tmux new-window for headless spawn")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "tmux new-window exited {} for window {}: {}",
+            output.status,
+            window_name,
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+/// Kill the tmux window `tb-<session_name>` if it exists.
+pub fn kill_window(session_name: &str) -> Result<()> {
+    let target = window_target(session_name);
+    let output = Command::new("tmux")
+        .args(["-L", TMUX_SOCKET, "kill-window", "-t", &target])
+        .output()
+        .context("Failed to run tmux kill-window")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // It's fine if the window is already gone.
+        if stderr.contains("can't find window") || stderr.contains("window not found") {
+            return Ok(());
+        }
+        bail!(
+            "tmux kill-window exited {} for {}: {}",
+            output.status,
+            target,
+            stderr.trim()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
