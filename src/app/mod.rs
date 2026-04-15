@@ -200,6 +200,10 @@ const ADMIN_ROLE_NAME: &str = "admin";
 /// MCP server name pre-checked in the admin-spawn MCP picker.
 const ADMIN_DEFAULT_MCP: &str = "thurbox";
 
+/// Name prefix identifying admin sessions. Applied at spawn and used at
+/// restore to re-tag admin sessions loaded from the DB.
+const ADMIN_NAME_PREFIX: &str = "admin-";
+
 /// Build the `RoleConfig` stored under `ADMIN_ROLE_NAME`.
 fn admin_role() -> RoleConfig {
     RoleConfig {
@@ -1042,7 +1046,7 @@ impl App {
     /// Spawn an admin session, bypassing the name modal.
     fn prepare_spawn_admin(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
         let raw_name = self.next_session_name();
-        let name = format!("admin-{raw_name}");
+        let name = format!("{ADMIN_NAME_PREFIX}{raw_name}");
         self.finish_prepare_spawn_admin(name, config, worktrees);
     }
 
@@ -3308,6 +3312,7 @@ impl App {
     ) {
         let name = shared.name.clone();
         let session_id = shared.id;
+        let is_admin = name.starts_with(ADMIN_NAME_PREFIX);
 
         let role = if shared.role.is_empty() {
             DEFAULT_ROLE_NAME.to_string()
@@ -3360,6 +3365,7 @@ impl App {
             session.info.additional_dirs = shared.additional_dirs.clone();
             session.info.role = role;
             session.info.worktrees = worktrees.clone();
+            session.info.is_admin = is_admin;
             resolve_repo_display_names(&mut session.info);
 
             // Re-adopt shell pane if one was persisted
@@ -3403,7 +3409,7 @@ impl App {
                 skills: vec![],
                 model: shared.model,
             };
-            self.do_spawn_session(name, &config, worktrees, false);
+            self.do_spawn_session(name, &config, worktrees, is_admin);
         }
     }
 
