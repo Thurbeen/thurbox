@@ -135,8 +135,9 @@ async fn main() -> Result<()> {
     // Ensure admin project exists and .mcp.json is up to date
     app.ensure_admin_setup();
 
-    // Set up statusline script and Claude CLI settings for agent metrics
-    app.ensure_statusline_setup();
+    // Write the statusline script; the per-session statusLine config is
+    // injected by skill_staging::prepare into each session's CLAUDE_CONFIG_DIR.
+    app.ensure_statusline_script();
 
     let res = run_loop(&mut terminal, &mut app).await;
 

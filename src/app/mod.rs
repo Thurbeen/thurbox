@@ -880,13 +880,15 @@ impl App {
         self.write_mcp_json(&admin_dir);
     }
 
-    /// Set up the statusline script and `~/.claude/settings.json` for agent metrics.
+    /// Set up the statusline script that Thurbox points Claude at for agent metrics.
     ///
     /// Creates a shell script that the Claude CLI pipes statusline JSON into,
-    /// which writes metrics to per-session files. Also configures the Claude CLI
-    /// global settings to use this script as the statusline handler.
-    pub fn ensure_statusline_setup(&self) {
-        let Some(data_dir) = crate::paths::log_directory() else {
+    /// which writes metrics to per-session files. The `statusLine` config that
+    /// references this script is written per-session into each session's
+    /// `CLAUDE_CONFIG_DIR` by `agent::skill_staging::prepare`, so the user's
+    /// global `~/.claude/settings.json` is never touched.
+    pub fn ensure_statusline_script(&self) {
+        let Some(script_path) = crate::paths::statusline_script_path() else {
             return;
         };
         let Some(metrics_dir) = crate::paths::metrics_directory() else {
@@ -904,7 +906,6 @@ impl App {
         // using the THURBOX_SESSION_ID env var as filename. If the env var
         // is missing (e.g. sessions spawned before this feature), it falls
         // back to extracting `session_id` from the JSON itself.
-        let script_path = data_dir.join("statusline.sh");
         let script = format!(
             "#!/bin/sh\n\
              METRICS_DIR=\"${{THURBOX_METRICS_DIR:-{metrics_dir}}}\"\n\
@@ -928,54 +929,6 @@ impl App {
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-        }
-
-        // Configure ~/.claude/settings.json with the statusline command.
-        let home = match std::env::var_os("HOME") {
-            Some(h) => std::path::PathBuf::from(h),
-            None => return,
-        };
-        let settings_path = home.join(".claude").join("settings.json");
-        if let Err(e) = std::fs::create_dir_all(settings_path.parent().unwrap()) {
-            tracing::warn!("Failed to create ~/.claude directory: {e}");
-            return;
-        }
-
-        let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|c| serde_json::from_str(&c).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-
-        let should_write = match settings.get("statusLine") {
-            None => true,
-            Some(existing) => {
-                let cmd = existing
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if cmd.contains("thurbox") && cmd.ends_with("statusline.sh") {
-                    // Thurbox-managed statusLine — update to current path.
-                    true
-                } else {
-                    tracing::warn!(
-                        "statusLine already set to a non-Thurbox command ({cmd}); \
-                         agent monitoring metrics will not be available"
-                    );
-                    false
-                }
-            }
-        };
-        if should_write {
-            settings["statusLine"] = serde_json::json!({
-                "type": "command",
-                "command": script_path.display().to_string()
-            });
-            if let Err(e) = std::fs::write(
-                &settings_path,
-                serde_json::to_string_pretty(&settings).unwrap(),
-            ) {
-                tracing::warn!("Failed to write ~/.claude/settings.json: {e}");
-            }
         }
 
         // Clean up stale metrics files (sessions that no longer exist).

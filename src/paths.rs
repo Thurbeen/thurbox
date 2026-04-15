@@ -383,6 +383,15 @@ pub fn metrics_directory() -> Option<PathBuf> {
     resolve(PathKind::MetricsDir)
 }
 
+/// Resolve the Thurbox-managed statusline script path.
+///
+/// The script is written by `App::ensure_statusline_script` at startup and is
+/// the value Thurbox inserts into per-session `settings.json` for Claude's
+/// `statusLine` command.
+pub fn statusline_script_path() -> Option<PathBuf> {
+    log_directory().map(|d| d.join("statusline.sh"))
+}
+
 /// Resolve the worktrees directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/worktrees/` or `$HOME/.local/share/thurbox/worktrees/`

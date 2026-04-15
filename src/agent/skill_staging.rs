@@ -2,7 +2,9 @@
 //!
 //! Builds `~/.local/share/thurbox/sessions/<key>/claude-home/` containing:
 //! - `skills/` with symlinks to the selected skill directories
-//! - Top-level entries symlinked from `~/.claude/` (settings.json, agents, …)
+//! - `settings.json` materialized with Thurbox's `statusLine` merged over the
+//!   user's global `~/.claude/settings.json`
+//! - Other top-level entries symlinked from `~/.claude/` (agents, credentials, …)
 //!
 //! Then `CLAUDE_CONFIG_DIR` is set to that path when spawning `claude`, so
 //! per-session skills never touch the repo worktree.
@@ -31,9 +33,12 @@ fn claude_home_dir(session_key: &str) -> Result<PathBuf> {
 /// session (e.g. `claude login` storing credentials, new project history,
 /// updated settings) resolve through the symlink back to the real `~/.claude/`
 /// — so login and state persist across sessions and outside thurbox.
+///
+/// Note: `settings.json` is intentionally excluded — Thurbox materializes a
+/// real (merged) `settings.json` in the staging dir so it can inject its own
+/// `statusLine` without mutating the user's global `~/.claude/settings.json`.
 const MIRRORED_CLAUDE_ENTRIES: &[&str] = &[
     ".credentials.json",
-    "settings.json",
     "settings.local.json",
     "CLAUDE.md",
     "projects",
@@ -103,6 +108,12 @@ pub fn prepare(session_key: &str, skills: &[SkillConfig]) -> Result<PathBuf> {
         }
     }
 
+    // Materialize a real `settings.json` in the staging dir so Thurbox can
+    // set its own `statusLine` (feeding the info panel's token/context
+    // metrics) without mutating the user's global `~/.claude/settings.json`.
+    // Any existing keys in the user's global file are preserved.
+    write_session_settings_json(&dir)?;
+
     // `skills/` is fully rebuilt each time so de-selected skills disappear.
     let skills_dir = dir.join("skills");
     if skills_dir.exists() {
@@ -116,6 +127,44 @@ pub fn prepare(session_key: &str, skills: &[SkillConfig]) -> Result<PathBuf> {
     }
 
     Ok(dir)
+}
+
+/// Write a real `settings.json` into the staging directory, merging the user's
+/// global `~/.claude/settings.json` (if any) with Thurbox's `statusLine` entry.
+///
+/// The merged file wins over the user's global because `CLAUDE_CONFIG_DIR`
+/// short-circuits Claude's config discovery to the staging dir.
+fn write_session_settings_json(dir: &std::path::Path) -> Result<()> {
+    use serde_json::{json, Value};
+
+    let target = dir.join("settings.json");
+
+    // Remove any pre-existing symlink/file so we never overwrite through a
+    // symlink pointing at the user's real settings.
+    if target.symlink_metadata().is_ok() {
+        std::fs::remove_file(&target)?;
+    }
+
+    // Seed from the user's global file so unrelated keys (theme, env, …)
+    // are preserved.
+    let mut settings: Value = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|h| h.join(".claude").join("settings.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_else(|| json!({}));
+
+    if let Some(script) = crate::paths::statusline_script_path() {
+        settings["statusLine"] = json!({
+            "type": "command",
+            "command": script.display().to_string(),
+        });
+    }
+
+    let pretty = serde_json::to_string_pretty(&settings)
+        .map_err(|e| anyhow!("serialize settings.json: {e}"))?;
+    std::fs::write(&target, pretty)?;
+    Ok(())
 }
 
 /// Remove the per-session staging directory. Best-effort.
@@ -275,6 +324,115 @@ mod tests {
         .unwrap();
         assert!(dir.join("skills").join("a").symlink_metadata().is_err());
         assert!(dir.join("skills").join("b").exists());
+    }
+
+    #[test]
+    fn prepare_materializes_settings_json_with_statusline() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        let fake_home = temp.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &fake_home);
+
+        let dir = prepare("sess-settings", &[]).unwrap();
+
+        let settings_path = dir.join("settings.json");
+        let meta = settings_path.symlink_metadata().unwrap();
+        assert!(
+            !meta.file_type().is_symlink(),
+            "settings.json must be a real file, not a symlink to the user's global config"
+        );
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let cmd = value
+            .pointer("/statusLine/command")
+            .and_then(|v| v.as_str())
+            .expect("statusLine.command must be set");
+        assert!(
+            cmd.ends_with("statusline.sh"),
+            "statusLine.command must point at Thurbox's statusline.sh, got {cmd}"
+        );
+
+        if let Some(h) = prev_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn prepare_merges_user_global_settings() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        let fake_home = temp.path().join("home");
+        let user_claude = fake_home.join(".claude");
+        std::fs::create_dir_all(&user_claude).unwrap();
+        std::fs::write(
+            user_claude.join("settings.json"),
+            r#"{"theme":"dark","statusLine":{"type":"command","command":"/user/own.sh"}}"#,
+        )
+        .unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &fake_home);
+
+        let dir = prepare("sess-merge", &[]).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+
+        assert_eq!(value.get("theme").and_then(|v| v.as_str()), Some("dark"));
+        let cmd = value
+            .pointer("/statusLine/command")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            cmd.ends_with("statusline.sh"),
+            "Thurbox statusLine must override the user's, got {cmd}"
+        );
+
+        // User's global file must be pristine.
+        let global = std::fs::read_to_string(user_claude.join("settings.json")).unwrap();
+        assert!(global.contains("/user/own.sh"));
+
+        if let Some(h) = prev_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn prepare_refreshes_settings_json_on_second_call() {
+        // Re-preparing a session must re-materialize settings.json as a real
+        // file (the mirror loop must never turn it back into a symlink) and
+        // must re-apply the current statusLine from the user's global.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        let fake_home = temp.path().join("home");
+        std::fs::create_dir_all(fake_home.join(".claude")).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &fake_home);
+
+        let dir = prepare("sess-refresh", &[]).unwrap();
+        prepare("sess-refresh", &[]).unwrap();
+
+        let meta = dir.join("settings.json").symlink_metadata().unwrap();
+        assert!(
+            !meta.file_type().is_symlink(),
+            "settings.json must remain a real file after re-prepare"
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert!(value.pointer("/statusLine/command").is_some());
+
+        if let Some(h) = prev_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 
     #[test]
