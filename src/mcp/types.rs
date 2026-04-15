@@ -170,6 +170,50 @@ pub struct DeleteContainerfileTemplateParams {
     pub name: String,
 }
 
+// ── Skill Parameters ───────────────────────────────────────────
+
+/// A skill registry entry — a name and an absolute path to an on-disk
+/// skill directory containing a `SKILL.md` file. Thurbox only stores
+/// references; it never creates, edits, or deletes skill files.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SkillInput {
+    #[schemars(description = "Skill name (1-64 chars, unique)")]
+    pub name: String,
+    #[schemars(
+        description = "Absolute path to the skill directory on disk (must exist and contain a SKILL.md file)"
+    )]
+    pub path: String,
+}
+
+/// Parameters for the `set_skills` tool.
+///
+/// Atomically replaces all registered skills. All existing skill references
+/// are deleted and the provided list is inserted in a single database
+/// transaction. Skill files on disk are never touched.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetSkillsParams {
+    #[schemars(
+        description = "Complete list of skill references — atomically replaces all registered skills"
+    )]
+    pub skills: Vec<SkillInput>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RegisterSkillParams {
+    #[schemars(description = "Skill name (1-64 chars, unique)")]
+    pub name: String,
+    #[schemars(
+        description = "Absolute path to the skill directory on disk (must exist and contain a SKILL.md file)"
+    )]
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnregisterSkillParams {
+    #[schemars(description = "Skill name to unregister (disk files are not touched)")]
+    pub name: String,
+}
+
 // ── Scheduled Command Parameters ───────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -330,6 +374,12 @@ pub struct VmResponse {
     pub disk_gb: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_msg: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SkillResponse {
+    pub name: String,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Serialize)]

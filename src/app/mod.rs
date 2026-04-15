@@ -68,6 +68,10 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__get_containerfile_template",
     "mcp__thurbox__set_containerfile_template",
     "mcp__thurbox__delete_containerfile_template",
+    "mcp__thurbox__list_skills",
+    "mcp__thurbox__set_skills",
+    "mcp__thurbox__register_skill",
+    "mcp__thurbox__unregister_skill",
     "mcp__thurbox__list_vm_images",
     "mcp__thurbox__download_vm_image",
     "mcp__thurbox__delete_vm_image",
@@ -6230,7 +6234,7 @@ mod tests {
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 25);
+        assert_eq!(perms.allowed_tools.len(), 29);
         assert!(perms
             .allowed_tools
             .iter()

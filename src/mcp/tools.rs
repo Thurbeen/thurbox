@@ -3,7 +3,7 @@
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 
-use crate::session::{McpServerConfig, RoleConfig, RolePermissions, SessionId};
+use crate::session::{McpServerConfig, RoleConfig, RolePermissions, SessionId, SkillConfig};
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
@@ -17,9 +17,10 @@ use super::types::{
     DeleteSessionParams, DeleteVmImageParams, DownloadVmImageParams,
     GetContainerfileTemplateParams, GetScheduledCommandParams, GetSessionParams, GetVmParams,
     ListScheduledCommandsParams, ListSessionsParams, ListVmsParams, McpServerResponse,
-    RestartSessionParams, RestoreSessionParams, RoleResponse, ScheduleCommandParams,
-    ScheduledCommandResponse, SendPromptParams, SessionResponse, SetContainerfileTemplateParams,
-    SetEditorCommandParams, SetMcpServersParams, SetRolesParams, VmImageResponse, VmResponse,
+    RegisterSkillParams, RestartSessionParams, RestoreSessionParams, RoleResponse,
+    ScheduleCommandParams, ScheduledCommandResponse, SendPromptParams, SessionResponse,
+    SetContainerfileTemplateParams, SetEditorCommandParams, SetMcpServersParams, SetRolesParams,
+    SetSkillsParams, SkillResponse, UnregisterSkillParams, VmImageResponse, VmResponse,
     WorktreeResponse,
 };
 use super::ThurboxMcp;
@@ -116,6 +117,13 @@ fn validate_safe_name(name: &str) -> Result<(), String> {
         return Err(error_json("Name contains invalid characters"));
     }
     Ok(())
+}
+
+fn skill_to_response(s: &SkillConfig) -> SkillResponse {
+    SkillResponse {
+        name: s.name.clone(),
+        path: s.path.clone(),
+    }
 }
 
 // ── Tool implementations ────────────────────────────────────────
@@ -586,6 +594,83 @@ impl ThurboxMcp {
         .to_string()
     }
 
+    // ── Skill Registry Tools ────────────────────────────────────
+
+    #[tool(
+        description = "List all registered skills. Returns a JSON array of {name, path} objects pointing at on-disk skill directories. Thurbox only stores references; skill files are never created, edited, or deleted through these tools."
+    )]
+    fn list_skills(&self) -> String {
+        let db = self.db.lock().unwrap();
+        match db.list_global_skills() {
+            Ok(skills) => {
+                let resp: Vec<SkillResponse> = skills.iter().map(skill_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Atomically replace all registered skills. Deletes existing registry entries and inserts the provided list in a single transaction. To add a skill, include all existing skills plus the new one. To clear the registry, pass an empty array. Each entry's path must be absolute, exist, and contain a SKILL.md file. Disk files are never modified."
+    )]
+    fn set_skills(&self, Parameters(params): Parameters<SetSkillsParams>) -> String {
+        let db = self.db.lock().unwrap();
+
+        let mut skills: Vec<SkillConfig> = Vec::with_capacity(params.skills.len());
+        for s in params.skills {
+            if let Err(e) = validate_safe_name(&s.name) {
+                return e;
+            }
+            let path = std::path::PathBuf::from(&s.path);
+            if let Err(e) = crate::paths::validate_skill_path(&path) {
+                return error_json(&format!("skill '{}': {e}", s.name));
+            }
+            skills.push(SkillConfig { name: s.name, path });
+        }
+
+        match db.replace_global_skills(&skills) {
+            Ok(()) => {
+                let resp: Vec<SkillResponse> = skills.iter().map(skill_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Register (or update) a single skill by name, pointing at an existing on-disk skill directory. The path must be absolute, exist, and contain a SKILL.md file. Disk files are never modified."
+    )]
+    fn register_skill(&self, Parameters(params): Parameters<RegisterSkillParams>) -> String {
+        if let Err(e) = validate_safe_name(&params.name) {
+            return e;
+        }
+        let path = std::path::PathBuf::from(&params.path);
+        if let Err(e) = crate::paths::validate_skill_path(&path) {
+            return error_json(&e);
+        }
+        let db = self.db.lock().unwrap();
+        let skill = SkillConfig {
+            name: params.name,
+            path,
+        };
+        match db.upsert_global_skill(&skill) {
+            Ok(()) => json_text(&skill_to_response(&skill)),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Unregister a skill by name. Removes only the registry entry; on-disk skill files are never touched. Returns {\"deleted\": true, \"name\": ...} if a row was removed, or an error if no such skill was registered."
+    )]
+    fn unregister_skill(&self, Parameters(params): Parameters<UnregisterSkillParams>) -> String {
+        let db = self.db.lock().unwrap();
+        match db.delete_global_skill(&params.name) {
+            Ok(true) => serde_json::json!({ "deleted": true, "name": params.name }).to_string(),
+            Ok(false) => error_json(&format!("Skill not registered: {}", params.name)),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
     // ── VM Image Tools ──────────────────────────────────────────
 
     #[tool(description = "List downloaded VM images with file sizes")]
@@ -869,7 +954,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::mcp::types::{McpServerInput, RoleInput};
+    use crate::mcp::types::{McpServerInput, RoleInput, SkillInput};
     use crate::storage::Database;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -1610,5 +1695,164 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Cannot delete the 'default' template"));
+    }
+
+    // ── Skill Registry Tests ────────────────────────────────────
+
+    /// Create `<root>/<name>/SKILL.md` and return the skill directory.
+    fn make_skill_dir(root: &std::path::Path, name: &str) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn list_skills_empty() {
+        let server = test_server();
+        let result = server.list_skills();
+        let v = parse_json(&result);
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn register_skill_then_list() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = make_skill_dir(temp.path(), "domain-cli");
+        let server = test_server();
+
+        let result = server.register_skill(Parameters(RegisterSkillParams {
+            name: "domain-cli".to_string(),
+            path: path.to_string_lossy().into_owned(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["name"], "domain-cli");
+
+        let listed = parse_json(&server.list_skills());
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["name"], "domain-cli");
+    }
+
+    #[test]
+    fn register_skill_rejects_missing_skill_md() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let empty = temp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let server = test_server();
+
+        let result = server.register_skill(Parameters(RegisterSkillParams {
+            name: "x".to_string(),
+            path: empty.to_string_lossy().into_owned(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("SKILL.md"));
+    }
+
+    #[test]
+    fn register_skill_rejects_relative_path() {
+        let server = test_server();
+        let result = server.register_skill(Parameters(RegisterSkillParams {
+            name: "x".to_string(),
+            path: "relative/path".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("absolute"));
+    }
+
+    #[test]
+    fn register_skill_rejects_invalid_name() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = make_skill_dir(temp.path(), "ok-dir");
+        let server = test_server();
+
+        let result = server.register_skill(Parameters(RegisterSkillParams {
+            name: "../escape".to_string(),
+            path: path.to_string_lossy().into_owned(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].is_string());
+    }
+
+    #[test]
+    fn set_skills_replaces_all() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let a = make_skill_dir(temp.path(), "a");
+        let b = make_skill_dir(temp.path(), "b");
+        let c = make_skill_dir(temp.path(), "c");
+        let server = test_server();
+
+        server.set_skills(Parameters(SetSkillsParams {
+            skills: vec![
+                SkillInput {
+                    name: "a".to_string(),
+                    path: a.to_string_lossy().into_owned(),
+                },
+                SkillInput {
+                    name: "b".to_string(),
+                    path: b.to_string_lossy().into_owned(),
+                },
+            ],
+        }));
+
+        let result = server.set_skills(Parameters(SetSkillsParams {
+            skills: vec![SkillInput {
+                name: "c".to_string(),
+                path: c.to_string_lossy().into_owned(),
+            }],
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["name"], "c");
+    }
+
+    #[test]
+    fn set_skills_empty_clears() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let a = make_skill_dir(temp.path(), "a");
+        let server = test_server();
+
+        server.set_skills(Parameters(SetSkillsParams {
+            skills: vec![SkillInput {
+                name: "a".to_string(),
+                path: a.to_string_lossy().into_owned(),
+            }],
+        }));
+        server.set_skills(Parameters(SetSkillsParams { skills: vec![] }));
+
+        let listed = parse_json(&server.list_skills());
+        assert_eq!(listed.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn unregister_skill_removes_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = make_skill_dir(temp.path(), "s");
+        let server = test_server();
+
+        server.register_skill(Parameters(RegisterSkillParams {
+            name: "s".to_string(),
+            path: path.to_string_lossy().into_owned(),
+        }));
+
+        let result = server.unregister_skill(Parameters(UnregisterSkillParams {
+            name: "s".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v["deleted"], true);
+        assert_eq!(v["name"], "s");
+
+        // Skill directory on disk must still exist — registry removal
+        // never touches disk files.
+        assert!(path.join("SKILL.md").is_file());
+    }
+
+    #[test]
+    fn unregister_skill_unknown_returns_error() {
+        let server = test_server();
+        let result = server.unregister_skill(Parameters(UnregisterSkillParams {
+            name: "nope".to_string(),
+        }));
+        let v = parse_json(&result);
+        assert!(v["error"].as_str().unwrap().contains("not registered"));
     }
 }

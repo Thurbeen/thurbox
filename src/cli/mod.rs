@@ -17,6 +17,7 @@ pub mod mcp_servers;
 pub mod roles;
 pub mod scheduled;
 pub mod sessions;
+pub mod skills;
 pub mod vm_images;
 pub mod vms;
 
@@ -76,6 +77,11 @@ pub enum Command {
         #[command(subcommand)]
         action: containerfiles::Action,
     },
+    /// Manage the skill registry (references to on-disk skill directories).
+    Skill {
+        #[command(subcommand)]
+        action: skills::Action,
+    },
 }
 
 /// Run a parsed CLI invocation against `db` and write JSON to stdout.
@@ -89,6 +95,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Vm { action } => vms::run(action, db),
         Command::VmImage { action } => vm_images::run(action),
         Command::Containerfile { action } => containerfiles::run(action),
+        Command::Skill { action } => skills::run(action, db),
     }?;
 
     let text = if cli.pretty {

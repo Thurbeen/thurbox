@@ -312,6 +312,28 @@ pub fn validate_safe_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that `path` is absolute, exists as a directory, and contains a
+/// `SKILL.md` file. Shared by the MCP `register_skill`/`set_skills` tools
+/// and the `thurbox-cli skill` subcommand so both enforce the same rules.
+pub fn validate_skill_path(path: &std::path::Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err(format!("skill path must be absolute: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!(
+            "skill path does not exist or is not a directory: {}",
+            path.display()
+        ));
+    }
+    if !path.join("SKILL.md").is_file() {
+        return Err(format!(
+            "skill directory missing SKILL.md: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// List Containerfile templates on disk as `(name, files)` pairs sorted by name.
 ///
 /// Returns an empty vector when the directory doesn't exist. Used by the MCP

@@ -188,6 +188,10 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `get_containerfile_template` | Read a template's Containerfile content and list support files |
 | `set_containerfile_template` | Create/update a template (Containerfile + optional support files) |
 | `delete_containerfile_template` | Delete a template (refuses to delete "default") |
+| `list_skills` | List all registered skills (name + path references only) |
+| `set_skills` | Atomically replace all skill registry entries |
+| `register_skill` | Register/update a single skill reference (path must contain SKILL.md) |
+| `unregister_skill` | Remove a skill from the registry (never touches disk) |
 | `list_vm_images` | List downloaded VM images with file sizes |
 | `download_vm_image` | Download a VM image from an HTTPS URL |
 | `delete_vm_image` | Delete a cached VM image |
