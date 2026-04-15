@@ -6,9 +6,10 @@ use ratatui::{
     Frame,
 };
 
-use super::centered_fixed_height_rect;
-use super::render_modal_frame;
-use super::theme::Theme;
+use super::{
+    centered_fixed_height_rect, render_modal_frame, selector_list_item, selector_nav_footer,
+    theme::Theme,
+};
 use crate::session::RoleConfig;
 
 pub struct RoleSelectorState<'a> {
@@ -17,7 +18,6 @@ pub struct RoleSelectorState<'a> {
 }
 
 pub fn render_role_selector_modal(frame: &mut Frame, state: &RoleSelectorState<'_>) {
-    // 2 (border) + roles count + 1 (description) + 1 (footer)
     let height = (state.roles.len() as u16) + 4;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
@@ -26,9 +26,9 @@ pub fn render_role_selector_modal(frame: &mut Frame, state: &RoleSelectorState<'
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // Role list
-            Constraint::Length(1), // Description
-            Constraint::Length(1), // Footer
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(inner);
 
@@ -36,28 +36,11 @@ pub fn render_role_selector_modal(frame: &mut Frame, state: &RoleSelectorState<'
         .roles
         .iter()
         .enumerate()
-        .map(|(i, role)| {
-            let style = if i == state.selected_index {
-                Theme::selected_item()
-            } else {
-                Theme::normal_item()
-            };
-            let prefix = if i == state.selected_index {
-                "▸ "
-            } else {
-                "  "
-            };
-            ListItem::new(Line::from(Span::styled(
-                format!("{prefix}{}", role.name),
-                style,
-            )))
-        })
+        .map(|(i, role)| selector_list_item(&role.name, i == state.selected_index))
         .collect();
 
-    let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    frame.render_widget(List::new(items), chunks[0]);
 
-    // Description of selected role
     if let Some(role) = state.roles.get(state.selected_index) {
         let desc = Line::from(Span::styled(
             &role.description,
@@ -66,13 +49,5 @@ pub fn render_role_selector_modal(frame: &mut Frame, state: &RoleSelectorState<'
         frame.render_widget(Paragraph::new(desc), chunks[1]);
     }
 
-    let footer = Line::from(vec![
-        Span::styled("j/k", Theme::keybind()),
-        Span::styled(" navigate  ", Theme::keybind_desc()),
-        Span::styled("Enter", Theme::keybind()),
-        Span::styled(" select  ", Theme::keybind_desc()),
-        Span::styled("Esc", Theme::keybind()),
-        Span::styled(" cancel", Theme::keybind_desc()),
-    ]);
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[2]);
 }

@@ -236,6 +236,31 @@ pub fn render_list_modal_frame<'a>(
     Some([chunks[0], chunks[1]])
 }
 
+/// Standard "j/k navigate · Enter select · Esc cancel" footer used by selector
+/// modals.
+pub fn selector_nav_footer() -> Line<'static> {
+    Line::from(vec![
+        Span::styled("j/k", Theme::keybind()),
+        Span::styled(" navigate  ", Theme::keybind_desc()),
+        Span::styled("Enter", Theme::keybind()),
+        Span::styled(" select  ", Theme::keybind_desc()),
+        Span::styled("Esc", Theme::keybind()),
+        Span::styled(" cancel", Theme::keybind_desc()),
+    ])
+}
+
+/// Build a selector list item with the standard "▸ " selected prefix and
+/// selected/normal theme styles.
+pub fn selector_list_item<'a>(label: &str, selected: bool) -> ratatui::widgets::ListItem<'a> {
+    let style = if selected {
+        Theme::selected_item()
+    } else {
+        Theme::normal_item()
+    };
+    let prefix = if selected { "▸ " } else { "  " };
+    ratatui::widgets::ListItem::new(Line::from(Span::styled(format!("{prefix}{label}"), style)))
+}
+
 /// Render a labeled text input field with cursor visualization and horizontal
 /// viewport scrolling.
 ///
