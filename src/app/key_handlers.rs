@@ -201,7 +201,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('d') => match self.focus {
-                    InputFocus::SessionList => {
+                    InputFocus::SessionList | InputFocus::FileViewer => {
                         self.close_active_session();
                         return;
                     }
@@ -257,10 +257,7 @@ impl App {
                 // Vim navigation: h=cycle-left, j=down, k=up, l=cycle-right
                 KeyCode::Char('h') => {
                     self.clear_search();
-                    self.focus = match self.focus {
-                        InputFocus::SessionList => InputFocus::Terminal,
-                        InputFocus::Terminal => InputFocus::SessionList,
-                    };
+                    self.focus = self.cycle_focus_backward();
                     return;
                 }
                 KeyCode::Char('j') => {
@@ -273,10 +270,7 @@ impl App {
                 }
                 KeyCode::Char('l') => {
                     self.clear_search();
-                    self.focus = match self.focus {
-                        InputFocus::SessionList => InputFocus::Terminal,
-                        InputFocus::Terminal => InputFocus::SessionList,
-                    };
+                    self.focus = self.cycle_focus_forward();
                     return;
                 }
                 _ => {}
@@ -293,12 +287,115 @@ impl App {
                 self.show_info_panel = !self.show_info_panel;
                 return;
             }
+            KeyCode::F(3) => {
+                self.show_file_viewer = !self.show_file_viewer;
+                if self.show_file_viewer {
+                    self.rebuild_file_viewer_for_active();
+                } else if self.focus == InputFocus::FileViewer {
+                    self.focus = InputFocus::SessionList;
+                }
+                return;
+            }
             _ => {}
         }
 
         match self.focus {
             InputFocus::SessionList => self.handle_session_list_key(code),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
+            InputFocus::FileViewer => self.handle_file_viewer_key(code, mods),
+        }
+    }
+
+    /// Cycle focus forward (Ctrl+L). Skips FileViewer when not visible.
+    fn cycle_focus_forward(&self) -> InputFocus {
+        match self.focus {
+            InputFocus::SessionList => InputFocus::Terminal,
+            InputFocus::Terminal => {
+                if self.show_file_viewer {
+                    InputFocus::FileViewer
+                } else {
+                    InputFocus::SessionList
+                }
+            }
+            InputFocus::FileViewer => InputFocus::SessionList,
+        }
+    }
+
+    /// Cycle focus backward (Ctrl+H). Skips FileViewer when not visible.
+    fn cycle_focus_backward(&self) -> InputFocus {
+        match self.focus {
+            InputFocus::SessionList => {
+                if self.show_file_viewer {
+                    InputFocus::FileViewer
+                } else {
+                    InputFocus::Terminal
+                }
+            }
+            InputFocus::Terminal => InputFocus::SessionList,
+            InputFocus::FileViewer => InputFocus::Terminal,
+        }
+    }
+
+    fn handle_file_viewer_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        if self.file_viewer.search_active {
+            self.handle_file_viewer_search_key(code, mods);
+        } else {
+            self.handle_file_viewer_nav_key(code);
+        }
+    }
+
+    fn handle_file_viewer_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        match code {
+            KeyCode::Esc => self.file_viewer.end_search(),
+            // Enter/Down cycle to next match and stay in search mode.
+            // Tab commits and exits search mode.
+            KeyCode::Enter | KeyCode::Down => self.file_viewer.next_match(),
+            KeyCode::Up => self.file_viewer.prev_match(),
+            KeyCode::Tab => self.file_viewer.search_active = false,
+            KeyCode::Char('n') if ctrl => self.file_viewer.next_match(),
+            KeyCode::Char('p') if ctrl => self.file_viewer.prev_match(),
+            KeyCode::Backspace => self.file_viewer.search_pop(),
+            KeyCode::Char(c) if !ctrl => self.file_viewer.search_push(c),
+            _ => {}
+        }
+    }
+
+    fn handle_file_viewer_nav_key(&mut self, code: KeyCode) {
+        use crate::ui::file_viewer::Activation;
+        match code {
+            KeyCode::Char('/') => self.file_viewer.start_search(),
+            KeyCode::Char('n') => self.file_viewer.next_match(),
+            KeyCode::Char('N') => self.file_viewer.prev_match(),
+            KeyCode::Esc if !self.file_viewer.search_query.is_empty() => {
+                self.file_viewer.end_search();
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.file_viewer.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.file_viewer.move_selection(-1),
+            KeyCode::Char('h') | KeyCode::Left => self.file_viewer.collapse(),
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+                // Capture root+file before activate() (activate only opens files, not dirs).
+                let file_with_root = self.file_viewer.selected_file_with_root();
+                if matches!(self.file_viewer.activate(), Activation::Open(_)) {
+                    if let Some((file, root)) = file_with_root {
+                        self.open_file_in_editor(root, file);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn open_file_in_editor(&mut self, root: std::path::PathBuf, file: std::path::PathBuf) {
+        let Some(editor) = super::helpers::resolve_editor_command(&self.db) else {
+            self.set_status(
+                super::StatusLevel::Error,
+                "No editor configured — set `editor_command` via MCP or $VISUAL / $EDITOR.",
+            );
+            return;
+        };
+        if let Err(e) = super::helpers::open_in_editor(&[root, file], &editor) {
+            warn!("file viewer: failed to open editor: {e}");
         }
     }
 

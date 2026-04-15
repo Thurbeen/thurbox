@@ -414,6 +414,7 @@ pub struct StatusMessage {
 pub enum InputFocus {
     SessionList,
     Terminal,
+    FileViewer,
 }
 
 /// Which pane the terminal view is showing for a given session.
@@ -469,6 +470,8 @@ pub struct App {
     pub(crate) terminal_cols: u16,
     session_counter: usize,
     pub(crate) show_info_panel: bool,
+    pub(crate) show_file_viewer: bool,
+    pub(crate) file_viewer: crate::ui::file_viewer::FileViewerState,
     pub(crate) modal: modals::Modal,
     // (Delete project, add project, edit project modal state is now in self.modal)
     pub(crate) pending_repo_path: Option<PathBuf>,
@@ -622,6 +625,9 @@ pub(crate) struct EditorSnapshot {
     pub fields: Vec<String>,
 }
 
+const EDITOR_NOT_CONFIGURED: &str =
+    "No editor configured — set `editor_command` via MCP or export $EDITOR/$VISUAL";
+
 impl App {
     pub fn new(
         rows: u16,
@@ -680,6 +686,8 @@ impl App {
             terminal_cols: cols,
             session_counter,
             show_info_panel: false,
+            show_file_viewer: false,
+            file_viewer: crate::ui::file_viewer::FileViewerState::new(),
             modal: modals::Modal::None,
             pending_repo_path: None,
             pending_all_repos: None,
@@ -1272,11 +1280,46 @@ impl App {
 
     /// Open the active session's worktree (or cwd) in the configured editor.
     fn open_active_in_editor(&mut self) {
+        if self.try_open_selected_file() {
+            return;
+        }
+        let paths = match self.collect_active_session_paths() {
+            Some(p) => p,
+            None => return,
+        };
+        self.launch_editor_with_paths(&paths);
+    }
+
+    /// If the file viewer is focused on a file, open `[root, file]` so editors
+    /// open the workspace and highlight the file. Returns true if handled.
+    fn try_open_selected_file(&mut self) -> bool {
+        if self.focus != InputFocus::FileViewer {
+            return false;
+        }
+        let Some((file, root)) = self.file_viewer.selected_file_with_root() else {
+            return false;
+        };
+        let Some(editor) = helpers::resolve_editor_command(&self.db) else {
+            self.set_error(EDITOR_NOT_CONFIGURED);
+            return true;
+        };
+        match helpers::open_in_editor(&[root, file.clone()], &editor) {
+            Ok(()) => self.set_info(format!(
+                "Opening {} in {editor}",
+                file.file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            )),
+            Err(e) => self.set_error(format!("Failed to launch editor `{editor}`: {e}")),
+        }
+        true
+    }
+
+    fn collect_active_session_paths(&mut self) -> Option<Vec<std::path::PathBuf>> {
         let Some(session) = self.sessions.get(self.active_index) else {
             self.set_error("No active session");
-            return;
+            return None;
         };
-
         let mut paths: Vec<std::path::PathBuf> = Vec::new();
         for wt in &session.info.worktrees {
             if !paths.contains(&wt.worktree_path) {
@@ -1293,21 +1336,19 @@ impl App {
                 paths.push(dir.clone());
             }
         }
-
         if paths.is_empty() {
             self.set_error("Active session has no worktree or cwd to open");
-            return;
+            return None;
         }
+        Some(paths)
+    }
 
+    fn launch_editor_with_paths(&mut self, paths: &[std::path::PathBuf]) {
         let Some(editor) = helpers::resolve_editor_command(&self.db) else {
-            self.set_error(
-                "No editor configured — set `editor_command` via MCP or \
-                 export $EDITOR/$VISUAL",
-            );
+            self.set_error(EDITOR_NOT_CONFIGURED);
             return;
         };
-
-        match helpers::open_in_editor(&paths, &editor) {
+        match helpers::open_in_editor(paths, &editor) {
             Ok(()) => self.set_info(format!("Opening {} path(s) in {editor}", paths.len())),
             Err(e) => self.set_error(format!("Failed to launch editor `{editor}`: {e}")),
         }
@@ -1649,7 +1690,7 @@ impl App {
         use crate::ui::links;
 
         let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let areas = layout::compute_layout(area, self.show_info_panel);
+        let areas = layout::compute_layout(area, self.show_info_panel, self.show_file_viewer);
         let border_block = Block::default().borders(Borders::ALL);
 
         // Ctrl+Click: URL opening (terminal-relative, existing behavior)
@@ -2742,6 +2783,17 @@ impl App {
         // Detach from backend sessions without killing them — they persist in tmux.
         for session in self.sessions {
             session.detach();
+        }
+    }
+
+    /// Rebuild the file viewer tree from the currently active session's
+    /// worktrees and additional directories. Called when the active session
+    /// changes or when the file viewer is first opened.
+    pub(crate) fn rebuild_file_viewer_for_active(&mut self) {
+        if let Some(session) = self.sessions.get(self.active_index) {
+            self.file_viewer.rebuild_from_session(&session.info);
+        } else {
+            self.file_viewer.clear();
         }
     }
 
@@ -4156,7 +4208,8 @@ impl App {
 
     pub(crate) fn content_area_size(&self) -> (u16, u16) {
         let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let terminal = layout::compute_layout(area, self.show_info_panel).terminal;
+        let terminal =
+            layout::compute_layout(area, self.show_info_panel, self.show_file_viewer).terminal;
         let inner = Block::default().borders(Borders::ALL).inner(terminal);
         (inner.height, inner.width)
     }

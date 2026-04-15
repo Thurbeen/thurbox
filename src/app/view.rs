@@ -15,17 +15,18 @@ use crate::session::SessionInfo;
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
-    branch_selector_modal, containerfile_picker, info_panel, layout, mcp_server_picker_modal,
-    project_list, restore_sessions_modal, role_editor_modal, role_selector_modal,
-    schedule_command_modal, scheduled_commands_list_modal, session_mode_modal, session_name_modal,
-    skill_picker_modal, status_bar, terminal_view, worktree_name_modal,
+    branch_selector_modal, containerfile_picker, file_viewer, info_panel, layout,
+    mcp_server_picker_modal, project_list, restore_sessions_modal, role_editor_modal,
+    role_selector_modal, schedule_command_modal, scheduled_commands_list_modal, session_mode_modal,
+    session_name_modal, skill_picker_modal, status_bar, terminal_view, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
-        let areas = layout::compute_layout(frame.area(), self.show_info_panel);
+        let areas =
+            layout::compute_layout(frame.area(), self.show_info_panel, self.show_file_viewer);
 
         status_bar::render_header(frame, areas.header);
 
@@ -56,7 +57,7 @@ impl App {
             use crate::ui::FocusLevel;
             let list_focus = match self.focus {
                 InputFocus::SessionList => FocusLevel::Focused,
-                InputFocus::Terminal => FocusLevel::Active,
+                InputFocus::Terminal | InputFocus::FileViewer => FocusLevel::Active,
             };
 
             let match_count = self
@@ -134,10 +135,26 @@ impl App {
             }
         }
 
+        // File viewer (right column)
+        if let Some(fv_area) = areas.file_viewer {
+            if let Some(session) = self.sessions.get(self.active_index) {
+                if self.file_viewer.needs_rebuild_for(&session.info) {
+                    self.file_viewer.rebuild_from_session(&session.info);
+                }
+            } else {
+                self.file_viewer.clear();
+            }
+            let fv_focus = match self.focus {
+                InputFocus::FileViewer => crate::ui::FocusLevel::Focused,
+                _ => crate::ui::FocusLevel::Inactive,
+            };
+            file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
+        }
+
         // Terminal
         let terminal_focus = match self.focus {
             InputFocus::Terminal => crate::ui::FocusLevel::Focused,
-            InputFocus::SessionList => crate::ui::FocusLevel::Active,
+            InputFocus::SessionList | InputFocus::FileViewer => crate::ui::FocusLevel::Active,
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
         match self.sessions.get(self.active_index) {
@@ -168,6 +185,7 @@ impl App {
             InputFocus::SessionList => "Sessions",
             InputFocus::Terminal if is_shell_view => "Shell",
             InputFocus::Terminal => "Terminal",
+            InputFocus::FileViewer => "Files",
         };
         status_bar::render_footer(
             frame,
@@ -183,6 +201,7 @@ impl App {
                 container_provisioning_step: &self.container_provisioning_step,
                 tick_count: self.tick_count,
                 pending_scheduled_count: self.cached_pending_commands.len(),
+                file_viewer_open: self.show_file_viewer,
             },
         );
 
@@ -560,6 +579,21 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("Ctrl+T", "Toggle shell pane"),
         help_line("F1", "Toggle keybindings help"),
         help_line("F2", "Toggle info panel"),
+        help_line("F3", "Toggle file viewer"),
+        help_line("Ctrl+L/H", "Cycle focus (includes file viewer when open)"),
+        help_line("j/k", "File viewer: move down/up (when focused)"),
+        help_line("h", "File viewer: collapse / parent"),
+        help_line("l / Enter", "File viewer: expand dir / open file in editor"),
+        help_line("/", "File viewer: start search"),
+        help_line(
+            "Enter / \u{2193}",
+            "In search: jump to next match (stays in search)",
+        ),
+        help_line("\u{2191}", "In search: previous match"),
+        help_line("Tab", "In search: commit & exit search mode"),
+        help_line("Esc", "In search: cancel and clear query"),
+        help_line("n / N", "After search: next / previous match"),
+        help_line("Ctrl+O", "On file viewer: open project with file focused"),
         help_line("Ctrl+Q", "Quit"),
         Line::from(""),
         help_section("List Navigation (when focused)"),

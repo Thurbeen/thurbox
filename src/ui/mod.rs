@@ -1,5 +1,6 @@
 pub mod branch_selector_modal;
 pub mod containerfile_picker;
+pub mod file_viewer;
 pub mod info_panel;
 pub mod layout;
 pub mod links;
