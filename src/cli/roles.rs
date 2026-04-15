@@ -33,18 +33,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
         }
         Action::Set { file } => {
             let content = super::read_file(&file)?;
-            // Accept either `[RoleInput...]` or `{"roles":[RoleInput...]}`.
-            let value: Value =
-                serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {e}"))?;
-            let arr = match &value {
-                Value::Array(a) => a.clone(),
-                Value::Object(o) => match o.get("roles") {
-                    Some(Value::Array(a)) => a.clone(),
-                    _ => return Err("JSON must be an array or {\"roles\":[...]}".into()),
-                },
-                _ => return Err("JSON must be an array or {\"roles\":[...]}".into()),
-            };
-
+            let arr = super::parse_array_or_wrapper(&content, "roles")?;
             let roles: Vec<RoleConfig> = arr
                 .into_iter()
                 .map(|v| -> Result<RoleConfig, String> {

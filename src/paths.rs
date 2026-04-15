@@ -292,6 +292,60 @@ pub fn containerfiles_directory() -> Option<PathBuf> {
     resolve(PathKind::ContainerfilesDir)
 }
 
+/// Validate that `name` is a safe single-segment identifier — non-empty,
+/// no dot-prefix, no slashes / backslashes / `..`, max 64 chars. Shared by
+/// `session_ops::spawn`, the MCP `create_session` tool, and CLI commands
+/// that name on-disk resources (VM images, Containerfile templates).
+pub fn validate_safe_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Name cannot be empty".into());
+    }
+    if name.len() > 64 {
+        return Err("Name too long (max 64 characters)".into());
+    }
+    if name.starts_with('.') {
+        return Err("Name cannot start with '.'".into());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("Name contains invalid characters".into());
+    }
+    Ok(())
+}
+
+/// List Containerfile templates on disk as `(name, files)` pairs sorted by name.
+///
+/// Returns an empty vector when the directory doesn't exist. Used by the MCP
+/// `list_containerfile_templates` tool and the `thurbox-cli containerfile list`
+/// subcommand so both share the same scan logic.
+pub fn list_containerfile_templates() -> Result<Vec<(String, Vec<String>)>, String> {
+    let Some(dir) = containerfiles_directory() else {
+        return Err("Could not resolve containerfiles directory".into());
+    };
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("Failed to read directory: {e}"))?;
+    let mut templates = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let mut files = Vec::new();
+        if let Ok(children) = std::fs::read_dir(entry.path()) {
+            for child in children.flatten() {
+                if child.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                    files.push(child.file_name().to_string_lossy().to_string());
+                }
+            }
+        }
+        files.sort();
+        templates.push((name, files));
+    }
+    templates.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(templates)
+}
+
 /// Resolve the VM images directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/admin/images/` or

@@ -445,39 +445,16 @@ impl ThurboxMcp {
 
     #[tool(description = "List all Containerfile templates with their files")]
     fn list_containerfile_templates(&self) -> String {
-        let dir = match crate::paths::containerfiles_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve containerfiles directory"),
-        };
-
-        if !dir.exists() {
-            return json_text(&Vec::<ContainerfileTemplateSummary>::new());
-        }
-
-        let mut templates = Vec::new();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(e) => return error_json(&format!("Failed to read directory: {e}")),
-        };
-
-        for entry in entries.flatten() {
-            if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                continue;
+        match crate::paths::list_containerfile_templates() {
+            Ok(rows) => {
+                let templates: Vec<ContainerfileTemplateSummary> = rows
+                    .into_iter()
+                    .map(|(name, files)| ContainerfileTemplateSummary { name, files })
+                    .collect();
+                json_text(&templates)
             }
-            let name = entry.file_name().to_string_lossy().to_string();
-            let mut files = Vec::new();
-            if let Ok(children) = std::fs::read_dir(entry.path()) {
-                for child in children.flatten() {
-                    if child.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                        files.push(child.file_name().to_string_lossy().to_string());
-                    }
-                }
-            }
-            files.sort();
-            templates.push(ContainerfileTemplateSummary { name, files });
+            Err(e) => error_json(&e),
         }
-        templates.sort_by(|a, b| a.name.cmp(&b.name));
-        json_text(&templates)
     }
 
     #[tool(description = "Get a Containerfile template's content and list its support files")]

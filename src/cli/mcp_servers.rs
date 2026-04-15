@@ -30,17 +30,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
         }
         Action::Set { file } => {
             let content = super::read_file(&file)?;
-            let value: Value =
-                serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {e}"))?;
-            let arr = match &value {
-                Value::Array(a) => a.clone(),
-                Value::Object(o) => match o.get("servers") {
-                    Some(Value::Array(a)) => a.clone(),
-                    _ => return Err("JSON must be an array or {\"servers\":[...]}".into()),
-                },
-                _ => return Err("JSON must be an array or {\"servers\":[...]}".into()),
-            };
-
+            let arr = super::parse_array_or_wrapper(&content, "servers")?;
             let servers: Vec<McpServerConfig> = arr
                 .into_iter()
                 .map(|v| -> Result<McpServerConfig, String> {

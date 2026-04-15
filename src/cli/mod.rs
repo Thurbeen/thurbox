@@ -107,22 +107,30 @@ pub(crate) fn read_file(path: &std::path::Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))
 }
 
+/// Parse a JSON document that may be either a bare array or an object
+/// with a single `wrapper_key` field whose value is an array. Returns the
+/// array items. Used by `role set` / `mcp-server set` CLI commands.
+pub(crate) fn parse_array_or_wrapper(
+    content: &str,
+    wrapper_key: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(content).map_err(|e| format!("Failed to parse JSON: {e}"))?;
+    let err = || format!("JSON must be an array or {{\"{wrapper_key}\":[...]}}");
+    match value {
+        serde_json::Value::Array(a) => Ok(a),
+        serde_json::Value::Object(mut o) => match o.remove(wrapper_key) {
+            Some(serde_json::Value::Array(a)) => Ok(a),
+            _ => Err(err()),
+        },
+        _ => Err(err()),
+    }
+}
+
 /// Validate that `name` is a safe single-segment filename (no slashes,
 /// dot-prefix, or `..`) — used by VM-image and Containerfile commands.
 pub(crate) fn validate_safe_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("Name cannot be empty".into());
-    }
-    if name.len() > 64 {
-        return Err("Name too long (max 64 characters)".into());
-    }
-    if name.starts_with('.') {
-        return Err("Name cannot start with '.'".into());
-    }
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err("Name contains invalid characters".into());
-    }
-    Ok(())
+    crate::paths::validate_safe_name(name)
 }
 
 #[cfg(test)]

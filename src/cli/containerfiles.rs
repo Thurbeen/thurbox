@@ -47,31 +47,10 @@ pub struct SupportFiles {
 pub fn run(action: Action) -> Result<Value, String> {
     match action {
         Action::List => {
-            let dir = crate::paths::containerfiles_directory()
-                .ok_or_else(|| "Could not resolve containerfiles directory".to_string())?;
-            if !dir.exists() {
-                return Ok(Value::Array(Vec::new()));
-            }
-            let entries = std::fs::read_dir(&dir)
-                .map_err(|e| format!("Failed to read containerfiles directory: {e}"))?;
-            let mut templates = Vec::new();
-            for entry in entries.flatten() {
-                if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().to_string();
-                let mut files = Vec::new();
-                if let Ok(children) = std::fs::read_dir(entry.path()) {
-                    for child in children.flatten() {
-                        if child.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                            files.push(child.file_name().to_string_lossy().to_string());
-                        }
-                    }
-                }
-                files.sort();
-                templates.push(json!({ "name": name, "files": files }));
-            }
-            templates.sort_by_key(|v| v["name"].as_str().unwrap_or("").to_string());
+            let templates: Vec<Value> = crate::paths::list_containerfile_templates()?
+                .into_iter()
+                .map(|(name, files)| json!({ "name": name, "files": files }))
+                .collect();
             Ok(Value::Array(templates))
         }
         Action::Get { name } => {

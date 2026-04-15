@@ -118,22 +118,10 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     })
 }
 
-/// Validate a session name — same rules as the MCP `validate_safe_name`
-/// guard so both code paths reject the same inputs.
+/// Validate a session name. Delegates to the shared `paths::validate_safe_name`
+/// so MCP and CLI reject the same inputs.
 fn validate_session_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("Name cannot be empty".into());
-    }
-    if name.len() > 64 {
-        return Err("Name too long (max 64 characters)".into());
-    }
-    if name.starts_with('.') {
-        return Err("Name cannot start with '.'".into());
-    }
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err("Name contains invalid characters".into());
-    }
-    Ok(())
+    crate::paths::validate_safe_name(name)
 }
 
 /// Resolve a role name to its concrete permissions.
