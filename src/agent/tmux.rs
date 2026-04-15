@@ -982,10 +982,13 @@ fn tmux_create_session() -> Result<()> {
 /// Used by [`spawn_window`] so callers that don't hold a
 /// [`LocalTmuxBackend`] can still create sessions safely.
 fn ensure_tmux_session_headless() -> Result<()> {
-    if tmux_session_exists()? {
-        return Ok(());
+    if !tmux_session_exists()? {
+        tmux_create_session()?;
     }
-    tmux_create_session()?;
+    // Apply options unconditionally — the TUI may have created the session
+    // without them, and `set-option` is idempotent. In particular,
+    // `remain-on-exit=on` is required so a failed claude process leaves its
+    // tmux window visible with the error instead of silently vanishing.
     for (k, v) in HEADLESS_SESSION_OPTS {
         let _ = Command::new("tmux")
             .args(["-L", TMUX_SOCKET, "set-option", "-t", TMUX_SESSION, k, v])

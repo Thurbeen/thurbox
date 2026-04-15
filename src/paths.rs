@@ -413,6 +413,40 @@ pub fn thurbox_mcp_binary() -> String {
     "thurbox-mcp".to_string()
 }
 
+/// Returns true if a Claude transcript file `<agent_session_id>.jsonl` exists
+/// under `<root>/projects/*/`.
+///
+/// Root resolution: `config_dir_override` → `$CLAUDE_CONFIG_DIR` → `~/.claude`.
+/// Used by restart paths to decide between `--resume` (transcript exists) and
+/// `--session-id` (fresh start with same id).
+pub fn claude_transcript_exists(
+    agent_session_id: &str,
+    config_dir_override: Option<&Path>,
+) -> bool {
+    let root = if let Some(p) = config_dir_override {
+        p.to_path_buf()
+    } else if let Some(env) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        PathBuf::from(env)
+    } else {
+        match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h).join(".claude"),
+            None => return false,
+        }
+    };
+
+    let projects = root.join("projects");
+    let Ok(entries) = std::fs::read_dir(&projects) else {
+        return false;
+    };
+    let target = format!("{agent_session_id}.jsonl");
+    for entry in entries.flatten() {
+        if entry.path().join(&target).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Override path resolution for all paths to use a custom base directory.
 ///
 /// This is primarily intended for testing. All paths will resolve under the given base:
@@ -587,6 +621,24 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_exists_detects_file_under_any_project_slug() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("projects").join("-some-slug");
+        std::fs::create_dir_all(&proj).unwrap();
+        let sid = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(proj.join(format!("{sid}.jsonl")), b"").unwrap();
+
+        assert!(claude_transcript_exists(sid, Some(tmp.path())));
+        assert!(!claude_transcript_exists("not-present", Some(tmp.path())));
+    }
+
+    #[test]
+    fn transcript_exists_returns_false_when_projects_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!claude_transcript_exists("any-id", Some(tmp.path())));
+    }
 
     #[test]
     fn default_strategy_is_xdg() {

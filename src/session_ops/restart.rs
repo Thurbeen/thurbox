@@ -25,8 +25,24 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
 
     let permissions = lookup_role_permissions(db, &session.role)?;
 
+    // If the Claude conversation transcript doesn't exist yet (session was
+    // never interacted with), `--resume` would fail with "No conversation
+    // found". Fall back to `--session-id` to start fresh with the same id.
+    let config_dir_override = permissions
+        .env
+        .get("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from);
+    let resume_session_id = if crate::paths::claude_transcript_exists(
+        &agent_session_id,
+        config_dir_override.as_deref(),
+    ) {
+        Some(agent_session_id.clone())
+    } else {
+        None
+    };
+
     let mut config = SessionConfig {
-        resume_session_id: Some(agent_session_id.clone()),
+        resume_session_id,
         agent_session_id: Some(agent_session_id.clone()),
         cwd: session.cwd.clone(),
         additional_dirs: session.additional_dirs.clone(),
