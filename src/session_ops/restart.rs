@@ -1,5 +1,6 @@
 //! Headless session restart — tears down the tmux window and re-launches
-//! the claude CLI with `--resume <agent_session_id>`.
+//! the claude CLI, resuming the existing transcript when one exists and
+//! starting fresh with the same id otherwise.
 
 use crate::session::{
     default_developer_permissions, RolePermissions, SessionConfig, SessionId, DEFAULT_ROLE_NAME,
@@ -7,7 +8,13 @@ use crate::session::{
 use crate::storage::Database;
 
 /// Restart an existing session in-place — kills its tmux window and
-/// re-spawns the claude CLI with `--resume <agent_session_id>`.
+/// re-spawns the claude CLI.
+///
+/// Uses `--resume <agent_session_id>` when a transcript for that id exists on
+/// disk, otherwise passes `--session-id <agent_session_id>` so claude starts a
+/// fresh conversation under the same id (the transcript only appears after the
+/// user's first message, and `--resume` on a missing id fails with
+/// "No conversation found").
 ///
 /// MCP servers + skills are intentionally not re-attached on restart — the
 /// TUI has the same behaviour (see `App::handle_restart_command`). Delete
@@ -24,22 +31,7 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
         .ok_or_else(|| format!("Cannot restart session {session_id} without agent_session_id"))?;
 
     let permissions = lookup_role_permissions(db, &session.role)?;
-
-    // If the Claude conversation transcript doesn't exist yet (session was
-    // never interacted with), `--resume` would fail with "No conversation
-    // found". Fall back to `--session-id` to start fresh with the same id.
-    let config_dir_override = permissions
-        .env
-        .get("CLAUDE_CONFIG_DIR")
-        .map(std::path::PathBuf::from);
-    let resume_session_id = if crate::paths::claude_transcript_exists(
-        &agent_session_id,
-        config_dir_override.as_deref(),
-    ) {
-        Some(agent_session_id.clone())
-    } else {
-        None
-    };
+    let resume_session_id = super::resume_id_if_transcript_exists(&agent_session_id, &permissions);
 
     let mut config = SessionConfig {
         resume_session_id,

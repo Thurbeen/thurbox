@@ -11,7 +11,25 @@ pub mod spawn;
 pub use restart::restart_session_headless;
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 
-use crate::session::SessionConfig;
+use crate::session::{RolePermissions, SessionConfig};
+
+/// Decide whether to pass `--resume <id>` vs `--session-id <id>` when
+/// (re)spawning claude. Returns `Some(id.clone())` only when a transcript for
+/// that id already exists on disk under `CLAUDE_CONFIG_DIR`/`~/.claude`.
+///
+/// Shared by [`restart::restart_session_headless`] and
+/// `App::restart_active_session` so the headless and TUI paths agree.
+pub(crate) fn resume_id_if_transcript_exists(
+    agent_session_id: &str,
+    permissions: &RolePermissions,
+) -> Option<String> {
+    let config_dir_override = permissions
+        .env
+        .get("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from);
+    crate::paths::claude_transcript_exists(agent_session_id, config_dir_override.as_deref())
+        .then(|| agent_session_id.to_string())
+}
 
 /// Build the (command, args) invocation for the default `ClaudeProvider`
 /// from a fully populated [`SessionConfig`].
@@ -41,5 +59,38 @@ fn inject_thurbox_env(config: &mut SessionConfig, agent_session_id: &str) {
             .permissions
             .env
             .insert("THURBOX_METRICS_DIR".into(), dir.to_string_lossy().into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_id_is_none_when_no_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut perms = RolePermissions::default();
+        perms
+            .env
+            .insert("CLAUDE_CONFIG_DIR".into(), tmp.path().display().to_string());
+        assert_eq!(resume_id_if_transcript_exists("some-uuid", &perms), None);
+    }
+
+    #[test]
+    fn resume_id_is_some_when_transcript_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sid = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
+        let proj = tmp.path().join("projects").join("-slug");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join(format!("{sid}.jsonl")), b"").unwrap();
+
+        let mut perms = RolePermissions::default();
+        perms
+            .env
+            .insert("CLAUDE_CONFIG_DIR".into(), tmp.path().display().to_string());
+        assert_eq!(
+            resume_id_if_transcript_exists(sid, &perms),
+            Some(sid.to_string())
+        );
     }
 }

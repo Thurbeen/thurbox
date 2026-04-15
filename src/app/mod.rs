@@ -1216,20 +1216,8 @@ impl App {
         let additional_dirs = session.info.additional_dirs.clone();
 
         let permissions = self.resolve_role_permissions(&role);
-        // If no transcript exists yet, start fresh with `--session-id` rather
-        // than failing with `--resume` (see session_ops::restart for details).
-        let config_dir_override = permissions
-            .env
-            .get("CLAUDE_CONFIG_DIR")
-            .map(std::path::PathBuf::from);
-        let resume_session_id = if crate::paths::claude_transcript_exists(
-            &agent_session_id,
-            config_dir_override.as_deref(),
-        ) {
-            Some(agent_session_id.clone())
-        } else {
-            None
-        };
+        let resume_session_id =
+            crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &permissions);
         let config = SessionConfig {
             resume_session_id,
             agent_session_id: Some(agent_session_id),
