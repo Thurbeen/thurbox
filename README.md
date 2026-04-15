@@ -1,8 +1,9 @@
 # Thurbox
 
-A multi-session Claude Code orchestrator for your terminal.
-Run parallel Claude instances in persistent tmux panes — and let
-one of them drive the others.
+An agentic IDE and agent orchestrator for your terminal.
+Run parallel Claude Code instances in persistent tmux panes —
+and let one of them drive the others. Sessions, roles, worktrees,
+skills, and MCP servers are first-class citizens.
 
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
