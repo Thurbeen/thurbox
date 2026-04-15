@@ -54,6 +54,16 @@ impl App {
 
             let session_elapsed_buf = self.session_elapsed_buf.clone();
 
+            // Pin admin sessions to the top of the list. All parallel arrays
+            // (elapsed, match_positions) and active_index are remapped so they
+            // stay aligned with the rendered order.
+            let ordered = project_list::OrderedSessions::new(
+                &all_sessions,
+                &session_elapsed_buf,
+                &self.session_match_positions,
+                self.active_index,
+            );
+
             use crate::ui::FocusLevel;
             let list_focus = match self.focus {
                 InputFocus::SessionList => FocusLevel::Focused,
@@ -65,24 +75,25 @@ impl App {
                 .iter()
                 .filter(|m| m.is_some())
                 .count();
-            let total_count = all_sessions.len();
+            let total_count = ordered.sessions.len();
 
             project_list::render_left_panel(
                 frame,
                 left_area,
                 &mut project_list::LeftPanelState {
-                    sessions: &all_sessions,
-                    active_session: self.active_index,
-                    session_elapsed_ms: &session_elapsed_buf,
+                    sessions: &ordered.sessions,
+                    active_session: ordered.active_index,
+                    session_elapsed_ms: &ordered.elapsed_ms,
                     session_focus: list_focus,
                     session_list_state: &mut self.session_list_state,
                     search_query: &self.search_input.buffer,
                     search_active: self.search_active,
                     search_cursor: self.search_input.cursor,
-                    session_match_positions: &self.session_match_positions,
+                    session_match_positions: &ordered.match_positions,
                     session_search_active: !self.session_match_positions.is_empty(),
                     match_count,
                     total_count,
+                    first_non_admin_index: ordered.first_non_admin_index,
                 },
             );
         }

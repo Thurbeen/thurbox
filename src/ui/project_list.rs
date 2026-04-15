@@ -11,6 +11,7 @@ use super::{focus_block, status_color, FocusLevel};
 use crate::session::SessionInfo;
 
 /// Per-field fuzzy match positions for a session entry.
+#[derive(Clone)]
 pub struct SessionMatch {
     pub name: Vec<usize>,
     pub role: Vec<usize>,
@@ -52,6 +53,49 @@ impl SessionMatch {
     }
 }
 
+/// Display-ordered view of the session list with admin sessions pinned to the
+/// top. All fields are parallel arrays aligned to the rendered order.
+pub struct OrderedSessions<'a> {
+    pub sessions: Vec<&'a SessionInfo>,
+    pub elapsed_ms: Vec<u64>,
+    pub match_positions: Vec<Option<SessionMatch>>,
+    pub active_index: usize,
+    /// Index of the first non-admin row, or `None` if no non-admin sessions.
+    pub first_non_admin_index: Option<usize>,
+}
+
+impl<'a> OrderedSessions<'a> {
+    /// Reorder the parallel arrays so admin sessions come first (stable), and
+    /// remap `active_index` and `match_positions` to follow the new order.
+    pub fn new(
+        sessions: &[&'a SessionInfo],
+        elapsed_ms: &[u64],
+        match_positions: &[Option<SessionMatch>],
+        active_index: usize,
+    ) -> Self {
+        let n = sessions.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| !sessions[i].is_admin);
+
+        let first_non_admin_index = order.iter().position(|&i| !sessions[i].is_admin);
+        let ordered_sessions = order.iter().map(|&i| sessions[i]).collect();
+        let ordered_elapsed = order.iter().map(|&i| elapsed_ms[i]).collect();
+        let ordered_matches = order
+            .iter()
+            .map(|&i| match_positions.get(i).cloned().flatten())
+            .collect();
+        let new_active = order.iter().position(|&i| i == active_index).unwrap_or(0);
+
+        Self {
+            sessions: ordered_sessions,
+            elapsed_ms: ordered_elapsed,
+            match_positions: ordered_matches,
+            active_index: new_active,
+            first_non_admin_index,
+        }
+    }
+}
+
 pub struct LeftPanelState<'a> {
     pub sessions: &'a [&'a SessionInfo],
     pub active_session: usize,
@@ -75,6 +119,10 @@ pub struct LeftPanelState<'a> {
     pub match_count: usize,
     /// Total number of sessions (for search count display).
     pub total_count: usize,
+    /// Index of the first non-admin session in the ordered list. When `Some`
+    /// and > 0, a subtle divider is rendered above that row to separate admin
+    /// sessions (pinned at the top) from the rest.
+    pub first_non_admin_index: Option<usize>,
 }
 
 pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelState<'_>) {
@@ -112,6 +160,7 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.session_match_positions,
         state.session_search_active,
         state.search_query,
+        state.first_non_admin_index,
     );
 
     if let Some(area) = search_area {
@@ -312,6 +361,7 @@ fn render_session_section(
     match_positions: &[Option<SessionMatch>],
     search_active: bool,
     search_query: &str,
+    first_non_admin_index: Option<usize>,
 ) {
     let mut block = focus_block(" Sessions ", level);
 
@@ -505,6 +555,17 @@ fn render_session_section(
 
                     item_lines.push(Line::from(line3_spans));
                 }
+            }
+
+            // Prepend a subtle divider above the first non-admin session when
+            // admin sessions are pinned above it.
+            if first_non_admin_index == Some(i) && i > 0 {
+                let divider_width = inner_width.max(1);
+                let divider = Line::from(Span::styled(
+                    "\u{2500}".repeat(divider_width),
+                    Style::default().fg(Theme::TEXT_MUTED),
+                ));
+                item_lines.insert(0, divider);
             }
 
             ListItem::new(item_lines)
@@ -863,5 +924,98 @@ mod tests {
         let entries = build_repo_entries(&info);
         assert!(entries.is_empty());
         assert_eq!(format_repo_entries_plain(&entries), "");
+    }
+
+    // --- OrderedSessions ---
+
+    fn info(name: &str, admin: bool) -> SessionInfo {
+        let mut s = SessionInfo::new(name.to_string());
+        s.is_admin = admin;
+        s
+    }
+
+    #[test]
+    fn ordered_sessions_pins_admins_first_stable() {
+        let a = info("admin-a", true);
+        let n1 = info("normal-1", false);
+        let b = info("admin-b", true);
+        let n2 = info("normal-2", false);
+        let sessions = vec![&n1, &a, &n2, &b];
+        let elapsed = vec![10, 20, 30, 40];
+        let matches = vec![None, None, None, None];
+
+        let ordered = OrderedSessions::new(&sessions, &elapsed, &matches, 0);
+
+        let names: Vec<_> = ordered.sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["admin-a", "admin-b", "normal-1", "normal-2"]);
+        assert_eq!(ordered.elapsed_ms, vec![20, 40, 10, 30]);
+        assert_eq!(ordered.first_non_admin_index, Some(2));
+    }
+
+    #[test]
+    fn ordered_sessions_remaps_active_index() {
+        let a = info("admin", true);
+        let n1 = info("normal-1", false);
+        let n2 = info("normal-2", false);
+        // original order: [n1, n2, a], active = n2 (index 1)
+        let sessions = vec![&n1, &n2, &a];
+        let elapsed = vec![0, 0, 0];
+        let matches = vec![None, None, None];
+
+        let ordered = OrderedSessions::new(&sessions, &elapsed, &matches, 1);
+
+        // new order: [a, n1, n2], n2 lives at index 2
+        assert_eq!(ordered.active_index, 2);
+    }
+
+    #[test]
+    fn ordered_sessions_no_admins_has_no_divider_beyond_zero() {
+        let n1 = info("n1", false);
+        let n2 = info("n2", false);
+        let sessions = vec![&n1, &n2];
+        let ordered = OrderedSessions::new(&sessions, &[0, 0], &[None, None], 0);
+        // Divider is gated by `Some(i) && i > 0`; with no admins the index is 0.
+        assert_eq!(ordered.first_non_admin_index, Some(0));
+    }
+
+    #[test]
+    fn ordered_sessions_all_admins_has_no_non_admin_index() {
+        let a1 = info("a1", true);
+        let a2 = info("a2", true);
+        let sessions = vec![&a1, &a2];
+        let ordered = OrderedSessions::new(&sessions, &[0, 0], &[None, None], 0);
+        assert_eq!(ordered.first_non_admin_index, None);
+    }
+
+    #[test]
+    fn ordered_sessions_empty_input() {
+        let sessions: Vec<&SessionInfo> = vec![];
+        let ordered = OrderedSessions::new(&sessions, &[], &[], 0);
+        assert!(ordered.sessions.is_empty());
+        assert_eq!(ordered.active_index, 0);
+        assert_eq!(ordered.first_non_admin_index, None);
+    }
+
+    #[test]
+    fn ordered_sessions_remaps_match_positions() {
+        let a = info("admin", true);
+        let n = info("normal", false);
+        let sessions = vec![&n, &a];
+        let elapsed = vec![0, 0];
+        let m_normal = SessionMatch::from_matches(Some(vec![0, 1]), None, None, None, None);
+        let m_admin = SessionMatch::from_matches(Some(vec![3]), None, None, None, None);
+        let matches = vec![m_normal, m_admin];
+
+        let ordered = OrderedSessions::new(&sessions, &elapsed, &matches, 0);
+
+        // Admin bubbles to front, so its match moves with it.
+        assert_eq!(
+            ordered.match_positions[0].as_ref().map(|m| m.name.clone()),
+            Some(vec![3])
+        );
+        assert_eq!(
+            ordered.match_positions[1].as_ref().map(|m| m.name.clone()),
+            Some(vec![0, 1])
+        );
     }
 }
