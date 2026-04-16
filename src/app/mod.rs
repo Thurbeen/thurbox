@@ -2718,8 +2718,12 @@ impl App {
                             .or(shared_session.cwd.clone());
 
                         let permissions = self.resolve_role_permissions(&shared_session.role);
+                        let resume_session_id = crate::session_ops::resume_id_if_transcript_exists(
+                            agent_sid,
+                            &permissions,
+                        );
                         let config = SessionConfig {
-                            resume_session_id: None,
+                            resume_session_id,
                             agent_session_id: Some(agent_sid.clone()),
                             cwd,
                             additional_dirs: shared_session.additional_dirs.clone(),
@@ -3387,18 +3391,21 @@ impl App {
             self.active_index = self.sessions.len() - 1;
             self.focus = InputFocus::Terminal;
         } else {
-            // No matching backend session or adopt failed — spawn fresh using
-            // `--session-id` so claude creates the conversation if one doesn't
-            // yet exist for this agent_session_id (e.g. CLI-created sessions
-            // whose claude process never persisted a conversation).
+            // No matching backend session or adopt failed — respawn with
+            // `--resume` when a transcript already exists for this
+            // agent_session_id, otherwise `--session-id` so claude creates
+            // the conversation (e.g. CLI-created sessions whose claude
+            // process never persisted a conversation).
             if let Err(e) = self.db.soft_delete_session(session_id) {
                 error!("Failed to soft-delete stale session {session_id}: {e}");
             }
 
             let permissions = self.resolve_role_permissions(&role);
+            let resume_session_id =
+                crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &permissions);
 
             let config = SessionConfig {
-                resume_session_id: None,
+                resume_session_id,
                 agent_session_id: Some(agent_session_id),
                 cwd: shared.cwd,
                 additional_dirs: shared.additional_dirs,
@@ -3635,8 +3642,15 @@ impl App {
                 }
             }
 
+            let resume_session_id =
+                crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &permissions);
+            let resume_flag = if resume_session_id.is_some() {
+                "--resume"
+            } else {
+                "--session-id"
+            };
             let config = SessionConfig {
-                resume_session_id: None,
+                resume_session_id,
                 agent_session_id: Some(agent_session_id),
                 cwd: shared.cwd,
                 additional_dirs: shared.additional_dirs,
@@ -3650,7 +3664,7 @@ impl App {
                 model: shared.model,
             };
             self.do_spawn_session(name, &config, worktrees, false);
-            info!(session = %session_id, "Session restored (respawned with --session-id)");
+            info!(session = %session_id, "Session restored (respawned with {resume_flag})");
         }
 
         self.save_state();
@@ -3703,9 +3717,11 @@ impl App {
             }
 
             let permissions = self.resolve_role_permissions(&role);
+            let resume_session_id =
+                crate::session_ops::resume_id_if_transcript_exists(agent_session_id, &permissions);
 
             let config = SessionConfig {
-                resume_session_id: None,
+                resume_session_id,
                 agent_session_id: Some(agent_session_id.clone()),
                 cwd: shared.cwd,
                 additional_dirs: shared.additional_dirs,
