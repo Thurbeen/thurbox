@@ -219,6 +219,70 @@ fn default_palette() -> ThemePalette {
     }
 }
 
+/// Compact intermediate representation used to construct the seven RGB-based
+/// palettes without restating the 27-field `ThemePalette` literal in each one.
+///
+/// `build()` derives the symmetric fields (status_idle = text_muted,
+/// border_focused = accent, admin_border = admin_badge, inverted_fg = app_bg)
+/// so each preset only specifies the colours that actually vary between themes.
+struct PaletteSlots {
+    accent: Color,
+    accent_bright: Color,
+    green: Color,
+    yellow: Color,
+    red: Color,
+    text_primary: Color,
+    text_secondary: Color,
+    text_muted: Color,
+    border_unfocused: Color,
+    role_name: Color,
+    branch_name: Color,
+    search_bar: Color,
+    admin_badge: Color,
+    keybind_hint: Color,
+    selection_bg: Color,
+    selection_fg: Color,
+    modal_dim_bg: Color,
+    modal_bg: Color,
+    modal_border: Color,
+    base_bg: Color,
+}
+
+impl PaletteSlots {
+    fn build(self) -> ThemePalette {
+        ThemePalette {
+            accent: self.accent,
+            accent_bright: self.accent_bright,
+            status_busy: self.green,
+            status_waiting: self.yellow,
+            status_idle: self.text_muted,
+            status_error: self.red,
+            text_primary: self.text_primary,
+            text_secondary: self.text_secondary,
+            text_muted: self.text_muted,
+            border_focused: self.accent,
+            border_unfocused: self.border_unfocused,
+            role_name: self.role_name,
+            admin_badge: self.admin_badge,
+            branch_name: self.branch_name,
+            search_bar: self.search_bar,
+            keybind_hint: self.keybind_hint,
+            tool_allowed: self.green,
+            tool_disallowed: self.red,
+            admin_border: self.admin_badge,
+            danger: self.red,
+            selection_bg: self.selection_bg,
+            selection_fg: self.selection_fg,
+            modal_dim_bg: self.modal_dim_bg,
+            modal_bg: self.modal_bg,
+            modal_border: self.modal_border,
+            inverted_fg: self.base_bg,
+            app_bg: self.base_bg,
+            nerd_font_enabled: false,
+        }
+    }
+}
+
 fn catppuccin_mocha_palette() -> ThemePalette {
     let mauve = Color::Rgb(0xCB, 0xA6, 0xF7);
     let pink = Color::Rgb(0xF5, 0xC2, 0xE7);
@@ -233,48 +297,29 @@ fn catppuccin_mocha_palette() -> ThemePalette {
     let surface0 = Color::Rgb(0x31, 0x32, 0x44);
     let surface1 = Color::Rgb(0x45, 0x47, 0x5A);
     let base = Color::Rgb(0x1E, 0x1E, 0x2E);
-
-    ThemePalette {
+    PaletteSlots {
         accent: mauve,
         accent_bright: pink,
-
-        status_busy: green,
-        status_waiting: yellow,
-        status_idle: overlay,
-        status_error: red,
-
+        green,
+        yellow,
+        red,
         text_primary: text,
         text_secondary: subtext,
         text_muted: overlay,
-
-        border_focused: mauve,
         border_unfocused: surface1,
-
         role_name: pink,
-        admin_badge: yellow,
         branch_name: green,
         search_bar: blue,
-
+        admin_badge: yellow,
         keybind_hint: yellow,
-        tool_allowed: green,
-        tool_disallowed: red,
-
-        admin_border: yellow,
-        danger: red,
-
         selection_bg: surface1,
         selection_fg: text,
-
         modal_dim_bg: base,
         modal_bg: surface0,
         modal_border: teal,
-
-        inverted_fg: base,
-
-        app_bg: base,
-
-        nerd_font_enabled: false,
+        base_bg: base,
     }
+    .build()
 }
 
 fn tokyo_night_palette() -> ThemePalette {
@@ -292,48 +337,29 @@ fn tokyo_night_palette() -> ThemePalette {
     let bg = Color::Rgb(0x1A, 0x1B, 0x26);
     let bg_dark = Color::Rgb(0x16, 0x16, 0x1E);
     let bg_highlight = Color::Rgb(0x29, 0x2E, 0x42);
-
-    ThemePalette {
+    PaletteSlots {
         accent: blue,
         accent_bright: cyan,
-
-        status_busy: green,
-        status_waiting: yellow,
-        status_idle: muted,
-        status_error: red,
-
+        green,
+        yellow,
+        red,
         text_primary: text,
         text_secondary: subtext,
         text_muted: muted,
-
-        border_focused: blue,
         border_unfocused: bg_highlight,
-
         role_name: purple,
-        admin_badge: orange,
         branch_name: green,
         search_bar: cyan,
-
+        admin_badge: orange,
         keybind_hint: yellow,
-        tool_allowed: green,
-        tool_disallowed: red,
-
-        admin_border: orange,
-        danger: red,
-
         selection_bg: bg_highlight,
         selection_fg: magenta,
-
         modal_dim_bg: bg_dark,
         modal_bg: bg,
         modal_border: blue,
-
-        inverted_fg: bg,
-
-        app_bg: bg,
-
-        nerd_font_enabled: false,
+        base_bg: bg,
     }
+    .build()
 }
 
 fn gruvbox_dark_palette() -> ThemePalette {
@@ -350,48 +376,29 @@ fn gruvbox_dark_palette() -> ThemePalette {
     let bg0 = Color::Rgb(0x28, 0x28, 0x28);
     let bg1 = Color::Rgb(0x3C, 0x38, 0x36);
     let bg_hard = Color::Rgb(0x1D, 0x20, 0x21);
-
-    ThemePalette {
+    PaletteSlots {
         accent: yellow,
         accent_bright: orange,
-
-        status_busy: green,
-        status_waiting: yellow,
-        status_idle: gray,
-        status_error: red,
-
+        green,
+        yellow,
+        red,
         text_primary: fg,
         text_secondary: fg2,
         text_muted: gray,
-
-        border_focused: yellow,
         border_unfocused: bg1,
-
         role_name: purple,
-        admin_badge: orange,
         branch_name: aqua,
         search_bar: blue,
-
+        admin_badge: orange,
         keybind_hint: orange,
-        tool_allowed: green,
-        tool_disallowed: red,
-
-        admin_border: orange,
-        danger: red,
-
         selection_bg: bg1,
         selection_fg: fg,
-
         modal_dim_bg: bg_hard,
         modal_bg: bg0,
         modal_border: yellow,
-
-        inverted_fg: bg0,
-
-        app_bg: bg0,
-
-        nerd_font_enabled: false,
+        base_bg: bg0,
     }
+    .build()
 }
 
 fn catppuccin_latte_palette() -> ThemePalette {
@@ -409,48 +416,29 @@ fn catppuccin_latte_palette() -> ThemePalette {
     let surface1 = Color::Rgb(0xBC, 0xC0, 0xCC);
     let base = Color::Rgb(0xEF, 0xF1, 0xF5);
     let crust = Color::Rgb(0xDC, 0xE0, 0xE8);
-
-    ThemePalette {
+    PaletteSlots {
         accent: mauve,
         accent_bright: pink,
-
-        status_busy: green,
-        status_waiting: yellow,
-        status_idle: overlay,
-        status_error: red,
-
+        green,
+        yellow,
+        red,
         text_primary: text,
         text_secondary: subtext,
         text_muted: overlay,
-
-        border_focused: mauve,
         border_unfocused: surface1,
-
         role_name: pink,
-        admin_badge: yellow,
         branch_name: green,
         search_bar: blue,
-
+        admin_badge: yellow,
         keybind_hint: yellow,
-        tool_allowed: green,
-        tool_disallowed: red,
-
-        admin_border: yellow,
-        danger: red,
-
         selection_bg: surface0,
         selection_fg: text,
-
         modal_dim_bg: crust,
         modal_bg: base,
         modal_border: teal,
-
-        inverted_fg: base,
-
-        app_bg: base,
-
-        nerd_font_enabled: false,
+        base_bg: base,
     }
+    .build()
 }
 
 fn tokyo_night_day_palette() -> ThemePalette {
@@ -468,48 +456,29 @@ fn tokyo_night_day_palette() -> ThemePalette {
     let bg = Color::Rgb(0xE1, 0xE2, 0xE7);
     let bg_dark = Color::Rgb(0xD0, 0xD5, 0xE1);
     let bg_highlight = Color::Rgb(0xC4, 0xC8, 0xDA);
-
-    ThemePalette {
+    PaletteSlots {
         accent: blue,
         accent_bright: cyan,
-
-        status_busy: green,
-        status_waiting: yellow,
-        status_idle: muted,
-        status_error: red,
-
+        green,
+        yellow,
+        red,
         text_primary: text,
         text_secondary: subtext,
         text_muted: muted,
-
-        border_focused: blue,
         border_unfocused: bg_highlight,
-
         role_name: purple,
-        admin_badge: orange,
         branch_name: green,
         search_bar: cyan,
-
+        admin_badge: orange,
         keybind_hint: orange,
-        tool_allowed: green,
-        tool_disallowed: red,
-
-        admin_border: orange,
-        danger: red,
-
         selection_bg: bg_highlight,
         selection_fg: magenta,
-
         modal_dim_bg: bg_dark,
         modal_bg: bg,
         modal_border: blue,
-
-        inverted_fg: bg,
-
-        app_bg: bg,
-
-        nerd_font_enabled: false,
+        base_bg: bg,
     }
+    .build()
 }
 
 fn gruvbox_light_palette() -> ThemePalette {
@@ -526,48 +495,29 @@ fn gruvbox_light_palette() -> ThemePalette {
     let bg0 = Color::Rgb(0xFB, 0xF1, 0xC7);
     let bg1 = Color::Rgb(0xEB, 0xDB, 0xB2);
     let bg_soft = Color::Rgb(0xF2, 0xE5, 0xBC);
-
-    ThemePalette {
+    PaletteSlots {
         accent: orange,
         accent_bright: yellow,
-
-        status_busy: green,
-        status_waiting: yellow,
-        status_idle: gray,
-        status_error: red,
-
+        green,
+        yellow,
+        red,
         text_primary: fg,
         text_secondary: fg2,
         text_muted: gray,
-
-        border_focused: orange,
         border_unfocused: bg1,
-
         role_name: purple,
-        admin_badge: yellow,
         branch_name: aqua,
         search_bar: blue,
-
+        admin_badge: yellow,
         keybind_hint: yellow,
-        tool_allowed: green,
-        tool_disallowed: red,
-
-        admin_border: yellow,
-        danger: red,
-
         selection_bg: bg1,
         selection_fg: fg,
-
         modal_dim_bg: bg_soft,
         modal_bg: bg0,
         modal_border: orange,
-
-        inverted_fg: bg0,
-
-        app_bg: bg0,
-
-        nerd_font_enabled: false,
+        base_bg: bg0,
     }
+    .build()
 }
 
 fn solarized_light_palette() -> ThemePalette {
@@ -584,48 +534,29 @@ fn solarized_light_palette() -> ThemePalette {
     let base1 = Color::Rgb(0x93, 0xA1, 0xA1);
     let base2 = Color::Rgb(0xEE, 0xE8, 0xD5);
     let base3 = Color::Rgb(0xFD, 0xF6, 0xE3);
-
-    ThemePalette {
+    PaletteSlots {
         accent: blue,
         accent_bright: cyan,
-
-        status_busy: green,
-        status_waiting: yellow,
-        status_idle: base1,
-        status_error: red,
-
+        green,
+        yellow,
+        red,
         text_primary: base01,
         text_secondary: base00,
         text_muted: base1,
-
-        border_focused: blue,
         border_unfocused: base2,
-
         role_name: magenta,
-        admin_badge: orange,
         branch_name: green,
         search_bar: violet,
-
+        admin_badge: orange,
         keybind_hint: orange,
-        tool_allowed: green,
-        tool_disallowed: red,
-
-        admin_border: orange,
-        danger: red,
-
         selection_bg: base2,
         selection_fg: base01,
-
         modal_dim_bg: base2,
         modal_bg: base3,
         modal_border: blue,
-
-        inverted_fg: base3,
-
-        app_bg: base3,
-
-        nerd_font_enabled: false,
+        base_bg: base3,
     }
+    .build()
 }
 
 #[cfg(test)]
