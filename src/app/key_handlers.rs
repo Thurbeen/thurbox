@@ -1143,12 +1143,11 @@ impl App {
                 }
                 self.show_role_editor = false;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down
                 if !self.global_roles.is_empty()
-                    && self.role_editor_list_index + 1 < self.global_roles.len()
-                {
-                    self.role_editor_list_index += 1;
-                }
+                    && self.role_editor_list_index + 1 < self.global_roles.len() =>
+            {
+                self.role_editor_list_index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
@@ -1156,20 +1155,16 @@ impl App {
             KeyCode::Char('a') => {
                 self.prepare_new_role_editor();
             }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.global_roles.is_empty() {
-                    let idx = self.role_editor_list_index;
-                    self.open_role_for_editing(idx);
-                }
+            KeyCode::Char('e') | KeyCode::Enter if !self.global_roles.is_empty() => {
+                let idx = self.role_editor_list_index;
+                self.open_role_for_editing(idx);
             }
-            KeyCode::Char('d') => {
-                if !self.global_roles.is_empty() {
-                    self.global_roles.remove(self.role_editor_list_index);
-                    if self.role_editor_list_index >= self.global_roles.len()
-                        && self.role_editor_list_index > 0
-                    {
-                        self.role_editor_list_index -= 1;
-                    }
+            KeyCode::Char('d') if !self.global_roles.is_empty() => {
+                self.global_roles.remove(self.role_editor_list_index);
+                if self.role_editor_list_index >= self.global_roles.len()
+                    && self.role_editor_list_index > 0
+                {
+                    self.role_editor_list_index -= 1;
                 }
             }
             _ => {}
@@ -1405,9 +1400,7 @@ impl App {
             }
             KeyCode::Char('d') if !self.global_skills.is_empty() => {
                 self.global_skills.remove(self.skill_list_index);
-                if self.skill_list_index >= self.global_skills.len()
-                    && self.skill_list_index > 0
-                {
+                if self.skill_list_index >= self.global_skills.len() && self.skill_list_index > 0 {
                     self.skill_list_index -= 1;
                 }
             }
