@@ -1020,19 +1020,15 @@ impl App {
             KeyCode::Esc => {
                 self.modal.close();
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if tp.index + 1 < preset_count {
-                    tp.index += 1;
-                    let preset = presets[tp.index];
-                    crate::ui::theme::set_active(preset.palette());
-                }
+            KeyCode::Char('j') | KeyCode::Down if tp.index + 1 < preset_count => {
+                tp.index += 1;
+                let preset = presets[tp.index];
+                crate::ui::theme::set_active(preset.palette());
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if tp.index > 0 {
-                    tp.index -= 1;
-                    let preset = presets[tp.index];
-                    crate::ui::theme::set_active(preset.palette());
-                }
+            KeyCode::Char('k') | KeyCode::Up if tp.index > 0 => {
+                tp.index -= 1;
+                let preset = presets[tp.index];
+                crate::ui::theme::set_active(preset.palette());
             }
             KeyCode::Enter => {
                 let idx = tp.index;

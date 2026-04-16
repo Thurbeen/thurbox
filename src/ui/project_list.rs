@@ -475,10 +475,8 @@ fn render_session_section(
                 if !entries.is_empty() {
                     let text = format_repo_entries_plain(&entries);
                     if !text.is_empty() {
-                        item_lines.push(Line::from(vec![Span::styled(
-                            format!("   {text}"),
-                            dimmed,
-                        )]));
+                        item_lines
+                            .push(Line::from(vec![Span::styled(format!("   {text}"), dimmed)]));
                     }
                 }
             } else if info.status == crate::session::SessionStatus::Provisioning {
