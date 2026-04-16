@@ -19,7 +19,7 @@ use crate::ui::{
     mcp_server_picker_modal, model_picker_modal, project_list, restore_sessions_modal,
     role_editor_modal, role_selector_modal, schedule_command_modal, scheduled_commands_list_modal,
     session_mode_modal, session_name_modal, skill_picker_modal, status_bar, terminal_view,
-    worktree_name_modal,
+    theme_picker_modal, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -29,7 +29,19 @@ impl App {
         let areas =
             layout::compute_layout(frame.area(), self.show_info_panel, self.show_file_viewer);
 
-        status_bar::render_header(frame, areas.header);
+        let active_name = self
+            .sessions
+            .get(self.active_index)
+            .map(|s| s.info.name.as_str());
+        let theme_label = self.active_theme.display_name();
+        status_bar::render_header(
+            frame,
+            areas.header,
+            Some(status_bar::HeaderBadge {
+                active_session: active_name,
+                theme_label,
+            }),
+        );
 
         // Left panel (flat session list)
         if let Some(left_area) = areas.left_panel {
@@ -291,6 +303,17 @@ impl App {
             );
         }
 
+        // Theme picker modal
+        if let super::modals::Modal::ThemePicker(ref tp) = self.modal {
+            theme_picker_modal::render_theme_picker_modal(
+                frame,
+                &theme_picker_modal::ThemePickerState {
+                    presets: crate::session::ThemePreset::all(),
+                    selected_index: tp.index,
+                },
+            );
+        }
+
         // Model selector modal
         if let super::modals::Modal::ModelSelector(ref msel) = self.modal {
             model_picker_modal::render_model_picker_modal(
@@ -539,10 +562,10 @@ impl App {
             let text = Line::from(vec![
                 Span::styled(
                     " Discard changes? ",
-                    Style::default().fg(Theme::TEXT_PRIMARY),
+                    Style::default().fg(Theme::text_primary()),
                 ),
                 Span::styled("y", Theme::keybind()),
-                Span::styled("/", Style::default().fg(Theme::TEXT_MUTED)),
+                Span::styled("/", Style::default().fg(Theme::text_muted())),
                 Span::styled("n", Theme::keybind()),
             ]);
             frame.render_widget(
@@ -554,11 +577,35 @@ impl App {
             );
         }
 
+        // Repaint cells that fell back to terminal-default colours with the
+        // active theme's background and primary text. Themes whose `app_bg`
+        // is `Color::Reset` (e.g. the ANSI-based Default preset) skip this
+        // step so they continue to honour the user's terminal palette.
+        let app_bg = Theme::app_bg();
+        if app_bg != ratatui::style::Color::Reset {
+            let text_primary = Theme::text_primary();
+            let area = frame.area();
+            let buf = frame.buffer_mut();
+            for y in area.y..area.y + area.height {
+                for x in area.x..area.x + area.width {
+                    let pos = ratatui::layout::Position::new(x, y);
+                    if let Some(cell) = buf.cell_mut(pos) {
+                        if cell.bg == ratatui::style::Color::Reset {
+                            cell.bg = app_bg;
+                        }
+                        if cell.fg == ratatui::style::Color::Reset {
+                            cell.fg = text_primary;
+                        }
+                    }
+                }
+            }
+        }
+
         // Selection highlight and text cache — runs after all rendering.
         if let Some(ref sel) = self.text_selection {
             let sel_style = Style::default()
-                .bg(Theme::SELECTION_BG)
-                .fg(Theme::SELECTION_FG);
+                .bg(Theme::selection_bg())
+                .fg(Theme::selection_fg());
             let sel_clone = sel.clone();
 
             selection::highlight_buffer(frame.buffer_mut(), &sel_clone, sel_style);
@@ -634,7 +681,7 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from(""),
         Line::from(Span::styled(
             "Press F1 or Esc to close",
-            Style::default().fg(Theme::TEXT_MUTED),
+            Style::default().fg(Theme::text_muted()),
         )),
     ];
 
@@ -648,7 +695,7 @@ fn help_section(title: &str) -> Line<'_> {
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
     Line::from(vec![
         Span::styled(format!("  {key:<16}"), Theme::keybind()),
-        Span::styled(desc, Style::default().fg(Theme::TEXT_PRIMARY)),
+        Span::styled(desc, Style::default().fg(Theme::text_primary())),
     ])
 }
 

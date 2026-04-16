@@ -63,6 +63,24 @@ pub struct SetEditorCommandParams {
     pub command: String,
 }
 
+/// Parameters for the `set_theme` tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetThemeParams {
+    #[schemars(
+        description = "Theme preset id. One of: \"default\", \"catppuccin-mocha\", \"tokyo-night\", \"gruvbox-dark\"."
+    )]
+    pub name: String,
+}
+
+/// Parameters for the `set_keybindings` tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetKeybindingsParams {
+    #[schemars(
+        description = "Full keybindings JSON document. Shape: { \"<Action>\": [\"<chord>\", ...] }. Unknown actions and unparseable chords are ignored; missing actions retain their defaults."
+    )]
+    pub json: String,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetRolesParams {
     #[schemars(

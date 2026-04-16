@@ -58,7 +58,7 @@ pub fn render_terminal(
 
     let mut pseudo_term = PseudoTerminal::new(parser.screen())
         .block(block)
-        .style(Style::default().fg(Theme::TEXT_PRIMARY).bg(Color::Reset));
+        .style(Style::default().fg(Theme::text_primary()).bg(Color::Reset));
 
     // Hide cursor when scrolled up
     if scroll_offset > 0 {
@@ -80,8 +80,8 @@ pub fn render_terminal(
         });
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .thumb_style(Style::default().fg(Theme::ACCENT))
-            .track_style(Style::default().fg(Theme::TEXT_MUTED));
+            .thumb_style(Style::default().fg(Theme::accent()))
+            .track_style(Style::default().fg(Theme::text_muted()));
 
         // Invert: offset 0 (bottom) → position at max, offset max (top) → position at 0
         let position = total_scrollback.saturating_sub(scroll_offset);
@@ -131,7 +131,7 @@ pub fn render_empty_terminal(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .title(" No Session ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::TEXT_MUTED));
+        .border_style(Style::default().fg(Theme::text_muted()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -161,7 +161,7 @@ pub fn render_empty_terminal(frame: &mut Frame, area: Rect) {
 
         let hint_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED));
+            .border_style(Style::default().fg(Theme::border_unfocused()));
 
         let hint_inner = hint_block.inner(center);
         frame.render_widget(hint_block, center);
@@ -169,16 +169,16 @@ pub fn render_empty_terminal(frame: &mut Frame, area: Rect) {
         let lines = vec![
             Line::from(Span::styled(
                 "No active sessions",
-                Style::default().fg(Theme::TEXT_SECONDARY),
+                Style::default().fg(Theme::text_secondary()),
             )),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Ctrl+N", Theme::keybind()),
-                Span::styled("  New session", Style::default().fg(Theme::TEXT_MUTED)),
+                Span::styled("  New session", Style::default().fg(Theme::text_muted())),
             ]),
             Line::from(vec![
                 Span::styled("  F1    ", Theme::keybind()),
-                Span::styled("  Help", Style::default().fg(Theme::TEXT_MUTED)),
+                Span::styled("  Help", Style::default().fg(Theme::text_muted())),
             ]),
         ];
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Left), hint_inner);

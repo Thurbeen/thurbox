@@ -204,6 +204,12 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `cancel_scheduled_command` | Cancel a pending scheduled command |
 | `get_editor_command` | Get the editor command used by Ctrl+O |
 | `set_editor_command` | Set the editor command used by Ctrl+O |
+| `list_themes` | List available built-in TUI theme presets |
+| `get_theme` | Get the active TUI theme preset id |
+| `set_theme` | Set the active TUI theme (live-applied via data-version polling) |
+| `get_keybindings` | Get the user keybindings JSON document (or built-in defaults) |
+| `set_keybindings` | Replace `~/.config/thurbox/keybindings.json` (effective on next TUI start) |
+| `reset_keybindings` | Delete the keybindings override file, restoring defaults |
 
 **Role Management**: Roles are global presets.
 `set_roles` performs an atomic replacement — all existing roles
@@ -346,12 +352,31 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
+| `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
 | `F1` | Toggle keybindings help | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
+| `F3` | Toggle file viewer | Next to F2 |
 
 List contexts use plain `j`/`k`/`Enter` for navigation.
 Terminal forwards all non-Ctrl keys to the PTY.
 `Shift+arrows/PageUp/PageDown` for scrollback.
+
+These defaults can be overridden by writing
+`~/.config/thurbox/keybindings.json` (or via the MCP
+`set_keybindings` tool). The file maps an `Action` name to one or
+more chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`. Modal-internal
+keys (j/k/Enter/Esc inside selectors) are not customizable.
+
+## Themes
+
+The TUI ships with eight palettes — four dark (**Default**, **Catppuccin
+Mocha**, **Tokyo Night**, **Gruvbox Dark**) and four light (**Catppuccin
+Latte**, **Tokyo Night Day**, **Gruvbox Light**, **Solarized Light**).
+Pick one with `Ctrl+Y` (or `F4`,
+which avoids terminals that intercept Ctrl+Y as DSUSP); the choice
+is persisted in SQLite under `metadata.active_theme` and survives
+restarts. Other thurbox processes pick up theme changes within one
+tick via `PRAGMA data_version` polling.
 
 ## Design Documentation
 

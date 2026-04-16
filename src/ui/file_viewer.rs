@@ -530,7 +530,7 @@ pub fn render_file_viewer(
     if state.roots.is_empty() {
         let p = Paragraph::new(Line::from(Span::styled(
             "No folders",
-            Style::default().fg(Theme::TEXT_MUTED),
+            Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(p, list_area);
         return;
@@ -559,20 +559,24 @@ pub fn render_file_viewer(
 }
 
 fn row_marker(row: &FlatRow) -> &'static str {
-    match (row.is_dir, row.expanded) {
-        (true, true) => "▾ ",
-        (true, false) => "▸ ",
-        _ => "  ",
+    let nerd = super::theme::current().nerd_font_enabled;
+    match (row.is_dir, row.expanded, nerd) {
+        (true, true, false) => "▾ ",
+        (true, false, false) => "▸ ",
+        (false, _, false) => "  ",
+        (true, true, true) => "\u{f07c} ",
+        (true, false, true) => "\u{f07b} ",
+        (false, _, true) => "\u{f15b} ",
     }
 }
 
 fn row_label_color(is_match: bool, is_dir: bool) -> ratatui::style::Color {
     if !is_match {
-        Theme::TEXT_MUTED
+        Theme::text_muted()
     } else if is_dir {
-        Theme::ACCENT
+        Theme::accent()
     } else {
-        Theme::TEXT_PRIMARY
+        Theme::text_primary()
     }
 }
 
@@ -585,8 +589,8 @@ fn build_row_line(row: &FlatRow, selected: bool, query_lc: Option<&str>) -> Line
 
     let label_style = if selected {
         Style::default()
-            .bg(Theme::SELECTION_BG)
-            .fg(Theme::SELECTION_FG)
+            .bg(Theme::selection_bg())
+            .fg(Theme::selection_fg())
             .add_modifier(Modifier::BOLD)
     } else {
         let mut s = Style::default().fg(row_label_color(is_match, row.is_dir));
@@ -597,10 +601,10 @@ fn build_row_line(row: &FlatRow, selected: bool, query_lc: Option<&str>) -> Line
     };
     let prefix_style = if selected {
         Style::default()
-            .bg(Theme::SELECTION_BG)
-            .fg(Theme::SELECTION_FG)
+            .bg(Theme::selection_bg())
+            .fg(Theme::selection_fg())
     } else {
-        Style::default().fg(Theme::TEXT_MUTED)
+        Style::default().fg(Theme::text_muted())
     };
 
     Line::from(vec![
@@ -621,9 +625,9 @@ fn render_search_bar(
     use ratatui::widgets::{Block, Borders};
 
     let style = if is_active {
-        Style::default().fg(Theme::SEARCH_BAR)
+        Style::default().fg(Theme::search_bar())
     } else {
-        Style::default().fg(Theme::TEXT_MUTED)
+        Style::default().fg(Theme::text_muted())
     };
 
     let block = Block::default()

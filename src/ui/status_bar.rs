@@ -9,21 +9,53 @@ use ratatui::{
 use super::theme::Theme;
 use crate::app::{StatusLevel, StatusMessage};
 
+fn brand_style() -> Style {
+    Style::default()
+        .fg(Theme::accent())
+        .add_modifier(Modifier::BOLD)
+}
+
 const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-pub fn render_header(frame: &mut Frame, area: Rect) {
+pub fn render_header(frame: &mut Frame, area: Rect, badge: Option<HeaderBadge<'_>>) {
+    if area.height == 0 {
+        return;
+    }
     let header = Paragraph::new(Line::from(vec![
-        Span::styled(" thurbox ", Theme::focused_title()),
+        Span::styled(" thurbox", brand_style()),
         Span::styled(
-            " Multi-Session Agent Orchestrator",
-            Style::default().fg(Theme::TEXT_SECONDARY),
+            "  Multi-Session Agent Orchestrator",
+            Style::default().fg(Theme::text_secondary()),
         ),
         Span::styled(
             concat!("  v", env!("THURBOX_VERSION")),
-            Style::default().fg(Theme::TEXT_MUTED),
+            Style::default().fg(Theme::text_muted()),
         ),
     ]));
     frame.render_widget(header, area);
+
+    if let Some(badge) = badge {
+        let mut spans: Vec<Span<'_>> = Vec::new();
+        if let Some(name) = badge.active_session {
+            spans.push(Span::styled(
+                name.to_string(),
+                Style::default().fg(Theme::text_primary()),
+            ));
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            format!("◐ {} ", badge.theme_label),
+            Style::default().fg(Theme::accent()),
+        ));
+        let right = Line::from(spans).alignment(ratatui::layout::Alignment::Right);
+        frame.render_widget(Paragraph::new(right), area);
+    }
+}
+
+/// Right-aligned overlay rendered on top of the header.
+pub struct HeaderBadge<'a> {
+    pub active_session: Option<&'a str>,
+    pub theme_label: &'a str,
 }
 
 /// State needed to render the footer bar.
@@ -82,7 +114,7 @@ fn push_status_section<'a>(spans: &mut Vec<Span<'a>>, state: &'a FooterState<'a>
             .map_or("Syncing...".to_string(), |s| s.text.clone());
         spans.push(Span::styled(
             format!(" {text} "),
-            Style::default().fg(Theme::ACCENT),
+            Style::default().fg(Theme::accent()),
         ));
     } else if let Some(msg) = state.status {
         push_status_message(spans, msg);
@@ -102,19 +134,19 @@ fn push_provisioning_badge<'a>(
     let text = if step.is_empty() { fallback } else { step };
     spans.push(Span::styled(
         format!(" {text} "),
-        Style::default().fg(Theme::ACCENT),
+        Style::default().fg(Theme::accent()),
     ));
 }
 
 fn push_status_message<'a>(spans: &mut Vec<Span<'a>>, msg: &'a StatusMessage) {
     let (badge_text, badge_bg, text_color) = match msg.level {
-        StatusLevel::Info => (" INFO ", Theme::ACCENT, Theme::TEXT_SECONDARY),
-        StatusLevel::Success => (" ✓ SYNC ", Theme::STATUS_BUSY, Theme::STATUS_BUSY),
-        StatusLevel::Error => (" ERROR ", Theme::STATUS_ERROR, Theme::STATUS_ERROR),
+        StatusLevel::Info => (" INFO ", Theme::accent(), Theme::text_secondary()),
+        StatusLevel::Success => (" ✓ SYNC ", Theme::status_busy(), Theme::status_busy()),
+        StatusLevel::Error => (" ERROR ", Theme::status_error(), Theme::status_error()),
     };
     spans.push(Span::styled(
         badge_text,
-        Style::default().fg(Theme::TEXT_PRIMARY).bg(badge_bg),
+        Style::default().fg(Theme::text_primary()).bg(badge_bg),
     ));
     spans.push(Span::styled(
         format!(" {} ", msg.text),
@@ -125,12 +157,14 @@ fn push_status_message<'a>(spans: &mut Vec<Span<'a>>, msg: &'a StatusMessage) {
 fn push_idle_counts<'a>(spans: &mut Vec<Span<'a>>, state: &FooterState<'a>) {
     spans.push(Span::styled(
         format!(" {} session(s) ", state.session_count),
-        Style::default().fg(Theme::TEXT_SECONDARY),
+        Style::default().fg(Theme::text_secondary()),
     ));
     if state.pending_scheduled_count > 0 {
         spans.push(Span::styled(
             format!(" {} scheduled ", state.pending_scheduled_count),
-            Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
+            Style::default()
+                .fg(Theme::text_primary())
+                .bg(Theme::accent()),
         ));
     }
 }
@@ -172,6 +206,8 @@ fn push_spinner_badge<'a>(spans: &mut Vec<Span<'a>>, tick_count: u64, label: &'a
     let spinner = SPINNER_CHARS[idx];
     spans.push(Span::styled(
         format!(" {spinner} {label} "),
-        Style::default().fg(Theme::TEXT_PRIMARY).bg(Theme::ACCENT),
+        Style::default()
+            .fg(Theme::text_primary())
+            .bg(Theme::accent()),
     ));
 }

@@ -38,17 +38,17 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
     let roles_style = if state.tab == SettingsTab::Roles {
         Theme::focused_title()
     } else {
-        Style::default().fg(Theme::TEXT_MUTED)
+        Style::default().fg(Theme::text_muted())
     };
     let mcp_style = if state.tab == SettingsTab::McpServers {
         Theme::focused_title()
     } else {
-        Style::default().fg(Theme::TEXT_MUTED)
+        Style::default().fg(Theme::text_muted())
     };
     let skills_style = if state.tab == SettingsTab::Skills {
         Theme::focused_title()
     } else {
-        Style::default().fg(Theme::TEXT_MUTED)
+        Style::default().fg(Theme::text_muted())
     };
 
     let tab_line = Line::from(vec![
@@ -72,7 +72,7 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
             if state.roles.is_empty() {
                 let empty = Paragraph::new(Line::from(Span::styled(
                     "  No roles configured. Press 'a' to add.",
-                    Style::default().fg(Theme::TEXT_MUTED),
+                    Style::default().fg(Theme::text_muted()),
                 )));
                 frame.render_widget(empty, list_area);
             } else {
@@ -84,7 +84,7 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
                         let style = if i == state.role_index {
                             Theme::focused_title()
                         } else {
-                            Style::default().fg(Theme::TEXT_PRIMARY)
+                            Style::default().fg(Theme::text_primary())
                         };
                         let prefix = if i == state.role_index { "▸ " } else { "  " };
                         ListItem::new(Line::from(Span::styled(
@@ -100,7 +100,7 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
             if state.mcp_servers.is_empty() {
                 let empty = Paragraph::new(Line::from(Span::styled(
                     "  No MCP servers configured. Press 'a' to add.",
-                    Style::default().fg(Theme::TEXT_MUTED),
+                    Style::default().fg(Theme::text_muted()),
                 )));
                 frame.render_widget(empty, list_area);
             } else {
@@ -112,7 +112,7 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
                         let style = if i == state.mcp_index {
                             Theme::focused_title()
                         } else {
-                            Style::default().fg(Theme::TEXT_PRIMARY)
+                            Style::default().fg(Theme::text_primary())
                         };
                         let prefix = if i == state.mcp_index { "▸ " } else { "  " };
                         ListItem::new(Line::from(Span::styled(
@@ -128,7 +128,7 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
             if state.skills.is_empty() {
                 let empty = Paragraph::new(Line::from(Span::styled(
                     "  No skills configured. Press 'a' to add.",
-                    Style::default().fg(Theme::TEXT_MUTED),
+                    Style::default().fg(Theme::text_muted()),
                 )));
                 frame.render_widget(empty, list_area);
             } else {
@@ -140,14 +140,14 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
                         let style = if i == state.skill_index {
                             Theme::focused_title()
                         } else {
-                            Style::default().fg(Theme::TEXT_PRIMARY)
+                            Style::default().fg(Theme::text_primary())
                         };
                         let prefix = if i == state.skill_index { "▸ " } else { "  " };
                         ListItem::new(Line::from(vec![
                             Span::styled(format!("{prefix}{}", skill.name), style),
                             Span::styled(
                                 format!("  {}", skill.path.display()),
-                                Style::default().fg(Theme::TEXT_MUTED),
+                                Style::default().fg(Theme::text_muted()),
                             ),
                         ]))
                     })
@@ -166,15 +166,15 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
 
     let hints = Line::from(vec![
         Span::styled(" Tab", Theme::keybind()),
-        Span::styled(": switch  ", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(": switch  ", Style::default().fg(Theme::text_muted())),
         Span::styled("a", Theme::keybind()),
-        Span::styled(": add  ", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(": add  ", Style::default().fg(Theme::text_muted())),
         Span::styled("e", Theme::keybind()),
-        Span::styled(": edit  ", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(": edit  ", Style::default().fg(Theme::text_muted())),
         Span::styled("d", Theme::keybind()),
-        Span::styled(": delete  ", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(": delete  ", Style::default().fg(Theme::text_muted())),
         Span::styled("Esc", Theme::keybind()),
-        Span::styled(": close", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(": close", Style::default().fg(Theme::text_muted())),
     ]);
     frame.render_widget(Paragraph::new(hints), hints_area);
 }

@@ -110,6 +110,13 @@ async fn main() -> Result<()> {
     });
     let db = Database::open(&db_path).expect("Failed to open database");
 
+    // Activate the persisted theme (falls back to default if unset/unknown).
+    if let Ok(Some(name)) = db.get_active_theme() {
+        thurbox::ui::theme::apply_preset_by_name(&name);
+    } else {
+        thurbox::ui::theme::ensure_initialized();
+    }
+
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let size = terminal.size()?;

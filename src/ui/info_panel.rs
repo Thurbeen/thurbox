@@ -49,7 +49,7 @@ pub fn render_info_panel(
     let block = Block::default()
         .title(" Info ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED));
+        .border_style(Style::default().fg(Theme::border_unfocused()));
 
     let inner_width = area.width.saturating_sub(2) as usize;
 
@@ -58,7 +58,7 @@ pub fn render_info_panel(
     // ── Session section (most relevant: "what am I looking at") ──
     lines.push(Line::from(vec![
         Span::styled("Name: ", Theme::label()),
-        Span::styled(&info.name, Style::default().fg(Theme::TEXT_PRIMARY)),
+        Span::styled(&info.name, Style::default().fg(Theme::text_primary())),
     ]));
     lines.push(Line::from(vec![
         Span::styled("Status: ", Theme::label()),
@@ -74,7 +74,7 @@ pub fn render_info_panel(
         Span::styled(
             &info.role,
             Style::default()
-                .fg(Theme::ROLE_NAME)
+                .fg(Theme::role_name())
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -98,10 +98,10 @@ pub fn render_info_panel(
             lines.extend(cpu_gauge);
 
             lines.push(Line::from(vec![
-                Span::styled("RAM", Style::default().fg(Theme::TEXT_MUTED)),
+                Span::styled("RAM", Style::default().fg(Theme::text_muted())),
                 Span::styled(
                     format!("  {}", format_bytes(m.session_memory_bytes)),
-                    Style::default().fg(Theme::TEXT_PRIMARY),
+                    Style::default().fg(Theme::text_primary()),
                 ),
             ]));
         }
@@ -145,11 +145,11 @@ pub fn render_info_panel(
         )));
         for entry in scheduled_commands {
             lines.push(Line::from(vec![
-                Span::styled(&entry.countdown, Style::default().fg(Theme::ACCENT)),
+                Span::styled(&entry.countdown, Style::default().fg(Theme::accent())),
                 Span::styled("  ", Style::default()),
                 Span::styled(
                     &entry.command_preview,
-                    Style::default().fg(Theme::TEXT_SECONDARY),
+                    Style::default().fg(Theme::text_secondary()),
                 ),
             ]));
         }
@@ -187,7 +187,7 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
             Span::styled("Tokens:  ", Theme::label()),
             Span::styled(
                 format!("{input} in / {output} out"),
-                Style::default().fg(Theme::TEXT_PRIMARY),
+                Style::default().fg(Theme::text_primary()),
             ),
         ]));
     }
@@ -204,11 +204,14 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
         let removed = metrics.total_lines_removed.unwrap_or(0);
         lines.push(Line::from(vec![
             Span::styled("Lines:   ", Theme::label()),
-            Span::styled(format!("+{added}"), Style::default().fg(Theme::STATUS_BUSY)),
-            Span::styled(" / ", Style::default().fg(Theme::TEXT_MUTED)),
+            Span::styled(
+                format!("+{added}"),
+                Style::default().fg(Theme::status_busy()),
+            ),
+            Span::styled(" / ", Style::default().fg(Theme::text_muted())),
             Span::styled(
                 format!("-{removed}"),
-                Style::default().fg(Theme::STATUS_ERROR),
+                Style::default().fg(Theme::status_error()),
             ),
         ]));
     }
@@ -225,7 +228,7 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
                     format_tokens(cache_read),
                     format_tokens(cache_create)
                 ),
-                Style::default().fg(Theme::TEXT_PRIMARY),
+                Style::default().fg(Theme::text_primary()),
             ),
         ]));
     }
@@ -265,17 +268,17 @@ fn append_repos_section<'a>(lines: &mut Vec<Line<'a>>, info: &'a SessionInfo) {
     if extra_names.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("Repos: ", Theme::label()),
-            Span::styled(primary, Style::default().fg(Theme::BRANCH_NAME)),
+            Span::styled(primary, Style::default().fg(Theme::branch_name())),
         ]));
     } else {
         lines.push(Line::from(vec![
             Span::styled("Repos: ", Theme::label()),
-            Span::styled(primary, Style::default().fg(Theme::BRANCH_NAME)),
+            Span::styled(primary, Style::default().fg(Theme::branch_name())),
         ]));
         for name in &extra_names {
             lines.push(Line::from(vec![
                 Span::styled("       ", Theme::label()),
-                Span::styled(*name, Style::default().fg(Theme::BRANCH_NAME)),
+                Span::styled(*name, Style::default().fg(Theme::branch_name())),
             ]));
         }
     }
@@ -298,18 +301,18 @@ fn append_vm_section<'a>(
     if let Some(vm) = vm_details {
         lines.push(Line::from(vec![
             Span::styled("State: ", Theme::label()),
-            Span::styled(&vm.state, Style::default().fg(Theme::TEXT_PRIMARY)),
+            Span::styled(&vm.state, Style::default().fg(Theme::text_primary())),
         ]));
         lines.push(Line::from(vec![
             Span::styled("CPUs: ", Theme::label()),
             Span::styled(
                 vm.cpus.to_string(),
-                Style::default().fg(Theme::TEXT_PRIMARY),
+                Style::default().fg(Theme::text_primary()),
             ),
             Span::styled("  RAM: ", Theme::label()),
             Span::styled(
                 format!("{} MB", vm.memory_mb),
-                Style::default().fg(Theme::TEXT_PRIMARY),
+                Style::default().fg(Theme::text_primary()),
             ),
         ]));
         if vm.ssh_port > 0 {
@@ -317,13 +320,13 @@ fn append_vm_section<'a>(
                 Span::styled("SSH: ", Theme::label()),
                 Span::styled(
                     format!("localhost:{}", vm.ssh_port),
-                    Style::default().fg(Theme::TEXT_PRIMARY),
+                    Style::default().fg(Theme::text_primary()),
                 ),
             ]));
         }
         lines.push(Line::from(vec![
             Span::styled("Image: ", Theme::label()),
-            Span::styled(&vm.base_image, Style::default().fg(Theme::TEXT_MUTED)),
+            Span::styled(&vm.base_image, Style::default().fg(Theme::text_muted())),
         ]));
     }
 
@@ -331,7 +334,7 @@ fn append_vm_section<'a>(
         if let Some(ref step) = info.provisioning_step {
             lines.push(Line::from(vec![
                 Span::styled("Step: ", Theme::label()),
-                Span::styled(step, Style::default().fg(Theme::ACCENT)),
+                Span::styled(step, Style::default().fg(Theme::accent())),
             ]));
         }
     }
@@ -340,7 +343,7 @@ fn append_vm_section<'a>(
 fn separator(width: usize) -> Line<'static> {
     Line::from(Span::styled(
         "─".repeat(width),
-        Style::default().fg(Theme::BORDER_UNFOCUSED),
+        Style::default().fg(Theme::border_unfocused()),
     ))
 }
 
@@ -361,9 +364,9 @@ fn render_gauge_lines(
     let right_len = right_text.chars().count();
     let padding = width.saturating_sub(label_len + right_len);
     let header_line = Line::from(vec![
-        Span::styled(label.to_string(), Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled(label.to_string(), Style::default().fg(Theme::text_muted())),
         Span::raw(" ".repeat(padding)),
-        Span::styled(right_text, Style::default().fg(Theme::TEXT_PRIMARY)),
+        Span::styled(right_text, Style::default().fg(Theme::text_primary())),
     ]);
 
     // Line 2: bar scaled to width - 2 (for [ and ])
@@ -371,10 +374,10 @@ fn render_gauge_lines(
     let filled = ((clamped / 100.0) * bar_width as f32).round() as usize;
     let empty = bar_width.saturating_sub(filled);
     let bar_line = Line::from(vec![
-        Span::styled("[", Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled("█".repeat(filled), Style::default().fg(Theme::ACCENT)),
-        Span::styled("░".repeat(empty), Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled("]", Style::default().fg(Theme::TEXT_MUTED)),
+        Span::styled("[", Style::default().fg(Theme::text_muted())),
+        Span::styled("█".repeat(filled), Style::default().fg(Theme::accent())),
+        Span::styled("░".repeat(empty), Style::default().fg(Theme::text_muted())),
+        Span::styled("]", Style::default().fg(Theme::text_muted())),
     ]);
 
     vec![header_line, bar_line]

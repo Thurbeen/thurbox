@@ -72,7 +72,7 @@ pub fn render_scheduled_commands_list_modal(
             } else {
                 Line::from(Span::styled(
                     text,
-                    Style::default().fg(Theme::TEXT_SECONDARY),
+                    Style::default().fg(Theme::text_secondary()),
                 ))
             }
         })

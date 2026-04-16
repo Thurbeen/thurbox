@@ -1,3 +1,9 @@
+pub mod keybindings;
+pub mod theme_config;
+
+pub use keybindings::{Action, KeyBindings, KeyChord};
+pub use theme_config::{ThemePalette, ThemePreset};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;

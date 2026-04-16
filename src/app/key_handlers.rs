@@ -143,6 +143,12 @@ impl App {
             return;
         }
 
+        // Theme picker modal captures all input
+        if matches!(self.modal, super::modals::Modal::ThemePicker(_)) {
+            self.handle_theme_picker_key(code);
+            return;
+        }
+
         // Model selector modal captures all input
         if matches!(self.modal, super::modals::Modal::ModelSelector(_)) {
             self.handle_model_selector_key(code);
@@ -191,118 +197,14 @@ impl App {
         // Any key press clears text selection (but the key still performs its action)
         self.text_selection = None;
 
-        // Global keybindings (always active)
-        if mods.contains(KeyModifiers::CONTROL) {
-            match code {
-                KeyCode::Char('q') => {
-                    self.should_quit = true;
-                    return;
-                }
-                KeyCode::Char('n') => {
-                    self.open_repo_picker();
-                    return;
-                }
-                KeyCode::Char('a') => {
-                    self.spawn_admin_session();
-                    return;
-                }
-                KeyCode::Char('d') => match self.focus {
-                    InputFocus::SessionList | InputFocus::FileViewer => {
-                        self.close_active_session();
-                        return;
-                    }
-                    InputFocus::Terminal => {} // forward to PTY
-                },
-                KeyCode::Char('e') => {
-                    self.open_settings();
-                    return;
-                }
-                KeyCode::Char('f') => match self.focus {
-                    InputFocus::Terminal => {} // forward to PTY (shell forward-search)
-                    _ => {
-                        self.fork_active_session();
-                        return;
-                    }
-                },
-                KeyCode::Char('r') => match self.focus {
-                    InputFocus::Terminal => {} // forward to PTY (e.g. bash reverse search)
-                    _ => {
-                        self.restart_active_session();
-                        return;
-                    }
-                },
-                KeyCode::Char('o') => match self.focus {
-                    InputFocus::Terminal => {} // forward to PTY
-                    _ => {
-                        self.open_active_in_editor();
-                        return;
-                    }
-                },
-                KeyCode::Char('p') => {
-                    self.open_scheduled_commands_list();
-                    return;
-                }
-                KeyCode::Char('s') => {
-                    self.start_sync();
-                    return;
-                }
-                KeyCode::Char('t') => {
-                    self.toggle_shell_view();
-                    return;
-                }
-                KeyCode::Char('z') => {
-                    if self.pending_delete.is_some() {
-                        self.undo_delete();
-                    }
-                    return;
-                }
-                KeyCode::Char('u') => {
-                    self.open_restore_sessions_modal();
-                    return;
-                }
-                // Vim navigation: h=cycle-left, j=down, k=up, l=cycle-right
-                KeyCode::Char('h') => {
-                    self.clear_search();
-                    self.focus = self.cycle_focus_backward();
-                    return;
-                }
-                KeyCode::Char('j') => {
-                    self.switch_session_forward();
-                    return;
-                }
-                KeyCode::Char('k') => {
-                    self.switch_session_backward();
-                    return;
-                }
-                KeyCode::Char('l') => {
-                    self.clear_search();
-                    self.focus = self.cycle_focus_forward();
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Function keys (work reliably in all terminals)
-        match code {
-            KeyCode::F(1) => {
-                self.modal = super::modals::Modal::Help;
+        // Global keybindings (always active) — driven by user-customizable
+        // `KeyBindings`. Some actions intentionally yield to the PTY when the
+        // terminal is focused (e.g. Ctrl+R = bash reverse-search) — those are
+        // handled inside `dispatch_action`.
+        if let Some(action) = self.keybindings.lookup(code, mods) {
+            if self.dispatch_action(action) {
                 return;
             }
-            KeyCode::F(2) => {
-                self.show_info_panel = !self.show_info_panel;
-                return;
-            }
-            KeyCode::F(3) => {
-                self.show_file_viewer = !self.show_file_viewer;
-                if self.show_file_viewer {
-                    self.rebuild_file_viewer_for_active();
-                } else if self.focus == InputFocus::FileViewer {
-                    self.focus = InputFocus::SessionList;
-                }
-                return;
-            }
-            _ => {}
         }
 
         match self.focus {
@@ -986,6 +888,160 @@ impl App {
                         let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
                         let is_admin = self.pending_spawn_is_admin;
                         self.maybe_show_model_picker(name, config, worktrees, is_admin);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Execute a global `Action`. Returns `true` when the action was consumed
+    /// and the caller should stop processing the keypress; `false` when the
+    /// action intentionally yielded to the PTY (e.g. Ctrl+R = bash
+    /// reverse-search while the terminal pane is focused).
+    fn dispatch_action(&mut self, action: crate::session::Action) -> bool {
+        use crate::session::Action;
+        match action {
+            Action::QuitApp => {
+                self.should_quit = true;
+                true
+            }
+            Action::NewSession => {
+                self.open_repo_picker();
+                true
+            }
+            Action::SpawnAdminSession => {
+                self.spawn_admin_session();
+                true
+            }
+            Action::DeleteSession => match self.focus {
+                InputFocus::SessionList | InputFocus::FileViewer => {
+                    self.close_active_session();
+                    true
+                }
+                InputFocus::Terminal => false, // forward to PTY
+            },
+            Action::OpenSettings => {
+                self.open_settings();
+                true
+            }
+            Action::OpenInEditor => match self.focus {
+                InputFocus::Terminal => false, // forward to PTY
+                _ => {
+                    self.open_active_in_editor();
+                    true
+                }
+            },
+            Action::OpenScheduledCommands => {
+                self.open_scheduled_commands_list();
+                true
+            }
+            Action::StartSync => {
+                self.start_sync();
+                true
+            }
+            Action::ToggleShell => {
+                self.toggle_shell_view();
+                true
+            }
+            Action::ForkSession => match self.focus {
+                InputFocus::Terminal => false, // PTY: shell forward-search
+                _ => {
+                    self.fork_active_session();
+                    true
+                }
+            },
+            Action::RestartSession => match self.focus {
+                InputFocus::Terminal => false, // PTY: bash reverse-search
+                _ => {
+                    self.restart_active_session();
+                    true
+                }
+            },
+            Action::UndoDelete => {
+                if self.pending_delete.is_some() {
+                    self.undo_delete();
+                }
+                true
+            }
+            Action::OpenRestoreSessions => {
+                self.open_restore_sessions_modal();
+                true
+            }
+            Action::OpenThemePicker => {
+                self.open_theme_picker();
+                true
+            }
+            Action::FocusBackward => {
+                self.clear_search();
+                self.focus = self.cycle_focus_backward();
+                true
+            }
+            Action::FocusForward => {
+                self.clear_search();
+                self.focus = self.cycle_focus_forward();
+                true
+            }
+            Action::NextSession => {
+                self.switch_session_forward();
+                true
+            }
+            Action::PreviousSession => {
+                self.switch_session_backward();
+                true
+            }
+            Action::ToggleHelp => {
+                self.modal = super::modals::Modal::Help;
+                true
+            }
+            Action::ToggleInfoPanel => {
+                self.show_info_panel = !self.show_info_panel;
+                true
+            }
+            Action::ToggleFileViewer => {
+                self.show_file_viewer = !self.show_file_viewer;
+                if self.show_file_viewer {
+                    self.rebuild_file_viewer_for_active();
+                } else if self.focus == InputFocus::FileViewer {
+                    self.focus = InputFocus::SessionList;
+                }
+                true
+            }
+        }
+    }
+
+    fn handle_theme_picker_key(&mut self, code: KeyCode) {
+        let presets = crate::session::ThemePreset::all();
+        let preset_count = presets.len();
+        let super::modals::Modal::ThemePicker(ref mut tp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if tp.index + 1 < preset_count {
+                    tp.index += 1;
+                    let preset = presets[tp.index];
+                    crate::ui::theme::set_active(preset.palette());
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if tp.index > 0 {
+                    tp.index -= 1;
+                    let preset = presets[tp.index];
+                    crate::ui::theme::set_active(preset.palette());
+                }
+            }
+            KeyCode::Enter => {
+                let idx = tp.index;
+                self.modal.close();
+                if let Some(preset) = presets.get(idx) {
+                    crate::ui::theme::set_active(preset.palette());
+                    self.active_theme = *preset;
+                    if let Err(e) = self.db.set_active_theme(preset.as_str()) {
+                        tracing::error!("Failed to persist active theme: {e}");
                     }
                 }
             }

@@ -68,9 +68,9 @@ pub fn render_mcp_editor_modal(frame: &mut Frame, state: &McpEditorState<'_>) {
         format!("\"{}\"", state.name)
     };
     let breadcrumb = Line::from(vec![
-        Span::styled(" MCP Servers", Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled(mcp_label, Style::default().fg(Theme::ACCENT)),
+        Span::styled(" MCP Servers", Style::default().fg(Theme::text_muted())),
+        Span::styled(" > ", Style::default().fg(Theme::text_muted())),
+        Span::styled(mcp_label, Style::default().fg(Theme::accent())),
     ]);
     frame.render_widget(Paragraph::new(breadcrumb), chunks[0]);
 

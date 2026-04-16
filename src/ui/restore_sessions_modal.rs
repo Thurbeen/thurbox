@@ -55,7 +55,7 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
             } else {
                 Line::from(Span::styled(
                     text,
-                    Style::default().fg(Theme::TEXT_SECONDARY),
+                    Style::default().fg(Theme::text_secondary()),
                 ))
             }
         })

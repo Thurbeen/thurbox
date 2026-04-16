@@ -23,6 +23,7 @@ pub mod skill_picker_modal;
 pub mod status_bar;
 pub mod terminal_view;
 pub mod theme;
+pub mod theme_picker_modal;
 pub mod worktree_name_modal;
 
 use ratatui::{
@@ -38,11 +39,11 @@ use theme::Theme;
 
 pub fn status_color(status: SessionStatus) -> Color {
     match status {
-        SessionStatus::Provisioning => Theme::ACCENT,
-        SessionStatus::Busy => Theme::STATUS_BUSY,
-        SessionStatus::Waiting => Theme::STATUS_WAITING,
-        SessionStatus::Idle => Theme::STATUS_IDLE,
-        SessionStatus::Error => Theme::STATUS_ERROR,
+        SessionStatus::Provisioning => Theme::accent(),
+        SessionStatus::Busy => Theme::status_busy(),
+        SessionStatus::Waiting => Theme::status_waiting(),
+        SessionStatus::Idle => Theme::status_idle(),
+        SessionStatus::Error => Theme::status_error(),
     }
 }
 
@@ -58,29 +59,33 @@ pub enum FocusLevel {
 }
 
 /// Build a [`Block`] with tri-state focus styling.
+///
+/// Focus is communicated by colour (bright accent vs plain accent vs gray)
+/// rather than border weight — every level uses rounded borders for a
+/// softer, opencode-style chrome.
 pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
     match level {
         FocusLevel::Focused => Block::default()
             .title(Line::from(Span::styled(title_text, Theme::focused_title())))
             .borders(Borders::ALL)
-            .border_type(BorderType::Thick)
-            .border_style(Style::default().fg(Theme::BORDER_FOCUSED)),
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Theme::accent_bright())),
         FocusLevel::Active => Block::default()
             .title(Line::from(Span::styled(
                 title_text,
-                Style::default().fg(Theme::ACCENT),
+                Style::default().fg(Theme::accent()),
             )))
             .borders(Borders::ALL)
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(Theme::ACCENT)),
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Theme::accent())),
         FocusLevel::Inactive => Block::default()
             .title(Line::from(Span::styled(
                 title_text,
                 Theme::unfocused_title(),
             )))
             .borders(Borders::ALL)
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED)),
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Theme::border_unfocused())),
     }
 }
 
@@ -94,21 +99,21 @@ pub fn admin_block(title_text: &str, level: FocusLevel) -> Block<'_> {
         FocusLevel::Focused => Block::default()
             .title(Line::from(Span::styled(title_text, Theme::admin_title())))
             .borders(Borders::ALL)
-            .border_type(BorderType::Thick)
-            .border_style(Style::default().fg(Theme::ADMIN_BORDER)),
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Theme::admin_border())),
         FocusLevel::Active => Block::default()
             .title(Line::from(Span::styled(title_text, Theme::admin_title())))
             .borders(Borders::ALL)
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(Theme::ADMIN_BORDER)),
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Theme::admin_border())),
         FocusLevel::Inactive => Block::default()
             .title(Line::from(Span::styled(
                 title_text,
                 Theme::unfocused_title(),
             )))
             .borders(Borders::ALL)
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(Theme::BORDER_UNFOCUSED)),
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Theme::border_unfocused())),
     }
 }
 
@@ -150,7 +155,7 @@ pub fn centered_fixed_height_rect(percent_x: u16, height: u16, area: Rect) -> Re
 
 /// Render a full-screen dim overlay to visually separate a modal from the background.
 pub fn render_dim_overlay(frame: &mut Frame) {
-    let dim = Block::default().style(Style::default().bg(Theme::MODAL_DIM_BG));
+    let dim = Block::default().style(Style::default().bg(Theme::modal_dim_bg()));
     frame.render_widget(dim, frame.area());
 }
 
@@ -161,17 +166,17 @@ fn build_modal_block(title: &str, title_style: Style, border_color: Color) -> Bl
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .style(Style::default().bg(Theme::MODAL_BG))
+        .style(Style::default().bg(Theme::modal_bg()))
 }
 
 /// Build a styled modal [`Block`] with rounded borders and an explicit background.
 pub fn modal_block(title: &str) -> Block<'_> {
-    build_modal_block(title, Theme::modal_title(), Theme::MODAL_BORDER)
+    build_modal_block(title, Theme::modal_title(), Theme::modal_border())
 }
 
 /// Build a danger-styled modal [`Block`] with red borders and background.
 pub fn modal_block_danger(title: &str) -> Block<'_> {
-    build_modal_block(title, Theme::modal_title_danger(), Theme::DANGER)
+    build_modal_block(title, Theme::modal_title_danger(), Theme::danger())
 }
 
 /// Dim the background, clear the modal region, render a styled block, and return the inner area.
@@ -221,7 +226,7 @@ pub fn render_list_modal_frame<'a>(
         if let Some(msg) = empty_message {
             let empty = Paragraph::new(Line::from(Span::styled(
                 msg,
-                Style::default().fg(Theme::TEXT_MUTED),
+                Style::default().fg(Theme::text_muted()),
             )))
             .alignment(ratatui::layout::Alignment::Center);
             frame.render_widget(empty, chunks[0]);
@@ -294,9 +299,9 @@ pub fn render_text_field_with_suggestion(
     suggestion: Option<&str>,
 ) {
     let border_color = if focused {
-        Theme::BORDER_FOCUSED
+        Theme::border_focused()
     } else {
-        Theme::BORDER_UNFOCUSED
+        Theme::border_unfocused()
     };
 
     let block = Block::default()
@@ -344,7 +349,7 @@ pub fn render_text_field_with_suggestion(
         let mut spans = Vec::new();
 
         if has_left_overflow {
-            spans.push(Span::styled("◀", Style::default().fg(Theme::TEXT_MUTED)));
+            spans.push(Span::styled("◀", Style::default().fg(Theme::text_muted())));
         }
 
         let visible_end = (content_start + content_width).min(chars.len());
@@ -364,14 +369,14 @@ pub fn render_text_field_with_suggestion(
             if !before.is_empty() {
                 spans.push(Span::styled(
                     before,
-                    Style::default().fg(Theme::TEXT_PRIMARY),
+                    Style::default().fg(Theme::text_primary()),
                 ));
             }
             spans.push(Span::styled(cursor_char, Theme::cursor()));
             if !after.is_empty() {
                 spans.push(Span::styled(
                     after,
-                    Style::default().fg(Theme::TEXT_PRIMARY),
+                    Style::default().fg(Theme::text_primary()),
                 ));
             }
 
@@ -384,7 +389,7 @@ pub fn render_text_field_with_suggestion(
                 if remaining > 0 {
                     let sug: String = suggestion_text.chars().take(remaining).collect();
                     if !sug.is_empty() {
-                        spans.push(Span::styled(sug, Style::default().fg(Theme::TEXT_MUTED)));
+                        spans.push(Span::styled(sug, Style::default().fg(Theme::text_muted())));
                     }
                 }
             }
@@ -392,12 +397,12 @@ pub fn render_text_field_with_suggestion(
             let visible: String = chars[content_start..visible_end].iter().collect();
             spans.push(Span::styled(
                 visible,
-                Style::default().fg(Theme::TEXT_PRIMARY),
+                Style::default().fg(Theme::text_primary()),
             ));
         }
 
         if has_right_overflow {
-            spans.push(Span::styled("▶", Style::default().fg(Theme::TEXT_MUTED)));
+            spans.push(Span::styled("▶", Style::default().fg(Theme::text_muted())));
         }
 
         Line::from(spans)
@@ -405,13 +410,13 @@ pub fn render_text_field_with_suggestion(
         if chars.len() > width {
             let truncated: String = chars[..width - 1].iter().collect();
             Line::from(vec![
-                Span::styled(truncated, Style::default().fg(Theme::TEXT_PRIMARY)),
-                Span::styled("…", Style::default().fg(Theme::TEXT_MUTED)),
+                Span::styled(truncated, Style::default().fg(Theme::text_primary())),
+                Span::styled("…", Style::default().fg(Theme::text_muted())),
             ])
         } else {
             Line::from(Span::styled(
                 value,
-                Style::default().fg(Theme::TEXT_PRIMARY),
+                Style::default().fg(Theme::text_primary()),
             ))
         }
     } else {
@@ -523,6 +528,6 @@ mod tests {
     #[test]
     fn modal_title_danger_uses_danger_color() {
         let style = Theme::modal_title_danger();
-        assert_eq!(style.bg, Some(Theme::DANGER));
+        assert_eq!(style.bg, Some(Theme::danger()));
     }
 }

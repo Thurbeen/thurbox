@@ -123,6 +123,11 @@ pub struct RoleSelectorModal {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ThemePickerModal {
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ModelSelectorModal {
     pub index: usize,
 }
@@ -300,6 +305,7 @@ pub enum Modal {
     ScheduledCommandsList(ScheduledCommandsListModal),
     RepoPicker(RepoPickerModal),
     SessionName(SessionNameModal),
+    ThemePicker(ThemePickerModal),
 }
 
 impl Modal {

@@ -12,6 +12,7 @@
 
 pub mod audit;
 pub mod containers;
+pub mod keybindings;
 mod mcp_servers;
 pub mod repo_bookmarks;
 mod roles;

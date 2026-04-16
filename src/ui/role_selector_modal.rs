@@ -44,7 +44,7 @@ pub fn render_role_selector_modal(frame: &mut Frame, state: &RoleSelectorState<'
     if let Some(role) = state.roles.get(state.selected_index) {
         let desc = Line::from(Span::styled(
             &role.description,
-            Style::default().fg(Theme::TEXT_MUTED),
+            Style::default().fg(Theme::text_muted()),
         ));
         frame.render_widget(Paragraph::new(desc), chunks[1]);
     }

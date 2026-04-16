@@ -621,6 +621,13 @@ pub struct App {
     pub(crate) skill_list_index: usize,
     /// Cached pending scheduled commands, refreshed every ~1 second.
     pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
+    /// Currently active theme preset, cached so the header doesn't hit SQLite
+    /// every render. Kept in sync with `db.set_active_theme` writes.
+    pub(crate) active_theme: crate::session::ThemePreset,
+    /// User-customizable global keybindings. Loaded from
+    /// `~/.config/thurbox/keybindings.json` on startup, falling back to defaults
+    /// when the file is missing or malformed.
+    pub(crate) keybindings: crate::session::KeyBindings,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -665,6 +672,28 @@ impl App {
 
         // Load global skills from DB.
         let global_skills = db.list_global_skills().unwrap_or_default();
+
+        // Resolve the persisted active theme (defaults to Default if unset/unknown).
+        let active_theme = db
+            .get_active_theme()
+            .ok()
+            .flatten()
+            .as_deref()
+            .and_then(crate::session::ThemePreset::from_str)
+            .unwrap_or(crate::session::ThemePreset::Default);
+
+        // Load keybindings from JSON config or fall back to defaults.
+        let keybindings = match crate::storage::keybindings::load_keybindings_json() {
+            Ok(Some(json)) => crate::session::KeyBindings::from_json(&json).unwrap_or_else(|e| {
+                tracing::warn!("Failed to parse keybindings.json: {e}; using defaults");
+                crate::session::KeyBindings::default()
+            }),
+            Ok(None) => crate::session::KeyBindings::default(),
+            Err(e) => {
+                tracing::warn!("Failed to read keybindings.json: {e}; using defaults");
+                crate::session::KeyBindings::default()
+            }
+        };
 
         // Load session counter from DB
         let session_counter = db.get_session_counter().unwrap_or(0);
@@ -787,6 +816,8 @@ impl App {
             global_skills,
             skill_list_index: 0,
             cached_pending_commands: Vec::new(),
+            active_theme,
+            keybindings,
         }
     }
 
@@ -1485,6 +1516,18 @@ impl App {
     }
 
     /// Open the restore deleted sessions modal (Ctrl+U).
+    /// Open the theme picker, pre-selecting the currently active preset.
+    fn open_theme_picker(&mut self) {
+        let active = self.db.get_active_theme().ok().flatten();
+        let presets = crate::session::ThemePreset::all();
+        let index = active
+            .as_deref()
+            .and_then(crate::session::ThemePreset::from_str)
+            .and_then(|p| presets.iter().position(|x| *x == p))
+            .unwrap_or(0);
+        self.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index });
+    }
+
     fn open_restore_sessions_modal(&mut self) {
         match self.db.list_deleted_sessions() {
             Ok(list) => {
@@ -2402,6 +2445,16 @@ impl App {
                 if let Ok(skills) = self.db.list_global_skills() {
                     if skills != self.global_skills {
                         self.global_skills = skills;
+                    }
+                }
+                // Pick up theme changes made by other thurbox processes (e.g.
+                // an MCP `set_theme` call from another session).
+                if let Ok(Some(name)) = self.db.get_active_theme() {
+                    if let Some(preset) = crate::session::ThemePreset::from_str(&name) {
+                        if preset != self.active_theme {
+                            crate::ui::theme::set_active(preset.palette());
+                            self.active_theme = preset;
+                        }
                     }
                 }
             }

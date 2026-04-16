@@ -85,9 +85,9 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
     // Bookmark list with checkboxes
     let list_focused = state.focus == RepoPickerFocus::List;
     let border_color = if list_focused {
-        Theme::BORDER_FOCUSED
+        Theme::border_focused()
     } else {
-        Theme::BORDER_UNFOCUSED
+        Theme::border_unfocused()
     };
 
     let title = format!(" Repos ({}) ", state.bookmarks.len());
@@ -108,7 +108,7 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
         };
         let placeholder = Paragraph::new(Line::from(Span::styled(
             msg,
-            Style::default().fg(Theme::TEXT_MUTED),
+            Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(placeholder, list_inner_area);
     } else {
@@ -158,7 +158,7 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
                             .unwrap_or(pos + 1);
                         result.push(Span::styled(
                             display[pos..end].to_string(),
-                            Style::default().fg(Theme::ACCENT),
+                            Style::default().fg(Theme::accent()),
                         ));
                         last = end;
                     }
@@ -171,7 +171,7 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
                 };
 
                 if checked && is_wt {
-                    spans.push(Span::styled(" [wt]", Style::default().fg(Theme::ACCENT)));
+                    spans.push(Span::styled(" [wt]", Style::default().fg(Theme::accent())));
                 }
                 ListItem::new(Line::from(spans))
             })

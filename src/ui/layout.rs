@@ -15,10 +15,14 @@ pub struct PanelAreas {
 /// At width ≥ 120, the layout becomes `list | info? | terminal | file_viewer?`
 /// with info (15%) and file_viewer (20%) appearing only when requested.
 pub fn compute_layout(area: Rect, show_info_panel: bool, show_file_viewer: bool) -> PanelAreas {
+    // Compact mode: when the terminal is shorter than 20 rows, drop the
+    // header line entirely so the content + footer get every row available.
+    let header_height = if area.height < 20 { 0 } else { 1 };
+
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(header_height),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
@@ -165,6 +169,20 @@ mod tests {
         let areas = compute_layout(area(100, 24), false, false);
         assert_eq!(areas.header.height, 1);
         assert_eq!(areas.footer.height, 1);
+    }
+
+    #[test]
+    fn compact_mode_hides_header_below_20_rows() {
+        let areas = compute_layout(area(100, 19), false, false);
+        assert_eq!(areas.header.height, 0);
+        assert_eq!(areas.footer.height, 1);
+        assert!(areas.left_panel.is_some());
+    }
+
+    #[test]
+    fn header_returns_at_20_rows() {
+        let areas = compute_layout(area(100, 20), false, false);
+        assert_eq!(areas.header.height, 1);
     }
 
     #[test]

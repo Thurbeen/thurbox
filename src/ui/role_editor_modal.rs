@@ -102,9 +102,9 @@ pub fn render_role_editor_modal(frame: &mut Frame, state: &RoleEditorState<'_>) 
         format!("\"{}\"", state.name)
     };
     let breadcrumb = Line::from(vec![
-        Span::styled(" Roles", Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled(" > ", Style::default().fg(Theme::TEXT_MUTED)),
-        Span::styled(role_label, Style::default().fg(Theme::ACCENT)),
+        Span::styled(" Roles", Style::default().fg(Theme::text_muted())),
+        Span::styled(" > ", Style::default().fg(Theme::text_muted())),
+        Span::styled(role_label, Style::default().fg(Theme::accent())),
     ]);
     frame.render_widget(Paragraph::new(breadcrumb), chunks[0]);
 
@@ -251,9 +251,9 @@ pub fn render_tool_list(
     focused: bool,
 ) {
     let border_color = if focused {
-        Theme::BORDER_FOCUSED
+        Theme::border_focused()
     } else {
-        Theme::BORDER_UNFOCUSED
+        Theme::border_unfocused()
     };
     let block = Block::default()
         .title(format!(" {label} "))
@@ -279,7 +279,7 @@ pub fn render_tool_list(
     if tools.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
             "  (none)",
-            Style::default().fg(Theme::TEXT_MUTED),
+            Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(empty, parts[0]);
     } else {
@@ -329,10 +329,10 @@ fn render_inline_input(frame: &mut Frame, area: ratatui::layout::Rect, value: &s
     };
 
     let line = Line::from(vec![
-        Span::styled("+ ", Style::default().fg(Theme::TOOL_ALLOWED)),
-        Span::styled(before, Style::default().fg(Theme::TEXT_PRIMARY)),
+        Span::styled("+ ", Style::default().fg(Theme::tool_allowed())),
+        Span::styled(before, Style::default().fg(Theme::text_primary())),
         Span::styled(cursor_char, Theme::cursor()),
-        Span::styled(after, Style::default().fg(Theme::TEXT_PRIMARY)),
+        Span::styled(after, Style::default().fg(Theme::text_primary())),
     ]);
 
     frame.render_widget(Paragraph::new(line), area);

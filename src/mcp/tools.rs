@@ -19,9 +19,9 @@ use super::types::{
     ListScheduledCommandsParams, ListSessionsParams, ListVmsParams, McpServerResponse,
     RegisterSkillParams, RestartSessionParams, RestoreSessionParams, RoleResponse,
     ScheduleCommandParams, ScheduledCommandResponse, SendPromptParams, SessionResponse,
-    SetContainerfileTemplateParams, SetEditorCommandParams, SetMcpServersParams, SetRolesParams,
-    SetSkillsParams, SkillResponse, UnregisterSkillParams, VmImageResponse, VmResponse,
-    WorktreeResponse,
+    SetContainerfileTemplateParams, SetEditorCommandParams, SetKeybindingsParams,
+    SetMcpServersParams, SetRolesParams, SetSkillsParams, SetThemeParams, SkillResponse,
+    UnregisterSkillParams, VmImageResponse, VmResponse, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -198,6 +198,84 @@ impl ThurboxMcp {
             })
             .to_string(),
             Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "List the built-in TUI theme presets. Returns a JSON array of {id, display_name} objects."
+    )]
+    fn list_themes(&self) -> String {
+        let presets: Vec<serde_json::Value> = crate::session::ThemePreset::all()
+            .iter()
+            .map(|p| serde_json::json!({ "id": p.as_str(), "display_name": p.display_name() }))
+            .collect();
+        serde_json::json!(presets).to_string()
+    }
+
+    #[tool(
+        description = "Get the currently active TUI theme. Returns {\"name\": \"...\"} or {\"name\": null} if unset (in which case the Default preset is used)."
+    )]
+    fn get_theme(&self) -> String {
+        let db = self.db.lock().unwrap();
+        match db.get_active_theme() {
+            Ok(name) => serde_json::json!({ "name": name }).to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Set the active TUI theme by preset id. Other Thurbox processes (e.g. the running TUI) pick up the change automatically via SQLite data-version polling."
+    )]
+    fn set_theme(&self, Parameters(params): Parameters<SetThemeParams>) -> String {
+        if crate::session::ThemePreset::from_str(&params.name).is_none() {
+            return error_json(&format!(
+                "Unknown theme preset '{}'. Run list_themes for valid ids.",
+                params.name
+            ));
+        }
+        let db = self.db.lock().unwrap();
+        match db.set_active_theme(&params.name) {
+            Ok(()) => serde_json::json!({ "name": params.name }).to_string(),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Get the user's keybindings JSON document, or the default document when no override file exists. Returns {\"json\": \"...\"}."
+    )]
+    fn get_keybindings(&self) -> String {
+        let json = match crate::storage::keybindings::load_keybindings_json() {
+            Ok(Some(s)) => s,
+            Ok(None) => match crate::session::KeyBindings::default().to_json() {
+                Ok(s) => s,
+                Err(e) => return error_json(&e),
+            },
+            Err(e) => return error_json(&e),
+        };
+        serde_json::json!({ "json": json }).to_string()
+    }
+
+    #[tool(
+        description = "Replace the user's keybindings JSON document at ~/.config/thurbox/keybindings.json. Shape: { \"<Action>\": [\"<chord>\", ...] }. Unknown actions and unparseable chords are dropped on load. The change takes effect at the next TUI restart."
+    )]
+    fn set_keybindings(&self, Parameters(params): Parameters<SetKeybindingsParams>) -> String {
+        // Validate by attempting to parse before persisting.
+        if let Err(e) = crate::session::KeyBindings::from_json(&params.json) {
+            return error_json(&format!("Invalid keybindings JSON: {e}"));
+        }
+        match crate::storage::keybindings::save_keybindings_json(&params.json) {
+            Ok(()) => serde_json::json!({ "saved": true }).to_string(),
+            Err(e) => error_json(&e),
+        }
+    }
+
+    #[tool(
+        description = "Delete the user's keybindings override file, restoring built-in defaults at the next TUI restart."
+    )]
+    fn reset_keybindings(&self) -> String {
+        match crate::storage::keybindings::delete_keybindings_json() {
+            Ok(()) => serde_json::json!({ "reset": true }).to_string(),
+            Err(e) => error_json(&e),
         }
     }
 
