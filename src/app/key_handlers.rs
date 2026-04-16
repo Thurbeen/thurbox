@@ -464,11 +464,9 @@ impl App {
             KeyCode::Char('k') if mods.contains(KeyModifiers::CONTROL) => {
                 self.search_navigate_backward();
             }
-            KeyCode::Char(c) => {
-                if !mods.contains(KeyModifiers::CONTROL) {
-                    self.search_input.insert(c);
-                    self.recompute_search_filter();
-                }
+            KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
+                self.search_input.insert(c);
+                self.recompute_search_filter();
             }
             _ => {}
         }
@@ -531,10 +529,10 @@ impl App {
             KeyCode::Esc => {
                 self.modal.close();
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !rs.list.is_empty() && rs.index + 1 < rs.list.len() {
-                    rs.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down
+                if !rs.list.is_empty() && rs.index + 1 < rs.list.len() =>
+            {
+                rs.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 rs.index = rs.index.saturating_sub(1);
@@ -574,10 +572,8 @@ impl App {
                 self.pending_all_repos = None;
                 self.pending_normal_repos.clear();
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if sm.index < max_index {
-                    sm.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if sm.index < max_index => {
+                sm.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 sm.index = sm.index.saturating_sub(1);
@@ -688,10 +684,8 @@ impl App {
                 self.pending_repo_path = None;
                 self.pending_all_repos = None;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if cp.index < max_index {
-                    cp.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if cp.index < max_index => {
+                cp.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 cp.index = cp.index.saturating_sub(1);
@@ -721,10 +715,8 @@ impl App {
                 self.pending_all_repos = None;
                 self.pending_normal_repos.clear();
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if bs.index + 1 < bs.branches.len() {
-                    bs.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if bs.index + 1 < bs.branches.len() => {
+                bs.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 bs.index = bs.index.saturating_sub(1);
@@ -965,10 +957,8 @@ impl App {
                 self.pending_spawn_is_admin = false;
                 self.pending_vm_id = None;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if rsel.index + 1 < role_count {
-                    rsel.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if rsel.index + 1 < role_count => {
+                rsel.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 rsel.index = rsel.index.saturating_sub(1);
@@ -1007,10 +997,8 @@ impl App {
                 self.pending_spawn_is_admin = false;
                 self.pending_vm_id = None;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if msel.index + 1 < choice_count {
-                    msel.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if msel.index + 1 < choice_count => {
+                msel.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 msel.index = msel.index.saturating_sub(1);
@@ -1048,10 +1036,8 @@ impl App {
                 self.pending_spawn_is_admin = false;
                 self.pending_restart = false;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if msp.index + 1 < server_count {
-                    msp.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if msp.index + 1 < server_count => {
+                msp.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 msp.index = msp.index.saturating_sub(1);
@@ -1109,10 +1095,8 @@ impl App {
                 self.pending_spawn_name = None;
                 self.pending_spawn_is_admin = false;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if sp.index + 1 < skill_count {
-                    sp.index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if sp.index + 1 < skill_count => {
+                sp.index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 sp.index = sp.index.saturating_sub(1);
@@ -1340,12 +1324,11 @@ impl App {
     /// Handle keys for the Roles tab in the settings overlay.
     fn handle_settings_roles_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down
                 if !self.global_roles.is_empty()
-                    && self.role_editor_list_index + 1 < self.global_roles.len()
-                {
-                    self.role_editor_list_index += 1;
-                }
+                    && self.role_editor_list_index + 1 < self.global_roles.len() =>
+            {
+                self.role_editor_list_index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.role_editor_list_index = self.role_editor_list_index.saturating_sub(1);
@@ -1354,21 +1337,17 @@ impl App {
                 self.prepare_new_role_editor();
                 self.show_role_editor = true;
             }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.global_roles.is_empty() {
-                    let idx = self.role_editor_list_index;
-                    self.open_role_for_editing(idx);
-                    self.show_role_editor = true;
-                }
+            KeyCode::Char('e') | KeyCode::Enter if !self.global_roles.is_empty() => {
+                let idx = self.role_editor_list_index;
+                self.open_role_for_editing(idx);
+                self.show_role_editor = true;
             }
-            KeyCode::Char('d') => {
-                if !self.global_roles.is_empty() {
-                    self.global_roles.remove(self.role_editor_list_index);
-                    if self.role_editor_list_index >= self.global_roles.len()
-                        && self.role_editor_list_index > 0
-                    {
-                        self.role_editor_list_index -= 1;
-                    }
+            KeyCode::Char('d') if !self.global_roles.is_empty() => {
+                self.global_roles.remove(self.role_editor_list_index);
+                if self.role_editor_list_index >= self.global_roles.len()
+                    && self.role_editor_list_index > 0
+                {
+                    self.role_editor_list_index -= 1;
                 }
             }
             _ => {}
@@ -1378,12 +1357,11 @@ impl App {
     /// Handle keys for the MCP Servers tab in the settings overlay.
     fn handle_settings_mcp_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down
                 if !self.global_mcp_servers.is_empty()
-                    && self.mcp_server_list_index + 1 < self.global_mcp_servers.len()
-                {
-                    self.mcp_server_list_index += 1;
-                }
+                    && self.mcp_server_list_index + 1 < self.global_mcp_servers.len() =>
+            {
+                self.mcp_server_list_index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.mcp_server_list_index = self.mcp_server_list_index.saturating_sub(1);
@@ -1391,20 +1369,16 @@ impl App {
             KeyCode::Char('a') => {
                 self.open_new_mcp_editor();
             }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.global_mcp_servers.is_empty() {
-                    let idx = self.mcp_server_list_index;
-                    self.open_mcp_for_editing(idx);
-                }
+            KeyCode::Char('e') | KeyCode::Enter if !self.global_mcp_servers.is_empty() => {
+                let idx = self.mcp_server_list_index;
+                self.open_mcp_for_editing(idx);
             }
-            KeyCode::Char('d') => {
-                if !self.global_mcp_servers.is_empty() {
-                    self.global_mcp_servers.remove(self.mcp_server_list_index);
-                    if self.mcp_server_list_index >= self.global_mcp_servers.len()
-                        && self.mcp_server_list_index > 0
-                    {
-                        self.mcp_server_list_index -= 1;
-                    }
+            KeyCode::Char('d') if !self.global_mcp_servers.is_empty() => {
+                self.global_mcp_servers.remove(self.mcp_server_list_index);
+                if self.mcp_server_list_index >= self.global_mcp_servers.len()
+                    && self.mcp_server_list_index > 0
+                {
+                    self.mcp_server_list_index -= 1;
                 }
             }
             _ => {}
@@ -1413,12 +1387,11 @@ impl App {
 
     fn handle_settings_skills_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down
                 if !self.global_skills.is_empty()
-                    && self.skill_list_index + 1 < self.global_skills.len()
-                {
-                    self.skill_list_index += 1;
-                }
+                    && self.skill_list_index + 1 < self.global_skills.len() =>
+            {
+                self.skill_list_index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.skill_list_index = self.skill_list_index.saturating_sub(1);
@@ -1426,20 +1399,16 @@ impl App {
             KeyCode::Char('a') => {
                 self.open_new_skill_editor();
             }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                if !self.global_skills.is_empty() {
-                    let idx = self.skill_list_index;
-                    self.open_skill_for_editing(idx);
-                }
+            KeyCode::Char('e') | KeyCode::Enter if !self.global_skills.is_empty() => {
+                let idx = self.skill_list_index;
+                self.open_skill_for_editing(idx);
             }
-            KeyCode::Char('d') => {
-                if !self.global_skills.is_empty() {
-                    self.global_skills.remove(self.skill_list_index);
-                    if self.skill_list_index >= self.global_skills.len()
-                        && self.skill_list_index > 0
-                    {
-                        self.skill_list_index -= 1;
-                    }
+            KeyCode::Char('d') if !self.global_skills.is_empty() => {
+                self.global_skills.remove(self.skill_list_index);
+                if self.skill_list_index >= self.global_skills.len()
+                    && self.skill_list_index > 0
+                {
+                    self.skill_list_index -= 1;
                 }
             }
             _ => {}
@@ -1810,10 +1779,8 @@ impl App {
                 rp.clear_search();
                 rp.focus = super::modals::RepoPickerFocus::Search;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if rp.list_index + 1 < rp.filtered_indices.len() {
-                    rp.list_index += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if rp.list_index + 1 < rp.filtered_indices.len() => {
+                rp.list_index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 rp.list_index = rp.list_index.saturating_sub(1);

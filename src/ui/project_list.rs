@@ -189,11 +189,10 @@ pub(super) fn render_scroll_indicators(
     let offset = list_state.offset();
     // Inner height = block_area.height - 2 (top + bottom border)
     let inner_height = block_area.height.saturating_sub(2);
-    let visible_count = if item_height > 0 {
-        (inner_height / item_height) as usize
-    } else {
-        0
-    };
+    let visible_count = inner_height
+        .checked_div(item_height)
+        .map(|n| n as usize)
+        .unwrap_or(0);
 
     let items_above = offset;
     let items_below = total_items.saturating_sub(offset + visible_count);
