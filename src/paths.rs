@@ -41,6 +41,15 @@ fn app_dir_name() -> &'static str {
     }
 }
 
+/// `$XDG_CONFIG_HOME/<app>/<filename>`, falling back to
+/// `$HOME/.config/<app>/<filename>` when `XDG_CONFIG_HOME` is unset.
+fn xdg_config_subpath(filename: &str) -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join(app_dir_name()).join(filename))
+}
+
 /// Categories of application paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathKind {
@@ -241,23 +250,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
-        PathKind::KeybindingsFile => {
-            // Prefer $XDG_CONFIG_HOME, fall back to $HOME/.config
-            if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("keybindings.json");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".config");
-                p.push(app_dir_name());
-                p.push("keybindings.json");
-                p
-            })
-        }
+        PathKind::KeybindingsFile => xdg_config_subpath("keybindings.json"),
     }
 }
 
