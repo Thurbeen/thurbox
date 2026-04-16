@@ -154,6 +154,7 @@ do_install() {
   tar -xzf "$tarball" -C "$dir"
   chmod +x "$dir/thurbox"
   if [ -f "$dir/thurbox-mcp" ]; then chmod +x "$dir/thurbox-mcp"; fi
+  if [ -f "$dir/thurbox-cli" ]; then chmod +x "$dir/thurbox-cli"; fi
 }
 
 # Show success message
@@ -169,6 +170,7 @@ show_success() {
   echo "  • Install claude CLI"
   echo "  • Run: thurbox"
   echo "  • MCP server: thurbox-mcp (stdio transport)"
+  echo "  • Scriptable CLI: thurbox-cli"
 }
 
 # Main

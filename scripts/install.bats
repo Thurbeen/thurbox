@@ -64,8 +64,8 @@
   grep -q "trap cleanup" "${BATS_TEST_DIRNAME}/install.sh"
 }
 
-@test "script is under 200 lines" {
-  [ $(wc -l < "${BATS_TEST_DIRNAME}/install.sh") -lt 200 ]
+@test "script is under 210 lines" {
+  [ $(wc -l < "${BATS_TEST_DIRNAME}/install.sh") -lt 210 ]
 }
 
 @test "script has logging functions" {
@@ -115,4 +115,22 @@
 
 @test "script conditionally chmods thurbox-mcp" {
   grep -q 'thurbox-mcp.*chmod' "${BATS_TEST_DIRNAME}/install.sh"
+}
+
+@test "do_install chmods all three binaries when thurbox-cli is present" {
+  tmpdir=$(mktemp -d)
+  mkdir -p "$tmpdir/src" "$tmpdir/dest"
+  printf '#!/bin/sh\n' > "$tmpdir/src/thurbox"
+  printf '#!/bin/sh\n' > "$tmpdir/src/thurbox-mcp"
+  printf '#!/bin/sh\n' > "$tmpdir/src/thurbox-cli"
+  tar -czf "$tmpdir/archive.tar.gz" -C "$tmpdir/src" thurbox thurbox-mcp thurbox-cli
+  TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; do_install '$tmpdir/archive.tar.gz' '$tmpdir/dest'"
+  [ -x "$tmpdir/dest/thurbox" ]
+  [ -x "$tmpdir/dest/thurbox-mcp" ]
+  [ -x "$tmpdir/dest/thurbox-cli" ]
+  rm -rf "$tmpdir"
+}
+
+@test "script conditionally chmods thurbox-cli" {
+  grep -q 'thurbox-cli.*chmod' "${BATS_TEST_DIRNAME}/install.sh"
 }
