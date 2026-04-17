@@ -41,7 +41,10 @@ async fn client_surfaces_server_error_for_unknown_plugin() {
     let err = client.list_plugin_tools("ghost").await.unwrap_err();
     match err {
         ControlError::Server(msg) => {
-            assert!(msg.contains("ghost") || msg.contains("unknown plugin"), "got: {msg}")
+            assert!(
+                msg.contains("ghost") || msg.contains("unknown plugin"),
+                "got: {msg}"
+            )
         }
         other => panic!("expected Server error, got {other:?}"),
     }

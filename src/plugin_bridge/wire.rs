@@ -92,8 +92,7 @@ mod tests {
 
     #[test]
     fn request_defaults_params_to_empty_object() {
-        let decoded: Request =
-            serde_json::from_str(r#"{"id":1,"op":"plugin.list"}"#).unwrap();
+        let decoded: Request = serde_json::from_str(r#"{"id":1,"op":"plugin.list"}"#).unwrap();
         assert_eq!(decoded.params, serde_json::json!({}));
     }
 
@@ -116,8 +115,7 @@ mod tests {
 
     #[test]
     fn response_parses_error_shape() {
-        let r: Response =
-            serde_json::from_str(r#"{"id":4,"ok":false,"error":"x"}"#).unwrap();
+        let r: Response = serde_json::from_str(r#"{"id":4,"ok":false,"error":"x"}"#).unwrap();
         assert_eq!(r.id, 4);
         assert!(!r.ok);
         assert_eq!(r.error.as_deref(), Some("x"));

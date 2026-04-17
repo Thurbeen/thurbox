@@ -20,13 +20,13 @@ use super::types::{
     GetContainerfileTemplateParams, GetPluginSettingParams, GetScheduledCommandParams,
     GetSessionParams, GetVmParams, InstallPluginParams, ListPluginSettingsParams,
     ListPluginToolsParams, ListScheduledCommandsParams, ListSessionsParams, ListVmsParams,
-    McpServerResponse, PluginResponse, PluginSettingResponse, ProcessSummary,
-    RegisterPluginParams, RegisterSkillParams, ResetPluginSettingParams, RestartSessionParams,
-    RestoreSessionParams, RoleResponse, ScheduleCommandParams, ScheduledCommandResponse,
-    SendPromptParams, SessionResponse, SetContainerfileTemplateParams, SetEditorCommandParams,
-    SetKeybindingsParams, SetMcpServersParams, SetPluginSettingParams, SetPluginsParams,
-    SetRolesParams, SetSkillsParams, SetThemeParams, SkillResponse, UninstallPluginParams,
-    UnregisterPluginParams, UnregisterSkillParams, VmImageResponse, VmResponse, WorktreeResponse,
+    McpServerResponse, PluginResponse, PluginSettingResponse, ProcessSummary, RegisterPluginParams,
+    RegisterSkillParams, ResetPluginSettingParams, RestartSessionParams, RestoreSessionParams,
+    RoleResponse, ScheduleCommandParams, ScheduledCommandResponse, SendPromptParams,
+    SessionResponse, SetContainerfileTemplateParams, SetEditorCommandParams, SetKeybindingsParams,
+    SetMcpServersParams, SetPluginSettingParams, SetPluginsParams, SetRolesParams, SetSkillsParams,
+    SetThemeParams, SkillResponse, UninstallPluginParams, UnregisterPluginParams,
+    UnregisterSkillParams, VmImageResponse, VmResponse, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -1564,16 +1564,13 @@ impl ThurboxMcp {
     #[tool(
         description = "List the tools a plugin exposes via its `mcp-tools` capability. Returns {\"tools\": [...], \"source\": \"manifest\"|\"runtime\"}. When the plugin's manifest declares [[contributes.mcp_tools]] entries, thurbox answers from the manifest without waking the plugin (source=manifest); otherwise it asks the running plugin's mcp.list_tools op (source=runtime). Errors if the TUI isn't running (no control socket) or the plugin isn't running with the mcp-tools capability."
     )]
-    fn list_plugin_tools(
-        &self,
-        Parameters(params): Parameters<ListPluginToolsParams>,
-    ) -> String {
+    fn list_plugin_tools(&self, Parameters(params): Parameters<ListPluginToolsParams>) -> String {
         let Some(client) = control_client::default_client() else {
             return error_json("control socket path unavailable (no runtime directory)");
         };
-        match run_control_call(|| async move {
-            client.list_plugin_tools(&params.plugin_name).await
-        }) {
+        match run_control_call(
+            || async move { client.list_plugin_tools(&params.plugin_name).await },
+        ) {
             Ok(v) => v.to_string(),
             Err(e) => error_json(&e.to_string()),
         }
@@ -1582,10 +1579,7 @@ impl ThurboxMcp {
     #[tool(
         description = "Invoke a tool on a running plugin. `args` is forwarded verbatim as the tool's MCP input (shape defined by its input_schema). Returns the tool's raw result. Errors if the TUI isn't running, the plugin isn't running, or the tool call times out (60s bound per call)."
     )]
-    fn call_plugin_tool(
-        &self,
-        Parameters(params): Parameters<CallPluginToolParams>,
-    ) -> String {
+    fn call_plugin_tool(&self, Parameters(params): Parameters<CallPluginToolParams>) -> String {
         let Some(client) = control_client::default_client() else {
             return error_json("control socket path unavailable (no runtime directory)");
         };
@@ -1608,9 +1602,7 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<T, ControlError>>,
 {
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(f())
-    })
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f()))
 }
 
 fn scheduled_command_to_response(cmd: &ScheduledCommand) -> ScheduledCommandResponse {

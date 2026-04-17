@@ -137,8 +137,7 @@ async fn main() -> Result<()> {
     // The listener owns its own DB connection (SQLite is in WAL mode, so
     // sharing the file across connections is fine). Drop of the handle at
     // the end of main aborts the task and removes the socket file.
-    let _control_socket =
-        bind_control_socket(Arc::clone(&plugin_runtime), &db_path).await;
+    let _control_socket = bind_control_socket(Arc::clone(&plugin_runtime), &db_path).await;
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;

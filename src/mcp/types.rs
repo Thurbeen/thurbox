@@ -356,9 +356,13 @@ pub struct ListPluginToolsParams {
 pub struct CallPluginToolParams {
     #[schemars(description = "Plugin name (must declare the `mcp-tools` capability)")]
     pub plugin_name: String,
-    #[schemars(description = "Tool name, as declared in [[contributes.mcp_tools]] or returned by mcp.list_tools")]
+    #[schemars(
+        description = "Tool name, as declared in [[contributes.mcp_tools]] or returned by mcp.list_tools"
+    )]
     pub tool: String,
-    #[schemars(description = "Arguments forwarded to the tool. JSON object; shape is defined by the tool's input_schema.")]
+    #[schemars(
+        description = "Arguments forwarded to the tool. JSON object; shape is defined by the tool's input_schema."
+    )]
     #[serde(default)]
     pub args: serde_json::Value,
 }

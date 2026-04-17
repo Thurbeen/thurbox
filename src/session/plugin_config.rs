@@ -196,9 +196,10 @@ pub struct ThemeContribution {
 /// One `[[contributes.mcp_tools]]` entry — a tool the plugin's process surface
 /// exposes via `mcp.call`. Declaring tools in the manifest makes them
 /// discoverable through `list_plugin_tools` without spawning the plugin, which
-/// is the unlock for the "dormant until needed" pattern (activation_events =
-/// ["onCommand:<name>"]). A plugin may still implement the dynamic `mcp.list_tools`
-/// op — if this vec is empty, the host falls back to asking the plugin at runtime.
+/// is the unlock for the "dormant until needed" pattern (e.g. `activation_events
+/// = ["onCommand:some-tool"]`). A plugin may still implement the dynamic
+/// `mcp.list_tools` op — if this vec is empty, the host falls back to asking
+/// the plugin at runtime.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct McpToolContribution {

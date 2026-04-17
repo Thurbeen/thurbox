@@ -154,9 +154,10 @@ async fn spin_up_plugin(
 
     let socket_path = tmp.path().join("control.sock");
     let listener_db = Database::open(&tmp.path().join("thurbox.db")).unwrap();
-    let socket_handle = control_socket::spawn(Arc::clone(&runtime), listener_db, socket_path.clone())
-        .await
-        .unwrap();
+    let socket_handle =
+        control_socket::spawn(Arc::clone(&runtime), listener_db, socket_path.clone())
+            .await
+            .unwrap();
     let client = ControlClient::new(socket_path);
 
     (runtime, client, socket_handle, tmp)
@@ -230,7 +231,10 @@ async fn call_plugin_tool_round_trips_through_the_plugin() {
         )
         .await
         .unwrap();
-    assert_eq!(result, serde_json::json!({ "echoed": { "hello": "world" } }));
+    assert_eq!(
+        result,
+        serde_json::json!({ "echoed": { "hello": "world" } })
+    );
 
     runtime.shutdown_all().await;
 }
@@ -250,7 +254,10 @@ async fn call_plugin_tool_surfaces_plugin_error_for_unknown_tool() {
         .unwrap_err();
     match err {
         thurbox::plugin_bridge::ControlError::Server(msg) => {
-            assert!(msg.contains("bogus-tool") || msg.contains("unknown tool"), "got: {msg}")
+            assert!(
+                msg.contains("bogus-tool") || msg.contains("unknown tool"),
+                "got: {msg}"
+            )
         }
         other => panic!("expected Server error, got {other:?}"),
     }

@@ -140,10 +140,9 @@ async fn list_tools(
     }
 
     // No static rows: fall back to the running plugin.
-    let proxy = runtime
-        .mcp_proxy(plugin_name)
-        .await
-        .ok_or_else(|| format!("plugin '{plugin_name}' is not running with mcp-tools capability"))?;
+    let proxy = runtime.mcp_proxy(plugin_name).await.ok_or_else(|| {
+        format!("plugin '{plugin_name}' is not running with mcp-tools capability")
+    })?;
     let live = proxy.list_tools().await?;
     Ok(json!({ "tools": live, "source": "runtime" }))
 }
@@ -162,10 +161,9 @@ async fn call_tool(runtime: &PluginRuntime, params: Value) -> Result<Value, Stri
         .cloned()
         .unwrap_or_else(|| Value::Object(Default::default()));
 
-    let proxy = runtime
-        .mcp_proxy(plugin_name)
-        .await
-        .ok_or_else(|| format!("plugin '{plugin_name}' is not running with mcp-tools capability"))?;
+    let proxy = runtime.mcp_proxy(plugin_name).await.ok_or_else(|| {
+        format!("plugin '{plugin_name}' is not running with mcp-tools capability")
+    })?;
     proxy.call(tool, args).await
 }
 

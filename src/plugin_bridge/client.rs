@@ -28,9 +28,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use super::wire::{
-    Request, Response, OP_PLUGIN_CALL, OP_PLUGIN_LIST, OP_PLUGIN_LIST_TOOLS,
-};
+use super::wire::{Request, Response, OP_PLUGIN_CALL, OP_PLUGIN_LIST, OP_PLUGIN_LIST_TOOLS};
 
 /// Errors surfaced by [`ControlClient`]. Deliberately a flat enum — callers
 /// usually want to either succeed or convert to an MCP error string.
@@ -133,10 +131,9 @@ impl ControlClient {
         writer.flush().await?;
 
         let mut lines = BufReader::new(reader).lines();
-        let line = lines
-            .next_line()
-            .await?
-            .ok_or_else(|| ControlError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))?;
+        let line = lines.next_line().await?.ok_or_else(|| {
+            ControlError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+        })?;
 
         let response: Response = serde_json::from_str(&line)
             .map_err(|e| ControlError::Decode(format!("response decode: {e}")))?;
@@ -150,7 +147,9 @@ impl ControlClient {
 
         if !response.ok {
             return Err(ControlError::Server(
-                response.error.unwrap_or_else(|| "unknown server error".into()),
+                response
+                    .error
+                    .unwrap_or_else(|| "unknown server error".into()),
             ));
         }
         Ok(response.result.unwrap_or(Value::Null))
@@ -221,10 +220,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn id_increments_across_calls() {
         let client = ControlClient::new("/tmp/unused.sock");
-        let a = client.next_id.fetch_add(0, std::sync::atomic::Ordering::Relaxed);
-        let _ = client.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let b = client.next_id.fetch_add(0, std::sync::atomic::Ordering::Relaxed);
+        let a = client
+            .next_id
+            .fetch_add(0, std::sync::atomic::Ordering::Relaxed);
+        let _ = client
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let b = client
+            .next_id
+            .fetch_add(0, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(b, a + 1);
     }
-
 }
