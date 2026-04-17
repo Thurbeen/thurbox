@@ -75,9 +75,15 @@ pub(crate) fn shell_window_name(session_name: &str) -> String {
     )
 }
 
-/// Build the `session:window` tmux target for a thurbox agent session.
+/// Build the `session:=window` tmux target for a thurbox agent session.
+///
+/// The `=` prefix forces tmux to match the window name exactly. Without
+/// it tmux falls back to FNMATCH-style prefix matching, so a target of
+/// `tb-foo` would resolve ambiguously when both `tb-foo` and
+/// `tb-foo-bar` exist — `send-keys`/`capture-pane` then fails with
+/// "ambiguous window" and the caller's text is silently dropped.
 fn window_target(session_name: &str) -> String {
-    format!("{TMUX_SESSION}:{}", agent_window_name(session_name))
+    format!("{TMUX_SESSION}:={}", agent_window_name(session_name))
 }
 
 /// Minimum tmux version required.
@@ -1560,5 +1566,14 @@ mod tests {
     fn agent_and_shell_window_names_share_sanitization() {
         assert_eq!(agent_window_name("Foo Bar"), "tb-Foo_Bar");
         assert_eq!(shell_window_name("Foo Bar"), "tbs-Foo_Bar");
+    }
+
+    #[test]
+    fn window_target_uses_exact_match_prefix() {
+        // Without `=`, tmux treats the window name as a pattern and will
+        // resolve `tb-foo` ambiguously when both `tb-foo` and
+        // `tb-foo-bar` exist. The `=` prefix forces exact-match lookup.
+        let t = window_target("foo");
+        assert!(t.ends_with(":=tb-foo"), "got {t}");
     }
 }
