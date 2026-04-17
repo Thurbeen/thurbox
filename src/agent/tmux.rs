@@ -32,12 +32,52 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
 };
 
 /// Window-name prefix for thurbox-managed tmux windows. Combined with the
-/// session name (`{prefix}{session_name}`) to form the tmux window target.
+/// sanitized session name (`{prefix}{sanitized_name}`) to form the tmux
+/// window target.
 pub(crate) const WINDOW_PREFIX: &str = "tb-";
 
-/// Build the `session:window` tmux target for a thurbox session.
+/// Prefix for the companion shell window a session lazily spawns.
+pub(crate) const SHELL_WINDOW_PREFIX: &str = "tbs-";
+
+/// Sanitize a session name into a tmux-safe window-name component.
+///
+/// tmux parses target strings as `session:window`, and — depending on
+/// version and context (e.g. `run-shell` scripts, `display-message`
+/// format expansion) — treats whitespace, colons, commas, and `.` as
+/// delimiters within the target string. Any character outside
+/// `[A-Za-z0-9_-]` is replaced with `_` so the produced window name
+/// round-trips cleanly through every tmux CLI/control-mode call.
+///
+/// The resulting string is deterministic — callers must use it both at
+/// window-creation time and at lookup time for matching to succeed.
+pub(crate) fn sanitize_window_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
+/// Build the tmux window name for a thurbox agent session: `tb-<safe>`.
+pub(crate) fn agent_window_name(session_name: &str) -> String {
+    format!("{WINDOW_PREFIX}{}", sanitize_window_name(session_name))
+}
+
+/// Build the tmux window name for a session's companion shell pane.
+pub(crate) fn shell_window_name(session_name: &str) -> String {
+    format!(
+        "{SHELL_WINDOW_PREFIX}{}",
+        sanitize_window_name(session_name)
+    )
+}
+
+/// Build the `session:window` tmux target for a thurbox agent session.
 fn window_target(session_name: &str) -> String {
-    format!("{TMUX_SESSION}:{WINDOW_PREFIX}{session_name}")
+    format!("{TMUX_SESSION}:{}", agent_window_name(session_name))
 }
 
 /// Minimum tmux version required.
@@ -1011,7 +1051,7 @@ pub fn spawn_window(
 ) -> Result<()> {
     ensure_tmux_session_headless()?;
 
-    let window_name = format!("{WINDOW_PREFIX}{session_name}");
+    let window_name = agent_window_name(session_name);
     let mut tmux = Command::new("tmux");
     tmux.args([
         "-L",
@@ -1488,5 +1528,37 @@ mod tests {
             parse_notification("%extended-output %2 : data"),
             Notification::Other("%extended-output %2 : data".to_string())
         );
+    }
+
+    // --- window-name sanitization tests ---
+
+    #[test]
+    fn sanitize_window_name_passes_through_safe_chars() {
+        assert_eq!(sanitize_window_name("abc-123_XYZ"), "abc-123_XYZ");
+    }
+
+    #[test]
+    fn sanitize_window_name_replaces_spaces() {
+        // Bug: session names with spaces broke `tmux send-keys` / capture
+        // because the target string `session:window with spaces` was
+        // re-split by tmux into `session`, `window`, `with`, `spaces`.
+        assert_eq!(sanitize_window_name("Foo Bar"), "Foo_Bar");
+    }
+
+    #[test]
+    fn sanitize_window_name_replaces_tmux_delimiters() {
+        // Colons, dots, commas all have meaning inside tmux target strings.
+        assert_eq!(sanitize_window_name("a:b.c,d"), "a_b_c_d");
+    }
+
+    #[test]
+    fn sanitize_window_name_replaces_non_ascii() {
+        assert_eq!(sanitize_window_name("café"), "caf_");
+    }
+
+    #[test]
+    fn agent_and_shell_window_names_share_sanitization() {
+        assert_eq!(agent_window_name("Foo Bar"), "tb-Foo_Bar");
+        assert_eq!(shell_window_name("Foo Bar"), "tbs-Foo_Bar");
     }
 }

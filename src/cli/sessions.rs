@@ -35,20 +35,33 @@ pub enum Action {
         /// Base branch for the worktree (default: main).
         #[arg(long)]
         base_branch: Option<String>,
-        /// Attach a global MCP server by name (repeatable).
-        #[arg(long = "mcp-server")]
+        /// Attach a global MCP server by name. Repeatable, or
+        /// comma-separated (`--mcp-server a,b,c`).
+        #[arg(long = "mcp-server", value_delimiter = ',')]
         mcp_servers: Vec<String>,
-        /// Stage a global skill by name (repeatable).
-        #[arg(long = "skill")]
+        /// Stage a global skill by name. Repeatable, or comma-separated
+        /// (`--skill review,docs`). Unknown skill names are rejected at
+        /// create-time against the global registry.
+        #[arg(long = "skill", value_delimiter = ',')]
         skills: Vec<String>,
         /// Model id passed via `claude --model` (e.g. "opus", "sonnet", "haiku").
         #[arg(long)]
         model: Option<String>,
     },
     /// Soft-delete a session.
+    ///
+    /// By default only the DB row is soft-deleted (the TUI cleans up the
+    /// tmux window and worktree on next sync). Pass `--force` to also
+    /// kill the tmux window, remove worktrees, and cancel pending
+    /// scheduled commands — useful for headless cleanup when the TUI
+    /// isn't running.
     Delete {
         /// Session UUID.
         uuid: String,
+        /// Also kill the tmux window, remove worktrees, and cancel
+        /// pending scheduled commands for this session.
+        #[arg(long)]
+        force: bool,
     },
     /// Restore a soft-deleted session.
     Restore {
@@ -121,14 +134,18 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 "cwd": res.cwd.display().to_string(),
             }))
         }
-        Action::Delete { uuid } => {
+        Action::Delete { uuid, force } => {
             let session = resolve(db, &uuid)?;
-            db.soft_delete_session(session.id)
-                .map_err(|e| format!("soft_delete_session: {e}"))?;
+            let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
             Ok(json!({
                 "deleted": true,
                 "id": session.id.to_string(),
                 "name": session.name,
+                "forced": force,
+                "killed_window": report.killed_window,
+                "removed_worktrees": report.removed_worktrees,
+                "worktree_errors": report.worktree_errors,
+                "cancelled_scheduled": report.cancelled_scheduled,
             }))
         }
         Action::Restore { uuid } => {
@@ -300,5 +317,61 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("text"), "got {err}");
+    }
+
+    #[test]
+    fn soft_delete_leaves_session_recoverable() {
+        // Bug #3: `session delete` without --force only soft-deletes the
+        // DB row, leaving pending scheduled commands and the metadata
+        // restorable.
+        let db = db();
+        let id = SessionId::default();
+        let shared = SharedSession {
+            id,
+            name: "Foo Bar".into(), // exercise bug #1 sanitization path too
+            role: "dev".into(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            tombstone: false,
+            tombstone_at: None,
+            model: None,
+        };
+        db.upsert_session(&shared).unwrap();
+        let future = crate::sync::current_time_millis() + 60_000;
+        let cmd = db.create_scheduled_command(id, "noop", future).unwrap();
+
+        let v = run(
+            Action::Delete {
+                uuid: id.to_string(),
+                force: false,
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(v["deleted"], true);
+        assert_eq!(v["forced"], false);
+        assert_eq!(v["cancelled_scheduled"], 0);
+
+        // Row is soft-deleted but recoverable; scheduled command is intact.
+        assert!(db.get_session_by_id(id).unwrap().is_none());
+        assert!(db
+            .list_pending_scheduled_commands()
+            .unwrap()
+            .iter()
+            .any(|c| c.id == cmd));
+        let restored = run(
+            Action::Restore {
+                uuid: id.to_string(),
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(restored["restored"], true);
+        assert!(db.get_session_by_id(id).unwrap().is_some());
     }
 }

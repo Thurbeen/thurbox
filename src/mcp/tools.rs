@@ -344,7 +344,7 @@ impl ThurboxMcp {
     }
 
     #[tool(
-        description = "Delete a session (soft delete). The TUI will detect the deletion and clean up the tmux pane and worktree."
+        description = "Delete a session. By default only the DB row is soft-deleted and the TUI (when running) will clean up the tmux pane and worktree on next sync. Pass `force: true` to also kill the tmux window, remove worktrees, and cancel pending scheduled commands immediately — use this for headless cleanup when no TUI is attached."
     )]
     fn delete_session(&self, Parameters(params): Parameters<DeleteSessionParams>) -> String {
         let db = self.db.lock().unwrap();
@@ -353,14 +353,19 @@ impl ThurboxMcp {
             Err(e) => return e,
         };
 
-        match db.soft_delete_session(session.id) {
-            Ok(()) => serde_json::json!({
+        match crate::session_ops::delete_session_headless(&db, session.id, params.force) {
+            Ok(report) => serde_json::json!({
                 "deleted": true,
                 "id": session.id.to_string(),
                 "name": session.name,
+                "forced": params.force,
+                "killed_window": report.killed_window,
+                "removed_worktrees": report.removed_worktrees,
+                "worktree_errors": report.worktree_errors,
+                "cancelled_scheduled": report.cancelled_scheduled,
             })
             .to_string(),
-            Err(e) => error_json(&e.to_string()),
+            Err(e) => error_json(&e),
         }
     }
 
@@ -1406,6 +1411,7 @@ mod tests {
 
         let result = server.delete_session(Parameters(DeleteSessionParams {
             session: sid.to_string(),
+            force: false,
         }));
         let v = parse_json(&result);
         assert_eq!(v["deleted"], true);
@@ -1424,6 +1430,7 @@ mod tests {
         let server = test_server();
         let result = server.delete_session(Parameters(DeleteSessionParams {
             session: SessionId::default().to_string(),
+            force: false,
         }));
         let v = parse_json(&result);
         assert!(v["error"].as_str().unwrap().contains("Session not found"));
@@ -1471,6 +1478,7 @@ mod tests {
         // Delete first
         server.delete_session(Parameters(DeleteSessionParams {
             session: sid.to_string(),
+            force: false,
         }));
 
         // Restore

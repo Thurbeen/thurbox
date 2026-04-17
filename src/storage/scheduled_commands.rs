@@ -61,6 +61,22 @@ impl Database {
         Ok(updated > 0)
     }
 
+    /// Cancel every pending scheduled command for a session. Returns the
+    /// number of commands cancelled. Used by force-delete to stop timers
+    /// that would otherwise fire against a dead tmux window.
+    pub fn cancel_scheduled_commands_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> rusqlite::Result<usize> {
+        let now = current_time_millis() as i64;
+        let updated = self.conn.execute(
+            "UPDATE scheduled_commands SET cancelled_at = ?1 \
+             WHERE session_id = ?2 AND executed_at IS NULL AND cancelled_at IS NULL",
+            params![now, session_id.to_string()],
+        )?;
+        Ok(updated)
+    }
+
     /// List all pending scheduled commands, ordered by scheduled_at.
     pub fn list_pending_scheduled_commands(&self) -> rusqlite::Result<Vec<ScheduledCommand>> {
         let mut stmt = self.conn.prepare(

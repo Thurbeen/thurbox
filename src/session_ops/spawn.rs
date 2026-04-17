@@ -95,10 +95,13 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         id: session_id,
         name: req.name.clone(),
         role: role_name.clone(),
-        // No pane_id is available without control mode; the window-target
-        // string is stored so the TUI can re-discover the live pane on its
-        // next startup.
-        backend_id: format!("{}{}", crate::agent::tmux::WINDOW_PREFIX, req.name),
+        // No pane_id is available without control mode. Leave `backend_id`
+        // empty so `App::find_matching_discovered` (and its MCP/TUI callers)
+        // fall back to matching by the sanitized window name — otherwise the
+        // TUI would see a stored `tb-<name>` that never matches a real
+        // tmux pane-id (`%N`), soft-delete this row, and respawn under a
+        // fresh UUID.
+        backend_id: String::new(),
         backend_type: LOCAL_TMUX_BACKEND_TYPE.to_string(),
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(cwd.clone()),
@@ -167,21 +170,63 @@ fn default_permissions_for(role_name: &str) -> RolePermissions {
 }
 
 /// Filter the global MCP-server / skill lists to those the request asks for.
+///
+/// Unknown names are rejected at create-time (rather than silently
+/// dropped) so users discover typos before the session spawns and
+/// Claude's staging step fails with a less useful error.
 fn resolve_attachments(
     db: &Database,
     wanted_servers: &[String],
     wanted_skills: &[String],
 ) -> Result<(Vec<McpServerConfig>, Vec<SkillConfig>), String> {
-    let mcp_servers = db
+    let available_servers = db
         .list_global_mcp_servers()
-        .map_err(|e| format!("Failed to load MCP servers: {e}"))?
+        .map_err(|e| format!("Failed to load MCP servers: {e}"))?;
+    let missing_servers: Vec<&str> = wanted_servers
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !available_servers.iter().any(|s| s.name == *n))
+        .collect();
+    if !missing_servers.is_empty() {
+        return Err(format!(
+            "Unknown MCP server(s): {}. Known: {}",
+            missing_servers.join(", "),
+            available_servers
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    let mcp_servers = available_servers
         .into_iter()
         .filter(|s| wanted_servers.iter().any(|n| n == &s.name))
         .collect();
 
-    let skills = db
+    let available_skills = db
         .list_global_skills()
-        .map_err(|e| format!("Failed to load skills: {e}"))?
+        .map_err(|e| format!("Failed to load skills: {e}"))?;
+    let missing_skills: Vec<&str> = wanted_skills
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !available_skills.iter().any(|s| s.name == *n))
+        .collect();
+    if !missing_skills.is_empty() {
+        return Err(format!(
+            "Unknown skill(s): {}. Known: {}",
+            missing_skills.join(", "),
+            if available_skills.is_empty() {
+                "(none registered)".to_string()
+            } else {
+                available_skills
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+        ));
+    }
+    let skills = available_skills
         .into_iter()
         .filter(|s| wanted_skills.iter().any(|n| n == &s.name))
         .collect();

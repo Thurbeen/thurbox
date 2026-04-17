@@ -104,6 +104,11 @@ pub struct GetSessionParams {
 pub struct DeleteSessionParams {
     #[schemars(description = "Session UUID")]
     pub session: String,
+    #[schemars(
+        description = "When true, also kill the tmux window, remove worktrees, and cancel pending scheduled commands. Defaults to false (soft delete only — the TUI will clean up when it next syncs)."
+    )]
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

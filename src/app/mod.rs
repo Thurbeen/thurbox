@@ -3800,21 +3800,26 @@ impl App {
 
     /// Find a discovered backend session matching a shared session.
     ///
-    /// Tries to match by `backend_id` first, falls back to window name (`tb-<name>`).
+    /// Tries to match by `backend_id` first; if that fails (e.g. the row
+    /// was created by the headless CLI/MCP path which doesn't know the
+    /// real tmux pane id yet), falls back to matching by the sanitized
+    /// window name (`tb-<safe_name>`).
     fn find_matching_discovered<'a>(
         shared: &sync::SharedSession,
         discovered: &'a [crate::agent::backend::DiscoveredSession],
     ) -> Option<&'a crate::agent::backend::DiscoveredSession> {
         if !shared.backend_id.is_empty() {
-            discovered
+            if let Some(d) = discovered
                 .iter()
                 .find(|d| d.backend_id == shared.backend_id && d.is_alive)
-        } else {
-            let expected_name = format!("tb-{}", shared.name);
-            discovered
-                .iter()
-                .find(|d| d.name == expected_name && d.is_alive)
+            {
+                return Some(d);
+            }
         }
+        let expected_name = crate::agent::tmux::agent_window_name(&shared.name);
+        discovered
+            .iter()
+            .find(|d| d.name == expected_name && d.is_alive)
     }
 
     /// Resolve a role name to its permissions from global roles.

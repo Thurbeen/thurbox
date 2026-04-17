@@ -5,9 +5,11 @@
 //! operations are synchronous against the SQLite database and the `tmux -L
 //! thurbox` server.
 
+pub mod delete;
 pub mod restart;
 pub mod spawn;
 
+pub use delete::{delete_session_headless, ForceDeleteReport};
 pub use restart::restart_session_headless;
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 

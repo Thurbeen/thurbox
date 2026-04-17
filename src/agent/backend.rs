@@ -254,7 +254,7 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
     ) -> Result<Self> {
         let args = provider.build_args(config);
-        let window_name = format!("tb-{name}");
+        let window_name = crate::agent::tmux::agent_window_name(&name);
 
         // Build env map, injecting VM/container ID if a target is specified.
         let mut env = config.permissions.env.clone();
@@ -518,7 +518,7 @@ impl Session {
         self.backend.kill(&self.backend_id)?;
 
         let args = self.provider.build_args(config);
-        let window_name = format!("tb-{}", self.info.name);
+        let window_name = crate::agent::tmux::agent_window_name(&self.info.name);
 
         // Inject __THURBOX_VM_ID / __THURBOX_CONTAINER_ID for backend-routed sessions.
         let mut env = config.permissions.env.clone();
@@ -596,7 +596,7 @@ impl Session {
         }
 
         let shell_cmd = self.backend.default_shell();
-        let window_name = format!("tbs-{}", self.info.name);
+        let window_name = crate::agent::tmux::shell_window_name(&self.info.name);
 
         // Inject __THURBOX_VM_ID / __THURBOX_CONTAINER_ID for backend-routed sessions
         // so the backend knows which VM/container to create the shell pane in.
