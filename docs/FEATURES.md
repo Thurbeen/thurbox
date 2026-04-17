@@ -52,10 +52,14 @@ the user to remember which field to type into.
 
 ### Settings overlay
 
-`Ctrl+E` opens the settings overlay with three tabs: **Roles**,
-**MCP Servers**, and **Skills**. Use `Tab` to cycle between tabs.
-All three are global presets shared across sessions and selected
-at session creation.
+`Ctrl+E` opens the settings overlay with four tabs: **Roles**,
+**MCP Servers**, **Skills**, and **Plugins**. Use `Tab` to cycle
+between tabs. The first three are global presets shared across
+sessions and selected at session creation. The Plugins tab lists
+effective plugins (disk-discovered + registered) with their
+version, source, enabled flag, and path; press `Space` to toggle a
+plugin on or off. Install/uninstall and per-plugin configuration
+are managed through the MCP tools — see `docs/PLUGINS.md`.
 
 ---
 

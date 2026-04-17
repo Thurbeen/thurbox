@@ -280,6 +280,7 @@ pub enum SettingsTab {
     Roles,
     McpServers,
     Skills,
+    Plugins,
 }
 
 // ── Main Modal Enum ────────────────────────────────────────────────────────

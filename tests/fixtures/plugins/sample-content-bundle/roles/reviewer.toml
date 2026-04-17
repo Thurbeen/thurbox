@@ -1,0 +1,5 @@
+name = "reviewer"
+description = "Read-only review role contributed by sample-content-bundle"
+permission_mode = "plan"
+allowed_tools = ["Read", "Grep", "Glob"]
+disallowed_tools = ["Edit", "Write", "Bash"]

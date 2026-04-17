@@ -15,6 +15,7 @@ use thurbox::agent::{
     QemuVmBackend, SessionBackend, VmManager,
 };
 use thurbox::app::{App, AppMessage};
+use thurbox::plugin::PluginRuntime;
 use thurbox::storage::Database;
 
 #[tokio::main]
@@ -117,6 +118,22 @@ async fn main() -> Result<()> {
         thurbox::ui::theme::ensure_initialized();
     }
 
+    // Spawn enabled process plugins. Plugins that declare
+    // `onBackendSelected:<name>` activation events get registered as
+    // backends here — done before `App::new` consumes `backends` by value.
+    let plugin_runtime = Arc::new(PluginRuntime::new());
+    let plugin_handle = tokio::runtime::Handle::current();
+    let reports = plugin_runtime
+        .start_all_process_plugins(&db, &mut backends, plugin_handle)
+        .await;
+    for report in &reports {
+        if let Some(err) = &report.error {
+            tracing::warn!(plugin = %report.name, error = %err, "Plugin spawn failed");
+        } else {
+            tracing::info!(plugin = %report.name, "Plugin started");
+        }
+    }
+
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let size = terminal.size()?;
@@ -130,6 +147,7 @@ async fn main() -> Result<()> {
         vm_manager_for_app,
         container_manager_for_app,
     );
+    app.set_plugin_runtime(Arc::clone(&plugin_runtime));
 
     // Ensure containerfile templates directory exists and is seeded
     app.ensure_containerfiles_dir();
@@ -149,6 +167,7 @@ async fn main() -> Result<()> {
     let res = run_loop(&mut terminal, &mut app).await;
 
     app.shutdown();
+    plugin_runtime.shutdown_all().await;
     execute!(
         std::io::stdout(),
         DisableBracketedPaste,

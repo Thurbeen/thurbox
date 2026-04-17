@@ -7,6 +7,14 @@ use crate::sync::current_time_millis;
 
 use super::Database;
 
+/// Where a resolved MCP server came from in the merged view.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpServerSource {
+    Registered,
+    Plugin(String),
+}
+
 /// Parse a row with columns (server_name, command, args, env) into McpServerConfig.
 fn row_to_mcp_server_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpServerConfig> {
     let name: String = row.get(0)?;
@@ -93,6 +101,25 @@ impl Database {
             params![name],
         )?;
         Ok(count > 0)
+    }
+
+    /// Plugin contributions merged with registered MCP servers. Registered
+    /// wins on name collision.
+    pub fn list_effective_mcp_servers(
+        &self,
+    ) -> rusqlite::Result<Vec<(McpServerConfig, McpServerSource)>> {
+        let mut by_name: std::collections::BTreeMap<String, (McpServerConfig, McpServerSource)> =
+            std::collections::BTreeMap::new();
+        for (server, plugin_name) in self.plugin_contributed_mcp_servers()? {
+            by_name.insert(
+                server.name.clone(),
+                (server, McpServerSource::Plugin(plugin_name)),
+            );
+        }
+        for server in self.list_global_mcp_servers()? {
+            by_name.insert(server.name.clone(), (server, McpServerSource::Registered));
+        }
+        Ok(by_name.into_values().collect())
     }
 }
 

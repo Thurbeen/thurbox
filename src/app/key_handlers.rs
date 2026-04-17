@@ -1360,13 +1360,15 @@ impl App {
                 self.settings_tab = match self.settings_tab {
                     super::SettingsTab::Roles => super::SettingsTab::McpServers,
                     super::SettingsTab::McpServers => super::SettingsTab::Skills,
-                    super::SettingsTab::Skills => super::SettingsTab::Roles,
+                    super::SettingsTab::Skills => super::SettingsTab::Plugins,
+                    super::SettingsTab::Plugins => super::SettingsTab::Roles,
                 };
             }
             _ => match self.settings_tab {
                 super::SettingsTab::Roles => self.handle_settings_roles_key(code),
                 super::SettingsTab::McpServers => self.handle_settings_mcp_key(code),
                 super::SettingsTab::Skills => self.handle_settings_skills_key(code),
+                super::SettingsTab::Plugins => self.handle_settings_plugins_key(code),
             },
         }
     }
@@ -1457,6 +1459,38 @@ impl App {
                 self.global_skills.remove(self.skill_list_index);
                 if self.skill_list_index >= self.global_skills.len() && self.skill_list_index > 0 {
                     self.skill_list_index -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle keys for the Plugins tab in the settings overlay.
+    ///
+    /// The TUI is read-only for plugins beyond the enable/disable toggle —
+    /// install/uninstall and configuration are managed via MCP. The richer
+    /// per-plugin details pane (logs / configuration form) is gated on the
+    /// process runtime and will land alongside it.
+    fn handle_settings_plugins_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down
+                if !self.effective_plugins.is_empty()
+                    && self.plugin_list_index + 1 < self.effective_plugins.len() =>
+            {
+                self.plugin_list_index += 1;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.plugin_list_index = self.plugin_list_index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') if !self.effective_plugins.is_empty() => {
+                let idx = self.plugin_list_index;
+                let (plugin, _src) = &self.effective_plugins[idx];
+                let new_state = !plugin.enabled;
+                let name = plugin.name.clone();
+                if let Err(e) = self.db.set_plugin_enabled(&name, new_state) {
+                    tracing::error!("Failed to toggle plugin '{name}': {e}");
+                } else if let Ok(plugins) = self.db.list_effective_plugins() {
+                    self.effective_plugins = plugins;
                 }
             }
             _ => {}

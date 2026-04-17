@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -155,6 +155,24 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             label        TEXT,
             last_used_at INTEGER NOT NULL,
             use_count    INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS plugins (
+            plugin_name TEXT PRIMARY KEY,
+            path        TEXT NOT NULL,
+            version     TEXT NOT NULL DEFAULT '',
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_settings (
+            plugin_name TEXT NOT NULL,
+            key         TEXT NOT NULL,
+            value_json  TEXT NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (plugin_name, key),
+            FOREIGN KEY (plugin_name) REFERENCES plugins(plugin_name) ON DELETE CASCADE
         );
         ",
     )?;
@@ -586,6 +604,29 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT", []);
     }
 
+    if version < 19 {
+        // v18 → v19: add plugins + plugin_settings tables for the plugin bundle system
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugins (
+                plugin_name TEXT PRIMARY KEY,
+                path        TEXT NOT NULL,
+                version     TEXT NOT NULL DEFAULT '',
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS plugin_settings (
+                plugin_name TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                value_json  TEXT NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                PRIMARY KEY (plugin_name, key),
+                FOREIGN KEY (plugin_name) REFERENCES plugins(plugin_name) ON DELETE CASCADE
+            );",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -624,6 +665,8 @@ mod tests {
         assert!(tables.contains(&"scheduled_commands".to_string()));
         assert!(tables.contains(&"repo_bookmarks".to_string()));
         assert!(tables.contains(&"skills".to_string()));
+        assert!(tables.contains(&"plugins".to_string()));
+        assert!(tables.contains(&"plugin_settings".to_string()));
         // Project tables should NOT exist
         assert!(!tables.contains(&"projects".to_string()));
         assert!(!tables.contains(&"project_repos".to_string()));

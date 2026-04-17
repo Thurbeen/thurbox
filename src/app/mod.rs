@@ -20,12 +20,13 @@ use tracing::{error, info, warn};
 use crate::agent::{BackendRegistry, Session, SessionBackend};
 use crate::git;
 use crate::session::{
-    default_developer_permissions, default_developer_role, McpServerConfig, RoleConfig,
-    RolePermissions, ScheduledCommand, SessionCommand, SessionConfig, SessionId, SessionInfo,
-    SessionStatus, SkillConfig, WorktreeInfo, DEFAULT_ROLE_NAME,
+    default_developer_permissions, default_developer_role, McpServerConfig, PluginConfig,
+    RoleConfig, RolePermissions, ScheduledCommand, SessionCommand, SessionConfig, SessionId,
+    SessionInfo, SessionStatus, SkillConfig, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
+use crate::storage::PluginSource;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
 use crate::ui::{info_panel, layout, project_list, role_editor_modal};
@@ -191,6 +192,45 @@ fn admin_mcp_permissions() -> RolePermissions {
         append_system_prompt: Some(ADMIN_SYSTEM_PROMPT.to_string()),
         ..RolePermissions::default()
     }
+}
+
+/// Snapshot the effective configuration for every plugin in `(name, key) →
+/// JSON value` form. Used by [`App::diff_and_notify_plugin_settings`] to
+/// detect cross-process `set_plugin_setting` writes.
+///
+/// Plugins whose manifest fails to load are silently skipped — there's
+/// nothing to notify and the plugin error already surfaces via `list_plugins`.
+fn compute_effective_plugin_settings(
+    db: &Database,
+) -> HashMap<(String, String), serde_json::Value> {
+    let mut out = HashMap::new();
+    let plugins = match db.list_effective_plugins() {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    for (plugin, _src) in plugins {
+        if !plugin.enabled {
+            continue;
+        }
+        let manifest = match crate::session::PluginManifest::load(&plugin.path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let schema = &manifest.contributes.configuration;
+        if schema.is_empty() {
+            continue;
+        }
+        let effective = match db.list_plugin_settings_with_defaults(&plugin.name, schema) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for setting in effective {
+            if let Ok(json) = serde_json::to_value(&setting.effective_value) {
+                out.insert((plugin.name.clone(), setting.key), json);
+            }
+        }
+    }
+    out
 }
 
 /// The role name used for admin sessions. Seeded into `global_roles` so it
@@ -619,6 +659,10 @@ pub struct App {
     pub(crate) global_skills: Vec<SkillConfig>,
     /// Index into global_skills for the skill list in the edit modal.
     pub(crate) skill_list_index: usize,
+    /// Effective plugins (disk + registered) cached for the Plugins settings tab.
+    pub(crate) effective_plugins: Vec<(PluginConfig, PluginSource)>,
+    /// Index into effective_plugins for the Plugins settings tab.
+    pub(crate) plugin_list_index: usize,
     /// Cached pending scheduled commands, refreshed every ~1 second.
     pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
@@ -628,6 +672,18 @@ pub struct App {
     /// `~/.config/thurbox/keybindings.json` on startup, falling back to defaults
     /// when the file is missing or malformed.
     pub(crate) keybindings: crate::session::KeyBindings,
+    /// Spawned process plugins. The TUI consults this on shutdown (graceful
+    /// `stop` op) and on `set_plugin_setting` writes (`config.updated` notify).
+    /// `None` if the host did not provide one — keeps headless test paths
+    /// (e.g. `App::stub`-based tests) compiling without forcing them through
+    /// the runtime.
+    pub(crate) plugin_runtime: Option<Arc<crate::plugin::PluginRuntime>>,
+    /// Per-(plugin, key) snapshot of the last-pushed effective JSON value.
+    /// On every tick we recompute the current effective value and notify the
+    /// plugin via `config.updated` for keys that changed — this is how
+    /// `set_plugin_setting` calls from `thurbox-mcp` (a separate process)
+    /// reach a running plugin.
+    pub(crate) plugin_setting_snapshot: HashMap<(String, String), serde_json::Value>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -675,6 +731,9 @@ impl App {
         // editor never confuses a disk-discovered directory with a
         // user-registered row.
         let global_skills = db.list_global_skills().unwrap_or_default();
+
+        // Effective plugins (disk + registered, registered wins on collision).
+        let effective_plugins = db.list_effective_plugins().unwrap_or_default();
 
         // Resolve the persisted active theme (defaults to Default if unset/unknown).
         let active_theme = db
@@ -818,10 +877,26 @@ impl App {
             mcp_server_list_index: 0,
             global_skills,
             skill_list_index: 0,
+            effective_plugins,
+            plugin_list_index: 0,
+            plugin_runtime: None,
+            plugin_setting_snapshot: HashMap::new(),
             cached_pending_commands: Vec::new(),
             active_theme,
             keybindings,
         }
+    }
+
+    /// Attach a plugin runtime spawned during boot.
+    ///
+    /// Done after `App::new` because the runtime must be created from inside
+    /// `tokio::main` (it captures a `Handle`) and `App::new` is also called
+    /// from non-async test contexts. Pre-seeds the configuration snapshot
+    /// from current effective values so the first tick doesn't fire spurious
+    /// `config.updated` notifications for keys that already match.
+    pub fn set_plugin_runtime(&mut self, runtime: Arc<crate::plugin::PluginRuntime>) {
+        self.plugin_setting_snapshot = compute_effective_plugin_settings(&self.db);
+        self.plugin_runtime = Some(runtime);
     }
 
     /// Ensure the containerfiles template directory exists and is seeded with defaults.
@@ -2492,6 +2567,17 @@ impl App {
                         self.global_skills = skills;
                     }
                 }
+                if let Ok(plugins) = self.db.list_effective_plugins() {
+                    if plugins != self.effective_plugins {
+                        if self.plugin_list_index >= plugins.len() {
+                            self.plugin_list_index = plugins.len().saturating_sub(1);
+                        }
+                        self.effective_plugins = plugins;
+                    }
+                }
+                // Detect changes in plugin_settings (e.g., from a separate
+                // thurbox-mcp process) and notify each running plugin.
+                self.diff_and_notify_plugin_settings();
                 // Pick up theme changes made by other thurbox processes (e.g.
                 // an MCP `set_theme` call from another session).
                 if let Ok(Some(name)) = self.db.get_active_theme() {
@@ -2901,6 +2987,48 @@ impl App {
         // Detach from backend sessions without killing them — they persist in tmux.
         for session in self.sessions {
             session.detach();
+        }
+        // Note: plugin runtime shutdown happens in `main.rs` after this returns,
+        // so it can `await`. We can't `await` here without making `shutdown`
+        // async, which ripples through every test that constructs an App.
+    }
+
+    /// Compare the current effective plugin settings against the snapshot and
+    /// fire `config.updated` for any keys that changed. No-op if no plugin
+    /// runtime is attached or no plugins are running.
+    pub(crate) fn diff_and_notify_plugin_settings(&mut self) {
+        let Some(runtime) = self.plugin_runtime.clone() else {
+            return;
+        };
+        let current = compute_effective_plugin_settings(&self.db);
+        if current == self.plugin_setting_snapshot {
+            return;
+        }
+        // Find changes (new + updated keys). Removed keys are rare in practice
+        // (only when a plugin's manifest stops declaring a key); they don't
+        // need a notification because the plugin no longer cares.
+        let mut changes: Vec<(String, String, serde_json::Value)> = Vec::new();
+        for ((plugin, key), value) in &current {
+            if self
+                .plugin_setting_snapshot
+                .get(&(plugin.clone(), key.clone()))
+                != Some(value)
+            {
+                changes.push((plugin.clone(), key.clone(), value.clone()));
+            }
+        }
+        self.plugin_setting_snapshot = current;
+        if changes.is_empty() {
+            return;
+        }
+        // Fire notifications. We're inside `tick()` on the main runtime; use
+        // `Handle::current().spawn` so each notify happens off the critical path.
+        let handle = tokio::runtime::Handle::current();
+        for (plugin, key, value) in changes {
+            let runtime = runtime.clone();
+            handle.spawn(async move {
+                runtime.notify_config_updated(&plugin, &key, &value).await;
+            });
         }
     }
 

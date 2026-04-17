@@ -7,6 +7,18 @@ use crate::sync::current_time_millis;
 
 use super::Database;
 
+/// Where a resolved role came from in the merged view.
+///
+/// Roles have no disk-source today (unlike skills), so the only sources are
+/// plugins and the SQLite registry — but the enum is shaped consistently with
+/// `SkillSource` so the TUI can render a single "source" column generically.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoleSource {
+    Registered,
+    Plugin(String),
+}
+
 /// Parse a row with columns: role_name, description, permission_mode, allowed_tools,
 /// disallowed_tools, tools, append_system_prompt, env → RoleConfig.
 fn row_to_role_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoleConfig> {
@@ -122,6 +134,20 @@ impl Database {
             .conn
             .execute("DELETE FROM roles WHERE role_name = ?1", params![role_name])?;
         Ok(rows > 0)
+    }
+
+    /// Plugin contributions merged with registered roles. Registered wins on
+    /// name collision (admin overrides plugin defaults).
+    pub fn list_effective_roles(&self) -> rusqlite::Result<Vec<(RoleConfig, RoleSource)>> {
+        let mut by_name: std::collections::BTreeMap<String, (RoleConfig, RoleSource)> =
+            std::collections::BTreeMap::new();
+        for (role, plugin_name) in self.plugin_contributed_roles()? {
+            by_name.insert(role.name.clone(), (role, RoleSource::Plugin(plugin_name)));
+        }
+        for role in self.list_global_roles()? {
+            by_name.insert(role.name.clone(), (role, RoleSource::Registered));
+        }
+        Ok(by_name.into_values().collect())
     }
 }
 

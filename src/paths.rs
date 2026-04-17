@@ -80,6 +80,10 @@ pub enum PathKind {
     ContainerfilesDir,
     /// Disk-source skills: `~/.local/share/thurbox/admin/skills/`
     SkillsDir,
+    /// Disk-source plugins: `~/.local/share/thurbox/admin/plugins/`
+    PluginsDir,
+    /// Per-plugin runtime log directory: `~/.local/share/thurbox/logs/plugins/`
+    PluginLogsDir,
     /// VM images: `~/.local/share/thurbox/admin/images/`
     ImagesDir,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
@@ -144,6 +148,8 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
         PathKind::AdminDir => xdg_data_subpath(&["admin"]),
         PathKind::ContainerfilesDir => xdg_data_subpath(&["admin", "containerfiles"]),
         PathKind::SkillsDir => xdg_data_subpath(&["admin", "skills"]),
+        PathKind::PluginsDir => xdg_data_subpath(&["admin", "plugins"]),
+        PathKind::PluginLogsDir => xdg_data_subpath(&["logs", "plugins"]),
         PathKind::ImagesDir => xdg_data_subpath(&["admin", "images"]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
         PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
@@ -160,6 +166,8 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::AdminDir => base.join("admin"),
         PathKind::ContainerfilesDir => base.join("admin").join("containerfiles"),
         PathKind::SkillsDir => base.join("admin").join("skills"),
+        PathKind::PluginsDir => base.join("admin").join("plugins"),
+        PathKind::PluginLogsDir => base.join("logs").join("plugins"),
         PathKind::ImagesDir => base.join("admin").join("images"),
         PathKind::MetricsDir => base.join("metrics"),
         PathKind::WorktreesDir => base.join("worktrees"),
@@ -326,6 +334,75 @@ pub fn list_disk_skills() -> Vec<crate::session::SkillConfig> {
     }
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills
+}
+
+/// Resolve the disk-source plugins directory path.
+///
+/// Each subdirectory under this path is a plugin bundle (must contain
+/// `thurbox-plugin.toml`). Mirrors `skills_directory()` — drop a directory in
+/// to make it discoverable without touching SQLite.
+pub fn plugins_directory() -> Option<PathBuf> {
+    resolve(PathKind::PluginsDir)
+}
+
+/// Resolve the per-plugin runtime log directory path.
+///
+/// Each process plugin's stdout+stderr land in `<plugin-name>.log` under this
+/// directory, with a single `<plugin-name>.log.1` backup after rotation.
+pub fn plugin_logs_directory() -> Option<PathBuf> {
+    resolve(PathKind::PluginLogsDir)
+}
+
+/// Resolve the absolute path to a single plugin's runtime log file.
+///
+/// Returns `None` only when the XDG data dir cannot be resolved at all.
+/// `name` is used as-is; callers should validate it via [`validate_safe_name`].
+pub fn plugin_log_path(name: &str) -> Option<PathBuf> {
+    Some(plugin_logs_directory()?.join(format!("{name}.log")))
+}
+
+/// Enumerate disk-source plugins as `PluginConfig` entries, sorted by name.
+///
+/// Each direct subdirectory of `plugins_directory()` that contains a parseable
+/// `thurbox-plugin.toml` is returned. Directories with missing or malformed
+/// manifests, or with unsafe names, are skipped silently. Returns an empty
+/// vector when the directory does not exist.
+pub fn list_disk_plugins() -> Vec<crate::session::PluginConfig> {
+    let Some(dir) = plugins_directory() else {
+        return Vec::new();
+    };
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut plugins = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if validate_safe_name(&name).is_err() {
+            continue;
+        }
+        let manifest = match crate::session::PluginManifest::load(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(plugin = %name, error = %e, "skipping plugin with invalid manifest");
+                continue;
+            }
+        };
+        plugins.push(crate::session::PluginConfig {
+            name: manifest.name,
+            path,
+            version: manifest.version,
+            enabled: true,
+        });
+    }
+    plugins.sort_by(|a, b| a.name.cmp(&b.name));
+    plugins
 }
 
 /// Resolve the VM images directory path.
@@ -805,6 +882,76 @@ mod tests {
         std::fs::write(dir.join(".hidden/SKILL.md"), "x").unwrap();
 
         assert!(list_disk_skills().is_empty());
+    }
+
+    fn seed_plugin(dir: &std::path::Path, name: &str, manifest_body: &str) -> PathBuf {
+        let plugin_dir = dir.join(name);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("thurbox-plugin.toml"), manifest_body).unwrap();
+        plugin_dir
+    }
+
+    fn minimal_manifest(name: &str, version: &str) -> String {
+        format!("name = \"{name}\"\nversion = \"{version}\"\nthurbox_plugin_api = 1\n")
+    }
+
+    #[test]
+    fn list_disk_plugins_empty_when_directory_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        assert!(list_disk_plugins().is_empty());
+    }
+
+    #[test]
+    fn list_disk_plugins_finds_valid_manifests() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let dir = plugins_directory().unwrap();
+        seed_plugin(&dir, "alpha", &minimal_manifest("alpha", "0.1.0"));
+        seed_plugin(&dir, "beta", &minimal_manifest("beta", "2.0.0"));
+
+        let plugins = list_disk_plugins();
+        let names: Vec<&str> = plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(plugins[1].version, "2.0.0");
+    }
+
+    #[test]
+    fn list_disk_plugins_skips_missing_manifest() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let dir = plugins_directory().unwrap();
+        std::fs::create_dir_all(dir.join("no-manifest")).unwrap();
+        seed_plugin(&dir, "ok", &minimal_manifest("ok", "0.1.0"));
+
+        let names: Vec<String> = list_disk_plugins().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["ok".to_string()]);
+    }
+
+    #[test]
+    fn list_disk_plugins_skips_malformed_manifest() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let dir = plugins_directory().unwrap();
+        seed_plugin(&dir, "bad", "this is not = toml {{{");
+        seed_plugin(&dir, "good", &minimal_manifest("good", "0.1.0"));
+
+        let names: Vec<String> = list_disk_plugins().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["good".to_string()]);
+    }
+
+    #[test]
+    fn list_disk_plugins_skips_unsafe_names() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let dir = plugins_directory().unwrap();
+        seed_plugin(&dir, ".hidden", &minimal_manifest("hidden", "0.1.0"));
+
+        assert!(list_disk_plugins().is_empty());
     }
 
     #[test]

@@ -237,6 +237,167 @@ pub struct UnregisterSkillParams {
     pub name: String,
 }
 
+// ── Plugin Parameters ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PluginInput {
+    #[schemars(description = "Plugin name (must match the manifest's name field)")]
+    pub name: String,
+    #[schemars(
+        description = "Absolute path to the plugin directory on disk (must contain thurbox-plugin.toml)"
+    )]
+    pub path: String,
+    #[serde(default)]
+    #[schemars(description = "Plugin version. If omitted, read from the manifest.")]
+    pub version: Option<String>,
+    #[serde(default = "default_true")]
+    #[schemars(description = "Whether the plugin is active. Defaults to true.")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPluginsParams {
+    #[schemars(
+        description = "Complete list of plugin registry entries — atomically replaces all registered plugins. To clear, pass an empty array."
+    )]
+    pub plugins: Vec<PluginInput>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RegisterPluginParams {
+    #[schemars(description = "Plugin name (must match the manifest's name field)")]
+    pub name: String,
+    #[schemars(
+        description = "Absolute path to the plugin directory on disk (must contain thurbox-plugin.toml)"
+    )]
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnregisterPluginParams {
+    #[schemars(description = "Plugin name to unregister (disk files are not touched)")]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct EnablePluginParams {
+    #[schemars(description = "Plugin name to enable")]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DisablePluginParams {
+    #[schemars(
+        description = "Plugin name to disable. Disabling a running process plugin stops it."
+    )]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct InstallPluginParams {
+    #[schemars(
+        description = "Absolute path to a plugin source directory containing thurbox-plugin.toml. Will be copied into ~/.local/share/thurbox/admin/plugins/<name>/."
+    )]
+    pub source_path: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional override for the install directory name. Defaults to the manifest's name field."
+    )]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UninstallPluginParams {
+    #[schemars(description = "Plugin name to uninstall")]
+    pub name: String,
+    #[schemars(
+        description = "Must be true. Uninstall removes the plugin directory from disk plus the registry row (cascades settings)."
+    )]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListPluginSettingsParams {
+    #[schemars(description = "Plugin name")]
+    pub plugin_name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetPluginSettingParams {
+    #[schemars(description = "Plugin name")]
+    pub plugin_name: String,
+    #[schemars(description = "Setting key (must be declared in the plugin manifest)")]
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPluginSettingParams {
+    #[schemars(description = "Plugin name")]
+    pub plugin_name: String,
+    #[schemars(description = "Setting key (must be declared in the plugin manifest)")]
+    pub key: String,
+    #[schemars(
+        description = "New value. Must match the type declared in the manifest's [[contributes.configuration]] entry. Pass JSON: a string, integer, or boolean."
+    )]
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ResetPluginSettingParams {
+    #[schemars(description = "Plugin name")]
+    pub plugin_name: String,
+    #[schemars(description = "Setting key whose user override should be cleared")]
+    pub key: String,
+}
+
+// ── Plugin Responses ───────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct PluginResponse {
+    pub name: String,
+    pub path: PathBuf,
+    pub version: String,
+    pub enabled: bool,
+    pub source: crate::storage::PluginSource,
+    pub contributions: ContributionsSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process: Option<ProcessSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct ContributionsSummary {
+    pub skills: Vec<String>,
+    pub roles: Vec<String>,
+    pub mcp_servers: Vec<String>,
+    pub themes: Vec<String>,
+    pub configuration_keys: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProcessSummary {
+    pub exec: PathBuf,
+    pub capabilities: Vec<String>,
+    pub activation_events: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginSettingResponse {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub default: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_value: Option<serde_json::Value>,
+    pub effective_value: serde_json::Value,
+    pub description: String,
+}
+
 // ── Scheduled Command Parameters ───────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

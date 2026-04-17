@@ -192,6 +192,15 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `set_skills` | Atomically replace all skill registry entries |
 | `register_skill` | Register/update a single skill reference (path must contain SKILL.md) |
 | `unregister_skill` | Remove a skill from the registry (never touches disk) |
+| `list_plugins` | List effective plugins (auto-discovered + registered) with contributions/process summary |
+| `set_plugins` | Atomically replace the plugin registry |
+| `register_plugin` | Register a plugin path (manifest must validate; never touches disk) |
+| `unregister_plugin` | Remove a plugin from the registry (cascades plugin_settings; never touches disk) |
+| `enable_plugin` / `disable_plugin` | Toggle a plugin's enabled flag (shadows disk-only plugins) |
+| `install_plugin` | Copy a plugin source dir into `admin/plugins/<name>/` |
+| `uninstall_plugin` | Remove a plugin from disk + registry (cascades settings); requires `confirm: true` |
+| `list_plugin_settings` | List a plugin's configuration schema with current effective values |
+| `get_plugin_setting` / `set_plugin_setting` / `reset_plugin_setting` | Read, override, or clear one plugin setting |
 | `list_vm_images` | List downloaded VM images with file sizes |
 | `download_vm_image` | Download a VM image from an HTTPS URL |
 | `delete_vm_image` | Delete a cached VM image |

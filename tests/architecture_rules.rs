@@ -163,6 +163,20 @@ fn cli_module_isolation() {
 }
 
 #[test]
+fn plugin_module_isolation() {
+    // The plugin runtime may import `agent` (the backend adapter implements
+    // `SessionBackend` so plugins can contribute backends). It must not pull
+    // in TUI state, the app coordinator, or git/mcp top-level helpers.
+    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugin");
+    let violations = check_no_imports(&module_dir, &["app", "ui", "git", "mcp"]);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        format_violations("plugin", &violations)
+    );
+}
+
+#[test]
 fn app_module_structure() {
     // Verify that app/ module can be split into multiple files
     // Each file should maintain proper module organization

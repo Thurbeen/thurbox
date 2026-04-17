@@ -13,13 +13,16 @@ use super::Database;
 /// defaults vs. user-registered references. Kept small and serde-friendly so
 /// it can ride along with `SkillConfig` in JSON responses without forcing
 /// `SkillConfig` itself to carry a source field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillSource {
     /// Found on disk under `~/.local/share/thurbox/admin/skills/`.
     Disk,
     /// Registered in the SQLite `skills` table.
     Registered,
+    /// Contributed by an enabled plugin's `[[contributes.skills]]` row. Carries
+    /// the plugin name so the TUI can show "from `<plugin>`".
+    Plugin(String),
 }
 
 /// Parse a row with columns (skill_name, path) into SkillConfig.
@@ -100,8 +103,15 @@ impl Database {
     pub fn list_effective_skills(&self) -> rusqlite::Result<Vec<(SkillConfig, SkillSource)>> {
         let mut by_name: std::collections::BTreeMap<String, (SkillConfig, SkillSource)> =
             std::collections::BTreeMap::new();
+        // Precedence (later inserts win): Disk → Plugin → Registered.
         for skill in crate::paths::list_disk_skills() {
             by_name.insert(skill.name.clone(), (skill, SkillSource::Disk));
+        }
+        for (skill, plugin_name) in self.plugin_contributed_skills()? {
+            by_name.insert(
+                skill.name.clone(),
+                (skill, SkillSource::Plugin(plugin_name)),
+            );
         }
         for skill in self.list_global_skills()? {
             by_name.insert(skill.name.clone(), (skill, SkillSource::Registered));
@@ -246,6 +256,67 @@ mod tests {
         assert_eq!(effective[0].1, SkillSource::Registered);
         // Disk entry is still on disk — the registry just hides it.
         assert!(disk_path.exists());
+    }
+
+    fn seed_plugin_with_skill(
+        dir: &std::path::Path,
+        plugin_name: &str,
+        skill_name: &str,
+    ) -> PathBuf {
+        let p = dir.join(plugin_name);
+        let skill_dir = p.join("skills").join(skill_name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "---\n").unwrap();
+        std::fs::write(
+            p.join("thurbox-plugin.toml"),
+            format!(
+                "name = \"{plugin_name}\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n\
+                 [[contributes.skills]]\nname = \"{skill_name}\"\npath = \"skills/{skill_name}\"\n"
+            ),
+        )
+        .unwrap();
+        p
+    }
+
+    #[test]
+    fn list_effective_skills_precedence_registered_beats_plugin_beats_disk() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        let disk_dir = crate::paths::skills_directory().unwrap();
+        let disk_path = seed_disk_skill(&disk_dir, "common");
+        seed_disk_skill(&disk_dir, "disk-only");
+
+        let plugin_dir = crate::paths::plugins_directory().unwrap();
+        let plugin_path = seed_plugin_with_skill(&plugin_dir, "bundle", "common");
+        seed_plugin_with_skill(&plugin_dir, "bundle2", "plugin-only");
+
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_global_skill(&SkillConfig {
+            name: "common".into(),
+            path: PathBuf::from("/user/override"),
+        })
+        .unwrap();
+
+        let effective = db.list_effective_skills().unwrap();
+        let by_name: std::collections::HashMap<_, _> = effective
+            .iter()
+            .map(|(s, src)| (s.name.as_str(), (s.path.clone(), src.clone())))
+            .collect();
+
+        assert_eq!(
+            by_name["common"].1,
+            SkillSource::Registered,
+            "registered must beat both plugin and disk"
+        );
+        assert_eq!(by_name["common"].0, PathBuf::from("/user/override"));
+        assert_eq!(
+            by_name["plugin-only"].1,
+            SkillSource::Plugin("bundle2".into())
+        );
+        assert_eq!(by_name["disk-only"].1, SkillSource::Disk);
+        // Disk + plugin files still on disk; registry just hides the colliding one.
+        assert!(disk_path.exists() && plugin_path.exists());
     }
 
     #[test]

@@ -364,6 +364,8 @@ impl App {
                     mcp_index: self.mcp_server_list_index,
                     skills: &self.global_skills,
                     skill_index: self.skill_list_index,
+                    plugins: &self.effective_plugins,
+                    plugin_index: self.plugin_list_index,
                 },
             );
         }
