@@ -197,6 +197,41 @@ pub(super) fn render_scroll_indicators(
     let items_above = offset;
     let items_below = total_items.saturating_sub(offset + visible_count);
 
+    draw_scroll_indicators(frame, block_area, items_above, items_below);
+}
+
+/// Variable-height variant: uses per-item heights to compute the visible range.
+fn render_scroll_indicators_variable(
+    frame: &mut Frame,
+    block_area: Rect,
+    list_state: &ListState,
+    heights: &[u16],
+) {
+    let offset = list_state.offset().min(heights.len());
+    let inner_height = block_area.height.saturating_sub(2);
+    let mut consumed: u16 = 0;
+    let mut visible_count = 0usize;
+    for &h in heights.iter().skip(offset) {
+        let next = consumed.saturating_add(h);
+        if next > inner_height {
+            break;
+        }
+        consumed = next;
+        visible_count += 1;
+    }
+
+    let items_above = offset;
+    let items_below = heights.len().saturating_sub(offset + visible_count);
+
+    draw_scroll_indicators(frame, block_area, items_above, items_below);
+}
+
+fn draw_scroll_indicators(
+    frame: &mut Frame,
+    block_area: Rect,
+    items_above: usize,
+    items_below: usize,
+) {
     let indicator_style = Style::default().fg(Theme::text_muted());
 
     if items_above > 0 {
@@ -398,6 +433,8 @@ fn render_session_section(
     // Available width inside the block (subtract 2 for borders)
     let inner_width = area.width.saturating_sub(2) as usize;
 
+    let mut item_heights: Vec<u16> = Vec::with_capacity(sessions.len());
+
     let items: Vec<ListItem> = sessions
         .iter()
         .enumerate()
@@ -408,6 +445,8 @@ fn render_session_section(
             // Determine if this session is dimmed (search active + no match).
             let session_match = match_positions.get(i).and_then(|m| m.as_ref());
             let is_dimmed = search_active && session_match.is_none();
+            // Expand (show role + repo) when selected or matched by current search.
+            let is_expanded = is_active || (search_active && session_match.is_some());
 
             let status_text = format_status_with_elapsed(info.status, elapsed_ms.get(i).copied());
             let name_style = if is_dimmed {
@@ -462,9 +501,13 @@ fn render_session_section(
 
             // Line 2: provisioning step or role [+ tag]
             // Line 3 (optional): repo/branch text
+            // Only shown when the row is expanded (selected or search-matched);
+            // collapsed rows render as a single compact line.
             let mut item_lines = vec![line1];
 
-            if is_dimmed {
+            if !is_expanded {
+                // Collapsed: line 1 only.
+            } else if is_dimmed {
                 let dimmed = Style::default().fg(Theme::text_muted());
                 item_lines.push(Line::from(vec![Span::styled(
                     format!("   {}", info.role),
@@ -566,6 +609,7 @@ fn render_session_section(
                 item_lines.insert(0, divider);
             }
 
+            item_heights.push(item_lines.len() as u16);
             ListItem::new(item_lines)
         })
         .collect();
@@ -580,8 +624,7 @@ fn render_session_section(
     list_state.select(Some(active_index));
     frame.render_stateful_widget(list, area, list_state);
 
-    // Most sessions are 3 lines (name + role + repo); use 3 as conservative estimate.
-    render_scroll_indicators(frame, area, sessions.len(), list_state, 3);
+    render_scroll_indicators_variable(frame, area, list_state, &item_heights);
 }
 
 /// A single repo entry with an optional branch (for worktree repos).
