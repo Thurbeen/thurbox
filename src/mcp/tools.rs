@@ -123,6 +123,18 @@ fn skill_to_response(s: &SkillConfig) -> SkillResponse {
     SkillResponse {
         name: s.name.clone(),
         path: s.path.clone(),
+        source: None,
+    }
+}
+
+fn effective_skill_to_response(
+    s: &SkillConfig,
+    source: crate::storage::SkillSource,
+) -> SkillResponse {
+    SkillResponse {
+        name: s.name.clone(),
+        path: s.path.clone(),
+        source: Some(source),
     }
 }
 
@@ -681,13 +693,16 @@ impl ThurboxMcp {
     // ── Skill Registry Tools ────────────────────────────────────
 
     #[tool(
-        description = "List all registered skills. Returns a JSON array of {name, path} objects pointing at on-disk skill directories. Thurbox only stores references; skill files are never created, edited, or deleted through these tools."
+        description = "List all effective skills. Returns a JSON array of {name, path, source} objects, where `source` is \"disk\" for skills auto-discovered under ~/.local/share/thurbox/admin/skills/ and \"registered\" for SQLite registry entries. Registered entries shadow disk-source entries of the same name. Thurbox never creates, edits, or deletes skill files through these tools."
     )]
     fn list_skills(&self) -> String {
         let db = self.db.lock().unwrap();
-        match db.list_global_skills() {
+        match db.list_effective_skills() {
             Ok(skills) => {
-                let resp: Vec<SkillResponse> = skills.iter().map(skill_to_response).collect();
+                let resp: Vec<SkillResponse> = skills
+                    .iter()
+                    .map(|(s, source)| effective_skill_to_response(s, *source))
+                    .collect();
                 json_text(&resp)
             }
             Err(e) => error_json(&e.to_string()),

@@ -142,6 +142,11 @@ pub struct McpServerPickerModal {
 pub struct SkillPickerModal {
     pub index: usize,
     pub selected: Vec<bool>,
+    /// Skills offered to the user at modal-open time — the merged view of
+    /// `admin/skills/` + the SQLite registry. Stored on the modal rather
+    /// than read from `App::global_skills` so the picker also surfaces
+    /// disk-source skills that aren't registry rows.
+    pub skills: Vec<crate::session::SkillConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

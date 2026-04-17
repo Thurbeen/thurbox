@@ -1135,10 +1135,10 @@ impl App {
     }
 
     fn handle_skill_picker_key(&mut self, code: KeyCode) {
-        let skill_count = self.global_skills.len();
         let super::modals::Modal::SkillPicker(ref mut sp) = self.modal else {
             return;
         };
+        let skill_count = sp.skills.len();
         match code {
             KeyCode::Esc => {
                 self.modal.close();
@@ -1159,9 +1159,10 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                // Collect selected skills.
-                let selected_skills: Vec<_> = self
-                    .global_skills
+                // Collect selected skills from the merged set we captured
+                // when the modal opened.
+                let selected_skills: Vec<_> = sp
+                    .skills
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| sp.selected.get(*i).copied().unwrap_or(false))

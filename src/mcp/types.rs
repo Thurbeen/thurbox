@@ -408,6 +408,12 @@ pub struct VmResponse {
 pub struct SkillResponse {
     pub name: String,
     pub path: PathBuf,
+    /// `"disk"` for skills auto-discovered under
+    /// `~/.local/share/thurbox/admin/skills/`, `"registered"` for SQLite
+    /// registry entries. Omitted when the source is unknown (e.g. the
+    /// `register_skill` tool only has the registry entry at hand).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::storage::SkillSource>,
 }
 
 #[derive(Debug, Serialize)]

@@ -2,19 +2,22 @@
 //!
 //! Skills are references to on-disk skill directories (each containing a
 //! `SKILL.md`). Thurbox never creates, edits, or deletes skill files —
-//! these commands only manage the registry rows in SQLite.
+//! these commands only manage the registry rows in SQLite. `list` also
+//! surfaces disk-source skills auto-discovered from
+//! `~/.local/share/thurbox/admin/skills/`; registry entries shadow
+//! disk-source entries of the same name.
 
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::session::SkillConfig;
 use crate::storage::Database;
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// List all registered skills.
+    /// List all effective skills (disk-source + registered) with source.
     List,
     /// Register (or update) a single skill reference.
     Register {
@@ -46,9 +49,19 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
     match action {
         Action::List => {
             let skills = db
-                .list_global_skills()
-                .map_err(|e| format!("list_global_skills: {e}"))?;
-            Ok(serde_json::to_value(skills).map_err(|e| e.to_string())?)
+                .list_effective_skills()
+                .map_err(|e| format!("list_effective_skills: {e}"))?;
+            let arr: Vec<Value> = skills
+                .into_iter()
+                .map(|(s, source)| {
+                    json!({
+                        "name": s.name,
+                        "path": s.path,
+                        "source": source,
+                    })
+                })
+                .collect();
+            Ok(Value::Array(arr))
         }
         Action::Register { name, path } => {
             super::validate_safe_name(&name)?;
@@ -113,6 +126,8 @@ mod tests {
 
     #[test]
     fn list_is_empty_by_default() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
         let v = run(Action::List, &db()).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 0);
     }
@@ -120,6 +135,7 @@ mod tests {
     #[test]
     fn register_then_list_then_unregister() {
         let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
         let path = make_skill_dir(tmp.path(), "my-skill");
         let db = db();
 
@@ -136,6 +152,7 @@ mod tests {
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["name"].as_str(), Some("my-skill"));
+        assert_eq!(arr[0]["source"].as_str(), Some("registered"));
 
         run(
             Action::Unregister {
@@ -145,6 +162,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run(Action::List, &db).unwrap().as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn list_reports_disk_source_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let disk_dir = crate::paths::skills_directory().unwrap();
+        std::fs::create_dir_all(disk_dir.join("publish")).unwrap();
+        std::fs::write(disk_dir.join("publish/SKILL.md"), "x").unwrap();
+
+        let v = run(Action::List, &db()).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"].as_str(), Some("publish"));
+        assert_eq!(arr[0]["source"].as_str(), Some("disk"));
     }
 
     #[test]

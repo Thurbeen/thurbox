@@ -203,9 +203,12 @@ fn resolve_attachments(
         .filter(|s| wanted_servers.iter().any(|n| n == &s.name))
         .collect();
 
-    let available_skills = db
-        .list_global_skills()
-        .map_err(|e| format!("Failed to load skills: {e}"))?;
+    let available_skills: Vec<SkillConfig> = db
+        .list_effective_skills()
+        .map_err(|e| format!("Failed to load skills: {e}"))?
+        .into_iter()
+        .map(|(s, _source)| s)
+        .collect();
     let missing_skills: Vec<&str> = wanted_skills
         .iter()
         .map(String::as_str)

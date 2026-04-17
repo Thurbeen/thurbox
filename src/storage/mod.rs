@@ -22,6 +22,7 @@ mod sessions;
 mod settings;
 mod skills;
 pub use sessions::DeletedSessionInfo;
+pub use skills::SkillSource;
 pub mod sync;
 pub mod vms;
 mod worktrees;

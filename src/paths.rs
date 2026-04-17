@@ -50,6 +50,21 @@ fn xdg_config_subpath(filename: &str) -> Option<PathBuf> {
     Some(base.join(app_dir_name()).join(filename))
 }
 
+/// `$XDG_DATA_HOME/<app>/<segments...>`, falling back to
+/// `$HOME/.local/share/<app>/<segments...>` when `XDG_DATA_HOME` is unset.
+fn xdg_data_subpath(segments: &[&str]) -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+        })?;
+    let mut p = base.join(app_dir_name());
+    for seg in segments {
+        p.push(seg);
+    }
+    Some(p)
+}
+
 /// Categories of application paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathKind {
@@ -63,6 +78,8 @@ pub enum PathKind {
     AdminDir,
     /// Containerfile templates: `~/.local/share/thurbox/admin/containerfiles/`
     ContainerfilesDir,
+    /// Disk-source skills: `~/.local/share/thurbox/admin/skills/`
+    SkillsDir,
     /// VM images: `~/.local/share/thurbox/admin/images/`
     ImagesDir,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
@@ -122,134 +139,14 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
                 p
             })
         }
-        PathKind::Database => {
-            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("thurbox.db");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p.push(app_dir_name());
-                p.push("thurbox.db");
-                p
-            })
-        }
-        PathKind::LogDir => {
-            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p.push(app_dir_name());
-                p
-            })
-        }
-        PathKind::AdminDir => {
-            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("admin");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p.push(app_dir_name());
-                p.push("admin");
-                p
-            })
-        }
-        PathKind::ContainerfilesDir => {
-            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("admin");
-                p.push("containerfiles");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p.push(app_dir_name());
-                p.push("admin");
-                p.push("containerfiles");
-                p
-            })
-        }
-        PathKind::ImagesDir => {
-            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("admin");
-                p.push("images");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p.push(app_dir_name());
-                p.push("admin");
-                p.push("images");
-                p
-            })
-        }
-        PathKind::MetricsDir => {
-            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("metrics");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p.push(app_dir_name());
-                p.push("metrics");
-                p
-            })
-        }
-        PathKind::WorktreesDir => {
-            // Prefer $XDG_DATA_HOME, fall back to $HOME/.local/share
-            if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("worktrees");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p.push(app_dir_name());
-                p.push("worktrees");
-                p
-            })
-        }
+        PathKind::Database => xdg_data_subpath(&["thurbox.db"]),
+        PathKind::LogDir => xdg_data_subpath(&[]),
+        PathKind::AdminDir => xdg_data_subpath(&["admin"]),
+        PathKind::ContainerfilesDir => xdg_data_subpath(&["admin", "containerfiles"]),
+        PathKind::SkillsDir => xdg_data_subpath(&["admin", "skills"]),
+        PathKind::ImagesDir => xdg_data_subpath(&["admin", "images"]),
+        PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
+        PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
         PathKind::KeybindingsFile => xdg_config_subpath("keybindings.json"),
     }
 }
@@ -262,6 +159,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::Database => base.join("thurbox.db"),
         PathKind::AdminDir => base.join("admin"),
         PathKind::ContainerfilesDir => base.join("admin").join("containerfiles"),
+        PathKind::SkillsDir => base.join("admin").join("skills"),
         PathKind::ImagesDir => base.join("admin").join("images"),
         PathKind::MetricsDir => base.join("metrics"),
         PathKind::WorktreesDir => base.join("worktrees"),
@@ -379,6 +277,55 @@ pub fn list_containerfile_templates() -> Result<Vec<(String, Vec<String>)>, Stri
     }
     templates.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(templates)
+}
+
+/// Resolve the disk-source skills directory path.
+///
+/// Each subdirectory under this path is an auto-discovered skill (must
+/// contain `SKILL.md`). Mirrors how `containerfiles_directory()` hosts
+/// pure-disk Containerfile templates: no SQLite row is needed, dropping
+/// a directory in is enough to make it available to `--skill <name>`.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/admin/skills/` or
+/// `$HOME/.local/share/thurbox/admin/skills/`
+pub fn skills_directory() -> Option<PathBuf> {
+    resolve(PathKind::SkillsDir)
+}
+
+/// Enumerate disk-source skills as `SkillConfig` entries, sorted by name.
+///
+/// Each direct subdirectory of `skills_directory()` that contains a
+/// `SKILL.md` file is returned. Directories without `SKILL.md` are
+/// skipped silently so a half-populated template can't break discovery.
+/// Returns an empty vector when the directory does not exist.
+pub fn list_disk_skills() -> Vec<crate::session::SkillConfig> {
+    let Some(dir) = skills_directory() else {
+        return Vec::new();
+    };
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut skills = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        if !path.join("SKILL.md").is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip hidden / unsafe names so we never pick up ".git" or similar.
+        if validate_safe_name(&name).is_err() {
+            continue;
+        }
+        skills.push(crate::session::SkillConfig { name, path });
+    }
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills
 }
 
 /// Resolve the VM images directory path.
@@ -732,6 +679,10 @@ mod tests {
             Some(base.join("admin").join("containerfiles"))
         );
         assert_eq!(
+            resolve(PathKind::SkillsDir),
+            Some(base.join("admin").join("skills"))
+        );
+        assert_eq!(
             resolve(PathKind::ImagesDir),
             Some(base.join("admin").join("images"))
         );
@@ -801,6 +752,59 @@ mod tests {
         assert!(path.ends_with("containerfiles"));
 
         reset_to_xdg();
+    }
+
+    #[test]
+    fn skills_directory_convenience() {
+        let base = PathBuf::from("/custom");
+        set_test_dir(&base);
+
+        let path = skills_directory().unwrap();
+        assert!(path.ends_with("skills"));
+
+        reset_to_xdg();
+    }
+
+    #[test]
+    fn list_disk_skills_returns_empty_when_directory_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        // `admin/skills/` does not exist under the override base.
+        assert!(list_disk_skills().is_empty());
+    }
+
+    #[test]
+    fn list_disk_skills_finds_directories_with_skill_md() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let dir = skills_directory().unwrap();
+        std::fs::create_dir_all(dir.join("publish")).unwrap();
+        std::fs::write(dir.join("publish/SKILL.md"), "---\nname: publish\n---\n").unwrap();
+        std::fs::create_dir_all(dir.join("orchestrate")).unwrap();
+        std::fs::write(dir.join("orchestrate/SKILL.md"), "---\n").unwrap();
+        // Directory without SKILL.md must be ignored.
+        std::fs::create_dir_all(dir.join("broken")).unwrap();
+        // Non-directory file at the top level must be ignored.
+        std::fs::write(dir.join("readme.txt"), "ignored").unwrap();
+
+        let skills = list_disk_skills();
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["orchestrate", "publish"]);
+        assert_eq!(skills[0].path, dir.join("orchestrate"));
+        assert_eq!(skills[1].path, dir.join("publish"));
+    }
+
+    #[test]
+    fn list_disk_skills_skips_unsafe_names() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let dir = skills_directory().unwrap();
+        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+        std::fs::write(dir.join(".hidden/SKILL.md"), "x").unwrap();
+
+        assert!(list_disk_skills().is_empty());
     }
 
     #[test]
@@ -899,6 +903,10 @@ mod tests {
         assert_eq!(
             resolve_override(base, PathKind::ContainerfilesDir),
             PathBuf::from("/data/admin/containerfiles")
+        );
+        assert_eq!(
+            resolve_override(base, PathKind::SkillsDir),
+            PathBuf::from("/data/admin/skills")
         );
         assert_eq!(
             resolve_override(base, PathKind::ImagesDir),

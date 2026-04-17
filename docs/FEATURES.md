@@ -680,9 +680,33 @@ per-role via the role editor.
 
 ## Skill Management
 
-Claude Code skills are managed as **global** presets (settings
-overlay → Skills tab) and attached to sessions at creation time
-via the skill picker.
+Claude Code skills come from **two sources**:
+
+1. **Disk-source (predefined)** — any directory under
+   `~/.local/share/thurbox/admin/skills/` that contains a
+   `SKILL.md` is auto-discovered. Dropping a directory in is all
+   it takes; no SQLite registration is needed. This mirrors how
+   Containerfile templates work under `admin/containerfiles/`.
+2. **Registered** — SQLite rows in the `skills` table that point
+   at arbitrary absolute paths. Managed via the settings overlay
+   (Ctrl+E → Skills tab), `thurbox-cli skill`, and the MCP
+   `list_skills` / `set_skills` / `register_skill` /
+   `unregister_skill` tools.
+
+**Collision rule**: a registered entry with the same name as a
+disk-source skill **shadows the disk-source entry**. Rationale:
+disk-source skills ship as admin-managed defaults; registering
+the same name is the documented way to override their path.
+`thurbox-cli skill list` and the MCP `list_skills` tool both
+return a `source` field (`"disk"` / `"registered"`) so operators
+can tell which entries are predefined vs. user-configured. The
+settings overlay shows only registered entries — disk-source
+skills never appear as editable rows to avoid confusion about
+"deleting" a directory the user can simply drop in again.
+
+Both sources are presented in the skill picker at session spawn
+time; the user selects skills by name, and Thurbox resolves each
+name against the merged view before symlinking.
 
 ### Staging outside the worktree
 

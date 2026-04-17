@@ -341,7 +341,7 @@ impl App {
             skill_picker_modal::render_skill_picker_modal(
                 frame,
                 &skill_picker_modal::SkillPickerState {
-                    skills: &self.global_skills,
+                    skills: &sp.skills,
                     selected: &sp.selected,
                     index: sp.index,
                 },

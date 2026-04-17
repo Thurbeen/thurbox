@@ -670,7 +670,10 @@ impl App {
         // Load global MCP servers from DB.
         let global_mcp_servers = db.list_global_mcp_servers().unwrap_or_default();
 
-        // Load global skills from DB.
+        // Load global skills from DB. Disk-source skills are merged in at
+        // skill-picker time (see `effective_skills`) so the settings-tab
+        // editor never confuses a disk-discovered directory with a
+        // user-registered row.
         let global_skills = db.list_global_skills().unwrap_or_default();
 
         // Resolve the persisted active theme (defaults to Default if unset/unknown).
@@ -1189,14 +1192,15 @@ impl App {
         worktrees: Vec<WorktreeInfo>,
         is_admin: bool,
     ) {
-        if self.global_skills.is_empty() {
+        let skills = self.effective_skills();
+        if skills.is_empty() {
             self.pending_spawn_is_admin = false;
             self.do_spawn_session(name, &config, worktrees, is_admin);
         } else {
             self.pending_spawn_name = Some(name);
             self.pending_spawn_config = Some(config);
             self.pending_spawn_worktrees = worktrees;
-            self.open_skill_picker(is_admin);
+            self.open_skill_picker(is_admin, skills);
         }
     }
 
@@ -1204,13 +1208,33 @@ impl App {
     ///
     /// Non-admin: all skills selected by default.
     /// Admin: nothing pre-checked — user opts in explicitly.
-    fn open_skill_picker(&mut self, is_admin: bool) {
+    fn open_skill_picker(&mut self, is_admin: bool, skills: Vec<SkillConfig>) {
         let selected = if is_admin {
-            vec![false; self.global_skills.len()]
+            vec![false; skills.len()]
         } else {
-            vec![true; self.global_skills.len()]
+            vec![true; skills.len()]
         };
-        self.modal = modals::Modal::SkillPicker(modals::SkillPickerModal { index: 0, selected });
+        self.modal = modals::Modal::SkillPicker(modals::SkillPickerModal {
+            index: 0,
+            selected,
+            skills,
+        });
+    }
+
+    /// Effective skill set shown to users at spawn time: disk-source skills
+    /// from `~/.local/share/thurbox/admin/skills/` merged with SQLite
+    /// registry rows. Registry entries shadow disk-source entries of the
+    /// same name — see `Database::list_effective_skills`. The settings
+    /// editor intentionally does **not** use this merged view; it edits
+    /// only the registry so dropping a directory under `admin/skills/` never
+    /// looks like a stray row the user has to clean up.
+    pub(crate) fn effective_skills(&self) -> Vec<SkillConfig> {
+        self.db
+            .list_effective_skills()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(s, _source)| s)
+            .collect()
     }
 
     /// Continue admin spawn — routes through the normal picker chain (role →
@@ -3987,10 +4011,9 @@ impl App {
             .cloned()
             .collect();
         let skills: Vec<SkillConfig> = self
-            .global_skills
-            .iter()
+            .effective_skills()
+            .into_iter()
             .filter(|s| skill_names.iter().any(|n| n == &s.name))
-            .cloned()
             .collect();
 
         // Optionally create a git worktree.
@@ -6381,7 +6404,7 @@ mod tests {
             None,
             None,
         );
-        app.global_skills = vec![
+        let skills = vec![
             SkillConfig {
                 name: "a".to_string(),
                 path: PathBuf::from("/tmp/a"),
@@ -6392,11 +6415,12 @@ mod tests {
             },
         ];
 
-        app.open_skill_picker(true);
+        app.open_skill_picker(true, skills);
 
         match app.modal {
             super::modals::Modal::SkillPicker(ref m) => {
                 assert_eq!(m.selected, vec![false, false]);
+                assert_eq!(m.skills.len(), 2);
             }
             _ => panic!("expected SkillPicker modal"),
         }
@@ -6415,16 +6439,17 @@ mod tests {
             None,
             None,
         );
-        app.global_skills = vec![SkillConfig {
+        let skills = vec![SkillConfig {
             name: "a".to_string(),
             path: PathBuf::from("/tmp/a"),
         }];
 
-        app.open_skill_picker(false);
+        app.open_skill_picker(false, skills);
 
         match app.modal {
             super::modals::Modal::SkillPicker(ref m) => {
                 assert_eq!(m.selected, vec![true]);
+                assert_eq!(m.skills.len(), 1);
             }
             _ => panic!("expected SkillPicker modal"),
         }
