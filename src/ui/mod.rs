@@ -538,8 +538,8 @@ mod tests {
     #[test]
     fn admin_focused_title_uses_badge_background() {
         let style = Theme::admin_focused_title();
-        assert_eq!(style.bg, Some(Theme::ADMIN_BORDER));
-        assert_eq!(style.fg, Some(Theme::INVERTED_FG));
+        assert_eq!(style.bg, Some(Theme::admin_border()));
+        assert_eq!(style.fg, Some(Theme::inverted_fg()));
     }
 
     #[test]
