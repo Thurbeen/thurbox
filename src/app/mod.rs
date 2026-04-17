@@ -2263,28 +2263,44 @@ impl App {
         }
     }
 
-    /// Switch to the next session in the flat session list (wraps around).
+    /// Indices into `self.sessions` in the order they are rendered.
+    ///
+    /// Mirrors `ui::project_list::OrderedSessions::new`: admin sessions
+    /// are pinned to the top (stable), the rest follow DB order. Used by
+    /// the session-navigation helpers so `Ctrl+J`/`Ctrl+K` step through
+    /// the list the user actually sees.
+    fn render_order_indices(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.sessions.len()).collect();
+        order.sort_by_key(|&i| !self.sessions[i].info.is_admin);
+        order
+    }
+
+    /// Switch to the next session in the **rendered** order (wraps around).
     pub(crate) fn switch_session_forward(&mut self) {
         if self.sessions.is_empty() {
             return;
         }
-        if self.active_index + 1 < self.sessions.len() {
-            self.active_index += 1;
-        } else {
-            self.active_index = 0;
-        }
+        let order = self.render_order_indices();
+        let pos = order
+            .iter()
+            .position(|&i| i == self.active_index)
+            .unwrap_or(0);
+        let next = (pos + 1) % order.len();
+        self.active_index = order[next];
     }
 
-    /// Switch to the previous session in the flat session list (wraps around).
+    /// Switch to the previous session in the **rendered** order (wraps around).
     pub(crate) fn switch_session_backward(&mut self) {
         if self.sessions.is_empty() {
             return;
         }
-        if self.active_index > 0 {
-            self.active_index -= 1;
-        } else {
-            self.active_index = self.sessions.len() - 1;
-        }
+        let order = self.render_order_indices();
+        let pos = order
+            .iter()
+            .position(|&i| i == self.active_index)
+            .unwrap_or(0);
+        let prev = if pos == 0 { order.len() - 1 } else { pos - 1 };
+        self.active_index = order[prev];
     }
 
     /// Clear all search/filter state.
@@ -4640,6 +4656,39 @@ mod tests {
         assert_eq!(app.active_index, 0);
         app.switch_session_backward();
         assert_eq!(app.active_index, 0);
+    }
+
+    #[test]
+    fn switch_forward_follows_admin_pinned_render_order() {
+        // Sessions stored in DB order: [normal-0, normal-1, admin-2].
+        // Rendered order (admin pinned): [admin-2, normal-0, normal-1].
+        // Stepping forward from index 0 (normal-0) must visit the *next
+        // rendered row*, normal-1 (index 1), not admin-2. Stepping
+        // forward from normal-1 must wrap to admin-2 (index 2).
+        let mut app = app_with_sessions(3);
+        app.sessions[2].info.is_admin = true;
+
+        app.active_index = 0;
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 1, "normal-0 → normal-1");
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 2, "normal-1 → admin-2 (wrap)");
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 0, "admin-2 → normal-0");
+    }
+
+    #[test]
+    fn switch_backward_follows_admin_pinned_render_order() {
+        let mut app = app_with_sessions(3);
+        app.sessions[2].info.is_admin = true;
+
+        app.active_index = 0; // normal-0, rendered row 1
+        app.switch_session_backward();
+        assert_eq!(app.active_index, 2, "normal-0 → admin-2 (prev row)");
+        app.switch_session_backward();
+        assert_eq!(app.active_index, 1, "admin-2 → normal-1 (wrap)");
+        app.switch_session_backward();
+        assert_eq!(app.active_index, 0, "normal-1 → normal-0");
     }
 
     #[test]
