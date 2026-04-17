@@ -233,6 +233,14 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
+    /// Style for a focused admin panel title: bold black on yellow badge.
+    pub fn admin_focused_title() -> Style {
+        Style::default()
+            .fg(Self::INVERTED_FG)
+            .bg(Self::ADMIN_BORDER)
+            .add_modifier(Modifier::BOLD)
+    }
+
     /// Style for modal titles: bold black on accent background (same as focused panels).
     pub fn modal_title() -> Style {
         Self::focused_title()

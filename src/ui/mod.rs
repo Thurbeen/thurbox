@@ -91,13 +91,17 @@ pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
 
 /// Build a [`Block`] with yellow admin styling (tri-state focus).
 ///
-/// Focused/Active use `ADMIN_BORDER` (yellow); Inactive falls back to
-/// the standard unfocused gray, keeping the admin chrome unobtrusive
-/// when the panel is in the background.
+/// Focused: thick yellow border + black-on-yellow title badge.
+/// Active: plain yellow border + plain yellow title text.
+/// Inactive: standard unfocused gray border + dimmed title, keeping the
+/// admin chrome unobtrusive when the panel is in the background.
 pub fn admin_block(title_text: &str, level: FocusLevel) -> Block<'_> {
     match level {
         FocusLevel::Focused => Block::default()
-            .title(Line::from(Span::styled(title_text, Theme::admin_title())))
+            .title(Line::from(Span::styled(
+                title_text,
+                Theme::admin_focused_title(),
+            )))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Theme::admin_border())),
@@ -529,5 +533,17 @@ mod tests {
     fn modal_title_danger_uses_danger_color() {
         let style = Theme::modal_title_danger();
         assert_eq!(style.bg, Some(Theme::danger()));
+    }
+
+    #[test]
+    fn admin_focused_title_uses_badge_background() {
+        let style = Theme::admin_focused_title();
+        assert_eq!(style.bg, Some(Theme::ADMIN_BORDER));
+        assert_eq!(style.fg, Some(Theme::INVERTED_FG));
+    }
+
+    #[test]
+    fn admin_focused_title_differs_from_admin_title() {
+        assert_ne!(Theme::admin_focused_title(), Theme::admin_title());
     }
 }
