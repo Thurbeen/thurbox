@@ -209,21 +209,27 @@ fn render_scroll_indicators_variable(
 ) {
     let offset = list_state.offset().min(heights.len());
     let inner_height = block_area.height.saturating_sub(2);
+    let visible_count = visible_count_from_heights(heights, offset, inner_height);
+
+    let items_above = offset;
+    let items_below = heights.len().saturating_sub(offset + visible_count);
+
+    draw_scroll_indicators(frame, block_area, items_above, items_below);
+}
+
+/// Count how many items starting at `offset` fit entirely within `inner_height`.
+fn visible_count_from_heights(heights: &[u16], offset: usize, inner_height: u16) -> usize {
     let mut consumed: u16 = 0;
-    let mut visible_count = 0usize;
+    let mut count = 0usize;
     for &h in heights.iter().skip(offset) {
         let next = consumed.saturating_add(h);
         if next > inner_height {
             break;
         }
         consumed = next;
-        visible_count += 1;
+        count += 1;
     }
-
-    let items_above = offset;
-    let items_below = heights.len().saturating_sub(offset + visible_count);
-
-    draw_scroll_indicators(frame, block_area, items_above, items_below);
+    count
 }
 
 fn draw_scroll_indicators(
@@ -1059,5 +1065,44 @@ mod tests {
             ordered.match_positions[1].as_ref().map(|m| m.name.clone()),
             Some(vec![0, 1])
         );
+    }
+
+    // --- visible_count_from_heights ---
+
+    #[test]
+    fn visible_count_fits_all_items_when_tall_enough() {
+        let heights = [3u16, 1, 1, 3];
+        assert_eq!(visible_count_from_heights(&heights, 0, 100), 4);
+    }
+
+    #[test]
+    fn visible_count_stops_when_next_item_would_overflow() {
+        // 3 + 1 + 1 = 5, next 3 would push to 8 > 6 → stop.
+        let heights = [3u16, 1, 1, 3];
+        assert_eq!(visible_count_from_heights(&heights, 0, 6), 3);
+    }
+
+    #[test]
+    fn visible_count_honors_offset() {
+        let heights = [3u16, 1, 1, 3];
+        // Skip first item, budget 4 → fits 1 + 1 + 2? only 1+1=2 then 3 overflows (2+3=5>4) → 2.
+        assert_eq!(visible_count_from_heights(&heights, 1, 4), 2);
+    }
+
+    #[test]
+    fn visible_count_zero_when_first_item_overflows() {
+        let heights = [5u16, 1];
+        assert_eq!(visible_count_from_heights(&heights, 0, 3), 0);
+    }
+
+    #[test]
+    fn visible_count_empty_heights() {
+        assert_eq!(visible_count_from_heights(&[], 0, 10), 0);
+    }
+
+    #[test]
+    fn visible_count_offset_past_end() {
+        let heights = [1u16, 1];
+        assert_eq!(visible_count_from_heights(&heights, 5, 10), 0);
     }
 }
