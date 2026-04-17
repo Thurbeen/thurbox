@@ -2405,9 +2405,14 @@ impl App {
             self.show_info_panel = false;
         }
 
-        let (r, c) = self.content_area_size();
+        self.resize_sessions_to_content_area();
+    }
+
+    /// Push the current content-area `(rows, cols)` to every session — call after any layout change.
+    pub(crate) fn resize_sessions_to_content_area(&mut self) {
+        let (rows, cols) = self.content_area_size();
         for session in &self.sessions {
-            session.resize(r, c);
+            session.resize(rows, cols);
         }
     }
 
@@ -5625,6 +5630,49 @@ mod tests {
         assert!(app.show_info_panel);
         app.handle_key(KeyCode::F(2), KeyModifiers::NONE);
         assert!(!app.show_info_panel);
+    }
+
+    fn session_parser_size(app: &App, index: usize) -> (u16, u16) {
+        let parser = app.sessions[index].parser.lock().unwrap();
+        parser.screen().size()
+    }
+
+    #[test]
+    fn f3_toggle_resizes_session_parser() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(160, 40));
+        let before = session_parser_size(&app, 0);
+
+        app.handle_key(KeyCode::F(3), KeyModifiers::NONE);
+        let after_open = session_parser_size(&app, 0);
+        assert!(app.show_file_viewer);
+        assert!(
+            after_open.1 < before.1,
+            "terminal width must shrink when file viewer opens: before={before:?}, after={after_open:?}",
+        );
+
+        app.handle_key(KeyCode::F(3), KeyModifiers::NONE);
+        let after_close = session_parser_size(&app, 0);
+        assert!(!app.show_file_viewer);
+        assert_eq!(
+            after_close, before,
+            "terminal size must return to original after file viewer closes",
+        );
+    }
+
+    #[test]
+    fn f2_toggle_resizes_session_parser() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(160, 40));
+        let before = session_parser_size(&app, 0);
+
+        app.handle_key(KeyCode::F(2), KeyModifiers::NONE);
+        let after = session_parser_size(&app, 0);
+        assert!(app.show_info_panel);
+        assert!(
+            after.1 < before.1,
+            "terminal width must shrink when info panel opens: before={before:?}, after={after:?}",
+        );
     }
 
     #[test]

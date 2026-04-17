@@ -986,6 +986,7 @@ impl App {
             }
             Action::ToggleInfoPanel => {
                 self.show_info_panel = !self.show_info_panel;
+                self.resize_sessions_to_content_area();
                 true
             }
             Action::ToggleFileViewer => {
@@ -995,6 +996,7 @@ impl App {
                 } else if self.focus == InputFocus::FileViewer {
                     self.focus = InputFocus::SessionList;
                 }
+                self.resize_sessions_to_content_area();
                 true
             }
         }
