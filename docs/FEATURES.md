@@ -1153,12 +1153,12 @@ separate tmux pane alongside the Claude pane.
 
 ---
 
-## Clickable URL Highlighting
+## Clickable URLs
 
 URLs (`https://`, `http://`, `file://`) in terminal output are
-detected via regex and highlighted in the terminal render. Trailing
-punctuation (`.`, `,`, `;`, `:`, `)`, `]`) is stripped from
-detected URLs. Character-based column offsets ensure correct
+detected via regex at click time and opened on `Ctrl+Click`.
+Trailing punctuation (`.`, `,`, `;`, `:`, `)`, `]`) is stripped
+from detected URLs. Character-based column offsets ensure correct
 positioning with multibyte characters.
 
 ---

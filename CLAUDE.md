@@ -290,7 +290,7 @@ app      ← coordinator, imports all modules
   list with repo/branch display), `terminal_view`, `info_panel`,
   `status_bar`, `repo_picker_modal` (repo selection with
   worktree toggle). `selection.rs` handles mouse-drag text
-  selection, `links.rs` detects and highlights clickable URLs.
+  selection, `links.rs` detects clickable URLs for Ctrl+Click.
 - **`mcp/`** — MCP server (`thurbox-mcp` binary). Exposes
   role/session/VM CRUD over stdio or Streamable HTTP
   JSON-RPC. Shares the same SQLite database as the TUI.
