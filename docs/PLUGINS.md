@@ -18,8 +18,13 @@ content bundle. A plugin with only `[process]` is a pure-process plugin.
 > `SessionBackend` adapter for each `onBackendSelected:<name>` activation
 > event so the contributed backend appears in session creation. Updates from
 > `set_plugin_setting` propagate to the running plugin as `config.updated`
-> notifications. The dynamic-MCP-tool adapter and the lazy-activation hooks
-> for `onCommand`, `onRole`, and `onWorkspaceContains` are still landing.
+> notifications. Plugins declaring `capabilities = ["mcp-tools"]` can be
+> driven over a Unix control socket from `thurbox-mcp`, either listing
+> tools statically from the manifest or delegating to the running plugin
+> via `mcp.list_tools` / `mcp.call`. The lazy-activation hooks for
+> `onCommand`, `onRole`, and `onWorkspaceContains` are still landing — for
+> `mcp-tools` today, use `onStartupFinished` so the plugin is live when the
+> control socket is asked to call it.
 
 ## Disk layout
 
@@ -66,6 +71,14 @@ path = "mcp/gh.toml"             # TOML matching McpServerConfig
 [[contributes.themes]]
 name = "midnight"
 path = "themes/midnight.toml"
+
+# Static MCP tool declarations — lets `list_plugin_tools` answer
+# without waking a dormant plugin. Omit to discover at runtime
+# via the `mcp.list_tools` op.
+[[contributes.mcp_tools]]
+name = "echo"
+description = "Echo back the input as {\"echoed\": <args>}."
+input_schema = { type = "object", additionalProperties = true }
 
 # ── Configuration schema (optional) ─────────────────────────────
 [[contributes.configuration]]
@@ -180,6 +193,16 @@ Twelve tools mirror the skills surface. All are exposed by `thurbox-mcp`.
 | `set_plugin_setting` | Validates against schema; auto-creates a shadow registry row for disk-only plugins so the setting persists |
 | `reset_plugin_setting` | Clear a user override |
 
+### Plugin MCP tools
+
+Exposed over the control socket to bridge `thurbox-mcp` into live
+process plugins.
+
+| Tool | Purpose |
+|------|---------|
+| `list_plugin_tools` | For a running `mcp-tools` plugin, returns `{source: "manifest"\|"runtime", tools: [...]}`. Prefers the static `[[contributes.mcp_tools]]` rows and only falls back to an `mcp.list_tools` RPC when the manifest declares none |
+| `call_plugin_tool` | Forwards `{plugin_name, tool, args}` to the plugin's `mcp.call` op; proxied through the control socket so the `mcp` module stays isolated from plugin-runtime types |
+
 ## Authoring an example
 
 A minimal content bundle:
@@ -242,11 +265,14 @@ overlapping calls demultiplex correctly. Notifications (currently only
 | `backend.kill` | thurbox → plugin | terminate a session |
 | `backend.detach` | thurbox → plugin | release a session without killing it |
 | `backend.pane_pid` | thurbox → plugin | best-effort pid of the foreground process for the session |
+| `mcp.list_tools` | thurbox → plugin | dynamic tool discovery for the `mcp-tools` capability |
+| `mcp.call` | thurbox → plugin | invoke one of the plugin's tools |
 | `stop` | thurbox → plugin | graceful shutdown request; plugin should respond then exit |
 
 `backend.*` ops are required when the manifest declares
-`capabilities = ["backend"]`. The MCP-tools adapter is still landing — its
-ops (`mcp.list_tools`, `mcp.call`) are reserved.
+`capabilities = ["backend"]`. `mcp.*` ops are required when the manifest
+declares `capabilities = ["mcp-tools"]`, though `mcp.list_tools` is skipped
+if the manifest already provides `[[contributes.mcp_tools]]` rows.
 
 ### Handshake
 
@@ -349,6 +375,50 @@ may be `null`.
 `{ "backend_id": "<id>" }` → `{ "pid": 12345 }` or `{ "pid": null }`. Used
 for "open in editor" and process-tree introspection.
 
+### MCP-tools ops
+
+Used by plugins declaring `capabilities = ["mcp-tools"]`. Traffic is
+driven from the control socket rather than the TUI itself: `thurbox-mcp`
+dials `$XDG_RUNTIME_DIR/thurbox/control.sock`, and the TUI-side dispatcher
+forwards calls to the running plugin.
+
+#### `mcp.list_tools`
+
+`params: {}` → result is a JSON array of tool descriptors, one per
+tool. The runtime only issues this op when the manifest contributes
+no `[[contributes.mcp_tools]]` rows.
+
+```json
+[
+  {
+    "name": "echo",
+    "description": "Echo back the input as {\"echoed\": <args>}.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": true
+    }
+  }
+]
+```
+
+#### `mcp.call`
+
+Request `params`:
+
+```json
+{ "name": "echo", "params": { "hello": "world" } }
+```
+
+Response `result` is whatever JSON the tool returns — no envelope:
+
+```json
+{ "echoed": { "hello": "world" } }
+```
+
+Errors surface as the standard `{ "ok": false, "error": "..." }` frame
+and are forwarded verbatim to the `thurbox-mcp` caller.
+
 ### `stop`
 
 `params: {}` → `null`. The runtime sends `stop`, waits for the response,
@@ -377,3 +447,23 @@ To use it as a real installed plugin, copy
 into `~/.local/share/thurbox/admin/plugins/sample-backend-plugin/`, place
 the compiled binary at `bin/sample-backend-plugin`, and restart thurbox.
 The `sample` backend will appear in session creation.
+
+## Reference MCP plugin
+
+[`examples/sample_mcp_plugin.rs`](../examples/sample_mcp_plugin.rs) is the
+canonical reference for the `mcp-tools` capability. It declares
+`capabilities = ["mcp-tools"]` and exposes a single `echo` tool that
+returns its arguments wrapped in `{"echoed": <args>}`. The same process
+handles both paths: static tools (populated from the manifest) and
+dynamic ones (answered on `mcp.list_tools`).
+
+Build it once and the integration test
+[`tests/mcp_tools_integration.rs`](../tests/mcp_tools_integration.rs)
+exercises the full stack — manifest discovery, spawn + handshake,
+control-socket framing, static-vs-runtime tool listing, and
+round-tripped `mcp.call`:
+
+```bash
+cargo build --example sample-mcp-plugin
+cargo nextest run --test mcp_tools_integration
+```

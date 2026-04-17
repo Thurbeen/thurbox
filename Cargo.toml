@@ -77,6 +77,13 @@ path = "src/bin/thurbox-cli.rs"
 name = "sample-backend-plugin"
 path = "examples/sample_backend_plugin.rs"
 
+# Reference implementation of a process plugin contributing the `mcp-tools`
+# capability. Used by `tests/mcp_tools_integration.rs`; shipped as a starting
+# point for plugin authors who want to expose MCP tools to thurbox-mcp.
+[[example]]
+name = "sample-mcp-plugin"
+path = "examples/sample_mcp_plugin.rs"
+
 [dev-dependencies]
 tempfile = "3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

@@ -134,6 +134,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    // The listener owns its own DB connection (SQLite is in WAL mode, so
+    // sharing the file across connections is fine). Drop of the handle at
+    // the end of main aborts the task and removes the socket file.
+    let _control_socket =
+        bind_control_socket(Arc::clone(&plugin_runtime), &db_path).await;
+
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let size = terminal.size()?;
@@ -222,4 +228,36 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
     }
 
     Ok(())
+}
+
+/// Bind the control socket so `thurbox-mcp` can reach running plugins.
+///
+/// Every failure — missing runtime dir, DB open failure, bind failure — is
+/// logged and reduced to `None`; the TUI stays healthy even if the socket
+/// never comes up (degraded MCP plugin-tool surface, nothing else).
+async fn bind_control_socket(
+    runtime: Arc<PluginRuntime>,
+    db_path: &std::path::Path,
+) -> Option<thurbox::plugin::control_socket::ControlSocketHandle> {
+    let path = thurbox::paths::control_socket_path().or_else(|| {
+        tracing::warn!("No runtime directory available; control socket disabled");
+        None
+    })?;
+    let listener_db = match Database::open(db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!(error = %e, "Control socket listener could not open DB");
+            return None;
+        }
+    };
+    match thurbox::plugin::control_socket::spawn(runtime, listener_db, path.clone()).await {
+        Ok(handle) => {
+            tracing::info!(socket = %path.display(), "Control socket listening");
+            Some(handle)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, socket = %path.display(), "Control socket bind failed");
+            None
+        }
+    }
 }

@@ -5,8 +5,8 @@ pub mod theme_config;
 pub use keybindings::{Action, KeyBindings, KeyChord};
 pub use plugin_config::{
     ActivationEvent, Capability, ConfigurationSchema, ConfigurationType, Contributes,
-    McpServerContribution, PluginConfig, PluginManifest, ProcessSection, RoleContribution,
-    SkillContribution, ThemeContribution,
+    McpServerContribution, McpToolContribution, PluginConfig, PluginManifest, ProcessSection,
+    RoleContribution, SkillContribution, ThemeContribution,
 };
 pub use theme_config::{ThemePalette, ThemePreset};
 

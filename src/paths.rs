@@ -92,6 +92,11 @@ pub enum PathKind {
     WorktreesDir,
     /// User keybindings JSON file: `~/.config/thurbox/keybindings.json`
     KeybindingsFile,
+    /// Per-user runtime directory for ephemeral sockets and pid files.
+    /// Prefers `$XDG_RUNTIME_DIR/thurbox[-dev]/`, falling back to
+    /// `/tmp/thurbox[-dev]-$UID/`. Created with mode 0700 by the TUI at
+    /// boot.
+    RuntimeDir,
 }
 
 /// Path resolution strategy (thread-local).
@@ -154,7 +159,21 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
         PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
         PathKind::KeybindingsFile => xdg_config_subpath("keybindings.json"),
+        PathKind::RuntimeDir => runtime_dir_xdg(),
     }
+}
+
+/// Resolve the per-user runtime directory using XDG, falling back to a
+/// per-user subdirectory of `/tmp/` when `$XDG_RUNTIME_DIR` is unset (macOS).
+fn runtime_dir_xdg() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return Some(PathBuf::from(xdg).join(app_dir_name()));
+    }
+    // macOS has no XDG_RUNTIME_DIR. Key the fallback by $USER so multiple
+    // accounts on the same host don't contend for /tmp/thurbox/. Callers must
+    // create the directory with mode 0700 to match the XDG runtime-dir contract.
+    let user = std::env::var("USER").ok()?;
+    Some(PathBuf::from("/tmp").join(format!("{}-{user}", app_dir_name())))
 }
 
 /// Resolve a path using a custom base directory (for testing).
@@ -172,6 +191,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::MetricsDir => base.join("metrics"),
         PathKind::WorktreesDir => base.join("worktrees"),
         PathKind::KeybindingsFile => base.join("keybindings.json"),
+        PathKind::RuntimeDir => base.join("runtime"),
     }
 }
 
@@ -442,6 +462,25 @@ pub fn worktrees_directory() -> Option<PathBuf> {
 /// `$HOME/.config/thurbox/keybindings.json`.
 pub fn keybindings_file() -> Option<PathBuf> {
     resolve(PathKind::KeybindingsFile)
+}
+
+/// Resolve the per-user runtime directory used for ephemeral sockets.
+///
+/// Returns `$XDG_RUNTIME_DIR/thurbox[-dev]/`, or `/tmp/thurbox[-dev]-$USER/`
+/// when `$XDG_RUNTIME_DIR` is unset (macOS). Callers that bind sockets here
+/// are responsible for creating the directory with mode 0700 so it matches
+/// the XDG runtime-dir trust contract.
+pub fn runtime_directory() -> Option<PathBuf> {
+    resolve(PathKind::RuntimeDir)
+}
+
+/// Resolve the path to the thurbox control socket.
+///
+/// The TUI binds this socket at boot so out-of-process clients — primarily
+/// `thurbox-mcp` — can reach the plugin runtime. One socket per user; the
+/// TUI owns the file and unlinks stale copies before bind().
+pub fn control_socket_path() -> Option<PathBuf> {
+    Some(runtime_directory()?.join("control.sock"))
 }
 
 /// Resolve the path to the `thurbox-mcp` binary.
@@ -1076,6 +1115,68 @@ mod tests {
 
         let path = metrics_directory().unwrap();
         assert!(path.ends_with("metrics"));
+
+        reset_to_xdg();
+    }
+
+    #[test]
+    fn runtime_directory_uses_xdg_when_set() {
+        // Force XDG strategy and a known XDG_RUNTIME_DIR. Thread-isolated
+        // so we don't fight other tests for env state.
+        let out = std::thread::spawn(|| {
+            let orig_xdg = std::env::var_os("XDG_RUNTIME_DIR");
+            std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1234");
+            reset_to_xdg();
+            let p = runtime_directory();
+            if let Some(x) = orig_xdg {
+                std::env::set_var("XDG_RUNTIME_DIR", x);
+            } else {
+                std::env::remove_var("XDG_RUNTIME_DIR");
+            }
+            p
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        // `app_dir_name()` is "thurbox" in release, "thurbox-dev" in dev builds.
+        assert!(out.starts_with("/run/user/1234"));
+        assert!(out.ends_with("thurbox") || out.ends_with("thurbox-dev"));
+    }
+
+    #[test]
+    fn runtime_directory_falls_back_to_per_user_tmp() {
+        let out = std::thread::spawn(|| {
+            let orig_xdg = std::env::var_os("XDG_RUNTIME_DIR");
+            let orig_user = std::env::var_os("USER");
+            std::env::remove_var("XDG_RUNTIME_DIR");
+            std::env::set_var("USER", "thurbox-test");
+            reset_to_xdg();
+            let p = runtime_directory();
+            if let Some(x) = orig_xdg {
+                std::env::set_var("XDG_RUNTIME_DIR", x);
+            }
+            if let Some(u) = orig_user {
+                std::env::set_var("USER", u);
+            } else {
+                std::env::remove_var("USER");
+            }
+            p
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        let s = out.to_string_lossy();
+        assert!(s.starts_with("/tmp/"));
+        assert!(s.contains("thurbox-test"));
+    }
+
+    #[test]
+    fn control_socket_path_sits_under_runtime_dir() {
+        let base = PathBuf::from("/custom/run");
+        set_test_dir(&base);
+
+        let sock = control_socket_path().unwrap();
+        assert_eq!(sock, base.join("runtime").join("control.sock"));
 
         reset_to_xdg();
     }

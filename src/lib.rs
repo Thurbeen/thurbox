@@ -8,6 +8,7 @@ pub mod git;
 pub mod mcp;
 pub mod paths;
 pub mod plugin;
+pub mod plugin_bridge;
 pub mod session;
 pub mod session_ops;
 pub mod storage;

@@ -598,3 +598,61 @@ Streamable HTTP is the MCP standard for networked transports.
 - *Always-on HTTP (no stdio)* — stdio is simpler for the
   common case (local Admin session). HTTP is opt-in for
   advanced deployments.
+
+---
+
+## ADR-18: Plugin control socket + `plugin_bridge` seam
+
+**Choice**: Cross-process calls from `thurbox-mcp` into running
+process plugins travel over a Unix domain socket at
+`$XDG_RUNTIME_DIR/thurbox/control.sock` (0o600). The listener lives
+in the TUI (`src/plugin/control_socket/`), owns the `PluginRuntime`,
+and answers a tiny op set (`plugin.list`, `plugin.list_tools`,
+`plugin.call`). The `thurbox-mcp` side dials the socket through a
+new sealed module `plugin_bridge` — stdlib + serde + tokio only, no
+knowledge of plugin-runtime types.
+
+**Why**: `thurbox-mcp` runs in its own process but the plugin
+children are owned by the TUI. The MCP server needs to list and call
+their tools without gaining a direct dependency on `PluginRuntime`
+(which would break the existing `mcp → storage, session, sync,
+paths` isolation rule enforced by `tests/architecture_rules.rs`).
+A narrow transport module keeps the surface tiny: `mcp` depends on
+`plugin_bridge` for framing only, and `plugin_bridge` depends on
+nothing inside thurbox except `paths`. The TUI's control-socket
+listener is free to touch `PluginRuntime` because it's a sibling of
+the rest of the plugin code, not part of `mcp`.
+
+**Key design decisions**:
+
+- One connection per call. No pooling, no multiplexing — request
+  framing is newline-delimited JSON, one round-trip per call, and
+  the socket is dialled fresh each time. Cheap and hard to desync.
+- Static tools win over RPC. `list_plugin_tools` reads
+  `[[contributes.mcp_tools]]` from the manifest whenever it can and
+  only falls back to `mcp.list_tools` when none are declared. This
+  lets callers enumerate tools without waking dormant plugins.
+- `DispatchCtx` wraps `Arc<std::sync::Mutex<Database>>`. The
+  dispatcher is spawned per-connection on tokio and `Database`
+  (holding an `rusqlite::Connection`) is `!Sync`; a sync mutex that
+  is locked and dropped *before* any `.await` makes the dispatch
+  path `Send` without restructuring the existing single-task code
+  paths that hold `&Database` across awaits.
+- The listener's `ControlSocketHandle` aborts its task and unlinks
+  the socket file on `Drop`, so shutting down the TUI also tears
+  down the listener deterministically.
+
+**Rejected**:
+
+- *Embedding `PluginRuntime` access in `mcp`* — would break module
+  isolation and couple the MCP server's process lifecycle to the
+  TUI's plugin state machine.
+- *Shared in-process runtime (one binary)* — `thurbox-mcp` is
+  deliberately a separate process (ADR-13). Reverting that would
+  undo the isolation benefits and inflate the TUI's startup cost.
+- *Named pipes / TCP loopback* — Unix sockets give filesystem
+  permissions for free (owner-only via 0o600) and avoid picking a
+  port. `$XDG_RUNTIME_DIR` already scopes them per-user.
+- *Pool of persistent connections* — premature; call volume is low
+  (an MCP client enumerating tools), and the cost of `connect()` on
+  a Unix socket is negligible compared to the plugin's own work.

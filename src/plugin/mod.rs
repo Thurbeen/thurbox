@@ -27,8 +27,10 @@
 
 pub mod activation;
 pub mod backend_adapter;
+pub mod control_socket;
 pub mod handshake;
 pub mod output;
+pub mod proxy;
 pub mod rpc;
 
 use std::collections::HashMap;
@@ -41,13 +43,14 @@ use tokio::sync::Mutex;
 
 use crate::agent::backend::SessionBackend;
 use crate::agent::registry::BackendRegistry;
-use crate::session::{ActivationEvent, PluginConfig, PluginManifest};
+use crate::session::{ActivationEvent, Capability, PluginConfig, PluginManifest};
 use crate::storage::Database;
 
 use activation::{any_event_matches, FiredEvent};
 use backend_adapter::PluginBackend;
 use handshake::{perform_handshake, HandshakeError, HandshakeResponse};
 use output::PluginLogWriter;
+use proxy::McpToolProxy;
 use rpc::{RpcClient, RpcError};
 
 /// One running process plugin.
@@ -245,6 +248,42 @@ impl PluginRuntime {
         if let Err(e) = running.client.notify("config.updated", payload).await {
             tracing::warn!(plugin = %plugin_name, key = %key, error = %e, "config.updated notify failed");
         }
+    }
+
+    /// Return a proxy for talking to a running plugin's `mcp-tools` capability.
+    ///
+    /// Returns `None` when the plugin isn't running, isn't a process plugin,
+    /// or didn't declare the `mcp-tools` capability. The proxy holds a clone
+    /// of the underlying [`RpcClient`], so it stays valid until the plugin
+    /// shuts down — but the caller should not cache it across a
+    /// `shutdown_all` / restart boundary.
+    pub async fn mcp_proxy(&self, plugin_name: &str) -> Option<McpToolProxy> {
+        let map = self.running.lock().await;
+        let running = map.get(plugin_name)?;
+        let process = running.manifest.process.as_ref()?;
+        if !process.capabilities.contains(&Capability::McpTools) {
+            return None;
+        }
+        Some(McpToolProxy::new(running.client.clone()))
+    }
+
+    /// Names of currently running plugins that declared the `mcp-tools`
+    /// capability, sorted for deterministic output. Used by the control
+    /// socket's `plugin.list` op.
+    pub async fn list_mcp_tools_plugins(&self) -> Vec<String> {
+        let map = self.running.lock().await;
+        let mut names: Vec<String> = map
+            .values()
+            .filter(|p| {
+                p.manifest
+                    .process
+                    .as_ref()
+                    .is_some_and(|proc| proc.capabilities.contains(&Capability::McpTools))
+            })
+            .map(|p| p.name.clone())
+            .collect();
+        names.sort();
+        names
     }
 
     async fn spawn_plugin(

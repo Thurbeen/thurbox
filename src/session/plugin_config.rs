@@ -161,6 +161,8 @@ pub struct Contributes {
     pub themes: Vec<ThemeContribution>,
     #[serde(default)]
     pub configuration: Vec<ConfigurationSchema>,
+    #[serde(default)]
+    pub mcp_tools: Vec<McpToolContribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -189,6 +191,25 @@ pub struct McpServerContribution {
 pub struct ThemeContribution {
     pub name: String,
     pub path: PathBuf,
+}
+
+/// One `[[contributes.mcp_tools]]` entry — a tool the plugin's process surface
+/// exposes via `mcp.call`. Declaring tools in the manifest makes them
+/// discoverable through `list_plugin_tools` without spawning the plugin, which
+/// is the unlock for the "dormant until needed" pattern (activation_events =
+/// ["onCommand:<name>"]). A plugin may still implement the dynamic `mcp.list_tools`
+/// op — if this vec is empty, the host falls back to asking the plugin at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpToolContribution {
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_empty_input_schema")]
+    pub input_schema: serde_json::Value,
+}
+
+fn default_empty_input_schema() -> serde_json::Value {
+    serde_json::json!({ "type": "object" })
 }
 
 /// One `[[contributes.configuration]]` entry — a tunable the plugin exposes.
@@ -256,6 +277,28 @@ impl PluginManifest {
         }
         for cfg in &self.contributes.configuration {
             cfg.validate_self()?;
+        }
+        for tool in &self.contributes.mcp_tools {
+            tool.validate_self()?;
+        }
+        Ok(())
+    }
+}
+
+impl McpToolContribution {
+    fn validate_self(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("mcp_tools entry name cannot be empty".into());
+        }
+        // Tool names leak through MCP protocol; apply the same safety rule
+        // we use for every other user-facing identifier in a manifest.
+        crate::paths::validate_safe_name(&self.name)
+            .map_err(|e| format!("Invalid mcp_tools name '{}': {e}", self.name))?;
+        if !self.input_schema.is_object() {
+            return Err(format!(
+                "mcp_tools '{}': input_schema must be a JSON object",
+                self.name
+            ));
         }
         Ok(())
     }
@@ -522,6 +565,116 @@ mod tests {
         assert!(schema.validate_value(&toml::Value::Integer(0)).is_err());
         assert!(schema.validate_value(&toml::Value::Integer(20)).is_err());
         schema.validate_value(&toml::Value::Integer(8)).unwrap();
+    }
+
+    #[test]
+    fn manifest_mcp_tools_parses_inline_schema() {
+        let raw = r#"
+            name = "sample"
+            version = "0.1.0"
+            thurbox_plugin_api = 1
+
+            [process]
+            exec = "bin/p"
+            capabilities = ["mcp-tools"]
+            activation_events = ["onCommand:echo"]
+
+            [[contributes.mcp_tools]]
+            name = "echo"
+            description = "Echoes its input back."
+            input_schema = { type = "object", properties = { msg = { type = "string" } }, required = ["msg"] }
+        "#;
+        let m: PluginManifest = toml::from_str(raw).unwrap();
+        m.validate().unwrap();
+        assert_eq!(m.contributes.mcp_tools.len(), 1);
+        let t = &m.contributes.mcp_tools[0];
+        assert_eq!(t.name, "echo");
+        assert_eq!(t.description, "Echoes its input back.");
+        assert_eq!(t.input_schema["type"], "object");
+        assert_eq!(t.input_schema["properties"]["msg"]["type"], "string");
+        assert_eq!(t.input_schema["required"], serde_json::json!(["msg"]));
+    }
+
+    #[test]
+    fn manifest_mcp_tools_defaults_input_schema_to_empty_object() {
+        let raw = r#"
+            name = "sample"
+            version = "0.1.0"
+            thurbox_plugin_api = 1
+
+            [[contributes.mcp_tools]]
+            name = "ping"
+            description = "Returns pong."
+        "#;
+        let m: PluginManifest = toml::from_str(raw).unwrap();
+        m.validate().unwrap();
+        assert_eq!(
+            m.contributes.mcp_tools[0].input_schema,
+            serde_json::json!({ "type": "object" })
+        );
+    }
+
+    #[test]
+    fn manifest_mcp_tools_rejects_unknown_field() {
+        let raw = r#"
+            name = "sample"
+            version = "0.1.0"
+            thurbox_plugin_api = 1
+
+            [[contributes.mcp_tools]]
+            name = "echo"
+            description = "x"
+            mystery = 42
+        "#;
+        assert!(toml::from_str::<PluginManifest>(raw).is_err());
+    }
+
+    #[test]
+    fn manifest_mcp_tools_rejects_empty_name() {
+        let raw = r#"
+            name = "sample"
+            version = "0.1.0"
+            thurbox_plugin_api = 1
+
+            [[contributes.mcp_tools]]
+            name = ""
+            description = "x"
+        "#;
+        let m: PluginManifest = toml::from_str(raw).unwrap();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn manifest_mcp_tools_rejects_unsafe_name() {
+        let raw = r#"
+            name = "sample"
+            version = "0.1.0"
+            thurbox_plugin_api = 1
+
+            [[contributes.mcp_tools]]
+            name = "../escape"
+            description = "x"
+        "#;
+        let m: PluginManifest = toml::from_str(raw).unwrap();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn manifest_mcp_tools_rejects_non_object_schema() {
+        // Structural TOML parse accepts any TOML value here — validate catches it.
+        let raw = r#"
+            name = "sample"
+            version = "0.1.0"
+            thurbox_plugin_api = 1
+
+            [[contributes.mcp_tools]]
+            name = "echo"
+            description = "x"
+            input_schema = "not-an-object"
+        "#;
+        let m: PluginManifest = toml::from_str(raw).unwrap();
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("input_schema"));
     }
 
     #[test]
