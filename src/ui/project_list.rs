@@ -474,12 +474,6 @@ fn render_session_section(
             let prefix_width = prefix_str.chars().count();
             let name_len = info.name.chars().count();
             let status_len = status_text.chars().count();
-            let used = prefix_width + name_len + status_len;
-            let gap = if used < inner_width {
-                inner_width - used
-            } else {
-                1
-            };
 
             let status_style = if is_dimmed {
                 Style::default().fg(Theme::text_muted())
@@ -501,18 +495,29 @@ fn render_session_section(
                 name_style,
             );
 
-            line1_spans.push(Span::raw(" ".repeat(gap)));
-            line1_spans.push(Span::styled(status_text, status_style));
+            if is_expanded {
+                let used = prefix_width + name_len + status_len;
+                let gap = if used < inner_width {
+                    inner_width - used
+                } else {
+                    1
+                };
+                line1_spans.push(Span::raw(" ".repeat(gap)));
+                line1_spans.push(Span::styled(status_text.clone(), status_style));
+            }
             let line1 = Line::from(line1_spans);
 
-            // Line 2: provisioning step or role [+ tag]
-            // Line 3 (optional): repo/branch text
-            // Only shown when the row is expanded (selected or search-matched);
-            // collapsed rows render as a single compact line.
+            // Default layout (non-expanded): 2 lines — name on line 1, status on line 2.
+            // Expanded (selected or search-matched): 3 lines — name+status on line 1,
+            // role (or provisioning step) on line 2, optional repo/branch on line 3.
             let mut item_lines = vec![line1];
 
             if !is_expanded {
-                // Collapsed: line 1 only.
+                // 2-line view: status (with elapsed) on its own line.
+                item_lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(status_text, status_style),
+                ]));
             } else if is_dimmed {
                 let dimmed = Style::default().fg(Theme::text_muted());
                 item_lines.push(Line::from(vec![Span::styled(
