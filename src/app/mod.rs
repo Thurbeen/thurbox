@@ -2731,100 +2731,130 @@ impl App {
             }
         }
 
-        // Handle added sessions from other instances
-        // Try to adopt them from the backend using their backend_id
+        // Handle added sessions from other instances.
+        //
+        // Headless spawns (CLI/MCP) persist the DB row with an empty
+        // `backend_id` because only the TUI knows the real tmux pane id
+        // (`%N`). Before spawning, call `discover()` and look up the
+        // existing window by sanitized name — otherwise we'd create a
+        // duplicate `tb-<name>` window for the one the CLI already
+        // opened, and exact-match `send-keys` would then fail on
+        // "ambiguous window".
+        //
+        // `discover()` is cached per backend_type so a burst of added
+        // sessions only hits tmux once per backend.
+        let mut discovered_by_backend: HashMap<
+            String,
+            Vec<crate::agent::backend::DiscoveredSession>,
+        > = HashMap::new();
         for shared_session in delta.added_sessions {
             // Skip if we already have this session
             if self.sessions.iter().any(|s| s.info.id == shared_session.id) {
                 continue;
             }
 
-            // Try to adopt from backend
+            let backend = self
+                .backends
+                .get(&shared_session.backend_type)
+                .cloned()
+                .unwrap_or_else(|| self.backends.default_backend().clone());
+
+            let discovered = discovered_by_backend
+                .entry(shared_session.backend_type.clone())
+                .or_insert_with(|| backend.discover().unwrap_or_default());
+            let matching_discovered = Self::find_matching_discovered(&shared_session, discovered);
+
             let (rows, cols) = self.content_area_size();
-            let env = self.resolve_role_permissions(&shared_session.role).env;
-            match Session::adopt(
-                shared_session.name.clone(),
-                rows,
-                cols,
-                &shared_session.backend_id,
-                self.backends.default_backend(),
-                &self.provider,
-                env,
-            ) {
-                Ok(mut adopted_session) => {
-                    // Preserve the original session ID from shared state
-                    // (Session::adopt creates a new one, but we need the consistent ID)
-                    adopted_session.info.id = shared_session.id;
+            if let Some(disc) = matching_discovered {
+                let env = self.resolve_role_permissions(&shared_session.role).env;
+                match Session::adopt(
+                    shared_session.name.clone(),
+                    rows,
+                    cols,
+                    &disc.backend_id,
+                    &backend,
+                    &self.provider,
+                    env,
+                ) {
+                    Ok(mut adopted_session) => {
+                        // Preserve the original session ID from shared
+                        // state (Session::adopt creates a new one, but we
+                        // need the consistent ID).
+                        adopted_session.info.id = shared_session.id;
+                        Self::apply_shared_session_metadata(&mut adopted_session, &shared_session);
+                        self.sessions.push(adopted_session);
+                        // Persist the real pane_id (`%N`) back to the DB
+                        // so future lookups short-circuit on the
+                        // backend_id match instead of always falling back
+                        // to name matching.
+                        self.save_state();
+                        tracing::debug!(
+                            "Adopted session {} from another instance",
+                            shared_session.name
+                        );
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to adopt session {} by discovered id {}: {}",
+                            shared_session.name,
+                            disc.backend_id,
+                            e
+                        );
+                    }
+                }
+                // Either adoption succeeded or the discovered window
+                // already exists and adoption failed transiently — in
+                // both cases we must NOT fall through to spawn, because
+                // that would create a second window with the same name.
+                continue;
+            }
 
-                    // Update with metadata from shared state
-                    Self::apply_shared_session_metadata(&mut adopted_session, &shared_session);
+            // No matching discovered window. If the session has an
+            // `agent_session_id`, spawn a fresh window with
+            // `--session-id` so claude creates the conversation (e.g.
+            // CLI-created sessions whose claude process never persisted
+            // a conversation before we first adopt them).
+            if let Some(ref agent_sid) = shared_session.agent_session_id {
+                let worktree_infos = Self::recreate_worktrees(&shared_session.worktrees);
+                let cwd = worktree_infos
+                    .first()
+                    .map(|wt| wt.worktree_path.clone())
+                    .or(shared_session.cwd.clone());
 
-                    // Add to sessions
-                    self.sessions.push(adopted_session);
+                let permissions = self.resolve_role_permissions(&shared_session.role);
+                let resume_session_id =
+                    crate::session_ops::resume_id_if_transcript_exists(agent_sid, &permissions);
+                let config = SessionConfig {
+                    resume_session_id,
+                    agent_session_id: Some(agent_sid.clone()),
+                    cwd,
+                    additional_dirs: shared_session.additional_dirs.clone(),
+                    role: shared_session.role.clone(),
+                    permissions,
+                    vm_id: None,
+                    container_id: None,
+                    fork_session_id: None,
+                    mcp_servers: vec![],
+                    skills: vec![],
+                    model: shared_session.model.clone(),
+                };
 
+                if let Ok(mut spawned) = Session::spawn(
+                    shared_session.name.clone(),
+                    rows,
+                    cols,
+                    &config,
+                    &backend,
+                    &self.provider,
+                ) {
+                    spawned.info.id = shared_session.id;
+                    spawned.info.worktrees = worktree_infos;
+                    self.sessions.push(spawned);
+                    self.save_state();
                     tracing::debug!(
-                        "Adopted session {} from another instance",
+                        "Spawned restored session {} with --resume",
                         shared_session.name
                     );
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        "Failed to adopt session {} from backend: {}",
-                        shared_session.name,
-                        e
-                    );
-
-                    // If adopt failed but session has an agent_session_id,
-                    // spawn using `--session-id` so claude creates the
-                    // conversation if it doesn't yet exist (e.g. sessions
-                    // created via the CLI whose claude process never
-                    // persisted a conversation before we first adopt them).
-                    if let Some(ref agent_sid) = shared_session.agent_session_id {
-                        let worktree_infos = Self::recreate_worktrees(&shared_session.worktrees);
-                        let cwd = worktree_infos
-                            .first()
-                            .map(|wt| wt.worktree_path.clone())
-                            .or(shared_session.cwd.clone());
-
-                        let permissions = self.resolve_role_permissions(&shared_session.role);
-                        let resume_session_id = crate::session_ops::resume_id_if_transcript_exists(
-                            agent_sid,
-                            &permissions,
-                        );
-                        let config = SessionConfig {
-                            resume_session_id,
-                            agent_session_id: Some(agent_sid.clone()),
-                            cwd,
-                            additional_dirs: shared_session.additional_dirs.clone(),
-                            role: shared_session.role.clone(),
-                            permissions,
-                            vm_id: None,
-                            container_id: None,
-                            fork_session_id: None,
-                            mcp_servers: vec![],
-                            skills: vec![],
-                            model: shared_session.model.clone(),
-                        };
-
-                        let (rows, cols) = self.content_area_size();
-                        if let Ok(mut spawned) = Session::spawn(
-                            shared_session.name.clone(),
-                            rows,
-                            cols,
-                            &config,
-                            self.backends.default_backend(),
-                            &self.provider,
-                        ) {
-                            spawned.info.id = shared_session.id;
-                            spawned.info.worktrees = worktree_infos;
-                            self.sessions.push(spawned);
-                            self.save_state();
-                            tracing::debug!(
-                                "Spawned restored session {} with --resume",
-                                shared_session.name
-                            );
-                        }
-                    }
                 }
             }
         }
@@ -6588,6 +6618,197 @@ mod tests {
         let shared = make_shared_session("thurbox:@0", "1");
         let result = App::find_matching_discovered(&shared, &[]);
         assert!(result.is_none());
+    }
+
+    // --- handle_external_state_change adoption tests ---
+
+    /// Mock backend that records spawn/adopt calls and returns a
+    /// caller-configured discover() list. Used to verify that the
+    /// TUI's reaction to a CLI-created session adopts the existing
+    /// window rather than spawning a duplicate.
+    struct RecordingBackend {
+        discovered: Vec<crate::agent::backend::DiscoveredSession>,
+        spawn_calls: std::sync::atomic::AtomicUsize,
+        adopt_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RecordingBackend {
+        fn new(discovered: Vec<crate::agent::backend::DiscoveredSession>) -> Self {
+            Self {
+                discovered,
+                spawn_calls: std::sync::atomic::AtomicUsize::new(0),
+                adopt_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl SessionBackend for RecordingBackend {
+        fn name(&self) -> &str {
+            "local-tmux"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &std::collections::HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+            self.spawn_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("recording backend: spawn intentionally fails to avoid real tmux IO")
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+            self.adopt_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("recording backend: adopt intentionally fails to avoid real tmux IO")
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            Ok(self.discovered.clone())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+    }
+
+    fn app_with_backend(backend: Arc<RecordingBackend>) -> App {
+        App::new(
+            24,
+            120,
+            BackendRegistry::new(backend.clone() as Arc<dyn SessionBackend>),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn handle_external_state_change_adopts_without_spawning_duplicate() {
+        // Simulates the live-TUI + headless-CLI race: the CLI just
+        // opened a tb-foo window (so discover() reports one), and the
+        // DB sync delta arrives with an empty backend_id. The TUI
+        // must name-match the existing window and NOT call spawn(),
+        // otherwise tmux would end up with two tb-foo windows and
+        // exact-match send-keys would fail with "ambiguous window".
+        let backend = Arc::new(RecordingBackend::new(vec![
+            crate::agent::backend::DiscoveredSession {
+                backend_id: "%42".into(),
+                name: "tb-foo".into(),
+                is_alive: true,
+            },
+        ]));
+        let mut app = app_with_backend(backend.clone());
+
+        let shared = sync::SharedSession {
+            id: crate::session::SessionId::default(),
+            name: "foo".into(),
+            role: String::new(),
+            backend_id: String::new(), // headless spawn stored it empty
+            backend_type: "local-tmux".into(),
+            agent_session_id: Some("agent-xyz".into()),
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            tombstone: false,
+            tombstone_at: None,
+            model: None,
+        };
+        let delta = sync::StateDelta {
+            added_sessions: vec![shared],
+            removed_sessions: Vec::new(),
+            updated_sessions: Vec::new(),
+            counter_increment: 0,
+        };
+
+        app.handle_external_state_change(delta);
+
+        let spawn_calls = backend
+            .spawn_calls
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let adopt_calls = backend
+            .adopt_calls
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            spawn_calls, 0,
+            "spawn must NOT be called when a matching tb-<name> window already exists"
+        );
+        assert_eq!(
+            adopt_calls, 1,
+            "adopt must be attempted once against the discovered window"
+        );
+    }
+
+    #[test]
+    fn handle_external_state_change_spawns_when_no_discovered_match() {
+        // Counterpart to the above: if discover() returns no matching
+        // window, the TUI should fall through to Session::spawn (the
+        // pre-existing restore path).
+        let backend = Arc::new(RecordingBackend::new(vec![]));
+        let mut app = app_with_backend(backend.clone());
+
+        let shared = sync::SharedSession {
+            id: crate::session::SessionId::default(),
+            name: "foo".into(),
+            role: String::new(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: Some("agent-xyz".into()),
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            tombstone: false,
+            tombstone_at: None,
+            model: None,
+        };
+        let delta = sync::StateDelta {
+            added_sessions: vec![shared],
+            removed_sessions: Vec::new(),
+            updated_sessions: Vec::new(),
+            counter_increment: 0,
+        };
+
+        app.handle_external_state_change(delta);
+
+        assert_eq!(
+            backend
+                .adopt_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            backend
+                .spawn_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     // --- Modal flow tests ---

@@ -34,6 +34,7 @@ pub(crate) fn now_millis() -> u64 {
 }
 
 /// Metadata returned when discovering existing sessions from the backend.
+#[derive(Clone)]
 pub struct DiscoveredSession {
     /// Backend-specific ID (e.g., tmux pane_id).
     pub backend_id: String,
