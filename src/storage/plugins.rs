@@ -28,6 +28,15 @@ pub enum PluginSource {
     Registered,
 }
 
+/// Outcome of [`Database::uninstall_plugin_with_disk`].
+#[derive(Debug, Clone)]
+pub struct UninstallSummary {
+    pub name: String,
+    pub removed_disk: bool,
+    pub removed_registry: bool,
+    pub disk_path: PathBuf,
+}
+
 fn row_to_plugin_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<PluginConfig> {
     let name: String = row.get(0)?;
     let path: String = row.get(1)?;
@@ -104,6 +113,46 @@ impl Database {
             .conn
             .execute("DELETE FROM plugins WHERE plugin_name = ?1", params![name])?;
         Ok(count > 0)
+    }
+
+    /// Uninstall a plugin: removes the directory under
+    /// `~/.local/share/thurbox/admin/plugins/` (when applicable) AND deletes
+    /// the registry row (cascades `plugin_settings`). For plugins registered
+    /// outside the admin dir, only the registry row is removed.
+    ///
+    /// Shared by the MCP `uninstall_plugin` tool and the TUI Plugins-tab
+    /// uninstall affordance so both surfaces apply identical rules.
+    pub fn uninstall_plugin_with_disk(&self, name: &str) -> Result<UninstallSummary, String> {
+        let registered = self
+            .list_global_plugins()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|p| p.name == name);
+        let plugins_dir =
+            crate::paths::plugins_directory().ok_or("Could not resolve plugins directory")?;
+        let disk_path = registered
+            .as_ref()
+            .map(|p| p.path.clone())
+            .unwrap_or_else(|| plugins_dir.join(name));
+
+        let mut removed_disk = false;
+        if disk_path.starts_with(&plugins_dir) && disk_path.exists() {
+            std::fs::remove_dir_all(&disk_path)
+                .map_err(|e| format!("Failed to remove plugin directory: {e}"))?;
+            removed_disk = true;
+        }
+        let removed_registry = self.delete_global_plugin(name).map_err(|e| e.to_string())?;
+
+        if !removed_disk && !removed_registry {
+            return Err(format!("Plugin not found: {name}"));
+        }
+
+        Ok(UninstallSummary {
+            name: name.to_string(),
+            removed_disk,
+            removed_registry,
+            disk_path,
+        })
     }
 
     /// Set the `enabled` flag for a plugin by name.

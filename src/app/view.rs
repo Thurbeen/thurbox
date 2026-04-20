@@ -370,6 +370,61 @@ impl App {
             );
         }
 
+        // Plugin install modal (overlays the settings overlay's Plugins tab)
+        if self.show_plugin_install_modal {
+            use crate::ui::plugin_install_modal::{
+                render_plugin_install_modal, PluginInstallModalState, PluginInstallStatusView,
+            };
+            let status = match &self.plugin_install_status {
+                super::PluginInstallStatus::Idle => PluginInstallStatusView::Idle,
+                super::PluginInstallStatus::InProgress => {
+                    PluginInstallStatusView::InProgress("Installing… (cloning + copying)")
+                }
+                super::PluginInstallStatus::Success(msg) => {
+                    PluginInstallStatusView::Success(msg.as_str())
+                }
+                super::PluginInstallStatus::Error(msg) => {
+                    PluginInstallStatusView::Error(msg.as_str())
+                }
+            };
+            render_plugin_install_modal(
+                frame,
+                &PluginInstallModalState {
+                    input: self.plugin_install_input.value(),
+                    cursor: self.plugin_install_input.cursor_pos(),
+                    status,
+                },
+            );
+        }
+
+        // Plugin uninstall confirmation (overlays the Plugins tab)
+        if let Some(ref name) = self.plugin_uninstall_confirm {
+            let area = crate::ui::centered_fixed_height_rect(50, 5, frame.area());
+            let inner = crate::ui::render_modal_frame_danger(frame, area, "Uninstall Plugin");
+            let path_display = self
+                .effective_plugins
+                .iter()
+                .find(|(p, _)| &p.name == name)
+                .map(|(p, _)| p.path.display().to_string())
+                .unwrap_or_default();
+            let text = Line::from(vec![
+                Span::styled(
+                    format!(" Uninstall '{name}'? Deletes {path_display}  "),
+                    Style::default().fg(Theme::text_primary()),
+                ),
+                Span::styled("y", Theme::keybind()),
+                Span::styled("/", Style::default().fg(Theme::text_muted())),
+                Span::styled("n", Theme::keybind()),
+            ]);
+            frame.render_widget(
+                Paragraph::new(text),
+                Rect {
+                    y: inner.y + inner.height / 2,
+                    ..inner
+                },
+            );
+        }
+
         // Role editor modal (detail form, overlays edit-project modal)
         if self.show_role_editor {
             role_editor_modal::render_role_editor_modal(

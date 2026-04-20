@@ -425,6 +425,251 @@ pub fn list_disk_plugins() -> Vec<crate::session::PluginConfig> {
     plugins
 }
 
+// ── Plugin install (path or git URL) ─────────────────────────────────
+//
+// Shared by the MCP `install_plugin` tool and the TUI Plugins-tab install
+// modal so both surfaces accept the same inputs and produce the same on-disk
+// layout.
+
+/// Where a plugin install is sourced from.
+pub enum InstallSource<'a> {
+    /// A directory already on disk (the original behaviour).
+    LocalPath(&'a Path),
+    /// A git URL — http(s)://, git://, ssh://, or scp-style `user@host:path`.
+    GitUrl(&'a str),
+}
+
+/// Result of a successful install.
+#[derive(Debug)]
+pub struct InstallSummary {
+    pub name: String,
+    pub path: PathBuf,
+    pub source_kind: &'static str,
+}
+
+/// Granular failure mode so callers can render context-appropriate messages.
+#[derive(Debug)]
+pub enum InstallError {
+    SourceNotFound(String),
+    InvalidManifest(String),
+    UnsafeName(String),
+    AlreadyInstalled(PathBuf),
+    GitNotAvailable,
+    GitCloneFailed(String),
+    PluginsDirUnresolvable,
+    CopyFailed(String),
+    PostInstallValidation(String),
+}
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SourceNotFound(s) => write!(f, "Source not found: {s}"),
+            Self::InvalidManifest(e) => write!(f, "Invalid plugin: {e}"),
+            Self::UnsafeName(e) => write!(f, "{e}"),
+            Self::AlreadyInstalled(p) => write!(
+                f,
+                "Plugin already installed at {} — uninstall first or pick a different name",
+                p.display()
+            ),
+            Self::GitNotAvailable => {
+                write!(
+                    f,
+                    "git executable not found on PATH — install git to use git URLs"
+                )
+            }
+            Self::GitCloneFailed(e) => write!(f, "git clone failed: {e}"),
+            Self::PluginsDirUnresolvable => write!(f, "Could not resolve plugins directory"),
+            Self::CopyFailed(e) => write!(f, "Copy failed: {e}"),
+            Self::PostInstallValidation(e) => write!(f, "Post-install validation failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for InstallError {}
+
+/// Decide whether `s` looks like a git URL or a local path. URL detection is
+/// intentionally permissive — anything with a recognised scheme or the
+/// `user@host:path` shape is treated as a clone target.
+pub fn classify_source(s: &str) -> InstallSource<'_> {
+    let trimmed = s.trim();
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("git://")
+        || trimmed.starts_with("ssh://")
+        || trimmed.starts_with("file://")
+        || trimmed.starts_with("git+http://")
+        || trimmed.starts_with("git+https://")
+        || is_scp_style_git_url(trimmed)
+    {
+        InstallSource::GitUrl(trimmed)
+    } else {
+        InstallSource::LocalPath(Path::new(trimmed))
+    }
+}
+
+/// Match the `user@host:path` form that ssh-style git URLs use, e.g.
+/// `git@github.com:Thurbeen/thurbox-plugin-orchestrator.git`. Excludes Windows
+/// drive letters (`C:\…`) by requiring an `@` before the colon.
+fn is_scp_style_git_url(s: &str) -> bool {
+    let Some(colon) = s.find(':') else {
+        return false;
+    };
+    let head = &s[..colon];
+    head.contains('@') && !head.contains('/') && !head.contains('\\')
+}
+
+/// Install a plugin from a local directory or a git URL. Copies the source
+/// (or clones it first) into `~/.local/share/thurbox/admin/plugins/<name>/`.
+///
+/// `name_override` lets callers force the install directory name; defaults to
+/// the manifest's `name` field. Always re-validates the manifest after copy
+/// so a partial transfer cannot leave a half-installed plugin behind.
+pub fn install_plugin_from_source(
+    source: &str,
+    name_override: Option<&str>,
+) -> Result<InstallSummary, InstallError> {
+    let (source_dir, source_kind, _tempdir_guard): (
+        PathBuf,
+        &'static str,
+        Option<tempfile::TempDir>,
+    ) = match classify_source(source) {
+        InstallSource::LocalPath(p) => {
+            if !p.is_dir() {
+                return Err(InstallError::SourceNotFound(p.display().to_string()));
+            }
+            (p.to_path_buf(), "path", None)
+        }
+        InstallSource::GitUrl(url) => {
+            let tmp =
+                tempfile::TempDir::new().map_err(|e| InstallError::CopyFailed(e.to_string()))?;
+            let clone_dir = tmp.path().join("plugin");
+            git_shallow_clone(url, &clone_dir)?;
+            (clone_dir, "git", Some(tmp))
+        }
+    };
+
+    // Look for the manifest at the source root. If absent, fall back to a
+    // single-level subdir search — many plugin repos are monorepos that put
+    // the payload under `plugin/`, `dist/`, or similar instead of the repo
+    // root. Pick the first matching subdir to avoid ambiguity.
+    let payload_dir = locate_manifest_dir(&source_dir)
+        .ok_or_else(|| InstallError::InvalidManifest(missing_manifest_message(&source_dir)))?;
+    let manifest = crate::session::PluginManifest::load(&payload_dir)
+        .map_err(|e| InstallError::InvalidManifest(e.to_string()))?;
+
+    let install_name = name_override
+        .map(str::to_string)
+        .unwrap_or_else(|| manifest.name.clone());
+    validate_safe_name(&install_name).map_err(InstallError::UnsafeName)?;
+
+    let plugins_dir = plugins_directory().ok_or(InstallError::PluginsDirUnresolvable)?;
+    std::fs::create_dir_all(&plugins_dir).map_err(|e| InstallError::CopyFailed(e.to_string()))?;
+
+    let dest = plugins_dir.join(&install_name);
+    if dest.exists() {
+        return Err(InstallError::AlreadyInstalled(dest));
+    }
+
+    if let Err(e) = copy_dir_all(&payload_dir, &dest) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(InstallError::CopyFailed(e.to_string()));
+    }
+
+    if let Err(e) = crate::session::PluginManifest::load(&dest) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(InstallError::PostInstallValidation(e.to_string()));
+    }
+
+    Ok(InstallSummary {
+        name: install_name,
+        path: dest,
+        source_kind,
+    })
+}
+
+/// Subdirectory names checked when the manifest isn't at the source root.
+/// Ordered by community convention; first match wins. Repos that don't follow
+/// this layout still work by pointing the source at the right directory
+/// directly.
+const MANIFEST_FALLBACK_SUBDIRS: &[&str] = &["plugin", "dist", "payload"];
+
+/// Find the directory containing `thurbox-plugin.toml`. Checks the root first,
+/// then a small allowlist of conventional subdirectories.
+fn locate_manifest_dir(root: &Path) -> Option<PathBuf> {
+    let filename = crate::session::PluginManifest::FILENAME;
+    if root.join(filename).is_file() {
+        return Some(root.to_path_buf());
+    }
+    for sub in MANIFEST_FALLBACK_SUBDIRS {
+        let candidate = root.join(sub);
+        if candidate.join(filename).is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Build the "manifest not found" error message, listing the locations checked
+/// so users see immediately which subdirectory layouts are supported.
+fn missing_manifest_message(root: &Path) -> String {
+    let filename = crate::session::PluginManifest::FILENAME;
+    let mut tried = vec![root.join(filename).display().to_string()];
+    for sub in MANIFEST_FALLBACK_SUBDIRS {
+        tried.push(root.join(sub).join(filename).display().to_string());
+    }
+    format!(
+        "{filename} not found. Checked: {}. \
+         Plugins typically live at the repo root or under one of: {}",
+        tried.join(", "),
+        MANIFEST_FALLBACK_SUBDIRS.join(", ")
+    )
+}
+
+/// Shallow `git clone --depth 1 <url> <dest>`. Returns `GitNotAvailable` when
+/// the binary is missing, otherwise `GitCloneFailed` carrying stderr.
+fn git_shallow_clone(url: &str, dest: &Path) -> Result<(), InstallError> {
+    let output = std::process::Command::new("git")
+        .args(["clone", "--depth", "1", "--quiet", url])
+        .arg(dest)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                InstallError::GitNotAvailable
+            } else {
+                InstallError::GitCloneFailed(e.to_string())
+            }
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let msg = if stderr.is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            stderr
+        };
+        return Err(InstallError::GitCloneFailed(msg));
+    }
+    Ok(())
+}
+
+/// Recursively copy `src` into `dst` (which must not yet exist). Mirrors
+/// `cp -r src dst` semantics — symlinks and special files are skipped because
+/// plugins are TOML/text/exec only.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else if ft.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Resolve the VM images directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/admin/images/` or
@@ -1429,5 +1674,203 @@ mod tests {
         if let Some(s) = complete_directory_path("~/") {
             assert!(!s.starts_with('/'));
         }
+    }
+
+    // ── plugin install ──────────────────────────────────────────────
+
+    fn write_plugin_dir(root: &Path, name: &str) -> PathBuf {
+        let p = root.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(
+            p.join("thurbox-plugin.toml"),
+            format!("name = \"{name}\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n"),
+        )
+        .unwrap();
+        p
+    }
+
+    #[test]
+    fn classify_source_recognises_url_schemes() {
+        assert!(matches!(
+            classify_source("https://github.com/x/y"),
+            InstallSource::GitUrl(_)
+        ));
+        assert!(matches!(
+            classify_source("http://example.com/x.git"),
+            InstallSource::GitUrl(_)
+        ));
+        assert!(matches!(
+            classify_source("git://example.com/x.git"),
+            InstallSource::GitUrl(_)
+        ));
+        assert!(matches!(
+            classify_source("ssh://git@example.com/x.git"),
+            InstallSource::GitUrl(_)
+        ));
+        assert!(matches!(
+            classify_source("git@github.com:Thurbeen/thurbox-plugin-orchestrator.git"),
+            InstallSource::GitUrl(_)
+        ));
+    }
+
+    #[test]
+    fn classify_source_treats_paths_as_local() {
+        assert!(matches!(
+            classify_source("/tmp/plugin"),
+            InstallSource::LocalPath(_)
+        ));
+        assert!(matches!(
+            classify_source("./relative"),
+            InstallSource::LocalPath(_)
+        ));
+        // Windows drive letters must not be misread as scp-style URLs.
+        assert!(matches!(
+            classify_source("C:\\path\\plugin"),
+            InstallSource::LocalPath(_)
+        ));
+    }
+
+    #[test]
+    fn install_plugin_from_local_path_copies_into_admin_dir() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        let source = write_plugin_dir(temp.path(), "alpha");
+
+        let summary = install_plugin_from_source(&source.to_string_lossy(), None).unwrap();
+        assert_eq!(summary.name, "alpha");
+        assert_eq!(summary.source_kind, "path");
+        let dest = plugins_directory().unwrap().join("alpha");
+        assert_eq!(summary.path, dest);
+        assert!(dest.join("thurbox-plugin.toml").is_file());
+    }
+
+    #[test]
+    fn install_plugin_rejects_existing_destination() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        let source = write_plugin_dir(temp.path(), "dup");
+
+        install_plugin_from_source(&source.to_string_lossy(), None).unwrap();
+        let err = install_plugin_from_source(&source.to_string_lossy(), None).unwrap_err();
+        assert!(matches!(err, InstallError::AlreadyInstalled(_)));
+    }
+
+    #[test]
+    fn install_plugin_rejects_missing_source() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let err =
+            install_plugin_from_source(&temp.path().join("does-not-exist").to_string_lossy(), None)
+                .unwrap_err();
+        assert!(matches!(err, InstallError::SourceNotFound(_)));
+    }
+
+    #[test]
+    fn install_plugin_rejects_missing_manifest() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        let bare = temp.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+
+        let err = install_plugin_from_source(&bare.to_string_lossy(), None).unwrap_err();
+        assert!(matches!(err, InstallError::InvalidManifest(_)));
+    }
+
+    #[test]
+    fn install_plugin_finds_manifest_in_plugin_subdir() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        // Repo-style layout: manifest lives under plugin/, repo root has other files.
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("README.md"), "repo readme").unwrap();
+        write_plugin_dir(&repo, "plugin");
+        // Rename inner manifest's `name` field to confirm the inner manifest
+        // (not the repo dir name) determines install_name.
+        std::fs::write(
+            repo.join("plugin").join("thurbox-plugin.toml"),
+            "name = \"orchestrator\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n",
+        )
+        .unwrap();
+
+        let summary = install_plugin_from_source(&repo.to_string_lossy(), None).unwrap();
+        assert_eq!(summary.name, "orchestrator");
+        let dest = plugins_directory().unwrap().join("orchestrator");
+        assert_eq!(summary.path, dest);
+        assert!(dest.join("thurbox-plugin.toml").is_file());
+        // Repo-root README should NOT have been copied — only the plugin/ payload.
+        assert!(!dest.join("README.md").is_file());
+    }
+
+    #[test]
+    fn install_plugin_honors_name_override() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+        let source = write_plugin_dir(temp.path(), "alpha");
+
+        let summary =
+            install_plugin_from_source(&source.to_string_lossy(), Some("renamed")).unwrap();
+        assert_eq!(summary.name, "renamed");
+        assert!(plugins_directory()
+            .unwrap()
+            .join("renamed")
+            .join("thurbox-plugin.toml")
+            .is_file());
+    }
+
+    #[test]
+    fn install_plugin_from_git_url_clones_and_installs() {
+        // Skip when git isn't available — not all CI runners include it.
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        // Build a bare git repo with a valid plugin manifest committed.
+        let work = temp.path().join("source-work");
+        let work_plugin = write_plugin_dir(&work, "from-git");
+        // The test plugin lives under source-work/from-git/. We commit the
+        // contents of that directory so the clone lands a flat layout.
+        let run = |args: &[&str], cwd: &Path| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap()
+        };
+        run(&["init", "-q", "-b", "main"], &work_plugin);
+        run(&["config", "user.email", "test@example.com"], &work_plugin);
+        run(&["config", "user.name", "Test"], &work_plugin);
+        run(&["add", "."], &work_plugin);
+        run(&["commit", "-q", "-m", "init"], &work_plugin);
+
+        let url = format!("file://{}", work_plugin.display());
+        let summary = install_plugin_from_source(&url, None).unwrap();
+        assert_eq!(summary.source_kind, "git");
+        assert_eq!(summary.name, "from-git");
+        assert!(summary.path.join("thurbox-plugin.toml").is_file());
+    }
+
+    #[test]
+    fn install_plugin_surfaces_git_clone_failure() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = TestPathGuard::new(temp.path());
+
+        let bogus = format!("file://{}/does-not-exist.git", temp.path().display());
+        let err = install_plugin_from_source(&bogus, None).unwrap_err();
+        assert!(matches!(err, InstallError::GitCloneFailed(_)));
     }
 }

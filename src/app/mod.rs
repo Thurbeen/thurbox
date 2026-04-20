@@ -19,6 +19,7 @@ use tracing::{error, info, warn};
 
 use crate::agent::{BackendRegistry, Session, SessionBackend};
 use crate::git;
+use crate::paths;
 use crate::session::{
     default_developer_permissions, default_developer_role, McpServerConfig, PluginConfig,
     RoleConfig, RolePermissions, ScheduledCommand, SessionCommand, SessionConfig, SessionId,
@@ -476,6 +477,16 @@ pub(crate) enum SkillEditorField {
     Path,
 }
 
+/// Lifecycle of a plugin install triggered from the TUI install modal.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum PluginInstallStatus {
+    #[default]
+    Idle,
+    InProgress,
+    Success(String),
+    Error(String),
+}
+
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
 struct PendingDelete {
     session: Session,
@@ -663,6 +674,17 @@ pub struct App {
     pub(crate) effective_plugins: Vec<(PluginConfig, PluginSource)>,
     /// Index into effective_plugins for the Plugins settings tab.
     pub(crate) plugin_list_index: usize,
+    /// Whether the plugin install modal is open (overlays the settings overlay).
+    pub(crate) show_plugin_install_modal: bool,
+    /// Buffer for the install modal's path/URL input.
+    pub(crate) plugin_install_input: TextInput,
+    /// Live status shown at the bottom of the install modal.
+    pub(crate) plugin_install_status: PluginInstallStatus,
+    /// Receiver for the result of an in-flight install (background thread).
+    pub(crate) plugin_install_rx: Option<mpsc::Receiver<Result<paths::InstallSummary, String>>>,
+    /// Name of the plugin pending uninstall confirmation. `None` when no
+    /// confirmation prompt is showing.
+    pub(crate) plugin_uninstall_confirm: Option<String>,
     /// Cached pending scheduled commands, refreshed every ~1 second.
     pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
@@ -879,6 +901,11 @@ impl App {
             skill_list_index: 0,
             effective_plugins,
             plugin_list_index: 0,
+            show_plugin_install_modal: false,
+            plugin_install_input: TextInput::new(),
+            plugin_install_status: PluginInstallStatus::Idle,
+            plugin_install_rx: None,
+            plugin_uninstall_confirm: None,
             plugin_runtime: None,
             plugin_setting_snapshot: HashMap::new(),
             cached_pending_commands: Vec::new(),
@@ -1932,10 +1959,13 @@ impl App {
     fn handle_paste(&mut self, text: String) {
         self.text_selection = None;
         self.selected_text_cache = None;
+        if self.try_paste_into_modal_input(&text) {
+            return;
+        }
         self.send_paste_to_session(&text);
     }
 
-    fn paste_from_clipboard(&mut self) {
+    pub(crate) fn paste_from_clipboard(&mut self) {
         self.text_selection = None;
         self.selected_text_cache = None;
 
@@ -1952,7 +1982,26 @@ impl App {
             }
         };
 
+        if self.try_paste_into_modal_input(&text) {
+            return;
+        }
         self.send_paste_to_session(&text);
+    }
+
+    /// Route pasted text into the focused modal text input when one is open.
+    /// Returns `true` when consumed, signalling the caller to skip the default
+    /// "send to session" behaviour. New modals with text inputs should add
+    /// their target here so paste works inside them.
+    fn try_paste_into_modal_input(&mut self, text: &str) -> bool {
+        if self.show_plugin_install_modal {
+            for c in text.chars() {
+                if !c.is_control() {
+                    self.plugin_install_input.insert(c);
+                }
+            }
+            return true;
+        }
+        false
     }
 
     pub(crate) fn submit_role_editor(&mut self) {
@@ -2594,6 +2643,9 @@ impl App {
             }
         }
 
+        // Poll for plugin install results from background thread
+        self.poll_plugin_install();
+
         // Poll for VM provisioning results from background thread
         self.poll_vm_provision();
 
@@ -2617,6 +2669,40 @@ impl App {
         // Refresh system metrics periodically
         if self.tick_count % METRICS_REFRESH_TICKS == 0 {
             self.refresh_system_metrics();
+        }
+    }
+
+    /// Drain the plugin install result channel. On success, refresh the
+    /// effective plugins list so the new entry shows up in the Plugins tab.
+    fn poll_plugin_install(&mut self) {
+        let Some(rx) = self.plugin_install_rx.as_ref() else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err("install thread died".to_string()),
+        };
+        self.plugin_install_rx = None;
+
+        match result {
+            Ok(summary) => {
+                self.plugin_install_status =
+                    PluginInstallStatus::Success(format!("Installed '{}'", summary.name));
+                self.set_status(
+                    StatusLevel::Success,
+                    format!("Installed plugin '{}'", summary.name),
+                );
+                if let Ok(plugins) = self.db.list_effective_plugins() {
+                    self.effective_plugins = plugins;
+                }
+                // Auto-close the modal after a successful install.
+                self.show_plugin_install_modal = false;
+                self.plugin_install_input.clear();
+            }
+            Err(msg) => {
+                self.plugin_install_status = PluginInstallStatus::Error(msg);
+            }
         }
     }
 

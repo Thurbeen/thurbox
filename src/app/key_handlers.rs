@@ -47,6 +47,26 @@ impl App {
             return;
         }
 
+        // Ctrl+V: paste. Routed before modal handlers so they don't swallow
+        // the literal 'v' — `paste_from_clipboard` knows whether a modal text
+        // input is open and routes the text accordingly.
+        if code == KeyCode::Char('v') && mods.contains(KeyModifiers::CONTROL) {
+            self.paste_from_clipboard();
+            return;
+        }
+
+        // Ctrl+C: copy active mouse-drag selection. Routed before modal
+        // handlers so users can copy text from inside any modal. Without an
+        // active selection, falls through to the normal handlers (e.g. SIGINT
+        // when the terminal is focused).
+        if code == KeyCode::Char('c')
+            && mods.contains(KeyModifiers::CONTROL)
+            && self.text_selection.is_some()
+        {
+            self.copy_selection_to_clipboard();
+            return;
+        }
+
         // Restore sessions modal captures all input
         if matches!(self.modal, super::modals::Modal::RestoreSessions(_)) {
             self.handle_restore_sessions_key(code);
@@ -176,21 +196,6 @@ impl App {
         // Search input captures all keys when active
         if self.search_active {
             self.handle_search_key(code, mods);
-            return;
-        }
-
-        // Ctrl+C: copy selection if active, otherwise forward to terminal as SIGINT
-        if code == KeyCode::Char('c')
-            && mods.contains(KeyModifiers::CONTROL)
-            && self.text_selection.is_some()
-        {
-            self.copy_selection_to_clipboard();
-            return;
-        }
-
-        // Ctrl+V: paste from clipboard
-        if code == KeyCode::Char('v') && mods.contains(KeyModifiers::CONTROL) {
-            self.paste_from_clipboard();
             return;
         }
 
@@ -1342,6 +1347,17 @@ impl App {
 
     /// Handle input in the settings overlay (tabbed list view).
     pub(crate) fn handle_settings_key(&mut self, code: KeyCode) {
+        // Plugin install modal overlays the Plugins tab — capture all input first.
+        if self.show_plugin_install_modal {
+            self.handle_plugin_install_modal_key(code);
+            return;
+        }
+        // Plugin uninstall confirm prompt is modal too.
+        if self.plugin_uninstall_confirm.is_some() {
+            self.handle_plugin_uninstall_confirm_key(code);
+            return;
+        }
+
         match code {
             KeyCode::Esc => {
                 // Save and close settings
@@ -1356,12 +1372,20 @@ impl App {
                 }
                 self.show_settings = false;
             }
-            KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Tab => {
                 self.settings_tab = match self.settings_tab {
                     super::SettingsTab::Roles => super::SettingsTab::McpServers,
                     super::SettingsTab::McpServers => super::SettingsTab::Skills,
                     super::SettingsTab::Skills => super::SettingsTab::Plugins,
                     super::SettingsTab::Plugins => super::SettingsTab::Roles,
+                };
+            }
+            KeyCode::BackTab => {
+                self.settings_tab = match self.settings_tab {
+                    super::SettingsTab::Roles => super::SettingsTab::Plugins,
+                    super::SettingsTab::McpServers => super::SettingsTab::Roles,
+                    super::SettingsTab::Skills => super::SettingsTab::McpServers,
+                    super::SettingsTab::Plugins => super::SettingsTab::Skills,
                 };
             }
             _ => match self.settings_tab {
@@ -1467,10 +1491,9 @@ impl App {
 
     /// Handle keys for the Plugins tab in the settings overlay.
     ///
-    /// The TUI is read-only for plugins beyond the enable/disable toggle —
-    /// install/uninstall and configuration are managed via MCP. The richer
-    /// per-plugin details pane (logs / configuration form) is gated on the
-    /// process runtime and will land alongside it.
+    /// Beyond j/k navigation and Space (toggle enable), `i` opens the install
+    /// modal and `d` triggers an uninstall confirm. Plugin configuration still
+    /// lives in MCP — the TUI only owns lifecycle (install / enable / remove).
     fn handle_settings_plugins_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down
@@ -1492,6 +1515,102 @@ impl App {
                 } else if let Ok(plugins) = self.db.list_effective_plugins() {
                     self.effective_plugins = plugins;
                 }
+            }
+            KeyCode::Char('i') => {
+                self.open_plugin_install_modal();
+            }
+            KeyCode::Char('d') if !self.effective_plugins.is_empty() => {
+                let idx = self.plugin_list_index;
+                let name = self.effective_plugins[idx].0.name.clone();
+                self.plugin_uninstall_confirm = Some(name);
+            }
+            _ => {}
+        }
+    }
+
+    /// Reset and open the plugin install modal.
+    pub(crate) fn open_plugin_install_modal(&mut self) {
+        self.plugin_install_input.clear();
+        self.plugin_install_status = super::PluginInstallStatus::Idle;
+        self.show_plugin_install_modal = true;
+    }
+
+    /// Handle keys inside the plugin install modal. `Enter` kicks off the
+    /// install on a background thread; `Esc` closes the modal (in-flight
+    /// installs continue and update the plugin list when they finish).
+    fn handle_plugin_install_modal_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.show_plugin_install_modal = false;
+            }
+            KeyCode::Enter => {
+                let source = self.plugin_install_input.value().trim().to_string();
+                if source.is_empty() {
+                    self.plugin_install_status =
+                        super::PluginInstallStatus::Error("Source cannot be empty".to_string());
+                    return;
+                }
+                if self.plugin_install_rx.is_some() {
+                    return;
+                }
+                self.start_plugin_install(source);
+            }
+            KeyCode::Backspace => self.plugin_install_input.backspace(),
+            KeyCode::Delete => self.plugin_install_input.delete(),
+            KeyCode::Left => self.plugin_install_input.move_left(),
+            KeyCode::Right => self.plugin_install_input.move_right(),
+            KeyCode::Home => self.plugin_install_input.home(),
+            KeyCode::End => self.plugin_install_input.end(),
+            KeyCode::Char(c) => self.plugin_install_input.insert(c),
+            _ => {}
+        }
+    }
+
+    /// Spawn the install on a background thread (git clone can take seconds —
+    /// must not block the UI loop). Result delivered via `mpsc` and polled in
+    /// `tick()`.
+    fn start_plugin_install(&mut self, source: String) {
+        use std::sync::mpsc;
+        self.plugin_install_status = super::PluginInstallStatus::InProgress;
+        let (tx, rx) = mpsc::channel();
+        self.plugin_install_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result =
+                crate::paths::install_plugin_from_source(&source, None).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Handle keys inside the uninstall confirmation prompt.
+    fn handle_plugin_uninstall_confirm_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let Some(name) = self.plugin_uninstall_confirm.take() else {
+                    return;
+                };
+                match self.db.uninstall_plugin_with_disk(&name) {
+                    Ok(_) => {
+                        self.set_status(
+                            super::StatusLevel::Success,
+                            format!("Uninstalled plugin '{name}'"),
+                        );
+                        if let Ok(plugins) = self.db.list_effective_plugins() {
+                            if self.plugin_list_index >= plugins.len() {
+                                self.plugin_list_index = plugins.len().saturating_sub(1);
+                            }
+                            self.effective_plugins = plugins;
+                        }
+                    }
+                    Err(e) => {
+                        self.set_status(
+                            super::StatusLevel::Error,
+                            format!("Failed to uninstall '{name}': {e}"),
+                        );
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.plugin_uninstall_confirm = None;
             }
             _ => {}
         }

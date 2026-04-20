@@ -168,7 +168,7 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
         SettingsTab::Plugins => {
             if state.plugins.is_empty() {
                 let empty = Paragraph::new(Line::from(Span::styled(
-                    "  No plugins installed. Drop one under ~/.local/share/thurbox/admin/plugins/",
+                    "  No plugins installed. Press 'i' to install from a path or git URL.",
                     Style::default().fg(Theme::text_muted()),
                 )));
                 frame.render_widget(empty, list_area);
@@ -240,6 +240,10 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
                 ": toggle enable  ",
                 Style::default().fg(Theme::text_muted()),
             ),
+            Span::styled("i", Theme::keybind()),
+            Span::styled(": install  ", Style::default().fg(Theme::text_muted())),
+            Span::styled("d", Theme::keybind()),
+            Span::styled(": uninstall  ", Style::default().fg(Theme::text_muted())),
             Span::styled("Esc", Theme::keybind()),
             Span::styled(": close", Style::default().fg(Theme::text_muted())),
         ])

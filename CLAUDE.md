@@ -197,7 +197,7 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `register_plugin` | Register a plugin path (manifest must validate; never touches disk) |
 | `unregister_plugin` | Remove a plugin from the registry (cascades plugin_settings; never touches disk) |
 | `enable_plugin` / `disable_plugin` | Toggle a plugin's enabled flag (shadows disk-only plugins) |
-| `install_plugin` | Copy a plugin source dir into `admin/plugins/<name>/` |
+| `install_plugin` | Install a plugin from a local directory or git URL (`https://`, `git://`, `ssh://`, scp-style) into `admin/plugins/<name>/` |
 | `uninstall_plugin` | Remove a plugin from disk + registry (cascades settings); requires `confirm: true` |
 | `list_plugin_settings` | List a plugin's configuration schema with current effective values |
 | `get_plugin_setting` / `set_plugin_setting` / `reset_plugin_setting` | Read, override, or clear one plugin setting |

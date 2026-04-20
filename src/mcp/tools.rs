@@ -282,24 +282,6 @@ fn plugin_to_response(
     response
 }
 
-/// Recursively copy `src` into `dst` (which must not yet exist). Mirrors
-/// `cp -r src dst` semantics. Used by `install_plugin`.
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        let target = dst.join(entry.file_name());
-        if ft.is_dir() {
-            copy_dir_all(&entry.path(), &target)?;
-        } else if ft.is_file() {
-            std::fs::copy(entry.path(), target)?;
-        }
-        // Ignore symlinks and special files — plugins are TOML/text/exec.
-    }
-    Ok(())
-}
-
 // ── Tool implementations ────────────────────────────────────────
 
 #[tool_router(vis = "pub(super)")]
@@ -1060,51 +1042,19 @@ impl ThurboxMcp {
     }
 
     #[tool(
-        description = "Install a plugin by copying a source directory into ~/.local/share/thurbox/admin/plugins/<name>/. The source must contain a valid thurbox-plugin.toml. Returns an error if the destination already exists. After install, the plugin is auto-discovered (no register call needed)."
+        description = "Install a plugin from a local directory or git URL into ~/.local/share/thurbox/admin/plugins/<name>/. Accepts a path, http(s)://, git://, ssh://, or scp-style git@host:repo URL. Git sources are shallow-cloned to a temp dir before install. Returns an error if the destination already exists. After install, the plugin is auto-discovered (no register call needed)."
     )]
     fn install_plugin(&self, Parameters(params): Parameters<InstallPluginParams>) -> String {
-        let source = std::path::PathBuf::from(&params.source_path);
-        if !source.is_dir() {
-            return error_json("source_path must be an existing directory");
+        match crate::paths::install_plugin_from_source(&params.source, params.name.as_deref()) {
+            Ok(summary) => serde_json::json!({
+                "installed": true,
+                "name": summary.name,
+                "path": summary.path.to_string_lossy(),
+                "source_kind": summary.source_kind,
+            })
+            .to_string(),
+            Err(e) => error_json(&e.to_string()),
         }
-        let manifest = match crate::session::PluginManifest::load(&source) {
-            Ok(m) => m,
-            Err(e) => return error_json(&format!("Invalid plugin: {e}")),
-        };
-        let install_name = params.name.unwrap_or_else(|| manifest.name.clone());
-        if let Err(e) = validate_safe_name(&install_name) {
-            return e;
-        }
-        let plugins_dir = match crate::paths::plugins_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve plugins directory"),
-        };
-        if let Err(e) = std::fs::create_dir_all(&plugins_dir) {
-            return error_json(&format!("Failed to create plugins directory: {e}"));
-        }
-        let dest = plugins_dir.join(&install_name);
-        if dest.exists() {
-            return error_json(&format!(
-                "Plugin already installed at {} — uninstall first or pick a different name",
-                dest.display()
-            ));
-        }
-        if let Err(e) = copy_dir_all(&source, &dest) {
-            // Best-effort cleanup on partial copy.
-            let _ = std::fs::remove_dir_all(&dest);
-            return error_json(&format!("Copy failed: {e}"));
-        }
-        // Re-validate after copy in case something didn't survive.
-        if let Err(e) = crate::session::PluginManifest::load(&dest) {
-            let _ = std::fs::remove_dir_all(&dest);
-            return error_json(&format!("Post-install validation failed: {e}"));
-        }
-        serde_json::json!({
-            "installed": true,
-            "name": install_name,
-            "path": dest.to_string_lossy(),
-        })
-        .to_string()
     }
 
     #[tool(
@@ -1118,40 +1068,16 @@ impl ThurboxMcp {
             return e;
         }
         let db = self.db.lock().unwrap();
-        // Resolve the path: registry takes precedence, else assume admin dir.
-        let registered = match db.list_global_plugins() {
-            Ok(rows) => rows.into_iter().find(|p| p.name == params.name),
-            Err(e) => return error_json(&e.to_string()),
-        };
-        let plugins_dir = match crate::paths::plugins_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve plugins directory"),
-        };
-        let disk_path = registered
-            .as_ref()
-            .map(|p| p.path.clone())
-            .unwrap_or_else(|| plugins_dir.join(&params.name));
-        let mut removed_disk = false;
-        if disk_path.starts_with(&plugins_dir) && disk_path.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&disk_path) {
-                return error_json(&format!("Failed to remove plugin directory: {e}"));
-            }
-            removed_disk = true;
+        match db.uninstall_plugin_with_disk(&params.name) {
+            Ok(summary) => serde_json::json!({
+                "uninstalled": true,
+                "name": summary.name,
+                "removed_disk": summary.removed_disk,
+                "removed_registry": summary.removed_registry,
+            })
+            .to_string(),
+            Err(e) => error_json(&e),
         }
-        let removed_row = match db.delete_global_plugin(&params.name) {
-            Ok(b) => b,
-            Err(e) => return error_json(&e.to_string()),
-        };
-        if !removed_disk && !removed_row {
-            return error_json(&format!("Plugin not found: {}", params.name));
-        }
-        serde_json::json!({
-            "uninstalled": true,
-            "name": params.name,
-            "removed_disk": removed_disk,
-            "removed_registry": removed_row,
-        })
-        .to_string()
     }
 
     // ── Plugin Configuration Tools ──────────────────────────────
@@ -2609,12 +2535,27 @@ mod tests {
 
         let server = test_server();
         let v = parse_json(&server.install_plugin(Parameters(InstallPluginParams {
-            source_path: source.to_string_lossy().into_owned(),
+            source: source.to_string_lossy().into_owned(),
             name: None,
         })));
         assert_eq!(v["installed"], true);
         let dest = crate::paths::plugins_directory().unwrap().join("source");
         assert!(dest.join("thurbox-plugin.toml").is_file());
+    }
+
+    #[test]
+    fn install_plugin_params_accepts_source_path_alias() {
+        // Backwards-compat: callers using the old `source_path` field should
+        // still deserialize successfully into the renamed `source` field.
+        let parsed: InstallPluginParams =
+            serde_json::from_value(serde_json::json!({ "source_path": "/tmp/x" })).unwrap();
+        assert_eq!(parsed.source, "/tmp/x");
+        assert!(parsed.name.is_none());
+
+        let parsed: InstallPluginParams =
+            serde_json::from_value(serde_json::json!({ "source": "/tmp/y", "name": "z" })).unwrap();
+        assert_eq!(parsed.source, "/tmp/y");
+        assert_eq!(parsed.name.as_deref(), Some("z"));
     }
 
     #[test]
@@ -2625,11 +2566,11 @@ mod tests {
 
         let server = test_server();
         server.install_plugin(Parameters(InstallPluginParams {
-            source_path: source.to_string_lossy().into_owned(),
+            source: source.to_string_lossy().into_owned(),
             name: None,
         }));
         let v = parse_json(&server.install_plugin(Parameters(InstallPluginParams {
-            source_path: source.to_string_lossy().into_owned(),
+            source: source.to_string_lossy().into_owned(),
             name: None,
         })));
         assert!(v["error"].as_str().unwrap().contains("already installed"));

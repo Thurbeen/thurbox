@@ -53,6 +53,9 @@ anyhow = "1.0"
 # Clipboard
 arboard = "3"
 
+# Temporary directories for plugin git clones
+tempfile = "3"
+
 # MCP server
 rmcp = { version = "1.0", features = ["server", "transport-io", "transport-streamable-http-server", "schemars"] }
 serde_json = "1"
@@ -85,7 +88,6 @@ name = "sample-mcp-plugin"
 path = "examples/sample_mcp_plugin.rs"
 
 [dev-dependencies]
-tempfile = "3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 
 # Development tool requirements (install with `cargo binstall` or `cargo install`)

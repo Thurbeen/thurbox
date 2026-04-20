@@ -299,10 +299,11 @@ pub struct DisablePluginParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InstallPluginParams {
+    #[serde(alias = "source_path")]
     #[schemars(
-        description = "Absolute path to a plugin source directory containing thurbox-plugin.toml. Will be copied into ~/.local/share/thurbox/admin/plugins/<name>/."
+        description = "Plugin source — either an absolute path to a directory containing thurbox-plugin.toml, or a git URL (https://, git://, ssh://, or scp-style git@host:repo). Git URLs are shallow-cloned to a temp dir before install. Accepted as `source` or (deprecated) `source_path`."
     )]
-    pub source_path: String,
+    pub source: String,
     #[serde(default)]
     #[schemars(
         description = "Optional override for the install directory name. Defaults to the manifest's name field."
