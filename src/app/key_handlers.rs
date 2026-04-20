@@ -846,10 +846,10 @@ impl App {
     }
 
     fn handle_role_selector_key(&mut self, code: KeyCode) {
-        let role_count = self.global_roles.len();
         let super::modals::Modal::RoleSelector(ref mut rsel) = self.modal else {
             return;
         };
+        let role_count = rsel.roles.len();
         match code {
             KeyCode::Esc => {
                 self.modal.close();
@@ -866,19 +866,18 @@ impl App {
                 rsel.index = rsel.index.saturating_sub(1);
             }
             KeyCode::Enter => {
-                let role_index = rsel.index;
+                let selected = rsel.roles.get(rsel.index).cloned();
                 self.modal.close();
-                if let (Some(mut config), Some(name)) = (
+                if let (Some(mut config), Some(name), Some(role)) = (
                     self.pending_spawn_config.take(),
                     self.pending_spawn_name.take(),
+                    selected,
                 ) {
-                    if let Some(role) = self.global_roles.get(role_index) {
-                        config.role = role.name.clone();
-                        config.permissions = role.permissions.clone();
-                        let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                        let is_admin = self.pending_spawn_is_admin;
-                        self.maybe_show_model_picker(name, config, worktrees, is_admin);
-                    }
+                    config.role = role.name;
+                    config.permissions = role.permissions;
+                    let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                    let is_admin = self.pending_spawn_is_admin;
+                    self.maybe_show_model_picker(name, config, worktrees, is_admin);
                 }
             }
             _ => {}

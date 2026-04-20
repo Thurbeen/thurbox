@@ -1168,7 +1168,7 @@ impl App {
         mut config: SessionConfig,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        let roles = &self.global_roles;
+        let roles = self.effective_roles();
 
         match roles.len() {
             0 => {
@@ -1188,7 +1188,8 @@ impl App {
                 self.pending_spawn_name = Some(name);
                 self.pending_spawn_config = Some(config);
                 self.pending_spawn_worktrees = worktrees;
-                self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal::default());
+                self.modal =
+                    modals::Modal::RoleSelector(modals::RoleSelectorModal { index: 0, roles });
             }
         }
     }
@@ -1312,6 +1313,17 @@ impl App {
             .collect()
     }
 
+    /// Registry roles + plugin-contributed roles (registry wins on name
+    /// collision — matches `Database::list_effective_roles`). Used by the
+    /// role-selector modal so plugin-contributed roles are pickable; falls
+    /// back to the editable `self.global_roles` cache if the DB read fails.
+    pub(crate) fn effective_roles(&self) -> Vec<RoleConfig> {
+        self.db
+            .list_effective_roles()
+            .map(|rows| rows.into_iter().map(|(r, _src)| r).collect())
+            .unwrap_or_else(|_| self.global_roles.clone())
+    }
+
     /// Continue admin spawn — routes through the normal picker chain (role →
     /// MCP → skill) with admin-specific defaults preselected. The user can
     /// override any default before the session spawns.
@@ -1321,8 +1333,8 @@ impl App {
         config: SessionConfig,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        let admin_index = self
-            .global_roles
+        let roles = self.effective_roles();
+        let admin_index = roles
             .iter()
             .position(|r| r.name == ADMIN_ROLE_NAME)
             .unwrap_or(0);
@@ -1330,7 +1342,10 @@ impl App {
         self.pending_spawn_name = Some(name);
         self.pending_spawn_config = Some(config);
         self.pending_spawn_worktrees = worktrees;
-        self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal { index: admin_index });
+        self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal {
+            index: admin_index,
+            roles,
+        });
     }
 
     fn restart_active_session(&mut self) {
@@ -4025,19 +4040,22 @@ impl App {
             .find(|d| d.name == expected_name && d.is_alive)
     }
 
-    /// Resolve a role name to its permissions from global roles.
+    /// Resolve a role name to its permissions, preferring registry roles over
+    /// plugin-contributed ones (matches `Database::list_effective_roles`
+    /// precedence). `self.global_roles` is the editable DB cache and excludes
+    /// plugin contributions, so we re-merge here on each spawn — role lookups
+    /// are infrequent and roles are tiny.
     fn resolve_role_permissions(&self, role_name: &str) -> RolePermissions {
-        self.global_roles
-            .iter()
-            .find(|r| r.name == role_name)
-            .map(|r| r.permissions.clone())
-            .unwrap_or_else(|| {
-                if role_name == DEFAULT_ROLE_NAME {
-                    default_developer_permissions()
-                } else {
-                    RolePermissions::default()
-                }
-            })
+        if let Ok(effective) = self.db.list_effective_roles() {
+            if let Some((role, _src)) = effective.iter().find(|(r, _)| r.name == role_name) {
+                return role.permissions.clone();
+            }
+        }
+        if role_name == DEFAULT_ROLE_NAME {
+            default_developer_permissions()
+        } else {
+            RolePermissions::default()
+        }
     }
 
     /// Process pending session commands from the MCP command queue.
@@ -5028,6 +5046,99 @@ mod tests {
     }
 
     // --- Role editor tests ---
+
+    /// Regression: plugin-contributed roles appear in the session-create
+    /// role-selector modal, not just registry roles. Without this, picking
+    /// the "orchestrator" role at session creation isn't possible through
+    /// the TUI.
+    #[test]
+    fn finish_prepare_spawn_surfaces_plugin_roles_in_picker() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let plugins_dir = crate::paths::plugins_directory().unwrap();
+        let p = plugins_dir.join("orch-bundle");
+        std::fs::create_dir_all(p.join("roles")).unwrap();
+        std::fs::write(
+            p.join("roles/role.toml"),
+            "name = \"orchestrator\"\ndescription = \"from plugin\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("thurbox-plugin.toml"),
+            "name = \"orch-bundle\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n\
+             [[contributes.roles]]\nname = \"orchestrator\"\npath = \"roles/role.toml\"\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        app.finish_prepare_spawn(
+            "session-1".to_string(),
+            SessionConfig::default(),
+            Vec::new(),
+        );
+        match app.modal {
+            super::modals::Modal::RoleSelector(ref m) => {
+                assert!(
+                    m.roles.iter().any(|r| r.name == "orchestrator"),
+                    "role picker should include plugin-contributed 'orchestrator'"
+                );
+            }
+            _ => panic!("expected RoleSelector modal"),
+        }
+    }
+
+    /// Regression: `resolve_role_permissions` must pick up plugin-contributed
+    /// roles (e.g. `orchestrator` role contributed by the orchestrator plugin)
+    /// so that tools like Write/Edit are actually blocked at session spawn.
+    #[test]
+    fn resolve_role_permissions_picks_up_plugin_contributed_role() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let plugins_dir = crate::paths::plugins_directory().unwrap();
+        let p = plugins_dir.join("orch-bundle");
+        std::fs::create_dir_all(p.join("roles")).unwrap();
+        std::fs::write(
+            p.join("roles/role.toml"),
+            "name = \"orchestrator\"\n\
+             description = \"test\"\n\
+             disallowed_tools = [\"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("thurbox-plugin.toml"),
+            "name = \"orch-bundle\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n\
+             [[contributes.roles]]\nname = \"orchestrator\"\npath = \"roles/role.toml\"\n",
+        )
+        .unwrap();
+
+        let app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        let perms = app.resolve_role_permissions("orchestrator");
+        assert_eq!(
+            perms.disallowed_tools,
+            vec![
+                "Write".to_string(),
+                "Edit".to_string(),
+                "MultiEdit".to_string(),
+                "NotebookEdit".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn open_role_editor_has_seeded_developer_role() {
@@ -6468,9 +6579,10 @@ mod tests {
             None,
             None,
         );
-        // Seeded roles: developer at [0], admin at [1].
-        let admin_index = app
-            .global_roles
+        // Admin must be among the effective roles (the source the picker
+        // uses) at a predictable position.
+        let effective = app.effective_roles();
+        let admin_index = effective
             .iter()
             .position(|r| r.name == ADMIN_ROLE_NAME)
             .unwrap();
@@ -6478,7 +6590,10 @@ mod tests {
         app.finish_prepare_spawn_admin("admin-1".to_string(), SessionConfig::default(), Vec::new());
 
         match app.modal {
-            super::modals::Modal::RoleSelector(ref m) => assert_eq!(m.index, admin_index),
+            super::modals::Modal::RoleSelector(ref m) => {
+                assert_eq!(m.index, admin_index);
+                assert_eq!(m.roles.len(), effective.len());
+            }
             _ => panic!("expected RoleSelector modal"),
         }
         assert!(app.pending_spawn_is_admin);

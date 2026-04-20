@@ -65,13 +65,13 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
 /// Look up permissions for `role_name`, falling back to the seeded default
 /// developer role (or empty permissions for any other unknown role).
 fn lookup_role_permissions(db: &Database, role_name: &str) -> Result<RolePermissions, String> {
-    let global_roles = db
-        .list_global_roles()
+    let effective_roles = db
+        .list_effective_roles()
         .map_err(|e| format!("Failed to load roles: {e}"))?;
-    Ok(global_roles
+    Ok(effective_roles
         .iter()
-        .find(|r| r.name == role_name)
-        .map(|r| r.permissions.clone())
+        .find(|(r, _src)| r.name == role_name)
+        .map(|(r, _src)| r.permissions.clone())
         .unwrap_or_else(|| {
             if role_name == DEFAULT_ROLE_NAME {
                 default_developer_permissions()

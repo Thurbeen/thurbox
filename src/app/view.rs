@@ -297,7 +297,7 @@ impl App {
             role_selector_modal::render_role_selector_modal(
                 frame,
                 &role_selector_modal::RoleSelectorState {
-                    roles: &self.global_roles,
+                    roles: &rsel.roles,
                     selected_index: rsel.index,
                 },
             );

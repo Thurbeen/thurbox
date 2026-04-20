@@ -139,19 +139,25 @@ fn resolve_role(
     db: &Database,
     requested: Option<&str>,
 ) -> Result<(String, RolePermissions), String> {
-    let global_roles = db
-        .list_global_roles()
-        .map_err(|e| format!("Failed to load roles: {e}"))?;
-
+    // Explicit role: search effective roles so plugin-contributed roles can be
+    // opted into. Plugin roles are NEVER picked up by the unscoped auto-fallback
+    // below — that only consults the registry, so installing a plugin can't
+    // silently change the default permissions of new sessions.
     if let Some(name) = requested.filter(|n| !n.is_empty()) {
-        let perms = global_roles
+        let effective_roles = db
+            .list_effective_roles()
+            .map_err(|e| format!("Failed to load roles: {e}"))?;
+        let perms = effective_roles
             .iter()
-            .find(|r| r.name == name)
-            .map(|r| r.permissions.clone())
+            .find(|(r, _src)| r.name == name)
+            .map(|(r, _src)| r.permissions.clone())
             .unwrap_or_else(|| default_permissions_for(name));
         return Ok((name.to_string(), perms));
     }
 
+    let global_roles = db
+        .list_global_roles()
+        .map_err(|e| format!("Failed to load roles: {e}"))?;
     Ok(match global_roles.as_slice() {
         [only] => (only.name.clone(), only.permissions.clone()),
         _ => (
@@ -352,5 +358,84 @@ mod tests {
         let (name, perms) = resolve_role(&db, Some("alpha")).unwrap();
         assert_eq!(name, "alpha");
         assert_eq!(perms.permission_mode.as_deref(), Some("plan"));
+    }
+
+    /// Regression: plugin-contributed roles are reachable via `--role <name>`.
+    #[test]
+    fn resolve_role_matches_plugin_contributed_role_by_name() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let plugins_dir = crate::paths::plugins_directory().unwrap();
+        seed_plugin_with_role(
+            &plugins_dir,
+            "orch-bundle",
+            "orchestrator",
+            "Write,Edit,MultiEdit,NotebookEdit",
+        );
+
+        let db = empty_db();
+        let (name, perms) = resolve_role(&db, Some("orchestrator")).unwrap();
+        assert_eq!(name, "orchestrator");
+        assert_eq!(
+            perms.disallowed_tools,
+            vec![
+                "Write".to_string(),
+                "Edit".to_string(),
+                "MultiEdit".to_string(),
+                "NotebookEdit".to_string(),
+            ]
+        );
+    }
+
+    /// Regression: a plugin-contributed role must NOT be silently auto-picked
+    /// when no role is requested — installing a plugin can't change the
+    /// default permissions of new sessions.
+    #[test]
+    fn resolve_role_ignores_plugin_role_when_unscoped() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let plugins_dir = crate::paths::plugins_directory().unwrap();
+        seed_plugin_with_role(&plugins_dir, "orch-bundle", "orchestrator", "Write");
+
+        let db = empty_db();
+        let (name, perms) = resolve_role(&db, None).unwrap();
+        assert_eq!(name, DEFAULT_ROLE_NAME);
+        assert_eq!(
+            perms.permission_mode,
+            default_developer_permissions().permission_mode
+        );
+    }
+
+    fn seed_plugin_with_role(
+        plugins_dir: &std::path::Path,
+        plugin_name: &str,
+        role_name: &str,
+        disallowed_csv: &str,
+    ) -> PathBuf {
+        let p = plugins_dir.join(plugin_name);
+        std::fs::create_dir_all(p.join("roles")).unwrap();
+        let disallowed_toml = disallowed_csv
+            .split(',')
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            p.join("roles/role.toml"),
+            format!(
+                "name = \"{role_name}\"\n\
+                 description = \"test\"\n\
+                 disallowed_tools = [{disallowed_toml}]\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("thurbox-plugin.toml"),
+            format!(
+                "name = \"{plugin_name}\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n\
+                 [[contributes.roles]]\nname = \"{role_name}\"\npath = \"roles/role.toml\"\n"
+            ),
+        )
+        .unwrap();
+        p
     }
 }

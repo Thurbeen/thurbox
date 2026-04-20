@@ -120,6 +120,11 @@ pub struct SessionNameModal {
 #[derive(Debug, Clone, Default)]
 pub struct RoleSelectorModal {
     pub index: usize,
+    /// Roles offered to the user at modal-open time — the merged view of the
+    /// SQLite registry + plugin-contributed roles. Stored on the modal rather
+    /// than read from `App::global_roles` so the picker also surfaces
+    /// plugin-contributed roles that aren't registry rows.
+    pub roles: Vec<crate::session::RoleConfig>,
 }
 
 #[derive(Debug, Clone, Default)]
