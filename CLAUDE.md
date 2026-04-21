@@ -192,6 +192,11 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `set_skills` | Atomically replace all skill registry entries |
 | `register_skill` | Register/update a single skill reference (path must contain SKILL.md) |
 | `unregister_skill` | Remove a skill from the registry (never touches disk) |
+| `list_profiles` | List all effective profiles (bundled role/MCP/skill presets) |
+| `get_profile` | Get a single profile by name |
+| `set_profiles` | Atomically replace all global profiles |
+| `register_profile` | Register/update a single profile — referenced roles/MCP/skills must exist |
+| `unregister_profile` | Remove a profile from the registry |
 | `list_plugins` | List effective plugins (auto-discovered + registered) with contributions/process summary |
 | `set_plugins` | Atomically replace the plugin registry |
 | `register_plugin` | Register a plugin path (manifest must validate; never touches disk) |
@@ -227,6 +232,20 @@ include all existing roles plus the new one.
 See [`docs/MCP_ROLES.md`](docs/MCP_ROLES.md) for the complete
 role configuration guide including permission modes, tool name
 format, and example role patterns.
+
+**Profiles**: A profile is a named bundle of role, MCP server,
+and skill references applied together at session spawn. When
+multiple roles are listed, their `RolePermissions` are merged:
+union of `allowed_tools` and `disallowed_tools`, concatenated
+`append_system_prompt`, env maps merged with later-wins
+precedence, and the most-permissive `permission_mode` wins
+(ranked `plan` < `default` < `acceptEdits` < `bypassPermissions`;
+unknown modes rank lowest). Apply a profile via
+`create_session {"profile": "<name>"}` or `thurbox-cli session
+create --profile <name>`. Explicit `role`, `mcp_servers`, or
+`skills` on the spawn call override the profile's contribution
+for that field. One `orchestrator` profile is seeded by default
+(roles=`[developer]`, skills=`[orchestrate]`).
 
 ### Admin Session (built-in MCP client)
 

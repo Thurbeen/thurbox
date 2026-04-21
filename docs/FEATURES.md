@@ -100,6 +100,41 @@ common case a 2-keystroke selection while still allowing arbitrary
 paths via the input field. Bookmark deletion (`d`) keeps the list
 from accumulating stale entries.
 
+### Profiles (preset bundles)
+
+A **profile** is a named bundle of role names, MCP server names,
+and skill names that get applied together at session spawn. It
+exists so common session shapes (e.g. "orchestrator sessions
+always use the `developer` role plus the `orchestrate` skill")
+can be one-step to reproduce instead of re-ticking three separate
+pickers.
+
+Profiles are exposed through the MCP tools (`list_profiles`,
+`get_profile`, `register_profile`, `unregister_profile`,
+`set_profiles`) and through the `thurbox-cli session create
+--profile <name>` flag. `create_session` over MCP accepts a
+`"profile"` field on the same precedence rules.
+
+**Multi-role merging.** A profile may list multiple roles. Their
+`RolePermissions` are merged at spawn time: `allowed_tools` and
+`disallowed_tools` are unioned, `append_system_prompt` is
+concatenated in role order, `env` maps are merged with later-wins
+precedence, and `permission_mode` is chosen as the most permissive
+(ranked `plan` < `default` < `acceptEdits` < `bypassPermissions`).
+Unknown mode strings rank lowest so they can't silently outrank a
+known mode.
+
+**Caller precedence.** An explicit `role`, `mcp_servers`, or
+`skills` argument on the spawn call overrides the profile's
+contribution for that single field. The displayed session role
+becomes `profile:<name>` when a profile is applied, so the TUI
+session list can distinguish preset-driven sessions.
+
+**Seeded default.** On first startup Thurbox seeds one profile,
+`orchestrator` (roles=`[developer]`, skills=`[orchestrate]`).
+Deleting it is persistent — a `profiles_seeded` metadata flag
+prevents re-seeding on subsequent startups.
+
 ---
 
 ## Keybinding Design
