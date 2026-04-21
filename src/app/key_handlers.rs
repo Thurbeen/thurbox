@@ -1810,7 +1810,7 @@ impl App {
     /// follow the same `Browse` / `Adding` pattern as the role editor's
     /// tool lists. Name and Description are plain text fields.
     pub(crate) fn handle_profile_editor_key(&mut self, code: KeyCode) {
-        use super::ProfileEditorField;
+        use crate::ui::profile_editor_modal::ProfileEditorField;
         use crate::ui::role_editor_modal::ToolListMode;
 
         // List fields delegate to Browse/Adding sub-handlers.
@@ -1892,7 +1892,7 @@ impl App {
     }
 
     fn active_profile_list_mut(&mut self) -> &mut super::ToolListState {
-        use super::ProfileEditorField;
+        use crate::ui::profile_editor_modal::ProfileEditorField;
         match self.profile_editor_field {
             ProfileEditorField::Roles => &mut self.profile_editor_roles,
             ProfileEditorField::McpServers => &mut self.profile_editor_mcp_servers,
@@ -1900,8 +1900,10 @@ impl App {
         }
     }
 
-    fn next_profile_editor_field(field: super::ProfileEditorField) -> super::ProfileEditorField {
-        use super::ProfileEditorField;
+    fn next_profile_editor_field(
+        field: crate::ui::profile_editor_modal::ProfileEditorField,
+    ) -> crate::ui::profile_editor_modal::ProfileEditorField {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
         match field {
             ProfileEditorField::Name => ProfileEditorField::Description,
             ProfileEditorField::Description => ProfileEditorField::Roles,
@@ -1911,8 +1913,10 @@ impl App {
         }
     }
 
-    fn prev_profile_editor_field(field: super::ProfileEditorField) -> super::ProfileEditorField {
-        use super::ProfileEditorField;
+    fn prev_profile_editor_field(
+        field: crate::ui::profile_editor_modal::ProfileEditorField,
+    ) -> crate::ui::profile_editor_modal::ProfileEditorField {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
         match field {
             ProfileEditorField::Name => ProfileEditorField::Skills,
             ProfileEditorField::Description => ProfileEditorField::Name,

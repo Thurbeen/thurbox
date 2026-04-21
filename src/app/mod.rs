@@ -487,17 +487,6 @@ pub(crate) enum PluginInstallStatus {
     Error(String),
 }
 
-/// Which field is focused in the profile editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ProfileEditorField {
-    #[default]
-    Name,
-    Description,
-    Roles,
-    McpServers,
-    Skills,
-}
-
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
 struct PendingDelete {
     session: Session,
@@ -591,7 +580,7 @@ pub struct App {
     pub(crate) profile_editor_roles: ToolListState,
     pub(crate) profile_editor_mcp_servers: ToolListState,
     pub(crate) profile_editor_skills: ToolListState,
-    pub(crate) profile_editor_field: ProfileEditorField,
+    pub(crate) profile_editor_field: crate::ui::profile_editor_modal::ProfileEditorField,
     pub(crate) profile_editor_editing_index: Option<usize>,
     /// Snapshot of role editor fields at open time for dirty detection.
     pub(crate) role_editor_snapshot: Option<EditorSnapshot>,
@@ -878,7 +867,7 @@ impl App {
             profile_editor_roles: ToolListState::new(),
             profile_editor_mcp_servers: ToolListState::new(),
             profile_editor_skills: ToolListState::new(),
-            profile_editor_field: ProfileEditorField::Name,
+            profile_editor_field: crate::ui::profile_editor_modal::ProfileEditorField::Name,
             profile_editor_editing_index: None,
             role_editor_snapshot: None,
             mcp_editor_snapshot: None,
@@ -3394,6 +3383,7 @@ impl App {
 
     /// Open the profile editor to create a new profile.
     pub(crate) fn open_new_profile_editor(&mut self) {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
         self.profile_editor_name.set("");
         self.profile_editor_description.set("");
         self.profile_editor_roles.reset();
@@ -3406,6 +3396,7 @@ impl App {
 
     /// Open the profile editor for an existing profile at the given index.
     pub(crate) fn open_profile_for_editing(&mut self, idx: usize) {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
         let Some(profile) = self.global_profiles.get(idx) else {
             return;
         };
@@ -7573,5 +7564,276 @@ mod tests {
         // Default developer perms include the tools listed by `default_developer_permissions`.
         let expected = default_developer_permissions();
         assert_eq!(config.permissions.allowed_tools, expected.allowed_tools);
+    }
+
+    // --- Profile editor lifecycle tests ---
+
+    fn profile_editor_app() -> App {
+        App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn open_new_profile_editor_resets_state() {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
+        let mut app = profile_editor_app();
+        // Pre-populate to verify reset clears everything.
+        app.profile_editor_name.set("stale");
+        app.profile_editor_description.set("stale");
+        app.profile_editor_roles.load(&["r".to_string()]);
+        app.profile_editor_editing_index = Some(99);
+
+        app.open_new_profile_editor();
+
+        assert!(app.show_profile_editor);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
+        assert_eq!(app.profile_editor_editing_index, None);
+        assert_eq!(app.profile_editor_name.value(), "");
+        assert_eq!(app.profile_editor_description.value(), "");
+        assert!(app.profile_editor_roles.items.is_empty());
+        assert!(app.profile_editor_mcp_servers.items.is_empty());
+        assert!(app.profile_editor_skills.items.is_empty());
+    }
+
+    #[test]
+    fn open_profile_for_editing_loads_existing_profile() {
+        use crate::session::ProfileConfig;
+        use crate::ui::profile_editor_modal::ProfileEditorField;
+        let mut app = profile_editor_app();
+        app.global_profiles.push(ProfileConfig {
+            name: "reviewer".to_string(),
+            description: "Read-only review bundle".to_string(),
+            roles: vec!["reviewer".to_string()],
+            mcp_servers: vec!["thurbox".to_string()],
+            skills: vec!["review".to_string(), "summarize".to_string()],
+        });
+        let idx = app.global_profiles.len() - 1;
+
+        app.open_profile_for_editing(idx);
+
+        assert!(app.show_profile_editor);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
+        assert_eq!(app.profile_editor_editing_index, Some(idx));
+        assert_eq!(app.profile_editor_name.value(), "reviewer");
+        assert_eq!(
+            app.profile_editor_description.value(),
+            "Read-only review bundle"
+        );
+        assert_eq!(app.profile_editor_roles.items, vec!["reviewer".to_string()]);
+        assert_eq!(
+            app.profile_editor_mcp_servers.items,
+            vec!["thurbox".to_string()]
+        );
+        assert_eq!(
+            app.profile_editor_skills.items,
+            vec!["review".to_string(), "summarize".to_string()]
+        );
+    }
+
+    #[test]
+    fn open_profile_for_editing_out_of_bounds_is_noop() {
+        let mut app = profile_editor_app();
+        let before = app.show_profile_editor;
+
+        app.open_profile_for_editing(app.global_profiles.len() + 10);
+
+        assert_eq!(app.show_profile_editor, before);
+    }
+
+    #[test]
+    fn submit_profile_editor_appends_new_profile() {
+        let mut app = profile_editor_app();
+        let start = app.global_profiles.len();
+        app.open_new_profile_editor();
+        app.profile_editor_name.set("custom");
+        app.profile_editor_description.set("My bundle");
+        app.profile_editor_roles.load(&["developer".to_string()]);
+        app.profile_editor_skills.load(&["orchestrate".to_string()]);
+
+        app.submit_profile_editor();
+
+        assert!(!app.show_profile_editor);
+        assert_eq!(app.global_profiles.len(), start + 1);
+        let added = app.global_profiles.last().expect("profile appended");
+        assert_eq!(added.name, "custom");
+        assert_eq!(added.description, "My bundle");
+        assert_eq!(added.roles, vec!["developer".to_string()]);
+        assert!(added.mcp_servers.is_empty());
+        assert_eq!(added.skills, vec!["orchestrate".to_string()]);
+    }
+
+    #[test]
+    fn submit_profile_editor_with_empty_name_is_ignored() {
+        let mut app = profile_editor_app();
+        let before = app.global_profiles.clone();
+        app.open_new_profile_editor();
+        // Name stays empty; whitespace-only also counts as empty.
+        app.profile_editor_name.set("   ");
+
+        app.submit_profile_editor();
+
+        assert!(
+            app.show_profile_editor,
+            "editor stays open on invalid submit"
+        );
+        assert_eq!(app.global_profiles, before);
+    }
+
+    #[test]
+    fn submit_profile_editor_with_editing_index_replaces_in_place() {
+        use crate::session::ProfileConfig;
+        let mut app = profile_editor_app();
+        app.global_profiles.push(ProfileConfig {
+            name: "old".to_string(),
+            description: String::new(),
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        });
+        let idx = app.global_profiles.len() - 1;
+        let len_before = app.global_profiles.len();
+
+        app.open_profile_for_editing(idx);
+        app.profile_editor_name.set("renamed");
+        app.profile_editor_description.set("updated");
+
+        app.submit_profile_editor();
+
+        assert_eq!(app.global_profiles.len(), len_before);
+        assert_eq!(app.global_profiles[idx].name, "renamed");
+        assert_eq!(app.global_profiles[idx].description, "updated");
+    }
+
+    #[test]
+    fn submit_profile_editor_with_stale_editing_index_does_not_append() {
+        let mut app = profile_editor_app();
+        let before_len = app.global_profiles.len();
+        app.open_new_profile_editor();
+        app.profile_editor_name.set("ghost");
+        // Simulate an editing index that no longer maps to a live profile
+        // (e.g. the profile was deleted by another instance mid-edit).
+        app.profile_editor_editing_index = Some(before_len + 10);
+
+        app.submit_profile_editor();
+
+        assert_eq!(app.global_profiles.len(), before_len);
+        assert!(app.global_profiles.iter().all(|p| p.name != "ghost"));
+    }
+
+    #[test]
+    fn close_profile_editor_does_not_persist_changes() {
+        let mut app = profile_editor_app();
+        let before = app.global_profiles.clone();
+        app.open_new_profile_editor();
+        app.profile_editor_name.set("discarded");
+        app.profile_editor_roles.load(&["developer".to_string()]);
+
+        app.close_profile_editor();
+
+        assert!(!app.show_profile_editor);
+        assert_eq!(app.global_profiles, before);
+    }
+
+    #[test]
+    fn profile_editor_tab_cycles_fields_forward() {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
+        let mut app = profile_editor_app();
+        app.open_new_profile_editor();
+
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
+        app.handle_profile_editor_key(KeyCode::Tab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Description);
+        app.handle_profile_editor_key(KeyCode::Tab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Roles);
+        app.handle_profile_editor_key(KeyCode::Tab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::McpServers);
+        app.handle_profile_editor_key(KeyCode::Tab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Skills);
+        app.handle_profile_editor_key(KeyCode::Tab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
+    }
+
+    #[test]
+    fn profile_editor_backtab_cycles_fields_backward() {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
+        let mut app = profile_editor_app();
+        app.open_new_profile_editor();
+
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
+        app.handle_profile_editor_key(KeyCode::BackTab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Skills);
+        app.handle_profile_editor_key(KeyCode::BackTab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::McpServers);
+        app.handle_profile_editor_key(KeyCode::BackTab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Roles);
+        app.handle_profile_editor_key(KeyCode::BackTab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Description);
+        app.handle_profile_editor_key(KeyCode::BackTab);
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
+    }
+
+    #[test]
+    fn profile_editor_esc_in_text_field_closes_overlay() {
+        let mut app = profile_editor_app();
+        app.open_new_profile_editor();
+        assert!(app.show_profile_editor);
+
+        app.handle_profile_editor_key(KeyCode::Esc);
+
+        assert!(!app.show_profile_editor);
+    }
+
+    #[test]
+    fn profile_editor_typing_updates_name_field() {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
+        let mut app = profile_editor_app();
+        app.open_new_profile_editor();
+        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
+
+        for c in "abc".chars() {
+            app.handle_profile_editor_key(KeyCode::Char(c));
+        }
+
+        assert_eq!(app.profile_editor_name.value(), "abc");
+    }
+
+    #[test]
+    fn profile_editor_list_field_add_pushes_item() {
+        use crate::ui::profile_editor_modal::ProfileEditorField;
+        use crate::ui::role_editor_modal::ToolListMode;
+        let mut app = profile_editor_app();
+        app.open_new_profile_editor();
+        app.profile_editor_field = ProfileEditorField::Roles;
+
+        // Enter Adding mode, type a role name, confirm with Enter.
+        app.handle_profile_editor_key(KeyCode::Char('a'));
+        assert_eq!(app.profile_editor_roles.mode, ToolListMode::Adding);
+        for c in "dev".chars() {
+            app.handle_profile_editor_key(KeyCode::Char(c));
+        }
+        app.handle_profile_editor_key(KeyCode::Enter);
+
+        assert_eq!(app.profile_editor_roles.mode, ToolListMode::Browse);
+        assert_eq!(app.profile_editor_roles.items, vec!["dev".to_string()]);
+    }
+
+    #[test]
+    fn settings_tab_cycle_reaches_profiles_between_skills_and_plugins() {
+        let mut app = profile_editor_app();
+        app.show_settings = true;
+        app.settings_tab = SettingsTab::Skills;
+
+        app.handle_settings_key(KeyCode::Tab);
+        assert_eq!(app.settings_tab, SettingsTab::Profiles);
+
+        app.handle_settings_key(KeyCode::Tab);
+        assert_eq!(app.settings_tab, SettingsTab::Plugins);
     }
 }

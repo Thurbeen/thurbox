@@ -8,7 +8,17 @@ use ratatui::{
 
 use super::role_editor_modal::{render_tool_list, tool_list_height, ToolListMode};
 use super::{centered_fixed_height_rect, render_modal_frame, render_text_field, theme::Theme};
-use crate::app::ProfileEditorField;
+
+/// Which field is focused in the profile editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProfileEditorField {
+    #[default]
+    Name,
+    Description,
+    Roles,
+    McpServers,
+    Skills,
+}
 
 pub struct ProfileEditorState<'a> {
     pub name: &'a str,
