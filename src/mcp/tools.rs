@@ -17,16 +17,18 @@ use super::types::{
     ContainerfileTemplateResponse, ContainerfileTemplateSummary, ContributionsSummary,
     CreateSessionParams, DeleteContainerfileTemplateParams, DeleteSessionParams,
     DeleteVmImageParams, DisablePluginParams, DownloadVmImageParams, EnablePluginParams,
-    GetContainerfileTemplateParams, GetPluginSettingParams, GetScheduledCommandParams,
-    GetSessionParams, GetVmParams, InstallPluginParams, ListPluginSettingsParams,
-    ListPluginToolsParams, ListScheduledCommandsParams, ListSessionsParams, ListVmsParams,
-    McpServerResponse, PluginResponse, PluginSettingResponse, ProcessSummary, RegisterPluginParams,
+    GetContainerfileTemplateParams, GetPluginSettingParams, GetProfileParams,
+    GetScheduledCommandParams, GetSessionParams, GetVmParams, InstallPluginParams,
+    ListPluginSettingsParams, ListPluginToolsParams, ListScheduledCommandsParams,
+    ListSessionsParams, ListVmsParams, McpServerResponse, PluginResponse, PluginSettingResponse,
+    ProcessSummary, ProfileResponse, RegisterPluginParams, RegisterProfileParams,
     RegisterSkillParams, ResetPluginSettingParams, RestartSessionParams, RestoreSessionParams,
     RoleResponse, ScheduleCommandParams, ScheduledCommandResponse, SendPromptParams,
     SessionResponse, SetContainerfileTemplateParams, SetEditorCommandParams, SetKeybindingsParams,
-    SetMcpServersParams, SetPluginSettingParams, SetPluginsParams, SetRolesParams, SetSkillsParams,
-    SetThemeParams, SkillResponse, UninstallPluginParams, UnregisterPluginParams,
-    UnregisterSkillParams, VmImageResponse, VmResponse, WorktreeResponse,
+    SetMcpServersParams, SetPluginSettingParams, SetPluginsParams, SetProfilesParams,
+    SetRolesParams, SetSkillsParams, SetThemeParams, SkillResponse, UninstallPluginParams,
+    UnregisterPluginParams, UnregisterProfileParams, UnregisterSkillParams, VmImageResponse,
+    VmResponse, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -140,6 +142,82 @@ fn effective_skill_to_response(
         name: s.name.clone(),
         path: s.path.clone(),
         source: Some(source),
+    }
+}
+
+fn profile_to_response(p: &crate::session::ProfileConfig) -> ProfileResponse {
+    ProfileResponse {
+        name: p.name.clone(),
+        description: p.description.clone(),
+        roles: p.roles.clone(),
+        mcp_servers: p.mcp_servers.clone(),
+        skills: p.skills.clone(),
+        source: None,
+    }
+}
+
+fn effective_profile_to_response(
+    p: &crate::session::ProfileConfig,
+    source: crate::storage::ProfileSource,
+) -> ProfileResponse {
+    ProfileResponse {
+        name: p.name.clone(),
+        description: p.description.clone(),
+        roles: p.roles.clone(),
+        mcp_servers: p.mcp_servers.clone(),
+        skills: p.skills.clone(),
+        source: Some(source),
+    }
+}
+
+/// Verify every referenced role/MCP server/skill name exists in the
+/// corresponding registry. Returns a joined error listing every unknown
+/// ref so the caller fixes them in one pass.
+fn validate_profile_refs(
+    db: &Database,
+    roles: &[String],
+    mcp_servers: &[String],
+    skills: &[String],
+) -> Result<(), String> {
+    let known_roles: std::collections::HashSet<String> = db
+        .list_effective_roles()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(r, _)| r.name)
+        .collect();
+    let known_mcp: std::collections::HashSet<String> = db
+        .list_effective_mcp_servers()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(s, _)| s.name)
+        .collect();
+    let known_skills: std::collections::HashSet<String> = db
+        .list_effective_skills()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(s, _)| s.name)
+        .collect();
+
+    let mut missing: Vec<String> = Vec::new();
+    for r in roles {
+        if !known_roles.contains(r) {
+            missing.push(format!("role '{r}'"));
+        }
+    }
+    for m in mcp_servers {
+        if !known_mcp.contains(m) {
+            missing.push(format!("mcp_server '{m}'"));
+        }
+    }
+    for s in skills {
+        if !known_skills.contains(s) {
+            missing.push(format!("skill '{s}'"));
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("unknown refs: {}", missing.join(", ")))
     }
 }
 
@@ -565,6 +643,7 @@ impl ThurboxMcp {
             worktree_branch: params.worktree_branch,
             base_branch: params.base_branch,
             role: params.role,
+            profile: params.profile,
             mcp_servers: params.mcp_servers,
             skills: params.skills,
             agent_session_id: None,
@@ -910,6 +989,114 @@ impl ThurboxMcp {
         match db.delete_global_skill(&params.name) {
             Ok(true) => serde_json::json!({ "deleted": true, "name": params.name }).to_string(),
             Ok(false) => error_json(&format!("Skill not registered: {}", params.name)),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    // ── Profile Registry Tools ──────────────────────────────────
+
+    #[tool(
+        description = "List all effective profiles. Returns a JSON array of {name, description, roles, mcp_servers, skills, source} objects. A profile bundles role/MCP server/skill references applied together at session spawn; when multiple roles are listed their permissions are merged (union allowed/disallowed, most-permissive mode wins, env later-wins, append_system_prompt concatenated)."
+    )]
+    fn list_profiles(&self) -> String {
+        let db = self.db.lock().unwrap();
+        match db.list_effective_profiles() {
+            Ok(profiles) => {
+                let resp: Vec<ProfileResponse> = profiles
+                    .into_iter()
+                    .map(|(p, src)| effective_profile_to_response(&p, src))
+                    .collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Get a single profile by name. Returns {name, description, roles, mcp_servers, skills, source} or an error if no such profile exists."
+    )]
+    fn get_profile(&self, Parameters(params): Parameters<GetProfileParams>) -> String {
+        let db = self.db.lock().unwrap();
+        match db.get_global_profile(&params.name) {
+            Ok(Some(profile)) => json_text(&effective_profile_to_response(
+                &profile,
+                crate::storage::ProfileSource::Registered,
+            )),
+            Ok(None) => error_json(&format!("Profile not found: {}", params.name)),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Atomically replace all global profiles. Deletes existing profiles and inserts the provided list in a single transaction. To add a profile, include all existing profiles plus the new one; to clear, pass an empty array. Referenced role/MCP server/skill names must exist in their respective registries at call time."
+    )]
+    fn set_profiles(&self, Parameters(params): Parameters<SetProfilesParams>) -> String {
+        let db = self.db.lock().unwrap();
+
+        let mut profiles: Vec<crate::session::ProfileConfig> =
+            Vec::with_capacity(params.profiles.len());
+        for p in params.profiles {
+            if let Err(e) = validate_safe_name(&p.name) {
+                return e;
+            }
+            if let Err(e) = validate_profile_refs(&db, &p.roles, &p.mcp_servers, &p.skills) {
+                return error_json(&format!("profile '{}': {e}", p.name));
+            }
+            profiles.push(crate::session::ProfileConfig {
+                name: p.name,
+                description: p.description,
+                roles: p.roles,
+                mcp_servers: p.mcp_servers,
+                skills: p.skills,
+            });
+        }
+
+        match db.replace_global_profiles(&profiles) {
+            Ok(()) => {
+                let resp: Vec<ProfileResponse> = profiles.iter().map(profile_to_response).collect();
+                json_text(&resp)
+            }
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Register (or update) a single profile — a bundle of role, MCP server, and skill names applied together at session spawn. Referenced names must already exist in their respective registries; unknown refs return a clear error. An empty `roles` list is allowed (the session falls back to the default role)."
+    )]
+    fn register_profile(&self, Parameters(params): Parameters<RegisterProfileParams>) -> String {
+        if let Err(e) = validate_safe_name(&params.name) {
+            return e;
+        }
+        let db = self.db.lock().unwrap();
+        if let Err(e) =
+            validate_profile_refs(&db, &params.roles, &params.mcp_servers, &params.skills)
+        {
+            return error_json(&e);
+        }
+        let profile = crate::session::ProfileConfig {
+            name: params.name,
+            description: params.description,
+            roles: params.roles,
+            mcp_servers: params.mcp_servers,
+            skills: params.skills,
+        };
+        match db.upsert_global_profile(&profile) {
+            Ok(()) => json_text(&profile_to_response(&profile)),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "Unregister a profile by name. Returns {\"deleted\": true, \"name\": ...} if a row was removed, or an error if no such profile existed."
+    )]
+    fn unregister_profile(
+        &self,
+        Parameters(params): Parameters<UnregisterProfileParams>,
+    ) -> String {
+        let db = self.db.lock().unwrap();
+        match db.delete_global_profile(&params.name) {
+            Ok(true) => serde_json::json!({ "deleted": true, "name": params.name }).to_string(),
+            Ok(false) => error_json(&format!("Profile not registered: {}", params.name)),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1554,7 +1741,10 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::mcp::types::{McpServerInput, RoleInput, SkillInput};
+    use crate::mcp::types::{
+        GetProfileParams, McpServerInput, ProfileInput, RegisterProfileParams, RoleInput,
+        SetProfilesParams, SkillInput, UnregisterProfileParams,
+    };
     use crate::storage::Database;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -2737,5 +2927,175 @@ mod tests {
             })),
         );
         assert!(v["error"].as_str().unwrap().contains("not declared"));
+    }
+
+    // ── Profile tool tests ────────────────────────────────────────
+
+    fn seed_dev_role(server: &ThurboxMcp) {
+        server.set_roles(Parameters(SetRolesParams {
+            roles: vec![RoleInput {
+                name: "developer".to_string(),
+                description: String::new(),
+                permission_mode: None,
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: None,
+                append_system_prompt: None,
+                env: HashMap::new(),
+            }],
+        }));
+    }
+
+    #[test]
+    fn list_profiles_returns_seeded_orchestrator() {
+        // The in-memory DB is initialised via schema::initialize, which seeds
+        // the default orchestrator profile.
+        let server = test_server();
+        let result = server.list_profiles();
+        let v = parse_json(&result);
+        let arr = v.as_array().unwrap();
+        assert!(
+            arr.iter().any(|p| p["name"] == "orchestrator"),
+            "expected seeded orchestrator profile, got {v}"
+        );
+    }
+
+    #[test]
+    fn set_and_list_profiles_roundtrip() {
+        let server = test_server();
+        seed_dev_role(&server);
+
+        let result = server.set_profiles(Parameters(SetProfilesParams {
+            profiles: vec![ProfileInput {
+                name: "combo".to_string(),
+                description: "two-role combo".to_string(),
+                roles: vec!["developer".to_string()],
+                mcp_servers: Vec::new(),
+                skills: Vec::new(),
+            }],
+        }));
+        let v = parse_json(&result);
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["name"], "combo");
+
+        let list = parse_json(&server.list_profiles());
+        let arr = list.as_array().unwrap();
+        // Seeded orchestrator is replaced by atomic set; only `combo` remains.
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "combo");
+        assert_eq!(arr[0]["source"], "registered");
+        assert_eq!(arr[0]["roles"][0], "developer");
+    }
+
+    #[test]
+    fn register_profile_upserts_and_get_returns_it() {
+        let server = test_server();
+        seed_dev_role(&server);
+
+        let v = parse_json(&server.register_profile(Parameters(RegisterProfileParams {
+            name: "solo".to_string(),
+            description: "first".to_string(),
+            roles: vec!["developer".to_string()],
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        })));
+        assert_eq!(v["name"], "solo");
+        assert_eq!(v["description"], "first");
+
+        // Upsert with a new description.
+        let v = parse_json(&server.register_profile(Parameters(RegisterProfileParams {
+            name: "solo".to_string(),
+            description: "updated".to_string(),
+            roles: vec!["developer".to_string()],
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        })));
+        assert_eq!(v["description"], "updated");
+
+        let got = parse_json(&server.get_profile(Parameters(GetProfileParams {
+            name: "solo".to_string(),
+        })));
+        assert_eq!(got["name"], "solo");
+        assert_eq!(got["description"], "updated");
+    }
+
+    #[test]
+    fn register_profile_rejects_unknown_role_ref() {
+        let server = test_server();
+        let v = parse_json(&server.register_profile(Parameters(RegisterProfileParams {
+            name: "bogus".to_string(),
+            description: String::new(),
+            roles: vec!["does-not-exist".to_string()],
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        })));
+        let err = v["error"].as_str().expect("error field");
+        assert!(err.contains("does-not-exist"), "got {err}");
+        assert!(err.contains("role"), "got {err}");
+    }
+
+    #[test]
+    fn register_profile_rejects_unknown_mcp_ref() {
+        let server = test_server();
+        let v = parse_json(&server.register_profile(Parameters(RegisterProfileParams {
+            name: "bogus".to_string(),
+            description: String::new(),
+            roles: Vec::new(),
+            mcp_servers: vec!["no-such-server".to_string()],
+            skills: Vec::new(),
+        })));
+        let err = v["error"].as_str().expect("error field");
+        assert!(err.contains("no-such-server"), "got {err}");
+    }
+
+    #[test]
+    fn register_profile_allows_empty_roles_list() {
+        let server = test_server();
+        let v = parse_json(&server.register_profile(Parameters(RegisterProfileParams {
+            name: "bare".to_string(),
+            description: String::new(),
+            roles: Vec::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        })));
+        assert_eq!(v["name"], "bare");
+    }
+
+    #[test]
+    fn unregister_profile_removes_and_idempotent_error() {
+        let server = test_server();
+        seed_dev_role(&server);
+        server.register_profile(Parameters(RegisterProfileParams {
+            name: "tmp".to_string(),
+            description: String::new(),
+            roles: vec!["developer".to_string()],
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        }));
+
+        let v = parse_json(
+            &server.unregister_profile(Parameters(UnregisterProfileParams {
+                name: "tmp".to_string(),
+            })),
+        );
+        assert_eq!(v["deleted"], true);
+        assert_eq!(v["name"], "tmp");
+
+        // Second call errors because nothing to remove.
+        let v = parse_json(
+            &server.unregister_profile(Parameters(UnregisterProfileParams {
+                name: "tmp".to_string(),
+            })),
+        );
+        assert!(v["error"].as_str().unwrap().contains("tmp"));
+    }
+
+    #[test]
+    fn get_profile_returns_error_when_missing() {
+        let server = test_server();
+        let v = parse_json(&server.get_profile(Parameters(GetProfileParams {
+            name: "ghost".to_string(),
+        })));
+        assert!(v["error"].as_str().unwrap().contains("ghost"));
     }
 }

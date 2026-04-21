@@ -1,7 +1,10 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
+
+use crate::session::default_profiles;
+use crate::sync::current_time_millis;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -174,6 +177,16 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             PRIMARY KEY (plugin_name, key),
             FOREIGN KEY (plugin_name) REFERENCES plugins(plugin_name) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS profiles (
+            profile_name      TEXT PRIMARY KEY,
+            description       TEXT NOT NULL DEFAULT '',
+            role_names        TEXT NOT NULL DEFAULT '',
+            mcp_server_names  TEXT NOT NULL DEFAULT '',
+            skill_names       TEXT NOT NULL DEFAULT '',
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL
+        );
         ",
     )?;
 
@@ -188,6 +201,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     migrate(conn)?;
+    seed_default_profiles(conn)?;
 
     Ok(())
 }
@@ -627,6 +641,21 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 20 {
+        // v19 → v20: add profiles table bundling roles + MCP servers + skills
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS profiles (
+                profile_name      TEXT PRIMARY KEY,
+                description       TEXT NOT NULL DEFAULT '',
+                role_names        TEXT NOT NULL DEFAULT '',
+                mcp_server_names  TEXT NOT NULL DEFAULT '',
+                skill_names       TEXT NOT NULL DEFAULT '',
+                created_at        INTEGER NOT NULL,
+                updated_at        INTEGER NOT NULL
+            );",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -634,6 +663,55 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+/// Seed the built-in profiles (see `session::default_profiles`) exactly once.
+///
+/// Guarded by the `profiles_seeded` metadata flag so admins who delete a
+/// seeded profile don't see it resurrect on the next thurbox startup.
+/// The flag is set on every call regardless of whether inserts happened,
+/// which also handles the "v19 → v20 migration seeded the table, same
+/// startup also calls this function" path — once the flag is set it stays
+/// set.
+fn seed_default_profiles(conn: &Connection) -> rusqlite::Result<()> {
+    let already_seeded: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'profiles_seeded'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    if already_seeded.is_some() {
+        return Ok(());
+    }
+
+    let existing: i64 = conn.query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))?;
+    if existing == 0 {
+        let now = current_time_millis() as i64;
+        for profile in default_profiles() {
+            conn.execute(
+                "INSERT INTO profiles \
+                 (profile_name, description, role_names, mcp_server_names, skill_names, \
+                  created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    profile.name,
+                    profile.description,
+                    profile.roles.join(","),
+                    profile.mcp_servers.join(","),
+                    profile.skills.join(","),
+                    now,
+                    now,
+                ],
+            )?;
+        }
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('profiles_seeded', '1')",
+        [],
+    )?;
     Ok(())
 }
 
@@ -667,6 +745,7 @@ mod tests {
         assert!(tables.contains(&"skills".to_string()));
         assert!(tables.contains(&"plugins".to_string()));
         assert!(tables.contains(&"plugin_settings".to_string()));
+        assert!(tables.contains(&"profiles".to_string()));
         // Project tables should NOT exist
         assert!(!tables.contains(&"projects".to_string()));
         assert!(!tables.contains(&"project_repos".to_string()));
@@ -704,6 +783,67 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
         initialize(&conn).unwrap(); // Should not error
+    }
+
+    #[test]
+    fn schema_seeds_default_profiles_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+
+        let names: Vec<String> = conn
+            .prepare("SELECT profile_name FROM profiles ORDER BY profile_name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            names,
+            vec![crate::session::DEFAULT_PROFILE_ORCHESTRATOR.to_string()]
+        );
+
+        // Second run must not re-seed the deleted profile.
+        conn.execute("DELETE FROM profiles", []).unwrap();
+        initialize(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn migrate_from_v19_adds_profiles_table_and_seeds() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Bootstrap a v19 database by running initialize then rolling
+        // the stored schema_version back to 19 and dropping the profiles
+        // table to simulate an upgrade from an existing install. Also
+        // clear the `profiles_seeded` flag since a genuine v19 DB would
+        // never have set it.
+        initialize(&conn).unwrap();
+        conn.execute("DROP TABLE profiles", []).unwrap();
+        conn.execute(
+            "UPDATE metadata SET value = '19' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM metadata WHERE key = 'profiles_seeded'", [])
+            .unwrap();
+
+        initialize(&conn).unwrap();
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

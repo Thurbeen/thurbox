@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use crate::session::{
-    default_developer_permissions, McpServerConfig, RolePermissions, SessionConfig, SessionId,
-    SkillConfig, DEFAULT_ROLE_NAME,
+    default_developer_permissions, merge_role_permissions, McpServerConfig, ProfileConfig,
+    RolePermissions, SessionConfig, SessionId, SkillConfig, DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
@@ -31,6 +31,11 @@ pub struct SpawnRequest {
     pub base_branch: Option<String>,
     /// Optional role name — falls back to the default developer role.
     pub role: Option<String>,
+    /// Optional profile name — resolved via the `profiles` table and
+    /// applied as a preset for roles/MCP/skills. Any explicit `role`,
+    /// `mcp_servers`, or `skills` set on this request overrides the
+    /// profile's contribution for that field.
+    pub profile: Option<String>,
     /// Names of global MCP servers to attach to the session.
     pub mcp_servers: Vec<String>,
     /// Names of global skills to stage into the session.
@@ -58,8 +63,10 @@ pub struct SpawnResult {
 pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
     validate_session_name(&req.name)?;
 
-    let (role_name, permissions) = resolve_role(db, req.role.as_deref())?;
-    let (mcp_servers, skills) = resolve_attachments(db, &req.mcp_servers, &req.skills)?;
+    let profile = resolve_profile(db, req.profile.as_deref())?;
+    let (role_name, permissions) = resolve_role_with_profile(db, req.role.as_deref(), &profile)?;
+    let (mcp_server_names, skill_names) = resolve_attachment_names(&req, &profile);
+    let (mcp_servers, skills) = resolve_attachments(db, &mcp_server_names, &skill_names)?;
     let (cwd, worktrees) = resolve_cwd(&req)?;
 
     let agent_session_id = req
@@ -131,40 +138,157 @@ fn validate_session_name(name: &str) -> Result<(), String> {
     crate::paths::validate_safe_name(name)
 }
 
-/// Resolve a role name to its concrete permissions.
+/// Load the profile named by the caller, if any.
 ///
-/// Falls back to the single configured role (if exactly one exists) or to the
-/// seeded developer role otherwise — same precedence as the TUI.
-fn resolve_role(
+/// Empty string is treated as "no profile". Unknown profile names are a
+/// hard error so typos surface immediately.
+fn resolve_profile(
     db: &Database,
     requested: Option<&str>,
+) -> Result<Option<ProfileConfig>, String> {
+    let Some(name) = requested.filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
+    match db
+        .get_global_profile(name)
+        .map_err(|e| format!("Failed to load profile '{name}': {e}"))?
+    {
+        Some(p) => Ok(Some(p)),
+        None => Err(format!("Unknown profile: {name}")),
+    }
+}
+
+/// Resolve the display role name and merged permissions.
+///
+/// Precedence for the role list:
+/// 1. Explicit `requested` role wins if set.
+/// 2. Otherwise, the profile's `roles` list (if non-empty).
+/// 3. Otherwise, the single configured role (if exactly one exists) or
+///    the seeded developer role.
+///
+/// The returned display name is:
+/// - `"profile:<name>"` when a profile was applied (lets the TUI
+///   distinguish preset-driven sessions),
+/// - the single role name otherwise, or `DEFAULT_ROLE_NAME` on fallback.
+fn resolve_role_with_profile(
+    db: &Database,
+    requested: Option<&str>,
+    profile: &Option<ProfileConfig>,
 ) -> Result<(String, RolePermissions), String> {
-    // Explicit role: search effective roles so plugin-contributed roles can be
-    // opted into. Plugin roles are NEVER picked up by the unscoped auto-fallback
-    // below — that only consults the registry, so installing a plugin can't
-    // silently change the default permissions of new sessions.
-    if let Some(name) = requested.filter(|n| !n.is_empty()) {
-        let effective_roles = db
+    let explicit = requested.filter(|n| !n.is_empty());
+    let profile_roles_opted_in = profile.as_ref().is_some_and(|p| !p.roles.is_empty());
+    let role_names = resolve_role_names(db, explicit, profile)?;
+
+    // Named roles (explicit or profile-driven) resolve against the effective
+    // set so plugin-contributed roles can be opted into. The unscoped
+    // auto-fallback only consults the registry, preserving the guarantee
+    // that installing a plugin can't silently change the default permissions
+    // of new sessions.
+    let uses_effective = explicit.is_some() || profile_roles_opted_in;
+
+    let parts: Vec<RolePermissions> = if role_names.is_empty() {
+        Vec::new()
+    } else if uses_effective {
+        let effective = db
             .list_effective_roles()
             .map_err(|e| format!("Failed to load roles: {e}"))?;
-        let perms = effective_roles
+        role_names
             .iter()
-            .find(|(r, _src)| r.name == name)
-            .map(|(r, _src)| r.permissions.clone())
-            .unwrap_or_else(|| default_permissions_for(name));
-        return Ok((name.to_string(), perms));
-    }
+            .map(|name| {
+                effective
+                    .iter()
+                    .find(|(r, _)| r.name == *name)
+                    .map(|(r, _)| r.permissions.clone())
+                    .unwrap_or_else(|| default_permissions_for(name))
+            })
+            .collect()
+    } else {
+        let global = db
+            .list_global_roles()
+            .map_err(|e| format!("Failed to load roles: {e}"))?;
+        role_names
+            .iter()
+            .map(|name| {
+                global
+                    .iter()
+                    .find(|r| r.name == *name)
+                    .map(|r| r.permissions.clone())
+                    .unwrap_or_else(|| default_permissions_for(name))
+            })
+            .collect()
+    };
 
+    // Single-role case is a pass-through: preserves insertion order of
+    // tool lists and avoids the BTreeSet sort performed by the merge
+    // function. Empty falls back to the hardcoded default developer perms.
+    let merged = match parts.as_slice() {
+        [] => default_developer_permissions(),
+        [only] => only.clone(),
+        _ => merge_role_permissions(&parts),
+    };
+
+    let display = match (profile.as_ref(), role_names.as_slice()) {
+        (Some(p), _) => format!("profile:{}", p.name),
+        (None, [only]) => only.clone(),
+        (None, []) => DEFAULT_ROLE_NAME.to_string(),
+        (None, many) => many.join("+"),
+    };
+
+    Ok((display, merged))
+}
+
+/// Determine which role names contribute to the merged permissions.
+///
+/// Explicit caller-supplied role always wins (even over a profile). If
+/// no explicit role and no profile is given, falls back to the TUI's
+/// previous behaviour: single existing role, or seeded developer.
+fn resolve_role_names(
+    db: &Database,
+    explicit: Option<&str>,
+    profile: &Option<ProfileConfig>,
+) -> Result<Vec<String>, String> {
+    if let Some(name) = explicit {
+        return Ok(vec![name.to_string()]);
+    }
+    if let Some(p) = profile.as_ref() {
+        if !p.roles.is_empty() {
+            return Ok(p.roles.clone());
+        }
+    }
     let global_roles = db
         .list_global_roles()
         .map_err(|e| format!("Failed to load roles: {e}"))?;
     Ok(match global_roles.as_slice() {
-        [only] => (only.name.clone(), only.permissions.clone()),
-        _ => (
-            DEFAULT_ROLE_NAME.to_string(),
-            default_developer_permissions(),
-        ),
+        [only] => vec![only.name.clone()],
+        _ => vec![DEFAULT_ROLE_NAME.to_string()],
     })
+}
+
+/// Caller-supplied MCP/skill lists override the profile's contributions.
+///
+/// Empty caller list + non-empty profile list → take from profile. Empty
+/// both → empty.
+fn resolve_attachment_names(
+    req: &SpawnRequest,
+    profile: &Option<ProfileConfig>,
+) -> (Vec<String>, Vec<String>) {
+    let mcp = if !req.mcp_servers.is_empty() {
+        req.mcp_servers.clone()
+    } else {
+        profile
+            .as_ref()
+            .map(|p| p.mcp_servers.clone())
+            .unwrap_or_default()
+    };
+    let skills = if !req.skills.is_empty() {
+        req.skills.clone()
+    } else {
+        profile
+            .as_ref()
+            .map(|p| p.skills.clone())
+            .unwrap_or_default()
+    };
+    (mcp, skills)
 }
 
 fn default_permissions_for(role_name: &str) -> RolePermissions {
@@ -282,6 +406,7 @@ mod tests {
             worktree_branch: None,
             base_branch: None,
             role: None,
+            profile: None,
             mcp_servers: Vec::new(),
             skills: Vec::new(),
             agent_session_id: None,
@@ -301,6 +426,7 @@ mod tests {
                 worktree_branch: None,
                 base_branch: None,
                 role: None,
+                profile: None,
                 mcp_servers: Vec::new(),
                 skills: Vec::new(),
                 agent_session_id: None,
@@ -316,9 +442,8 @@ mod tests {
     #[test]
     fn resolve_role_falls_back_to_default_developer() {
         let db = empty_db();
-        let (name, perms) = resolve_role(&db, None).unwrap();
+        let (name, perms) = resolve_role_with_profile(&db, None, &None).unwrap();
         assert_eq!(name, DEFAULT_ROLE_NAME);
-        // Default developer role has a non-default permission_mode set.
         assert_eq!(
             perms.permission_mode,
             default_developer_permissions().permission_mode
@@ -334,7 +459,7 @@ mod tests {
             permissions: RolePermissions::default(),
         };
         db.replace_global_roles(&[role]).unwrap();
-        let (name, _) = resolve_role(&db, None).unwrap();
+        let (name, _) = resolve_role_with_profile(&db, None, &None).unwrap();
         assert_eq!(name, "solo");
     }
 
@@ -355,7 +480,7 @@ mod tests {
             permissions: RolePermissions::default(),
         };
         db.replace_global_roles(&[r1, r2]).unwrap();
-        let (name, perms) = resolve_role(&db, Some("alpha")).unwrap();
+        let (name, perms) = resolve_role_with_profile(&db, Some("alpha"), &None).unwrap();
         assert_eq!(name, "alpha");
         assert_eq!(perms.permission_mode.as_deref(), Some("plan"));
     }
@@ -374,7 +499,7 @@ mod tests {
         );
 
         let db = empty_db();
-        let (name, perms) = resolve_role(&db, Some("orchestrator")).unwrap();
+        let (name, perms) = resolve_role_with_profile(&db, Some("orchestrator"), &None).unwrap();
         assert_eq!(name, "orchestrator");
         assert_eq!(
             perms.disallowed_tools,
@@ -398,7 +523,7 @@ mod tests {
         seed_plugin_with_role(&plugins_dir, "orch-bundle", "orchestrator", "Write");
 
         let db = empty_db();
-        let (name, perms) = resolve_role(&db, None).unwrap();
+        let (name, perms) = resolve_role_with_profile(&db, None, &None).unwrap();
         assert_eq!(name, DEFAULT_ROLE_NAME);
         assert_eq!(
             perms.permission_mode,
@@ -437,5 +562,142 @@ mod tests {
         )
         .unwrap();
         p
+    }
+
+    #[test]
+    fn resolve_profile_unknown_name_errors() {
+        let db = empty_db();
+        let err = resolve_profile(&db, Some("ghost")).unwrap_err();
+        assert!(err.contains("ghost"), "got {err}");
+    }
+
+    #[test]
+    fn resolve_profile_empty_string_is_none() {
+        let db = empty_db();
+        assert!(resolve_profile(&db, Some("")).unwrap().is_none());
+        assert!(resolve_profile(&db, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn profile_roles_merge_when_no_explicit_role() {
+        let db = empty_db();
+        let reader = RoleConfig {
+            name: "reader".into(),
+            description: String::new(),
+            permissions: RolePermissions {
+                allowed_tools: vec!["Read".to_string()],
+                permission_mode: Some("plan".into()),
+                ..RolePermissions::default()
+            },
+        };
+        let writer = RoleConfig {
+            name: "writer".into(),
+            description: String::new(),
+            permissions: RolePermissions {
+                allowed_tools: vec!["Edit".to_string()],
+                permission_mode: Some("acceptEdits".into()),
+                ..RolePermissions::default()
+            },
+        };
+        db.replace_global_roles(&[reader, writer]).unwrap();
+        let profile = ProfileConfig {
+            name: "combo".into(),
+            description: String::new(),
+            roles: vec!["reader".into(), "writer".into()],
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        };
+        let (name, perms) = resolve_role_with_profile(&db, None, &Some(profile)).unwrap();
+        assert_eq!(name, "profile:combo");
+        assert!(perms.allowed_tools.contains(&"Read".to_string()));
+        assert!(perms.allowed_tools.contains(&"Edit".to_string()));
+        // Most permissive mode wins.
+        assert_eq!(perms.permission_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    #[test]
+    fn explicit_role_overrides_profile_roles() {
+        let db = empty_db();
+        let reader = RoleConfig {
+            name: "reader".into(),
+            description: String::new(),
+            permissions: RolePermissions {
+                allowed_tools: vec!["Read".into()],
+                ..RolePermissions::default()
+            },
+        };
+        let writer = RoleConfig {
+            name: "writer".into(),
+            description: String::new(),
+            permissions: RolePermissions {
+                allowed_tools: vec!["Edit".into()],
+                ..RolePermissions::default()
+            },
+        };
+        db.replace_global_roles(&[reader, writer]).unwrap();
+        let profile = ProfileConfig {
+            name: "combo".into(),
+            description: String::new(),
+            roles: vec!["reader".into(), "writer".into()],
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        };
+        let (name, perms) = resolve_role_with_profile(&db, Some("reader"), &Some(profile)).unwrap();
+        // Display name uses the profile prefix because a profile was applied,
+        // but only the explicit role contributes permissions.
+        assert_eq!(name, "profile:combo");
+        assert_eq!(perms.allowed_tools, vec!["Read".to_string()]);
+    }
+
+    #[test]
+    fn caller_mcp_and_skills_override_profile() {
+        let profile = ProfileConfig {
+            name: "p".into(),
+            description: String::new(),
+            roles: Vec::new(),
+            mcp_servers: vec!["from-profile".into()],
+            skills: vec!["from-profile-skill".into()],
+        };
+        let req = SpawnRequest {
+            name: "t".into(),
+            repo_path: PathBuf::from("/tmp"),
+            worktree_branch: None,
+            base_branch: None,
+            role: None,
+            profile: Some("p".into()),
+            mcp_servers: vec!["caller".into()],
+            skills: vec!["caller-skill".into()],
+            agent_session_id: None,
+            model: None,
+        };
+        let (mcp, skills) = resolve_attachment_names(&req, &Some(profile));
+        assert_eq!(mcp, vec!["caller".to_string()]);
+        assert_eq!(skills, vec!["caller-skill".to_string()]);
+    }
+
+    #[test]
+    fn profile_mcp_and_skills_apply_when_caller_empty() {
+        let profile = ProfileConfig {
+            name: "p".into(),
+            description: String::new(),
+            roles: Vec::new(),
+            mcp_servers: vec!["from-profile".into()],
+            skills: vec!["from-profile-skill".into()],
+        };
+        let req = SpawnRequest {
+            name: "t".into(),
+            repo_path: PathBuf::from("/tmp"),
+            worktree_branch: None,
+            base_branch: None,
+            role: None,
+            profile: Some("p".into()),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            agent_session_id: None,
+            model: None,
+        };
+        let (mcp, skills) = resolve_attachment_names(&req, &Some(profile));
+        assert_eq!(mcp, vec!["from-profile".to_string()]);
+        assert_eq!(skills, vec!["from-profile-skill".to_string()]);
     }
 }

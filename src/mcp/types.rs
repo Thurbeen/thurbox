@@ -237,6 +237,75 @@ pub struct UnregisterSkillParams {
     pub name: String,
 }
 
+// ── Profile Parameters ─────────────────────────────────────────
+
+/// A profile — a named bundle of role + MCP server + skill references
+/// applied together at session spawn. Role permissions are merged when
+/// multiple roles are listed (see `merge_role_permissions`).
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProfileInput {
+    #[schemars(description = "Profile name (1-64 chars, unique)")]
+    pub name: String,
+    #[serde(default)]
+    #[schemars(description = "Human-readable summary of the profile's purpose")]
+    pub description: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Global role names applied in order. When multiple are listed, their permissions are merged (union allowed/disallowed, most-permissive mode wins, env later-wins, append_system_prompt concatenated)."
+    )]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Global MCP server names attached when this profile is applied")]
+    pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Global skill names staged when this profile is applied")]
+    pub skills: Vec<String>,
+}
+
+/// Parameters for the `set_profiles` tool.
+///
+/// Atomically replaces all global profiles — existing profiles are
+/// deleted and the provided list is inserted in a single transaction.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetProfilesParams {
+    #[schemars(
+        description = "Complete list of profiles — atomically replaces all global profiles"
+    )]
+    pub profiles: Vec<ProfileInput>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RegisterProfileParams {
+    #[schemars(description = "Profile name (1-64 chars, unique)")]
+    pub name: String,
+    #[serde(default)]
+    #[schemars(description = "Human-readable summary")]
+    pub description: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Global role names applied in order. All must already be registered."
+    )]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Global MCP server names. All must already be registered.")]
+    pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Global skill names. All must already be registered.")]
+    pub skills: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnregisterProfileParams {
+    #[schemars(description = "Profile name to unregister")]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetProfileParams {
+    #[schemars(description = "Profile name")]
+    pub name: String,
+}
+
 // ── Plugin Parameters ──────────────────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -494,6 +563,11 @@ pub struct CreateSessionParams {
     pub skills: Vec<String>,
     #[serde(default)]
     #[schemars(
+        description = "Optional global profile name — bundles role(s), MCP servers, and skills. Explicit role/mcp_servers/skills fields override the profile's equivalent lists."
+    )]
+    pub profile: Option<String>,
+    #[serde(default)]
+    #[schemars(
         description = "Model id passed via `claude --model` (e.g. \"opus\", \"sonnet\", \"haiku\"). Omit for the CLI default."
     )]
     pub model: Option<String>,
@@ -597,6 +671,23 @@ pub struct SkillResponse {
     /// `register_skill` tool only has the registry entry at hand).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::storage::SkillSource>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileResponse {
+    pub name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    /// `"registered"` for SQLite registry entries. Omitted from per-item
+    /// register/unregister responses where only the registry row is at
+    /// hand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::storage::ProfileSource>,
 }
 
 #[derive(Debug, Serialize)]

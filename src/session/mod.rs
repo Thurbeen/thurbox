@@ -205,6 +205,133 @@ impl McpServerConfig {
     }
 }
 
+/// A named bundle of roles + MCP servers + skills.
+///
+/// Profiles are preset session configurations: users select a profile and
+/// the referenced roles/MCP servers/skills are applied together at spawn
+/// time. Role permissions are merged via [`merge_role_permissions`] when
+/// multiple roles are listed, so small single-purpose roles compose into
+/// richer capabilities (e.g. "reviewer + docs-writer").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProfileConfig {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Role names applied in order. Empty list = fall back to default role.
+    /// Order matters for merge tiebreaks (see [`merge_role_permissions`]).
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// MCP server names attached when this profile is applied.
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    /// Skill names staged when this profile is applied.
+    #[serde(default)]
+    pub skills: Vec<String>,
+}
+
+/// Name of the single seeded default profile (see [`default_profiles`]).
+pub const DEFAULT_PROFILE_ORCHESTRATOR: &str = "orchestrator";
+
+/// Built-in profiles seeded into empty profile tables on first migration.
+///
+/// Mirrors [`default_developer_role`]: a pure function returning the seed
+/// list, no DB access. The storage layer calls this once when the
+/// `profiles` table is empty after migration to v20.
+pub fn default_profiles() -> Vec<ProfileConfig> {
+    vec![ProfileConfig {
+        name: DEFAULT_PROFILE_ORCHESTRATOR.to_string(),
+        description: "Delegates work to worker sessions via the orchestrate skill.".to_string(),
+        roles: vec![DEFAULT_ROLE_NAME.to_string()],
+        mcp_servers: Vec::new(),
+        skills: vec!["orchestrate".to_string()],
+    }]
+}
+
+/// Rank a Claude Code permission mode string by permissiveness.
+///
+/// Higher rank = more permissive. Used by [`merge_role_permissions`] to
+/// pick the most permissive mode when multiple roles set one. Unknown
+/// mode strings rank as the lowest tier so a plugin-introduced mode
+/// cannot silently outrank a known mode without admin review.
+///
+/// Known modes (least → most permissive): `plan`, `default`, `acceptEdits`,
+/// `bypassPermissions`.
+pub fn permission_mode_rank(mode: &str) -> u8 {
+    match mode {
+        "plan" => 1,
+        "default" => 2,
+        "acceptEdits" => 3,
+        "bypassPermissions" => 4,
+        _ => 0,
+    }
+}
+
+/// Merge `RolePermissions` from multiple roles into a single composite.
+///
+/// Semantics:
+/// - `permission_mode`: most permissive (see [`permission_mode_rank`]).
+///   `None` contributions are ignored. If no role sets a mode, result is
+///   `None`.
+/// - `allowed_tools` / `disallowed_tools`: set-union, dedup, stable-sorted.
+/// - `tools`: first non-`None` in input order.
+/// - `append_system_prompt`: concatenate non-empty parts in input order,
+///   separated by `\n\n`.
+/// - `env`: merge in input order, later role wins on key collision.
+///
+/// Single-input case is a pass-through (same allocations aside). Empty
+/// input returns [`RolePermissions::default`].
+pub fn merge_role_permissions(parts: &[RolePermissions]) -> RolePermissions {
+    if parts.is_empty() {
+        return RolePermissions::default();
+    }
+
+    let mut permission_mode: Option<String> = None;
+    let mut best_rank: u8 = 0;
+    let mut allowed = std::collections::BTreeSet::<String>::new();
+    let mut disallowed = std::collections::BTreeSet::<String>::new();
+    let mut tools: Option<String> = None;
+    let mut prompt_parts: Vec<&str> = Vec::new();
+    let mut env: HashMap<String, String> = HashMap::new();
+
+    for part in parts {
+        if let Some(mode) = part.permission_mode.as_deref() {
+            let rank = permission_mode_rank(mode);
+            if rank > best_rank || permission_mode.is_none() {
+                best_rank = rank;
+                permission_mode = Some(mode.to_string());
+            }
+        }
+        allowed.extend(part.allowed_tools.iter().cloned());
+        disallowed.extend(part.disallowed_tools.iter().cloned());
+        if tools.is_none() {
+            tools = part.tools.clone();
+        }
+        if let Some(p) = part.append_system_prompt.as_deref() {
+            if !p.is_empty() {
+                prompt_parts.push(p);
+            }
+        }
+        for (k, v) in &part.env {
+            env.insert(k.clone(), v.clone());
+        }
+    }
+
+    let append_system_prompt = if prompt_parts.is_empty() {
+        None
+    } else {
+        Some(prompt_parts.join("\n\n"))
+    };
+
+    RolePermissions {
+        permission_mode,
+        allowed_tools: allowed.into_iter().collect(),
+        disallowed_tools: disallowed.into_iter().collect(),
+        tools,
+        append_system_prompt,
+        env,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub repo_path: PathBuf,
@@ -989,5 +1116,209 @@ mod tests {
             doc["mcpServers"]["b"]["args"],
             serde_json::json!(["--flag"])
         );
+    }
+
+    #[test]
+    fn permission_mode_ranks_known_modes() {
+        assert_eq!(permission_mode_rank("plan"), 1);
+        assert_eq!(permission_mode_rank("default"), 2);
+        assert_eq!(permission_mode_rank("acceptEdits"), 3);
+        assert_eq!(permission_mode_rank("bypassPermissions"), 4);
+        assert_eq!(permission_mode_rank("unknown"), 0);
+        assert_eq!(permission_mode_rank(""), 0);
+    }
+
+    #[test]
+    fn merge_role_permissions_empty_returns_default() {
+        let merged = merge_role_permissions(&[]);
+        assert_eq!(merged, RolePermissions::default());
+    }
+
+    #[test]
+    fn merge_role_permissions_single_role_preserves_all_fields() {
+        let perms = RolePermissions {
+            permission_mode: Some("plan".to_string()),
+            allowed_tools: vec!["Read".to_string()],
+            disallowed_tools: vec!["Edit".to_string()],
+            tools: Some("default".to_string()),
+            append_system_prompt: Some("hi".to_string()),
+            env: HashMap::from([("K".to_string(), "V".to_string())]),
+        };
+        let merged = merge_role_permissions(std::slice::from_ref(&perms));
+        assert_eq!(merged, perms);
+    }
+
+    #[test]
+    fn merge_role_permissions_most_permissive_mode_wins() {
+        let a = RolePermissions {
+            permission_mode: Some("plan".to_string()),
+            ..RolePermissions::default()
+        };
+        let b = RolePermissions {
+            permission_mode: Some("acceptEdits".to_string()),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a.clone(), b.clone()]);
+        assert_eq!(merged.permission_mode.as_deref(), Some("acceptEdits"));
+        let merged_rev = merge_role_permissions(&[b, a]);
+        assert_eq!(merged_rev.permission_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    #[test]
+    fn merge_role_permissions_bypass_beats_default() {
+        let a = RolePermissions {
+            permission_mode: Some("default".to_string()),
+            ..RolePermissions::default()
+        };
+        let b = RolePermissions {
+            permission_mode: Some("bypassPermissions".to_string()),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a, b]);
+        assert_eq!(merged.permission_mode.as_deref(), Some("bypassPermissions"));
+    }
+
+    #[test]
+    fn merge_role_permissions_unknown_mode_does_not_outrank_known() {
+        let a = RolePermissions {
+            permission_mode: Some("custom".to_string()),
+            ..RolePermissions::default()
+        };
+        let b = RolePermissions {
+            permission_mode: Some("default".to_string()),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a, b]);
+        assert_eq!(merged.permission_mode.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn merge_role_permissions_unknown_alone_passes_through() {
+        let a = RolePermissions {
+            permission_mode: Some("custom".to_string()),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(std::slice::from_ref(&a));
+        assert_eq!(merged.permission_mode.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn merge_role_permissions_none_contributions_ignored() {
+        let a = RolePermissions::default();
+        let b = RolePermissions {
+            permission_mode: Some("plan".to_string()),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a, b]);
+        assert_eq!(merged.permission_mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn merge_role_permissions_unions_and_sorts_tool_lists() {
+        let a = RolePermissions {
+            allowed_tools: vec!["Read".to_string(), "Write".to_string()],
+            disallowed_tools: vec!["Delete".to_string()],
+            ..RolePermissions::default()
+        };
+        let b = RolePermissions {
+            allowed_tools: vec!["Edit".to_string(), "Read".to_string()],
+            disallowed_tools: vec!["Delete".to_string(), "Kill".to_string()],
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a, b]);
+        assert_eq!(
+            merged.allowed_tools,
+            vec!["Edit".to_string(), "Read".to_string(), "Write".to_string()]
+        );
+        assert_eq!(
+            merged.disallowed_tools,
+            vec!["Delete".to_string(), "Kill".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_role_permissions_concatenates_prompts_in_order() {
+        let a = RolePermissions {
+            append_system_prompt: Some("first".to_string()),
+            ..RolePermissions::default()
+        };
+        let b = RolePermissions {
+            append_system_prompt: None,
+            ..RolePermissions::default()
+        };
+        let c = RolePermissions {
+            append_system_prompt: Some("third".to_string()),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a, b, c]);
+        assert_eq!(
+            merged.append_system_prompt.as_deref(),
+            Some("first\n\nthird")
+        );
+    }
+
+    #[test]
+    fn merge_role_permissions_env_later_wins() {
+        let a = RolePermissions {
+            env: HashMap::from([
+                ("SHARED".to_string(), "from-a".to_string()),
+                ("A_ONLY".to_string(), "a".to_string()),
+            ]),
+            ..RolePermissions::default()
+        };
+        let b = RolePermissions {
+            env: HashMap::from([
+                ("SHARED".to_string(), "from-b".to_string()),
+                ("B_ONLY".to_string(), "b".to_string()),
+            ]),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a, b]);
+        assert_eq!(merged.env.get("SHARED"), Some(&"from-b".to_string()));
+        assert_eq!(merged.env.get("A_ONLY"), Some(&"a".to_string()));
+        assert_eq!(merged.env.get("B_ONLY"), Some(&"b".to_string()));
+    }
+
+    #[test]
+    fn merge_role_permissions_tools_takes_first_non_none() {
+        let a = RolePermissions {
+            tools: None,
+            ..RolePermissions::default()
+        };
+        let b = RolePermissions {
+            tools: Some("first".to_string()),
+            ..RolePermissions::default()
+        };
+        let c = RolePermissions {
+            tools: Some("second".to_string()),
+            ..RolePermissions::default()
+        };
+        let merged = merge_role_permissions(&[a, b, c]);
+        assert_eq!(merged.tools.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn default_profiles_includes_orchestrator() {
+        let profiles = default_profiles();
+        assert_eq!(profiles.len(), 1);
+        let orch = &profiles[0];
+        assert_eq!(orch.name, DEFAULT_PROFILE_ORCHESTRATOR);
+        assert_eq!(orch.roles, vec![DEFAULT_ROLE_NAME.to_string()]);
+        assert_eq!(orch.skills, vec!["orchestrate".to_string()]);
+        assert!(orch.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn profile_config_serde_roundtrip() {
+        let profile = ProfileConfig {
+            name: "dev".to_string(),
+            description: "dev bundle".to_string(),
+            roles: vec!["developer".to_string(), "reviewer".to_string()],
+            mcp_servers: vec!["github".to_string()],
+            skills: vec!["refactor".to_string()],
+        };
+        let json = serde_json::to_string(&profile).unwrap();
+        let roundtripped: ProfileConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(profile, roundtripped);
     }
 }

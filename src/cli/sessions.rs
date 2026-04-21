@@ -29,6 +29,11 @@ pub enum Action {
         /// Optional role name (falls back to the default developer role).
         #[arg(long)]
         role: Option<String>,
+        /// Apply a global profile preset (bundles roles, MCP servers, skills).
+        /// Explicit `--role`, `--mcp-server`, and `--skill` flags override
+        /// the profile's contribution for that field.
+        #[arg(long)]
+        profile: Option<String>,
         /// If set, create a git worktree on this branch off --base-branch.
         #[arg(long)]
         worktree_branch: Option<String>,
@@ -108,6 +113,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             name,
             repo_path,
             role,
+            profile,
             worktree_branch,
             base_branch,
             mcp_servers,
@@ -120,6 +126,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 worktree_branch,
                 base_branch,
                 role,
+                profile,
                 mcp_servers,
                 skills,
                 agent_session_id: None,
