@@ -670,6 +670,9 @@ pub struct App {
     pub(crate) global_skills: Vec<SkillConfig>,
     /// Index into global_skills for the skill list in the edit modal.
     pub(crate) skill_list_index: usize,
+    /// Cached global profiles (loaded from DB, used for the Ctrl+N profile
+    /// picker step). An empty vec means the picker is skipped entirely.
+    pub(crate) global_profiles: Vec<crate::session::ProfileConfig>,
     /// Effective plugins (disk + registered) cached for the Plugins settings tab.
     pub(crate) effective_plugins: Vec<(PluginConfig, PluginSource)>,
     /// Index into effective_plugins for the Plugins settings tab.
@@ -753,6 +756,10 @@ impl App {
         // editor never confuses a disk-discovered directory with a
         // user-registered row.
         let global_skills = db.list_global_skills().unwrap_or_default();
+
+        // Load global profiles from DB. Empty means the Ctrl+N profile step
+        // is skipped — users with no profiles see no UI change.
+        let global_profiles = db.list_global_profiles().unwrap_or_default();
 
         // Effective plugins (disk + registered, registered wins on collision).
         let effective_plugins = db.list_effective_plugins().unwrap_or_default();
@@ -899,6 +906,7 @@ impl App {
             mcp_server_list_index: 0,
             global_skills,
             skill_list_index: 0,
+            global_profiles,
             effective_plugins,
             plugin_list_index: 0,
             show_plugin_install_modal: false,
@@ -1188,8 +1196,33 @@ impl App {
 
     /// Continue spawn after the user has chosen a session name.
     ///
-    /// Routes to role selection if 2+ roles exist, otherwise spawns directly.
+    /// Shows the profile picker when profiles are registered; otherwise routes
+    /// directly to role selection (2+ roles) or spawns with the single/default
+    /// role (0-1 roles).
     fn finish_prepare_spawn(
+        &mut self,
+        name: String,
+        config: SessionConfig,
+        worktrees: Vec<WorktreeInfo>,
+    ) {
+        if !self.global_profiles.is_empty() {
+            self.pending_spawn_name = Some(name);
+            self.pending_spawn_config = Some(config);
+            self.pending_spawn_worktrees = worktrees;
+            self.modal = modals::Modal::ProfilePicker(modals::ProfilePickerModal {
+                index: 0,
+                profiles: self.global_profiles.clone(),
+            });
+            return;
+        }
+        self.finish_prepare_spawn_after_profile(name, config, worktrees);
+    }
+
+    /// Continue spawn after the profile picker step has been resolved (either
+    /// because the user chose "No profile" or because no profiles are
+    /// registered). Routes to role selection for 2+ roles, auto-assigns the
+    /// single role for len==1, or falls back to the default role when empty.
+    pub(crate) fn finish_prepare_spawn_after_profile(
         &mut self,
         name: String,
         mut config: SessionConfig,
@@ -1219,6 +1252,58 @@ impl App {
                     modals::Modal::RoleSelector(modals::RoleSelectorModal { index: 0, roles });
             }
         }
+    }
+
+    /// Apply a `ProfileConfig` to a `SessionConfig`: resolve and merge role
+    /// permissions, attach the profile's MCP servers and skills, set the
+    /// display role string to `profile:<name>`. Unknown role/MCP/skill
+    /// names referenced by the profile are silently dropped — they were
+    /// validated at `register_profile` time but may disappear if the admin
+    /// later deletes the referent; skipping keeps spawn working.
+    pub(crate) fn apply_profile_to_config(
+        &self,
+        profile: &crate::session::ProfileConfig,
+        config: &mut SessionConfig,
+    ) {
+        // Roles → merged permissions. Empty profile.roles falls back to
+        // the default role (mirrors `resolve_role_with_profile` in
+        // `session_ops/spawn.rs`).
+        let role_parts: Vec<_> = if profile.roles.is_empty() {
+            vec![default_developer_permissions()]
+        } else {
+            profile
+                .roles
+                .iter()
+                .filter_map(|name| self.global_roles.iter().find(|r| &r.name == name))
+                .map(|r| r.permissions.clone())
+                .collect()
+        };
+        if role_parts.is_empty() {
+            config.permissions = default_developer_permissions();
+        } else {
+            config.permissions = crate::session::merge_role_permissions(&role_parts);
+        }
+        config.role = format!("profile:{}", profile.name);
+
+        // Attached MCP servers — lookup by name against the cached registry.
+        config.mcp_servers = profile
+            .mcp_servers
+            .iter()
+            .filter_map(|name| {
+                self.global_mcp_servers
+                    .iter()
+                    .find(|s| &s.name == name)
+                    .cloned()
+            })
+            .collect();
+
+        // Attached skills — lookup by name against the effective (disk + registered) set.
+        let effective = self.effective_skills();
+        config.skills = profile
+            .skills
+            .iter()
+            .filter_map(|name| effective.iter().find(|s| &s.name == name).cloned())
+            .collect();
     }
 
     /// Show the model selector modal, or proceed directly for admin sessions.
@@ -5165,6 +5250,9 @@ mod tests {
             None,
             None,
         );
+        // Clear seeded profiles so finish_prepare_spawn skips the profile
+        // picker and routes directly to the role picker.
+        app.global_profiles.clear();
         app.finish_prepare_spawn(
             "session-1".to_string(),
             SessionConfig::default(),
@@ -7263,5 +7351,141 @@ mod tests {
         let mut app = app_with_sessions(1);
         // Should return early without error for empty text
         app.send_paste_to_session("");
+    }
+
+    #[test]
+    fn finish_prepare_spawn_shows_profile_picker_when_profiles_exist() {
+        // `test_db` runs the full migration including the `orchestrator`
+        // seed, so `global_profiles` is non-empty by default.
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        assert!(
+            !app.global_profiles.is_empty(),
+            "seeded profile expected in fresh DB"
+        );
+
+        app.finish_prepare_spawn("sess".to_string(), SessionConfig::default(), Vec::new());
+
+        match app.modal {
+            super::modals::Modal::ProfilePicker(ref pp) => {
+                assert_eq!(pp.index, 0, "cursor starts on 'No profile' row");
+                assert_eq!(pp.profiles.len(), app.global_profiles.len());
+            }
+            _ => panic!("expected ProfilePicker modal, got {:?}", app.modal),
+        }
+        assert_eq!(app.pending_spawn_name.as_deref(), Some("sess"));
+        assert!(app.pending_spawn_config.is_some());
+    }
+
+    #[test]
+    fn finish_prepare_spawn_skips_profile_picker_when_registry_empty() {
+        let db = test_db();
+        // Wipe seeded profiles so we hit the "no profiles" branch.
+        db.replace_global_profiles(&[]).unwrap();
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        assert!(app.global_profiles.is_empty());
+
+        app.finish_prepare_spawn("sess".to_string(), SessionConfig::default(), Vec::new());
+
+        // With seeded roles (developer + admin) the role selector opens.
+        match app.modal {
+            super::modals::Modal::RoleSelector(_) => {}
+            _ => panic!(
+                "expected RoleSelector when profiles empty, got {:?}",
+                app.modal
+            ),
+        }
+    }
+
+    #[test]
+    fn apply_profile_to_config_merges_roles_and_attaches_refs() {
+        use crate::session::{McpServerConfig, ProfileConfig, RoleConfig, RolePermissions};
+        let mut app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+
+        // Two roles with distinct allowed tools so we can prove the merge
+        // produced a union.
+        app.global_roles = vec![
+            RoleConfig {
+                name: "reader".to_string(),
+                description: String::new(),
+                permissions: RolePermissions {
+                    allowed_tools: vec!["Read".to_string()],
+                    ..Default::default()
+                },
+            },
+            RoleConfig {
+                name: "writer".to_string(),
+                description: String::new(),
+                permissions: RolePermissions {
+                    allowed_tools: vec!["Edit".to_string()],
+                    ..Default::default()
+                },
+            },
+        ];
+        app.global_mcp_servers = vec![McpServerConfig {
+            name: "thurbox".to_string(),
+            command: "x".to_string(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+        }];
+
+        let profile = ProfileConfig {
+            name: "multi".to_string(),
+            description: String::new(),
+            roles: vec!["reader".to_string(), "writer".to_string()],
+            mcp_servers: vec!["thurbox".to_string()],
+            skills: vec![],
+        };
+        let mut config = SessionConfig::default();
+        app.apply_profile_to_config(&profile, &mut config);
+
+        assert_eq!(config.role, "profile:multi");
+        assert!(config.permissions.allowed_tools.contains(&"Read".into()));
+        assert!(config.permissions.allowed_tools.contains(&"Edit".into()));
+        assert_eq!(config.mcp_servers.len(), 1);
+        assert_eq!(config.mcp_servers[0].name, "thurbox");
+    }
+
+    #[test]
+    fn apply_profile_with_empty_roles_falls_back_to_default_permissions() {
+        use crate::session::ProfileConfig;
+        let app = App::new(
+            24,
+            120,
+            stub_backend(),
+            stub_provider(),
+            test_db(),
+            None,
+            None,
+        );
+        let profile = ProfileConfig {
+            name: "bare".to_string(),
+            description: String::new(),
+            roles: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+        };
+        let mut config = SessionConfig::default();
+        app.apply_profile_to_config(&profile, &mut config);
+
+        assert_eq!(config.role, "profile:bare");
+        // Default developer perms include the tools listed by `default_developer_permissions`.
+        let expected = default_developer_permissions();
+        assert_eq!(config.permissions.allowed_tools, expected.allowed_tools);
     }
 }

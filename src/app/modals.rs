@@ -128,6 +128,16 @@ pub struct RoleSelectorModal {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ProfilePickerModal {
+    /// Cursor position. `0` is the synthetic "No profile" entry; subsequent
+    /// indices map onto `profiles[index - 1]`.
+    pub index: usize,
+    /// Snapshot taken at modal-open time so a mid-flow `set_profiles` MCP
+    /// call doesn't shift rows under the user's cursor.
+    pub profiles: Vec<crate::session::ProfileConfig>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ThemePickerModal {
     pub index: usize,
 }
@@ -307,6 +317,7 @@ pub enum Modal {
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
     RoleSelector(RoleSelectorModal),
+    ProfilePicker(ProfilePickerModal),
     ModelSelector(ModelSelectorModal),
     McpServerPicker(McpServerPickerModal),
     SkillPicker(SkillPickerModal),

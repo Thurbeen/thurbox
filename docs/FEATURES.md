@@ -135,6 +135,14 @@ session list can distinguish preset-driven sessions.
 Deleting it is persistent — a `profiles_seeded` metadata flag
 prevents re-seeding on subsequent startups.
 
+**TUI.** When at least one profile is registered, the Ctrl+N
+session creation chain inserts a profile picker right after the
+session-name prompt. Row 0 is a synthetic "(No profile)" that
+falls through to the normal role/MCP/skill chain; picking a
+registered profile applies its roles (merged), MCP servers, and
+skills, then jumps directly to the model picker. Users without
+profiles see no UI change.
+
 ---
 
 ## Keybinding Design

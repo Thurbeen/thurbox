@@ -8,6 +8,7 @@ pub mod mcp_editor_modal;
 pub mod mcp_server_picker_modal;
 pub mod model_picker_modal;
 pub mod plugin_install_modal;
+pub mod profile_picker_modal;
 pub mod project_list;
 pub mod repo_picker_modal;
 pub mod repo_selector_modal;

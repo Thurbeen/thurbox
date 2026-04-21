@@ -157,6 +157,12 @@ impl App {
             return;
         }
 
+        // Profile picker modal captures all input
+        if matches!(self.modal, super::modals::Modal::ProfilePicker(_)) {
+            self.handle_profile_picker_key(code);
+            return;
+        }
+
         // Role selector modal captures all input
         if matches!(self.modal, super::modals::Modal::RoleSelector(_)) {
             self.handle_role_selector_key(code);
@@ -848,6 +854,61 @@ impl App {
             scl.commands[scl.index].clone()
         };
         self.open_edit_scheduled_command(entry);
+    }
+
+    fn handle_profile_picker_key(&mut self, code: KeyCode) {
+        // Row 0 is the synthetic "No profile" entry; rows 1.. map to the
+        // `profiles` snapshot taken when the modal opened.
+        let super::modals::Modal::ProfilePicker(ref mut pp) = self.modal else {
+            return;
+        };
+        let row_count = pp.profiles.len() + 1;
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+                self.pending_spawn_config = None;
+                self.pending_spawn_worktrees.clear();
+                self.pending_spawn_name = None;
+                self.pending_spawn_is_admin = false;
+                self.pending_vm_id = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down if pp.index + 1 < row_count => {
+                pp.index += 1;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                pp.index = pp.index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let idx = pp.index;
+                let chosen_profile = if idx == 0 {
+                    None
+                } else {
+                    pp.profiles.get(idx - 1).cloned()
+                };
+                self.modal.close();
+                let (Some(mut config), Some(name)) = (
+                    self.pending_spawn_config.take(),
+                    self.pending_spawn_name.take(),
+                ) else {
+                    return;
+                };
+                let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                match chosen_profile {
+                    None => {
+                        // "No profile" — continue the normal role/mcp/skill chain.
+                        self.finish_prepare_spawn_after_profile(name, config, worktrees);
+                    }
+                    Some(profile) => {
+                        // Apply profile: merge role perms, attach MCP/skills, jump
+                        // straight to the model picker so the user doesn't have to
+                        // re-select what the profile already specified.
+                        self.apply_profile_to_config(&profile, &mut config);
+                        self.maybe_show_model_picker(name, config, worktrees, false);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn handle_role_selector_key(&mut self, code: KeyCode) {
