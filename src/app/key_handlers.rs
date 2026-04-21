@@ -151,6 +151,12 @@ impl App {
             return;
         }
 
+        // Profile editor detail form captures all input
+        if self.show_profile_editor {
+            self.handle_profile_editor_key(code);
+            return;
+        }
+
         // Settings overlay (tabbed list of roles / MCP servers) captures all input
         if self.show_settings {
             self.handle_settings_key(code);
@@ -1430,13 +1436,17 @@ impl App {
                 if let Err(e) = self.db.replace_global_skills(&self.global_skills) {
                     tracing::error!("Failed to save global skills: {e}");
                 }
+                if let Err(e) = self.db.replace_global_profiles(&self.global_profiles) {
+                    tracing::error!("Failed to save global profiles: {e}");
+                }
                 self.show_settings = false;
             }
             KeyCode::Tab => {
                 self.settings_tab = match self.settings_tab {
                     super::SettingsTab::Roles => super::SettingsTab::McpServers,
                     super::SettingsTab::McpServers => super::SettingsTab::Skills,
-                    super::SettingsTab::Skills => super::SettingsTab::Plugins,
+                    super::SettingsTab::Skills => super::SettingsTab::Profiles,
+                    super::SettingsTab::Profiles => super::SettingsTab::Plugins,
                     super::SettingsTab::Plugins => super::SettingsTab::Roles,
                 };
             }
@@ -1445,13 +1455,15 @@ impl App {
                     super::SettingsTab::Roles => super::SettingsTab::Plugins,
                     super::SettingsTab::McpServers => super::SettingsTab::Roles,
                     super::SettingsTab::Skills => super::SettingsTab::McpServers,
-                    super::SettingsTab::Plugins => super::SettingsTab::Skills,
+                    super::SettingsTab::Profiles => super::SettingsTab::Skills,
+                    super::SettingsTab::Plugins => super::SettingsTab::Profiles,
                 };
             }
             _ => match self.settings_tab {
                 super::SettingsTab::Roles => self.handle_settings_roles_key(code),
                 super::SettingsTab::McpServers => self.handle_settings_mcp_key(code),
                 super::SettingsTab::Skills => self.handle_settings_skills_key(code),
+                super::SettingsTab::Profiles => self.handle_settings_profiles_key(code),
                 super::SettingsTab::Plugins => self.handle_settings_plugins_key(code),
             },
         }
@@ -1543,6 +1555,37 @@ impl App {
                 self.global_skills.remove(self.skill_list_index);
                 if self.skill_list_index >= self.global_skills.len() && self.skill_list_index > 0 {
                     self.skill_list_index -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle keys for the Profiles tab in the settings overlay.
+    fn handle_settings_profiles_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down
+                if !self.global_profiles.is_empty()
+                    && self.profile_list_index + 1 < self.global_profiles.len() =>
+            {
+                self.profile_list_index += 1;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.profile_list_index = self.profile_list_index.saturating_sub(1);
+            }
+            KeyCode::Char('a') => {
+                self.open_new_profile_editor();
+            }
+            KeyCode::Char('e') | KeyCode::Enter if !self.global_profiles.is_empty() => {
+                let idx = self.profile_list_index;
+                self.open_profile_for_editing(idx);
+            }
+            KeyCode::Char('d') if !self.global_profiles.is_empty() => {
+                self.global_profiles.remove(self.profile_list_index);
+                if self.profile_list_index >= self.global_profiles.len()
+                    && self.profile_list_index > 0
+                {
+                    self.profile_list_index -= 1;
                 }
             }
             _ => {}
@@ -1758,6 +1801,124 @@ impl App {
         // After any path input change, recompute the suggestion.
         if self.skill_editor_field == super::SkillEditorField::Path {
             self.update_skill_editor_path_suggestion();
+        }
+    }
+
+    /// Handle input in the profile editor modal.
+    ///
+    /// The Roles, McpServers and Skills fields are CSV list editors that
+    /// follow the same `Browse` / `Adding` pattern as the role editor's
+    /// tool lists. Name and Description are plain text fields.
+    pub(crate) fn handle_profile_editor_key(&mut self, code: KeyCode) {
+        use super::ProfileEditorField;
+        use crate::ui::role_editor_modal::ToolListMode;
+
+        // List fields delegate to Browse/Adding sub-handlers.
+        match self.profile_editor_field {
+            ProfileEditorField::Roles
+            | ProfileEditorField::McpServers
+            | ProfileEditorField::Skills => {
+                if self.active_profile_list_mut().mode == ToolListMode::Adding {
+                    self.handle_profile_list_adding_key(code);
+                } else {
+                    self.handle_profile_list_browse_key(code);
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        match code {
+            KeyCode::Esc => {
+                self.close_profile_editor();
+            }
+            KeyCode::Tab => {
+                self.profile_editor_field =
+                    Self::next_profile_editor_field(self.profile_editor_field);
+            }
+            KeyCode::BackTab => {
+                self.profile_editor_field =
+                    Self::prev_profile_editor_field(self.profile_editor_field);
+            }
+            KeyCode::Enter => {
+                self.submit_profile_editor();
+            }
+            _ => {
+                let input = match self.profile_editor_field {
+                    ProfileEditorField::Name => &mut self.profile_editor_name,
+                    ProfileEditorField::Description => &mut self.profile_editor_description,
+                    _ => return,
+                };
+                match code {
+                    KeyCode::Backspace => input.backspace(),
+                    KeyCode::Delete => input.delete(),
+                    KeyCode::Left => input.move_left(),
+                    KeyCode::Right => input.move_right(),
+                    KeyCode::Home => input.home(),
+                    KeyCode::End => input.end(),
+                    KeyCode::Char(c) => input.insert(c),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn handle_profile_list_browse_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.close_profile_editor();
+            }
+            KeyCode::Tab => {
+                self.profile_editor_field =
+                    Self::next_profile_editor_field(self.profile_editor_field);
+            }
+            KeyCode::BackTab => {
+                self.profile_editor_field =
+                    Self::prev_profile_editor_field(self.profile_editor_field);
+            }
+            KeyCode::Enter => {
+                self.submit_profile_editor();
+            }
+            KeyCode::Char('a') => self.active_profile_list_mut().start_adding(),
+            KeyCode::Char('d') => self.active_profile_list_mut().delete_selected(),
+            KeyCode::Char('j') | KeyCode::Down => self.active_profile_list_mut().move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.active_profile_list_mut().move_up(),
+            _ => {}
+        }
+    }
+
+    fn handle_profile_list_adding_key(&mut self, code: KeyCode) {
+        handle_tool_list_adding_key(self.active_profile_list_mut(), code);
+    }
+
+    fn active_profile_list_mut(&mut self) -> &mut super::ToolListState {
+        use super::ProfileEditorField;
+        match self.profile_editor_field {
+            ProfileEditorField::Roles => &mut self.profile_editor_roles,
+            ProfileEditorField::McpServers => &mut self.profile_editor_mcp_servers,
+            _ => &mut self.profile_editor_skills,
+        }
+    }
+
+    fn next_profile_editor_field(field: super::ProfileEditorField) -> super::ProfileEditorField {
+        use super::ProfileEditorField;
+        match field {
+            ProfileEditorField::Name => ProfileEditorField::Description,
+            ProfileEditorField::Description => ProfileEditorField::Roles,
+            ProfileEditorField::Roles => ProfileEditorField::McpServers,
+            ProfileEditorField::McpServers => ProfileEditorField::Skills,
+            ProfileEditorField::Skills => ProfileEditorField::Name,
+        }
+    }
+
+    fn prev_profile_editor_field(field: super::ProfileEditorField) -> super::ProfileEditorField {
+        use super::ProfileEditorField;
+        match field {
+            ProfileEditorField::Name => ProfileEditorField::Skills,
+            ProfileEditorField::Description => ProfileEditorField::Name,
+            ProfileEditorField::Roles => ProfileEditorField::Description,
+            ProfileEditorField::McpServers => ProfileEditorField::Roles,
+            ProfileEditorField::Skills => ProfileEditorField::McpServers,
         }
     }
 

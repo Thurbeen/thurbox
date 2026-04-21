@@ -1,4 +1,5 @@
-//! Settings overlay: tabbed list of global Roles, MCP Servers, Skills, and Plugins.
+//! Settings overlay: tabbed list of global Roles, MCP Servers, Skills,
+//! Profiles, and Plugins.
 
 use ratatui::{
     style::Style,
@@ -11,7 +12,7 @@ use super::centered_fixed_height_rect;
 use super::render_modal_frame;
 use super::theme::Theme;
 use crate::app::SettingsTab;
-use crate::session::{McpServerConfig, PluginConfig, RoleConfig, SkillConfig};
+use crate::session::{McpServerConfig, PluginConfig, ProfileConfig, RoleConfig, SkillConfig};
 use crate::storage::PluginSource;
 
 /// State needed to render the settings overlay.
@@ -23,6 +24,8 @@ pub struct SettingsOverlayState<'a> {
     pub mcp_index: usize,
     pub skills: &'a [SkillConfig],
     pub skill_index: usize,
+    pub profiles: &'a [ProfileConfig],
+    pub profile_index: usize,
     pub plugins: &'a [(PluginConfig, PluginSource)],
     pub plugin_index: usize,
 }
@@ -53,6 +56,11 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
     } else {
         Style::default().fg(Theme::text_muted())
     };
+    let profiles_style = if state.tab == SettingsTab::Profiles {
+        Theme::focused_title()
+    } else {
+        Style::default().fg(Theme::text_muted())
+    };
     let plugins_style = if state.tab == SettingsTab::Plugins {
         Theme::focused_title()
     } else {
@@ -65,6 +73,8 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
         Span::styled("[MCP Servers] ", mcp_style),
         Span::styled("  ", Style::default()),
         Span::styled("[Skills] ", skills_style),
+        Span::styled("  ", Style::default()),
+        Span::styled("[Profiles] ", profiles_style),
         Span::styled("  ", Style::default()),
         Span::styled("[Plugins] ", plugins_style),
     ]);
@@ -157,6 +167,47 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
                             Span::styled(format!("{prefix}{}", skill.name), style),
                             Span::styled(
                                 format!("  {}", skill.path.display()),
+                                Style::default().fg(Theme::text_muted()),
+                            ),
+                        ]))
+                    })
+                    .collect();
+                frame.render_widget(List::new(items), list_area);
+            }
+        }
+        SettingsTab::Profiles => {
+            if state.profiles.is_empty() {
+                let empty = Paragraph::new(Line::from(Span::styled(
+                    "  No profiles configured. Press 'a' to add.",
+                    Style::default().fg(Theme::text_muted()),
+                )));
+                frame.render_widget(empty, list_area);
+            } else {
+                let items: Vec<ListItem> = state
+                    .profiles
+                    .iter()
+                    .enumerate()
+                    .map(|(i, profile)| {
+                        let style = if i == state.profile_index {
+                            Theme::focused_title()
+                        } else {
+                            Style::default().fg(Theme::text_primary())
+                        };
+                        let prefix = if i == state.profile_index {
+                            "▸ "
+                        } else {
+                            "  "
+                        };
+                        let summary = format!(
+                            "r={} m={} s={}",
+                            profile.roles.len(),
+                            profile.mcp_servers.len(),
+                            profile.skills.len()
+                        );
+                        ListItem::new(Line::from(vec![
+                            Span::styled(format!("{prefix}{}", profile.name), style),
+                            Span::styled(
+                                format!("  {summary}"),
                                 Style::default().fg(Theme::text_muted()),
                             ),
                         ]))

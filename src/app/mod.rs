@@ -487,6 +487,17 @@ pub(crate) enum PluginInstallStatus {
     Error(String),
 }
 
+/// Which field is focused in the profile editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProfileEditorField {
+    #[default]
+    Name,
+    Description,
+    Roles,
+    McpServers,
+    Skills,
+}
+
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
 struct PendingDelete {
     session: Session,
@@ -573,6 +584,15 @@ pub struct App {
     pub(crate) skill_editor_field: SkillEditorField,
     pub(crate) skill_editor_editing_index: Option<usize>,
     pub(crate) skill_editor_path_suggestion: Option<String>,
+    pub(crate) profile_list_index: usize,
+    pub(crate) show_profile_editor: bool,
+    pub(crate) profile_editor_name: TextInput,
+    pub(crate) profile_editor_description: TextInput,
+    pub(crate) profile_editor_roles: ToolListState,
+    pub(crate) profile_editor_mcp_servers: ToolListState,
+    pub(crate) profile_editor_skills: ToolListState,
+    pub(crate) profile_editor_field: ProfileEditorField,
+    pub(crate) profile_editor_editing_index: Option<usize>,
     /// Snapshot of role editor fields at open time for dirty detection.
     pub(crate) role_editor_snapshot: Option<EditorSnapshot>,
     /// Snapshot of MCP editor fields at open time for dirty detection.
@@ -851,6 +871,15 @@ impl App {
             skill_editor_field: SkillEditorField::Name,
             skill_editor_editing_index: None,
             skill_editor_path_suggestion: None,
+            profile_list_index: 0,
+            show_profile_editor: false,
+            profile_editor_name: TextInput::new(),
+            profile_editor_description: TextInput::new(),
+            profile_editor_roles: ToolListState::new(),
+            profile_editor_mcp_servers: ToolListState::new(),
+            profile_editor_skills: ToolListState::new(),
+            profile_editor_field: ProfileEditorField::Name,
+            profile_editor_editing_index: None,
             role_editor_snapshot: None,
             mcp_editor_snapshot: None,
             show_discard_confirmation: false,
@@ -3361,6 +3390,63 @@ impl App {
         } else {
             self.skill_editor_path_suggestion = None;
         }
+    }
+
+    /// Open the profile editor to create a new profile.
+    pub(crate) fn open_new_profile_editor(&mut self) {
+        self.profile_editor_name.set("");
+        self.profile_editor_description.set("");
+        self.profile_editor_roles.reset();
+        self.profile_editor_mcp_servers.reset();
+        self.profile_editor_skills.reset();
+        self.profile_editor_field = ProfileEditorField::Name;
+        self.profile_editor_editing_index = None;
+        self.show_profile_editor = true;
+    }
+
+    /// Open the profile editor for an existing profile at the given index.
+    pub(crate) fn open_profile_for_editing(&mut self, idx: usize) {
+        let Some(profile) = self.global_profiles.get(idx) else {
+            return;
+        };
+        self.profile_editor_name.set(&profile.name);
+        self.profile_editor_description.set(&profile.description);
+        self.profile_editor_roles.load(&profile.roles);
+        self.profile_editor_mcp_servers.load(&profile.mcp_servers);
+        self.profile_editor_skills.load(&profile.skills);
+        self.profile_editor_field = ProfileEditorField::Name;
+        self.profile_editor_editing_index = Some(idx);
+        self.show_profile_editor = true;
+    }
+
+    /// Save the current profile editor state into `global_profiles` and close.
+    /// Persistence to the DB happens when the settings overlay closes, matching
+    /// the role/MCP/skill editor flow.
+    pub(crate) fn submit_profile_editor(&mut self) {
+        let name = self.profile_editor_name.value().trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let profile = crate::session::ProfileConfig {
+            name,
+            description: self.profile_editor_description.value().trim().to_string(),
+            roles: self.profile_editor_roles.items.clone(),
+            mcp_servers: self.profile_editor_mcp_servers.items.clone(),
+            skills: self.profile_editor_skills.items.clone(),
+        };
+        if let Some(idx) = self.profile_editor_editing_index {
+            if idx < self.global_profiles.len() {
+                self.global_profiles[idx] = profile;
+            }
+        } else {
+            self.global_profiles.push(profile);
+        }
+        self.show_profile_editor = false;
+    }
+
+    /// Close the profile editor without saving.
+    pub(crate) fn close_profile_editor(&mut self) {
+        self.show_profile_editor = false;
     }
 
     /// Persist session state to the SQLite database.

@@ -359,11 +359,12 @@ impl App {
             );
         }
 
-        // Settings overlay (tabbed list of roles / MCP servers / skills)
+        // Settings overlay (tabbed list of roles / MCP servers / skills / profiles)
         if self.show_settings
             && !self.show_role_editor
             && !self.show_mcp_editor
             && !self.show_skill_editor
+            && !self.show_profile_editor
         {
             crate::ui::settings_overlay::render_settings_overlay(
                 frame,
@@ -375,6 +376,8 @@ impl App {
                     mcp_index: self.mcp_server_list_index,
                     skills: &self.global_skills,
                     skill_index: self.skill_list_index,
+                    profiles: &self.global_profiles,
+                    profile_index: self.profile_list_index,
                     plugins: &self.effective_plugins,
                     plugin_index: self.plugin_list_index,
                 },
@@ -505,6 +508,35 @@ impl App {
                     self.skill_editor_path_suggestion.as_deref(),
                 );
             }
+        }
+
+        // Profile editor modal (detail form for global profiles)
+        if self.show_profile_editor {
+            crate::ui::profile_editor_modal::render_profile_editor_modal(
+                frame,
+                &crate::ui::profile_editor_modal::ProfileEditorState {
+                    name: self.profile_editor_name.value(),
+                    name_cursor: self.profile_editor_name.cursor_pos(),
+                    description: self.profile_editor_description.value(),
+                    description_cursor: self.profile_editor_description.cursor_pos(),
+                    roles: &self.profile_editor_roles.items,
+                    roles_index: self.profile_editor_roles.selected,
+                    roles_mode: self.profile_editor_roles.mode,
+                    roles_input: self.profile_editor_roles.input.value(),
+                    roles_input_cursor: self.profile_editor_roles.input.cursor_pos(),
+                    mcp_servers: &self.profile_editor_mcp_servers.items,
+                    mcp_servers_index: self.profile_editor_mcp_servers.selected,
+                    mcp_servers_mode: self.profile_editor_mcp_servers.mode,
+                    mcp_servers_input: self.profile_editor_mcp_servers.input.value(),
+                    mcp_servers_input_cursor: self.profile_editor_mcp_servers.input.cursor_pos(),
+                    skills: &self.profile_editor_skills.items,
+                    skills_index: self.profile_editor_skills.selected,
+                    skills_mode: self.profile_editor_skills.mode,
+                    skills_input: self.profile_editor_skills.input.value(),
+                    skills_input_cursor: self.profile_editor_skills.input.cursor_pos(),
+                    focused_field: self.profile_editor_field,
+                },
+            );
         }
 
         // MCP editor modal (detail form for global MCP servers)

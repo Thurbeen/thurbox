@@ -295,6 +295,7 @@ pub enum SettingsTab {
     Roles,
     McpServers,
     Skills,
+    Profiles,
     Plugins,
 }
 
