@@ -23,7 +23,6 @@ fn make_session(id: SessionId, name: &str) -> SharedSession {
         shell_backend_id: None,
         tombstone: false,
         tombstone_at: None,
-        model: None,
     }
 }
 
@@ -369,7 +368,6 @@ fn db_session_metadata_preserved_across_instances() {
         shell_backend_id: None,
         tombstone: false,
         tombstone_at: None,
-        model: None,
     };
     db_a.upsert_session(&session).unwrap();
 

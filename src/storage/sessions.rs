@@ -18,7 +18,6 @@ pub struct DeletedSessionInfo {
     pub cwd: Option<PathBuf>,
     pub deleted_at: u64,
     pub worktrees: Vec<SharedWorktree>,
-    pub model: Option<String>,
 }
 
 impl Database {
@@ -48,8 +47,8 @@ impl Database {
                 "UPDATE sessions SET name = ?1, role = ?2, \
                  backend_id = ?3, backend_type = ?4, agent_session_id = ?5, \
                  cwd = ?6, additional_dirs = ?7, shell_backend_id = ?8, \
-                 model = ?9, updated_at = ?10, deleted_at = NULL \
-                 WHERE id = ?11",
+                 updated_at = ?9, deleted_at = NULL \
+                 WHERE id = ?10",
                 params![
                     session.name,
                     session.role,
@@ -59,7 +58,6 @@ impl Database {
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
                     session.shell_backend_id,
-                    session.model,
                     now,
                     id_str,
                 ],
@@ -76,9 +74,9 @@ impl Database {
         } else {
             self.conn.execute(
                 "INSERT INTO sessions (id, name, role, backend_id, backend_type, \
-                 agent_session_id, cwd, additional_dirs, shell_backend_id, model, \
+                 agent_session_id, cwd, additional_dirs, shell_backend_id, \
                  created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id_str,
                     session.name,
@@ -89,7 +87,6 @@ impl Database {
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
                     session.shell_backend_id,
-                    session.model,
                     now,
                     now,
                 ],
@@ -166,7 +163,6 @@ impl Database {
         let sql = format!(
             "SELECT s.id, s.name, s.role, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
-             s.model, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
@@ -180,10 +176,9 @@ impl Database {
             let cwd: Option<String> = row.get(6)?;
             let dirs_str: String = row.get(7)?;
             let shell_backend_id: Option<String> = row.get(8)?;
-            let model: Option<String> = row.get(9)?;
-            let wt_repo: Option<String> = row.get(10)?;
-            let wt_path: Option<String> = row.get(11)?;
-            let wt_branch: Option<String> = row.get(12)?;
+            let wt_repo: Option<String> = row.get(9)?;
+            let wt_path: Option<String> = row.get(10)?;
+            let wt_branch: Option<String> = row.get(11)?;
 
             let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
                 Vec::new()
@@ -214,7 +209,6 @@ impl Database {
                     shell_backend_id,
                     tombstone: false,
                     tombstone_at: None,
-                    model,
                 },
                 worktree,
             ))
@@ -307,7 +301,7 @@ impl Database {
     fn query_deleted_sessions(&self, condition: &str) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         let sql = format!(
             "SELECT s.id, s.name, s.role, s.agent_session_id, \
-             s.cwd, s.deleted_at, s.model, \
+             s.cwd, s.deleted_at, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
@@ -320,10 +314,9 @@ impl Database {
             let id_str: String = row.get(0)?;
             let cwd: Option<String> = row.get(4)?;
             let deleted_at: i64 = row.get(5)?;
-            let model: Option<String> = row.get(6)?;
-            let wt_repo: Option<String> = row.get(7)?;
-            let wt_path: Option<String> = row.get(8)?;
-            let wt_branch: Option<String> = row.get(9)?;
+            let wt_repo: Option<String> = row.get(6)?;
+            let wt_path: Option<String> = row.get(7)?;
+            let wt_branch: Option<String> = row.get(8)?;
 
             let worktree = match (wt_repo, wt_path, wt_branch) {
                 (Some(repo), Some(path), Some(branch)) => Some(SharedWorktree {
@@ -343,7 +336,6 @@ impl Database {
                     cwd: cwd.map(PathBuf::from),
                     deleted_at: deleted_at as u64,
                     worktrees: Vec::new(),
-                    model,
                 },
                 worktree,
             ))
@@ -434,26 +426,7 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         }
-    }
-
-    #[test]
-    fn session_model_roundtrip() {
-        let db = Database::open_in_memory().unwrap();
-        let mut session = make_session("S");
-        session.model = Some("sonnet".to_string());
-        db.upsert_session(&session).unwrap();
-
-        let loaded = db.list_active_sessions().unwrap();
-        assert_eq!(loaded[0].model, Some("sonnet".to_string()));
-
-        // Update path: clear model
-        let mut s2 = loaded[0].clone();
-        s2.model = None;
-        db.upsert_session(&s2).unwrap();
-        let loaded2 = db.list_active_sessions().unwrap();
-        assert_eq!(loaded2[0].model, None);
     }
 
     #[test]

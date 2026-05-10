@@ -95,7 +95,6 @@ fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
         || old.cwd != new.cwd
         || old.additional_dirs != new.additional_dirs
         || old.worktrees != new.worktrees
-        || old.model != new.model
 }
 
 #[cfg(test)]
@@ -117,7 +116,6 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         }
     }
 

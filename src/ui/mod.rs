@@ -6,7 +6,6 @@ pub mod layout;
 pub mod links;
 pub mod mcp_editor_modal;
 pub mod mcp_server_picker_modal;
-pub mod model_picker_modal;
 pub mod plugin_install_modal;
 pub mod profile_editor_modal;
 pub mod profile_picker_modal;

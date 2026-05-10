@@ -49,9 +49,6 @@ pub enum Action {
         /// create-time against the global registry.
         #[arg(long = "skill", value_delimiter = ',')]
         skills: Vec<String>,
-        /// Model id passed via `claude --model` (e.g. "opus", "sonnet", "haiku").
-        #[arg(long)]
-        model: Option<String>,
     },
     /// Soft-delete a session.
     ///
@@ -118,7 +115,6 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             base_branch,
             mcp_servers,
             skills,
-            model,
         } => {
             let req = crate::session_ops::SpawnRequest {
                 name,
@@ -130,7 +126,6 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 mcp_servers,
                 skills,
                 agent_session_id: None,
-                model,
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             Ok(json!({
@@ -265,7 +260,6 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         };
         db.upsert_session(&shared).unwrap();
 
@@ -312,7 +306,6 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         };
         db.upsert_session(&shared).unwrap();
         let err = run(
@@ -346,7 +339,6 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         };
         db.upsert_session(&shared).unwrap();
         let future = crate::sync::current_time_millis() + 60_000;

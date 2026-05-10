@@ -566,11 +566,6 @@ pub struct CreateSessionParams {
         description = "Optional global profile name — bundles role(s), MCP servers, and skills. Explicit role/mcp_servers/skills fields override the profile's equivalent lists."
     )]
     pub profile: Option<String>,
-    #[serde(default)]
-    #[schemars(
-        description = "Model id passed via `claude --model` (e.g. \"opus\", \"sonnet\", \"haiku\"). Omit for the CLI default."
-    )]
-    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

@@ -60,11 +60,6 @@ fn build_claude_args(config: &SessionConfig) -> Vec<String> {
         args.push(prompt.clone());
     }
 
-    if let Some(ref model) = config.model {
-        args.push("--model".to_string());
-        args.push(model.clone());
-    }
-
     for dir in &config.additional_dirs {
         args.push("--add-dir".to_string());
         args.push(dir.display().to_string());
@@ -322,26 +317,6 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&args[idx + 1]).unwrap();
         // JSON structure correctness is tested in McpServerConfig::to_mcp_json tests.
         assert!(json["mcpServers"]["test-server"].is_object());
-    }
-
-    #[test]
-    fn build_args_with_model() {
-        let config = SessionConfig {
-            model: Some("sonnet".to_string()),
-            ..SessionConfig::default()
-        };
-        let args = build_claude_args(&config);
-        assert_eq!(
-            args,
-            vec!["--permission-mode", "default", "--model", "sonnet"]
-        );
-    }
-
-    #[test]
-    fn build_args_no_model_flag_when_none() {
-        let config = SessionConfig::default();
-        let args = build_claude_args(&config);
-        assert!(!args.contains(&"--model".to_string()));
     }
 
     #[test]

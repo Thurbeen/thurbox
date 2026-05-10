@@ -283,7 +283,6 @@ impl Session {
         if !config.role.is_empty() {
             info.role = config.role.clone();
         }
-        info.model = config.model.clone();
         info.backend_id = Some(spawned.backend_id.clone());
         debug!(session_id = %info.id, backend_id = %spawned.backend_id, "Spawned session via backend");
 

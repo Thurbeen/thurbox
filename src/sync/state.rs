@@ -83,9 +83,6 @@ pub struct SharedSession {
 
     /// Timestamp when this session was tombstoned (millis since epoch).
     pub tombstone_at: Option<u64>,
-
-    /// Model id passed to the Claude CLI via `--model`. `None` means CLI default.
-    pub model: Option<String>,
 }
 
 /// Worktree information embedded in shared session.

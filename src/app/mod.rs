@@ -1253,13 +1253,13 @@ impl App {
                 // No roles configured — spawn with default developer permissions.
                 config.role = DEFAULT_ROLE_NAME.to_string();
                 config.permissions = default_developer_permissions();
-                self.maybe_show_model_picker(name, config, worktrees, false);
+                self.maybe_show_mcp_picker(name, config, worktrees, false);
             }
             1 => {
                 // Exactly one role — auto-assign it.
                 config.role = roles[0].name.clone();
                 config.permissions = roles[0].permissions.clone();
-                self.maybe_show_model_picker(name, config, worktrees, false);
+                self.maybe_show_mcp_picker(name, config, worktrees, false);
             }
             _ => {
                 // 2+ roles — show the role selector.
@@ -1322,27 +1322,6 @@ impl App {
             .iter()
             .filter_map(|name| effective.iter().find(|s| &s.name == name).cloned())
             .collect();
-    }
-
-    /// Show the model selector modal, or proceed directly for admin sessions.
-    ///
-    /// Admin sessions bypass the model picker — they aren't user-created.
-    fn maybe_show_model_picker(
-        &mut self,
-        name: String,
-        config: SessionConfig,
-        worktrees: Vec<WorktreeInfo>,
-        is_admin: bool,
-    ) {
-        if is_admin {
-            self.maybe_show_mcp_picker(name, config, worktrees, is_admin);
-            return;
-        }
-        self.pending_spawn_name = Some(name);
-        self.pending_spawn_config = Some(config);
-        self.pending_spawn_worktrees = worktrees;
-        self.pending_spawn_is_admin = is_admin;
-        self.modal = modals::Modal::ModelSelector(modals::ModelSelectorModal::default());
     }
 
     /// Route through MCP server picker if global MCP servers exist, otherwise spawn directly.
@@ -1505,7 +1484,6 @@ impl App {
             fork_session_id: None,
             mcp_servers: vec![],
             skills: vec![],
-            model: session.info.model.clone(),
         };
 
         if self.global_mcp_servers.is_empty() {
@@ -1623,7 +1601,6 @@ impl App {
         let container_id = session.info.container_id.clone();
         let source_name = session.info.name.clone();
         let fork_session_id = session.info.agent_session_id.clone();
-        let model = session.info.model.clone();
 
         let permissions = self.resolve_role_permissions(&role);
         let config = SessionConfig {
@@ -1638,7 +1615,6 @@ impl App {
             fork_session_id,
             mcp_servers: vec![],
             skills: vec![],
-            model,
         };
 
         self.pending_spawn_config = Some(config);
@@ -1812,7 +1788,6 @@ impl App {
             fork_session_id: None,
             mcp_servers: vec![],
             skills: vec![],
-            model: deleted.model,
         };
 
         let session_name = deleted.name.clone();
@@ -1854,7 +1829,6 @@ impl App {
         session.info.additional_dirs = shared.additional_dirs.clone();
         session.info.agent_session_id = shared.agent_session_id.clone();
         session.info.worktrees = shared.worktrees.iter().cloned().map(Into::into).collect();
-        session.info.model = shared.model.clone();
         resolve_repo_display_names(&mut session.info);
     }
 
@@ -3155,7 +3129,6 @@ impl App {
                     fork_session_id: None,
                     mcp_servers: vec![],
                     skills: vec![],
-                    model: shared_session.model.clone(),
                 };
 
                 if let Ok(mut spawned) = Session::spawn(
@@ -3481,7 +3454,6 @@ impl App {
             shell_backend_id: session.info.shell_backend_id.clone(),
             tombstone: false,
             tombstone_at: None,
-            model: session.info.model.clone(),
         }
     }
 
@@ -3935,7 +3907,6 @@ impl App {
                 fork_session_id: None,
                 mcp_servers: vec![],
                 skills: vec![],
-                model: shared.model,
             };
             self.do_spawn_session(name, &config, worktrees, is_admin);
         }
@@ -4180,7 +4151,6 @@ impl App {
                 fork_session_id: None,
                 mcp_servers: vec![],
                 skills: vec![],
-                model: shared.model,
             };
             self.do_spawn_session(name, &config, worktrees, false);
             info!(session = %session_id, "Session restored (respawned with {resume_flag})");
@@ -4251,7 +4221,6 @@ impl App {
                 fork_session_id: None,
                 mcp_servers: vec![],
                 skills: vec![],
-                model: shared.model,
             };
 
             warn!(
@@ -4490,7 +4459,6 @@ impl App {
             fork_session_id: None,
             mcp_servers: vec![],
             skills: vec![],
-            model: session.info.model.clone(),
         };
 
         let (rows, cols) = self.content_area_size();
@@ -7124,7 +7092,6 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         }
     }
 
@@ -7305,7 +7272,6 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         };
         let delta = sync::StateDelta {
             added_sessions: vec![shared],
@@ -7353,7 +7319,6 @@ mod tests {
             shell_backend_id: None,
             tombstone: false,
             tombstone_at: None,
-            model: None,
         };
         let delta = sync::StateDelta {
             added_sessions: vec![shared],

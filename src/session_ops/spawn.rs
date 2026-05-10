@@ -43,8 +43,6 @@ pub struct SpawnRequest {
     /// Optional pre-generated agent session UUID. When unset one is generated
     /// so callers can return it to the user immediately.
     pub agent_session_id: Option<String>,
-    /// Optional model id to pass via `claude --model`. `None` = CLI default.
-    pub model: Option<String>,
 }
 
 /// Result returned on successful headless spawn.
@@ -81,7 +79,6 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         permissions,
         mcp_servers,
         skills,
-        model: req.model.clone(),
         ..SessionConfig::default()
     };
     super::inject_thurbox_env(&mut config, &agent_session_id);
@@ -117,7 +114,6 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         shell_backend_id: None,
         tombstone: false,
         tombstone_at: None,
-        model: req.model.clone(),
     };
     db.upsert_session(&shared)
         .map_err(|e| format!("Failed to persist session: {e}"))?;
@@ -410,7 +406,6 @@ mod tests {
             mcp_servers: Vec::new(),
             skills: Vec::new(),
             agent_session_id: None,
-            model: None,
         };
         let err = spawn_session_headless(&db, req).unwrap_err();
         assert!(err.to_lowercase().contains("name"), "got {err}");
@@ -430,7 +425,6 @@ mod tests {
                 mcp_servers: Vec::new(),
                 skills: Vec::new(),
                 agent_session_id: None,
-                model: None,
             };
             assert!(
                 spawn_session_headless(&db, req).is_err(),
@@ -668,7 +662,6 @@ mod tests {
             mcp_servers: vec!["caller".into()],
             skills: vec!["caller-skill".into()],
             agent_session_id: None,
-            model: None,
         };
         let (mcp, skills) = resolve_attachment_names(&req, &Some(profile));
         assert_eq!(mcp, vec!["caller".to_string()]);
@@ -694,7 +687,6 @@ mod tests {
             mcp_servers: Vec::new(),
             skills: Vec::new(),
             agent_session_id: None,
-            model: None,
         };
         let (mcp, skills) = resolve_attachment_names(&req, &Some(profile));
         assert_eq!(mcp, vec!["from-profile".to_string()]);

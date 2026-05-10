@@ -16,10 +16,10 @@ use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
     branch_selector_modal, containerfile_picker, file_viewer, info_panel, layout,
-    mcp_server_picker_modal, model_picker_modal, profile_picker_modal, project_list,
-    restore_sessions_modal, role_editor_modal, role_selector_modal, schedule_command_modal,
-    scheduled_commands_list_modal, session_mode_modal, session_name_modal, skill_picker_modal,
-    status_bar, terminal_view, theme_picker_modal, worktree_name_modal,
+    mcp_server_picker_modal, profile_picker_modal, project_list, restore_sessions_modal,
+    role_editor_modal, role_selector_modal, schedule_command_modal, scheduled_commands_list_modal,
+    session_mode_modal, session_name_modal, skill_picker_modal, status_bar, terminal_view,
+    theme_picker_modal, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -321,16 +321,6 @@ impl App {
                 &theme_picker_modal::ThemePickerState {
                     presets: crate::session::ThemePreset::all(),
                     selected_index: tp.index,
-                },
-            );
-        }
-
-        // Model selector modal
-        if let super::modals::Modal::ModelSelector(ref msel) = self.modal {
-            model_picker_modal::render_model_picker_modal(
-                frame,
-                &model_picker_modal::ModelPickerState {
-                    selected_index: msel.index,
                 },
             );
         }

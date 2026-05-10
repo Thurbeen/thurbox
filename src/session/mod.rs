@@ -441,8 +441,6 @@ pub struct SessionInfo {
     /// Order: worktree repos first, then non-worktree additional dirs.
     /// Populated by the app layer at spawn/restore time.
     pub repo_display_names: Vec<String>,
-    /// Model id passed to the Claude CLI via `--model`. `None` means the CLI default.
-    pub model: Option<String>,
 }
 
 impl SessionInfo {
@@ -464,30 +462,8 @@ impl SessionInfo {
             agent_metrics: None,
             is_admin: false,
             repo_display_names: Vec::new(),
-            model: None,
         }
     }
-}
-
-/// Available model choices shown in the new-session picker.
-/// The id is passed to `claude --model`; `None` means CLI default (no flag).
-pub const MODEL_CHOICES: &[(Option<&str>, &str)] = &[
-    (None, "CLI default"),
-    (Some("opus"), "Opus 4.6"),
-    (Some("sonnet"), "Sonnet 4.6"),
-    (Some("haiku"), "Haiku 4.5"),
-];
-
-/// Human-readable display name for a model id. Falls back to the id itself
-/// when the id isn't in `MODEL_CHOICES` (e.g. custom ids via MCP).
-pub fn model_display_name(id: &str) -> String {
-    MODEL_CHOICES
-        .iter()
-        .find_map(|(maybe_id, name)| match maybe_id {
-            Some(known) if *known == id => Some(name.to_string()),
-            _ => None,
-        })
-        .unwrap_or_else(|| id.to_string())
 }
 
 /// A queued command for a session, inserted by MCP and processed by the TUI.
@@ -546,8 +522,6 @@ pub struct SessionConfig {
     /// directory is symlinked into the working directory before spawning
     /// so Claude Code auto-discovers them.
     pub skills: Vec<SkillConfig>,
-    /// Model id to pass via `claude --model`. `None` means CLI default (no flag).
-    pub model: Option<String>,
 }
 
 /// VM state machine for sandboxed sessions.

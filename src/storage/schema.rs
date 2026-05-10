@@ -4,7 +4,7 @@ use crate::session::default_profiles;
 use crate::sync::current_time_millis;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 20;
+pub const SCHEMA_VERSION: u32 = 21;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -28,7 +28,6 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             cwd               TEXT,
             additional_dirs   TEXT NOT NULL DEFAULT '',
             shell_backend_id  TEXT,
-            model             TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -613,11 +612,6 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    if version < 18 {
-        // v17 → v18: add model column to sessions for per-session model selection
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT", []);
-    }
-
     if version < 19 {
         // v18 → v19: add plugins + plugin_settings tables for the plugin bundle system
         conn.execute_batch(
@@ -654,6 +648,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                 updated_at        INTEGER NOT NULL
             );",
         )?;
+    }
+
+    if version < 21 {
+        // v20 → v21: drop the sessions.model column. Model selection was
+        // removed from the product — the agent picks its own model now.
+        // Use ignore-on-error in case an older SQLite (<3.35) lacks DROP
+        // COLUMN support; the unused column is harmless.
+        let _ = conn.execute("ALTER TABLE sessions DROP COLUMN model", []);
     }
 
     if version < SCHEMA_VERSION {
@@ -844,6 +846,71 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn sessions_have_no_model_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('sessions')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            !columns.iter().any(|c| c == "model"),
+            "sessions.model should be dropped at v21, got columns: {columns:?}"
+        );
+    }
+
+    #[test]
+    fn migrate_drops_legacy_model_column() {
+        // Simulate a v18-era DB that still has the `model` column, then run
+        // initialize() and confirm v21 drops it.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '18');
+             CREATE TABLE sessions (
+                id                TEXT PRIMARY KEY,
+                name              TEXT NOT NULL,
+                role              TEXT NOT NULL DEFAULT 'developer',
+                backend_id        TEXT NOT NULL DEFAULT '',
+                backend_type      TEXT NOT NULL DEFAULT 'tmux',
+                agent_session_id  TEXT,
+                cwd               TEXT,
+                additional_dirs   TEXT NOT NULL DEFAULT '',
+                shell_backend_id  TEXT,
+                model             TEXT,
+                created_at        INTEGER NOT NULL,
+                updated_at        INTEGER NOT NULL,
+                deleted_at        INTEGER
+             );
+             INSERT INTO sessions(id, name, model, created_at, updated_at)
+                VALUES ('s1', 'demo', 'sonnet', 0, 0);",
+        )
+        .unwrap();
+
+        initialize(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('sessions')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!columns.iter().any(|c| c == "model"));
+
+        let name: String = conn
+            .query_row("SELECT name FROM sessions WHERE id = 's1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "demo", "row content should survive the migration");
     }
 
     #[test]
