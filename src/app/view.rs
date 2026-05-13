@@ -739,6 +739,7 @@ fn render_help_overlay(frame: &mut Frame) {
         help_line("F1", "Toggle keybindings help"),
         help_line("F2", "Toggle info panel"),
         help_line("F3", "Toggle file viewer"),
+        help_line("Ctrl+Y / F4", "Pick TUI theme"),
         help_line("Ctrl+L/H", "Cycle focus (includes file viewer when open)"),
         help_line("j/k", "File viewer: move down/up (when focused)"),
         help_line("h", "File viewer: collapse / parent"),

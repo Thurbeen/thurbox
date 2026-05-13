@@ -191,6 +191,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+U` | Global | Restore deleted sessions list | **U**ndelete |
 | `F1` | Global | Toggle keybindings help | Universal help |
 | `F2` | Global | Toggle info panel | Next to F1 |
+| `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |
 | `j` / `Down` | Lists | Next item | |
 | `k` / `Up` | Lists | Previous item | |
 | `/` | Session list | Open fuzzy search (name, role, branch, cwd) | Vim search |
