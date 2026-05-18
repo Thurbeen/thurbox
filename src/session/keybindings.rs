@@ -92,6 +92,98 @@ impl Action {
             Action::ToggleFileViewer => "Toggle file viewer",
         }
     }
+
+    /// Section grouping used by the F1 help overlay. Exhaustive match —
+    /// adding a new `Action` variant without classifying it here is a
+    /// compile error, which is the entire point of this method.
+    pub fn category(self) -> Category {
+        match self {
+            Action::FocusBackward
+            | Action::FocusForward
+            | Action::NextSession
+            | Action::PreviousSession => Category::Navigation,
+
+            Action::NewSession
+            | Action::SpawnAdminSession
+            | Action::DeleteSession
+            | Action::RestartSession
+            | Action::ForkSession
+            | Action::OpenScheduledCommands
+            | Action::UndoDelete
+            | Action::OpenRestoreSessions => Category::Sessions,
+
+            Action::OpenSettings | Action::OpenInEditor | Action::StartSync => Category::Project,
+
+            Action::QuitApp
+            | Action::ToggleShell
+            | Action::ToggleHelp
+            | Action::ToggleInfoPanel
+            | Action::ToggleFileViewer
+            | Action::OpenThemePicker => Category::Ui,
+        }
+    }
+
+    /// Default key chord(s) bound to this action. Exhaustive match —
+    /// adding a new `Action` variant without a default chord here is a
+    /// compile error.
+    pub fn default_chords(self) -> Vec<KeyChord> {
+        match self {
+            Action::QuitApp => vec![KeyChord::ctrl('q')],
+            Action::NewSession => vec![KeyChord::ctrl('n')],
+            Action::SpawnAdminSession => vec![KeyChord::ctrl('a')],
+            Action::DeleteSession => vec![KeyChord::ctrl('d')],
+            Action::OpenSettings => vec![KeyChord::ctrl('e')],
+            Action::OpenInEditor => vec![KeyChord::ctrl('o')],
+            Action::OpenScheduledCommands => vec![KeyChord::ctrl('p')],
+            Action::StartSync => vec![KeyChord::ctrl('s')],
+            Action::ToggleShell => vec![KeyChord::ctrl('t')],
+            Action::ForkSession => vec![KeyChord::ctrl('f')],
+            Action::RestartSession => vec![KeyChord::ctrl('r')],
+            Action::UndoDelete => vec![KeyChord::ctrl('z')],
+            Action::OpenRestoreSessions => vec![KeyChord::ctrl('u')],
+            Action::OpenThemePicker => vec![KeyChord::ctrl('y'), KeyChord::function(4)],
+            Action::FocusBackward => vec![KeyChord::ctrl('h')],
+            Action::FocusForward => vec![KeyChord::ctrl('l')],
+            Action::NextSession => vec![KeyChord::ctrl('j')],
+            Action::PreviousSession => vec![KeyChord::ctrl('k')],
+            Action::ToggleHelp => vec![KeyChord::function(1)],
+            Action::ToggleInfoPanel => vec![KeyChord::function(2)],
+            Action::ToggleFileViewer => vec![KeyChord::function(3)],
+        }
+    }
+}
+
+/// Section grouping for the F1 help overlay.
+///
+/// Order of variants in `all()` is the order sections render in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Category {
+    Navigation,
+    Sessions,
+    Project,
+    Ui,
+}
+
+impl Category {
+    /// Section header text shown above the entries.
+    pub fn title(self) -> &'static str {
+        match self {
+            Category::Navigation => "Navigation",
+            Category::Sessions => "Sessions",
+            Category::Project => "Project",
+            Category::Ui => "UI",
+        }
+    }
+
+    /// Every category in render order.
+    pub fn all() -> &'static [Category] {
+        &[
+            Category::Navigation,
+            Category::Sessions,
+            Category::Project,
+            Category::Ui,
+        ]
+    }
 }
 
 /// A key chord: modifiers + key code.
@@ -212,36 +304,10 @@ pub struct KeyBindings {
 
 impl Default for KeyBindings {
     fn default() -> Self {
-        let mut map: HashMap<Action, Vec<KeyChord>> = HashMap::new();
-        let mut bind = |a: Action, chords: Vec<KeyChord>| {
-            map.insert(a, chords);
-        };
-
-        bind(Action::QuitApp, vec![KeyChord::ctrl('q')]);
-        bind(Action::NewSession, vec![KeyChord::ctrl('n')]);
-        bind(Action::SpawnAdminSession, vec![KeyChord::ctrl('a')]);
-        bind(Action::DeleteSession, vec![KeyChord::ctrl('d')]);
-        bind(Action::OpenSettings, vec![KeyChord::ctrl('e')]);
-        bind(Action::OpenInEditor, vec![KeyChord::ctrl('o')]);
-        bind(Action::OpenScheduledCommands, vec![KeyChord::ctrl('p')]);
-        bind(Action::StartSync, vec![KeyChord::ctrl('s')]);
-        bind(Action::ToggleShell, vec![KeyChord::ctrl('t')]);
-        bind(Action::ForkSession, vec![KeyChord::ctrl('f')]);
-        bind(Action::RestartSession, vec![KeyChord::ctrl('r')]);
-        bind(Action::UndoDelete, vec![KeyChord::ctrl('z')]);
-        bind(Action::OpenRestoreSessions, vec![KeyChord::ctrl('u')]);
-        bind(
-            Action::OpenThemePicker,
-            vec![KeyChord::ctrl('y'), KeyChord::function(4)],
-        );
-        bind(Action::FocusBackward, vec![KeyChord::ctrl('h')]);
-        bind(Action::FocusForward, vec![KeyChord::ctrl('l')]);
-        bind(Action::NextSession, vec![KeyChord::ctrl('j')]);
-        bind(Action::PreviousSession, vec![KeyChord::ctrl('k')]);
-        bind(Action::ToggleHelp, vec![KeyChord::function(1)]);
-        bind(Action::ToggleInfoPanel, vec![KeyChord::function(2)]);
-        bind(Action::ToggleFileViewer, vec![KeyChord::function(3)]);
-
+        let map = Action::all()
+            .iter()
+            .map(|a| (*a, a.default_chords()))
+            .collect();
         Self { map }
     }
 }
@@ -250,6 +316,13 @@ impl KeyBindings {
     /// First chord for the given action (used by hint rendering).
     pub fn chord_for(&self, action: Action) -> Option<&KeyChord> {
         self.map.get(&action).and_then(|v| v.first())
+    }
+
+    /// All chords bound to the given action, in order. Empty slice if
+    /// the action has no binding (should not happen for built-in
+    /// actions, since `Default` covers every variant).
+    pub fn chords_for(&self, action: Action) -> &[KeyChord] {
+        self.map.get(&action).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Reverse lookup: given the keypress, return the bound action.
@@ -392,5 +465,62 @@ mod tests {
         let json = r#"{ "QuitApp": ["nonsense", "ctrl+x"], "BogusAction": ["ctrl+y"] }"#;
         let kb = KeyBindings::from_json(json).unwrap();
         assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('x')));
+    }
+
+    #[test]
+    fn every_action_has_default_chord_and_category() {
+        let kb = KeyBindings::default();
+        for action in Action::all() {
+            assert!(
+                !kb.chords_for(*action).is_empty(),
+                "Action::{action:?} has no default chord binding"
+            );
+            // `category()` is exhaustive at compile time, but calling it
+            // here catches any panic-on-call and keeps test coverage honest.
+            let _ = action.category();
+        }
+    }
+
+    /// Compile-time check that `Action::all()` lists every variant.
+    ///
+    /// The match below is exhaustive: adding a new `Action` variant
+    /// without updating both this match AND `Action::all()` is a
+    /// compile error (non-exhaustive match) OR a test failure (length
+    /// mismatch). This is the last guard preventing a variant from
+    /// silently disappearing from the help overlay.
+    #[test]
+    fn all_enumerates_every_action_variant() {
+        fn classify(a: Action) -> u8 {
+            match a {
+                Action::QuitApp => 0,
+                Action::NewSession => 0,
+                Action::SpawnAdminSession => 0,
+                Action::DeleteSession => 0,
+                Action::OpenSettings => 0,
+                Action::OpenInEditor => 0,
+                Action::OpenScheduledCommands => 0,
+                Action::StartSync => 0,
+                Action::ToggleShell => 0,
+                Action::ForkSession => 0,
+                Action::RestartSession => 0,
+                Action::UndoDelete => 0,
+                Action::OpenRestoreSessions => 0,
+                Action::OpenThemePicker => 0,
+                Action::FocusBackward => 0,
+                Action::FocusForward => 0,
+                Action::NextSession => 0,
+                Action::PreviousSession => 0,
+                Action::ToggleHelp => 0,
+                Action::ToggleInfoPanel => 0,
+                Action::ToggleFileViewer => 0,
+            }
+        }
+        // 21 listed variants must equal Action::all().len(). If you add
+        // a variant, update both `Action::all()` and the match above.
+        const EXPECTED: usize = 21;
+        assert_eq!(Action::all().len(), EXPECTED);
+        for a in Action::all() {
+            classify(*a);
+        }
     }
 }

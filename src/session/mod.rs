@@ -2,7 +2,7 @@ pub mod keybindings;
 pub mod plugin_config;
 pub mod theme_config;
 
-pub use keybindings::{Action, KeyBindings, KeyChord};
+pub use keybindings::{Action, Category, KeyBindings, KeyChord};
 pub use plugin_config::{
     ActivationEvent, Capability, ConfigurationSchema, ConfigurationType, Contributes,
     McpServerContribution, McpToolContribution, PluginConfig, PluginManifest, ProcessSection,

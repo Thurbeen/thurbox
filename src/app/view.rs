@@ -11,7 +11,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::session::SessionInfo;
+use crate::session::{Action, Category, KeyBindings, KeyChord, SessionInfo};
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
@@ -231,7 +231,7 @@ impl App {
 
         // Help overlay (rendered last, on top of everything)
         if matches!(self.modal, super::modals::Modal::Help) {
-            render_help_overlay(frame);
+            render_help_overlay(frame, &self.keybindings);
         }
 
         // Session mode modal
@@ -708,82 +708,107 @@ impl App {
     }
 }
 
-fn render_help_overlay(frame: &mut Frame) {
+fn render_help_overlay(frame: &mut Frame, keybindings: &KeyBindings) {
     let area = centered_rect(60, 70, frame.area());
 
     let inner = crate::ui::render_modal_frame(frame, area, "Keybindings");
 
-    let help_lines = vec![
-        help_section("Navigation"),
-        help_line("Ctrl+H/L", "Toggle focus between session list and terminal"),
-        help_line("Ctrl+J", "Select next session"),
-        help_line("Ctrl+K", "Select previous session"),
-        Line::from(""),
-        help_section("Sessions"),
-        help_line("Ctrl+N", "Create new session"),
-        help_line("Ctrl+A", "Create admin session"),
-        help_line("Ctrl+D", "Delete focused session"),
-        help_line("Ctrl+R", "Restart active session"),
-        help_line("Ctrl+F", "Fork active session"),
-        help_line("Ctrl+P", "Scheduled commands (list/cancel/new)"),
-        help_line("Ctrl+Z", "Undo last delete"),
-        help_line("Ctrl+U", "Restore deleted sessions"),
-        Line::from(""),
-        help_section("Project"),
-        help_line("Ctrl+E", "Settings (roles & MCP servers)"),
-        help_line("Ctrl+O", "Open active worktree in editor"),
-        help_line("Ctrl+S", "Sync all worktrees with main"),
-        Line::from(""),
-        help_section("UI"),
-        help_line("Ctrl+T", "Toggle shell pane"),
-        help_line("F1", "Toggle keybindings help"),
-        help_line("F2", "Toggle info panel"),
-        help_line("F3", "Toggle file viewer"),
-        help_line("Ctrl+Y / F4", "Pick TUI theme"),
-        help_line("Ctrl+L/H", "Cycle focus (includes file viewer when open)"),
-        help_line("j/k", "File viewer: move down/up (when focused)"),
-        help_line("h", "File viewer: collapse / parent"),
-        help_line("l / Enter", "File viewer: expand dir / open file in editor"),
-        help_line("/", "File viewer: start search"),
-        help_line(
-            "Enter / \u{2193}",
-            "In search: jump to next match (stays in search)",
-        ),
-        help_line("\u{2191}", "In search: previous match"),
-        help_line("Tab", "In search: commit & exit search mode"),
-        help_line("Esc", "In search: cancel and clear query"),
-        help_line("n / N", "After search: next / previous match"),
-        help_line("Ctrl+O", "On file viewer: open project with file focused"),
-        help_line("Ctrl+Q", "Quit"),
-        Line::from(""),
-        help_section("List Navigation (when focused)"),
-        help_line("j / Down", "Select next item"),
-        help_line("k / Up", "Select previous item"),
-        help_line("Enter", "Focus next pane"),
-        Line::from(""),
-        help_section("Terminal (when focused)"),
-        help_line("Ctrl+C", "Copy selection, or send SIGINT if none"),
-        help_line("Ctrl+V", "Paste from clipboard"),
-        help_line("Shift+\u{2191}/\u{2193}", "Scroll up/down one line"),
-        help_line("Shift+PgUp/PgDn", "Scroll up/down half page"),
-        help_line("Mouse wheel", "Scroll up/down three lines"),
-        help_line("Click+drag", "Select text"),
-        help_line("*", "All other keys forwarded to session"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Press F1 or Esc to close",
-            Style::default().fg(Theme::text_muted()),
-        )),
-    ];
+    let mut help_lines: Vec<Line<'static>> = Vec::new();
+
+    // Action-driven sections — every variant of `Action` shows up here
+    // automatically. Adding a new variant is a compile error in
+    // `Action::category()` and `Action::default_chords()`.
+    for category in Category::all() {
+        help_lines.push(help_section(category.title()));
+        for action in Action::all().iter().filter(|a| a.category() == *category) {
+            let key = chords_display(keybindings.chords_for(*action));
+            help_lines.push(help_line(key, action.label()));
+        }
+        help_lines.push(Line::from(""));
+    }
+
+    // Non-Action keys (modal-internal, terminal forwarding, file viewer).
+    // These are not user-rebindable and don't drift with the `Action` enum.
+    help_lines.push(help_section("List Navigation (when focused)"));
+    help_lines.push(help_line("j / Down".into(), "Select next item"));
+    help_lines.push(help_line("k / Up".into(), "Select previous item"));
+    help_lines.push(help_line("Enter".into(), "Focus next pane"));
+    help_lines.push(Line::from(""));
+
+    help_lines.push(help_section("File Viewer (when focused)"));
+    help_lines.push(help_line("j/k".into(), "Move down/up"));
+    help_lines.push(help_line("h".into(), "Collapse / parent"));
+    help_lines.push(help_line(
+        "l / Enter".into(),
+        "Expand dir / open file in editor",
+    ));
+    help_lines.push(help_line("/".into(), "Start search"));
+    help_lines.push(help_line(
+        "Enter / \u{2193}".into(),
+        "In search: jump to next match (stays in search)",
+    ));
+    help_lines.push(help_line("\u{2191}".into(), "In search: previous match"));
+    help_lines.push(help_line(
+        "Tab".into(),
+        "In search: commit & exit search mode",
+    ));
+    help_lines.push(help_line("Esc".into(), "In search: cancel and clear query"));
+    help_lines.push(help_line(
+        "n / N".into(),
+        "After search: next / previous match",
+    ));
+    help_lines.push(Line::from(""));
+
+    help_lines.push(help_section("Terminal (when focused)"));
+    help_lines.push(help_line(
+        "Ctrl+C".into(),
+        "Copy selection, or send SIGINT if none",
+    ));
+    help_lines.push(help_line("Ctrl+V".into(), "Paste from clipboard"));
+    help_lines.push(help_line(
+        "Shift+\u{2191}/\u{2193}".into(),
+        "Scroll up/down one line",
+    ));
+    help_lines.push(help_line(
+        "Shift+PgUp/PgDn".into(),
+        "Scroll up/down half page",
+    ));
+    help_lines.push(help_line(
+        "Mouse wheel".into(),
+        "Scroll up/down three lines",
+    ));
+    help_lines.push(help_line("Click+drag".into(), "Select text"));
+    help_lines.push(help_line("*".into(), "All other keys forwarded to session"));
+    help_lines.push(Line::from(""));
+
+    help_lines.push(Line::from(Span::styled(
+        "Press F1 or Esc to close",
+        Style::default().fg(Theme::text_muted()),
+    )));
 
     frame.render_widget(Paragraph::new(help_lines), inner);
 }
 
-fn help_section(title: &str) -> Line<'_> {
+/// Format a slice of chords as the F1-help key column, e.g.
+/// `"ctrl+y / f4"`. Empty input renders as `"<unbound>"` — should not
+/// occur for built-in actions, but keeps the overlay legible if a user
+/// override drops every chord.
+fn chords_display(chords: &[KeyChord]) -> String {
+    if chords.is_empty() {
+        return "<unbound>".into();
+    }
+    chords
+        .iter()
+        .map(KeyChord::display)
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn help_section(title: &'static str) -> Line<'static> {
     Line::from(Span::styled(title, Theme::section_header()))
 }
 
-fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+fn help_line(key: String, desc: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("  {key:<16}"), Theme::keybind()),
         Span::styled(desc, Style::default().fg(Theme::text_primary())),
