@@ -9,34 +9,19 @@ use super::centered_fixed_height_rect;
 use super::render_modal_frame;
 use super::theme::Theme;
 
-const MODES_BASE: [&str; 2] = ["Normal", "Worktree"];
-const MODE_DEVCONTAINER: &str = "Container";
-const MODE_SANDBOX_VM: &str = "VM";
+const MODES: [&str; 2] = ["Normal", "Worktree"];
 
 pub struct SessionModeState {
     pub selected_index: usize,
-    /// Whether the "Container" option should be shown.
-    pub devcontainer_available: bool,
-    /// Whether the "VM" option should be shown.
-    pub vm_available: bool,
 }
 
 impl SessionModeState {
-    /// Build the list of visible mode names.
     pub fn mode_names(&self) -> Vec<&'static str> {
-        let mut modes: Vec<&str> = MODES_BASE.to_vec();
-        if self.devcontainer_available {
-            modes.push(MODE_DEVCONTAINER);
-        }
-        if self.vm_available {
-            modes.push(MODE_SANDBOX_VM);
-        }
-        modes
+        MODES.to_vec()
     }
 
-    /// Number of visible modes.
     pub fn mode_count(&self) -> usize {
-        self.mode_names().len()
+        MODES.len()
     }
 }
 

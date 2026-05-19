@@ -11,11 +11,9 @@
 //! ```
 
 pub mod audit;
-pub mod containers;
+mod helpers;
 pub mod keybindings;
 mod mcp_servers;
-mod plugin_settings;
-mod plugins;
 mod profiles;
 pub mod repo_bookmarks;
 mod roles;
@@ -25,14 +23,11 @@ mod sessions;
 mod settings;
 mod skills;
 pub use mcp_servers::McpServerSource;
-pub use plugin_settings::EffectiveSetting;
-pub use plugins::PluginSource;
 pub use profiles::ProfileSource;
 pub use roles::RoleSource;
 pub use sessions::DeletedSessionInfo;
 pub use skills::SkillSource;
 pub mod sync;
-pub mod vms;
 mod worktrees;
 
 use std::path::Path;

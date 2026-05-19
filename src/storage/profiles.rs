@@ -3,18 +3,17 @@ use rusqlite::params;
 use crate::session::ProfileConfig;
 use crate::sync::current_time_millis;
 
+use super::helpers::{csv_to_vec, vec_to_csv};
 use super::Database;
 
 /// Where a resolved profile came from in the merged view.
 ///
-/// Shaped like [`RoleSource`](super::RoleSource) so a future
-/// plugin-contribution path has a place to slot in without breaking
-/// callers. Only `Registered` is produced today.
+/// Shaped like [`RoleSource`](super::RoleSource) so callers can render a
+/// generic "source" column. Only `Registered` is produced today.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProfileSource {
     Registered,
-    Plugin(String),
 }
 
 fn row_to_profile_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProfileConfig> {
@@ -139,18 +138,6 @@ impl Database {
             .map(|p| (p, ProfileSource::Registered))
             .collect())
     }
-}
-
-fn csv_to_vec(csv: &str) -> Vec<String> {
-    if csv.is_empty() {
-        Vec::new()
-    } else {
-        csv.split(',').map(|s| s.to_string()).collect()
-    }
-}
-
-fn vec_to_csv(v: &[String]) -> String {
-    v.join(",")
 }
 
 #[cfg(test)]

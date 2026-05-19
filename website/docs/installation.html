@@ -281,36 +281,12 @@ cargo build --release"
                 <td>Worktree features</td>
               </tr>
               <tr>
-                <td>Docker or Podman</td>
-                <td>Optional</td>
-                <td>Container sessions (Podman preferred)</td>
-              </tr>
-              <tr>
-                <td>QEMU/KVM</td>
-                <td>Optional</td>
-                <td>VM sandbox sessions</td>
-              </tr>
-              <tr>
                 <td>Rust 1.75+</td>
                 <td>Optional</td>
                 <td>Building from source</td>
               </tr>
             </tbody>
           </table>
-
-          <div class="info-box">
-            <p>
-              For VM sessions, you need
-              <code>qemu-system-x86_64</code>
-              ,
-              <code>/dev/kvm</code>
-              , and
-              <code>genisoimage</code>
-              (or
-              <code>mkisofs</code>
-              ).
-            </p>
-          </div>
 
           <h2 id="quick-start">
             Quick Start
@@ -334,7 +310,7 @@ cargo build --release"
               <strong>Create a session</strong>
               &mdash; select your project, press
               <code>Ctrl+N</code>
-              again. Choose a session mode (Normal, Worktree, Container, or VM).
+              again. Choose a session mode (Normal or Worktree).
             </li>
             <li>
               <strong>Work with Claude</strong>
@@ -373,22 +349,6 @@ cargo build --release"
             <code>$XDG_DATA_HOME</code>
             respected). Logs go to
             <code>~/.local/share/thurbox/thurbox.log</code>
-            .
-          </p>
-
-          <p>
-            Container templates are stored at
-            <code>~/.local/share/thurbox/admin/containerfiles/</code>
-            . A
-            <code>default/</code>
-            template (Debian Bookworm-based) is created on first run.
-          </p>
-
-          <p>
-            VM base images are cached at
-            <code>~/.local/share/thurbox/images/</code>
-            . Per-VM state lives under
-            <code>~/.local/share/thurbox/vms/</code>
             .
           </p>
         </main>

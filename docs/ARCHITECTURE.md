@@ -33,12 +33,11 @@ backend is `LocalTmuxBackend` (`tmux -L thurbox`).
 `vt100::Parser` interprets escape sequences,
 `tui_term::PseudoTerminal` renders the parsed screen into ratatui.
 
-**Why**: The trait-based design allows plugging in different
-transports (local tmux, SSH+tmux, Docker, cloud VM) without
-changing the app layer. tmux provides truly persistent sessions
-that survive thurbox crashes/restarts, multiple thurbox instances
-share the same running sessions, and external recovery is
-possible via `tmux -L thurbox attach`.
+**Why**: tmux provides truly persistent sessions that survive
+thurbox crashes/restarts, multiple thurbox instances share the
+same running sessions, and external recovery is possible via
+`tmux -L thurbox attach`. The trait-based design keeps the
+session lifecycle decoupled from the rest of the app.
 
 **Previous design**: `portable-pty` spawned the `claude` CLI
 directly. Sessions died when thurbox exited, terminal content was
@@ -159,7 +158,7 @@ specifically for `perf` / `flamegraph` workflows.
 ## ADR-8: State storage — SQLite
 
 **Choice**: All persistent state (sessions, roles, MCP servers,
-skills, worktrees, VMs, containers, scheduled commands) is stored
+skills, worktrees, scheduled commands) is stored
 in a single SQLite database at
 `~/.local/share/thurbox/thurbox.db` (respects `$XDG_DATA_HOME`).
 WAL mode enables concurrent multi-instance access.
@@ -200,11 +199,10 @@ project → many sessions, with shared repos and roles). In practice
 users created one session per task, so the project layer was pure
 overhead — an extra navigation level, an extra creation step, and
 an extra deletion guard. Storage migration v16 dropped the
-`projects`, `project_repos`, `project_roles`, `project_mcp_servers`,
-`project_vm_config`, and `project_container_config` tables and
-removed `project_id` columns from `sessions`, `vms`, and
-`containers`. The Admin session pinned at index 0 guarantees the
-list is never empty.
+`projects`, `project_repos`, `project_roles`, and
+`project_mcp_servers` tables and removed `project_id` columns
+from `sessions`. The Admin session pinned at index 0 guarantees
+the list is never empty.
 
 **Rejected**:
 
@@ -225,11 +223,10 @@ list is never empty.
 struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
-**Why**: Thurbox needs to support multiple deployment targets:
-local tmux today, SSH+tmux, Docker, and cloud VMs in the future.
-A trait boundary keeps the app layer completely backend-agnostic.
-Adding a new backend is a matter of implementing `SessionBackend`
-without touching `App`, `Session`, or any UI code.
+**Why**: A trait boundary keeps the app layer completely
+backend-agnostic. The only backend today is `LocalTmuxBackend`,
+but keeping the seam costs little and would let a future backend
+slot in without touching `App`, `Session`, or any UI code.
 
 **Trait methods**: `check_available`, `ensure_ready`, `spawn`,
 `adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`.
@@ -247,11 +244,8 @@ without touching `App`, `Session`, or any UI code.
 **Rejected**:
 
 - *Async trait methods* — added complexity for no benefit since
-  all current backends use synchronous `Command::new("tmux")`.
+  the local tmux backend uses synchronous `Command::new("tmux")`.
   Can be added via `async-trait` if a future backend needs it.
-- *Backend per session* — initially rejected as over-engineering,
-  later revisited in ADR-15 when VM support required per-session
-  backend routing.
 
 ---
 
@@ -329,7 +323,7 @@ delivers pixel-perfect rendering with all original formatting.
 ## ADR-7b: Multi-Instance Sync — SQLite with PRAGMA data_version
 
 **Choice**: Multiple thurbox instances synchronize all state
-(sessions, roles, MCP servers, skills, worktrees, VMs, containers)
+(sessions, roles, MCP servers, skills, worktrees)
 via a shared SQLite database
 (`~/.local/share/thurbox/thurbox.db`). Each instance polls
 `PRAGMA data_version` to detect external changes. SQLite's WAL mode
@@ -405,8 +399,8 @@ I/O coordination.
 
 **Choice**: The MCP (Model Context Protocol) server is a separate
 binary (`thurbox-mcp`) that shares the same SQLite database as the
-TUI. It exposes role, session, VM, container, scheduled-command,
-and editor-command management over stdio JSON-RPC (and optionally
+TUI. It exposes role, session, skill, profile, MCP-server, and
+scheduled-command management over stdio JSON-RPC (and optionally
 Streamable HTTP — see ADR-17) using the `rmcp` crate.
 
 **Why**: A separate binary avoids coupling the MCP protocol stack
@@ -465,117 +459,6 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
 
 ---
 
-## ADR-15: Multi-backend architecture and QEMU VM sessions
-
-**Choice**: Sessions select their backend at creation time via a
-`BackendRegistry`. Each session stores its `backend_type` (e.g.,
-`"local-tmux"` or `"qemu-vm"`) in the database. The registry routes
-spawn, adopt, discover, and other operations to the correct backend.
-
-**Why**: VM-sandboxed sessions need a fundamentally different
-transport (SSH into a QEMU/KVM guest) but share the same session
-lifecycle. Rather than forking the session logic, the existing
-`SessionBackend` trait is reused with a second implementation
-(`QemuVmBackend`) that tunnels tmux control mode over SSH.
-
-**Key components**:
-
-- `BackendRegistry` — maps backend names to `Arc<dyn SessionBackend>`.
-  Created at startup with `LocalTmuxBackend` as default, optionally
-  registers `QemuVmBackend`. `all_backends()` enables multi-backend
-  discovery during session restoration.
-- `QemuVmBackend` — implements `SessionBackend` by running tmux
-  commands over SSH (`ssh -o ControlPath=... tmux -L thurbox ...`).
-  Uses SSH control mode (`-C`) for multiplexed connections.
-  `prepare_vm()` establishes the SSH control master before any
-  session operations.
-- `VmManager` — owns QEMU/KVM VM lifecycle: create (Debian 13
-  Trixie base image, qcow2 CoW overlay, cloud-init ISO with
-  tmux/git/rsync/Claude CLI), start (`qemu-system-x86_64` with
-  `-enable-kvm -cpu host`, 2 CPUs, 2 GB RAM, 10 GB disk, user-mode
-  networking on ports 22200+), stop, destroy. Tracks `VmInstance`
-  state (`Creating`, `Starting`, `Ready`, `Stopping`, `Stopped`,
-  `Error`). `restore_vm()` re-hydrates a running VM from DB
-  records on restart.
-- `VM_ID_ENV_KEY` (`__THURBOX_VM_ID`) — internal env variable
-  injected by `Session::spawn()` / `restart()` / `ensure_shell_pane()`
-  so the backend can route to the correct VM instance.
-
-**Session restoration**: On restart, `restore_sessions()` discovers
-sessions from all registered backends (not just default). For VM
-sessions, it calls `VmManager::restore_vm()` to verify the QEMU
-process is still running via SSH probe, then re-establishes the
-SSH control mode connection before adopting the tmux pane inside
-the VM.
-
-**VM state persistence**: The `vms` table stores VM records with
-`session_id REFERENCES sessions(id)` (FK constraint). The
-`update_vm_session()` call must happen after `save_state()` to
-satisfy the FK constraint.
-
-**Rejected**:
-
-- *Single backend for all sessions (ADR-11 original)* — VM sessions
-  need SSH transport; can't share a single local-tmux backend.
-- *Separate session type for VMs* — duplicates lifecycle logic;
-  the trait abstraction handles the difference cleanly.
-- *Docker instead of QEMU* — QEMU provides full OS isolation with
-  KVM acceleration; Docker shares the host kernel and is less
-  suitable for untrusted code sandboxing.
-
----
-
-## ADR-16: Devcontainer backend (Docker/Podman)
-
-**Choice**: A `DevcontainerBackend` implementation of
-`SessionBackend` runs sessions inside Docker or Podman
-containers. The runtime is auto-detected at startup (Podman
-preferred, Docker fallback). `ContainerManager` handles the
-container lifecycle (build, run, stop, destroy).
-`DockerExecControlMode` tunnels tmux control mode over
-`docker/podman exec`.
-
-**Why**: Containers provide lightweight isolation without
-the overhead of full VMs. Many developers already have Docker
-or Podman installed, lowering the barrier to sandboxed sessions.
-The Containerfile template system lets users customize
-environments per use case (Python, Node, Rust, etc.) while
-the firewall allowlist restricts network egress by default.
-
-**Key components**:
-
-- `detect_runtime()` — probes `podman info` then `docker info`
-  to find an available runtime. Prefers Podman for rootless
-  operation.
-- `ContainerManager` — builds images from Containerfile
-  templates, runs containers with volume-mounted repos, and
-  manages lifecycle. Supports optional nftables/iptables
-  firewall via `init-firewall.sh`.
-- `DockerExecControlMode` — tunnels tmux control mode over
-  `docker/podman exec -i`, providing the same
-  `ControlModeReader`/`ControlModeWriter` abstraction as the
-  SSH-based VM backend.
-- Containerfile templates at
-  `~/.local/share/thurbox/admin/containerfiles/<name>/`. A `default/`
-  template (Debian Bookworm-based) is seeded on first run.
-
-**Container state persistence**: The `containers` table stores
-container records with `session_id REFERENCES sessions(id)` (FK
-constraint), mirroring the VM state persistence pattern.
-
-**Rejected**:
-
-- *Reusing QemuVmBackend for Docker* — Docker and QEMU have
-  fundamentally different interfaces (`exec` vs SSH). A shared
-  backend would require too many conditionals.
-- *Docker-only (no Podman)* — Podman is increasingly popular,
-  especially on Linux where rootless operation avoids privilege
-  escalation. Auto-detection supports both with zero config.
-- *Kubernetes pods* — over-engineering for local development;
-  requires a cluster and adds latency/complexity.
-
----
-
 ## ADR-17: Streamable HTTP transport for MCP server
 
 **Choice**: The `thurbox-mcp` binary supports a second transport
@@ -600,59 +483,3 @@ Streamable HTTP is the MCP standard for networked transports.
   advanced deployments.
 
 ---
-
-## ADR-18: Plugin control socket + `plugin_bridge` seam
-
-**Choice**: Cross-process calls from `thurbox-mcp` into running
-process plugins travel over a Unix domain socket at
-`$XDG_RUNTIME_DIR/thurbox/control.sock` (0o600). The listener lives
-in the TUI (`src/plugin/control_socket/`), owns the `PluginRuntime`,
-and answers a tiny op set (`plugin.list`, `plugin.list_tools`,
-`plugin.call`). The `thurbox-mcp` side dials the socket through a
-new sealed module `plugin_bridge` — stdlib + serde + tokio only, no
-knowledge of plugin-runtime types.
-
-**Why**: `thurbox-mcp` runs in its own process but the plugin
-children are owned by the TUI. The MCP server needs to list and call
-their tools without gaining a direct dependency on `PluginRuntime`
-(which would break the existing `mcp → storage, session, sync,
-paths` isolation rule enforced by `tests/architecture_rules.rs`).
-A narrow transport module keeps the surface tiny: `mcp` depends on
-`plugin_bridge` for framing only, and `plugin_bridge` depends on
-nothing inside thurbox except `paths`. The TUI's control-socket
-listener is free to touch `PluginRuntime` because it's a sibling of
-the rest of the plugin code, not part of `mcp`.
-
-**Key design decisions**:
-
-- One connection per call. No pooling, no multiplexing — request
-  framing is newline-delimited JSON, one round-trip per call, and
-  the socket is dialled fresh each time. Cheap and hard to desync.
-- Static tools win over RPC. `list_plugin_tools` reads
-  `[[contributes.mcp_tools]]` from the manifest whenever it can and
-  only falls back to `mcp.list_tools` when none are declared. This
-  lets callers enumerate tools without waking dormant plugins.
-- `DispatchCtx` wraps `Arc<std::sync::Mutex<Database>>`. The
-  dispatcher is spawned per-connection on tokio and `Database`
-  (holding an `rusqlite::Connection`) is `!Sync`; a sync mutex that
-  is locked and dropped *before* any `.await` makes the dispatch
-  path `Send` without restructuring the existing single-task code
-  paths that hold `&Database` across awaits.
-- The listener's `ControlSocketHandle` aborts its task and unlinks
-  the socket file on `Drop`, so shutting down the TUI also tears
-  down the listener deterministically.
-
-**Rejected**:
-
-- *Embedding `PluginRuntime` access in `mcp`* — would break module
-  isolation and couple the MCP server's process lifecycle to the
-  TUI's plugin state machine.
-- *Shared in-process runtime (one binary)* — `thurbox-mcp` is
-  deliberately a separate process (ADR-13). Reverting that would
-  undo the isolation benefits and inflate the TUI's startup cost.
-- *Named pipes / TCP loopback* — Unix sockets give filesystem
-  permissions for free (owner-only via 0o600) and avoid picking a
-  port. `$XDG_RUNTIME_DIR` already scopes them per-user.
-- *Pool of persistent connections* — premature; call volume is low
-  (an MCP client enumerating tools), and the cost of `connect()` on
-  a Unix socket is negligible compared to the plugin's own work.

@@ -7,24 +7,12 @@ use std::sync::{
 };
 use std::time::SystemTime;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 use crate::agent::provider::AgentProvider;
 use crate::session::{SessionConfig, SessionInfo};
-
-/// Internal env key used to pass the target VM ID through `SessionBackend::spawn()`.
-///
-/// Injected by `Session::spawn/restart/ensure_shell_pane` when `SessionConfig.vm_id` is set;
-/// consumed by `QemuVmBackend::spawn()` to route the session to the correct VM.
-pub(crate) const VM_ID_ENV_KEY: &str = "__THURBOX_VM_ID";
-
-/// Internal env key used to pass the target container ID through `SessionBackend::spawn()`.
-///
-/// Injected by `Session::spawn/restart/ensure_shell_pane` when `SessionConfig.container_id` is
-/// set; consumed by `DevcontainerBackend::spawn()` to route the session to the correct container.
-pub(crate) const CONTAINER_ID_ENV_KEY: &str = "__THURBOX_CONTAINER_ID";
 
 pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
@@ -104,17 +92,7 @@ pub trait SessionBackend: Send + Sync {
     /// Detach from a session without killing it (for Ctrl+Q quit).
     fn detach(&self, backend_id: &str) -> Result<()>;
 
-    /// Prepare a VM for session spawning (e.g., establish SSH control mode).
-    ///
-    /// No-op for non-VM backends. VM backends use this to set up the control
-    /// mode connection after provisioning completes.
-    fn prepare_vm(&self, _vm_id: &str) -> Result<()> {
-        Ok(())
-    }
-
     /// Default shell command for companion shell panes.
-    ///
-    /// Local backends use `$SHELL`; VM backends return the VM's default shell.
     fn default_shell(&self) -> String {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
     }
@@ -169,66 +147,6 @@ impl ShellPane {
     }
 }
 
-/// Minimal no-op backend used by `Session::placeholder()`.
-struct NullBackend;
-
-impl SessionBackend for NullBackend {
-    fn name(&self) -> &str {
-        "null"
-    }
-    fn check_available(&self) -> Result<()> {
-        Ok(())
-    }
-    fn ensure_ready(&self) -> Result<()> {
-        Ok(())
-    }
-    fn spawn(
-        &self,
-        _: &str,
-        _: &str,
-        _: &[String],
-        _: Option<&Path>,
-        _: &HashMap<String, String>,
-        _: u16,
-        _: u16,
-    ) -> Result<SpawnedSession> {
-        bail!("NullBackend cannot spawn sessions")
-    }
-    fn adopt(&self, _: &str, _: u16, _: u16) -> Result<AdoptedSession> {
-        bail!("NullBackend cannot adopt sessions")
-    }
-    fn discover(&self) -> Result<Vec<DiscoveredSession>> {
-        Ok(Vec::new())
-    }
-    fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
-        Ok(())
-    }
-    fn is_dead(&self, _: &str) -> Result<bool> {
-        Ok(true)
-    }
-    fn kill(&self, _: &str) -> Result<()> {
-        Ok(())
-    }
-    fn detach(&self, _: &str) -> Result<()> {
-        Ok(())
-    }
-    fn pane_pid(&self, _: &str) -> Result<Option<u32>> {
-        Ok(None)
-    }
-}
-
-/// Minimal no-op agent provider used by `Session::placeholder()`.
-struct NullProvider;
-
-impl AgentProvider for NullProvider {
-    fn command(&self) -> &str {
-        ""
-    }
-    fn build_args(&self, _: &SessionConfig) -> Vec<String> {
-        Vec::new()
-    }
-}
-
 /// A running session connected to a backend.
 pub struct Session {
     pub info: SessionInfo,
@@ -257,14 +175,7 @@ impl Session {
         let args = provider.build_args(config);
         let window_name = crate::agent::tmux::agent_window_name(&name);
 
-        // Build env map, injecting VM/container ID if a target is specified.
-        let mut env = config.permissions.env.clone();
-        if let Some(ref vm_id) = config.vm_id {
-            env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
-        }
-        if let Some(ref container_id) = config.container_id {
-            env.insert(CONTAINER_ID_ENV_KEY.to_string(), container_id.clone());
-        }
+        let env = config.permissions.env.clone();
 
         let spawned = backend.spawn(
             &window_name,
@@ -337,32 +248,6 @@ impl Session {
             provider,
             env,
         ))
-    }
-
-    /// Create a lightweight placeholder session with no I/O.
-    ///
-    /// Used during async session restoration: the placeholder appears in the
-    /// session list with `Provisioning` status and spinner while the background
-    /// thread restores the container/VM. Once ready, the placeholder is replaced
-    /// with a real session via `adopt()` or `spawn()`.
-    pub fn placeholder(info: SessionInfo) -> Self {
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0)));
-        let (input_tx, _input_rx) = mpsc::unbounded_channel();
-        let exited = Arc::new(AtomicBool::new(true));
-        let last_output_at = Arc::new(AtomicU64::new(0));
-
-        Self {
-            info,
-            parser,
-            input_tx,
-            backend_id: String::new(),
-            backend: Arc::new(NullBackend),
-            provider: Arc::new(NullProvider),
-            exited,
-            last_output_at,
-            shell_pane: None,
-            env: HashMap::new(),
-        }
     }
 
     /// Create parser, spawn reader/writer loops for the given I/O handles.
@@ -520,14 +405,7 @@ impl Session {
         let args = self.provider.build_args(config);
         let window_name = crate::agent::tmux::agent_window_name(&self.info.name);
 
-        // Inject __THURBOX_VM_ID / __THURBOX_CONTAINER_ID for backend-routed sessions.
-        let mut env = config.permissions.env.clone();
-        if let Some(ref vm_id) = config.vm_id {
-            env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
-        }
-        if let Some(ref container_id) = config.container_id {
-            env.insert(CONTAINER_ID_ENV_KEY.to_string(), container_id.clone());
-        }
+        let env = config.permissions.env.clone();
 
         let spawned = self.backend.spawn(
             &window_name,
@@ -598,15 +476,7 @@ impl Session {
         let shell_cmd = self.backend.default_shell();
         let window_name = crate::agent::tmux::shell_window_name(&self.info.name);
 
-        // Inject __THURBOX_VM_ID / __THURBOX_CONTAINER_ID for backend-routed sessions
-        // so the backend knows which VM/container to create the shell pane in.
-        let mut env = self.env.clone();
-        if let Some(ref vm_id) = self.info.vm_id {
-            env.insert(VM_ID_ENV_KEY.to_string(), vm_id.clone());
-        }
-        if let Some(ref container_id) = self.info.container_id {
-            env.insert(CONTAINER_ID_ENV_KEY.to_string(), container_id.clone());
-        }
+        let env = self.env.clone();
 
         let spawned = self.backend.spawn(
             &window_name,
@@ -697,81 +567,5 @@ mod tests {
         let ms = now_millis();
         // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
-    }
-
-    #[test]
-    fn vm_id_env_key_is_internal() {
-        // The key should start with __ to signal it's an internal implementation detail.
-        assert!(VM_ID_ENV_KEY.starts_with("__"));
-    }
-
-    #[test]
-    fn container_id_env_key_is_internal() {
-        assert!(CONTAINER_ID_ENV_KEY.starts_with("__"));
-    }
-
-    #[test]
-    fn placeholder_session_is_exited() {
-        let info = SessionInfo::new("test".to_string());
-        let session = Session::placeholder(info);
-        assert!(session.exited.load(Ordering::Relaxed));
-        assert_eq!(session.backend_id, "");
-        assert!(session.shell_pane.is_none());
-    }
-
-    #[test]
-    fn placeholder_preserves_session_info() {
-        let mut info = SessionInfo::new("my-session".to_string());
-        info.status = crate::session::SessionStatus::Provisioning;
-        info.provisioning_step = Some("Restoring container...".to_string());
-        let session = Session::placeholder(info);
-        assert_eq!(session.info.name, "my-session");
-        assert_eq!(
-            session.info.status,
-            crate::session::SessionStatus::Provisioning
-        );
-        assert_eq!(
-            session.info.provisioning_step.as_deref(),
-            Some("Restoring container...")
-        );
-    }
-
-    #[test]
-    fn null_backend_name_is_null() {
-        let backend = NullBackend;
-        assert_eq!(backend.name(), "null");
-    }
-
-    #[test]
-    fn null_backend_is_dead_returns_true() {
-        let backend = NullBackend;
-        assert!(backend.is_dead("anything").unwrap());
-    }
-
-    #[test]
-    fn null_backend_discover_returns_empty() {
-        let backend = NullBackend;
-        assert!(backend.discover().unwrap().is_empty());
-    }
-
-    #[test]
-    fn null_backend_spawn_fails() {
-        let backend = NullBackend;
-        assert!(backend
-            .spawn("id", "name", &[], None, &HashMap::new(), 24, 80)
-            .is_err());
-    }
-
-    #[test]
-    fn null_backend_adopt_fails() {
-        let backend = NullBackend;
-        assert!(backend.adopt("id", 24, 80).is_err());
-    }
-
-    #[test]
-    fn null_provider_returns_empty() {
-        let provider = NullProvider;
-        assert_eq!(provider.command(), "");
-        assert!(provider.build_args(&SessionConfig::default()).is_empty());
     }
 }

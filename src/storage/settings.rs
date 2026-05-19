@@ -6,7 +6,6 @@ use super::Database;
 
 const EDITOR_COMMAND_KEY: &str = "editor_command";
 const THEME_KEY: &str = "active_theme";
-const NERD_FONT_KEY: &str = "nerd_font_glyphs";
 
 impl Database {
     /// Get the configured editor command (e.g. `code`, `nvim --remote-tab`).
@@ -62,29 +61,6 @@ impl Database {
         }
         Ok(())
     }
-
-    /// Whether nerd-font glyphs are enabled. Defaults to `false` when unset.
-    pub fn get_nerd_font_enabled(&self) -> rusqlite::Result<bool> {
-        let value: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = ?1",
-                params![NERD_FONT_KEY],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        Ok(value.as_deref() == Some("1"))
-    }
-
-    /// Toggle nerd-font glyphs. Stored as `"1"` / `"0"`.
-    pub fn set_nerd_font_enabled(&self, enabled: bool) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![NERD_FONT_KEY, if enabled { "1" } else { "0" }],
-        )?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -128,17 +104,5 @@ mod tests {
 
         db.set_active_theme("").unwrap();
         assert_eq!(db.get_active_theme().unwrap(), None);
-    }
-
-    #[test]
-    fn nerd_font_round_trip() {
-        let db = Database::open_in_memory().unwrap();
-        assert!(!db.get_nerd_font_enabled().unwrap());
-
-        db.set_nerd_font_enabled(true).unwrap();
-        assert!(db.get_nerd_font_enabled().unwrap());
-
-        db.set_nerd_font_enabled(false).unwrap();
-        assert!(!db.get_nerd_font_enabled().unwrap());
     }
 }

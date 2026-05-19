@@ -3,32 +3,21 @@
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router};
 
-use crate::plugin_bridge::{client as control_client, ControlError};
 use crate::session::{McpServerConfig, RoleConfig, RolePermissions, SessionId, SkillConfig};
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
-use crate::storage::vms::VmRecord;
-
 use crate::session::ScheduledCommand;
 
 use super::types::{
-    CallPluginToolParams, CancelScheduledCommandParams, CaptureSessionOutputParams,
-    ContainerfileTemplateResponse, ContainerfileTemplateSummary, ContributionsSummary,
-    CreateSessionParams, DeleteContainerfileTemplateParams, DeleteSessionParams,
-    DeleteVmImageParams, DisablePluginParams, DownloadVmImageParams, EnablePluginParams,
-    GetContainerfileTemplateParams, GetPluginSettingParams, GetProfileParams,
-    GetScheduledCommandParams, GetSessionParams, GetVmParams, InstallPluginParams,
-    ListPluginSettingsParams, ListPluginToolsParams, ListScheduledCommandsParams,
-    ListSessionsParams, ListVmsParams, McpServerResponse, PluginResponse, PluginSettingResponse,
-    ProcessSummary, ProfileResponse, RegisterPluginParams, RegisterProfileParams,
-    RegisterSkillParams, ResetPluginSettingParams, RestartSessionParams, RestoreSessionParams,
+    CancelScheduledCommandParams, CaptureSessionOutputParams, CreateSessionParams,
+    DeleteSessionParams, GetProfileParams, GetScheduledCommandParams, GetSessionParams,
+    ListScheduledCommandsParams, ListSessionsParams, McpServerResponse, ProfileResponse,
+    RegisterProfileParams, RegisterSkillParams, RestartSessionParams, RestoreSessionParams,
     RoleResponse, ScheduleCommandParams, ScheduledCommandResponse, SendPromptParams,
-    SessionResponse, SetContainerfileTemplateParams, SetEditorCommandParams, SetKeybindingsParams,
-    SetMcpServersParams, SetPluginSettingParams, SetPluginsParams, SetProfilesParams,
-    SetRolesParams, SetSkillsParams, SetThemeParams, SkillResponse, UninstallPluginParams,
-    UnregisterPluginParams, UnregisterProfileParams, UnregisterSkillParams, VmImageResponse,
-    VmResponse, WorktreeResponse,
+    SessionResponse, SetEditorCommandParams, SetKeybindingsParams, SetMcpServersParams,
+    SetProfilesParams, SetRolesParams, SetSkillsParams, SetThemeParams, SkillResponse,
+    UnregisterProfileParams, UnregisterSkillParams, WorktreeResponse,
 };
 use super::ThurboxMcp;
 
@@ -86,20 +75,6 @@ fn session_to_response(s: &SharedSession) -> SessionResponse {
     }
 }
 
-fn vm_to_response(r: &VmRecord) -> VmResponse {
-    VmResponse {
-        id: r.id.clone(),
-        session_id: r.session_id.clone(),
-        state: r.state.to_string(),
-        ssh_port: r.ssh_port,
-        base_image: r.base_image.clone(),
-        cpus: r.cpus,
-        memory_mb: r.memory_mb,
-        disk_gb: r.disk_gb,
-        error_msg: r.error_msg.clone(),
-    }
-}
-
 fn json_text<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|e| error_json(&e.to_string()))
 }
@@ -126,39 +101,20 @@ fn validate_safe_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn skill_to_response(s: &SkillConfig) -> SkillResponse {
-    SkillResponse {
-        name: s.name.clone(),
-        path: s.path.clone(),
-        source: None,
-    }
-}
-
-fn effective_skill_to_response(
+fn skill_to_response(
     s: &SkillConfig,
-    source: crate::storage::SkillSource,
+    source: Option<crate::storage::SkillSource>,
 ) -> SkillResponse {
     SkillResponse {
         name: s.name.clone(),
         path: s.path.clone(),
-        source: Some(source),
+        source,
     }
 }
 
-fn profile_to_response(p: &crate::session::ProfileConfig) -> ProfileResponse {
-    ProfileResponse {
-        name: p.name.clone(),
-        description: p.description.clone(),
-        roles: p.roles.clone(),
-        mcp_servers: p.mcp_servers.clone(),
-        skills: p.skills.clone(),
-        source: None,
-    }
-}
-
-fn effective_profile_to_response(
+fn profile_to_response(
     p: &crate::session::ProfileConfig,
-    source: crate::storage::ProfileSource,
+    source: Option<crate::storage::ProfileSource>,
 ) -> ProfileResponse {
     ProfileResponse {
         name: p.name.clone(),
@@ -166,7 +122,7 @@ fn effective_profile_to_response(
         roles: p.roles.clone(),
         mcp_servers: p.mcp_servers.clone(),
         skills: p.skills.clone(),
-        source: Some(source),
+        source,
     }
 }
 
@@ -219,145 +175,6 @@ fn validate_profile_refs(
     } else {
         Err(format!("unknown refs: {}", missing.join(", ")))
     }
-}
-
-/// Convert a `toml::Value` to `serde_json::Value` for response payloads.
-fn toml_to_json(v: &toml::Value) -> serde_json::Value {
-    match v {
-        toml::Value::String(s) => serde_json::Value::String(s.clone()),
-        toml::Value::Integer(i) => serde_json::Value::Number((*i).into()),
-        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
-        toml::Value::Datetime(d) => serde_json::Value::String(d.to_string()),
-        toml::Value::Array(a) => serde_json::Value::Array(a.iter().map(toml_to_json).collect()),
-        toml::Value::Table(t) => serde_json::Value::Object(
-            t.iter()
-                .map(|(k, v)| (k.clone(), toml_to_json(v)))
-                .collect(),
-        ),
-    }
-}
-
-/// Convert a `serde_json::Value` (from a tool input parameter) to `toml::Value`
-/// so it can be validated against a `ConfigurationSchema` and stored.
-fn json_to_toml(v: &serde_json::Value) -> Result<toml::Value, String> {
-    match v {
-        serde_json::Value::Null => Err("null is not supported in plugin settings".into()),
-        serde_json::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(toml::Value::Integer(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(toml::Value::Float(f))
-            } else {
-                Err(format!("unsupported number: {n}"))
-            }
-        }
-        serde_json::Value::String(s) => Ok(toml::Value::String(s.clone())),
-        serde_json::Value::Array(arr) => {
-            let items: Result<Vec<_>, _> = arr.iter().map(json_to_toml).collect();
-            Ok(toml::Value::Array(items?))
-        }
-        serde_json::Value::Object(obj) => {
-            let mut table = toml::value::Table::new();
-            for (k, val) in obj {
-                table.insert(k.clone(), json_to_toml(val)?);
-            }
-            Ok(toml::Value::Table(table))
-        }
-    }
-}
-
-fn configuration_type_str(ty: crate::session::ConfigurationType) -> &'static str {
-    match ty {
-        crate::session::ConfigurationType::String => "string",
-        crate::session::ConfigurationType::Int => "int",
-        crate::session::ConfigurationType::Bool => "bool",
-        crate::session::ConfigurationType::Duration => "duration",
-        crate::session::ConfigurationType::Path => "path",
-        crate::session::ConfigurationType::Enum => "enum",
-    }
-}
-
-/// Project a registered/disk plugin row + its manifest (loaded on demand) into
-/// the response shape exposed via MCP. A failed manifest parse becomes an
-/// `error` field — the row still appears so the user can see the plugin needs
-/// fixing, with empty contributions.
-fn plugin_to_response(
-    plugin: &crate::session::PluginConfig,
-    source: crate::storage::PluginSource,
-) -> PluginResponse {
-    let mut response = PluginResponse {
-        name: plugin.name.clone(),
-        path: plugin.path.clone(),
-        version: plugin.version.clone(),
-        enabled: plugin.enabled,
-        source,
-        contributions: ContributionsSummary::default(),
-        process: None,
-        error: None,
-    };
-    match crate::session::PluginManifest::load(&plugin.path) {
-        Ok(manifest) => {
-            response.contributions = ContributionsSummary {
-                skills: manifest
-                    .contributes
-                    .skills
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect(),
-                roles: manifest
-                    .contributes
-                    .roles
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect(),
-                mcp_servers: manifest
-                    .contributes
-                    .mcp_servers
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect(),
-                themes: manifest
-                    .contributes
-                    .themes
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect(),
-                configuration_keys: manifest
-                    .contributes
-                    .configuration
-                    .iter()
-                    .map(|c| c.key.clone())
-                    .collect(),
-            };
-            if let Some(p) = manifest.process {
-                response.process = Some(ProcessSummary {
-                    exec: p.exec,
-                    capabilities: p
-                        .capabilities
-                        .iter()
-                        .map(|c| match c {
-                            crate::session::Capability::Backend => "backend".to_string(),
-                            crate::session::Capability::McpTools => "mcp-tools".to_string(),
-                        })
-                        .collect(),
-                    activation_events: p
-                        .activation_events
-                        .iter()
-                        .map(|e| e.as_manifest_string())
-                        .collect(),
-                });
-            }
-            if response.version.is_empty() {
-                response.version = manifest.version;
-            }
-        }
-        Err(e) => response.error = Some(e),
-    }
-    response
 }
 
 // ── Tool implementations ────────────────────────────────────────
@@ -715,29 +532,6 @@ impl ThurboxMcp {
         }
     }
 
-    #[tool(description = "List all active VMs")]
-    fn list_vms(&self, Parameters(_params): Parameters<ListVmsParams>) -> String {
-        let db = self.db.lock().unwrap();
-
-        match db.list_vms() {
-            Ok(vms) => {
-                let resp: Vec<VmResponse> = vms.iter().map(vm_to_response).collect();
-                json_text(&resp)
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(description = "Get a VM by its UUID")]
-    fn get_vm(&self, Parameters(params): Parameters<GetVmParams>) -> String {
-        let db = self.db.lock().unwrap();
-        match db.get_vm(&params.vm) {
-            Ok(Some(vm)) => json_text(&vm_to_response(&vm)),
-            Ok(None) => error_json(&format!("VM not found: {}", params.vm)),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
     #[tool(
         description = "Restore a soft-deleted session. The TUI will detect the restored session via sync polling and spawn it with --resume if a Claude session ID exists."
     )]
@@ -767,151 +561,6 @@ impl ThurboxMcp {
         }
     }
 
-    // ── Containerfile Template Tools ────────────────────────────
-
-    #[tool(description = "List all Containerfile templates with their files")]
-    fn list_containerfile_templates(&self) -> String {
-        match crate::paths::list_containerfile_templates() {
-            Ok(rows) => {
-                let templates: Vec<ContainerfileTemplateSummary> = rows
-                    .into_iter()
-                    .map(|(name, files)| ContainerfileTemplateSummary { name, files })
-                    .collect();
-                json_text(&templates)
-            }
-            Err(e) => error_json(&e),
-        }
-    }
-
-    #[tool(description = "Get a Containerfile template's content and list its support files")]
-    fn get_containerfile_template(
-        &self,
-        Parameters(params): Parameters<GetContainerfileTemplateParams>,
-    ) -> String {
-        if let Err(e) = validate_safe_name(&params.name) {
-            return e;
-        }
-
-        let dir = match crate::paths::containerfiles_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve containerfiles directory"),
-        };
-
-        let template_dir = dir.join(&params.name);
-        if !template_dir.is_dir() {
-            return error_json(&format!("Template not found: {}", params.name));
-        }
-
-        let containerfile_path = template_dir.join("Containerfile");
-        let containerfile_content = match std::fs::read_to_string(&containerfile_path) {
-            Ok(c) => c,
-            Err(_) => {
-                return error_json(&format!("Template '{}' has no Containerfile", params.name))
-            }
-        };
-
-        let mut support_files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&template_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                    let fname = entry.file_name().to_string_lossy().to_string();
-                    if fname != "Containerfile" {
-                        support_files.push(fname);
-                    }
-                }
-            }
-        }
-        support_files.sort();
-
-        json_text(&ContainerfileTemplateResponse {
-            name: params.name,
-            containerfile_content,
-            support_files,
-        })
-    }
-
-    #[tool(
-        description = "Create or update a Containerfile template. Writes the Containerfile and optional support files to the template directory."
-    )]
-    fn set_containerfile_template(
-        &self,
-        Parameters(params): Parameters<SetContainerfileTemplateParams>,
-    ) -> String {
-        if let Err(e) = validate_safe_name(&params.name) {
-            return e;
-        }
-
-        let dir = match crate::paths::containerfiles_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve containerfiles directory"),
-        };
-
-        let template_dir = dir.join(&params.name);
-        if let Err(e) = std::fs::create_dir_all(&template_dir) {
-            return error_json(&format!("Failed to create template directory: {e}"));
-        }
-
-        if let Err(e) = std::fs::write(
-            template_dir.join("Containerfile"),
-            &params.containerfile_content,
-        ) {
-            return error_json(&format!("Failed to write Containerfile: {e}"));
-        }
-
-        let mut all_files = vec!["Containerfile".to_string()];
-        if let Some(ref files) = params.support_files {
-            for f in files {
-                if let Err(e) = validate_safe_name(&f.filename) {
-                    return e;
-                }
-                if let Err(e) = std::fs::write(template_dir.join(&f.filename), &f.content) {
-                    return error_json(&format!("Failed to write {}: {e}", f.filename));
-                }
-                all_files.push(f.filename.clone());
-            }
-        }
-        all_files.sort();
-
-        json_text(&ContainerfileTemplateSummary {
-            name: params.name,
-            files: all_files,
-        })
-    }
-
-    #[tool(description = "Delete a Containerfile template directory. Refuses to delete 'default'.")]
-    fn delete_containerfile_template(
-        &self,
-        Parameters(params): Parameters<DeleteContainerfileTemplateParams>,
-    ) -> String {
-        if let Err(e) = validate_safe_name(&params.name) {
-            return e;
-        }
-
-        if params.name == "default" {
-            return error_json("Cannot delete the 'default' template");
-        }
-
-        let dir = match crate::paths::containerfiles_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve containerfiles directory"),
-        };
-
-        let template_dir = dir.join(&params.name);
-        if !template_dir.is_dir() {
-            return error_json(&format!("Template not found: {}", params.name));
-        }
-
-        if let Err(e) = std::fs::remove_dir_all(&template_dir) {
-            return error_json(&format!("Failed to delete template: {e}"));
-        }
-
-        serde_json::json!({
-            "deleted": true,
-            "name": params.name,
-        })
-        .to_string()
-    }
-
     // ── Skill Registry Tools ────────────────────────────────────
 
     #[tool(
@@ -923,7 +572,7 @@ impl ThurboxMcp {
             Ok(skills) => {
                 let resp: Vec<SkillResponse> = skills
                     .iter()
-                    .map(|(s, source)| effective_skill_to_response(s, source.clone()))
+                    .map(|(s, source)| skill_to_response(s, Some(source.clone())))
                     .collect();
                 json_text(&resp)
             }
@@ -951,7 +600,8 @@ impl ThurboxMcp {
 
         match db.replace_global_skills(&skills) {
             Ok(()) => {
-                let resp: Vec<SkillResponse> = skills.iter().map(skill_to_response).collect();
+                let resp: Vec<SkillResponse> =
+                    skills.iter().map(|s| skill_to_response(s, None)).collect();
                 json_text(&resp)
             }
             Err(e) => error_json(&e.to_string()),
@@ -975,7 +625,7 @@ impl ThurboxMcp {
             path,
         };
         match db.upsert_global_skill(&skill) {
-            Ok(()) => json_text(&skill_to_response(&skill)),
+            Ok(()) => json_text(&skill_to_response(&skill, None)),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1003,7 +653,7 @@ impl ThurboxMcp {
             Ok(profiles) => {
                 let resp: Vec<ProfileResponse> = profiles
                     .into_iter()
-                    .map(|(p, src)| effective_profile_to_response(&p, src))
+                    .map(|(p, src)| profile_to_response(&p, Some(src)))
                     .collect();
                 json_text(&resp)
             }
@@ -1017,9 +667,9 @@ impl ThurboxMcp {
     fn get_profile(&self, Parameters(params): Parameters<GetProfileParams>) -> String {
         let db = self.db.lock().unwrap();
         match db.get_global_profile(&params.name) {
-            Ok(Some(profile)) => json_text(&effective_profile_to_response(
+            Ok(Some(profile)) => json_text(&profile_to_response(
                 &profile,
-                crate::storage::ProfileSource::Registered,
+                Some(crate::storage::ProfileSource::Registered),
             )),
             Ok(None) => error_json(&format!("Profile not found: {}", params.name)),
             Err(e) => error_json(&e.to_string()),
@@ -1052,7 +702,10 @@ impl ThurboxMcp {
 
         match db.replace_global_profiles(&profiles) {
             Ok(()) => {
-                let resp: Vec<ProfileResponse> = profiles.iter().map(profile_to_response).collect();
+                let resp: Vec<ProfileResponse> = profiles
+                    .iter()
+                    .map(|p| profile_to_response(p, None))
+                    .collect();
                 json_text(&resp)
             }
             Err(e) => error_json(&e.to_string()),
@@ -1080,7 +733,7 @@ impl ThurboxMcp {
             skills: params.skills,
         };
         match db.upsert_global_profile(&profile) {
-            Ok(()) => json_text(&profile_to_response(&profile)),
+            Ok(()) => json_text(&profile_to_response(&profile, None)),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1098,460 +751,6 @@ impl ThurboxMcp {
             Ok(false) => error_json(&format!("Profile not registered: {}", params.name)),
             Err(e) => error_json(&e.to_string()),
         }
-    }
-
-    // ── Plugin Lifecycle Tools ──────────────────────────────────
-
-    #[tool(
-        description = "List all effective plugins (auto-discovered under ~/.local/share/thurbox/admin/plugins/ plus SQLite registry entries). Returns a JSON array of {name, path, version, enabled, source, contributions, process?, error?} objects."
-    )]
-    fn list_plugins(&self) -> String {
-        let db = self.db.lock().unwrap();
-        match db.list_effective_plugins() {
-            Ok(plugins) => {
-                let resp: Vec<PluginResponse> = plugins
-                    .into_iter()
-                    .map(|(p, src)| plugin_to_response(&p, src))
-                    .collect();
-                json_text(&resp)
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Atomically replace the plugin registry. Deletes existing rows and inserts the provided list in a single transaction. Disk-source plugins are unaffected. To clear the registry, pass an empty array."
-    )]
-    fn set_plugins(&self, Parameters(params): Parameters<SetPluginsParams>) -> String {
-        let mut plugins = Vec::with_capacity(params.plugins.len());
-        for p in params.plugins {
-            if let Err(e) = validate_safe_name(&p.name) {
-                return e;
-            }
-            let path = std::path::PathBuf::from(&p.path);
-            if !path.is_absolute() {
-                return error_json(&format!("plugin '{}': path must be absolute", p.name));
-            }
-            let manifest = match crate::session::PluginManifest::load(&path) {
-                Ok(m) => m,
-                Err(e) => return error_json(&format!("plugin '{}': {e}", p.name)),
-            };
-            plugins.push(crate::session::PluginConfig {
-                name: p.name,
-                path,
-                version: p.version.unwrap_or(manifest.version),
-                enabled: p.enabled,
-            });
-        }
-        let db = self.db.lock().unwrap();
-        match db.replace_global_plugins(&plugins) {
-            Ok(()) => json_text(&plugins.iter().map(|p| &p.name).collect::<Vec<_>>()),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Register (or update) a single plugin by name, pointing at an existing on-disk plugin directory. The path must be absolute and contain a valid thurbox-plugin.toml. Disk files are never modified."
-    )]
-    fn register_plugin(&self, Parameters(params): Parameters<RegisterPluginParams>) -> String {
-        if let Err(e) = validate_safe_name(&params.name) {
-            return e;
-        }
-        let path = std::path::PathBuf::from(&params.path);
-        if !path.is_absolute() {
-            return error_json("path must be absolute");
-        }
-        let manifest = match crate::session::PluginManifest::load(&path) {
-            Ok(m) => m,
-            Err(e) => return error_json(&e),
-        };
-        if manifest.name != params.name {
-            return error_json(&format!(
-                "manifest name '{}' does not match registration name '{}'",
-                manifest.name, params.name
-            ));
-        }
-        let plugin = crate::session::PluginConfig {
-            name: params.name,
-            path,
-            version: manifest.version,
-            enabled: true,
-        };
-        let db = self.db.lock().unwrap();
-        match db.upsert_global_plugin(&plugin) {
-            Ok(()) => json_text(&plugin_to_response(
-                &plugin,
-                crate::storage::PluginSource::Registered,
-            )),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Unregister a plugin by name. Removes only the registry row (cascades plugin_settings); on-disk files are never touched. Use uninstall_plugin to remove disk files."
-    )]
-    fn unregister_plugin(&self, Parameters(params): Parameters<UnregisterPluginParams>) -> String {
-        let db = self.db.lock().unwrap();
-        match db.delete_global_plugin(&params.name) {
-            Ok(true) => serde_json::json!({ "deleted": true, "name": params.name }).to_string(),
-            Ok(false) => error_json(&format!("Plugin not registered: {}", params.name)),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Enable a plugin by name. For disk-only plugins, creates a shadow registry row so the flag survives restarts. Errors if the plugin doesn't exist on disk and isn't registered."
-    )]
-    fn enable_plugin(&self, Parameters(params): Parameters<EnablePluginParams>) -> String {
-        let db = self.db.lock().unwrap();
-        match db.set_plugin_enabled(&params.name, true) {
-            Ok(()) => serde_json::json!({ "enabled": true, "name": params.name }).to_string(),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                error_json(&format!("Plugin not found: {}", params.name))
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Disable a plugin by name. The plugin's contributions are dropped from effective lists; a running process plugin would be stopped (process runtime forthcoming). Shadow row is created for disk-only plugins so the flag survives restarts."
-    )]
-    fn disable_plugin(&self, Parameters(params): Parameters<DisablePluginParams>) -> String {
-        let db = self.db.lock().unwrap();
-        match db.set_plugin_enabled(&params.name, false) {
-            Ok(()) => serde_json::json!({ "enabled": false, "name": params.name }).to_string(),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                error_json(&format!("Plugin not found: {}", params.name))
-            }
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Install a plugin from a local directory or git URL into ~/.local/share/thurbox/admin/plugins/<name>/. Accepts a path, http(s)://, git://, ssh://, or scp-style git@host:repo URL. Git sources are shallow-cloned to a temp dir before install. Returns an error if the destination already exists. After install, the plugin is auto-discovered (no register call needed)."
-    )]
-    fn install_plugin(&self, Parameters(params): Parameters<InstallPluginParams>) -> String {
-        match crate::paths::install_plugin_from_source(&params.source, params.name.as_deref()) {
-            Ok(summary) => serde_json::json!({
-                "installed": true,
-                "name": summary.name,
-                "path": summary.path.to_string_lossy(),
-                "source_kind": summary.source_kind,
-            })
-            .to_string(),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Uninstall a plugin: removes the directory under ~/.local/share/thurbox/admin/plugins/ AND deletes the registry row (cascades plugin_settings). Refuses if confirm != true. For plugins registered outside the admin dir, only the registry row is removed."
-    )]
-    fn uninstall_plugin(&self, Parameters(params): Parameters<UninstallPluginParams>) -> String {
-        if !params.confirm {
-            return error_json("uninstall_plugin requires confirm = true");
-        }
-        if let Err(e) = validate_safe_name(&params.name) {
-            return e;
-        }
-        let db = self.db.lock().unwrap();
-        match db.uninstall_plugin_with_disk(&params.name) {
-            Ok(summary) => serde_json::json!({
-                "uninstalled": true,
-                "name": summary.name,
-                "removed_disk": summary.removed_disk,
-                "removed_registry": summary.removed_registry,
-            })
-            .to_string(),
-            Err(e) => error_json(&e),
-        }
-    }
-
-    // ── Plugin Configuration Tools ──────────────────────────────
-
-    #[tool(
-        description = "List a plugin's configuration schema with current effective values. Returns a JSON array of {key, type, default, user_value?, effective_value, description} objects. Type is one of: string, int, bool, duration, path, enum."
-    )]
-    fn list_plugin_settings(
-        &self,
-        Parameters(params): Parameters<ListPluginSettingsParams>,
-    ) -> String {
-        let db = self.db.lock().unwrap();
-        let plugin = match db.list_global_plugins() {
-            Ok(rows) => rows.into_iter().find(|p| p.name == params.plugin_name),
-            Err(e) => return error_json(&e.to_string()),
-        };
-        let path = match plugin {
-            Some(p) => p.path,
-            None => match crate::paths::plugins_directory() {
-                Some(d) => d.join(&params.plugin_name),
-                None => return error_json("Could not resolve plugins directory"),
-            },
-        };
-        let manifest = match crate::session::PluginManifest::load(&path) {
-            Ok(m) => m,
-            Err(e) => return error_json(&format!("Failed to load manifest: {e}")),
-        };
-        let schema = manifest.contributes.configuration;
-        let effective = match db.list_plugin_settings_with_defaults(&params.plugin_name, &schema) {
-            Ok(v) => v,
-            Err(e) => return error_json(&e.to_string()),
-        };
-        let resp: Vec<PluginSettingResponse> = effective
-            .into_iter()
-            .map(|s| PluginSettingResponse {
-                key: s.key,
-                ty: configuration_type_str(s.ty).to_string(),
-                default: toml_to_json(&s.default),
-                user_value: s.user_value.as_ref().map(toml_to_json),
-                effective_value: toml_to_json(&s.effective_value),
-                description: s.description,
-            })
-            .collect();
-        json_text(&resp)
-    }
-
-    #[tool(
-        description = "Get the current effective value for one plugin setting. Returns the user override if set, otherwise the manifest default. Errors if the key isn't declared in the manifest."
-    )]
-    fn get_plugin_setting(&self, Parameters(params): Parameters<GetPluginSettingParams>) -> String {
-        let db = self.db.lock().unwrap();
-        let plugin = match db.list_global_plugins() {
-            Ok(rows) => rows.into_iter().find(|p| p.name == params.plugin_name),
-            Err(e) => return error_json(&e.to_string()),
-        };
-        let path = match plugin {
-            Some(p) => p.path,
-            None => match crate::paths::plugins_directory() {
-                Some(d) => d.join(&params.plugin_name),
-                None => return error_json("Could not resolve plugins directory"),
-            },
-        };
-        let manifest = match crate::session::PluginManifest::load(&path) {
-            Ok(m) => m,
-            Err(e) => return error_json(&format!("Failed to load manifest: {e}")),
-        };
-        let Some(schema) = manifest
-            .contributes
-            .configuration
-            .into_iter()
-            .find(|c| c.key == params.key)
-        else {
-            return error_json(&format!(
-                "Setting '{}' not declared in manifest",
-                params.key
-            ));
-        };
-        let user_value = match db.get_plugin_setting(&params.plugin_name, &params.key) {
-            Ok(v) => v,
-            Err(e) => return error_json(&e.to_string()),
-        };
-        let effective = user_value.unwrap_or(schema.default);
-        json_text(&toml_to_json(&effective))
-    }
-
-    #[tool(
-        description = "Set a user override for one plugin setting. The value is validated against the manifest's declared type, min/max, and enum values; out-of-range or wrong-type values are rejected. Pass JSON: a string, integer, or boolean. Returns the new effective value."
-    )]
-    fn set_plugin_setting(&self, Parameters(params): Parameters<SetPluginSettingParams>) -> String {
-        let value = match json_to_toml(&params.value) {
-            Ok(v) => v,
-            Err(e) => return error_json(&format!("Invalid value: {e}")),
-        };
-        let db = self.db.lock().unwrap();
-        let plugin = match db.list_global_plugins() {
-            Ok(rows) => rows.into_iter().find(|p| p.name == params.plugin_name),
-            Err(e) => return error_json(&e.to_string()),
-        };
-        let path = match plugin {
-            Some(p) => p.path,
-            None => match crate::paths::plugins_directory() {
-                Some(d) => d.join(&params.plugin_name),
-                None => return error_json("Could not resolve plugins directory"),
-            },
-        };
-        let manifest = match crate::session::PluginManifest::load(&path) {
-            Ok(m) => m,
-            Err(e) => return error_json(&format!("Failed to load manifest: {e}")),
-        };
-        let Some(schema) = manifest
-            .contributes
-            .configuration
-            .into_iter()
-            .find(|c| c.key == params.key)
-        else {
-            return error_json(&format!(
-                "Setting '{}' not declared in manifest",
-                params.key
-            ));
-        };
-        if let Err(e) = schema.validate_value(&value) {
-            return error_json(&format!("Validation failed: {e}"));
-        }
-        if let Err(e) = db.upsert_plugin_setting(&params.plugin_name, &params.key, &value) {
-            return error_json(&e.to_string());
-        }
-        json_text(&toml_to_json(&value))
-    }
-
-    #[tool(
-        description = "Clear a user override, restoring the manifest default. Returns {\"reset\": true, ...}; or {\"reset\": false, ...} if no override existed."
-    )]
-    fn reset_plugin_setting(
-        &self,
-        Parameters(params): Parameters<ResetPluginSettingParams>,
-    ) -> String {
-        let db = self.db.lock().unwrap();
-        match db.reset_plugin_setting(&params.plugin_name, &params.key) {
-            Ok(removed) => serde_json::json!({
-                "reset": removed,
-                "plugin_name": params.plugin_name,
-                "key": params.key,
-            })
-            .to_string(),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    // ── VM Image Tools ──────────────────────────────────────────
-
-    #[tool(description = "List downloaded VM images with file sizes")]
-    fn list_vm_images(&self) -> String {
-        let dir = match crate::paths::images_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve images directory"),
-        };
-
-        if !dir.exists() {
-            return json_text(&Vec::<VmImageResponse>::new());
-        }
-
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(e) => return error_json(&format!("Failed to read images directory: {e}")),
-        };
-
-        let mut images = Vec::new();
-        for entry in entries.flatten() {
-            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let filename = entry.file_name().to_string_lossy().to_string();
-                if filename.ends_with(".partial") {
-                    continue;
-                }
-                let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                images.push(VmImageResponse {
-                    filename,
-                    size_bytes,
-                });
-            }
-        }
-        images.sort_by(|a, b| a.filename.cmp(&b.filename));
-        json_text(&images)
-    }
-
-    #[tool(
-        description = "Download a VM image from an HTTPS URL to the images directory. Uses atomic download (writes to .partial file, then renames)."
-    )]
-    fn download_vm_image(&self, Parameters(params): Parameters<DownloadVmImageParams>) -> String {
-        if !params.url.starts_with("https://") {
-            return error_json("Only HTTPS URLs are allowed");
-        }
-
-        let filename = match &params.filename {
-            Some(f) => {
-                if let Err(e) = validate_safe_name(f) {
-                    return e;
-                }
-                f.clone()
-            }
-            None => {
-                // Derive filename from URL path
-                match params.url.rsplit('/').next() {
-                    Some(f) if !f.is_empty() => {
-                        let name = f.split('?').next().unwrap_or(f).to_string();
-                        if let Err(e) = validate_safe_name(&name) {
-                            return e;
-                        }
-                        name
-                    }
-                    _ => {
-                        return error_json(
-                            "Cannot derive filename from URL; provide one explicitly",
-                        )
-                    }
-                }
-            }
-        };
-
-        let dir = match crate::paths::images_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve images directory"),
-        };
-
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            return error_json(&format!("Failed to create images directory: {e}"));
-        }
-
-        let partial_path = dir.join(format!("{filename}.partial"));
-        let final_path = dir.join(&filename);
-
-        let result = std::process::Command::new("curl")
-            .args([
-                "-fSL",
-                "--output",
-                &partial_path.to_string_lossy(),
-                &params.url,
-            ])
-            .output();
-
-        match result {
-            Ok(output) if output.status.success() => {
-                if let Err(e) = std::fs::rename(&partial_path, &final_path) {
-                    let _ = std::fs::remove_file(&partial_path);
-                    return error_json(&format!("Failed to finalize download: {e}"));
-                }
-                let size = std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
-                json_text(&VmImageResponse {
-                    filename,
-                    size_bytes: size,
-                })
-            }
-            Ok(output) => {
-                let _ = std::fs::remove_file(&partial_path);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                error_json(&format!("Download failed: {stderr}"))
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&partial_path);
-                error_json(&format!("Failed to run curl: {e}"))
-            }
-        }
-    }
-
-    #[tool(description = "Delete a cached VM image")]
-    fn delete_vm_image(&self, Parameters(params): Parameters<DeleteVmImageParams>) -> String {
-        if let Err(e) = validate_safe_name(&params.filename) {
-            return e;
-        }
-
-        let dir = match crate::paths::images_directory() {
-            Some(d) => d,
-            None => return error_json("Could not resolve images directory"),
-        };
-
-        let path = dir.join(&params.filename);
-        if !path.is_file() {
-            return error_json(&format!("Image not found: {}", params.filename));
-        }
-
-        if let Err(e) = std::fs::remove_file(&path) {
-            return error_json(&format!("Failed to delete image: {e}"));
-        }
-
-        serde_json::json!({
-            "deleted": true,
-            "filename": params.filename,
-        })
-        .to_string()
     }
 
     // ── Scheduled Command Tools ────────────────────────────────
@@ -1670,51 +869,6 @@ impl ThurboxMcp {
             Err(e) => error_json(&e.to_string()),
         }
     }
-
-    // ── Plugin Runtime Tools (via TUI control socket) ────────────
-
-    #[tool(
-        description = "List the tools a plugin exposes via its `mcp-tools` capability. Returns {\"tools\": [...], \"source\": \"manifest\"|\"runtime\"}. When the plugin's manifest declares [[contributes.mcp_tools]] entries, thurbox answers from the manifest without waking the plugin (source=manifest); otherwise it asks the running plugin's mcp.list_tools op (source=runtime). Errors if the TUI isn't running (no control socket) or the plugin isn't running with the mcp-tools capability."
-    )]
-    fn list_plugin_tools(&self, Parameters(params): Parameters<ListPluginToolsParams>) -> String {
-        let Some(client) = control_client::default_client() else {
-            return error_json("control socket path unavailable (no runtime directory)");
-        };
-        match run_control_call(
-            || async move { client.list_plugin_tools(&params.plugin_name).await },
-        ) {
-            Ok(v) => v.to_string(),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-
-    #[tool(
-        description = "Invoke a tool on a running plugin. `args` is forwarded verbatim as the tool's MCP input (shape defined by its input_schema). Returns the tool's raw result. Errors if the TUI isn't running, the plugin isn't running, or the tool call times out (60s bound per call)."
-    )]
-    fn call_plugin_tool(&self, Parameters(params): Parameters<CallPluginToolParams>) -> String {
-        let Some(client) = control_client::default_client() else {
-            return error_json("control socket path unavailable (no runtime directory)");
-        };
-        match run_control_call(|| async move {
-            client
-                .call_plugin_tool(&params.plugin_name, &params.tool, params.args)
-                .await
-        }) {
-            Ok(v) => v.to_string(),
-            Err(e) => error_json(&e.to_string()),
-        }
-    }
-}
-
-/// Bridge a synchronous MCP tool handler into the tokio runtime so the
-/// async [`ControlClient`] calls can complete. `block_in_place` is required
-/// — we're running on a worker thread and a plain `block_on` would deadlock.
-fn run_control_call<F, Fut, T>(f: F) -> Result<T, ControlError>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<T, ControlError>>,
-{
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f()))
 }
 
 fn scheduled_command_to_response(cmd: &ScheduledCommand) -> ScheduledCommandResponse {
@@ -2244,251 +1398,6 @@ mod tests {
             .contains("Deleted session not found"));
     }
 
-    // ── VM tool tests ───────────────────────────────────────────
-
-    #[test]
-    fn list_vms_empty() {
-        let server = test_server();
-        let result = server.list_vms(Parameters(ListVmsParams {}));
-        let v = parse_json(&result);
-        assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn get_vm_not_found() {
-        let server = test_server();
-        let result = server.get_vm(Parameters(GetVmParams {
-            vm: "nonexistent".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("VM not found"));
-    }
-
-    #[test]
-    fn get_vm_exists() {
-        let server = test_server();
-        let config = crate::session::VmConfig::default();
-
-        {
-            let db = server.db.lock().unwrap();
-            db.insert_vm(
-                "vm-1",
-                None,
-                &crate::session::VmState::Ready,
-                22200,
-                &config,
-            )
-            .unwrap();
-        }
-
-        let result = server.get_vm(Parameters(GetVmParams {
-            vm: "vm-1".to_string(),
-        }));
-        let v = parse_json(&result);
-        assert_eq!(v["id"], "vm-1");
-        assert_eq!(v["state"], "Ready");
-        assert_eq!(v["ssh_port"], 22200);
-        assert_eq!(v["cpus"], 2);
-    }
-
-    // ── validate_safe_name tests ───────────────────────────────
-
-    #[test]
-    fn validate_safe_name_rejects_empty() {
-        assert!(validate_safe_name("").is_err());
-    }
-
-    #[test]
-    fn validate_safe_name_rejects_long_name() {
-        let long = "a".repeat(65);
-        assert!(validate_safe_name(&long).is_err());
-    }
-
-    #[test]
-    fn validate_safe_name_accepts_max_length() {
-        let max = "a".repeat(64);
-        assert!(validate_safe_name(&max).is_ok());
-    }
-
-    #[test]
-    fn validate_safe_name_rejects_dot_prefix() {
-        assert!(validate_safe_name(".hidden").is_err());
-    }
-
-    #[test]
-    fn validate_safe_name_rejects_path_traversal() {
-        assert!(validate_safe_name("../etc").is_err());
-        assert!(validate_safe_name("foo/bar").is_err());
-        assert!(validate_safe_name("foo\\bar").is_err());
-        assert!(validate_safe_name("foo..bar").is_err());
-    }
-
-    #[test]
-    fn validate_safe_name_accepts_valid_names() {
-        assert!(validate_safe_name("default").is_ok());
-        assert!(validate_safe_name("my-template").is_ok());
-        assert!(validate_safe_name("python_3.12").is_ok());
-    }
-
-    // ── Containerfile template tool tests ──────────────────────
-
-    #[test]
-    fn list_containerfile_templates_empty() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let result = server.list_containerfile_templates();
-        let v = parse_json(&result);
-        assert_eq!(v, serde_json::json!([]));
-    }
-
-    #[test]
-    fn list_containerfile_templates_with_templates() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let cf_dir = temp.path().join("admin").join("containerfiles");
-        std::fs::create_dir_all(cf_dir.join("default")).unwrap();
-        std::fs::write(cf_dir.join("default/Containerfile"), "FROM ubuntu").unwrap();
-        std::fs::write(cf_dir.join("default/init.sh"), "#!/bin/sh").unwrap();
-
-        let result = server.list_containerfile_templates();
-        let v = parse_json(&result);
-        assert_eq!(v[0]["name"], "default");
-        assert!(v[0]["files"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("Containerfile")));
-        assert!(v[0]["files"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("init.sh")));
-    }
-
-    #[test]
-    fn get_containerfile_template_existing() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let cf_dir = temp
-            .path()
-            .join("admin")
-            .join("containerfiles")
-            .join("python");
-        std::fs::create_dir_all(&cf_dir).unwrap();
-        std::fs::write(cf_dir.join("Containerfile"), "FROM python:3.12").unwrap();
-        std::fs::write(cf_dir.join("setup.sh"), "pip install stuff").unwrap();
-
-        let result = server.get_containerfile_template(Parameters(
-            super::super::types::GetContainerfileTemplateParams {
-                name: "python".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert_eq!(v["name"], "python");
-        assert_eq!(v["containerfile_content"], "FROM python:3.12");
-        assert!(v["support_files"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("setup.sh")));
-    }
-
-    #[test]
-    fn get_containerfile_template_not_found() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let result = server.get_containerfile_template(Parameters(
-            super::super::types::GetContainerfileTemplateParams {
-                name: "nonexistent".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert!(v["error"].as_str().unwrap().contains("Template not found"));
-    }
-
-    #[test]
-    fn get_containerfile_template_invalid_name() {
-        let server = test_server();
-        let result = server.get_containerfile_template(Parameters(
-            super::super::types::GetContainerfileTemplateParams {
-                name: "../escape".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert!(v["error"].is_string());
-    }
-
-    #[test]
-    fn set_containerfile_template_creates_new() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let result = server.set_containerfile_template(Parameters(
-            super::super::types::SetContainerfileTemplateParams {
-                name: "rust".to_string(),
-                containerfile_content: "FROM rust:latest".to_string(),
-                support_files: Some(vec![super::super::types::SupportFileInput {
-                    filename: "build.sh".to_string(),
-                    content: "cargo build".to_string(),
-                }]),
-            },
-        ));
-        let v = parse_json(&result);
-        assert_eq!(v["name"], "rust");
-        assert!(v["files"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("Containerfile")));
-        assert!(v["files"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("build.sh")));
-    }
-
-    #[test]
-    fn delete_containerfile_template_success() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let server = test_server();
-
-        let cf_dir = temp
-            .path()
-            .join("admin")
-            .join("containerfiles")
-            .join("custom");
-        std::fs::create_dir_all(&cf_dir).unwrap();
-        std::fs::write(cf_dir.join("Containerfile"), "FROM alpine").unwrap();
-
-        let result = server.delete_containerfile_template(Parameters(
-            super::super::types::DeleteContainerfileTemplateParams {
-                name: "custom".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert_eq!(v["deleted"], true);
-    }
-
-    #[test]
-    fn delete_containerfile_template_refuses_default() {
-        let server = test_server();
-        let result = server.delete_containerfile_template(Parameters(
-            super::super::types::DeleteContainerfileTemplateParams {
-                name: "default".to_string(),
-            },
-        ));
-        let v = parse_json(&result);
-        assert!(v["error"]
-            .as_str()
-            .unwrap()
-            .contains("Cannot delete the 'default' template"));
-    }
-
     // ── Skill Registry Tests ────────────────────────────────────
 
     /// Create `<root>/<name>/SKILL.md` and return the skill directory.
@@ -2646,285 +1555,6 @@ mod tests {
         }));
         let v = parse_json(&result);
         assert!(v["error"].as_str().unwrap().contains("not registered"));
-    }
-
-    // ── Plugin tool tests ───────────────────────────────────────
-
-    fn make_plugin_dir(root: &std::path::Path, name: &str, with_config: bool) -> PathBuf {
-        let p = root.join(name);
-        std::fs::create_dir_all(&p).unwrap();
-        let mut manifest =
-            format!("name = \"{name}\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n");
-        if with_config {
-            manifest.push_str(
-                "[[contributes.configuration]]\n\
-                 key = \"workers\"\n\
-                 type = \"int\"\n\
-                 default = 3\n\
-                 min = 1\n\
-                 max = 16\n",
-            );
-        }
-        std::fs::write(p.join("thurbox-plugin.toml"), manifest).unwrap();
-        p
-    }
-
-    #[test]
-    fn list_plugins_includes_disk_source() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let dir = crate::paths::plugins_directory().unwrap();
-        make_plugin_dir(&dir, "alpha", false);
-
-        let server = test_server();
-        let v = parse_json(&server.list_plugins());
-        let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["name"], "alpha");
-        assert_eq!(arr[0]["source"], "disk");
-        assert_eq!(arr[0]["enabled"], true);
-    }
-
-    #[test]
-    fn register_plugin_then_list() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = make_plugin_dir(temp.path(), "beta", false);
-
-        let server = test_server();
-        let v = parse_json(&server.register_plugin(Parameters(RegisterPluginParams {
-            name: "beta".to_string(),
-            path: path.to_string_lossy().into_owned(),
-        })));
-        assert_eq!(v["name"], "beta");
-        assert_eq!(v["source"], "registered");
-        assert_eq!(v["version"], "0.1.0");
-    }
-
-    #[test]
-    fn register_plugin_rejects_name_mismatch() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = make_plugin_dir(temp.path(), "actual", false);
-
-        let server = test_server();
-        let v = parse_json(&server.register_plugin(Parameters(RegisterPluginParams {
-            name: "claimed".to_string(),
-            path: path.to_string_lossy().into_owned(),
-        })));
-        assert!(v["error"].as_str().unwrap().contains("does not match"));
-    }
-
-    #[test]
-    fn install_plugin_copies_into_admin_dir() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let source = make_plugin_dir(temp.path(), "source", false);
-
-        let server = test_server();
-        let v = parse_json(&server.install_plugin(Parameters(InstallPluginParams {
-            source: source.to_string_lossy().into_owned(),
-            name: None,
-        })));
-        assert_eq!(v["installed"], true);
-        let dest = crate::paths::plugins_directory().unwrap().join("source");
-        assert!(dest.join("thurbox-plugin.toml").is_file());
-    }
-
-    #[test]
-    fn install_plugin_params_accepts_source_path_alias() {
-        // Backwards-compat: callers using the old `source_path` field should
-        // still deserialize successfully into the renamed `source` field.
-        let parsed: InstallPluginParams =
-            serde_json::from_value(serde_json::json!({ "source_path": "/tmp/x" })).unwrap();
-        assert_eq!(parsed.source, "/tmp/x");
-        assert!(parsed.name.is_none());
-
-        let parsed: InstallPluginParams =
-            serde_json::from_value(serde_json::json!({ "source": "/tmp/y", "name": "z" })).unwrap();
-        assert_eq!(parsed.source, "/tmp/y");
-        assert_eq!(parsed.name.as_deref(), Some("z"));
-    }
-
-    #[test]
-    fn install_plugin_rejects_existing_dest() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let source = make_plugin_dir(temp.path(), "dup", false);
-
-        let server = test_server();
-        server.install_plugin(Parameters(InstallPluginParams {
-            source: source.to_string_lossy().into_owned(),
-            name: None,
-        }));
-        let v = parse_json(&server.install_plugin(Parameters(InstallPluginParams {
-            source: source.to_string_lossy().into_owned(),
-            name: None,
-        })));
-        assert!(v["error"].as_str().unwrap().contains("already installed"));
-    }
-
-    #[test]
-    fn uninstall_plugin_requires_confirm() {
-        let server = test_server();
-        let v = parse_json(&server.uninstall_plugin(Parameters(UninstallPluginParams {
-            name: "anything".to_string(),
-            confirm: false,
-        })));
-        assert!(v["error"].as_str().unwrap().contains("confirm = true"));
-    }
-
-    #[test]
-    fn uninstall_plugin_removes_disk_and_registry() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let dir = crate::paths::plugins_directory().unwrap();
-        let plugin_path = make_plugin_dir(&dir, "gamma", true);
-
-        let server = test_server();
-        // Register so we exercise both deletes.
-        server.register_plugin(Parameters(RegisterPluginParams {
-            name: "gamma".to_string(),
-            path: plugin_path.to_string_lossy().into_owned(),
-        }));
-
-        let v = parse_json(&server.uninstall_plugin(Parameters(UninstallPluginParams {
-            name: "gamma".to_string(),
-            confirm: true,
-        })));
-        assert_eq!(v["uninstalled"], true);
-        assert_eq!(v["removed_disk"], true);
-        assert_eq!(v["removed_registry"], true);
-        assert!(!plugin_path.exists());
-    }
-
-    #[test]
-    fn enable_disable_plugin_roundtrip() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let dir = crate::paths::plugins_directory().unwrap();
-        make_plugin_dir(&dir, "togg", false);
-
-        let server = test_server();
-        let v = parse_json(&server.disable_plugin(Parameters(DisablePluginParams {
-            name: "togg".to_string(),
-        })));
-        assert_eq!(v["enabled"], false);
-
-        let listed = parse_json(&server.list_plugins());
-        let togg = &listed[0];
-        assert_eq!(togg["enabled"], false);
-        assert_eq!(togg["source"], "registered", "shadow row should appear");
-
-        let v = parse_json(&server.enable_plugin(Parameters(EnablePluginParams {
-            name: "togg".to_string(),
-        })));
-        assert_eq!(v["enabled"], true);
-    }
-
-    #[test]
-    fn list_plugin_settings_returns_schema_with_defaults() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let dir = crate::paths::plugins_directory().unwrap();
-        make_plugin_dir(&dir, "cfg", true);
-
-        let server = test_server();
-        let v = parse_json(
-            &server.list_plugin_settings(Parameters(ListPluginSettingsParams {
-                plugin_name: "cfg".to_string(),
-            })),
-        );
-        let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["key"], "workers");
-        assert_eq!(arr[0]["type"], "int");
-        assert_eq!(arr[0]["default"], 3);
-        assert_eq!(arr[0]["effective_value"], 3);
-        assert!(arr[0].get("user_value").is_none() || arr[0]["user_value"].is_null());
-    }
-
-    #[test]
-    fn set_plugin_setting_validates_type_and_range() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let dir = crate::paths::plugins_directory().unwrap();
-        make_plugin_dir(&dir, "cfg", true);
-
-        let server = test_server();
-
-        // Wrong type — string for int.
-        let v = parse_json(
-            &server.set_plugin_setting(Parameters(SetPluginSettingParams {
-                plugin_name: "cfg".to_string(),
-                key: "workers".to_string(),
-                value: serde_json::json!("five"),
-            })),
-        );
-        assert!(v["error"].as_str().unwrap().contains("Validation"));
-
-        // Out of range.
-        let v = parse_json(
-            &server.set_plugin_setting(Parameters(SetPluginSettingParams {
-                plugin_name: "cfg".to_string(),
-                key: "workers".to_string(),
-                value: serde_json::json!(99),
-            })),
-        );
-        assert!(v["error"].as_str().unwrap().contains("Validation"));
-
-        // Valid.
-        let v = parse_json(
-            &server.set_plugin_setting(Parameters(SetPluginSettingParams {
-                plugin_name: "cfg".to_string(),
-                key: "workers".to_string(),
-                value: serde_json::json!(8),
-            })),
-        );
-        assert_eq!(v, serde_json::json!(8));
-
-        // get returns the new value.
-        let v = parse_json(
-            &server.get_plugin_setting(Parameters(GetPluginSettingParams {
-                plugin_name: "cfg".to_string(),
-                key: "workers".to_string(),
-            })),
-        );
-        assert_eq!(v, serde_json::json!(8));
-
-        // reset removes the override.
-        let v = parse_json(
-            &server.reset_plugin_setting(Parameters(ResetPluginSettingParams {
-                plugin_name: "cfg".to_string(),
-                key: "workers".to_string(),
-            })),
-        );
-        assert_eq!(v["reset"], true);
-        let v = parse_json(
-            &server.get_plugin_setting(Parameters(GetPluginSettingParams {
-                plugin_name: "cfg".to_string(),
-                key: "workers".to_string(),
-            })),
-        );
-        assert_eq!(v, serde_json::json!(3));
-    }
-
-    #[test]
-    fn set_plugin_setting_rejects_unknown_key() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let dir = crate::paths::plugins_directory().unwrap();
-        make_plugin_dir(&dir, "cfg", true);
-
-        let server = test_server();
-        let v = parse_json(
-            &server.set_plugin_setting(Parameters(SetPluginSettingParams {
-                plugin_name: "cfg".to_string(),
-                key: "unknown".to_string(),
-                value: serde_json::json!(1),
-            })),
-        );
-        assert!(v["error"].as_str().unwrap().contains("not declared"));
     }
 
     // ── Profile tool tests ────────────────────────────────────────

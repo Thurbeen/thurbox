@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rusqlite::params;
 
-use crate::session::{SessionCommand, SessionId};
+use crate::session::SessionId;
 use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
 
 use super::audit::{AuditAction, EntityType};
@@ -361,51 +361,6 @@ impl Database {
 
         Ok(sessions)
     }
-
-    /// Insert a command into the session command queue.
-    pub fn enqueue_session_command(
-        &self,
-        session_id: SessionId,
-        command: &str,
-    ) -> rusqlite::Result<i64> {
-        let now = current_time_millis() as i64;
-        self.conn.execute(
-            "INSERT INTO session_commands (session_id, command, created_at) VALUES (?1, ?2, ?3)",
-            params![session_id.to_string(), command, now],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// Fetch all pending (unprocessed) session commands, ordered by ID.
-    pub fn pending_session_commands(&self) -> rusqlite::Result<Vec<SessionCommand>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, command, created_at \
-             FROM session_commands WHERE processed_at IS NULL ORDER BY id",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let id: i64 = row.get(0)?;
-            let session_id_str: String = row.get(1)?;
-            let command: String = row.get(2)?;
-            let created_at: i64 = row.get(3)?;
-            Ok(SessionCommand {
-                id,
-                session_id: session_id_str.parse().unwrap_or_default(),
-                command,
-                created_at: created_at as u64,
-            })
-        })?;
-        rows.collect()
-    }
-
-    /// Mark a session command as processed.
-    pub fn mark_command_processed(&self, command_id: i64) -> rusqlite::Result<()> {
-        let now = current_time_millis() as i64;
-        self.conn.execute(
-            "UPDATE session_commands SET processed_at = ?1 WHERE id = ?2",
-            params![now, command_id],
-        )?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -608,37 +563,6 @@ mod tests {
 
         let name = db.get_session_name(sid).unwrap();
         assert_eq!(name.as_deref(), Some("Session 1"));
-    }
-
-    #[test]
-    fn enqueue_and_fetch_commands() {
-        let db = Database::open_in_memory().unwrap();
-        let session = make_session("Session 1");
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-
-        let cmd_id = db.enqueue_session_command(sid, "restart").unwrap();
-        assert!(cmd_id > 0);
-
-        let pending = db.pending_session_commands().unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id, cmd_id);
-        assert_eq!(pending[0].session_id, sid);
-        assert_eq!(pending[0].command, "restart");
-    }
-
-    #[test]
-    fn mark_command_processed() {
-        let db = Database::open_in_memory().unwrap();
-        let session = make_session("Session 1");
-        let sid = session.id;
-        db.upsert_session(&session).unwrap();
-
-        let cmd_id = db.enqueue_session_command(sid, "restart").unwrap();
-        db.mark_command_processed(cmd_id).unwrap();
-
-        let pending = db.pending_session_commands().unwrap();
-        assert!(pending.is_empty());
     }
 
     #[test]

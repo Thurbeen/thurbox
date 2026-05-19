@@ -10,12 +10,8 @@ use crossterm::execute;
 
 use thurbox::agent::claude::ClaudeProvider;
 use thurbox::agent::tmux::LocalTmuxBackend;
-use thurbox::agent::{
-    detect_runtime, AgentProvider, BackendRegistry, ContainerManager, DevcontainerBackend,
-    QemuVmBackend, SessionBackend, VmManager,
-};
+use thurbox::agent::{AgentProvider, BackendRegistry, SessionBackend};
 use thurbox::app::{App, AppMessage};
-use thurbox::plugin::PluginRuntime;
 use thurbox::storage::Database;
 
 #[tokio::main]
@@ -49,55 +45,8 @@ async fn main() -> Result<()> {
     let local_tmux: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
     local_tmux.check_available()?;
     local_tmux.ensure_ready()?;
-    let mut backends = BackendRegistry::new(local_tmux);
+    let backends = BackendRegistry::new(local_tmux);
     let provider: Arc<dyn AgentProvider> = Arc::new(ClaudeProvider);
-
-    // Register QEMU VM backend if available (optional — requires qemu-system-x86_64 + /dev/kvm).
-    let data_dir = thurbox::paths::log_directory().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let vm_manager = Arc::new(std::sync::Mutex::new(VmManager::new(&data_dir)));
-    let vm_backend: Arc<dyn SessionBackend> = Arc::new(QemuVmBackend::new(Arc::clone(&vm_manager)));
-    let mut vm_manager_for_app = None;
-    if vm_backend.check_available().is_ok() {
-        if let Err(e) = vm_backend.ensure_ready() {
-            tracing::warn!("QEMU VM backend available but setup failed: {e}");
-        } else {
-            tracing::info!("QEMU VM backend registered");
-            backends.register(vm_backend);
-            vm_manager_for_app = Some(vm_manager);
-        }
-    } else {
-        tracing::debug!("QEMU VM backend not available (qemu-system-x86_64 not found or /dev/kvm not accessible)");
-    }
-
-    // Register container backend if available (optional — requires Docker or Podman).
-    let mut container_manager_for_app = None;
-    match detect_runtime() {
-        Ok(runtime) => {
-            let containerfiles_dir = thurbox::paths::containerfiles_directory()
-                .unwrap_or_else(|| data_dir.join("containerfiles"));
-            let container_manager = Arc::new(std::sync::Mutex::new(ContainerManager::new(
-                &data_dir,
-                containerfiles_dir,
-                runtime,
-            )));
-            let dc_backend: Arc<dyn SessionBackend> = Arc::new(DevcontainerBackend::new(
-                Arc::clone(&container_manager),
-                runtime,
-            ));
-            if dc_backend.check_available().is_ok() {
-                if let Err(e) = dc_backend.ensure_ready() {
-                    tracing::warn!("Container backend available but setup failed: {e}");
-                } else {
-                    tracing::info!("Container backend registered (runtime: {runtime})");
-                    backends.register(dc_backend);
-                    container_manager_for_app = Some(container_manager);
-                }
-            }
-        }
-        Err(_) => {
-            tracing::debug!("Container backend not available (no Docker or Podman found)");
-        }
-    }
 
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
@@ -118,44 +67,11 @@ async fn main() -> Result<()> {
         thurbox::ui::theme::ensure_initialized();
     }
 
-    // Spawn enabled process plugins. Plugins that declare
-    // `onBackendSelected:<name>` activation events get registered as
-    // backends here — done before `App::new` consumes `backends` by value.
-    let plugin_runtime = Arc::new(PluginRuntime::new());
-    let plugin_handle = tokio::runtime::Handle::current();
-    let reports = plugin_runtime
-        .start_all_process_plugins(&db, &mut backends, plugin_handle)
-        .await;
-    for report in &reports {
-        if let Some(err) = &report.error {
-            tracing::warn!(plugin = %report.name, error = %err, "Plugin spawn failed");
-        } else {
-            tracing::info!(plugin = %report.name, "Plugin started");
-        }
-    }
-
-    // The listener owns its own DB connection (SQLite is in WAL mode, so
-    // sharing the file across connections is fine). Drop of the handle at
-    // the end of main aborts the task and removes the socket file.
-    let _control_socket = bind_control_socket(Arc::clone(&plugin_runtime), &db_path).await;
-
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let size = terminal.size()?;
 
-    let mut app = App::new(
-        size.height,
-        size.width,
-        backends,
-        provider,
-        db,
-        vm_manager_for_app,
-        container_manager_for_app,
-    );
-    app.set_plugin_runtime(Arc::clone(&plugin_runtime));
-
-    // Ensure containerfile templates directory exists and is seeded
-    app.ensure_containerfiles_dir();
+    let mut app = App::new(size.height, size.width, backends, provider, db);
 
     // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
@@ -172,7 +88,6 @@ async fn main() -> Result<()> {
     let res = run_loop(&mut terminal, &mut app).await;
 
     app.shutdown();
-    plugin_runtime.shutdown_all().await;
     execute!(
         std::io::stdout(),
         DisableBracketedPaste,
@@ -227,36 +142,4 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
     }
 
     Ok(())
-}
-
-/// Bind the control socket so `thurbox-mcp` can reach running plugins.
-///
-/// Every failure — missing runtime dir, DB open failure, bind failure — is
-/// logged and reduced to `None`; the TUI stays healthy even if the socket
-/// never comes up (degraded MCP plugin-tool surface, nothing else).
-async fn bind_control_socket(
-    runtime: Arc<PluginRuntime>,
-    db_path: &std::path::Path,
-) -> Option<thurbox::plugin::control_socket::ControlSocketHandle> {
-    let path = thurbox::paths::control_socket_path().or_else(|| {
-        tracing::warn!("No runtime directory available; control socket disabled");
-        None
-    })?;
-    let listener_db = match Database::open(db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!(error = %e, "Control socket listener could not open DB");
-            return None;
-        }
-    };
-    match thurbox::plugin::control_socket::spawn(runtime, listener_db, path.clone()).await {
-        Ok(handle) => {
-            tracing::info!(socket = %path.display(), "Control socket listening");
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, socket = %path.display(), "Control socket bind failed");
-            None
-        }
-    }
 }

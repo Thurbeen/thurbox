@@ -202,12 +202,6 @@
                   wraps
                   <code>SessionBackend</code>
                   .
-                  <code>BackendRegistry</code>
-                  manages multiple backends.
-                  <code>ContainerManager</code>
-                  and
-                  <code>VmManager</code>
-                  handle lifecycle.
                 </td>
               </tr>
               <tr>
@@ -221,10 +215,6 @@
                   <code>SessionInfo</code>
                   ,
                   <code>SessionConfig</code>
-                  ,
-                  <code>VmState</code>
-                  ,
-                  <code>ContainerState</code>
                   . No logic beyond Display/Default.
                 </td>
               </tr>
@@ -355,20 +345,7 @@
               <tr>
                 <td><code>LocalTmuxBackend</code></td>
                 <td><code>tmux -L thurbox</code></td>
-                <td>Default, local sessions</td>
-              </tr>
-              <tr>
-                <td><code>DevcontainerBackend</code></td>
-                <td>
-                  tmux over
-                  <code>docker/podman exec</code>
-                </td>
-                <td>Container isolation</td>
-              </tr>
-              <tr>
-                <td><code>QemuVmBackend</code></td>
-                <td>tmux over SSH</td>
-                <td>Full VM sandbox</td>
+                <td>Local sessions</td>
               </tr>
             </tbody>
           </table>

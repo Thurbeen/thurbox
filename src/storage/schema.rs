@@ -4,7 +4,7 @@ use crate::session::default_profiles;
 use crate::sync::current_time_millis;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 21;
+pub const SCHEMA_VERSION: u32 = 22;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -91,53 +91,6 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             updated_at INTEGER NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS session_commands (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id   TEXT NOT NULL,
-            command      TEXT NOT NULL,
-            created_at   INTEGER NOT NULL,
-            processed_at INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_session_commands_pending
-            ON session_commands(id) WHERE processed_at IS NULL;
-
-        CREATE TABLE IF NOT EXISTS vms (
-            id          TEXT PRIMARY KEY,
-            session_id  TEXT REFERENCES sessions(id),
-            state       TEXT NOT NULL DEFAULT 'stopped',
-            ssh_port    INTEGER NOT NULL,
-            base_image  TEXT NOT NULL,
-            cpus        INTEGER NOT NULL DEFAULT 2,
-            memory_mb   INTEGER NOT NULL DEFAULT 2048,
-            disk_gb     INTEGER NOT NULL DEFAULT 10,
-            qemu_pid    INTEGER,
-            error_msg   TEXT,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL,
-            deleted_at  INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_vms_session
-            ON vms(session_id) WHERE deleted_at IS NULL;
-
-        CREATE TABLE IF NOT EXISTS containers (
-            id                  TEXT PRIMARY KEY,
-            session_id          TEXT REFERENCES sessions(id),
-            state               TEXT NOT NULL DEFAULT 'stopped',
-            docker_container_id TEXT,
-            image               TEXT,
-            cpus                INTEGER NOT NULL DEFAULT 2,
-            memory_mb           INTEGER NOT NULL DEFAULT 2048,
-            firewall_enabled    INTEGER NOT NULL DEFAULT 1,
-            containerfile       TEXT,
-            error_msg           TEXT,
-            created_at          INTEGER NOT NULL,
-            updated_at          INTEGER NOT NULL,
-            deleted_at          INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_containers_session
-            ON containers(session_id) WHERE deleted_at IS NULL;
 
         CREATE TABLE IF NOT EXISTS scheduled_commands (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,24 +110,6 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             label        TEXT,
             last_used_at INTEGER NOT NULL,
             use_count    INTEGER NOT NULL DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS plugins (
-            plugin_name TEXT PRIMARY KEY,
-            path        TEXT NOT NULL,
-            version     TEXT NOT NULL DEFAULT '',
-            enabled     INTEGER NOT NULL DEFAULT 1,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS plugin_settings (
-            plugin_name TEXT NOT NULL,
-            key         TEXT NOT NULL,
-            value_json  TEXT NOT NULL,
-            updated_at  INTEGER NOT NULL,
-            PRIMARY KEY (plugin_name, key),
-            FOREIGN KEY (plugin_name) REFERENCES plugins(plugin_name) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS profiles (
@@ -658,6 +593,22 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         let _ = conn.execute("ALTER TABLE sessions DROP COLUMN model", []);
     }
 
+    if version < 22 {
+        // v21 → v22: drop tables for removed subsystems. VM, devcontainer,
+        // and process-plugin subsystems were removed to focus thurbox on
+        // the TUI surface; the session_commands queue is unused now that
+        // MCP `restart_session` / `create_session` run synchronously.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS plugin_settings;
+             DROP TABLE IF EXISTS plugins;
+             DROP TABLE IF EXISTS vms;
+             DROP TABLE IF EXISTS containers;
+             DROP TABLE IF EXISTS project_vm_config;
+             DROP TABLE IF EXISTS project_container_config;
+             DROP TABLE IF EXISTS session_commands;",
+        )?;
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -740,13 +691,9 @@ mod tests {
         assert!(tables.contains(&"sessions".to_string()));
         assert!(tables.contains(&"worktrees".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
-        assert!(tables.contains(&"session_commands".to_string()));
-        assert!(tables.contains(&"containers".to_string()));
         assert!(tables.contains(&"scheduled_commands".to_string()));
         assert!(tables.contains(&"repo_bookmarks".to_string()));
         assert!(tables.contains(&"skills".to_string()));
-        assert!(tables.contains(&"plugins".to_string()));
-        assert!(tables.contains(&"plugin_settings".to_string()));
         assert!(tables.contains(&"profiles".to_string()));
         // Project tables should NOT exist
         assert!(!tables.contains(&"projects".to_string()));

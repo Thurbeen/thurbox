@@ -180,14 +180,8 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `list_sessions` | List all active sessions |
 | `get_session` | Get a session by UUID |
 | `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
-| `restart_session` | Queue a session restart (TUI processes the command) |
+| `restart_session` | Restart a session synchronously (kills the tmux window and re-spawns claude with --resume) |
 | `restore_session` | Restore a soft-deleted session |
-| `list_vms` | List active VMs |
-| `get_vm` | Get a VM by UUID |
-| `list_containerfile_templates` | List template names + files in each |
-| `get_containerfile_template` | Read a template's Containerfile content and list support files |
-| `set_containerfile_template` | Create/update a template (Containerfile + optional support files) |
-| `delete_containerfile_template` | Delete a template (refuses to delete "default") |
 | `list_skills` | List all effective skills (disk-source + registered) with source tag |
 | `set_skills` | Atomically replace all skill registry entries |
 | `register_skill` | Register/update a single skill reference (path must contain SKILL.md) |
@@ -197,18 +191,6 @@ thurbox-mcp --transport streamable-http --port 9090  # Custom port
 | `set_profiles` | Atomically replace all global profiles |
 | `register_profile` | Register/update a single profile — referenced roles/MCP/skills must exist |
 | `unregister_profile` | Remove a profile from the registry |
-| `list_plugins` | List effective plugins (auto-discovered + registered) with contributions/process summary |
-| `set_plugins` | Atomically replace the plugin registry |
-| `register_plugin` | Register a plugin path (manifest must validate; never touches disk) |
-| `unregister_plugin` | Remove a plugin from the registry (cascades plugin_settings; never touches disk) |
-| `enable_plugin` / `disable_plugin` | Toggle a plugin's enabled flag (shadows disk-only plugins) |
-| `install_plugin` | Install a plugin from a local directory or git URL (`https://`, `git://`, `ssh://`, scp-style) into `admin/plugins/<name>/` |
-| `uninstall_plugin` | Remove a plugin from disk + registry (cascades settings); requires `confirm: true` |
-| `list_plugin_settings` | List a plugin's configuration schema with current effective values |
-| `get_plugin_setting` / `set_plugin_setting` / `reset_plugin_setting` | Read, override, or clear one plugin setting |
-| `list_vm_images` | List downloaded VM images with file sizes |
-| `download_vm_image` | Download a VM image from an HTTPS URL |
-| `delete_vm_image` | Delete a cached VM image |
 | `create_session` | Spawn a new local-tmux session (optionally on a fresh worktree) |
 | `send_prompt` | Send text to a session's terminal immediately (orchestrator mode) |
 | `capture_session_output` | Read rendered pane contents from a session |
@@ -286,21 +268,13 @@ app      ← coordinator, imports all modules
 - **`agent/`** — Side-effect layer. `AgentProvider` trait
   abstracts CLI command + arg construction (default:
   `ClaudeProvider`). `Session` wraps a `SessionBackend`
-  trait. `BackendRegistry` manages multiple backends
-  (default: `LocalTmuxBackend` using `tmux -L thurbox`,
-  `DevcontainerBackend` for Docker/Podman containers,
-  optional: `QemuVmBackend` for sandboxed VM sessions).
-  `ContainerManager` handles container lifecycle (build,
-  run, stop, destroy) with auto-detected runtime (Podman
-  preferred, Docker fallback). `VmManager` handles QEMU/KVM
-  VM lifecycle (create, start, stop, destroy, restore).
+  trait. `BackendRegistry` holds the active backend
+  (`LocalTmuxBackend` using `tmux -L thurbox`).
   Reads output into `Arc<Mutex<vt100::Parser>>`, writes input
   via mpsc channel. `input.rs` translates crossterm `KeyCode`
   → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
-  `SessionInfo` (with optional `vm_id` and `container_id`),
-  `SessionConfig` (with optional `cwd`, `vm_id`, `container_id`),
-  `VmState`, `VmConfig`, `ContainerState`, `ContainerConfig`.
+  `SessionInfo`, `SessionConfig` (with optional `cwd`).
   `default_developer_role()` provides the seeded developer role.
   No logic beyond Display/Default impls.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
@@ -311,14 +285,14 @@ app      ← coordinator, imports all modules
   worktree toggle). `selection.rs` handles mouse-drag text
   selection, `links.rs` detects clickable URLs for Ctrl+Click.
 - **`mcp/`** — MCP server (`thurbox-mcp` binary). Exposes
-  role/session/VM CRUD over stdio or Streamable HTTP
-  JSON-RPC. Shares the same SQLite database as the TUI.
+  role/session/skill/profile/MCP-server CRUD over stdio or
+  Streamable HTTP JSON-RPC. Shares the same SQLite database
+  as the TUI.
 
 ### Event Loop (main.rs)
 
 ```text
-tokio::main → init backends (BackendRegistry: local-tmux
-  + devcontainer + optional qemu-vm) → open SQLite DB
+tokio::main → init local-tmux backend → open SQLite DB
 → init terminal → spawn/restore sessions → loop {
     draw frame → poll crossterm events (10ms)
     → convert to AppMessage → app.update() → app.tick()
@@ -344,9 +318,7 @@ framework). Install with `prek install`. Stages:
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- Session backends: `LocalTmuxBackend` (`tmux -L thurbox`),
-  `DevcontainerBackend` (tmux over Docker/Podman exec),
-  and optional `QemuVmBackend` (tmux over SSH inside QEMU/KVM VMs)
+- Session backend: `LocalTmuxBackend` (`tmux -L thurbox`)
 - Output reader runs in `tokio::task::spawn_blocking`
   (blocking I/O), writer in `tokio::spawn` (async)
 - Terminal state parsed by `vt100::Parser`,

@@ -7,21 +7,12 @@ use ratatui::{
 };
 
 use super::theme::Theme;
-use crate::session::{AgentMetrics, SessionInfo, SessionStatus};
+use crate::session::{AgentMetrics, SessionInfo};
 
 /// View-only entry for scheduled commands shown in the info panel.
 pub struct ScheduledCommandEntry {
     pub command_preview: String,
     pub countdown: String,
-}
-
-/// Rich VM details for the info panel, sourced from the database VM record.
-pub struct VmDetails {
-    pub state: String,
-    pub cpus: u32,
-    pub memory_mb: u32,
-    pub ssh_port: u16,
-    pub base_image: String,
 }
 
 /// System-wide and active-session resource metrics.
@@ -42,7 +33,6 @@ pub fn render_info_panel(
     frame: &mut Frame,
     area: Rect,
     info: &SessionInfo,
-    vm_details: Option<&VmDetails>,
     metrics: Option<&SystemMetrics>,
     scheduled_commands: &[ScheduledCommandEntry],
 ) {
@@ -122,9 +112,6 @@ pub fn render_info_panel(
         );
         lines.extend(ram_lines);
     }
-
-    // ── VM section (for sandboxed sessions) ──
-    append_vm_section(&mut lines, info, vm_details, inner_width);
 
     // ── Scheduled commands section ──
     if !scheduled_commands.is_empty() {
@@ -269,62 +256,6 @@ fn append_repos_section<'a>(lines: &mut Vec<Line<'a>>, info: &'a SessionInfo) {
             lines.push(Line::from(vec![
                 Span::styled("       ", Theme::label()),
                 Span::styled(*name, Style::default().fg(Theme::branch_name())),
-            ]));
-        }
-    }
-}
-
-/// Append VM details section (for sandboxed sessions only).
-fn append_vm_section<'a>(
-    lines: &mut Vec<Line<'a>>,
-    info: &'a SessionInfo,
-    vm_details: Option<&'a VmDetails>,
-    inner_width: usize,
-) {
-    if info.vm_id.is_none() {
-        return;
-    }
-
-    lines.push(separator(inner_width));
-    lines.push(Line::from(Span::styled("VM", Theme::section_header())));
-
-    if let Some(vm) = vm_details {
-        lines.push(Line::from(vec![
-            Span::styled("State: ", Theme::label()),
-            Span::styled(&vm.state, Style::default().fg(Theme::text_primary())),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("CPUs: ", Theme::label()),
-            Span::styled(
-                vm.cpus.to_string(),
-                Style::default().fg(Theme::text_primary()),
-            ),
-            Span::styled("  RAM: ", Theme::label()),
-            Span::styled(
-                format!("{} MB", vm.memory_mb),
-                Style::default().fg(Theme::text_primary()),
-            ),
-        ]));
-        if vm.ssh_port > 0 {
-            lines.push(Line::from(vec![
-                Span::styled("SSH: ", Theme::label()),
-                Span::styled(
-                    format!("localhost:{}", vm.ssh_port),
-                    Style::default().fg(Theme::text_primary()),
-                ),
-            ]));
-        }
-        lines.push(Line::from(vec![
-            Span::styled("Image: ", Theme::label()),
-            Span::styled(&vm.base_image, Style::default().fg(Theme::text_muted())),
-        ]));
-    }
-
-    if info.status == SessionStatus::Provisioning {
-        if let Some(ref step) = info.provisioning_step {
-            lines.push(Line::from(vec![
-                Span::styled("Step: ", Theme::label()),
-                Span::styled(step, Style::default().fg(Theme::accent())),
             ]));
         }
     }

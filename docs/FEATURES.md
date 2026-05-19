@@ -22,11 +22,11 @@ worktree), and cwd.
   pure overhead: an extra navigation level, an extra creation step,
   and an extra deletion guard.
 - Removing the project layer (storage migration v16 dropped
-  `projects`, `project_repos`, `project_roles`, `project_mcp_servers`,
-  `project_vm_config`, `project_container_config`) collapses the
-  model to "sessions own their own configuration". Roles, MCP
-  servers, and skills become global presets attached at session
-  creation time, not project attributes.
+  `projects`, `project_repos`, `project_roles`, and
+  `project_mcp_servers`) collapses the model to "sessions own
+  their own configuration". Roles, MCP servers, and skills become
+  global presets attached at session creation time, not project
+  attributes.
 
 **Why a sidebar at all instead of a popup?**
 
@@ -53,13 +53,9 @@ the user to remember which field to type into.
 ### Settings overlay
 
 `Ctrl+E` opens the settings overlay with four tabs: **Roles**,
-**MCP Servers**, **Skills**, and **Plugins**. Use `Tab` to cycle
-between tabs. The first three are global presets shared across
-sessions and selected at session creation. The Plugins tab lists
-effective plugins (disk-discovered + registered) with their
-version, source, enabled flag, and path; press `Space` to toggle a
-plugin on or off. Install/uninstall and per-plugin configuration
-are managed through the MCP tools — see `docs/PLUGINS.md`.
+**MCP Servers**, **Skills**, and **Profiles**. Use `Tab` to cycle
+between tabs. All four are global presets shared across sessions
+and selected at session creation.
 
 ---
 
@@ -76,9 +72,8 @@ not applicable.
    first selected repo becomes the session's `cwd`; the rest are
    passed to Claude via `--add-dir` so it can read across all of
    them.
-2. **Session mode** — Normal / Worktree / Container / VM. Skipped
-   when at least one repo is marked as worktree (the choice is
-   already implied).
+2. **Session mode** — Normal / Worktree. Skipped when at least
+   one repo is marked as worktree (the choice is already implied).
 3. **Base branch selector** — worktree mode only.
 4. **Session name** — free text identifier shown in the sidebar.
 5. **New branch name** — worktree mode only.
@@ -401,23 +396,12 @@ for the Admin session via `ADMIN_MCP_TOOLS`.
 
 ### How spawning works
 
-`create_session` writes a single row to the `session_commands`
-table with a `spawn:<json>` payload and a pre-generated session
-UUID. The TUI's existing DB-polled command queue (`process_session_commands`,
-~10 ms cadence) picks it up, resolves role/MCP servers/skills
-by name against the global config, optionally runs
-`git::create_worktree` off the requested base branch, and then
-calls `do_spawn_session` — the same code path as `Ctrl+N`.
-
-Because the UUID is generated up front, the caller can start
-polling immediately without waiting for the spawn to land.
-
-### Scope
-
-Orchestrator spawns are **local-tmux only**. VM and container
-backends are out of scope — if you need a sandboxed orchestrator
-worker, provision the VM/container through the TUI and drive
-it with `send_prompt`/`capture_session_output`.
+`create_session` runs synchronously inside `thurbox-mcp`:
+resolves role/MCP servers/skills by name against the global
+config, optionally runs `git::create_worktree` off the requested
+base branch, and then writes the session row via the same
+storage path the TUI uses. The TUI picks it up on the next
+`PRAGMA data_version` tick and adopts the tmux window.
 
 ---
 
@@ -463,9 +447,8 @@ demand emerges.
 ## Git Worktree Integration
 
 Sessions can optionally run inside git worktrees for branch
-isolation. This is opt-in via the session mode selector ("Normal",
-"Worktree", "Container", or "VM") or by marking a repo with `w`
-in the repo picker.
+isolation. This is opt-in via the session mode selector ("Normal"
+or "Worktree") or by marking a repo with `w` in the repo picker.
 
 ### Flow
 
@@ -601,10 +584,10 @@ thurbox instances.
 ### State storage
 
 All session state is stored in the SQLite database (`thurbox.db`).
-Tables include `sessions`, `worktrees`, `vms`, `containers`,
-`scheduled_commands`, `roles`, `mcp_servers`, `skills`, and
-`metadata`. The database uses WAL mode for concurrent multi-instance
-access.
+Tables include `sessions`, `worktrees`, `scheduled_commands`,
+`roles`, `mcp_servers`, `skills`, `profiles`, `repo_bookmarks`,
+and `metadata`. The database uses WAL mode for concurrent
+multi-instance access.
 
 ### Worktree preservation
 
@@ -733,8 +716,7 @@ Claude Code skills come from **two sources**:
 1. **Disk-source (predefined)** — any directory under
    `~/.local/share/thurbox/admin/skills/` that contains a
    `SKILL.md` is auto-discovered. Dropping a directory in is all
-   it takes; no SQLite registration is needed. This mirrors how
-   Containerfile templates work under `admin/containerfiles/`.
+   it takes; no SQLite registration is needed.
 2. **Registered** — SQLite rows in the `skills` table that point
    at arbitrary absolute paths. Managed via the settings overlay
    (Ctrl+E → Skills tab), `thurbox-cli skill`, and the MCP
@@ -917,250 +899,6 @@ empty, but the active terminal can briefly be empty during spawn.
 
 Section boundaries in the info panel use styled `──────` separator
 lines instead of blank lines, improving visual structure.
-
----
-
-## Container Sessions
-
-Sessions can run inside Docker or Podman containers for lightweight
-OS-level isolation. This is opt-in: the session mode selector
-modal offers "Container" alongside "Normal", "Worktree", and "VM".
-
-### Container runtime
-
-Thurbox auto-detects Docker or Podman, preferring Podman. The
-runtime is detected once at startup via `detect_runtime()`.
-
-### Containerfile templates
-
-User-editable templates live in
-`~/.local/share/thurbox/admin/containerfiles/`. Each template is a
-folder containing a `Containerfile` and any support files (e.g.,
-`init-firewall.sh`). The entire folder is used as the build
-context.
-
-```text
-~/.local/share/thurbox/admin/containerfiles/
-  default/
-    Containerfile
-    init-firewall.sh
-  python/
-    Containerfile
-    requirements.txt
-```
-
-A `default/` template (based on `debian:bookworm-slim`) is seeded
-on first run. Users can add more folders for different environments
-and select them via a picker in the TUI.
-
-### Container defaults
-
-| Parameter | Value |
-|-----------|-------|
-| CPUs | 2 |
-| Memory | 2048 MB |
-| Firewall | Enabled (nftables/iptables allowlist) |
-| Containerfile | `default/` template |
-
-### Firewall allowlist
-
-When `firewall_enabled` is true, the container runs
-`init-firewall.sh` which restricts egress to a configurable
-allowlist of domains and CIDRs. The default allowlist includes
-`api.anthropic.com`, `github.com`, `crates.io`, and other common
-development endpoints.
-
-### Container lifecycle
-
-```text
-Building → Starting → Ready → Stopping → Stopped
-                        ↓
-                      Failed
-```
-
-### Session restoration
-
-Containers survive Thurbox restarts. On restart, Thurbox discovers
-containers from the database, verifies they are still running, and
-re-adopts their tmux sessions.
-
-### Container state persistence
-
-Container records are stored in the `containers` SQLite table with
-a foreign key to `sessions(id)`.
-
-### TUI template picker
-
-When creating a container session, a Containerfile picker modal
-lists all available templates. `j`/`k` navigate, `Enter` selects,
-`Esc` cancels. If only one template exists, the picker is skipped
-and the default template is used automatically.
-
-### Default template contents
-
-The seeded `default/` Containerfile builds on `debian:bookworm-slim`
-and installs: `curl`, `ca-certificates`, `git`, `tmux`, `iptables`,
-`ipset`, `jq`, `rsync`. It creates a dedicated `thurbox` user
-(UID/GID 5000), installs Claude Code via the native installer,
-copies the firewall script and allowlist into the image, and
-configures sudoers for firewall script execution.
-
-### Template management via MCP
-
-Four MCP tools provide programmatic access to templates:
-
-| Tool | Description |
-|------|-------------|
-| `list_containerfile_templates` | List template names and the files each contains |
-| `get_containerfile_template` | Read a template's Containerfile content and list support files |
-| `set_containerfile_template` | Create or update a template (Containerfile + optional support files) |
-| `delete_containerfile_template` | Delete a template (refuses to delete "default") |
-
-### Template name safety
-
-Template names and support file names are validated to prevent
-path traversal: they must be non-empty, at most 64 characters, and
-cannot contain `/`, `\`, `..`, or start with `.`. The `default`
-template is protected from deletion.
-
----
-
-## VM Sessions
-
-Sessions can run inside QEMU/KVM virtual machines for full OS-level
-isolation. This is opt-in: the session mode selector modal offers
-"VM" alongside "Normal", "Worktree", and "Container".
-
-### VM specifications
-
-| Parameter | Value |
-|-----------|-------|
-| Base image | Debian 13 (Trixie) genericcloud amd64 qcow2 |
-| CPUs | 2 |
-| RAM | 2048 MB |
-| Disk | 10 GB qcow2 CoW overlay |
-| Networking | User-mode (SLIRP), SSH on ports 22200+ |
-| SSH user | `thurbox` (ed25519 ephemeral key) |
-| Packages | tmux, git, rsync, curl, Claude CLI |
-| Boot timeout | 120 seconds |
-
-Base images are cached at `~/.local/share/thurbox/images/`. Per-VM
-state (disk overlay, cloud-init ISO, SSH keys, PID file) lives
-under `~/.local/share/thurbox/vms/<vm-uuid>/`.
-
-### Host requirements
-
-- `qemu-system-x86_64` with `/dev/kvm` support
-- `genisoimage` or `mkisofs` (cloud-init ISO creation)
-- `ssh-keygen`, `rsync`
-
-### How it works
-
-1. `Ctrl+N` triggers session creation.
-2. Choosing "VM" in the session mode modal starts asynchronous
-   provisioning:
-   - Downloads the Debian 13 base image (once, cached)
-   - Creates a qcow2 CoW overlay disk
-   - Generates cloud-init ISO (SSH key, user setup, packages)
-   - Launches QEMU with KVM acceleration (`-enable-kvm -cpu host`)
-   - Polls SSH readiness every 500ms (up to 120s timeout)
-3. Once the VM is ready, a tmux session is spawned inside the VM
-   over SSH, and the Claude Code CLI starts with `--resume`.
-
-### VM lifecycle
-
-VMs are managed by `VmManager` with a state machine:
-
-```text
-Creating → Starting → Ready → Stopping → Stopped
-                        ↓
-                      Error
-```
-
-### Session restoration
-
-QEMU VMs survive Thurbox restarts (they are separate processes).
-On restart, Thurbox:
-
-1. Discovers sessions from all registered backends (local-tmux,
-   devcontainer, qemu-vm).
-2. For VM sessions, calls `VmManager::restore_vm()` to verify the
-   QEMU process is still running via SSH probe.
-3. Re-establishes the SSH control mode connection.
-4. Adopts the tmux pane inside the VM with terminal content intact.
-5. If the VM has died, falls through to re-provision a new VM with
-   `--resume` to preserve conversation history.
-
-### VM state persistence
-
-VM records are stored in the `vms` SQLite table with a foreign key
-to `sessions(id)`.
-
-### Per-VM disk layout
-
-Each VM's state lives in `~/.local/share/thurbox/vms/<vm-uuid>/`:
-
-```text
-<vm-uuid>/
-  disk.qcow2       # CoW overlay (base image unchanged)
-  cloud-init.iso   # nocloud format ISO
-  ssh_key          # ephemeral ed25519 private key
-  ssh_key.pub      # ephemeral ed25519 public key
-  qemu.pid         # QEMU process PID file
-```
-
-The SSH ControlMaster socket is stored at
-`/tmp/thurbox-ssh-<short-id>` (first 8 characters of the VM UUID)
-to stay within the 108-byte Unix socket path limit.
-
-### CoW overlay
-
-Each VM gets a QCOW2 copy-on-write overlay that references the
-shared base image as a backing file. The base image on disk is
-never modified — all writes go to the per-VM overlay, which grows
-on demand. This means creating a new VM is nearly instant (no
-multi-gigabyte copy) and base image updates affect only new VMs.
-
-### Cloud-init provisioning
-
-VMs are provisioned via cloud-init in nocloud format:
-
-- **User account**: `thurbox` with passwordless sudo and
-  `/bin/bash` shell. SSH public key injected from the ephemeral
-  keypair.
-- **Packages**: `tmux`, `rsync`, `git`, `curl` installed via
-  `package_update` + `packages`.
-- **Claude CLI**: Installed via
-  `curl -fsSL https://claude.ai/install.sh | bash` and symlinked
-  to `/usr/local/bin/claude`.
-- **Setup script**: An optional custom shell script from
-  `VmConfig.setup_script` runs after package installation.
-
-Thurbox waits for `cloud-init status --wait` to complete before
-marking the VM as ready. If cloud-init reports errors (e.g., a
-runcmd failure), provisioning continues as long as core packages
-are installed.
-
-### SSH port allocation
-
-VM SSH ports start at 22200 and increment. On allocation, Thurbox
-probes candidate ports to skip those already bound by orphaned
-QEMU processes, scanning up to 100 ports. Host port forwarding is
-configured via QEMU user-mode networking:
-`-netdev user,id=net0,hostfwd=tcp::{port}-:22`.
-
-### VM image management via MCP
-
-Three MCP tools manage the base image cache:
-
-| Tool | Description |
-|------|-------------|
-| `list_vm_images` | List downloaded images with file sizes |
-| `download_vm_image` | Download an image from an HTTPS URL (rejects http/file) |
-| `delete_vm_image` | Delete a cached image |
-
-Image filenames are validated with the same path-traversal
-protection used for container templates.
 
 ---
 

@@ -163,51 +163,6 @@ fn cli_module_isolation() {
 }
 
 #[test]
-fn plugin_module_isolation() {
-    // The plugin runtime may import `agent` (the backend adapter implements
-    // `SessionBackend` so plugins can contribute backends). It must not pull
-    // in TUI state, the app coordinator, or git/mcp top-level helpers.
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugin");
-    let violations = check_no_imports(&module_dir, &["app", "ui", "git", "mcp"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("plugin", &violations)
-    );
-}
-
-#[test]
-fn plugin_bridge_module_isolation() {
-    // `plugin_bridge` is a sealed transport primitive shared by `mcp` and
-    // `plugin`. It must depend only on stdlib + external crates + `paths`.
-    // No thurbox business logic — no `agent`, `app`, `ui`, `git`, `mcp`,
-    // `plugin`, `session`, `storage`, `sync`, or `session_ops`. Breaking this
-    // rule would create an import cycle the moment `mcp` tries to use the
-    // client (since `mcp` already imports `storage` and `session`).
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugin_bridge");
-    let violations = check_no_imports(
-        &module_dir,
-        &[
-            "agent",
-            "app",
-            "ui",
-            "git",
-            "mcp",
-            "plugin",
-            "session",
-            "storage",
-            "sync",
-            "session_ops",
-        ],
-    );
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("plugin_bridge", &violations)
-    );
-}
-
-#[test]
 fn app_module_structure() {
     // Verify that app/ module can be split into multiple files
     // Each file should maintain proper module organization

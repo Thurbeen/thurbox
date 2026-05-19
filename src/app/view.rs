@@ -15,11 +15,11 @@ use crate::session::{Action, Category, KeyBindings, KeyChord, SessionInfo};
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
-    branch_selector_modal, containerfile_picker, file_viewer, info_panel, layout,
-    mcp_server_picker_modal, profile_picker_modal, project_list, restore_sessions_modal,
-    role_editor_modal, role_selector_modal, schedule_command_modal, scheduled_commands_list_modal,
-    session_mode_modal, session_name_modal, skill_picker_modal, status_bar, terminal_view,
-    theme_picker_modal, worktree_name_modal,
+    branch_selector_modal, file_viewer, info_panel, layout, mcp_server_picker_modal,
+    profile_picker_modal, project_list, restore_sessions_modal, role_editor_modal,
+    role_selector_modal, schedule_command_modal, scheduled_commands_list_modal, session_mode_modal,
+    session_name_modal, skill_picker_modal, status_bar, terminal_view, theme_picker_modal,
+    worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -46,23 +46,10 @@ impl App {
         // Left panel (flat session list)
         if let Some(left_area) = areas.left_panel {
             // Build flat session list: all sessions, with tag names from projects
-            let mut all_sessions: Vec<&SessionInfo> =
-                self.sessions.iter().map(|s| &s.info).collect();
+            let all_sessions: Vec<&SessionInfo> = self.sessions.iter().map(|s| &s.info).collect();
             self.session_elapsed_buf.clear();
             for s in &self.sessions {
                 self.session_elapsed_buf.push(s.millis_since_last_output());
-            }
-
-            // Include VM placeholder in the session list.
-            if let Some(ref ph) = self.vm_placeholder {
-                all_sessions.push(ph);
-                self.session_elapsed_buf.push(0);
-            }
-
-            // Include container placeholder in the session list.
-            if let Some(ref ph) = self.container_placeholder {
-                all_sessions.push(ph);
-                self.session_elapsed_buf.push(0);
             }
 
             let session_elapsed_buf = self.session_elapsed_buf.clone();
@@ -113,28 +100,7 @@ impl App {
 
         // Info panel
         if let Some(info_area) = areas.info_panel {
-            // Determine the session info to display: real session or VM placeholder.
-            let info_session: Option<&SessionInfo> = self
-                .sessions
-                .get(self.active_index)
-                .map(|s| &s.info)
-                .or(self.vm_placeholder.as_ref())
-                .or(self.container_placeholder.as_ref());
-
-            if let Some(info) = info_session {
-                let vm_details = info.vm_id.as_deref().and_then(|vm_id| {
-                    self.db
-                        .get_vm(vm_id)
-                        .ok()
-                        .flatten()
-                        .map(|rec| info_panel::VmDetails {
-                            state: rec.state.to_string(),
-                            cpus: rec.cpus,
-                            memory_mb: rec.memory_mb,
-                            ssh_port: rec.ssh_port,
-                            base_image: rec.base_image,
-                        })
-                });
+            if let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) {
                 let now = crate::sync::current_time_millis();
                 let scheduled_entries: Vec<info_panel::ScheduledCommandEntry> = self
                     .cached_pending_commands
@@ -152,7 +118,6 @@ impl App {
                     frame,
                     info_area,
                     info,
-                    vm_details.as_ref(),
                     Some(&self.system_metrics),
                     &scheduled_entries,
                 );
@@ -219,10 +184,6 @@ impl App {
                 status: self.status_message.as_ref(),
                 focus_label,
                 sync_in_progress: self.worktree_sync_in_progress,
-                vm_provisioning: self.vm_provisioning,
-                vm_provisioning_step: &self.vm_provisioning_step,
-                container_provisioning: self.container_provisioning,
-                container_provisioning_step: &self.container_provisioning_step,
                 tick_count: self.tick_count,
                 pending_scheduled_count: self.cached_pending_commands.len(),
                 file_viewer_open: self.show_file_viewer,
@@ -240,19 +201,6 @@ impl App {
                 frame,
                 &session_mode_modal::SessionModeState {
                     selected_index: sm.index,
-                    devcontainer_available: self.backends.has("devcontainer"),
-                    vm_available: self.backends.has("qemu-vm"),
-                },
-            );
-        }
-
-        // Containerfile picker modal
-        if let super::modals::Modal::ContainerfilePicker(ref cp) = self.modal {
-            containerfile_picker::render_containerfile_picker(
-                frame,
-                &containerfile_picker::ContainerfilePickerState {
-                    containerfiles: &cp.list,
-                    selected_index: cp.index,
                 },
             );
         }
@@ -368,63 +316,6 @@ impl App {
                     skill_index: self.skill_list_index,
                     profiles: &self.global_profiles,
                     profile_index: self.profile_list_index,
-                    plugins: &self.effective_plugins,
-                    plugin_index: self.plugin_list_index,
-                },
-            );
-        }
-
-        // Plugin install modal (overlays the settings overlay's Plugins tab)
-        if self.show_plugin_install_modal {
-            use crate::ui::plugin_install_modal::{
-                render_plugin_install_modal, PluginInstallModalState, PluginInstallStatusView,
-            };
-            let status = match &self.plugin_install_status {
-                super::PluginInstallStatus::Idle => PluginInstallStatusView::Idle,
-                super::PluginInstallStatus::InProgress => {
-                    PluginInstallStatusView::InProgress("Installing… (cloning + copying)")
-                }
-                super::PluginInstallStatus::Success(msg) => {
-                    PluginInstallStatusView::Success(msg.as_str())
-                }
-                super::PluginInstallStatus::Error(msg) => {
-                    PluginInstallStatusView::Error(msg.as_str())
-                }
-            };
-            render_plugin_install_modal(
-                frame,
-                &PluginInstallModalState {
-                    input: self.plugin_install_input.value(),
-                    cursor: self.plugin_install_input.cursor_pos(),
-                    status,
-                },
-            );
-        }
-
-        // Plugin uninstall confirmation (overlays the Plugins tab)
-        if let Some(ref name) = self.plugin_uninstall_confirm {
-            let area = crate::ui::centered_fixed_height_rect(50, 5, frame.area());
-            let inner = crate::ui::render_modal_frame_danger(frame, area, "Uninstall Plugin");
-            let path_display = self
-                .effective_plugins
-                .iter()
-                .find(|(p, _)| &p.name == name)
-                .map(|(p, _)| p.path.display().to_string())
-                .unwrap_or_default();
-            let text = Line::from(vec![
-                Span::styled(
-                    format!(" Uninstall '{name}'? Deletes {path_display}  "),
-                    Style::default().fg(Theme::text_primary()),
-                ),
-                Span::styled("y", Theme::keybind()),
-                Span::styled("/", Style::default().fg(Theme::text_muted())),
-                Span::styled("n", Theme::keybind()),
-            ]);
-            frame.render_widget(
-                Paragraph::new(text),
-                Rect {
-                    y: inner.y + inner.height / 2,
-                    ..inner
                 },
             );
         }

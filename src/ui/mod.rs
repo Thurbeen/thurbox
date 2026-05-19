@@ -1,12 +1,10 @@
 pub mod branch_selector_modal;
-pub mod containerfile_picker;
 pub mod file_viewer;
 pub mod info_panel;
 pub mod layout;
 pub mod links;
 pub mod mcp_editor_modal;
 pub mod mcp_server_picker_modal;
-pub mod plugin_install_modal;
 pub mod profile_editor_modal;
 pub mod profile_picker_modal;
 pub mod project_list;
@@ -41,7 +39,6 @@ use theme::Theme;
 
 pub fn status_color(status: SessionStatus) -> Color {
     match status {
-        SessionStatus::Provisioning => Theme::accent(),
         SessionStatus::Busy => Theme::status_busy(),
         SessionStatus::Waiting => Theme::status_waiting(),
         SessionStatus::Idle => Theme::status_idle(),
@@ -471,7 +468,6 @@ mod tests {
 
     #[test]
     fn status_color_maps_all_variants() {
-        assert_eq!(status_color(SessionStatus::Provisioning), Color::Cyan);
         assert_eq!(status_color(SessionStatus::Busy), Color::Green);
         assert_eq!(status_color(SessionStatus::Waiting), Color::Yellow);
         assert_eq!(status_color(SessionStatus::Idle), Color::DarkGray);

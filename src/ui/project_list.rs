@@ -532,12 +532,6 @@ fn render_session_section(
                             .push(Line::from(vec![Span::styled(format!("   {text}"), dimmed)]));
                     }
                 }
-            } else if info.status == crate::session::SessionStatus::Provisioning {
-                let step_text = info.provisioning_step.as_deref().unwrap_or("Starting...");
-                item_lines.push(Line::from(vec![
-                    Span::styled("   \u{27f3} ", Style::default().fg(Theme::accent())),
-                    Span::styled(step_text, Style::default().fg(Theme::accent())),
-                ]));
             } else {
                 let role_style = Style::default().fg(Theme::role_name());
                 let mut line2_spans = vec![Span::raw("   ")];
@@ -547,22 +541,6 @@ fn render_session_section(
                     session_match.and_then(|m| m.positions(&m.role)),
                     role_style,
                 );
-                if info.vm_id.is_some() {
-                    line2_spans.push(Span::styled(
-                        " \u{00b7} ",
-                        Style::default().fg(Theme::text_muted()),
-                    ));
-                    line2_spans.push(Span::styled("VM", Style::default().fg(Theme::accent())));
-                } else if info.container_id.is_some() {
-                    line2_spans.push(Span::styled(
-                        " \u{00b7} ",
-                        Style::default().fg(Theme::text_muted()),
-                    ));
-                    line2_spans.push(Span::styled(
-                        "Container",
-                        Style::default().fg(Theme::accent()),
-                    ));
-                }
                 item_lines.push(Line::from(line2_spans));
 
                 let entries = build_repo_entries(info);

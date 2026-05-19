@@ -1,3 +1,0 @@
-name = "gh"
-command = "gh"
-args = ["mcp"]

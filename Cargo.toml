@@ -21,7 +21,6 @@ tui-term = "0.3"
 
 # Terminal emulation
 vt100 = "0.16"
-bytes = "1"
 
 # URL detection
 regex = "1"
@@ -53,7 +52,7 @@ anyhow = "1.0"
 # Clipboard
 arboard = "3"
 
-# Temporary directories for plugin git clones
+# Temporary directories (used by tests and session_ops)
 tempfile = "3"
 
 # MCP server
@@ -72,20 +71,6 @@ path = "src/bin/thurbox-mcp.rs"
 [[bin]]
 name = "thurbox-cli"
 path = "src/bin/thurbox-cli.rs"
-
-# Reference implementation of a process plugin contributing a backend.
-# Used by `tests/plugin_backend.rs` and shipped as a starting point for
-# external plugin authors (e.g. the gastown bridge).
-[[example]]
-name = "sample-backend-plugin"
-path = "examples/sample_backend_plugin.rs"
-
-# Reference implementation of a process plugin contributing the `mcp-tools`
-# capability. Used by `tests/mcp_tools_integration.rs`; shipped as a starting
-# point for plugin authors who want to expose MCP tools to thurbox-mcp.
-[[example]]
-name = "sample-mcp-plugin"
-path = "examples/sample_mcp_plugin.rs"
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

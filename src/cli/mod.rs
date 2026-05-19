@@ -11,15 +11,12 @@ use clap::{Parser, Subcommand};
 
 use crate::storage::Database;
 
-pub mod containerfiles;
 pub mod editor;
 pub mod mcp_servers;
 pub mod roles;
 pub mod scheduled;
 pub mod sessions;
 pub mod skills;
-pub mod vm_images;
-pub mod vms;
 
 /// Thurbox CLI — manage roles, sessions, scheduled commands, and more.
 #[derive(Parser, Debug)]
@@ -61,22 +58,6 @@ pub enum Command {
         #[command(subcommand)]
         action: scheduled::Action,
     },
-    /// Manage VMs (read-only).
-    Vm {
-        #[command(subcommand)]
-        action: vms::Action,
-    },
-    /// Manage cached VM images.
-    #[command(name = "vm-image")]
-    VmImage {
-        #[command(subcommand)]
-        action: vm_images::Action,
-    },
-    /// Manage Containerfile templates.
-    Containerfile {
-        #[command(subcommand)]
-        action: containerfiles::Action,
-    },
     /// Manage the skill registry (references to on-disk skill directories).
     Skill {
         #[command(subcommand)]
@@ -92,9 +73,6 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Editor { action } => editor::run(action, db),
         Command::Session { action } => sessions::run(action, db),
         Command::Schedule { action } => scheduled::run(action, db),
-        Command::Vm { action } => vms::run(action, db),
-        Command::VmImage { action } => vm_images::run(action),
-        Command::Containerfile { action } => containerfiles::run(action),
         Command::Skill { action } => skills::run(action, db),
     }?;
 
@@ -112,6 +90,12 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
 /// Read a file's contents as a UTF-8 string, returning a CLI-style error.
 pub(crate) fn read_file(path: &std::path::Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))
+}
+
+/// Validate that `name` is a safe single-segment filename (no slashes,
+/// dot-prefix, or `..`) — used by the `skill` CLI command.
+pub(crate) fn validate_safe_name(name: &str) -> Result<(), String> {
+    crate::paths::validate_safe_name(name)
 }
 
 /// Parse a JSON document that may be either a bare array or an object
@@ -132,12 +116,6 @@ pub(crate) fn parse_array_or_wrapper(
         },
         _ => Err(err()),
     }
-}
-
-/// Validate that `name` is a safe single-segment filename (no slashes,
-/// dot-prefix, or `..`) — used by VM-image and Containerfile commands.
-pub(crate) fn validate_safe_name(name: &str) -> Result<(), String> {
-    crate::paths::validate_safe_name(name)
 }
 
 #[cfg(test)]
@@ -257,68 +235,5 @@ mod tests {
                 action: scheduled::Action::Create { .. }
             }
         ));
-    }
-
-    #[test]
-    fn parse_vm_image_download() {
-        let cli = Cli::try_parse_from([
-            "thurbox-cli",
-            "vm-image",
-            "download",
-            "https://example.com/img.qcow2",
-            "--filename",
-            "img.qcow2",
-        ])
-        .unwrap();
-        let Command::VmImage {
-            action:
-                vm_images::Action::Download {
-                    url,
-                    filename: Some(f),
-                },
-        } = cli.command
-        else {
-            panic!("expected VmImage::Download with filename");
-        };
-        assert_eq!(url, "https://example.com/img.qcow2");
-        assert_eq!(f, "img.qcow2");
-    }
-
-    #[test]
-    fn parse_containerfile_set_with_support_files() {
-        let cli = Cli::try_parse_from([
-            "thurbox-cli",
-            "containerfile",
-            "set",
-            "mytpl",
-            "--file",
-            "/tmp/Containerfile",
-            "--support-file",
-            "entrypoint.sh=/tmp/entry.sh",
-        ])
-        .unwrap();
-        let Command::Containerfile {
-            action:
-                containerfiles::Action::Set {
-                    name,
-                    file,
-                    support,
-                },
-        } = cli.command
-        else {
-            panic!("expected Containerfile::Set");
-        };
-        assert_eq!(name, "mytpl");
-        assert_eq!(file.to_string_lossy(), "/tmp/Containerfile");
-        assert_eq!(support.files, vec!["entrypoint.sh=/tmp/entry.sh"]);
-    }
-
-    #[test]
-    fn validate_safe_name_basics() {
-        assert!(validate_safe_name("ok-name").is_ok());
-        assert!(validate_safe_name("").is_err());
-        assert!(validate_safe_name(".dot").is_err());
-        assert!(validate_safe_name("a/b").is_err());
-        assert!(validate_safe_name(&"x".repeat(65)).is_err());
     }
 }

@@ -75,18 +75,12 @@ have one Claude delegate work to others. Thurbox adds:
   `>= 120`: sidebar + terminal + info panel. Vim-inspired keys
   throughout.
 
-> Optional sandboxing: Docker/Podman containers and QEMU/KVM VMs
-> are supported as alternative session backends but are
-> experimental — see [docs/FEATURES.md](docs/FEATURES.md).
-
 ## Prerequisites
 
 - **tmux >= 3.2**
 - **claude CLI** — [anthropics/claude-code](https://github.com/anthropics/claude-code)
 - **git** (required for worktree features)
 - **Rust 1.75+** (only to build from source)
-- *Optional:* Docker/Podman for container sessions; QEMU/KVM
-  (`qemu-system-x86_64`, `/dev/kvm`, `genisoimage`) for VM sessions
 
 ## Installation
 
@@ -245,15 +239,6 @@ thurbox-mcp --transport streamable-http --port 9090  # custom port
 | `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
 | `restart_session` | Queue a session restart (TUI processes the command) |
 | `restore_session` | Restore a soft-deleted session |
-| `list_vms` | List active VMs |
-| `get_vm` | Get a VM by UUID |
-| `list_containerfile_templates` | List template names + files in each |
-| `get_containerfile_template` | Read a template's Containerfile content and list support files |
-| `set_containerfile_template` | Create/update a template (Containerfile + optional support files) |
-| `delete_containerfile_template` | Delete a template (refuses to delete "default") |
-| `list_vm_images` | List downloaded VM images with file sizes |
-| `download_vm_image` | Download a VM image from an HTTPS URL |
-| `delete_vm_image` | Delete a cached VM image |
 | `schedule_command` | Schedule text to be sent to a session at a future time |
 | `list_scheduled_commands` | List pending scheduled commands, optionally by session |
 | `get_scheduled_command` | Get a scheduled command by ID |
@@ -278,12 +263,10 @@ modes, tool name format, and example role patterns, see
 Thurbox follows **The Elm Architecture** (TEA):
 `Event → Message → update(model, msg) → view(model) → Frame`.
 All state lives in a single `App` model. Sessions run via a
-pluggable `SessionBackend` trait with a `BackendRegistry` that
-manages multiple backends: local tmux (`tmux -L thurbox`),
-Docker/Podman containers (tmux over `exec`), and optional
-QEMU/KVM VMs (tmux over SSH). Terminal output is parsed
-by `vt100::Parser` and rendered by `tui_term`. All persistent
-state (sessions, roles, VMs) is stored in SQLite.
+`SessionBackend` trait — the only backend is local tmux
+(`tmux -L thurbox`). Terminal output is parsed by
+`vt100::Parser` and rendered by `tui_term`. All persistent
+state (sessions, roles, MCP servers, skills) is stored in SQLite.
 
 ### Module Dependency Rules
 
@@ -306,7 +289,7 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architectural
   decisions with rationale
 - [docs/FEATURES.md](docs/FEATURES.md) — Feature-level design
-  choices (including orchestrator mode, containers, VMs)
+  choices (including orchestrator mode)
 - [docs/MCP_ROLES.md](docs/MCP_ROLES.md) — MCP role
   configuration guide
 

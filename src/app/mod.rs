@@ -2,7 +2,6 @@ mod helpers;
 mod key_handlers;
 pub(crate) mod mcp_editor_modal;
 pub(crate) mod modals;
-mod provisioning;
 mod state;
 mod view;
 
@@ -19,15 +18,13 @@ use tracing::{error, info, warn};
 
 use crate::agent::{BackendRegistry, Session, SessionBackend};
 use crate::git;
-use crate::paths;
 use crate::session::{
-    default_developer_permissions, default_developer_role, McpServerConfig, PluginConfig,
-    RoleConfig, RolePermissions, ScheduledCommand, SessionCommand, SessionConfig, SessionId,
-    SessionInfo, SessionStatus, SkillConfig, WorktreeInfo, DEFAULT_ROLE_NAME,
+    default_developer_permissions, default_developer_role, McpServerConfig, RoleConfig,
+    RolePermissions, ScheduledCommand, SessionConfig, SessionId, SessionInfo, SessionStatus,
+    SkillConfig, WorktreeInfo, DEFAULT_ROLE_NAME,
 };
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
-use crate::storage::PluginSource;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
 use crate::ui::{info_panel, layout, project_list, role_editor_modal};
@@ -64,19 +61,10 @@ const ADMIN_MCP_TOOLS: &[&str] = &[
     "mcp__thurbox__delete_session",
     "mcp__thurbox__restart_session",
     "mcp__thurbox__restore_session",
-    "mcp__thurbox__list_vms",
-    "mcp__thurbox__get_vm",
-    "mcp__thurbox__list_containerfile_templates",
-    "mcp__thurbox__get_containerfile_template",
-    "mcp__thurbox__set_containerfile_template",
-    "mcp__thurbox__delete_containerfile_template",
     "mcp__thurbox__list_skills",
     "mcp__thurbox__set_skills",
     "mcp__thurbox__register_skill",
     "mcp__thurbox__unregister_skill",
-    "mcp__thurbox__list_vm_images",
-    "mcp__thurbox__download_vm_image",
-    "mcp__thurbox__delete_vm_image",
     "mcp__thurbox__schedule_command",
     "mcp__thurbox__list_scheduled_commands",
     "mcp__thurbox__get_scheduled_command",
@@ -97,18 +85,7 @@ You can:
 - Configure global roles (named permission presets applied to sessions)
 - Configure global MCP servers
 - List, inspect, delete, restart, and restore sessions
-- List and inspect VMs
-- Create and manage Containerfile templates for container-based sessions
-- List, download, and delete VM images for sandbox sessions
-
-Containerfile templates live in ~/.local/share/thurbox/admin/containerfiles/. Each \
-template is a folder containing a Containerfile and any support files (e.g. \
-init-firewall.sh). The default/ template includes Node.js LTS, tmux, git, \
-iptables, and claude-code. Use the containerfile template tools to list, read, \
-create, update, and delete templates — no need to edit files directly.
-
-VM images live in ~/.local/share/thurbox/images/. Use the VM image tools to \
-list cached images, download new ones from HTTPS URLs, or delete old ones.
+- Register and manage skills
 
 When the user asks you to manage roles, sessions, or MCP servers, use \
 the appropriate thurbox MCP tool. Always list existing resources before making \
@@ -193,45 +170,6 @@ fn admin_mcp_permissions() -> RolePermissions {
         append_system_prompt: Some(ADMIN_SYSTEM_PROMPT.to_string()),
         ..RolePermissions::default()
     }
-}
-
-/// Snapshot the effective configuration for every plugin in `(name, key) →
-/// JSON value` form. Used by [`App::diff_and_notify_plugin_settings`] to
-/// detect cross-process `set_plugin_setting` writes.
-///
-/// Plugins whose manifest fails to load are silently skipped — there's
-/// nothing to notify and the plugin error already surfaces via `list_plugins`.
-fn compute_effective_plugin_settings(
-    db: &Database,
-) -> HashMap<(String, String), serde_json::Value> {
-    let mut out = HashMap::new();
-    let plugins = match db.list_effective_plugins() {
-        Ok(p) => p,
-        Err(_) => return out,
-    };
-    for (plugin, _src) in plugins {
-        if !plugin.enabled {
-            continue;
-        }
-        let manifest = match crate::session::PluginManifest::load(&plugin.path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let schema = &manifest.contributes.configuration;
-        if schema.is_empty() {
-            continue;
-        }
-        let effective = match db.list_plugin_settings_with_defaults(&plugin.name, schema) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        for setting in effective {
-            if let Ok(json) = serde_json::to_value(&setting.effective_value) {
-                out.insert((plugin.name.clone(), setting.key), json);
-            }
-        }
-    }
-    out
 }
 
 /// The role name used for admin sessions. Seeded into `global_roles` so it
@@ -431,14 +369,6 @@ pub enum AppMessage {
     },
     Resize(u16, u16),
     ExternalStateChange(StateDelta),
-    /// A VM has finished provisioning and is ready for a session.
-    VmReady {
-        vm_id: String,
-    },
-    /// VM provisioning failed.
-    VmFailed {
-        error: String,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,16 +407,6 @@ pub(crate) enum SkillEditorField {
     Path,
 }
 
-/// Lifecycle of a plugin install triggered from the TUI install modal.
-#[derive(Debug, Clone, Default)]
-pub(crate) enum PluginInstallStatus {
-    #[default]
-    Idle,
-    InProgress,
-    Success(String),
-    Error(String),
-}
-
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
 struct PendingDelete {
     session: Session,
@@ -495,23 +415,6 @@ struct PendingDelete {
 }
 
 /// Result sent by a background container/VM restore thread on completion.
-struct RestoreResult {
-    /// Sessions discovered on the restored backend (for adopt matching).
-    discovered: Vec<crate::agent::backend::DiscoveredSession>,
-}
-
-/// A background container/VM restoration task being polled by `tick()`.
-struct PendingRestore {
-    /// Placeholder session ID shown with `Provisioning` status.
-    session_id: SessionId,
-    /// Completion channel — receives `Ok(RestoreResult)` or `Err(message)`.
-    rx: mpsc::Receiver<Result<RestoreResult, String>>,
-    /// Progress step channel — latest message shown as `provisioning_step`.
-    step_rx: mpsc::Receiver<String>,
-    /// Original session data needed for adopt/respawn once the background work finishes.
-    shared: sync::SharedSession,
-}
-
 pub struct App {
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
@@ -533,8 +436,6 @@ pub struct App {
     pub(crate) pending_all_repos: Option<Vec<PathBuf>>,
     /// Normal (non-worktree) repos to include alongside worktree repos.
     pub(crate) pending_normal_repos: Vec<PathBuf>,
-    /// Repo paths collected for rsync into the VM (set during provisioning).
-    pub(crate) pending_vm_repo_paths: Option<Vec<PathBuf>>,
     pub(crate) pending_base_branch: Option<String>,
     pub(crate) pending_session_name: Option<String>,
     pub(crate) pending_spawn_config: Option<SessionConfig>,
@@ -608,56 +509,12 @@ pub struct App {
     /// Recently deleted session awaiting finalization or undo (Ctrl+Z).
     pending_delete: Option<PendingDelete>,
     // (Restore sessions modal state is now in self.modal)
-    /// VM provisioning in progress — stores the pending session config.
-    vm_provisioning: bool,
-    /// VM ID currently being provisioned.
-    vm_provisioning_id: Option<String>,
-    /// VM lifecycle manager (shared with background provisioning thread).
-    vm_manager: Option<Arc<std::sync::Mutex<crate::agent::VmManager>>>,
-    /// Receiver for VM provisioning results from background thread.
-    vm_provision_rx: Option<mpsc::Receiver<Result<String, String>>>,
-    /// Receiver for VM provisioning step updates (progress messages).
-    vm_provision_step_rx: Option<mpsc::Receiver<String>>,
-    /// Current VM provisioning step description shown in the status bar.
-    vm_provisioning_step: String,
-    /// Placeholder session shown in the session list during VM provisioning.
-    vm_placeholder: Option<SessionInfo>,
-    /// Session config preserved during VM provisioning for role selection after ready.
-    pending_vm_config: Option<SessionConfig>,
-    /// VM ID stored after provisioning completes, consumed by `do_spawn_session`.
-    pending_vm_id: Option<String>,
-    /// MCP servers to write into the VM working directory before spawning.
-    pending_vm_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
     /// Active text selection (click+drag), uses screen-absolute coordinates.
     pub(crate) text_selection: Option<Selection>,
     /// Cached text extracted from the frame buffer for the current selection.
     selected_text_cache: Option<String>,
     /// Persistent clipboard handle to avoid "dropped too quickly" warnings on Linux.
     clipboard: Option<arboard::Clipboard>,
-    /// Containerfile name selected by the user (consumed during provisioning).
-    pub(crate) pending_containerfile_name: Option<String>,
-    /// Container provisioning in progress.
-    container_provisioning: bool,
-    /// Container ID currently being provisioned.
-    container_provisioning_id: Option<String>,
-    /// Container lifecycle manager (shared with background provisioning thread).
-    container_manager: Option<Arc<std::sync::Mutex<crate::agent::ContainerManager>>>,
-    /// Receiver for container provisioning results from background thread.
-    container_provision_rx: Option<mpsc::Receiver<Result<String, String>>>,
-    /// Receiver for container provisioning step updates (progress messages).
-    container_provision_step_rx: Option<mpsc::Receiver<String>>,
-    /// Current container provisioning step description.
-    container_provisioning_step: String,
-    /// Placeholder session shown during container provisioning.
-    container_placeholder: Option<SessionInfo>,
-    /// Session config preserved during container provisioning for role selection after ready.
-    pending_container_config: Option<SessionConfig>,
-    /// Container ID stored after provisioning completes, consumed by `do_spawn_session`.
-    pending_container_id: Option<String>,
-    /// MCP servers to write into the container working directory before spawning.
-    pending_container_mcp_servers: Option<Vec<crate::session::McpServerConfig>>,
-    /// Background container/VM restoration tasks polled by `tick()`.
-    pending_restores: Vec<PendingRestore>,
     /// Reusable buffer for session elapsed-ms in the view (avoids per-frame allocation).
     pub(crate) session_elapsed_buf: Vec<u64>,
     /// Persistent list state for the session section (preserves scroll offset).
@@ -682,21 +539,6 @@ pub struct App {
     /// Cached global profiles (loaded from DB, used for the Ctrl+N profile
     /// picker step). An empty vec means the picker is skipped entirely.
     pub(crate) global_profiles: Vec<crate::session::ProfileConfig>,
-    /// Effective plugins (disk + registered) cached for the Plugins settings tab.
-    pub(crate) effective_plugins: Vec<(PluginConfig, PluginSource)>,
-    /// Index into effective_plugins for the Plugins settings tab.
-    pub(crate) plugin_list_index: usize,
-    /// Whether the plugin install modal is open (overlays the settings overlay).
-    pub(crate) show_plugin_install_modal: bool,
-    /// Buffer for the install modal's path/URL input.
-    pub(crate) plugin_install_input: TextInput,
-    /// Live status shown at the bottom of the install modal.
-    pub(crate) plugin_install_status: PluginInstallStatus,
-    /// Receiver for the result of an in-flight install (background thread).
-    pub(crate) plugin_install_rx: Option<mpsc::Receiver<Result<paths::InstallSummary, String>>>,
-    /// Name of the plugin pending uninstall confirmation. `None` when no
-    /// confirmation prompt is showing.
-    pub(crate) plugin_uninstall_confirm: Option<String>,
     /// Cached pending scheduled commands, refreshed every ~1 second.
     pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
@@ -706,18 +548,6 @@ pub struct App {
     /// `~/.config/thurbox/keybindings.json` on startup, falling back to defaults
     /// when the file is missing or malformed.
     pub(crate) keybindings: crate::session::KeyBindings,
-    /// Spawned process plugins. The TUI consults this on shutdown (graceful
-    /// `stop` op) and on `set_plugin_setting` writes (`config.updated` notify).
-    /// `None` if the host did not provide one — keeps headless test paths
-    /// (e.g. `App::stub`-based tests) compiling without forcing them through
-    /// the runtime.
-    pub(crate) plugin_runtime: Option<Arc<crate::plugin::PluginRuntime>>,
-    /// Per-(plugin, key) snapshot of the last-pushed effective JSON value.
-    /// On every tick we recompute the current effective value and notify the
-    /// plugin via `config.updated` for keys that changed — this is how
-    /// `set_plugin_setting` calls from `thurbox-mcp` (a separate process)
-    /// reach a running plugin.
-    pub(crate) plugin_setting_snapshot: HashMap<(String, String), serde_json::Value>,
 }
 
 /// Snapshot of editor field values for dirty detection.
@@ -736,8 +566,6 @@ impl App {
         backends: BackendRegistry,
         provider: Arc<dyn crate::agent::AgentProvider>,
         db: Database,
-        vm_manager: Option<Arc<std::sync::Mutex<crate::agent::VmManager>>>,
-        container_manager: Option<Arc<std::sync::Mutex<crate::agent::ContainerManager>>>,
     ) -> Self {
         // Load global roles from DB, seeding the default developer role if empty
         // and ensuring the admin role is always present (so Ctrl+A can preselect
@@ -769,9 +597,6 @@ impl App {
         // Load global profiles from DB. Empty means the Ctrl+N profile step
         // is skipped — users with no profiles see no UI change.
         let global_profiles = db.list_global_profiles().unwrap_or_default();
-
-        // Effective plugins (disk + registered, registered wins on collision).
-        let effective_plugins = db.list_effective_plugins().unwrap_or_default();
 
         // Resolve the persisted active theme (defaults to Default if unset/unknown).
         let active_theme = db
@@ -825,7 +650,6 @@ impl App {
             pending_repo_path: None,
             pending_all_repos: None,
             pending_normal_repos: Vec::new(),
-            pending_vm_repo_paths: None,
             pending_base_branch: None,
             pending_session_name: None,
             pending_spawn_config: None,
@@ -889,31 +713,9 @@ impl App {
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
             pending_delete: None,
-            vm_provisioning: false,
-            vm_provisioning_id: None,
-            vm_manager,
-            vm_provision_rx: None,
-            vm_provision_step_rx: None,
-            vm_provisioning_step: String::new(),
-            vm_placeholder: None,
-            pending_vm_config: None,
-            pending_vm_id: None,
-            pending_vm_mcp_servers: None,
             text_selection: None,
             selected_text_cache: None,
             clipboard: arboard::Clipboard::new().ok(),
-            pending_containerfile_name: None,
-            container_provisioning: false,
-            container_provisioning_id: None,
-            container_manager,
-            container_provision_rx: None,
-            container_provision_step_rx: None,
-            container_provisioning_step: String::new(),
-            container_placeholder: None,
-            pending_container_config: None,
-            pending_container_id: None,
-            pending_container_mcp_servers: None,
-            pending_restores: Vec::new(),
             session_elapsed_buf: Vec::new(),
             session_list_state: ratatui::widgets::ListState::default(),
             search_active: false,
@@ -925,106 +727,10 @@ impl App {
             global_skills,
             skill_list_index: 0,
             global_profiles,
-            effective_plugins,
-            plugin_list_index: 0,
-            show_plugin_install_modal: false,
-            plugin_install_input: TextInput::new(),
-            plugin_install_status: PluginInstallStatus::Idle,
-            plugin_install_rx: None,
-            plugin_uninstall_confirm: None,
-            plugin_runtime: None,
-            plugin_setting_snapshot: HashMap::new(),
             cached_pending_commands: Vec::new(),
             active_theme,
             keybindings,
         }
-    }
-
-    /// Attach a plugin runtime spawned during boot.
-    ///
-    /// Done after `App::new` because the runtime must be created from inside
-    /// `tokio::main` (it captures a `Handle`) and `App::new` is also called
-    /// from non-async test contexts. Pre-seeds the configuration snapshot
-    /// from current effective values so the first tick doesn't fire spurious
-    /// `config.updated` notifications for keys that already match.
-    pub fn set_plugin_runtime(&mut self, runtime: Arc<crate::plugin::PluginRuntime>) {
-        self.plugin_setting_snapshot = compute_effective_plugin_settings(&self.db);
-        self.plugin_runtime = Some(runtime);
-    }
-
-    /// Ensure the containerfiles template directory exists and is seeded with defaults.
-    ///
-    /// Creates `~/.local/share/thurbox/admin/containerfiles/default/` containing:
-    /// - `Containerfile` — the default container image definition
-    /// - `init-firewall.sh` — the firewall script referenced by the Containerfile
-    ///
-    /// Each template is a folder used as the build context.
-    pub fn ensure_containerfiles_dir(&self) {
-        let Some(dir) = crate::paths::containerfiles_directory() else {
-            return;
-        };
-        let default_dir = dir.join("default");
-        if let Err(e) = std::fs::create_dir_all(&default_dir) {
-            tracing::warn!("Failed to create default containerfile directory: {e}");
-            return;
-        }
-        // Always overwrite the "default" template to keep it in sync with the
-        // built-in version. Users who want a custom template should create a
-        // new named template instead of modifying "default".
-        if let Err(e) = std::fs::write(
-            default_dir.join("Containerfile"),
-            crate::agent::DEFAULT_CONTAINERFILE,
-        ) {
-            tracing::warn!("Failed to write default Containerfile: {e}");
-        }
-        if let Err(e) = std::fs::write(
-            default_dir.join("init-firewall.sh"),
-            crate::agent::INIT_FIREWALL_SH,
-        ) {
-            tracing::warn!("Failed to write init-firewall.sh: {e}");
-        }
-        if let Err(e) = std::fs::write(
-            default_dir.join("allowlist.conf"),
-            crate::agent::DEFAULT_ALLOWLIST,
-        ) {
-            tracing::warn!("Failed to write allowlist.conf: {e}");
-        }
-    }
-
-    /// Load available containerfile template names from the templates directory.
-    ///
-    /// Each template is a subdirectory containing a `Containerfile`. Returns
-    /// sorted directory names, excluding hidden directories and directories
-    /// without a `Containerfile`.
-    pub fn load_containerfiles(&self) -> Vec<String> {
-        let Some(dir) = crate::paths::containerfiles_directory() else {
-            return vec!["default".to_string()];
-        };
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => return vec!["default".to_string()],
-        };
-        let mut names: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') {
-                    return None;
-                }
-                // Only include if the directory contains a Containerfile
-                if e.path().join("Containerfile").exists() {
-                    Some(name)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        names.sort();
-        if names.is_empty() {
-            names.push("default".to_string());
-        }
-        names
     }
 
     /// Ensure the admin directory and `.mcp.json` exist.
@@ -1336,9 +1042,7 @@ impl App {
         worktrees: Vec<WorktreeInfo>,
         is_admin: bool,
     ) {
-        let is_vm_or_container =
-            self.pending_vm_id.is_some() || self.pending_container_id.is_some();
-        if is_vm_or_container || self.global_mcp_servers.is_empty() {
+        if self.global_mcp_servers.is_empty() {
             self.maybe_show_skill_picker(name, config, worktrees, is_admin);
         } else {
             self.pending_spawn_name = Some(name);
@@ -1479,8 +1183,6 @@ impl App {
             additional_dirs,
             role,
             permissions,
-            vm_id: session.info.vm_id.clone(),
-            container_id: session.info.container_id.clone(),
             fork_session_id: None,
             mcp_servers: vec![],
             skills: vec![],
@@ -1597,8 +1299,6 @@ impl App {
         let cwd = session.info.cwd.clone();
         let additional_dirs = session.info.additional_dirs.clone();
         let worktrees = session.info.worktrees.clone();
-        let vm_id = session.info.vm_id.clone();
-        let container_id = session.info.container_id.clone();
         let source_name = session.info.name.clone();
         let fork_session_id = session.info.agent_session_id.clone();
 
@@ -1610,8 +1310,6 @@ impl App {
             additional_dirs,
             role,
             permissions,
-            vm_id,
-            container_id,
             fork_session_id,
             mcp_servers: vec![],
             skills: vec![],
@@ -1783,8 +1481,6 @@ impl App {
             additional_dirs: Vec::new(),
             role: deleted.role,
             permissions,
-            vm_id: None,
-            container_id: None,
             fork_session_id: None,
             mcp_servers: vec![],
             skills: vec![],
@@ -1843,8 +1539,6 @@ impl App {
             AppMessage::MouseUp { x, y } => self.handle_mouse_up(x, y),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
             AppMessage::ExternalStateChange(delta) => self.handle_external_state_change(delta),
-            AppMessage::VmReady { vm_id } => self.handle_vm_ready(&vm_id),
-            AppMessage::VmFailed { error } => self.handle_vm_failed(&error),
         }
     }
 
@@ -2084,15 +1778,7 @@ impl App {
     /// Returns `true` when consumed, signalling the caller to skip the default
     /// "send to session" behaviour. New modals with text inputs should add
     /// their target here so paste works inside them.
-    fn try_paste_into_modal_input(&mut self, text: &str) -> bool {
-        if self.show_plugin_install_modal {
-            for c in text.chars() {
-                if !c.is_control() {
-                    self.plugin_install_input.insert(c);
-                }
-            }
-            return true;
-        }
+    fn try_paste_into_modal_input(&mut self, _text: &str) -> bool {
         false
     }
 
@@ -2295,92 +1981,25 @@ impl App {
             }
         }
 
-        // When a VM was just provisioned, use the VM backend and take the
-        // placeholder's name instead of generating a new one.
-        let vm_id = self.pending_vm_id.take();
-        let container_id = self.pending_container_id.take();
-        let placeholder = if vm_id.is_some() {
-            self.vm_placeholder.take()
-        } else if container_id.is_some() {
-            self.container_placeholder.take()
-        } else {
-            None
-        };
-        // Tie the session to its specific VM or container.
-        if vm_id.is_some() {
-            config.vm_id = vm_id.clone();
-        }
-        if container_id.is_some() {
-            config.container_id = container_id.clone();
-        }
-        let (backend, spawn_name): (Arc<dyn SessionBackend>, String) = if vm_id.is_some() {
-            let vm_name = placeholder
-                .as_ref()
-                .map(|ph| ph.name.clone())
-                .unwrap_or_else(|| name.clone());
-            match self.backends.get("qemu-vm") {
-                Some(b) => (Arc::clone(b), vm_name),
-                None => {
-                    self.set_error("QEMU VM backend disappeared".to_string());
-                    return;
-                }
-            }
-        } else if container_id.is_some() {
-            let dc_name = placeholder
-                .as_ref()
-                .map(|ph| ph.name.clone())
-                .unwrap_or_else(|| name.clone());
-            match self.backends.get("devcontainer") {
-                Some(b) => (Arc::clone(b), dc_name),
-                None => {
-                    self.set_error("Container backend disappeared".to_string());
-                    return;
-                }
-            }
-        } else {
-            (Arc::clone(self.backends.default_backend()), name)
-        };
+        let backend: Arc<dyn SessionBackend> = Arc::clone(self.backends.default_backend());
+        let spawn_name = name;
 
         // Stage selected skills so Claude Code auto-discovers them on startup.
         //
-        // For local sessions we build a per-session claude-home directory OUTSIDE
-        // the worktree and point Claude at it via CLAUDE_CONFIG_DIR. This avoids
-        // polluting the repo with `.claude/skills/` symlinks that could be
-        // accidentally committed.
-        //
-        // For VM/container backends the staging dir would need to be mounted
-        // into the guest, which is not yet supported — fall back to the
-        // historical .claude/skills/ injection in the worktree cwd.
+        // We build a per-session claude-home directory OUTSIDE the worktree and
+        // point Claude at it via CLAUDE_CONFIG_DIR. This avoids polluting the
+        // repo with `.claude/skills/` symlinks that could be accidentally
+        // committed.
         if !config.skills.is_empty() {
-            let is_local = vm_id.is_none() && container_id.is_none();
-            if is_local {
-                if let Some(ref sid) = config.agent_session_id {
-                    match crate::agent::skill_staging::prepare(sid, &config.skills) {
-                        Ok(path) => {
-                            config.permissions.env.insert(
-                                "CLAUDE_CONFIG_DIR".to_string(),
-                                path.display().to_string(),
-                            );
-                        }
-                        Err(e) => warn!("Failed to stage skills: {e}"),
+            if let Some(ref sid) = config.agent_session_id {
+                match crate::agent::skill_staging::prepare(sid, &config.skills) {
+                    Ok(path) => {
+                        config
+                            .permissions
+                            .env
+                            .insert("CLAUDE_CONFIG_DIR".to_string(), path.display().to_string());
                     }
-                }
-            } else if let Some(ref cwd) = config.cwd {
-                let skills_dir = cwd.join(".claude").join("skills");
-                if let Err(e) = std::fs::create_dir_all(&skills_dir) {
-                    warn!("Failed to create .claude/skills/: {e}");
-                } else {
-                    for skill in &config.skills {
-                        let link_path = skills_dir.join(&skill.name);
-                        if link_path.exists() || link_path.symlink_metadata().is_ok() {
-                            tracing::debug!(skill = %skill.name, "Skill already exists, skipping");
-                            continue;
-                        }
-                        #[cfg(unix)]
-                        if let Err(e) = std::os::unix::fs::symlink(&skill.path, &link_path) {
-                            warn!(skill = %skill.name, "Failed to symlink skill: {e}");
-                        }
-                    }
+                    Err(e) => warn!("Failed to stage skills: {e}"),
                 }
             }
         }
@@ -2388,61 +2007,6 @@ impl App {
         match Session::spawn(spawn_name, rows, cols, &config, &backend, &self.provider) {
             Ok(mut session) => {
                 session.info.worktrees = worktrees;
-                let session_id = session.info.id;
-
-                if let Some(ref vid) = vm_id {
-                    session.info.vm_id = Some(vid.clone());
-
-                    // Persist SSH port and QEMU PID from the running VM instance.
-                    let qemu_pid = if let Some(ref mgr) = self.vm_manager {
-                        if let Ok(mgr) = mgr.lock() {
-                            if let Some(inst) = mgr.get_instance(vid) {
-                                if let Err(e) = self.db.update_vm_ssh_port(vid, inst.ssh_port) {
-                                    error!(vm_id = %vid, "Failed to persist VM SSH port: {e}");
-                                }
-                            }
-                            mgr.qemu_pid(vid)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    if let Err(e) = self.db.update_vm_state(
-                        vid,
-                        &crate::session::VmState::Ready,
-                        qemu_pid,
-                        None,
-                    ) {
-                        error!(vm_id = %vid, "Failed to update VM state to Ready: {e}");
-                    }
-                }
-
-                if let Some(ref cid) = container_id {
-                    session.info.container_id = Some(cid.clone());
-
-                    // Update container state to Ready with docker ID.
-                    let docker_id = if let Some(ref mgr) = self.container_manager {
-                        if let Ok(mgr) = mgr.lock() {
-                            mgr.get_instance(cid)
-                                .and_then(|i| i.docker_container_id.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    if let Err(e) = self.db.update_container_state(
-                        cid,
-                        &crate::session::ContainerState::Ready,
-                        docker_id.as_deref(),
-                        None,
-                    ) {
-                        error!(container_id = %cid, "Failed to update container state to Ready: {e}");
-                    }
-                }
 
                 resolve_repo_display_names(&mut session.info);
                 self.sessions.push(session);
@@ -2455,35 +2019,7 @@ impl App {
                     self.sessions.last_mut().unwrap().info.is_admin = true;
                 }
 
-                // Sync to shared state for other instances — this upserts
-                // the session into the DB (required before FK references).
                 self.save_state();
-
-                // Link the VM record to this session. This must happen AFTER
-                // save_state() because vms.session_id has a FK constraint
-                // referencing sessions(id), so the session row must exist first.
-                if let Some(ref vid) = vm_id {
-                    let sid_str = session_id.to_string();
-                    if let Err(e) = self.db.update_vm_session(vid, &sid_str) {
-                        error!(
-                            vm_id = %vid,
-                            session_id = %sid_str,
-                            "Failed to link VM record to session: {e}"
-                        );
-                    }
-                }
-
-                // Link the container record to this session (same FK constraint).
-                if let Some(ref cid) = container_id {
-                    let sid_str = session_id.to_string();
-                    if let Err(e) = self.db.update_container_session(cid, &sid_str) {
-                        error!(
-                            container_id = %cid,
-                            session_id = %sid_str,
-                            "Failed to link container record to session: {e}"
-                        );
-                    }
-                }
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
@@ -2708,17 +2244,6 @@ impl App {
                         self.global_skills = skills;
                     }
                 }
-                if let Ok(plugins) = self.db.list_effective_plugins() {
-                    if plugins != self.effective_plugins {
-                        if self.plugin_list_index >= plugins.len() {
-                            self.plugin_list_index = plugins.len().saturating_sub(1);
-                        }
-                        self.effective_plugins = plugins;
-                    }
-                }
-                // Detect changes in plugin_settings (e.g., from a separate
-                // thurbox-mcp process) and notify each running plugin.
-                self.diff_and_notify_plugin_settings();
                 // Pick up theme changes made by other thurbox processes (e.g.
                 // an MCP `set_theme` call from another session).
                 if let Ok(Some(name)) = self.db.get_active_theme() {
@@ -2735,21 +2260,6 @@ impl App {
             }
         }
 
-        // Poll for plugin install results from background thread
-        self.poll_plugin_install();
-
-        // Poll for VM provisioning results from background thread
-        self.poll_vm_provision();
-
-        // Poll for container provisioning results from background thread
-        self.poll_container_provision();
-
-        // Poll for background session restore threads (container/VM startup on restart)
-        self.poll_session_restores();
-
-        // Process queued session commands from MCP
-        self.process_session_commands();
-
         // Process scheduled commands (once per second)
         self.process_scheduled_commands();
 
@@ -2761,40 +2271,6 @@ impl App {
         // Refresh system metrics periodically
         if self.tick_count % METRICS_REFRESH_TICKS == 0 {
             self.refresh_system_metrics();
-        }
-    }
-
-    /// Drain the plugin install result channel. On success, refresh the
-    /// effective plugins list so the new entry shows up in the Plugins tab.
-    fn poll_plugin_install(&mut self) {
-        let Some(rx) = self.plugin_install_rx.as_ref() else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(r) => r,
-            Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => Err("install thread died".to_string()),
-        };
-        self.plugin_install_rx = None;
-
-        match result {
-            Ok(summary) => {
-                self.plugin_install_status =
-                    PluginInstallStatus::Success(format!("Installed '{}'", summary.name));
-                self.set_status(
-                    StatusLevel::Success,
-                    format!("Installed plugin '{}'", summary.name),
-                );
-                if let Ok(plugins) = self.db.list_effective_plugins() {
-                    self.effective_plugins = plugins;
-                }
-                // Auto-close the modal after a successful install.
-                self.show_plugin_install_modal = false;
-                self.plugin_install_input.clear();
-            }
-            Err(msg) => {
-                self.plugin_install_status = PluginInstallStatus::Error(msg);
-            }
         }
     }
 
@@ -3124,8 +2600,6 @@ impl App {
                     additional_dirs: shared_session.additional_dirs.clone(),
                     role: shared_session.role.clone(),
                     permissions,
-                    vm_id: None,
-                    container_id: None,
                     fork_session_id: None,
                     mcp_servers: vec![],
                     skills: vec![],
@@ -3164,48 +2638,6 @@ impl App {
         // Detach from backend sessions without killing them — they persist in tmux.
         for session in self.sessions {
             session.detach();
-        }
-        // Note: plugin runtime shutdown happens in `main.rs` after this returns,
-        // so it can `await`. We can't `await` here without making `shutdown`
-        // async, which ripples through every test that constructs an App.
-    }
-
-    /// Compare the current effective plugin settings against the snapshot and
-    /// fire `config.updated` for any keys that changed. No-op if no plugin
-    /// runtime is attached or no plugins are running.
-    pub(crate) fn diff_and_notify_plugin_settings(&mut self) {
-        let Some(runtime) = self.plugin_runtime.clone() else {
-            return;
-        };
-        let current = compute_effective_plugin_settings(&self.db);
-        if current == self.plugin_setting_snapshot {
-            return;
-        }
-        // Find changes (new + updated keys). Removed keys are rare in practice
-        // (only when a plugin's manifest stops declaring a key); they don't
-        // need a notification because the plugin no longer cares.
-        let mut changes: Vec<(String, String, serde_json::Value)> = Vec::new();
-        for ((plugin, key), value) in &current {
-            if self
-                .plugin_setting_snapshot
-                .get(&(plugin.clone(), key.clone()))
-                != Some(value)
-            {
-                changes.push((plugin.clone(), key.clone(), value.clone()));
-            }
-        }
-        self.plugin_setting_snapshot = current;
-        if changes.is_empty() {
-            return;
-        }
-        // Fire notifications. We're inside `tick()` on the main runtime; use
-        // `Handle::current().spawn` so each notify happens off the critical path.
-        let handle = tokio::runtime::Handle::current();
-        for (plugin, key, value) in changes {
-            let runtime = runtime.clone();
-            handle.spawn(async move {
-                runtime.notify_config_updated(&plugin, &key, &value).await;
-            });
         }
     }
 
@@ -3483,75 +2915,17 @@ impl App {
 
     /// Restore sessions from the database on startup.
     ///
-    /// Local-tmux sessions are restored synchronously (fast — just tmux queries).
-    /// Container and VM sessions are restored asynchronously: a placeholder session
-    /// with `Provisioning` status is shown immediately, and a background thread
-    /// handles the expensive container inspect/start + control mode setup.
-    /// `poll_session_restores()` in `tick()` finishes the adopt/respawn once ready.
+    /// All sessions live on the local-tmux backend and are restored
+    /// synchronously by querying tmux for existing windows.
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
 
-        // Partition sessions by backend type.
         let mut local_sessions = Vec::new();
-        let mut async_sessions = Vec::new();
         for shared in sessions {
             if shared.agent_session_id.is_none() {
                 continue; // Skip sessions without a claude session ID
             }
-            match shared.backend_type.as_str() {
-                "devcontainer" | "qemu-vm" => async_sessions.push(shared),
-                _ => local_sessions.push(shared),
-            }
-        }
-
-        // --- Async sessions: create placeholders + spawn background threads ---
-        for shared in async_sessions {
-            let session_id = shared.id;
-
-            // Create a placeholder session with Provisioning status.
-            let mut placeholder = SessionInfo::new(shared.name.clone());
-            placeholder.id = session_id;
-            placeholder.status = SessionStatus::Provisioning;
-            if shared.backend_type == "devcontainer" {
-                placeholder.container_id = self
-                    .db
-                    .get_container_by_session(&session_id.to_string())
-                    .ok()
-                    .flatten()
-                    .map(|r| r.id);
-            } else if shared.backend_type == "qemu-vm" {
-                placeholder.vm_id = self
-                    .db
-                    .get_vm_by_session(&session_id.to_string())
-                    .ok()
-                    .flatten()
-                    .map(|r| r.id);
-            }
-            let step_label = if shared.backend_type == "devcontainer" {
-                "Restoring container..."
-            } else {
-                "Restoring VM..."
-            };
-            placeholder.provisioning_step = Some(step_label.to_string());
-
-            self.sessions.push(Session::placeholder(placeholder));
-
-            // Gather data needed by the background thread (DB lookups are fast).
-            let (tx, rx) = mpsc::channel();
-            let (step_tx, step_rx) = mpsc::channel();
-
-            if shared.backend_type == "devcontainer" {
-                self.spawn_container_restore_thread(&shared, tx, step_tx);
-            } else {
-                self.spawn_vm_restore_thread(&shared, tx, step_tx);
-            }
-
-            self.pending_restores.push(PendingRestore {
-                session_id,
-                rx,
-                step_rx,
-                shared,
-            });
+            local_sessions.push(shared);
         }
 
         // --- Local-tmux sessions: restore synchronously (fast) ---
@@ -3574,231 +2948,6 @@ impl App {
 
         // Claim ownership of restored sessions in the shared state
         self.save_state();
-    }
-
-    /// Spawn a background thread to restore a container for a session.
-    fn spawn_container_restore_thread(
-        &self,
-        shared: &sync::SharedSession,
-        tx: mpsc::Sender<Result<RestoreResult, String>>,
-        step_tx: mpsc::Sender<String>,
-    ) {
-        let session_id_str = shared.id.to_string();
-
-        // Look up container record from DB (fast).
-        let container_record = match self.db.get_container_by_session(&session_id_str) {
-            Ok(Some(rec)) => rec,
-            Ok(None) => {
-                warn!(session = %shared.id, "No container record found for devcontainer session");
-                let _ = tx.send(Err("No container record found".to_string()));
-                return;
-            }
-            Err(e) => {
-                warn!(session = %shared.id, "Failed to look up container record: {e}");
-                let _ = tx.send(Err(format!("DB lookup failed: {e}")));
-                return;
-            }
-        };
-
-        let docker_id = match container_record.docker_container_id {
-            Some(ref id) => id.clone(),
-            None => {
-                let _ = tx.send(Err(
-                    "Container record has no docker container ID".to_string()
-                ));
-                return;
-            }
-        };
-
-        let manager = match self.container_manager {
-            Some(ref m) => Arc::clone(m),
-            None => {
-                let _ = tx.send(Err("No ContainerManager available".to_string()));
-                return;
-            }
-        };
-
-        let backend = match self.backends.get("devcontainer") {
-            Some(b) => Arc::clone(b),
-            None => {
-                let _ = tx.send(Err("devcontainer backend not available".to_string()));
-                return;
-            }
-        };
-
-        let config = crate::session::ContainerConfig {
-            image: container_record.image.clone(),
-            cpus: container_record.cpus,
-            memory_mb: container_record.memory_mb,
-            firewall_enabled: container_record.firewall_enabled,
-            containerfile: container_record.containerfile.clone(),
-        };
-
-        let workspace_dir = shared
-            .cwd
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("/workspaces"));
-        let container_id = container_record.id.clone();
-        let session_id = shared.id;
-        let tx_fallback = tx.clone();
-
-        let spawn_result = std::thread::Builder::new()
-            .name(format!(
-                "dc-restore-{}",
-                &container_id[..8.min(container_id.len())]
-            ))
-            .spawn(move || {
-                let _ = step_tx.send("Starting container...".to_string());
-
-                // Restore container (inspect/start/wait for readiness).
-                let mgr = match manager.lock() {
-                    Ok(m) => m,
-                    Err(e) => {
-                        let _ = tx.send(Err(format!("ContainerManager lock poisoned: {e}")));
-                        return;
-                    }
-                };
-                if let Err(e) =
-                    mgr.restore_container(&container_id, &docker_id, &config, &workspace_dir)
-                {
-                    let _ = tx.send(Err(format!("Container not reachable: {e:#}")));
-                    return;
-                }
-                drop(mgr);
-
-                let _ = step_tx.send("Connecting to container...".to_string());
-
-                // Establish docker exec control mode connection.
-                if let Err(e) = backend.prepare_vm(&container_id) {
-                    let _ = tx.send(Err(format!("Control mode failed: {e:#}")));
-                    return;
-                }
-
-                // Discover sessions on this backend.
-                let discovered = match backend.discover() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(
-                            container_id = %container_id,
-                            session = %session_id,
-                            "Discover failed after container restore: {e}"
-                        );
-                        Vec::new()
-                    }
-                };
-
-                info!(
-                    container_id = %container_id,
-                    session = %session_id,
-                    discovered = discovered.len(),
-                    "Container restored and control mode established"
-                );
-                let _ = tx.send(Ok(RestoreResult { discovered }));
-            });
-
-        if let Err(e) = spawn_result {
-            error!("Failed to spawn container restore thread: {e}");
-            let _ = tx_fallback.send(Err(format!("Thread spawn failed: {e}")));
-        }
-    }
-
-    /// Spawn a background thread to restore a VM for a session.
-    fn spawn_vm_restore_thread(
-        &self,
-        shared: &sync::SharedSession,
-        tx: mpsc::Sender<Result<RestoreResult, String>>,
-        step_tx: mpsc::Sender<String>,
-    ) {
-        let session_id_str = shared.id.to_string();
-
-        // Look up VM record from DB (fast).
-        let vm_record = match self.db.get_vm_by_session(&session_id_str) {
-            Ok(Some(rec)) => rec,
-            Ok(None) => {
-                warn!(session = %shared.id, "No VM record found for VM session");
-                let _ = tx.send(Err("No VM record found".to_string()));
-                return;
-            }
-            Err(e) => {
-                warn!(session = %shared.id, "Failed to look up VM record: {e}");
-                let _ = tx.send(Err(format!("DB lookup failed: {e}")));
-                return;
-            }
-        };
-
-        let manager = match self.vm_manager {
-            Some(ref m) => Arc::clone(m),
-            None => {
-                let _ = tx.send(Err("No VmManager available".to_string()));
-                return;
-            }
-        };
-
-        let backend = match self.backends.get("qemu-vm") {
-            Some(b) => Arc::clone(b),
-            None => {
-                let _ = tx.send(Err("qemu-vm backend not available".to_string()));
-                return;
-            }
-        };
-
-        let vm_id = vm_record.id.clone();
-        let session_id = shared.id;
-        let tx_fallback = tx.clone();
-
-        let spawn_result = std::thread::Builder::new()
-            .name(format!("vm-restore-{}", &vm_id[..8.min(vm_id.len())]))
-            .spawn(move || {
-                let _ = step_tx.send("Restoring VM...".to_string());
-
-                // Restore VM (verify SSH reachable).
-                let mgr = match manager.lock() {
-                    Ok(m) => m,
-                    Err(e) => {
-                        let _ = tx.send(Err(format!("VmManager lock poisoned: {e}")));
-                        return;
-                    }
-                };
-                if let Err(e) = mgr.restore_vm(&vm_record) {
-                    let _ = tx.send(Err(format!("VM not reachable: {e:#}")));
-                    return;
-                }
-                drop(mgr);
-
-                let _ = step_tx.send("Connecting to VM...".to_string());
-
-                // Establish SSH control mode connection.
-                if let Err(e) = backend.prepare_vm(&vm_id) {
-                    let _ = tx.send(Err(format!("SSH control mode failed: {e:#}")));
-                    return;
-                }
-
-                // Discover sessions on this backend.
-                let discovered = match backend.discover() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(
-                            vm_id = %vm_id,
-                            session = %session_id,
-                            "Discover failed after VM restore: {e}"
-                        );
-                        Vec::new()
-                    }
-                };
-
-                info!(
-                    vm_id = %vm_id,
-                    session = %session_id,
-                    discovered = discovered.len(),
-                    "VM restored and control mode established"
-                );
-                let _ = tx.send(Ok(RestoreResult { discovered }));
-            });
-
-        if let Err(e) = spawn_result {
-            error!("Failed to spawn VM restore thread: {e}");
-            let _ = tx_fallback.send(Err(format!("Thread spawn failed: {e}")));
-        }
     }
 
     /// Restore a single local-tmux session synchronously (used during startup).
@@ -3902,335 +3051,12 @@ impl App {
                 additional_dirs: shared.additional_dirs,
                 role,
                 permissions,
-                vm_id: None,
-                container_id: None,
                 fork_session_id: None,
                 mcp_servers: vec![],
                 skills: vec![],
             };
             self.do_spawn_session(name, &config, worktrees, is_admin);
         }
-    }
-
-    /// Poll background session restore threads for completion.
-    ///
-    /// Called from `tick()`. Drains step updates and checks for completion.
-    /// When a restore completes, the placeholder session is replaced with a
-    /// real session (adopted or respawned with `--resume`).
-    fn poll_session_restores(&mut self) {
-        if self.pending_restores.is_empty() {
-            return;
-        }
-
-        // Drain step updates — update placeholder provisioning_step.
-        for pending in &self.pending_restores {
-            let mut latest_step = None;
-            while let Ok(step) = pending.step_rx.try_recv() {
-                latest_step = Some(step);
-            }
-            if let Some(step) = latest_step {
-                // Find the placeholder session and update its provisioning step.
-                if let Some(session) = self
-                    .sessions
-                    .iter_mut()
-                    .find(|s| s.info.id == pending.session_id)
-                {
-                    session.info.provisioning_step = Some(step);
-                }
-            }
-        }
-
-        // Check for completed restores (drain finished entries).
-        let mut completed_indices = Vec::new();
-        for (i, pending) in self.pending_restores.iter().enumerate() {
-            match pending.rx.try_recv() {
-                Ok(result) => {
-                    completed_indices.push((i, result));
-                }
-                Err(mpsc::TryRecvError::Empty) => {} // Still in progress
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    completed_indices
-                        .push((i, Err("Restore thread terminated unexpectedly".to_string())));
-                }
-            }
-        }
-
-        // Process completed restores in reverse order so indices stay valid.
-        for (i, result) in completed_indices.into_iter().rev() {
-            let pending = self.pending_restores.remove(i);
-            match result {
-                Ok(restore_result) => {
-                    self.handle_restore_complete(pending, restore_result);
-                }
-                Err(error) => {
-                    self.handle_restore_failed(pending, &error);
-                }
-            }
-        }
-    }
-
-    /// Handle successful background restore: adopt or respawn the session.
-    fn handle_restore_complete(&mut self, pending: PendingRestore, result: RestoreResult) {
-        let shared = pending.shared;
-        let session_id = shared.id;
-        let name = shared.name.clone();
-
-        let role = if shared.role.is_empty() {
-            DEFAULT_ROLE_NAME.to_string()
-        } else {
-            shared.role.clone()
-        };
-
-        let worktrees: Vec<WorktreeInfo> =
-            shared.worktrees.iter().cloned().map(Into::into).collect();
-
-        let agent_session_id = match shared.agent_session_id {
-            Some(ref id) => id.clone(),
-            None => return,
-        };
-
-        // Remove the placeholder session.
-        self.sessions.retain(|s| s.info.id != session_id);
-
-        let matching_discovered = Self::find_matching_discovered(&shared, &result.discovered);
-
-        let backend = self
-            .backends
-            .get(&shared.backend_type)
-            .cloned()
-            .unwrap_or_else(|| self.backends.default_backend().clone());
-
-        // Try to adopt the existing backend session.
-        let env = self.resolve_role_permissions(&role).env;
-        let adopted = matching_discovered.and_then(|disc| {
-            let (rows, cols) = self.content_area_size();
-            match Session::adopt(
-                name.clone(),
-                rows,
-                cols,
-                &disc.backend_id,
-                &backend,
-                &self.provider,
-                env.clone(),
-            ) {
-                Ok(session) => Some(session),
-                Err(e) => {
-                    error!("Failed to adopt session '{name}': {e}");
-                    None
-                }
-            }
-        });
-
-        if let Some(mut session) = adopted {
-            session.info.id = session_id;
-            session.info.agent_session_id = Some(agent_session_id.clone());
-            session.info.cwd = shared.cwd.clone();
-            session.info.additional_dirs = shared.additional_dirs.clone();
-            session.info.role = role;
-            session.info.worktrees = worktrees;
-            resolve_repo_display_names(&mut session.info);
-
-            // Restore vm_id on adopted VM sessions.
-            if shared.backend_type == "qemu-vm" {
-                if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string()) {
-                    session.info.vm_id = Some(vm_record.id);
-                }
-            }
-
-            // Restore container_id on adopted devcontainer sessions.
-            if shared.backend_type == "devcontainer" {
-                if let Ok(Some(container_record)) =
-                    self.db.get_container_by_session(&session_id.to_string())
-                {
-                    session.info.container_id = Some(container_record.id);
-                }
-            }
-
-            // Re-adopt shell pane if one was persisted.
-            if let Some(shell_bid) = &shared.shell_backend_id {
-                if result
-                    .discovered
-                    .iter()
-                    .any(|d| d.backend_id == *shell_bid && d.is_alive)
-                {
-                    let (rows, cols) = self.content_area_size();
-                    if let Err(e) = session.adopt_shell_pane(shell_bid, rows, cols) {
-                        tracing::warn!("Failed to re-adopt shell pane: {e}");
-                    }
-                }
-            }
-
-            self.sessions.push(session);
-            info!(session = %session_id, name = %name, "Session restored (adopted)");
-        } else {
-            // No matching backend session or adopt failed — spawn new with --resume.
-            if let Err(e) = self.db.soft_delete_session(session_id) {
-                error!("Failed to soft-delete stale session {session_id}: {e}");
-            }
-
-            let permissions = self.resolve_role_permissions(&role);
-
-            // Check if the backend resource is alive for respawn routing.
-            let mut resolved_vm_id = None;
-            let mut resolved_container_id = None;
-
-            if shared.backend_type == "qemu-vm" {
-                if let Ok(Some(vm_record)) = self.db.get_vm_by_session(&session_id.to_string()) {
-                    let vm_alive = self.vm_manager.as_ref().is_some_and(|mgr| {
-                        mgr.lock()
-                            .ok()
-                            .and_then(|m| m.vm_state(&vm_record.id))
-                            .is_some_and(|s| s == crate::session::VmState::Ready)
-                    });
-                    if vm_alive {
-                        resolved_vm_id = Some(vm_record.id);
-                    } else {
-                        warn!(
-                            session = %session_id,
-                            vm_id = %vm_record.id,
-                            "VM died — session will be re-spawned with --resume on local-tmux"
-                        );
-                        let _ = self.db.update_vm_state(
-                            &vm_record.id,
-                            &crate::session::VmState::Stopped,
-                            None,
-                            Some("VM not reachable after restart"),
-                        );
-                    }
-                }
-            } else if shared.backend_type == "devcontainer" {
-                if let Ok(Some(container_record)) =
-                    self.db.get_container_by_session(&session_id.to_string())
-                {
-                    let container_alive = self.container_manager.as_ref().is_some_and(|mgr| {
-                        mgr.lock()
-                            .ok()
-                            .and_then(|m| m.get_instance(&container_record.id))
-                            .is_some_and(|inst| inst.state == crate::session::ContainerState::Ready)
-                    });
-                    if container_alive {
-                        info!(
-                            session = %session_id,
-                            container_id = %container_record.id,
-                            "Container alive — re-spawning session inside container"
-                        );
-                        resolved_container_id = Some(container_record.id.clone());
-                        self.pending_container_id = Some(container_record.id);
-                    } else {
-                        warn!(
-                            session = %session_id,
-                            container_id = %container_record.id,
-                            "Container not alive — session will be re-spawned on local-tmux"
-                        );
-                        let _ = self.db.update_container_state(
-                            &container_record.id,
-                            &crate::session::ContainerState::Stopped,
-                            None,
-                            Some("Container not reachable after restart"),
-                        );
-                    }
-                }
-            }
-
-            let resume_session_id =
-                crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &permissions);
-            let resume_flag = if resume_session_id.is_some() {
-                "--resume"
-            } else {
-                "--session-id"
-            };
-            let config = SessionConfig {
-                resume_session_id,
-                agent_session_id: Some(agent_session_id),
-                cwd: shared.cwd,
-                additional_dirs: shared.additional_dirs,
-                role,
-                permissions,
-                vm_id: resolved_vm_id,
-                container_id: resolved_container_id,
-                fork_session_id: None,
-                mcp_servers: vec![],
-                skills: vec![],
-            };
-            self.do_spawn_session(name, &config, worktrees, false);
-            info!(session = %session_id, "Session restored (respawned with {resume_flag})");
-        }
-
-        self.save_state();
-    }
-
-    /// Handle a failed background restore: remove placeholder, fall back to local-tmux.
-    fn handle_restore_failed(&mut self, pending: PendingRestore, error: &str) {
-        let session_id = pending.session_id;
-        warn!(session = %session_id, "Background restore failed: {error}");
-
-        // Try to respawn on local-tmux as a fallback.
-        let shared = pending.shared;
-        let name = shared.name.clone();
-        let role = if shared.role.is_empty() {
-            DEFAULT_ROLE_NAME.to_string()
-        } else {
-            shared.role.clone()
-        };
-        let worktrees: Vec<WorktreeInfo> =
-            shared.worktrees.iter().cloned().map(Into::into).collect();
-
-        // Remove the placeholder session.
-        self.sessions.retain(|s| s.info.id != session_id);
-
-        if let Some(ref agent_session_id) = shared.agent_session_id {
-            // Soft-delete the stale entry and respawn on local-tmux with --resume.
-            if let Err(e) = self.db.soft_delete_session(session_id) {
-                error!("Failed to soft-delete stale session {session_id}: {e}");
-            }
-
-            // Mark the container/VM as stopped in the DB.
-            if shared.backend_type == "devcontainer" {
-                if let Ok(Some(rec)) = self.db.get_container_by_session(&session_id.to_string()) {
-                    let _ = self.db.update_container_state(
-                        &rec.id,
-                        &crate::session::ContainerState::Stopped,
-                        None,
-                        Some(error),
-                    );
-                }
-            } else if shared.backend_type == "qemu-vm" {
-                if let Ok(Some(rec)) = self.db.get_vm_by_session(&session_id.to_string()) {
-                    let _ = self.db.update_vm_state(
-                        &rec.id,
-                        &crate::session::VmState::Stopped,
-                        None,
-                        Some(error),
-                    );
-                }
-            }
-
-            let permissions = self.resolve_role_permissions(&role);
-            let resume_session_id =
-                crate::session_ops::resume_id_if_transcript_exists(agent_session_id, &permissions);
-
-            let config = SessionConfig {
-                resume_session_id,
-                agent_session_id: Some(agent_session_id.clone()),
-                cwd: shared.cwd,
-                additional_dirs: shared.additional_dirs,
-                role,
-                permissions,
-                vm_id: None,
-                container_id: None,
-                fork_session_id: None,
-                mcp_servers: vec![],
-                skills: vec![],
-            };
-
-            warn!(
-                session = %session_id,
-                "Falling back to local-tmux for session after restore failure"
-            );
-            self.do_spawn_session(name, &config, worktrees, false);
-        }
-
-        self.save_state();
     }
 
     /// Find a discovered backend session matching a shared session.
@@ -4272,207 +3098,6 @@ impl App {
             default_developer_permissions()
         } else {
             RolePermissions::default()
-        }
-    }
-
-    /// Process pending session commands from the MCP command queue.
-    fn process_session_commands(&mut self) {
-        let commands = match self.db.pending_session_commands() {
-            Ok(cmds) => cmds,
-            Err(e) => {
-                error!("Failed to fetch session commands: {e}");
-                return;
-            }
-        };
-
-        for cmd in commands {
-            if cmd.command == "restart" {
-                self.handle_restart_command(&cmd);
-            } else if let Some(payload) = cmd.command.strip_prefix("spawn:") {
-                self.handle_spawn_command(payload);
-            } else {
-                error!("Unknown session command: {}", cmd.command);
-            }
-
-            if let Err(e) = self.db.mark_command_processed(cmd.id) {
-                error!("Failed to mark command {} as processed: {e}", cmd.id);
-            }
-        }
-    }
-
-    /// Handle a spawn command enqueued by the MCP `create_session` tool.
-    fn handle_spawn_command(&mut self, payload: &str) {
-        let v: serde_json::Value = match serde_json::from_str(payload) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Invalid spawn payload: {e}");
-                return;
-            }
-        };
-
-        let name = v
-            .get("name")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let repo_path = v
-            .get("repo_path")
-            .and_then(|x| x.as_str())
-            .map(PathBuf::from);
-        let Some(repo_path) = repo_path else {
-            error!("spawn command missing repo_path");
-            return;
-        };
-        let role = v.get("role").and_then(|x| x.as_str()).map(str::to_string);
-        let worktree_branch = v
-            .get("worktree_branch")
-            .and_then(|x| x.as_str())
-            .map(str::to_string);
-        let base_branch = v
-            .get("base_branch")
-            .and_then(|x| x.as_str())
-            .unwrap_or("main")
-            .to_string();
-        let mcp_server_names: Vec<String> = v
-            .get("mcp_servers")
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|e| e.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let skill_names: Vec<String> = v
-            .get("skills")
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|e| e.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let agent_session_id = v
-            .get("agent_session_id")
-            .and_then(|x| x.as_str())
-            .map(str::to_string);
-
-        // Resolve role permissions.
-        let (role_name, permissions) = match role.as_deref() {
-            Some(r) if !r.is_empty() => (r.to_string(), self.resolve_role_permissions(r)),
-            _ => match self.global_roles.len() {
-                1 => (
-                    self.global_roles[0].name.clone(),
-                    self.global_roles[0].permissions.clone(),
-                ),
-                _ => (
-                    DEFAULT_ROLE_NAME.to_string(),
-                    default_developer_permissions(),
-                ),
-            },
-        };
-
-        // Resolve MCP servers and skills by name.
-        let mcp_servers: Vec<McpServerConfig> = self
-            .global_mcp_servers
-            .iter()
-            .filter(|s| mcp_server_names.iter().any(|n| n == &s.name))
-            .cloned()
-            .collect();
-        let skills: Vec<SkillConfig> = self
-            .effective_skills()
-            .into_iter()
-            .filter(|s| skill_names.iter().any(|n| n == &s.name))
-            .collect();
-
-        // Optionally create a git worktree.
-        let (cwd, worktrees) = if let Some(branch) = worktree_branch {
-            match git::create_worktree(&repo_path, &branch, &base_branch) {
-                Ok(wt_path) => {
-                    let info = WorktreeInfo {
-                        repo_path: repo_path.clone(),
-                        worktree_path: wt_path.clone(),
-                        branch,
-                    };
-                    (wt_path, vec![info])
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to create worktree in {} off {}: {e}",
-                        repo_path.display(),
-                        base_branch
-                    );
-                    return;
-                }
-            }
-        } else {
-            (repo_path, Vec::new())
-        };
-
-        let config = SessionConfig {
-            agent_session_id,
-            cwd: Some(cwd),
-            role: role_name,
-            permissions,
-            mcp_servers,
-            skills,
-            ..SessionConfig::default()
-        };
-
-        self.do_spawn_session(name, &config, worktrees, false);
-    }
-
-    /// Handle a restart command from the session command queue.
-    fn handle_restart_command(&mut self, cmd: &SessionCommand) {
-        let Some(session_idx) = self
-            .sessions
-            .iter()
-            .position(|s| s.info.id == cmd.session_id)
-        else {
-            error!("Restart command for unknown session: {}", cmd.session_id);
-            return;
-        };
-
-        let session = &self.sessions[session_idx];
-        let Some(agent_session_id) = session.info.agent_session_id.clone() else {
-            error!(
-                "Cannot restart session {} without agent_session_id",
-                cmd.session_id
-            );
-            return;
-        };
-
-        let role = session.info.role.clone();
-        let cwd = session.info.cwd.clone();
-        let additional_dirs = session.info.additional_dirs.clone();
-
-        let permissions = self.resolve_role_permissions(&role);
-
-        let config = SessionConfig {
-            resume_session_id: Some(agent_session_id.clone()),
-            agent_session_id: Some(agent_session_id),
-            cwd,
-            additional_dirs,
-            role,
-            permissions,
-            vm_id: session.info.vm_id.clone(),
-            container_id: session.info.container_id.clone(),
-            fork_session_id: None,
-            mcp_servers: vec![],
-            skills: vec![],
-        };
-
-        let (rows, cols) = self.content_area_size();
-        let session = &mut self.sessions[session_idx];
-        match session.restart(&config, rows, cols) {
-            Ok(()) => {
-                self.save_state();
-            }
-            Err(e) => {
-                error!(
-                    "Failed to restart session {} via command: {e}",
-                    cmd.session_id
-                );
-            }
         }
     }
 
@@ -5024,8 +3649,6 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db(),
-            None,
-            None,
         );
         for _i in 0..count {
             let session = Session::stub("test-session", &backend_arc, &provider);
@@ -5181,30 +3804,14 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(
-            50,
-            100,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let app = App::new(50, 100, stub_backend(), stub_provider(), test_db());
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(
-            6,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let app = App::new(6, 80, stub_backend(), stub_provider(), test_db());
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -5218,29 +3825,13 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -5248,128 +3839,16 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
 
     // --- Role editor tests ---
 
-    /// Regression: plugin-contributed roles appear in the session-create
-    /// role-selector modal, not just registry roles. Without this, picking
-    /// the "orchestrator" role at session creation isn't possible through
-    /// the TUI.
-    #[test]
-    fn finish_prepare_spawn_surfaces_plugin_roles_in_picker() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let plugins_dir = crate::paths::plugins_directory().unwrap();
-        let p = plugins_dir.join("orch-bundle");
-        std::fs::create_dir_all(p.join("roles")).unwrap();
-        std::fs::write(
-            p.join("roles/role.toml"),
-            "name = \"orchestrator\"\ndescription = \"from plugin\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            p.join("thurbox-plugin.toml"),
-            "name = \"orch-bundle\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n\
-             [[contributes.roles]]\nname = \"orchestrator\"\npath = \"roles/role.toml\"\n",
-        )
-        .unwrap();
-
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
-        // Clear seeded profiles so finish_prepare_spawn skips the profile
-        // picker and routes directly to the role picker.
-        app.global_profiles.clear();
-        app.finish_prepare_spawn(
-            "session-1".to_string(),
-            SessionConfig::default(),
-            Vec::new(),
-        );
-        match app.modal {
-            super::modals::Modal::RoleSelector(ref m) => {
-                assert!(
-                    m.roles.iter().any(|r| r.name == "orchestrator"),
-                    "role picker should include plugin-contributed 'orchestrator'"
-                );
-            }
-            _ => panic!("expected RoleSelector modal"),
-        }
-    }
-
-    /// Regression: `resolve_role_permissions` must pick up plugin-contributed
-    /// roles (e.g. `orchestrator` role contributed by the orchestrator plugin)
-    /// so that tools like Write/Edit are actually blocked at session spawn.
-    #[test]
-    fn resolve_role_permissions_picks_up_plugin_contributed_role() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let plugins_dir = crate::paths::plugins_directory().unwrap();
-        let p = plugins_dir.join("orch-bundle");
-        std::fs::create_dir_all(p.join("roles")).unwrap();
-        std::fs::write(
-            p.join("roles/role.toml"),
-            "name = \"orchestrator\"\n\
-             description = \"test\"\n\
-             disallowed_tools = [\"Write\", \"Edit\", \"MultiEdit\", \"NotebookEdit\"]\n",
-        )
-        .unwrap();
-        std::fs::write(
-            p.join("thurbox-plugin.toml"),
-            "name = \"orch-bundle\"\nversion = \"0.1.0\"\nthurbox_plugin_api = 1\n\
-             [[contributes.roles]]\nname = \"orchestrator\"\npath = \"roles/role.toml\"\n",
-        )
-        .unwrap();
-
-        let app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
-        let perms = app.resolve_role_permissions("orchestrator");
-        assert_eq!(
-            perms.disallowed_tools,
-            vec![
-                "Write".to_string(),
-                "Edit".to_string(),
-                "MultiEdit".to_string(),
-                "NotebookEdit".to_string(),
-            ]
-        );
-    }
-
     #[test]
     fn open_role_editor_has_seeded_developer_role() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         assert!(app.show_role_editor);
         // Seeded: developer + admin (admin appended).
@@ -5390,7 +3869,7 @@ mod tests {
             permissions: RolePermissions::default(),
         }])
         .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
         app.open_role_editor();
         // DB had "ops"; App::new appends "admin" to guarantee it exists.
         assert_eq!(app.global_roles.len(), 2);
@@ -5400,15 +3879,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "reviewer".chars() {
@@ -5432,15 +3903,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         for c in "restricted".chars() {
@@ -5450,15 +3913,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         // Try to submit with empty name
@@ -5489,15 +3944,7 @@ mod tests {
 
     #[test]
     fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         // App::new() seeds the developer role and appends the admin role,
         // so we start with 2.
         let initial_count = app.global_roles.len();
@@ -5544,7 +3991,7 @@ mod tests {
             },
         }])
         .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -5566,15 +4013,7 @@ mod tests {
 
     #[test]
     fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_name.set("new-role");
@@ -5606,7 +4045,7 @@ mod tests {
             },
         };
         db.replace_global_roles(&[reviewer]).unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -5626,15 +4065,7 @@ mod tests {
     #[test]
     fn role_editor_tab_cycles_fields_forward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -5656,15 +4087,7 @@ mod tests {
     #[test]
     fn role_editor_backtab_cycles_fields_backward() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -5685,15 +4108,7 @@ mod tests {
 
     #[test]
     fn role_editor_esc_closes_overlay() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         assert_eq!(app.role_editor_view, RoleEditorView::Editor);
@@ -5721,7 +4136,7 @@ mod tests {
             },
         ])
         .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
         app.open_role_editor();
         // After App::new appends admin, the list is [a, b, admin]. Select "b".
         app.role_editor_list_index = 1;
@@ -5733,15 +4148,7 @@ mod tests {
 
     #[test]
     fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         let initial_count = app.global_roles.len();
         app.open_empty_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
@@ -5856,15 +4263,7 @@ mod tests {
     #[test]
     fn tool_browse_add_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
 
@@ -5887,15 +4286,7 @@ mod tests {
     #[test]
     fn tool_browse_delete_via_key_handler() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::AllowedTools;
@@ -5912,15 +4303,7 @@ mod tests {
     #[test]
     fn tool_adding_esc_cancels() {
         use role_editor_modal::RoleEditorField;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.open_role_editor();
         app.handle_role_editor_list_key(KeyCode::Char('a'));
         app.role_editor_field = RoleEditorField::DisallowedTools;
@@ -5951,7 +4334,7 @@ mod tests {
             },
         }])
         .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
         app.open_role_editor();
         app.open_role_for_editing(0);
 
@@ -5973,7 +4356,7 @@ mod tests {
         let db = test_db();
         // Global roles table is empty — App::new() seeds the developer role
         // and appends the admin role.
-        let app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let app = App::new(24, 120, stub_backend(), stub_provider(), db);
 
         assert_eq!(app.global_roles.len(), 2);
         assert_eq!(app.global_roles[0].name, "developer");
@@ -6208,15 +4591,7 @@ mod tests {
 
     #[test]
     fn load_persisted_state_empty_db_returns_none() {
-        let app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert!(app.load_persisted_state_from_db().is_none());
     }
     #[test]
@@ -6229,8 +4604,6 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db(),
-            None,
-            None,
         );
 
         // Add a session
@@ -6248,15 +4621,7 @@ mod tests {
 
     #[test]
     fn save_state_persists_session_counter() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.session_counter = 42;
 
         app.save_state();
@@ -6275,8 +4640,6 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db(),
-            None,
-            None,
         );
 
         let mut session = Session::stub("test-session", &backend_arc, &provider);
@@ -6306,8 +4669,6 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db(),
-            None,
-            None,
         );
 
         let mut session = Session::stub("test-session", &backend_arc, &provider);
@@ -6347,8 +4708,6 @@ mod tests {
             BackendRegistry::new(backend_arc.clone()),
             provider.clone(),
             test_db(),
-            None,
-            None,
         );
 
         let mut session = Session::stub("test-session", &backend_arc, &provider);
@@ -6363,15 +4722,7 @@ mod tests {
     }
     #[test]
     fn set_error_creates_error_status() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.set_error("something failed");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
@@ -6380,15 +4731,7 @@ mod tests {
 
     #[test]
     fn set_status_creates_typed_status() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.set_status(StatusLevel::Success, "all good");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Success);
@@ -6397,15 +4740,7 @@ mod tests {
 
     #[test]
     fn set_status_replaces_previous() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.set_error("old error");
         app.set_status(StatusLevel::Info, "new info");
         let msg = app.status_message.as_ref().unwrap();
@@ -6417,15 +4752,7 @@ mod tests {
 
     #[test]
     fn start_sync_with_no_sessions_shows_info() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.start_sync();
         assert!(!app.worktree_sync_in_progress);
         let msg = app.status_message.as_ref().unwrap();
@@ -6435,15 +4762,7 @@ mod tests {
 
     #[test]
     fn start_sync_ignores_if_already_in_progress() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_in_progress = true;
         app.status_message = None;
         app.start_sync();
@@ -6453,15 +4772,7 @@ mod tests {
 
     #[test]
     fn ctrl_s_triggers_start_sync() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
         // No sessions → info message
         let msg = app.status_message.as_ref().unwrap();
@@ -6545,15 +4856,7 @@ mod tests {
 
     #[test]
     fn tick_increments_tick_count() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         assert_eq!(app.tick_count, 0);
         app.tick();
         assert_eq!(app.tick_count, 1);
@@ -6563,15 +4866,7 @@ mod tests {
 
     #[test]
     fn finish_sync_all_synced_shows_success() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let id = SessionId::default();
         app.worktree_sync_completed = vec![
             (id, git::SyncResult::Synced),
@@ -6585,15 +4880,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_errors_shows_error() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_completed = vec![(
             SessionId::default(),
             git::SyncResult::Error("fetch failed".into()),
@@ -6607,15 +4894,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_conflicts_shows_info() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_completed = vec![
             (SessionId::default(), git::SyncResult::Synced),
             (
@@ -6632,15 +4911,7 @@ mod tests {
 
     #[test]
     fn finish_sync_errors_take_priority_over_conflicts() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.worktree_sync_completed = vec![
             (
                 SessionId::default(),
@@ -6659,15 +4930,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_sends_at_correct_tick() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"hello".to_vec(), 5));
 
@@ -6684,15 +4947,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_retains_future_items() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"early".to_vec(), 5));
         app.deferred_inputs.push((id, b"late".to_vec(), 20));
@@ -6705,15 +4960,7 @@ mod tests {
 
     #[test]
     fn send_conflict_prompt_noop_for_unknown_session() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         app.send_conflict_prompt(SessionId::default());
         assert!(app.deferred_inputs.is_empty());
     }
@@ -6731,15 +4978,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_triggers_finish_when_all_received() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let (tx, rx) = mpsc::channel();
         let id = SessionId::default();
 
@@ -6760,15 +4999,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_waits_for_all_pending() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         let (tx, rx) = mpsc::channel();
 
         tx.send((SessionId::default(), git::SyncResult::Synced))
@@ -6789,15 +5020,7 @@ mod tests {
 
     #[test]
     fn finish_prepare_spawn_admin_opens_role_picker_with_admin_preselected() {
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         // Admin must be among the effective roles (the source the picker
         // uses) at a predictable position.
         let effective = app.effective_roles();
@@ -6823,15 +5046,7 @@ mod tests {
     #[test]
     fn open_mcp_picker_admin_preselects_only_default_mcp() {
         use crate::session::McpServerConfig;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.global_mcp_servers = vec![
             McpServerConfig {
                 name: "other".to_string(),
@@ -6867,15 +5082,7 @@ mod tests {
     #[test]
     fn open_mcp_picker_non_admin_preselects_all() {
         use crate::session::McpServerConfig;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         app.global_mcp_servers = vec![
             McpServerConfig {
                 name: "a".to_string(),
@@ -6905,15 +5112,7 @@ mod tests {
     fn open_skill_picker_admin_preselects_none() {
         use crate::session::SkillConfig;
         use std::path::PathBuf;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         let skills = vec![
             SkillConfig {
                 name: "a".to_string(),
@@ -6940,15 +5139,7 @@ mod tests {
     fn open_skill_picker_non_admin_preselects_all() {
         use crate::session::SkillConfig;
         use std::path::PathBuf;
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         let skills = vec![SkillConfig {
             name: "a".to_string(),
             path: PathBuf::from("/tmp/a"),
@@ -6968,7 +5159,7 @@ mod tests {
     #[test]
     fn admin_mcp_permissions_contains_all_tools() {
         let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), 29);
+        assert_eq!(perms.allowed_tools.len(), super::ADMIN_MCP_TOOLS.len());
         assert!(perms
             .allowed_tools
             .iter()
@@ -7237,8 +5428,6 @@ mod tests {
             BackendRegistry::new(backend.clone() as Arc<dyn SessionBackend>),
             stub_provider(),
             test_db(),
-            None,
-            None,
         )
     }
 
@@ -7375,15 +5564,7 @@ mod tests {
 
     #[test]
     fn send_paste_to_session_noop_when_no_sessions() {
-        let mut app = App::new(
-            24,
-            80,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
         // Should not panic with no active sessions
         app.send_paste_to_session("hello");
     }
@@ -7399,15 +5580,7 @@ mod tests {
     fn finish_prepare_spawn_shows_profile_picker_when_profiles_exist() {
         // `test_db` runs the full migration including the `orchestrator`
         // seed, so `global_profiles` is non-empty by default.
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         assert!(
             !app.global_profiles.is_empty(),
             "seeded profile expected in fresh DB"
@@ -7431,7 +5604,7 @@ mod tests {
         let db = test_db();
         // Wipe seeded profiles so we hit the "no profiles" branch.
         db.replace_global_profiles(&[]).unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db, None, None);
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
         assert!(app.global_profiles.is_empty());
 
         app.finish_prepare_spawn("sess".to_string(), SessionConfig::default(), Vec::new());
@@ -7449,15 +5622,7 @@ mod tests {
     #[test]
     fn apply_profile_to_config_merges_roles_and_attaches_refs() {
         use crate::session::{McpServerConfig, ProfileConfig, RoleConfig, RolePermissions};
-        let mut app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
 
         // Two roles with distinct allowed tools so we can prove the merge
         // produced a union.
@@ -7506,15 +5671,7 @@ mod tests {
     #[test]
     fn apply_profile_with_empty_roles_falls_back_to_default_permissions() {
         use crate::session::ProfileConfig;
-        let app = App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        );
+        let app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
         let profile = ProfileConfig {
             name: "bare".to_string(),
             description: String::new(),
@@ -7534,15 +5691,7 @@ mod tests {
     // --- Profile editor lifecycle tests ---
 
     fn profile_editor_app() -> App {
-        App::new(
-            24,
-            120,
-            stub_backend(),
-            stub_provider(),
-            test_db(),
-            None,
-            None,
-        )
+        App::new(24, 120, stub_backend(), stub_provider(), test_db())
     }
 
     #[test]
@@ -7790,7 +5939,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_tab_cycle_reaches_profiles_between_skills_and_plugins() {
+    fn settings_tab_cycle_reaches_profiles_between_skills_and_roles() {
         let mut app = profile_editor_app();
         app.show_settings = true;
         app.settings_tab = SettingsTab::Skills;
@@ -7799,6 +5948,6 @@ mod tests {
         assert_eq!(app.settings_tab, SettingsTab::Profiles);
 
         app.handle_settings_key(KeyCode::Tab);
-        assert_eq!(app.settings_tab, SettingsTab::Plugins);
+        assert_eq!(app.settings_tab, SettingsTab::Roles);
     }
 }

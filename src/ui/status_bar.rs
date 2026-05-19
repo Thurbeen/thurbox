@@ -64,10 +64,6 @@ pub struct FooterState<'a> {
     pub status: Option<&'a StatusMessage>,
     pub focus_label: &'a str,
     pub sync_in_progress: bool,
-    pub vm_provisioning: bool,
-    pub vm_provisioning_step: &'a str,
-    pub container_provisioning: bool,
-    pub container_provisioning_step: &'a str,
     pub tick_count: u64,
     pub pending_scheduled_count: usize,
     pub file_viewer_open: bool,
@@ -91,23 +87,7 @@ pub fn render_footer(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
 }
 
 fn push_status_section<'a>(spans: &mut Vec<Span<'a>>, state: &'a FooterState<'a>) {
-    if state.vm_provisioning {
-        push_provisioning_badge(
-            spans,
-            state.tick_count,
-            "VM",
-            state.vm_provisioning_step,
-            "Starting VM...",
-        );
-    } else if state.container_provisioning {
-        push_provisioning_badge(
-            spans,
-            state.tick_count,
-            "CONTAINER",
-            state.container_provisioning_step,
-            "Starting container...",
-        );
-    } else if state.sync_in_progress {
+    if state.sync_in_progress {
         push_spinner_badge(spans, state.tick_count, "SYNC");
         let text = state
             .status
@@ -121,21 +101,6 @@ fn push_status_section<'a>(spans: &mut Vec<Span<'a>>, state: &'a FooterState<'a>
     } else {
         push_idle_counts(spans, state);
     }
-}
-
-fn push_provisioning_badge<'a>(
-    spans: &mut Vec<Span<'a>>,
-    tick_count: u64,
-    label: &'a str,
-    step: &'a str,
-    fallback: &'a str,
-) {
-    push_spinner_badge(spans, tick_count, label);
-    let text = if step.is_empty() { fallback } else { step };
-    spans.push(Span::styled(
-        format!(" {text} "),
-        Style::default().fg(Theme::accent()),
-    ));
 }
 
 fn push_status_message<'a>(spans: &mut Vec<Span<'a>>, msg: &'a StatusMessage) {

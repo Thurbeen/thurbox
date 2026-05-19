@@ -165,14 +165,6 @@ pub enum RoleEditorView {
     Editor,
 }
 
-// ── ContainerfilePickerModal ─────────────────────────────────────────────
-
-#[derive(Debug, Clone, Default)]
-pub struct ContainerfilePickerModal {
-    pub index: usize,
-    pub list: Vec<String>,
-}
-
 // ── RestoreSessionsModal ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -291,7 +283,6 @@ pub enum SettingsTab {
     McpServers,
     Skills,
     Profiles,
-    Plugins,
 }
 
 // ── Main Modal Enum ────────────────────────────────────────────────────────
@@ -316,7 +307,6 @@ pub enum Modal {
     ProfilePicker(ProfilePickerModal),
     McpServerPicker(McpServerPickerModal),
     SkillPicker(SkillPickerModal),
-    ContainerfilePicker(ContainerfilePickerModal),
     RestoreSessions(RestoreSessionsModal),
     ScheduleCommand(ScheduleCommandModal),
     ScheduledCommandsList(ScheduledCommandsListModal),

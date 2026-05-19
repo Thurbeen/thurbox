@@ -1,5 +1,5 @@
 //! Settings overlay: tabbed list of global Roles, MCP Servers, Skills,
-//! Profiles, and Plugins.
+//! and Profiles.
 
 use ratatui::{
     style::Style,
@@ -12,8 +12,7 @@ use super::centered_fixed_height_rect;
 use super::render_modal_frame;
 use super::theme::Theme;
 use crate::app::SettingsTab;
-use crate::session::{McpServerConfig, PluginConfig, ProfileConfig, RoleConfig, SkillConfig};
-use crate::storage::PluginSource;
+use crate::session::{McpServerConfig, ProfileConfig, RoleConfig, SkillConfig};
 
 /// State needed to render the settings overlay.
 pub struct SettingsOverlayState<'a> {
@@ -26,8 +25,6 @@ pub struct SettingsOverlayState<'a> {
     pub skill_index: usize,
     pub profiles: &'a [ProfileConfig],
     pub profile_index: usize,
-    pub plugins: &'a [(PluginConfig, PluginSource)],
-    pub plugin_index: usize,
 }
 
 pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) {
@@ -61,11 +58,6 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
     } else {
         Style::default().fg(Theme::text_muted())
     };
-    let plugins_style = if state.tab == SettingsTab::Plugins {
-        Theme::focused_title()
-    } else {
-        Style::default().fg(Theme::text_muted())
-    };
 
     let tab_line = Line::from(vec![
         Span::styled(" [Roles] ", roles_style),
@@ -75,8 +67,6 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
         Span::styled("[Skills] ", skills_style),
         Span::styled("  ", Style::default()),
         Span::styled("[Profiles] ", profiles_style),
-        Span::styled("  ", Style::default()),
-        Span::styled("[Plugins] ", plugins_style),
     ]);
     frame.render_widget(Paragraph::new(tab_line), tab_area);
 
@@ -216,63 +206,6 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
                 frame.render_widget(List::new(items), list_area);
             }
         }
-        SettingsTab::Plugins => {
-            if state.plugins.is_empty() {
-                let empty = Paragraph::new(Line::from(Span::styled(
-                    "  No plugins installed. Press 'i' to install from a path or git URL.",
-                    Style::default().fg(Theme::text_muted()),
-                )));
-                frame.render_widget(empty, list_area);
-            } else {
-                let items: Vec<ListItem> = state
-                    .plugins
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (plugin, source))| {
-                        let style = if i == state.plugin_index {
-                            Theme::focused_title()
-                        } else {
-                            Style::default().fg(Theme::text_primary())
-                        };
-                        let prefix = if i == state.plugin_index {
-                            "▸ "
-                        } else {
-                            "  "
-                        };
-                        let enabled_marker = if plugin.enabled { "✓" } else { "✗" };
-                        let source_label = match source {
-                            PluginSource::Disk => "disk",
-                            PluginSource::Registered => "registered",
-                        };
-                        let version = if plugin.version.is_empty() {
-                            "-".to_string()
-                        } else {
-                            plugin.version.clone()
-                        };
-                        ListItem::new(Line::from(vec![
-                            Span::styled(format!("{prefix}{} ", plugin.name), style),
-                            Span::styled(
-                                format!("v{version}  "),
-                                Style::default().fg(Theme::text_muted()),
-                            ),
-                            Span::styled(
-                                format!("[{source_label}]  "),
-                                Style::default().fg(Theme::text_muted()),
-                            ),
-                            Span::styled(
-                                format!("{enabled_marker}  "),
-                                Style::default().fg(Theme::text_muted()),
-                            ),
-                            Span::styled(
-                                plugin.path.display().to_string(),
-                                Style::default().fg(Theme::text_muted()),
-                            ),
-                        ]))
-                    })
-                    .collect();
-                frame.render_widget(List::new(items), list_area);
-            }
-        }
     }
 
     // Hints bar (last row)
@@ -282,35 +215,17 @@ pub fn render_settings_overlay(frame: &mut Frame, state: &SettingsOverlayState) 
         ..inner
     };
 
-    let hints = if state.tab == SettingsTab::Plugins {
-        Line::from(vec![
-            Span::styled(" Tab", Theme::keybind()),
-            Span::styled(": switch  ", Style::default().fg(Theme::text_muted())),
-            Span::styled("Space", Theme::keybind()),
-            Span::styled(
-                ": toggle enable  ",
-                Style::default().fg(Theme::text_muted()),
-            ),
-            Span::styled("i", Theme::keybind()),
-            Span::styled(": install  ", Style::default().fg(Theme::text_muted())),
-            Span::styled("d", Theme::keybind()),
-            Span::styled(": uninstall  ", Style::default().fg(Theme::text_muted())),
-            Span::styled("Esc", Theme::keybind()),
-            Span::styled(": close", Style::default().fg(Theme::text_muted())),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled(" Tab", Theme::keybind()),
-            Span::styled(": switch  ", Style::default().fg(Theme::text_muted())),
-            Span::styled("a", Theme::keybind()),
-            Span::styled(": add  ", Style::default().fg(Theme::text_muted())),
-            Span::styled("e", Theme::keybind()),
-            Span::styled(": edit  ", Style::default().fg(Theme::text_muted())),
-            Span::styled("d", Theme::keybind()),
-            Span::styled(": delete  ", Style::default().fg(Theme::text_muted())),
-            Span::styled("Esc", Theme::keybind()),
-            Span::styled(": close", Style::default().fg(Theme::text_muted())),
-        ])
-    };
+    let hints = Line::from(vec![
+        Span::styled(" Tab", Theme::keybind()),
+        Span::styled(": switch  ", Style::default().fg(Theme::text_muted())),
+        Span::styled("a", Theme::keybind()),
+        Span::styled(": add  ", Style::default().fg(Theme::text_muted())),
+        Span::styled("e", Theme::keybind()),
+        Span::styled(": edit  ", Style::default().fg(Theme::text_muted())),
+        Span::styled("d", Theme::keybind()),
+        Span::styled(": delete  ", Style::default().fg(Theme::text_muted())),
+        Span::styled("Esc", Theme::keybind()),
+        Span::styled(": close", Style::default().fg(Theme::text_muted())),
+    ]);
     frame.render_widget(Paragraph::new(hints), hints_area);
 }

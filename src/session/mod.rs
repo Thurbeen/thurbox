@@ -1,13 +1,7 @@
 pub mod keybindings;
-pub mod plugin_config;
 pub mod theme_config;
 
 pub use keybindings::{Action, Category, KeyBindings, KeyChord};
-pub use plugin_config::{
-    ActivationEvent, Capability, ConfigurationSchema, ConfigurationType, Contributes,
-    McpServerContribution, McpToolContribution, PluginConfig, PluginManifest, ProcessSection,
-    RoleContribution, SkillContribution, ThemeContribution,
-};
 pub use theme_config::{ThemePalette, ThemePreset};
 
 use std::collections::HashMap;
@@ -364,7 +358,6 @@ impl std::str::FromStr for SessionId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
-    Provisioning,
     Busy,
     Waiting,
     Idle,
@@ -374,7 +367,6 @@ pub enum SessionStatus {
 impl SessionStatus {
     pub fn icon(self) -> &'static str {
         match self {
-            Self::Provisioning => "⟳",
             Self::Busy => "●",
             Self::Waiting => "◉",
             Self::Idle => "○",
@@ -386,7 +378,6 @@ impl SessionStatus {
 impl fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Provisioning => write!(f, "Provisioning"),
             Self::Busy => write!(f, "Busy"),
             Self::Waiting => write!(f, "Waiting"),
             Self::Idle => write!(f, "Idle"),
@@ -427,12 +418,6 @@ pub struct SessionInfo {
     pub additional_dirs: Vec<PathBuf>,
     pub backend_id: Option<String>,
     pub shell_backend_id: Option<String>,
-    /// VM identifier when this session runs inside a sandboxed VM.
-    pub vm_id: Option<String>,
-    /// Container identifier when this session runs inside a devcontainer.
-    pub container_id: Option<String>,
-    /// Current provisioning step description (shown while status is `Provisioning`).
-    pub provisioning_step: Option<String>,
     /// Agent metrics from Claude CLI statusline.
     pub agent_metrics: Option<AgentMetrics>,
     /// Whether this is the admin session (internal, never user-visible).
@@ -456,23 +441,11 @@ impl SessionInfo {
             additional_dirs: Vec::new(),
             backend_id: None,
             shell_backend_id: None,
-            vm_id: None,
-            container_id: None,
-            provisioning_step: None,
             agent_metrics: None,
             is_admin: false,
             repo_display_names: Vec::new(),
         }
     }
-}
-
-/// A queued command for a session, inserted by MCP and processed by the TUI.
-#[derive(Debug, Clone)]
-pub struct SessionCommand {
-    pub id: i64,
-    pub session_id: SessionId,
-    pub command: String,
-    pub created_at: u64,
 }
 
 /// A time-scheduled command for a session, inserted by MCP and executed by the TUI tick loop.
@@ -495,16 +468,6 @@ pub struct SessionConfig {
     pub additional_dirs: Vec<PathBuf>,
     pub role: String,
     pub permissions: RolePermissions,
-    /// Target VM ID for VM-backed sessions.
-    ///
-    /// When set, the VM backend uses this to spawn the session on the specific VM
-    /// rather than picking arbitrarily. Ensures each session is tied to its own VM.
-    pub vm_id: Option<String>,
-    /// Target container ID for devcontainer-backed sessions.
-    ///
-    /// When set, the devcontainer backend uses this to spawn the session on the
-    /// specific container. Ensures each session is tied to its own container.
-    pub container_id: Option<String>,
     /// Fork from an existing session's conversation.
     ///
     /// When set, the CLI is invoked with `--resume <fork_session_id> --fork-session`
@@ -522,184 +485,6 @@ pub struct SessionConfig {
     /// directory is symlinked into the working directory before spawning
     /// so Claude Code auto-discovers them.
     pub skills: Vec<SkillConfig>,
-}
-
-/// VM state machine for sandboxed sessions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VmState {
-    /// Overlay disk and cloud-init ISO are being created.
-    Provisioning,
-    /// QEMU process started, waiting for SSH readiness.
-    Starting,
-    /// SSH is reachable, VM is ready for sessions.
-    Ready,
-    /// Shutdown signal sent, waiting for QEMU to exit.
-    Stopping,
-    /// QEMU process has exited.
-    Stopped,
-    /// Something went wrong.
-    Failed(String),
-}
-
-impl fmt::Display for VmState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Provisioning => write!(f, "Provisioning"),
-            Self::Starting => write!(f, "Starting"),
-            Self::Ready => write!(f, "Ready"),
-            Self::Stopping => write!(f, "Stopping"),
-            Self::Stopped => write!(f, "Stopped"),
-            Self::Failed(msg) => write!(f, "Failed: {msg}"),
-        }
-    }
-}
-
-impl VmState {
-    /// Parse from database string representation.
-    pub fn from_db_str(s: &str) -> Self {
-        match s {
-            "provisioning" => Self::Provisioning,
-            "starting" => Self::Starting,
-            "ready" => Self::Ready,
-            "stopping" => Self::Stopping,
-            "stopped" => Self::Stopped,
-            other => {
-                if let Some(msg) = other.strip_prefix("failed:") {
-                    Self::Failed(msg.trim().to_string())
-                } else {
-                    Self::Stopped
-                }
-            }
-        }
-    }
-
-    /// Convert to database string representation.
-    pub fn to_db_str(&self) -> String {
-        match self {
-            Self::Provisioning => "provisioning".to_string(),
-            Self::Starting => "starting".to_string(),
-            Self::Ready => "ready".to_string(),
-            Self::Stopping => "stopping".to_string(),
-            Self::Stopped => "stopped".to_string(),
-            Self::Failed(msg) => format!("failed:{msg}"),
-        }
-    }
-}
-
-/// Configuration for a sandboxed VM instance.
-#[derive(Debug, Clone)]
-pub struct VmConfig {
-    /// Base cloud image filename (e.g., "debian-13-genericcloud-amd64.qcow2").
-    pub base_image: String,
-    /// Number of virtual CPUs.
-    pub cpus: u32,
-    /// RAM in megabytes.
-    pub memory_mb: u32,
-    /// Disk size in gigabytes (CoW overlay, grows on demand).
-    pub disk_gb: u32,
-    /// Optional setup script run during cloud-init.
-    pub setup_script: Option<String>,
-}
-
-impl Default for VmConfig {
-    fn default() -> Self {
-        Self {
-            base_image: "debian-13-genericcloud-amd64.qcow2".to_string(),
-            cpus: 2,
-            memory_mb: 2048,
-            disk_gb: 10,
-            setup_script: None,
-        }
-    }
-}
-
-/// Container state machine for devcontainer-backed sessions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContainerState {
-    /// Devcontainer image is being built.
-    Building,
-    /// Container is starting up.
-    Starting,
-    /// Container is running and ready for sessions.
-    Ready,
-    /// Container stop has been requested.
-    Stopping,
-    /// Container has been stopped.
-    Stopped,
-    /// Something went wrong.
-    Failed(String),
-}
-
-impl fmt::Display for ContainerState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Building => write!(f, "Building"),
-            Self::Starting => write!(f, "Starting"),
-            Self::Ready => write!(f, "Ready"),
-            Self::Stopping => write!(f, "Stopping"),
-            Self::Stopped => write!(f, "Stopped"),
-            Self::Failed(msg) => write!(f, "Failed: {msg}"),
-        }
-    }
-}
-
-impl ContainerState {
-    /// Parse from database string representation.
-    pub fn from_db_str(s: &str) -> Self {
-        match s {
-            "building" => Self::Building,
-            "starting" => Self::Starting,
-            "ready" => Self::Ready,
-            "stopping" => Self::Stopping,
-            "stopped" => Self::Stopped,
-            other => {
-                if let Some(msg) = other.strip_prefix("failed:") {
-                    Self::Failed(msg.trim().to_string())
-                } else {
-                    Self::Stopped
-                }
-            }
-        }
-    }
-
-    /// Convert to database string representation.
-    pub fn to_db_str(&self) -> String {
-        match self {
-            Self::Building => "building".to_string(),
-            Self::Starting => "starting".to_string(),
-            Self::Ready => "ready".to_string(),
-            Self::Stopping => "stopping".to_string(),
-            Self::Stopped => "stopped".to_string(),
-            Self::Failed(msg) => format!("failed:{msg}"),
-        }
-    }
-}
-
-/// Configuration for a container instance.
-#[derive(Debug, Clone)]
-pub struct ContainerConfig {
-    /// Docker image to use (None = build from Containerfile template).
-    pub image: Option<String>,
-    /// Number of CPUs to allocate.
-    pub cpus: u32,
-    /// RAM in megabytes.
-    pub memory_mb: u32,
-    /// Whether to enable egress firewall rules.
-    pub firewall_enabled: bool,
-    /// Containerfile template name (filename in containerfiles dir).
-    pub containerfile: Option<String>,
-}
-
-impl Default for ContainerConfig {
-    fn default() -> Self {
-        Self {
-            image: None,
-            cpus: 2,
-            memory_mb: 2048,
-            firewall_enabled: true,
-            containerfile: Some("default".to_string()),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -791,7 +576,6 @@ mod tests {
 
     #[test]
     fn session_status_display() {
-        assert_eq!(SessionStatus::Provisioning.to_string(), "Provisioning");
         assert_eq!(SessionStatus::Busy.to_string(), "Busy");
         assert_eq!(SessionStatus::Waiting.to_string(), "Waiting");
         assert_eq!(SessionStatus::Idle.to_string(), "Idle");
@@ -800,7 +584,6 @@ mod tests {
 
     #[test]
     fn session_status_icon() {
-        assert_eq!(SessionStatus::Provisioning.icon(), "⟳");
         assert_eq!(SessionStatus::Busy.icon(), "●");
         assert_eq!(SessionStatus::Waiting.icon(), "◉");
         assert_eq!(SessionStatus::Idle.icon(), "○");
@@ -893,8 +676,6 @@ mod tests {
         assert!(config.additional_dirs.is_empty());
         assert_eq!(config.role, "");
         assert_eq!(config.permissions, RolePermissions::default());
-        assert!(config.vm_id.is_none());
-        assert!(config.container_id.is_none());
     }
 
     #[test]

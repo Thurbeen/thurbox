@@ -1,22 +1,16 @@
-use std::collections::HashMap;
-
 use rusqlite::params;
 
 use crate::session::{RoleConfig, RolePermissions};
 use crate::sync::current_time_millis;
 
+use super::helpers::{csv_to_vec, env_to_json, json_to_env, vec_to_csv};
 use super::Database;
 
 /// Where a resolved role came from in the merged view.
-///
-/// Roles have no disk-source today (unlike skills), so the only sources are
-/// plugins and the SQLite registry — but the enum is shaped consistently with
-/// `SkillSource` so the TUI can render a single "source" column generically.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RoleSource {
     Registered,
-    Plugin(String),
 }
 
 /// Parse a row with columns: role_name, description, permission_mode, allowed_tools,
@@ -136,55 +130,22 @@ impl Database {
         Ok(rows > 0)
     }
 
-    /// Plugin contributions merged with registered roles. Registered wins on
-    /// name collision (admin overrides plugin defaults).
+    /// All registered roles as `(role, source)` pairs. Kept as a list of
+    /// pairs so callers can render a generic "source" column even though
+    /// `RoleSource::Registered` is currently the only variant.
     pub fn list_effective_roles(&self) -> rusqlite::Result<Vec<(RoleConfig, RoleSource)>> {
-        let mut by_name: std::collections::BTreeMap<String, (RoleConfig, RoleSource)> =
-            std::collections::BTreeMap::new();
-        for (role, plugin_name) in self.plugin_contributed_roles()? {
-            by_name.insert(role.name.clone(), (role, RoleSource::Plugin(plugin_name)));
-        }
-        for role in self.list_global_roles()? {
-            by_name.insert(role.name.clone(), (role, RoleSource::Registered));
-        }
-        Ok(by_name.into_values().collect())
-    }
-}
-
-/// Convert a comma-separated string to a Vec<String>, filtering empty entries.
-fn csv_to_vec(csv: &str) -> Vec<String> {
-    if csv.is_empty() {
-        Vec::new()
-    } else {
-        csv.split(',').map(|s| s.to_string()).collect()
-    }
-}
-
-/// Convert a Vec<String> to a comma-separated string.
-fn vec_to_csv(v: &[String]) -> String {
-    v.join(",")
-}
-
-/// Deserialize a JSON string to a HashMap of environment variables.
-fn json_to_env(json: &str) -> HashMap<String, String> {
-    if json.is_empty() {
-        HashMap::new()
-    } else {
-        serde_json::from_str(json).unwrap_or_default()
-    }
-}
-
-/// Serialize a HashMap of environment variables to a JSON string.
-fn env_to_json(env: &HashMap<String, String>) -> String {
-    if env.is_empty() {
-        String::new()
-    } else {
-        serde_json::to_string(env).unwrap_or_default()
+        Ok(self
+            .list_global_roles()?
+            .into_iter()
+            .map(|r| (r, RoleSource::Registered))
+            .collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]

@@ -10,7 +10,7 @@ use crate::agent::SessionBackend;
 
 /// A registry of session backends keyed by name.
 ///
-/// Each backend is registered under its `name()` (e.g., `"local-tmux"`, `"qemu-vm"`).
+/// Each backend is registered under its `name()` (e.g., `"local-tmux"`, `"extra-backend"`).
 /// The registry always has a default backend that is used when no explicit backend
 /// name is specified.
 pub struct BackendRegistry {
@@ -144,13 +144,16 @@ mod tests {
         });
         let mut registry = BackendRegistry::new(default);
 
-        let vm: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "qemu-vm",
+        let extra: Arc<dyn SessionBackend> = Arc::new(StubBackend {
+            backend_name: "extra-backend",
         });
-        registry.register(vm);
+        registry.register(extra);
 
-        assert!(registry.has("qemu-vm"));
-        assert_eq!(registry.get("qemu-vm").unwrap().name(), "qemu-vm");
+        assert!(registry.has("extra-backend"));
+        assert_eq!(
+            registry.get("extra-backend").unwrap().name(),
+            "extra-backend"
+        );
         // Default is still local-tmux
         assert_eq!(registry.default_name(), "local-tmux");
     }
@@ -173,14 +176,14 @@ mod tests {
         });
         let mut registry = BackendRegistry::new(default);
 
-        let vm: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "qemu-vm",
+        let extra: Arc<dyn SessionBackend> = Arc::new(StubBackend {
+            backend_name: "extra-backend",
         });
-        registry.register(vm);
+        registry.register(extra);
 
         let mut names: Vec<&str> = registry.names().collect();
         names.sort();
-        assert_eq!(names, vec!["local-tmux", "qemu-vm"]);
+        assert_eq!(names, vec!["extra-backend", "local-tmux"]);
     }
 
     #[test]
@@ -190,14 +193,14 @@ mod tests {
         });
         let mut registry = BackendRegistry::new(default);
 
-        let vm: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "qemu-vm",
+        let extra: Arc<dyn SessionBackend> = Arc::new(StubBackend {
+            backend_name: "extra-backend",
         });
-        registry.register(vm);
+        registry.register(extra);
 
         let mut names: Vec<&str> = registry.all_backends().map(|b| b.name()).collect();
         names.sort();
-        assert_eq!(names, vec!["local-tmux", "qemu-vm"]);
+        assert_eq!(names, vec!["extra-backend", "local-tmux"]);
     }
 
     #[test]

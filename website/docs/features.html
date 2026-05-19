@@ -6,7 +6,7 @@
     <title>Features — Thurbox Docs</title>
     <meta
       name="description"
-      content="Thurbox features: session orchestration, git worktrees, containers, VMs, role system, MCP server, and responsive UI."
+      content="Thurbox features: session orchestration, git worktrees, role system, MCP server, and responsive UI."
     />
     <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -75,8 +75,6 @@
             <li><a href="#scheduled-commands">Scheduled Commands</a></li>
             <li><a href="#git-worktrees">Git Worktrees</a></li>
             <li><a href="#worktree-sync">Worktree Sync</a></li>
-            <li><a href="#container-sessions">Container Sessions</a></li>
-            <li><a href="#vm-sessions">VM Sessions</a></li>
             <li><a href="#role-system">Role System</a></li>
             <li><a href="#skill-management">Skill Management</a></li>
             <li><a href="#session-forking">Session Forking</a></li>
@@ -203,14 +201,6 @@
               &rarr; send a prompt &rarr; poll again until idle &rarr; capture the output &rarr; act
               on the response.
             </li>
-            <li>
-              Scope: local-tmux backend only. VM and container backends are out of scope; provision
-              those from the TUI and drive them with
-              <code>send_prompt</code>
-              /
-              <code>capture_session_output</code>
-              .
-            </li>
           </ul>
 
           <h2 id="scheduled-commands">
@@ -315,190 +305,6 @@
               Results shown per-session: synced, conflict (sent to Claude for resolution), or error.
             </li>
           </ul>
-
-          <h2 id="container-sessions">
-            Container Sessions
-            <a href="#container-sessions" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Run sessions inside Docker or Podman containers for lightweight isolation. Choose
-            "Container" in the session mode selector.
-          </p>
-
-          <h3>How it works</h3>
-          <ul>
-            <li>Thurbox builds a container image from a Containerfile template</li>
-            <li>
-              Runs the container with optional firewall-restricted network egress (nftables/iptables
-              allowlist)
-            </li>
-            <li>Spawns the Claude session inside the container</li>
-            <li>Auto-detects runtime (Podman preferred, Docker fallback)</li>
-            <li>Containers survive Thurbox restarts</li>
-          </ul>
-
-          <h3>Templates</h3>
-          <p>
-            Templates are stored at
-            <code>~/.local/share/thurbox/admin/containerfiles/</code>
-            . A
-            <code>default/</code>
-            template (Debian Bookworm-based) is seeded on first run. It installs tmux, git,
-            iptables, Claude Code, and creates a dedicated
-            <code>thurbox</code>
-            user (UID/GID 5000). Add custom templates by creating folders with a
-            <code>Containerfile</code>
-            and any support files.
-          </p>
-          <p>
-            A TUI picker modal lets you choose a template when creating a container session. If only
-            one template exists, the picker is skipped.
-          </p>
-
-          <h3>Template management via MCP</h3>
-          <p>
-            Four MCP tools provide programmatic access to templates:
-            <code>list_containerfile_templates</code>
-            ,
-            <code>get_containerfile_template</code>
-            ,
-            <code>set_containerfile_template</code>
-            , and
-            <code>delete_containerfile_template</code>
-            . Template names are validated to prevent path traversal.
-          </p>
-
-          <h3>Default container configuration</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Parameter</th>
-                <th>Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>CPUs</td>
-                <td>2</td>
-              </tr>
-              <tr>
-                <td>Memory</td>
-                <td>2048 MB</td>
-              </tr>
-              <tr>
-                <td>Firewall</td>
-                <td>Enabled (domain allowlist)</td>
-              </tr>
-              <tr>
-                <td>Containerfile</td>
-                <td>
-                  <code>default/</code>
-                  template
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h2 id="vm-sessions">
-            VM Sessions
-            <a href="#vm-sessions" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Run sessions inside QEMU/KVM virtual machines for full OS-level isolation. Choose "VM"
-            in the session mode selector.
-          </p>
-
-          <h3>VM specifications</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Parameter</th>
-                <th>Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Base image</td>
-                <td>Debian 13 (Trixie) genericcloud amd64 qcow2</td>
-              </tr>
-              <tr>
-                <td>CPUs</td>
-                <td>2</td>
-              </tr>
-              <tr>
-                <td>RAM</td>
-                <td>2048 MB</td>
-              </tr>
-              <tr>
-                <td>Disk</td>
-                <td>10 GB qcow2 CoW overlay</td>
-              </tr>
-              <tr>
-                <td>Networking</td>
-                <td>User-mode (SLIRP), SSH on ports 22200+</td>
-              </tr>
-              <tr>
-                <td>Pre-installed</td>
-                <td>tmux, git, rsync, curl, Claude CLI</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h3>Requirements</h3>
-          <ul>
-            <li>
-              <code>qemu-system-x86_64</code>
-              with
-              <code>/dev/kvm</code>
-              support
-            </li>
-            <li>
-              <code>genisoimage</code>
-              or
-              <code>mkisofs</code>
-              (cloud-init ISO creation)
-            </li>
-            <li>
-              <code>ssh-keygen</code>
-              ,
-              <code>rsync</code>
-            </li>
-          </ul>
-
-          <h3>Session restoration</h3>
-          <p>
-            VMs survive Thurbox restarts. On restart, Thurbox discovers VMs from the database,
-            verifies the QEMU process is still running via SSH probe, and re-adopts the tmux session
-            inside the VM. If a VM has died, Thurbox re-provisions a new one with
-            <code>--resume</code>
-            to preserve conversation history.
-          </p>
-
-          <h3>CoW overlay and cloud-init</h3>
-          <p>
-            Each VM gets a QCOW2 copy-on-write overlay referencing the shared base image. The base
-            image is never modified &mdash; all writes go to the per-VM overlay, which grows on
-            demand. VMs are provisioned via cloud-init (nocloud format) with a
-            <code>thurbox</code>
-            user, SSH key injection, and an optional custom setup script.
-          </p>
-
-          <h3>SSH port allocation</h3>
-          <p>
-            VM SSH ports start at 22200 and increment. Thurbox probes candidate ports to skip those
-            already bound by orphaned QEMU processes, scanning up to 100 ports.
-          </p>
-
-          <h3>VM image management via MCP</h3>
-          <p>
-            Three MCP tools manage the base image cache:
-            <code>list_vm_images</code>
-            ,
-            <code>download_vm_image</code>
-            (HTTPS-only), and
-            <code>delete_vm_image</code>
-            . Filenames are validated to prevent path traversal.
-          </p>
 
           <h2 id="role-system">
             Role System

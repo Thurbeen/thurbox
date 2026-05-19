@@ -73,12 +73,6 @@ impl App {
             return;
         }
 
-        // Containerfile picker modal captures all input
-        if matches!(self.modal, super::modals::Modal::ContainerfilePicker(_)) {
-            self.handle_containerfile_picker_key(code);
-            return;
-        }
-
         // Session mode modal captures all input
         if matches!(self.modal, super::modals::Modal::SessionMode(_)) {
             self.handle_session_mode_key(code);
@@ -472,8 +466,6 @@ impl App {
         // Build the dynamic mode list matching the UI modal.
         let mode_state = crate::ui::session_mode_modal::SessionModeState {
             selected_index: sm.index,
-            devcontainer_available: self.backends.has("devcontainer"),
-            vm_available: self.backends.has("qemu-vm"),
         };
         let modes = mode_state.mode_names();
         let max_index = modes.len().saturating_sub(1);
@@ -511,107 +503,8 @@ impl App {
                     "Worktree" => {
                         self.start_branch_selection();
                     }
-                    "Container" => {
-                        // Container mode — build config for role selection after
-                        // container is ready, store MCP servers for writing into container.
-                        let config = if let Some(all_repos) = self.pending_all_repos.clone() {
-                            SessionConfig {
-                                cwd: Some(all_repos[0].clone()),
-                                additional_dirs: all_repos[1..].to_vec(),
-                                ..SessionConfig::default()
-                            }
-                        } else if let Some(ref path) = self.pending_repo_path {
-                            SessionConfig {
-                                cwd: Some(path.clone()),
-                                ..SessionConfig::default()
-                            }
-                        } else {
-                            SessionConfig::default()
-                        };
-                        self.pending_container_config = Some(config);
-                        self.pending_container_mcp_servers = if self.global_mcp_servers.is_empty() {
-                            None
-                        } else {
-                            Some(self.global_mcp_servers.clone())
-                        };
-
-                        // Show containerfile picker (skip if only one file)
-                        let containerfiles = self.load_containerfiles();
-                        if containerfiles.len() <= 1 {
-                            self.pending_containerfile_name = containerfiles
-                                .first()
-                                .cloned()
-                                .or_else(|| Some("default".to_string()));
-                            self.start_container_provisioning();
-                        } else {
-                            self.modal = super::modals::Modal::ContainerfilePicker(
-                                super::modals::ContainerfilePickerModal {
-                                    index: 0,
-                                    list: containerfiles,
-                                },
-                            );
-                        }
-                    }
-                    "VM" => {
-                        // VM mode — build config for role selection after
-                        // VM is ready, store MCP servers for writing into the VM.
-                        let config = if let Some(all_repos) = self.pending_all_repos.clone() {
-                            SessionConfig {
-                                cwd: Some(all_repos[0].clone()),
-                                additional_dirs: all_repos[1..].to_vec(),
-                                ..SessionConfig::default()
-                            }
-                        } else if let Some(ref path) = self.pending_repo_path {
-                            SessionConfig {
-                                cwd: Some(path.clone()),
-                                ..SessionConfig::default()
-                            }
-                        } else {
-                            SessionConfig::default()
-                        };
-                        self.pending_vm_config = Some(config);
-                        self.pending_vm_mcp_servers = if self.global_mcp_servers.is_empty() {
-                            None
-                        } else {
-                            Some(self.global_mcp_servers.clone())
-                        };
-                        self.start_vm_provisioning();
-                    }
                     _ => {}
                 }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_containerfile_picker_key(&mut self, code: KeyCode) {
-        let super::modals::Modal::ContainerfilePicker(ref mut cp) = self.modal else {
-            return;
-        };
-        let max_index = cp.list.len().saturating_sub(1);
-        match code {
-            KeyCode::Esc => {
-                self.modal.close();
-                self.pending_container_config = None;
-                self.pending_container_mcp_servers = None;
-                self.pending_repo_path = None;
-                self.pending_all_repos = None;
-            }
-            KeyCode::Char('j') | KeyCode::Down if cp.index < max_index => {
-                cp.index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                cp.index = cp.index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                let name = cp
-                    .list
-                    .get(cp.index)
-                    .cloned()
-                    .unwrap_or_else(|| "default".to_string());
-                self.modal.close();
-                self.pending_containerfile_name = Some(name);
-                self.start_container_provisioning();
             }
             _ => {}
         }
@@ -711,7 +604,6 @@ impl App {
                     // Normal flow — clean up spawn state.
                     self.pending_spawn_config = None;
                     self.pending_spawn_worktrees.clear();
-                    self.pending_vm_id = None;
                     self.pending_fork = false;
                 }
             }
@@ -870,7 +762,6 @@ impl App {
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
                 self.pending_spawn_is_admin = false;
-                self.pending_vm_id = None;
             }
             KeyCode::Char('j') | KeyCode::Down if pp.index + 1 < row_count => {
                 pp.index += 1;
@@ -923,7 +814,6 @@ impl App {
                 self.pending_spawn_worktrees.clear();
                 self.pending_spawn_name = None;
                 self.pending_spawn_is_admin = false;
-                self.pending_vm_id = None;
             }
             KeyCode::Char('j') | KeyCode::Down if rsel.index + 1 < role_count => {
                 rsel.index += 1;
@@ -1368,17 +1258,6 @@ impl App {
 
     /// Handle input in the settings overlay (tabbed list view).
     pub(crate) fn handle_settings_key(&mut self, code: KeyCode) {
-        // Plugin install modal overlays the Plugins tab — capture all input first.
-        if self.show_plugin_install_modal {
-            self.handle_plugin_install_modal_key(code);
-            return;
-        }
-        // Plugin uninstall confirm prompt is modal too.
-        if self.plugin_uninstall_confirm.is_some() {
-            self.handle_plugin_uninstall_confirm_key(code);
-            return;
-        }
-
         match code {
             KeyCode::Esc => {
                 // Save and close settings
@@ -1401,17 +1280,15 @@ impl App {
                     super::SettingsTab::Roles => super::SettingsTab::McpServers,
                     super::SettingsTab::McpServers => super::SettingsTab::Skills,
                     super::SettingsTab::Skills => super::SettingsTab::Profiles,
-                    super::SettingsTab::Profiles => super::SettingsTab::Plugins,
-                    super::SettingsTab::Plugins => super::SettingsTab::Roles,
+                    super::SettingsTab::Profiles => super::SettingsTab::Roles,
                 };
             }
             KeyCode::BackTab => {
                 self.settings_tab = match self.settings_tab {
-                    super::SettingsTab::Roles => super::SettingsTab::Plugins,
+                    super::SettingsTab::Roles => super::SettingsTab::Profiles,
                     super::SettingsTab::McpServers => super::SettingsTab::Roles,
                     super::SettingsTab::Skills => super::SettingsTab::McpServers,
                     super::SettingsTab::Profiles => super::SettingsTab::Skills,
-                    super::SettingsTab::Plugins => super::SettingsTab::Profiles,
                 };
             }
             _ => match self.settings_tab {
@@ -1419,7 +1296,6 @@ impl App {
                 super::SettingsTab::McpServers => self.handle_settings_mcp_key(code),
                 super::SettingsTab::Skills => self.handle_settings_skills_key(code),
                 super::SettingsTab::Profiles => self.handle_settings_profiles_key(code),
-                super::SettingsTab::Plugins => self.handle_settings_plugins_key(code),
             },
         }
     }
@@ -1542,133 +1418,6 @@ impl App {
                 {
                     self.profile_list_index -= 1;
                 }
-            }
-            _ => {}
-        }
-    }
-
-    /// Handle keys for the Plugins tab in the settings overlay.
-    ///
-    /// Beyond j/k navigation and Space (toggle enable), `i` opens the install
-    /// modal and `d` triggers an uninstall confirm. Plugin configuration still
-    /// lives in MCP — the TUI only owns lifecycle (install / enable / remove).
-    fn handle_settings_plugins_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down
-                if !self.effective_plugins.is_empty()
-                    && self.plugin_list_index + 1 < self.effective_plugins.len() =>
-            {
-                self.plugin_list_index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.plugin_list_index = self.plugin_list_index.saturating_sub(1);
-            }
-            KeyCode::Char(' ') if !self.effective_plugins.is_empty() => {
-                let idx = self.plugin_list_index;
-                let (plugin, _src) = &self.effective_plugins[idx];
-                let new_state = !plugin.enabled;
-                let name = plugin.name.clone();
-                if let Err(e) = self.db.set_plugin_enabled(&name, new_state) {
-                    tracing::error!("Failed to toggle plugin '{name}': {e}");
-                } else if let Ok(plugins) = self.db.list_effective_plugins() {
-                    self.effective_plugins = plugins;
-                }
-            }
-            KeyCode::Char('i') => {
-                self.open_plugin_install_modal();
-            }
-            KeyCode::Char('d') if !self.effective_plugins.is_empty() => {
-                let idx = self.plugin_list_index;
-                let name = self.effective_plugins[idx].0.name.clone();
-                self.plugin_uninstall_confirm = Some(name);
-            }
-            _ => {}
-        }
-    }
-
-    /// Reset and open the plugin install modal.
-    pub(crate) fn open_plugin_install_modal(&mut self) {
-        self.plugin_install_input.clear();
-        self.plugin_install_status = super::PluginInstallStatus::Idle;
-        self.show_plugin_install_modal = true;
-    }
-
-    /// Handle keys inside the plugin install modal. `Enter` kicks off the
-    /// install on a background thread; `Esc` closes the modal (in-flight
-    /// installs continue and update the plugin list when they finish).
-    fn handle_plugin_install_modal_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.show_plugin_install_modal = false;
-            }
-            KeyCode::Enter => {
-                let source = self.plugin_install_input.value().trim().to_string();
-                if source.is_empty() {
-                    self.plugin_install_status =
-                        super::PluginInstallStatus::Error("Source cannot be empty".to_string());
-                    return;
-                }
-                if self.plugin_install_rx.is_some() {
-                    return;
-                }
-                self.start_plugin_install(source);
-            }
-            KeyCode::Backspace => self.plugin_install_input.backspace(),
-            KeyCode::Delete => self.plugin_install_input.delete(),
-            KeyCode::Left => self.plugin_install_input.move_left(),
-            KeyCode::Right => self.plugin_install_input.move_right(),
-            KeyCode::Home => self.plugin_install_input.home(),
-            KeyCode::End => self.plugin_install_input.end(),
-            KeyCode::Char(c) => self.plugin_install_input.insert(c),
-            _ => {}
-        }
-    }
-
-    /// Spawn the install on a background thread (git clone can take seconds —
-    /// must not block the UI loop). Result delivered via `mpsc` and polled in
-    /// `tick()`.
-    fn start_plugin_install(&mut self, source: String) {
-        use std::sync::mpsc;
-        self.plugin_install_status = super::PluginInstallStatus::InProgress;
-        let (tx, rx) = mpsc::channel();
-        self.plugin_install_rx = Some(rx);
-        std::thread::spawn(move || {
-            let result =
-                crate::paths::install_plugin_from_source(&source, None).map_err(|e| e.to_string());
-            let _ = tx.send(result);
-        });
-    }
-
-    /// Handle keys inside the uninstall confirmation prompt.
-    fn handle_plugin_uninstall_confirm_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let Some(name) = self.plugin_uninstall_confirm.take() else {
-                    return;
-                };
-                match self.db.uninstall_plugin_with_disk(&name) {
-                    Ok(_) => {
-                        self.set_status(
-                            super::StatusLevel::Success,
-                            format!("Uninstalled plugin '{name}'"),
-                        );
-                        if let Ok(plugins) = self.db.list_effective_plugins() {
-                            if self.plugin_list_index >= plugins.len() {
-                                self.plugin_list_index = plugins.len().saturating_sub(1);
-                            }
-                            self.effective_plugins = plugins;
-                        }
-                    }
-                    Err(e) => {
-                        self.set_status(
-                            super::StatusLevel::Error,
-                            format!("Failed to uninstall '{name}': {e}"),
-                        );
-                    }
-                }
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                self.plugin_uninstall_confirm = None;
             }
             _ => {}
         }
