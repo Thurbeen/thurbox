@@ -41,7 +41,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.0"
 
 # Storage
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # System metrics
 sysinfo = "0.39"
