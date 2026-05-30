@@ -158,7 +158,7 @@ pub struct Session {
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
     pub shell_pane: Option<ShellPane>,
-    /// Environment variables from the role, passed to shell pane spawns.
+    /// Session environment variables, passed to shell pane spawns.
     env: HashMap<String, String>,
 }
 
@@ -396,8 +396,8 @@ impl Session {
 
     /// Restart the session: kill the old pane, spawn a fresh one with new config.
     ///
-    /// Uses `--resume` so the agent picks up the conversation while getting
-    /// freshly-resolved role permissions.
+    /// Uses the agent's resume args (when defined) so it picks up the
+    /// existing conversation instead of starting fresh.
     pub fn restart(&mut self, config: &SessionConfig, rows: u16, cols: u16) -> Result<()> {
         self.backend.kill(&self.backend_id)?;
 

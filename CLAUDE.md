@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 **Testing:**
 
 - Comprehensive test suite in `scripts/install.bats` using bats-core framework
-- 36 tests covering platform detection, checksum verification, binary extraction, and error handling
+- 25 tests covering platform detection, checksum verification, binary extraction, and error handling
 - Run tests locally: `bats scripts/install.bats`
 - CI runs tests automatically on every commit
 
@@ -120,7 +120,7 @@ Every push to `main` automatically triggers the release workflow:
    - Determines semantic version (feat→minor, fix/perf→patch)
    - Creates lightweight git tag: `v{version}` (e.g., v0.1.0)
    - Pushes tag to origin
-   - Builds binaries for 4 platforms (version passed via environment variable)
+   - Builds binaries for 3 platforms (version passed via environment variable)
    - Generates changelog from commits
    - Publishes GitHub Release with binaries and release notes
 
@@ -137,10 +137,9 @@ Every push to `main` automatically triggers the release workflow:
 
 Each release includes:
 
-- Binaries for 4 platforms:
+- Binaries for 3 platforms:
   - `thurbox-v{ver}-x86_64-unknown-linux-gnu.tar.gz`
   - `thurbox-v{ver}-x86_64-unknown-linux-musl.tar.gz`
-  - `thurbox-v{ver}-x86_64-apple-darwin.tar.gz`
   - `thurbox-v{ver}-aarch64-apple-darwin.tar.gz`
 - `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
 - Changelog with categorized commits

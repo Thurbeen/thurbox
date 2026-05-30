@@ -22,6 +22,36 @@
   color: var(--text-secondary);
 }
 
+.agent-support {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+  justify-content: center;
+  max-width: 640px;
+  margin: 0 auto var(--space-xl);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.agent-support span {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-primary);
+}
+
+.agent-support .agent-support-any {
+  border-style: dashed;
+  color: var(--cyan);
+}
+
 .hero-ctas {
   display: flex;
   gap: var(--space-md);

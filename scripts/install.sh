@@ -153,7 +153,6 @@ do_install() {
   mkdir -p "$dir"
   tar -xzf "$tarball" -C "$dir"
   chmod +x "$dir/thurbox"
-  if [ -f "$dir/thurbox-mcp" ]; then chmod +x "$dir/thurbox-mcp"; fi
   if [ -f "$dir/thurbox-cli" ]; then chmod +x "$dir/thurbox-cli"; fi
 }
 
@@ -167,9 +166,8 @@ show_success() {
 
   echo "Setup:"
   echo "  • Install tmux >= 3.2"
-  echo "  • Install claude CLI"
+  echo "  • Install a coding-agent CLI (claude, codex, gemini, opencode, aider, …)"
   echo "  • Run: thurbox"
-  echo "  • MCP server: thurbox-mcp (stdio transport)"
   echo "  • Scriptable CLI: thurbox-cli"
 }
 

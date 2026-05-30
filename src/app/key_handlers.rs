@@ -3,7 +3,7 @@
 //! This module contains all keyboard input handling logic organized by context:
 //! - Global keybindings (always active)
 //! - Focus-based handlers (ProjectList, SessionList, Terminal)
-//! - Modal handlers (AddProject, RepoSelector, BranchSelector, etc.)
+//! - Modal handlers (RepoPicker, BranchSelector, AgentPicker, etc.)
 
 use crate::session::SessionConfig;
 

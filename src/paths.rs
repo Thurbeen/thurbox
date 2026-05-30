@@ -74,25 +74,12 @@ pub enum PathKind {
     LogDir,
     /// SQLite database: `~/.local/share/thurbox/thurbox.db`
     Database,
-    /// Admin session directory: `~/.local/share/thurbox/admin/`
-    AdminDir,
-    /// Containerfile templates: `~/.local/share/thurbox/admin/containerfiles/`
-    ContainerfilesDir,
-    /// Disk-source skills: `~/.local/share/thurbox/admin/skills/`
-    SkillsDir,
-    /// VM images: `~/.local/share/thurbox/admin/images/`
-    ImagesDir,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
     MetricsDir,
     /// Git worktrees: `~/.local/share/thurbox/worktrees/`
     WorktreesDir,
     /// User keybindings JSON file: `~/.config/thurbox/keybindings.json`
     KeybindingsFile,
-    /// Per-user runtime directory for ephemeral sockets and pid files.
-    /// Prefers `$XDG_RUNTIME_DIR/thurbox[-dev]/`, falling back to
-    /// `/tmp/thurbox[-dev]-$UID/`. Created with mode 0700 by the TUI at
-    /// boot.
-    RuntimeDir,
 }
 
 /// Path resolution strategy (thread-local).
@@ -146,28 +133,10 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
         }
         PathKind::Database => xdg_data_subpath(&["thurbox.db"]),
         PathKind::LogDir => xdg_data_subpath(&[]),
-        PathKind::AdminDir => xdg_data_subpath(&["admin"]),
-        PathKind::ContainerfilesDir => xdg_data_subpath(&["admin", "containerfiles"]),
-        PathKind::SkillsDir => xdg_data_subpath(&["admin", "skills"]),
-        PathKind::ImagesDir => xdg_data_subpath(&["admin", "images"]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
         PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
         PathKind::KeybindingsFile => xdg_config_subpath("keybindings.json"),
-        PathKind::RuntimeDir => runtime_dir_xdg(),
     }
-}
-
-/// Resolve the per-user runtime directory using XDG, falling back to a
-/// per-user subdirectory of `/tmp/` when `$XDG_RUNTIME_DIR` is unset (macOS).
-fn runtime_dir_xdg() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return Some(PathBuf::from(xdg).join(app_dir_name()));
-    }
-    // macOS has no XDG_RUNTIME_DIR. Key the fallback by $USER so multiple
-    // accounts on the same host don't contend for /tmp/thurbox/. Callers must
-    // create the directory with mode 0700 to match the XDG runtime-dir contract.
-    let user = std::env::var("USER").ok()?;
-    Some(PathBuf::from("/tmp").join(format!("{}-{user}", app_dir_name())))
 }
 
 /// Resolve a path using a custom base directory (for testing).
@@ -176,14 +145,9 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::Config => base.join("config.toml"),
         PathKind::LogDir => base.to_path_buf(),
         PathKind::Database => base.join("thurbox.db"),
-        PathKind::AdminDir => base.join("admin"),
-        PathKind::ContainerfilesDir => base.join("admin").join("containerfiles"),
-        PathKind::SkillsDir => base.join("admin").join("skills"),
-        PathKind::ImagesDir => base.join("admin").join("images"),
         PathKind::MetricsDir => base.join("metrics"),
         PathKind::WorktreesDir => base.join("worktrees"),
         PathKind::KeybindingsFile => base.join("keybindings.json"),
-        PathKind::RuntimeDir => base.join("runtime"),
     }
 }
 
@@ -208,25 +172,9 @@ pub fn database_file() -> Option<PathBuf> {
     resolve(PathKind::Database)
 }
 
-/// Resolve the admin session directory path.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/admin/` or `$HOME/.local/share/thurbox/admin/`
-pub fn admin_directory() -> Option<PathBuf> {
-    resolve(PathKind::AdminDir)
-}
-
-/// Resolve the containerfiles template directory path.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/admin/containerfiles/` or
-/// `$HOME/.local/share/thurbox/admin/containerfiles/`
-pub fn containerfiles_directory() -> Option<PathBuf> {
-    resolve(PathKind::ContainerfilesDir)
-}
-
 /// Validate that `name` is a safe single-segment identifier — non-empty,
-/// no dot-prefix, no slashes / backslashes / `..`, max 64 chars. Shared by
-/// `session_ops::spawn`, the MCP `create_session` tool, and CLI commands
-/// that name on-disk resources (VM images, Containerfile templates).
+/// no dot-prefix, no slashes / backslashes / `..`, max 64 chars. Used by
+/// `session_ops::spawn` to guard names that become on-disk paths.
 pub fn validate_safe_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Name cannot be empty".into());
@@ -243,97 +191,11 @@ pub fn validate_safe_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate that `path` is absolute, exists as a directory, and contains a
-/// `SKILL.md` file. Shared by the MCP `register_skill`/`set_skills` tools
-/// and the `thurbox-cli skill` subcommand so both enforce the same rules.
-pub fn validate_skill_path(path: &std::path::Path) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err(format!("skill path must be absolute: {}", path.display()));
-    }
-    if !path.is_dir() {
-        return Err(format!(
-            "skill path does not exist or is not a directory: {}",
-            path.display()
-        ));
-    }
-    if !path.join("SKILL.md").is_file() {
-        return Err(format!(
-            "skill directory missing SKILL.md: {}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-/// List Containerfile templates on disk as `(name, files)` pairs sorted by name.
-///
-/// Returns an empty vector when the directory doesn't exist. Used by the MCP
-/// `list_containerfile_templates` tool and the `thurbox-cli containerfile list`
-/// subcommand so both share the same scan logic.
-pub fn list_containerfile_templates() -> Result<Vec<(String, Vec<String>)>, String> {
-    let Some(dir) = containerfiles_directory() else {
-        return Err("Could not resolve containerfiles directory".into());
-    };
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("Failed to read directory: {e}"))?;
-    let mut templates = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let mut files = Vec::new();
-        if let Ok(children) = std::fs::read_dir(entry.path()) {
-            for child in children.flatten() {
-                if child.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                    files.push(child.file_name().to_string_lossy().to_string());
-                }
-            }
-        }
-        files.sort();
-        templates.push((name, files));
-    }
-    templates.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(templates)
-}
-
-/// Resolve the disk-source skills directory path.
-///
-/// Each subdirectory under this path is an auto-discovered skill (must
-/// contain `SKILL.md`). Mirrors how `containerfiles_directory()` hosts
-/// pure-disk Containerfile templates: no SQLite row is needed, dropping
-/// a directory in is enough to make it available to `--skill <name>`.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/admin/skills/` or
-/// `$HOME/.local/share/thurbox/admin/skills/`
-pub fn skills_directory() -> Option<PathBuf> {
-    resolve(PathKind::SkillsDir)
-}
-
-/// Resolve the VM images directory path.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/admin/images/` or
-/// `$HOME/.local/share/thurbox/admin/images/`
-pub fn images_directory() -> Option<PathBuf> {
-    resolve(PathKind::ImagesDir)
-}
-
 /// Resolve the agent metrics directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/metrics/` or `$HOME/.local/share/thurbox/metrics/`
 pub fn metrics_directory() -> Option<PathBuf> {
     resolve(PathKind::MetricsDir)
-}
-
-/// Resolve the Thurbox-managed statusline script path.
-///
-/// The script is written by `App::ensure_statusline_script` at startup and is
-/// the value Thurbox inserts into per-session `settings.json` for Claude's
-/// `statusLine` command.
-pub fn statusline_script_path() -> Option<PathBuf> {
-    log_directory().map(|d| d.join("statusline.sh"))
 }
 
 /// Resolve the worktrees directory path.
@@ -349,30 +211,6 @@ pub fn worktrees_directory() -> Option<PathBuf> {
 /// `$HOME/.config/thurbox/keybindings.json`.
 pub fn keybindings_file() -> Option<PathBuf> {
     resolve(PathKind::KeybindingsFile)
-}
-
-/// Resolve the per-user runtime directory used for ephemeral sockets.
-///
-/// Returns `$XDG_RUNTIME_DIR/thurbox[-dev]/`, or `/tmp/thurbox[-dev]-$USER/`
-/// when `$XDG_RUNTIME_DIR` is unset (macOS). Callers that bind sockets here
-/// are responsible for creating the directory with mode 0700 so it matches
-/// the XDG runtime-dir trust contract.
-pub fn runtime_directory() -> Option<PathBuf> {
-    resolve(PathKind::RuntimeDir)
-}
-
-/// Resolve the path to the `thurbox-mcp` binary.
-///
-/// Checks for a sibling of `current_exe()` first (works for both installed and dev builds),
-/// then falls back to bare `"thurbox-mcp"` for `$PATH` lookup.
-pub fn thurbox_mcp_binary() -> String {
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.with_file_name("thurbox-mcp");
-        if sibling.exists() {
-            return sibling.display().to_string();
-        }
-    }
-    "thurbox-mcp".to_string()
 }
 
 /// Returns true if a Claude transcript file `<agent_session_id>.jsonl` exists
@@ -667,19 +505,6 @@ mod tests {
         assert_eq!(resolve(PathKind::Config), Some(base.join("config.toml")));
         assert_eq!(resolve(PathKind::LogDir), Some(base.clone()));
         assert_eq!(resolve(PathKind::Database), Some(base.join("thurbox.db")));
-        assert_eq!(resolve(PathKind::AdminDir), Some(base.join("admin")));
-        assert_eq!(
-            resolve(PathKind::ContainerfilesDir),
-            Some(base.join("admin").join("containerfiles"))
-        );
-        assert_eq!(
-            resolve(PathKind::SkillsDir),
-            Some(base.join("admin").join("skills"))
-        );
-        assert_eq!(
-            resolve(PathKind::ImagesDir),
-            Some(base.join("admin").join("images"))
-        );
         assert_eq!(resolve(PathKind::MetricsDir), Some(base.join("metrics")));
         assert_eq!(
             resolve(PathKind::WorktreesDir),
@@ -724,57 +549,6 @@ mod tests {
         assert!(path.ends_with("thurbox.db"));
 
         reset_to_xdg();
-    }
-
-    #[test]
-    fn admin_directory_convenience() {
-        let base = PathBuf::from("/custom");
-        set_test_dir(&base);
-
-        let path = admin_directory().unwrap();
-        assert!(path.ends_with("admin"));
-
-        reset_to_xdg();
-    }
-
-    #[test]
-    fn containerfiles_directory_convenience() {
-        let base = PathBuf::from("/custom");
-        set_test_dir(&base);
-
-        let path = containerfiles_directory().unwrap();
-        assert!(path.ends_with("containerfiles"));
-
-        reset_to_xdg();
-    }
-
-    #[test]
-    fn skills_directory_convenience() {
-        let base = PathBuf::from("/custom");
-        set_test_dir(&base);
-
-        let path = skills_directory().unwrap();
-        assert!(path.ends_with("skills"));
-
-        reset_to_xdg();
-    }
-
-    #[test]
-    fn images_directory_convenience() {
-        let base = PathBuf::from("/custom");
-        set_test_dir(&base);
-
-        let path = images_directory().unwrap();
-        assert!(path.ends_with("images"));
-
-        reset_to_xdg();
-    }
-
-    #[test]
-    fn thurbox_mcp_binary_returns_string() {
-        // Without a sibling binary, falls back to bare name for $PATH lookup
-        let binary = thurbox_mcp_binary();
-        assert!(binary.contains("thurbox-mcp"));
     }
 
     #[test]
@@ -849,22 +623,6 @@ mod tests {
             PathBuf::from("/data/thurbox.db")
         );
         assert_eq!(
-            resolve_override(base, PathKind::AdminDir),
-            PathBuf::from("/data/admin")
-        );
-        assert_eq!(
-            resolve_override(base, PathKind::ContainerfilesDir),
-            PathBuf::from("/data/admin/containerfiles")
-        );
-        assert_eq!(
-            resolve_override(base, PathKind::SkillsDir),
-            PathBuf::from("/data/admin/skills")
-        );
-        assert_eq!(
-            resolve_override(base, PathKind::ImagesDir),
-            PathBuf::from("/data/admin/images")
-        );
-        assert_eq!(
             resolve_override(base, PathKind::MetricsDir),
             PathBuf::from("/data/metrics")
         );
@@ -883,57 +641,6 @@ mod tests {
         assert!(path.ends_with("metrics"));
 
         reset_to_xdg();
-    }
-
-    #[test]
-    fn runtime_directory_uses_xdg_when_set() {
-        // Force XDG strategy and a known XDG_RUNTIME_DIR. Thread-isolated
-        // so we don't fight other tests for env state.
-        let out = std::thread::spawn(|| {
-            let orig_xdg = std::env::var_os("XDG_RUNTIME_DIR");
-            std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1234");
-            reset_to_xdg();
-            let p = runtime_directory();
-            if let Some(x) = orig_xdg {
-                std::env::set_var("XDG_RUNTIME_DIR", x);
-            } else {
-                std::env::remove_var("XDG_RUNTIME_DIR");
-            }
-            p
-        })
-        .join()
-        .unwrap()
-        .unwrap();
-        // `app_dir_name()` is "thurbox" in release, "thurbox-dev" in dev builds.
-        assert!(out.starts_with("/run/user/1234"));
-        assert!(out.ends_with("thurbox") || out.ends_with("thurbox-dev"));
-    }
-
-    #[test]
-    fn runtime_directory_falls_back_to_per_user_tmp() {
-        let out = std::thread::spawn(|| {
-            let orig_xdg = std::env::var_os("XDG_RUNTIME_DIR");
-            let orig_user = std::env::var_os("USER");
-            std::env::remove_var("XDG_RUNTIME_DIR");
-            std::env::set_var("USER", "thurbox-test");
-            reset_to_xdg();
-            let p = runtime_directory();
-            if let Some(x) = orig_xdg {
-                std::env::set_var("XDG_RUNTIME_DIR", x);
-            }
-            if let Some(u) = orig_user {
-                std::env::set_var("USER", u);
-            } else {
-                std::env::remove_var("USER");
-            }
-            p
-        })
-        .join()
-        .unwrap()
-        .unwrap();
-        let s = out.to_string_lossy();
-        assert!(s.starts_with("/tmp/"));
-        assert!(s.contains("thurbox-test"));
     }
 
     #[test]

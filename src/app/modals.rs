@@ -91,12 +91,6 @@ impl TextInput {
 // ── Modal State Structs ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-pub struct RepoSelectorModal {
-    pub index: usize,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct BranchSelectorModal {
     pub index: usize,
     pub branches: Vec<String>,
@@ -235,8 +229,6 @@ pub enum Modal {
     #[default]
     None,
     Help,
-    #[allow(dead_code)] // Planned: not yet wired to a trigger key
-    RepoSelector(RepoSelectorModal),
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
     AgentPicker(crate::ui::agent_picker_modal::AgentPickerState),
