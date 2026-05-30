@@ -236,6 +236,13 @@ scripts/demo/record.sh          # deterministic: canned in-binary demo agent
 scripts/demo/record-agents.sh   # showcase: real claude/opencode/codex/gemini
 ```
 
+`record-agents.sh` records the combined hero demo
+(`thurbox-demo.*`) **and** one clip per feature
+(`thurbox-{file-manager,info-panel,theme,session-creation}.*`),
+one VHS tape each (`scripts/demo/<feature>.tape`). Pass tape
+stems to re-record a subset, e.g.
+`scripts/demo/record-agents.sh theme file-manager`.
+
 Both run fully isolated from your real environment — a dev build
 (`0.0.0-dev` → `dev_build` cfg) uses the `thurbox-dev` socket and
 XDG subdirs, and each script points `TMUX_TMPDIR` and

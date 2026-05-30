@@ -26,8 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Copy demo video into website assets
-        run: cp docs/media/thurbox-demo.mp4 website/assets/thurbox-demo.mp4
+      - name: Copy demo videos into website assets
+        run: cp docs/media/*.mp4 website/assets/
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 

@@ -49,6 +49,10 @@ adds:
   clipboard, scheduled commands (`Ctrl+P`), soft-delete with undo
   (`Ctrl+Z`) and restore (`Ctrl+U`).
 
+Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
+
+![Session creation workflow](./docs/media/thurbox-session-creation.gif)
+
 ### Agent definitions
 
 - Agents are declared as data in `~/.config/thurbox/agents.toml`,
@@ -70,6 +74,20 @@ adds:
 - `< 80` cols: terminal only · `>= 80`: sidebar + terminal ·
   `>= 120`: sidebar + terminal + info panel. Vim-inspired keys
   throughout. Pick a theme with `Ctrl+Y` (or `F4`).
+
+The **info panel** (`Ctrl+B`) shows per-session details and live
+CPU/RAM and agent metrics:
+
+![Info panel](./docs/media/thurbox-info-panel.gif)
+
+The **file viewer** (`Ctrl+E`) browses the session's worktree
+tree with fuzzy search:
+
+![File manager](./docs/media/thurbox-file-manager.gif)
+
+Eight themes (four dark, four light) switch live with `Ctrl+Y`:
+
+![Theme switcher](./docs/media/thurbox-theme.gif)
 
 ## Prerequisites
 
@@ -101,13 +119,52 @@ INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen
 VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
+**Arch Linux (AUR):**
+
+Thurbox is on the AUR as
+[`thurbox`](https://aur.archlinux.org/packages/thurbox) (builds
+from source) and
+[`thurbox-bin`](https://aur.archlinux.org/packages/thurbox-bin)
+(prebuilt release binary). Install with your AUR helper:
+
+```bash
+paru -S thurbox-bin   # prebuilt binary (fastest)
+paru -S thurbox       # build from source
+```
+
+`tmux` is pulled in as a dependency. (Swap `paru` for `yay` or
+your preferred helper.)
+
 **From source:**
 
 ```bash
+sudo pacman -S --needed git tmux rust   # Arch deps; use your distro's equivalent
 git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
 cargo build --release
 # binary at target/release/thurbox
+```
+
+## Uninstall
+
+Remove the binary, depending on how you installed it:
+
+```bash
+rm ~/.local/bin/thurbox        # curl one-liner / manual install
+paru -R thurbox thurbox-bin    # Arch (AUR)
+```
+
+Sessions outlive Thurbox in tmux, so stop them too:
+
+```bash
+tmux -L thurbox kill-server    # ends all running agent sessions
+```
+
+To also delete state and config (optional — this erases your
+session history, theme, and `agents.toml`):
+
+```bash
+rm -rf ~/.local/share/thurbox ~/.config/thurbox
 ```
 
 ## Getting Started

@@ -83,6 +83,22 @@
   width: 100%;
 }
 
+/* ---- Feature walkthrough ---- */
+.video-card {
+  margin: 0;
+}
+
+.video-card video {
+  display: block;
+  width: 100%;
+}
+
+.video-card figcaption {
+  margin-top: var(--space-sm);
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
 /* ---- Features grid ---- */
 .features {
   background: var(--bg-secondary);

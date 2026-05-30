@@ -20,14 +20,31 @@
 # you want to feature (claude / opencode / codex / gemini). Missing agents are
 # skipped with a warning.
 #
-# Usage:  scripts/demo/record-agents.sh
+# Usage:  scripts/demo/record-agents.sh [tape-stem ...]
+#
+#   With no args, records every tape below. Pass one or more tape stems to
+#   re-record only a subset, e.g. `record-agents.sh theme file-manager`.
 
 set -eu
+
+# Tapes to record (stems of scripts/demo/<stem>.tape). `agents` is the combined
+# hero demo (docs/media/thurbox-demo.*); the rest are per-feature clips.
+ALL_TAPES="agents file-manager info-panel theme session-creation"
+TAPES="${*:-$ALL_TAPES}"
 
 # --- Locate the repo root (this script lives in scripts/demo/) ---------------
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT"
+
+# Validate requested tapes exist before doing any expensive setup.
+for tape in $TAPES; do
+    if [ ! -f "$SCRIPT_DIR/$tape.tape" ]; then
+        echo "error: no such tape: $SCRIPT_DIR/$tape.tape" >&2
+        echo "  available: $ALL_TAPES" >&2
+        exit 1
+    fi
+done
 
 # --- Preflight: required tools ----------------------------------------------
 missing=
@@ -133,13 +150,23 @@ for a in $AGENTS; do
     "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
 done
 
-# Give the real CLIs a moment to boot before VHS starts capturing.
-sleep 4
+# Give the real CLIs a moment to boot before VHS starts capturing. Each tape
+# relaunches the TUI against the same seeded sessions, so they only need to be
+# warm once.
+sleep 6
 
 # --- Record -----------------------------------------------------------------
-echo "==> Recording with VHS ..."
-vhs "$SCRIPT_DIR/agents.tape"
+# Each tape declares its own Output paths, so one VHS run == one output pair.
+# Loop over the requested tapes, rendering each into docs/media/.
+for tape in $TAPES; do
+    echo "==> Recording $tape.tape ..."
+    vhs "$SCRIPT_DIR/$tape.tape"
+done
 
-echo "==> Done. Updated:"
-echo "    docs/media/thurbox-demo.gif"
-echo "    docs/media/thurbox-demo.mp4"
+echo "==> Done. Updated docs/media/ for tape(s):$([ "$TAPES" = "$ALL_TAPES" ] && echo " all" || echo " $TAPES")"
+for tape in $TAPES; do
+    case "$tape" in
+        agents) echo "    thurbox-demo.{gif,mp4}" ;;
+        *)      echo "    thurbox-$tape.{gif,mp4}" ;;
+    esac
+done

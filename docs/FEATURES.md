@@ -52,6 +52,8 @@ the user to remember which field to type into.
 
 ## Session Creation
 
+![Session creation workflow](media/thurbox-session-creation.gif)
+
 `Ctrl+N` walks through a series of modals to configure a new
 session. Each step has a sensible default and can be skipped when
 not applicable.
@@ -359,6 +361,13 @@ auto-clear after a timeout or on the next successful action.
 
 ## Responsive Layout
 
+The info panel (`Ctrl+B`) and file viewer (`Ctrl+E`) are the
+optional columns that appear at wider widths:
+
+![Info panel](media/thurbox-info-panel.gif)
+
+![File viewer](media/thurbox-file-manager.gif)
+
 ### Breakpoint Rationale
 
 | Width | Layout | Why |
@@ -589,6 +598,8 @@ historical output.
 ---
 
 ## Theme System
+
+![Theme switcher](media/thurbox-theme.gif)
 
 All UI colors are centralized in `src/ui/theme.rs` via a semantic
 palette. Widget files reference named colors (accent, text, status,

@@ -68,10 +68,12 @@
           <h4>On This Page</h4>
           <ul>
             <li><a href="#from-binary">From Binary</a></li>
+            <li><a href="#arch-linux">Arch Linux (AUR)</a></li>
             <li><a href="#from-source">From Source</a></li>
             <li><a href="#prerequisites">Prerequisites</a></li>
             <li><a href="#quick-start">Quick Start</a></li>
             <li><a href="#configuration">Configuration</a></li>
+            <li><a href="#uninstall">Uninstall</a></li>
           </ul>
         </aside>
 
@@ -200,6 +202,39 @@
               </tr>
             </tbody>
           </table>
+
+          <h2 id="arch-linux">
+            Arch Linux (AUR)
+            <a href="#arch-linux" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Thurbox is on the AUR as
+            <a href="https://aur.archlinux.org/packages/thurbox"><code>thurbox</code></a>
+            (builds from source) and
+            <a href="https://aur.archlinux.org/packages/thurbox-bin"><code>thurbox-bin</code></a>
+            (prebuilt release binary). Install with your AUR helper:
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">bash</span>
+            </div>
+            <div class="terminal-body">
+              <button class="copy-btn" data-code="paru -S thurbox-bin">Copy</button>
+              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox-bin   <span class="syn-comment"># prebuilt binary (fastest)</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox       <span class="syn-comment"># build from source</span></code></pre>
+            </div>
+          </div>
+          <p>
+            <code>tmux</code>
+            is pulled in as a dependency. Swap
+            <code>paru</code>
+            for
+            <code>yay</code>
+            or your preferred helper.
+          </p>
 
           <h2 id="from-source">
             From Source
@@ -341,6 +376,44 @@ cargo build --release"
             <code>~/.local/share/thurbox/thurbox.log</code>
             .
           </p>
+
+          <h2 id="uninstall">
+            Uninstall
+            <a href="#uninstall" class="heading-anchor">#</a>
+          </h2>
+          <p>Remove the binary, depending on how you installed it:</p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">bash</span>
+            </div>
+            <div class="terminal-body">
+              <button class="copy-btn" data-code="rm ~/.local/bin/thurbox">Copy</button>
+              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">rm</span> ~/.local/bin/thurbox        <span class="syn-comment"># curl one-liner / manual install</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-R</span> thurbox thurbox-bin    <span class="syn-comment"># Arch (AUR)</span></code></pre>
+            </div>
+          </div>
+          <p>
+            Sessions outlive Thurbox in tmux, so stop them too &mdash; and optionally delete state
+            and config (this erases session history, theme, and
+            <code>agents.toml</code>
+            ):
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">bash</span>
+            </div>
+            <div class="terminal-body">
+              <button class="copy-btn" data-code="tmux -L thurbox kill-server">Copy</button>
+              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">tmux</span> <span class="syn-flag">-L</span> thurbox kill-server    <span class="syn-comment"># ends all running agent sessions</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">rm</span> <span class="syn-flag">-rf</span> ~/.local/share/thurbox ~/.config/thurbox   <span class="syn-comment"># optional: wipe state</span></code></pre>
+            </div>
+          </div>
         </main>
       </div>
     </div>

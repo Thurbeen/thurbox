@@ -75,6 +75,7 @@
             <li><a href="#session-forking">Session Forking</a></li>
             <li><a href="#fuzzy-search">Fuzzy Search</a></li>
             <li><a href="#responsive-ui">Responsive UI</a></li>
+            <li><a href="#themes">Themes</a></li>
             <li><a href="#session-persistence">Session Persistence</a></li>
           </ul>
         </aside>
@@ -98,6 +99,27 @@
             Sessions
             <a href="#session-orchestration" class="heading-anchor">#</a>
           </h2>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/thurbox-session-creation.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Creating a new session: repo picker, name, agent picker
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              Creating a session with
+              <code>Ctrl+N</code>
+              : pick a repo, name it, choose an agent.
+            </figcaption>
+          </figure>
           <p>
             Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. A session runs
             one agent (Claude Code, Codex, Gemini CLI, opencode, aider, or your own), each with its
@@ -362,6 +384,79 @@
             <li>Vim-inspired keybindings throughout</li>
             <li>Tri-state focus system (Focused, Active, Inactive) with visual border feedback</li>
           </ul>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/thurbox-info-panel.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Info panel showing session details and live metrics
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              The info panel (
+              <code>Ctrl+B</code>
+              ) &mdash; session details plus live CPU/RAM and agent metrics.
+            </figcaption>
+          </figure>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/thurbox-file-manager.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Browsing the worktree file tree with the file viewer
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              The file viewer (
+              <code>Ctrl+E</code>
+              ) &mdash; browse the worktree tree with fuzzy search.
+            </figcaption>
+          </figure>
+
+          <h2 id="themes">
+            Themes
+            <a href="#themes" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Eight built-in palettes (four dark, four light) switch live with
+            <code>Ctrl+Y</code>
+            and persist across restarts.
+          </p>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/thurbox-theme.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Switching between light and dark themes live
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              Cycling palettes with the theme picker (
+              <code>Ctrl+Y</code>
+              ).
+            </figcaption>
+          </figure>
 
           <h2 id="session-persistence">
             Session Persistence
