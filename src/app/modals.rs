@@ -97,11 +97,6 @@ pub struct RepoSelectorModal {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SessionModeModal {
-    pub index: usize,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct BranchSelectorModal {
     pub index: usize,
     pub branches: Vec<String>,
@@ -118,51 +113,8 @@ pub struct SessionNameModal {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct RoleSelectorModal {
-    pub index: usize,
-    /// Roles offered to the user at modal-open time — the merged view of the
-    /// SQLite registry + plugin-contributed roles. Stored on the modal rather
-    /// than read from `App::global_roles` so the picker also surfaces
-    /// plugin-contributed roles that aren't registry rows.
-    pub roles: Vec<crate::session::RoleConfig>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ProfilePickerModal {
-    /// Cursor position. `0` is the synthetic "No profile" entry; subsequent
-    /// indices map onto `profiles[index - 1]`.
-    pub index: usize,
-    /// Snapshot taken at modal-open time so a mid-flow `set_profiles` MCP
-    /// call doesn't shift rows under the user's cursor.
-    pub profiles: Vec<crate::session::ProfileConfig>,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct ThemePickerModal {
     pub index: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct McpServerPickerModal {
-    pub index: usize,
-    pub selected: Vec<bool>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SkillPickerModal {
-    pub index: usize,
-    pub selected: Vec<bool>,
-    /// Skills offered to the user at modal-open time — the merged view of
-    /// `admin/skills/` + the SQLite registry. Stored on the modal rather
-    /// than read from `App::global_skills` so the picker also surfaces
-    /// disk-source skills that aren't registry rows.
-    pub skills: Vec<crate::session::SkillConfig>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoleEditorView {
-    List,
-    Editor,
 }
 
 // ── RestoreSessionsModal ─────────────────────────────────────────────────
@@ -274,25 +226,10 @@ impl RepoPickerModal {
     }
 }
 
-// ── SettingsTab ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SettingsTab {
-    #[default]
-    Roles,
-    McpServers,
-    Skills,
-    Profiles,
-}
-
 // ── Main Modal Enum ────────────────────────────────────────────────────────
 
 /// Single, discriminated union replacing boolean flags for modal state.
 /// Only one modal can be active at a time, making invalid states unrepresentable.
-///
-/// Note: `RoleEditor`, `McpEditor`, and `DiscardConfirmation` are kept as separate
-/// boolean flags on `App`. See `App::show_role_editor`, `App::show_mcp_editor`, and
-/// `App::show_discard_confirmation`.
 #[derive(Debug, Clone, Default)]
 pub enum Modal {
     #[default]
@@ -300,13 +237,9 @@ pub enum Modal {
     Help,
     #[allow(dead_code)] // Planned: not yet wired to a trigger key
     RepoSelector(RepoSelectorModal),
-    SessionMode(SessionModeModal),
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
-    RoleSelector(RoleSelectorModal),
-    ProfilePicker(ProfilePickerModal),
-    McpServerPicker(McpServerPickerModal),
-    SkillPicker(SkillPickerModal),
+    AgentPicker(crate::ui::agent_picker_modal::AgentPickerState),
     RestoreSessions(RestoreSessionsModal),
     ScheduleCommand(ScheduleCommandModal),
     ScheduledCommandsList(ScheduledCommandsListModal),

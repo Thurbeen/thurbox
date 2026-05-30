@@ -52,8 +52,8 @@ pub struct SharedSession {
     /// Human-readable session name (e.g., "1", "Session 1").
     pub name: String,
 
-    /// Role assigned to this session (e.g., "developer", "reviewer").
-    pub role: String,
+    /// Coding agent driving this session (e.g., "claude", "codex").
+    pub agent: String,
 
     /// Backend identifier for finding the session in tmux.
     /// Format: "thurbox:@0" for local tmux sessions.

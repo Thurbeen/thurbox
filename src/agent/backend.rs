@@ -175,7 +175,7 @@ impl Session {
         let args = provider.build_args(config);
         let window_name = crate::agent::tmux::agent_window_name(&name);
 
-        let env = config.permissions.env.clone();
+        let env = config.env.clone();
 
         let spawned = backend.spawn(
             &window_name,
@@ -190,9 +190,8 @@ impl Session {
         let mut info = SessionInfo::new(name);
         info.agent_session_id = config.agent_session_id.clone();
         info.cwd = config.cwd.clone();
-        info.additional_dirs = config.additional_dirs.clone();
-        if !config.role.is_empty() {
-            info.role = config.role.clone();
+        if !config.agent.is_empty() {
+            info.agent = config.agent.clone();
         }
         info.backend_id = Some(spawned.backend_id.clone());
         debug!(session_id = %info.id, backend_id = %spawned.backend_id, "Spawned session via backend");
@@ -208,7 +207,7 @@ impl Session {
             },
             backend,
             provider,
-            config.permissions.env.clone(),
+            env,
         ))
     }
 
@@ -405,7 +404,7 @@ impl Session {
         let args = self.provider.build_args(config);
         let window_name = crate::agent::tmux::agent_window_name(&self.info.name);
 
-        let env = config.permissions.env.clone();
+        let env = config.env.clone();
 
         let spawned = self.backend.spawn(
             &window_name,
@@ -432,10 +431,10 @@ impl Session {
         self.input_tx = state.input_tx;
         self.exited = state.exited;
         self.last_output_at = state.last_output_at;
-        self.env = config.permissions.env.clone();
+        self.env = config.env.clone();
         self.info.backend_id = Some(self.backend_id.clone());
-        if !config.role.is_empty() {
-            self.info.role = config.role.clone();
+        if !config.agent.is_empty() {
+            self.info.agent = config.agent.clone();
         }
 
         debug!(session_id = %self.info.id, backend_id = %self.backend_id, "Restarted session");

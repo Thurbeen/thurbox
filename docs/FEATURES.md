@@ -11,29 +11,27 @@ For architectural choices, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The left sidebar holds a single flat list of sessions — there is no
 project grouping layer above it. Sessions are top-level, identified
-by a UUID v4, and labeled with their name, role, branch (when in a
+by a UUID v4, and labeled with their name, agent, branch (when in a
 worktree), and cwd.
 
 **Why no projects?**
 
 - An earlier design grouped sessions under projects (one project →
-  many sessions, with shared repos and roles). In practice users
-  tended to create one session per task, so the project layer was
-  pure overhead: an extra navigation level, an extra creation step,
-  and an extra deletion guard.
+  many sessions, with shared repos). In practice users tended to
+  create one session per task, so the project layer was pure
+  overhead: an extra navigation level, an extra creation step, and
+  an extra deletion guard.
 - Removing the project layer (storage migration v16 dropped
-  `projects`, `project_repos`, `project_roles`, and
-  `project_mcp_servers`) collapses the model to "sessions own
-  their own configuration". Roles, MCP servers, and skills become
-  global presets attached at session creation time, not project
-  attributes.
+  `projects` and `project_repos`) collapses the model to "sessions
+  own their own configuration". Each session picks its own agent
+  and repos at creation time.
 
 **Why a sidebar at all instead of a popup?**
 
 - Sessions are persistent context, not transient selections. An
   always-visible list shows status (Running, Idle, Error), elapsed
   time, and branch at a glance — useful for monitoring multiple
-  parallel Claude instances.
+  parallel agent sessions.
 - The sidebar fits cleanly into the existing 3-tier responsive
   layout (`<80`, `>=80`, `>=120`); a popup would require its own
   open/close keybinding and dismissal logic.
@@ -41,21 +39,14 @@ worktree), and cwd.
 ### Fuzzy search
 
 Pressing `/` while the session list is focused opens an inline
-fuzzy filter that matches against the session's name, role, branch
+fuzzy filter that matches against the session's name, agent, branch
 name, and cwd. `Enter` confirms, `Esc` cancels.
 
 **Why all four fields?** Users remember sessions by whichever
 attribute is most distinctive — sometimes the branch name, often
-the role ("the reviewer one"), occasionally the repo path. Indexing
+the agent ("the codex one"), occasionally the repo path. Indexing
 all four makes the search hit on the first attempt without forcing
 the user to remember which field to type into.
-
-### Settings overlay
-
-`Ctrl+E` opens the settings overlay with four tabs: **Roles**,
-**MCP Servers**, **Skills**, and **Profiles**. Use `Tab` to cycle
-between tabs. All four are global presets shared across sessions
-and selected at session creation.
 
 ---
 
@@ -69,19 +60,19 @@ not applicable.
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base, `d` deletes the bookmark, and a path-input
    field with filesystem autocomplete adds new bookmarks. The
-   first selected repo becomes the session's `cwd`; the rest are
-   passed to Claude via `--add-dir` so it can read across all of
-   them.
-2. **Session mode** — Normal / Worktree. Skipped when at least
-   one repo is marked as worktree (the choice is already implied).
-3. **Base branch selector** — worktree mode only.
-4. **Session name** — free text identifier shown in the sidebar.
-5. **New branch name** — worktree mode only.
-6. **Role selector** — only when 2+ global roles are defined; the
-   single-role case auto-selects.
-7. **MCP server picker** — pick which global MCP servers to attach
-   to this session.
-8. **Skill picker** — pick which global skills to attach.
+   first selected repo becomes the session's `cwd`; the rest may be
+   exposed to the agent depending on the agent's own flags.
+2. **Base branch selector** — worktree mode only.
+3. **Session name** — free text identifier shown in the sidebar.
+4. **New branch name** — worktree mode only.
+5. **Agent picker** — choose which coding agent runs in this
+   session. Skipped when only one agent is defined in
+   `agents.toml`.
+
+A session is fully described by its repos and agent. There is no
+per-session model selection, permissions, prompt, tool, or skill
+configuration — those concerns belong to the agent CLI itself,
+which runs with its own default config.
 
 **Why per-session repo selection?** Each session is its own context,
 so it makes sense to pick repos at creation time rather than
@@ -89,54 +80,58 @@ inheriting from a parent grouping. Mixed sessions are supported:
 some repos may be worktree-based (new branch created) while others
 are added as-is.
 
+**Why per-session agent?** Different tasks suit different agents.
+Choosing the agent at creation time keeps each session
+self-describing and lets you mix agents across the sidebar
+(Claude here, Codex there) with no shared global configuration.
+
 **Why a bookmark list rather than a path picker every time?** Users
 work on the same handful of repos repeatedly. Bookmarks make the
 common case a 2-keystroke selection while still allowing arbitrary
 paths via the input field. Bookmark deletion (`d`) keeps the list
 from accumulating stale entries.
 
-### Profiles (preset bundles)
+### Agent definitions
 
-A **profile** is a named bundle of role names, MCP server names,
-and skill names that get applied together at session spawn. It
-exists so common session shapes (e.g. "orchestrator sessions
-always use the `developer` role plus the `orchestrate` skill")
-can be one-step to reproduce instead of re-ticking three separate
-pickers.
+The set of available agents is **data**, not code. On first run
+Thurbox seeds `~/.config/thurbox/agents.toml` with built-in
+definitions for claude, codex, gemini, opencode, and aider
+(`agent::agent_config::load_or_seed`). Editing the file — adding an
+`[[agents]]` entry or tweaking an existing one — extends the agent
+picker with no recompile.
 
-Profiles are exposed through the MCP tools (`list_profiles`,
-`get_profile`, `register_profile`, `unregister_profile`,
-`set_profiles`) and through the `thurbox-cli session create
---profile <name>` flag. `create_session` over MCP accepts a
-`"profile"` field on the same precedence rules.
+Each definition (`session::AgentDef`) carries:
 
-**Multi-role merging.** A profile may list multiple roles. Their
-`RolePermissions` are merged at spawn time: `allowed_tools` and
-`disallowed_tools` are unioned, `append_system_prompt` is
-concatenated in role order, `env` maps are merged with later-wins
-precedence, and `permission_mode` is chosen as the most permissive
-(ranked `plan` < `default` < `acceptEdits` < `bypassPermissions`).
-Unknown mode strings rank lowest so they can't silently outrank a
-known mode.
+- `name` — display + lookup key, unique in the registry.
+- `command` — the CLI executable to launch.
+- argument-template groups: `args` (always passed — bake in flags
+  like a model here if you want) and `resume_args` / `fork_args` /
+  `new_session_args` (with `{id}`).
 
-**Caller precedence.** An explicit `role`, `mcp_servers`, or
-`skills` argument on the spawn call overrides the profile's
-contribution for that single field. The displayed session role
-becomes `profile:<name>` when a profile is applied, so the TUI
-session list can distinguish preset-driven sessions.
+`agent::GenericProvider` builds the launch arguments by appending
+each group **only when its driving value is present**, substituting
+`{id}` token-by-token. Selection precedence is fork > resume >
+new-session id; static `args` follow. A group with no value is
+simply omitted — no unresolved-placeholder heuristics. Agents that
+declare no `resume_args` (e.g. codex) start fresh on restart
+instead of resuming.
 
-**Seeded default.** On first startup Thurbox seeds one profile,
-`orchestrator` (roles=`[developer]`, skills=`[orchestrate]`).
-Deleting it is persistent — a `profiles_seeded` metadata flag
-prevents re-seeding on subsequent startups.
+Example:
 
-**TUI.** When at least one profile is registered, the Ctrl+N
-session creation chain inserts a profile picker right after the
-session-name prompt. Row 0 is a synthetic "(No profile)" that
-falls through to the normal role/MCP/skill chain; picking a
-registered profile applies its roles (merged), MCP servers, and
-skills, then jumps directly to the model picker. Users without
-profiles see no UI change.
+```toml
+default = "claude"
+
+[[agents]]
+name = "claude"
+command = "claude"
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+[[agents]]
+name = "codex"
+command = "codex"
+```
 
 ---
 
@@ -150,9 +145,9 @@ commands) and `Shift+arrow/page` keys (intercepted for scrollback).
 
 **Why Ctrl, not Alt?**
 
-- Claude Code and shell programs heavily use Alt-key combinations.
-  Intercepting Alt would break readline, vim, and Claude's own
-  keybindings.
+- Coding-agent CLIs and shell programs heavily use Alt-key
+  combinations. Intercepting Alt would break readline, vim, and the
+  agent's own keybindings.
 - Ctrl has well-established precedent for "meta" actions in
   terminal multiplexers (tmux uses `Ctrl+B`, screen uses `Ctrl+A`).
 - Ctrl combos are easier to type one-handed, which matters for a
@@ -171,25 +166,25 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
 | `Ctrl+P` | Global | Schedule command for active session | **P**rogram |
-| `Ctrl+T` | Global | Toggle shell pane alongside Claude session | **T**erminal |
+| `Ctrl+T` | Global | Toggle shell pane alongside the agent session | **T**erminal |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Global | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Global | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Session list | Delete selected session | Vim: **d** = delete |
-| `Ctrl+E` | Global | Edit settings (roles, MCP servers, skills) | **E**dit |
 | `Ctrl+O` | Global | Open active session's worktrees in editor | **O**pen |
 | `Ctrl+R` | Global | Restart active session | **R**estart |
 | `Ctrl+F` | Global | Fork active session | **F**ork |
 | `Ctrl+S` | Global | Sync all worktree sessions with origin/main | **S**ync |
 | `Ctrl+Z` | Global | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Global | Restore deleted sessions list | **U**ndelete |
+| `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |
 | `F1` | Global | Toggle keybindings help | Universal help |
 | `F2` | Global | Toggle info panel | Next to F1 |
-| `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |
+| `F3` | Global | Toggle file viewer | Next to F2 |
 | `j` / `Down` | Lists | Next item | |
 | `k` / `Up` | Lists | Previous item | |
-| `/` | Session list | Open fuzzy search (name, role, branch, cwd) | Vim search |
+| `/` | Session list | Open fuzzy search (name, agent, branch, cwd) | Vim search |
 | `Enter` | Search bar | Confirm and close search | |
 | `Esc` | Search bar | Cancel search | |
 | `Enter` | Session list | Focus terminal | |
@@ -222,9 +217,9 @@ Create (UUID v4) → Running → Idle / Error
 
 - **Running**: PTY is alive, read loop is active, output is
   streaming to the terminal widget.
-- **Idle**: Claude CLI has exited cleanly (exit code 0). Session
+- **Idle**: the agent CLI has exited cleanly (exit code 0). Session
   is still displayed but no longer accepts input.
-- **Error**: PTY or Claude CLI exited with a non-zero code. Error
+- **Error**: PTY or the agent CLI exited with a non-zero code. Error
   details shown in status bar.
 - **Shutdown**: Triggered by the user closing a session or quitting
   the app. Sends `SIGHUP` to the PTY child process, then waits for
@@ -233,26 +228,18 @@ Create (UUID v4) → Running → Idle / Error
 ### Session Restart (`Ctrl+R`)
 
 Restarts the active session's tmux pane while preserving the
-conversation history. The session is killed and respawned with
-`--resume` plus freshly-resolved role permissions from the
-session's stored role.
+conversation history. The session is killed and respawned with the
+agent's resume arguments (e.g. `--resume <id>` for Claude),
+reusing the session's stored agent. Agents that define no
+`resume_args` simply start a fresh conversation.
 
 **Why restart instead of close + new?**
 
-- Closing destroys the Claude session ID. Restarting uses
-  `--resume` so the conversation context is preserved.
-- When a user edits role permissions via `Ctrl+E`, existing
-  sessions keep running with stale permissions. `Ctrl+R` picks up
-  the new permissions without losing context.
-- The session's `SessionInfo` (ID, name, role, repos) stays intact
-  — only the backend pane and I/O are replaced.
-
-### Session context in system prompt
-
-At session creation, Thurbox injects a small context block into
-the Claude system prompt describing the session's name, role, and
-working repos. This gives Claude immediate awareness of where it
-is running without the user having to restate it.
+- Closing destroys the agent's session ID. Restarting uses the
+  agent's resume arguments so the conversation context is
+  preserved (when the agent supports it).
+- The session's `SessionInfo` (ID, name, agent, repos)
+  stays intact — only the backend pane and I/O are replaced.
 
 ### Why UUID v4?
 
@@ -268,8 +255,7 @@ session after recycling.
 
 `Ctrl+O` opens the active session's working directories in a
 configured external editor. The editor command is a global setting
-stored in SQLite (`get_editor_command` / `set_editor_command` MCP
-tools), defaulting to a sensible value on first run.
+stored in SQLite, defaulting to a sensible value on first run.
 
 **Why a configurable command rather than `$EDITOR`?** `$EDITOR` is
 typically a terminal editor (vim, nano) — wrong for "open this
@@ -343,65 +329,12 @@ The `cancelled_at` timestamp prevents execution. When set:
 Cancellation is atomic — it only succeeds if the command has not
 already been executed or cancelled.
 
-### MCP access
+### Headless access (`thurbox-cli`)
 
-Four MCP tools provide programmatic access:
-
-| Tool | Description |
-|------|-------------|
-| `schedule_command` | Schedule text to be sent to a session at a future time |
-| `list_scheduled_commands` | List pending commands, optionally filtered by session |
-| `get_scheduled_command` | Get a scheduled command by ID |
-| `cancel_scheduled_command` | Cancel a pending scheduled command |
-
----
-
-## Orchestrator Mode
-
-The Admin session can act as a coordinator that spawns other
-sessions, dispatches prompts to them, and reads back their
-output — turning the built-in MCP client into a multi-agent
-orchestrator.
-
-### The three orchestrator primitives
-
-| Tool | Purpose |
-|------|---------|
-| `create_session` | Spawn a new local-tmux session (optionally on a fresh git worktree) |
-| `send_prompt` | Send text to a session's terminal immediately, followed by Enter |
-| `capture_session_output` | Read the rendered contents of a session's pane |
-
-All three are exposed through `thurbox-mcp` and pre-allowed
-for the Admin session via `ADMIN_MCP_TOOLS`.
-
-### Typical loop
-
-1. `create_session(name, repo_path, role?, worktree_branch?,
-   mcp_servers?, skills?)` — returns a UUID immediately; the
-   TUI picks up the queued spawn on its next tick and boots
-   the session.
-2. Poll `get_session(id)` until the session exists and
-   `status` transitions to `Idle`/`Waiting` (meaning Claude
-   has finished its initial boot).
-3. `send_prompt(id, "your task here")` — text is typed into
-   the session's tmux pane; Enter is pressed after a short
-   delay so the app has time to process the typed input.
-4. Poll `get_session(id)` again; once the status returns to
-   `Idle` the agent has finished responding.
-5. `capture_session_output(id, lines?)` — returns the pane's
-   rendered text. Default 200 lines of scrollback before the
-   visible region; capped at 10 000.
-6. React: call `send_prompt` again, `delete_session`, or
-   spawn more workers.
-
-### How spawning works
-
-`create_session` runs synchronously inside `thurbox-mcp`:
-resolves role/MCP servers/skills by name against the global
-config, optionally runs `git::create_worktree` off the requested
-base branch, and then writes the session row via the same
-storage path the TUI uses. The TUI picks it up on the next
-`PRAGMA data_version` tick and adopts the tmux window.
+The `thurbox-cli scheduled` subcommands provide programmatic
+access to schedule, list, and cancel commands without the TUI.
+They share the same `scheduled_commands` table, so the TUI's
+tick-loop safety net still applies.
 
 ---
 
@@ -447,21 +380,21 @@ demand emerges.
 ## Git Worktree Integration
 
 Sessions can optionally run inside git worktrees for branch
-isolation. This is opt-in via the session mode selector ("Normal"
-or "Worktree") or by marking a repo with `w` in the repo picker.
+isolation. This is opt-in by marking a repo with `w` in the repo
+picker.
 
 ### Flow
 
 1. `Ctrl+N` triggers session creation and opens the repo picker.
-2. Marking a repo with `w` in the picker, or choosing "Worktree"
-   in the mode modal, routes through the worktree branch flow.
+2. Marking a repo with `w` in the picker routes through the
+   worktree branch flow.
 3. A base branch selector lists local branches from the selected
    repo.
 4. Selecting a base branch opens a prompt for the new branch name.
 5. Confirming creates a new git branch (from the selected base) in
    a worktree and spawns the session inside it.
 6. Mixed sessions are supported: worktree-marked repos get a new
-   branch while normal repos are added as-is via `--add-dir`.
+   branch while normal repos are added as-is.
 
 ### Worktree storage
 
@@ -512,7 +445,7 @@ Per-worktree steps:
 5. **Stash pop** — restores the stashed changes. If rebase fails
    (conflict), the stash is popped before reporting the conflict.
 
-**Why stash instead of requiring a clean tree?** Claude sessions
+**Why stash instead of requiring a clean tree?** Agent sessions
 frequently have uncommitted work in progress. Requiring a clean
 tree would make sync unusable in the most common case.
 
@@ -541,8 +474,8 @@ Each worktree reports one of three outcomes:
 
 - **Synced** — rebase succeeded, stash restored.
 - **Conflict** — rebase failed due to merge conflicts. The conflict
-  details are sent to the session's Claude instance as a prompt
-  asking it to resolve the rebase.
+  details are sent to the session's agent as a prompt asking it to
+  resolve the rebase.
 - **Error** — fetch or stash failed. The error message is shown in
   the status bar.
 
@@ -584,10 +517,10 @@ thurbox instances.
 ### State storage
 
 All session state is stored in the SQLite database (`thurbox.db`).
-Tables include `sessions`, `worktrees`, `scheduled_commands`,
-`roles`, `mcp_servers`, `skills`, `profiles`, `repo_bookmarks`,
-and `metadata`. The database uses WAL mode for concurrent
-multi-instance access.
+Tables include `sessions`, `worktrees`, `scheduled_commands`, and
+`metadata`. The database uses WAL mode
+for concurrent multi-instance access. Agent definitions are the
+exception — they live in `~/.config/thurbox/agents.toml`.
 
 ### Worktree preservation
 
@@ -641,7 +574,7 @@ present."
 Ctrl-prefixed keys are reserved for Thurbox global commands.
 Shift+arrow and Shift+Page are the conventional scrollback
 keybindings in most terminal emulators (GNOME Terminal, Kitty,
-Alacritty) and do not conflict with Claude Code or shell readline.
+Alacritty) and do not conflict with the agent CLI or shell readline.
 
 ### Scrollbar widget
 
@@ -655,183 +588,41 @@ historical output.
 
 ---
 
-## Role System
-
-Roles are **global** presets shared across all sessions. They are
-managed via the settings overlay (`Ctrl+E` → Roles tab) or via the
-MCP server.
-
-A built-in "developer" role (`permission_mode: acceptEdits`, no
-tool restrictions) is seeded as the default when no roles are
-configured. When creating a session, a role selector appears if
-2+ global roles are defined; otherwise the single role is used
-automatically.
-
-For programmatic role management via the MCP server, see
-[MCP_ROLES.md](MCP_ROLES.md).
-
-### Allow / Ask / Deny Semantics
-
-Each role maps to Claude CLI flags:
-
-| Concept | CLI Flag |
-|---------|----------|
-| Allow (auto-approve) | `--allowed-tools "Read Bash(git:*)"` |
-| Deny (blocked) | `--disallowed-tools "Edit"` |
-| Ask (prompt user) | *(default for unlisted tools)* |
-| Permission mode | `--permission-mode plan` |
-
-Bash scope patterns like `Bash(git:*)` and `Bash(cargo:*)` are
-supported in both allowed and disallowed tool lists.
-
-### Role List View
-
-Shows all global roles. Supports add (`a`), edit (`e` / `Enter`),
-and delete (`d`). Pressing `Esc` saves changes to the database and
-closes the modal.
-
-### Role Editor View
-
-Edits a single role with five text fields:
-
-- **Name** — role identifier (required, unique)
-- **Description** — human-readable summary
-- **Allowed Tools** — space-separated tool names (auto-approved)
-- **Disallowed Tools** — space-separated tool names (blocked)
-- **Environment Variables** — key=value pairs injected into
-  sessions using this role
-
-Permission mode defaults to `default` and can be overridden
-per-role via the role editor.
-
-`Tab` / `Shift+Tab` cycles between fields. `Enter` saves the role,
-`Esc` discards changes.
-
----
-
-## Skill Management
-
-Claude Code skills come from **two sources**:
-
-1. **Disk-source (predefined)** — any directory under
-   `~/.local/share/thurbox/admin/skills/` that contains a
-   `SKILL.md` is auto-discovered. Dropping a directory in is all
-   it takes; no SQLite registration is needed.
-2. **Registered** — SQLite rows in the `skills` table that point
-   at arbitrary absolute paths. Managed via the settings overlay
-   (Ctrl+E → Skills tab), `thurbox-cli skill`, and the MCP
-   `list_skills` / `set_skills` / `register_skill` /
-   `unregister_skill` tools.
-
-**Collision rule**: a registered entry with the same name as a
-disk-source skill **shadows the disk-source entry**. Rationale:
-disk-source skills ship as admin-managed defaults; registering
-the same name is the documented way to override their path.
-`thurbox-cli skill list` and the MCP `list_skills` tool both
-return a `source` field (`"disk"` / `"registered"`) so operators
-can tell which entries are predefined vs. user-configured. The
-settings overlay shows only registered entries — disk-source
-skills never appear as editable rows to avoid confusion about
-"deleting" a directory the user can simply drop in again.
-
-Both sources are presented in the skill picker at session spawn
-time; the user selects skills by name, and Thurbox resolves each
-name against the merged view before symlinking.
-
-### Staging outside the worktree
-
-Selected skills are staged into a per-session directory **outside
-the session's working tree** and exposed to Claude Code via the
-`CLAUDE_CONFIG_DIR` environment variable. Claude Code reads skills
-from `$CLAUDE_CONFIG_DIR/skills/` automatically.
-
-**Why outside the worktree?**
-
-- Staging skills inside the repo would mean every session creates
-  uncommitted (or worse, accidentally-committed) files in the
-  user's working tree. Routing through `CLAUDE_CONFIG_DIR` keeps
-  the worktree pristine.
-- It also makes skills truly per-session rather than per-repo —
-  two sessions on the same repo can run with different skill sets
-  without colliding.
-
----
-
-## Admin Session
-
-A built-in Admin session provides conversational access to Thurbox
-management via Claude Code with the `thurbox-mcp` MCP server
-auto-configured. It is pinned at index 0 of the session list and
-visually distinguished with a yellow `⚙` prefix.
-
-### How it works
-
-On startup, Thurbox creates:
-
-1. An admin directory at `~/.local/share/thurbox/admin/` (or
-   `thurbox-dev/admin/` for dev builds).
-2. A `.mcp.json` file in that directory pointing to the
-   `thurbox-mcp` binary. Claude Code auto-discovers this file.
-3. An "Admin" session pinned at index 0 of the session list, with
-   `cwd` set to the admin directory, all `thurbox-mcp` tools
-   pre-allowed (auto-approved without user prompts), and a system
-   prompt describing its management role.
-
-The `.mcp.json` is rewritten on every startup to pick up binary
-path changes after upgrades.
-
-### Admin session restrictions
-
-- Cannot be deleted (`Ctrl+D` shows an error message).
-- Always present at index 0 — guarantees the session list is never
-  empty, removing the need for a separate empty-state placeholder
-  during startup.
-
-**Why a pinned built-in instead of an auto-created normal session?**
-A regular session could be deleted, leaving the user without the
-conversational management entry point. Pinning the Admin session
-makes the management interface a permanent first-class affordance
-without requiring user setup.
-
-### Binary resolution
-
-The `thurbox-mcp` binary path is resolved by:
-
-1. Checking for a sibling of `current_exe()` (works for both
-   installed `~/.local/bin/` and dev `target/debug/` builds).
-2. Falling back to bare `"thurbox-mcp"` for `$PATH` lookup.
-
----
-
 ## Theme System
 
-All UI colors are centralized in `src/ui/theme.rs` via semantic
-constants on a `Theme` struct. Widget files reference
-`Theme::ACCENT`, `Theme::TEXT_PRIMARY`, etc. instead of hard-coded
-`Color::*` values.
+All UI colors are centralized in `src/ui/theme.rs` via a semantic
+palette. Widget files reference named colors (accent, text, status,
+border) rather than hard-coded `Color::*` values, so the whole UI
+can be re-skinned by swapping the active palette.
+
+Thurbox ships eight built-in presets — four dark (Default,
+Catppuccin Mocha, Tokyo Night, Gruvbox Dark) and four light
+(Catppuccin Latte, Tokyo Night Day, Gruvbox Light, Solarized
+Light). Press `Ctrl+Y` (or `F4`, which avoids terminals that
+intercept `Ctrl+Y` as DSUSP) to pick one. The choice is persisted
+in SQLite under `metadata.active_theme` and survives restarts;
+other Thurbox processes pick it up within one tick via
+`PRAGMA data_version` polling.
 
 ### Why centralized?
 
 - ~50 color references were scattered across 13+ widget files.
   Changing the accent color required editing every file.
-- Semantic names (`ACCENT`, `STATUS_BUSY`, `BORDER_FOCUSED`) make
-  the intent clear at each call site.
-- A single file enables future theming support (dark/light/custom)
-  without touching widget code.
+- Semantic names (accent, status, border) make the intent clear at
+  each call site.
+- A single palette enables user-selectable themes without touching
+  widget code.
 
 ### Color categories
 
-| Category | Constants | Purpose |
-|----------|-----------|---------|
-| Accent | `ACCENT` | Focused borders, selected items, highlights |
-| Status | `STATUS_BUSY/WAITING/IDLE/ERROR` | Session status indicators |
-| Text | `TEXT_PRIMARY/SECONDARY/MUTED` | Three-level text hierarchy |
-| Borders | `BORDER_FOCUSED/UNFOCUSED` | Panel border states |
-| Domain | `ROLE_NAME/ADMIN_BADGE/BRANCH_NAME` | Semantic domain colors |
-| Hints | `KEYBIND_HINT/TOOL_ALLOWED/TOOL_DISALLOWED` | Interactive hints |
-
-Composite style methods (`focused_title()`, `keybind()`, `cursor()`,
-etc.) combine colors with modifiers for common patterns.
+| Category | Purpose |
+|----------|---------|
+| Accent | Focused borders, selected items, highlights |
+| Status | Session status indicators (busy/waiting/idle/error) |
+| Text | Three-level text hierarchy (primary/secondary/muted) |
+| Borders | Panel border states (focused/unfocused) |
+| Domain | Semantic colors for agent name, branch name |
+| Hints | Keybinding and interactive hints |
 
 ---
 
@@ -860,19 +651,7 @@ seconds.
 | `Info` | Cyan `INFO` | Gray | Success feedback ("Session saved") |
 
 Positive feedback is shown for: session start/restart/delete/
-restore, role save, skill save.
-
----
-
-## Unsaved Changes Guard
-
-When pressing `Esc` in the role or MCP editor with modified fields,
-a confirmation overlay asks "Discard changes? y/n". This prevents
-accidental loss of edits.
-
-Dirty detection uses snapshot comparison: field values are captured
-when the editor opens and compared on `Esc`. If unchanged, the
-editor closes immediately without prompting.
+restore, worktree sync, and theme changes.
 
 ---
 
@@ -890,8 +669,8 @@ panel shows a centered hint box:
 └───────────────────────────────┘
 ```
 
-The Admin session guarantees the session list itself is never
-empty, but the active terminal can briefly be empty during spawn.
+The session list is empty until the first session is created; the
+active terminal can also briefly be empty during spawn.
 
 ---
 
@@ -924,13 +703,13 @@ lifetime to avoid Linux-specific "dropped too quickly" issues.
 
 ## Shell Pane Toggle
 
-`Ctrl+T` toggles between the Claude Code session and a shell pane
+`Ctrl+T` toggles between the agent session and a shell pane
 (plain bash/zsh) for the active session. The shell runs in a
-separate tmux pane alongside the Claude pane.
+separate tmux pane alongside the agent pane.
 
 - **Status bar**: Shows "Shell" label when viewing the shell pane.
 - **Per-session state**: Each session tracks its own `TerminalView`
-  (Claude or Shell) independently.
+  (Agent or Shell) independently.
 - Input is forwarded to whichever pane is currently active.
 
 ---
@@ -951,6 +730,6 @@ Directional intent, not commitments. These may change as the
 project evolves.
 
 - **Multi-session orchestration**: Broadcast input to multiple
-  Claude Code instances simultaneously.
+  agent sessions simultaneously.
 - **Task delegation**: Split a task across multiple sessions with
   dependency tracking.

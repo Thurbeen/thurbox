@@ -88,9 +88,13 @@ pub(super) fn resolve_editor_command(db: &crate::storage::Database) -> Option<St
 ///
 /// Returns an empty string when there is nothing useful to inject (no repos,
 /// no other sessions).
+///
+/// Currently unused: the agent-agnostic launcher has no generic system-prompt
+/// injection path yet. Kept for re-wiring once agents declare a prompt arg.
+#[allow(dead_code)]
 pub(super) fn build_session_context_prompt(
     session_name: &str,
-    role: &str,
+    agent: &str,
     worktrees: &[WorktreeInfo],
     cwd: Option<&Path>,
     additional_dirs: &[PathBuf],
@@ -107,7 +111,7 @@ pub(super) fn build_session_context_prompt(
     // -- This Session --
     out.push_str("\n## This Session\n");
     out.push_str(&format!("- **Name:** {session_name}\n"));
-    out.push_str(&format!("- **Role:** {role}\n"));
+    out.push_str(&format!("- **Agent:** {agent}\n"));
 
     // -- Accessible Directories --
     // Lists every directory the agent can access: cwd (primary), worktree
@@ -172,7 +176,10 @@ pub(super) fn build_session_context_prompt(
                     .collect();
                 format!(" on {}", parts.join(", "))
             };
-            out.push_str(&format!("- \"{}\" [{}]{repo_part}\n", sess.name, sess.role));
+            out.push_str(&format!(
+                "- \"{}\" [{}]{repo_part}\n",
+                sess.name, sess.agent
+            ));
         }
 
         if has_overlap {
@@ -187,6 +194,7 @@ pub(super) fn build_session_context_prompt(
 }
 
 /// Collect display names of repos for this session (for overlap detection).
+#[allow(dead_code)]
 fn collect_my_repo_names(worktrees: &[WorktreeInfo], cwd: Option<&Path>) -> HashSet<String> {
     let mut names = HashSet::new();
     for wt in worktrees {
@@ -205,6 +213,7 @@ fn collect_my_repo_names(worktrees: &[WorktreeInfo], cwd: Option<&Path>) -> Hash
 }
 
 /// Summarize another session's repos as (display_name, optional_branch) pairs.
+#[allow(dead_code)]
 fn session_repo_summary(sess: &SessionInfo) -> Vec<(String, Option<String>)> {
     let mut entries = Vec::new();
     if !sess.worktrees.is_empty() {
@@ -228,12 +237,12 @@ mod tests {
     /// Helper to make a `SessionInfo` for testing.
     fn make_session(
         name: &str,
-        role: &str,
+        agent: &str,
         worktrees: Vec<WorktreeInfo>,
         repo_display_names: Vec<String>,
     ) -> SessionInfo {
         let mut info = SessionInfo::new(name.to_string());
-        info.role = role.to_string();
+        info.agent = agent.to_string();
         info.worktrees = worktrees;
         info.repo_display_names = repo_display_names;
         info
@@ -258,7 +267,7 @@ mod tests {
         let wt = make_worktree("/repo", "/wt/repo", "main");
         let result = build_session_context_prompt("my-session", "architect", &[wt], None, &[], &[]);
         assert!(result.contains("**Name:** my-session"));
-        assert!(result.contains("**Role:** architect"));
+        assert!(result.contains("**Agent:** architect"));
     }
 
     #[test]

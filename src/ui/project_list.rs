@@ -14,7 +14,7 @@ use crate::session::SessionInfo;
 #[derive(Clone)]
 pub struct SessionMatch {
     pub name: Vec<usize>,
-    pub role: Vec<usize>,
+    pub agent: Vec<usize>,
     pub branch: Vec<usize>,
     pub cwd: Vec<usize>,
     pub status: Vec<usize>,
@@ -24,16 +24,20 @@ impl SessionMatch {
     /// Build a `SessionMatch` from fuzzy match results, returning `None` if nothing matched.
     pub fn from_matches(
         name: Option<Vec<usize>>,
-        role: Option<Vec<usize>>,
+        agent: Option<Vec<usize>>,
         branch: Option<Vec<usize>>,
         cwd: Option<Vec<usize>>,
         status: Option<Vec<usize>>,
     ) -> Option<Self> {
-        if name.is_some() || role.is_some() || branch.is_some() || cwd.is_some() || status.is_some()
+        if name.is_some()
+            || agent.is_some()
+            || branch.is_some()
+            || cwd.is_some()
+            || status.is_some()
         {
             Some(Self {
                 name: name.unwrap_or_default(),
-                role: role.unwrap_or_default(),
+                agent: agent.unwrap_or_default(),
                 branch: branch.unwrap_or_default(),
                 cwd: cwd.unwrap_or_default(),
                 status: status.unwrap_or_default(),
@@ -451,7 +455,7 @@ fn render_session_section(
             // Determine if this session is dimmed (search active + no match).
             let session_match = match_positions.get(i).and_then(|m| m.as_ref());
             let is_dimmed = search_active && session_match.is_none();
-            // Expand (show role + repo) when selected or matched by current search.
+            // Expand (show agent + repo) when selected or matched by current search.
             let is_expanded = is_active || (search_active && session_match.is_some());
 
             let status_text = format_status_with_elapsed(info.status, elapsed_ms.get(i).copied());
@@ -509,7 +513,7 @@ fn render_session_section(
 
             // Default layout (non-expanded): 2 lines — name on line 1, status on line 2.
             // Expanded (selected or search-matched): 3 lines — name+status on line 1,
-            // role (or provisioning step) on line 2, optional repo/branch on line 3.
+            // agent (or provisioning step) on line 2, optional repo/branch on line 3.
             let mut item_lines = vec![line1];
 
             if !is_expanded {
@@ -521,7 +525,7 @@ fn render_session_section(
             } else if is_dimmed {
                 let dimmed = Style::default().fg(Theme::text_muted());
                 item_lines.push(Line::from(vec![Span::styled(
-                    format!("   {}", info.role),
+                    format!("   {}", info.agent),
                     dimmed,
                 )]));
                 let entries = build_repo_entries(info);
@@ -537,8 +541,8 @@ fn render_session_section(
                 let mut line2_spans = vec![Span::raw("   ")];
                 append_name_spans(
                     &mut line2_spans,
-                    &info.role,
-                    session_match.and_then(|m| m.positions(&m.role)),
+                    &info.agent,
+                    session_match.and_then(|m| m.positions(&m.agent)),
                     role_style,
                 );
                 item_lines.push(Line::from(line2_spans));
@@ -790,7 +794,7 @@ mod tests {
     fn session_match_from_matches_name_only() {
         let m = SessionMatch::from_matches(Some(vec![0, 1]), None, None, None, None).unwrap();
         assert_eq!(m.name, vec![0, 1]);
-        assert!(m.role.is_empty());
+        assert!(m.agent.is_empty());
         assert!(m.branch.is_empty());
         assert!(m.cwd.is_empty());
         assert!(m.status.is_empty());
@@ -800,7 +804,7 @@ mod tests {
     fn session_match_from_matches_role_only() {
         let m = SessionMatch::from_matches(None, Some(vec![2]), None, None, None).unwrap();
         assert!(m.name.is_empty());
-        assert_eq!(m.role, vec![2]);
+        assert_eq!(m.agent, vec![2]);
         assert!(m.branch.is_empty());
     }
 
@@ -808,7 +812,7 @@ mod tests {
     fn session_match_from_matches_branch_only() {
         let m = SessionMatch::from_matches(None, None, Some(vec![3, 5]), None, None).unwrap();
         assert!(m.name.is_empty());
-        assert!(m.role.is_empty());
+        assert!(m.agent.is_empty());
         assert_eq!(m.branch, vec![3, 5]);
     }
 
@@ -823,7 +827,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.name, vec![0]);
-        assert_eq!(m.role, vec![1]);
+        assert_eq!(m.agent, vec![1]);
         assert_eq!(m.branch, vec![2]);
         assert_eq!(m.cwd, vec![3]);
         assert_eq!(m.status, vec![4]);
@@ -846,7 +850,7 @@ mod tests {
     #[test]
     fn session_match_positions_empty_returns_none() {
         let m = SessionMatch::from_matches(Some(vec![0]), None, None, None, None).unwrap();
-        assert!(m.positions(&m.role).is_none());
+        assert!(m.positions(&m.agent).is_none());
         assert!(m.positions(&m.branch).is_none());
     }
 

@@ -57,9 +57,9 @@ No ad-hoc event handlers, no component-local state, no callback chains.
 
 ### 8. Backend-first session model
 
-Claude Code sessions run via a `SessionBackend` trait. The
-backend is local tmux (`tmux -L thurbox`), which gives us
-truly persistent sessions that survive crashes/restarts.
+Coding-agent sessions run via a `SessionBackend` trait, backed by
+local tmux (`tmux -L thurbox`). tmux provides truly persistent
+sessions that survive crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
 The backend is the source of truth for session lifecycle.
 

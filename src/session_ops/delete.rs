@@ -74,7 +74,7 @@ mod tests {
         let shared = SharedSession {
             id,
             name: name.into(),
-            role: "dev".into(),
+            agent: "dev".into(),
             backend_id: String::new(),
             backend_type: "local-tmux".into(),
             agent_session_id: Some(uuid::Uuid::new_v4().to_string()),

@@ -26,29 +26,16 @@ pub enum Action {
         /// Absolute path to the repository or working directory.
         #[arg(long)]
         repo_path: PathBuf,
-        /// Optional role name (falls back to the default developer role).
+        /// Coding agent to launch (e.g. "claude", "codex"). Falls back to the
+        /// default agent from `agents.toml`.
         #[arg(long)]
-        role: Option<String>,
-        /// Apply a global profile preset (bundles roles, MCP servers, skills).
-        /// Explicit `--role`, `--mcp-server`, and `--skill` flags override
-        /// the profile's contribution for that field.
-        #[arg(long)]
-        profile: Option<String>,
+        agent: Option<String>,
         /// If set, create a git worktree on this branch off --base-branch.
         #[arg(long)]
         worktree_branch: Option<String>,
         /// Base branch for the worktree (default: main).
         #[arg(long)]
         base_branch: Option<String>,
-        /// Attach a global MCP server by name. Repeatable, or
-        /// comma-separated (`--mcp-server a,b,c`).
-        #[arg(long = "mcp-server", value_delimiter = ',')]
-        mcp_servers: Vec<String>,
-        /// Stage a global skill by name. Repeatable, or comma-separated
-        /// (`--skill review,docs`). Unknown skill names are rejected at
-        /// create-time against the global registry.
-        #[arg(long = "skill", value_delimiter = ',')]
-        skills: Vec<String>,
     },
     /// Soft-delete a session.
     ///
@@ -109,29 +96,23 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
         Action::Create {
             name,
             repo_path,
-            role,
-            profile,
+            agent,
             worktree_branch,
             base_branch,
-            mcp_servers,
-            skills,
         } => {
             let req = crate::session_ops::SpawnRequest {
                 name,
                 repo_path,
                 worktree_branch,
                 base_branch,
-                role,
-                profile,
-                mcp_servers,
-                skills,
+                agent,
                 agent_session_id: None,
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             Ok(json!({
                 "id": res.session_id.to_string(),
                 "name": res.name,
-                "role": res.role,
+                "agent": res.agent,
                 "agent_session_id": res.agent_session_id,
                 "cwd": res.cwd.display().to_string(),
             }))
@@ -215,7 +196,7 @@ fn shared_session_to_json(s: &SharedSession) -> Value {
     json!({
         "id": s.id.to_string(),
         "name": s.name,
-        "role": s.role,
+        "agent": s.agent,
         "backend_type": s.backend_type,
         "agent_session_id": s.agent_session_id,
         "cwd": s.cwd.as_ref().map(|p| p.display().to_string()),
@@ -250,7 +231,7 @@ mod tests {
         let shared = SharedSession {
             id,
             name: "demo".into(),
-            role: "dev".into(),
+            agent: "dev".into(),
             backend_id: "tb-demo".into(),
             backend_type: "local-tmux".into(),
             agent_session_id: Some("agent-1".into()),
@@ -269,7 +250,7 @@ mod tests {
         let s = &arr[0];
         assert_eq!(s["id"].as_str(), Some(id.to_string().as_str()));
         assert_eq!(s["name"].as_str(), Some("demo"));
-        assert_eq!(s["role"].as_str(), Some("dev"));
+        assert_eq!(s["agent"].as_str(), Some("dev"));
         assert_eq!(s["backend_type"].as_str(), Some("local-tmux"));
         assert_eq!(s["agent_session_id"].as_str(), Some("agent-1"));
         assert_eq!(s["cwd"].as_str(), Some("/tmp/repo"));
@@ -296,7 +277,7 @@ mod tests {
         let shared = SharedSession {
             id,
             name: "demo".into(),
-            role: "dev".into(),
+            agent: "dev".into(),
             backend_id: "tb-demo".into(),
             backend_type: "local-tmux".into(),
             agent_session_id: None,
@@ -329,7 +310,7 @@ mod tests {
         let shared = SharedSession {
             id,
             name: "Foo Bar".into(), // exercise bug #1 sanitization path too
-            role: "dev".into(),
+            agent: "dev".into(),
             backend_id: String::new(),
             backend_type: "local-tmux".into(),
             agent_session_id: None,

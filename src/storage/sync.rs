@@ -48,7 +48,7 @@ mod tests {
         SharedSession {
             id: SessionId::default(),
             name: name.to_string(),
-            role: "developer".to_string(),
+            agent: "developer".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
             agent_session_id: None,

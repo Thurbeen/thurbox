@@ -11,22 +11,13 @@
 //! ```
 
 pub mod audit;
-mod helpers;
 pub mod keybindings;
-mod mcp_servers;
-mod profiles;
 pub mod repo_bookmarks;
-mod roles;
 mod scheduled_commands;
 mod schema;
 mod sessions;
 mod settings;
-mod skills;
-pub use mcp_servers::McpServerSource;
-pub use profiles::ProfileSource;
-pub use roles::RoleSource;
 pub use sessions::DeletedSessionInfo;
-pub use skills::SkillSource;
 pub mod sync;
 mod worktrees;
 

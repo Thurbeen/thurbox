@@ -63,8 +63,6 @@
           </ul>
           <h4>Reference</h4>
           <ul>
-            <li><a href="mcp.html">MCP Server</a></li>
-            <li><a href="roles.html">Role Configuration</a></li>
             <li><a href="architecture.html">Architecture</a></li>
           </ul>
           <h4>On This Page</h4>
@@ -76,7 +74,7 @@
             <li><a href="#terminal-scrollback">Terminal Scrollback</a></li>
             <li><a href="#modals">Modal Keybindings</a></li>
             <li><a href="#scheduled-commands">Scheduled Commands</a></li>
-            <li><a href="#role-editor">Role Editor</a></li>
+            <li><a href="#agent-picker">Agent Picker</a></li>
           </ul>
         </aside>
 
@@ -111,8 +109,8 @@
           <div class="info-box">
             <p>
               <strong>Why Ctrl, not Alt?</strong>
-              Claude Code and shell programs heavily use Alt-key combinations. Ctrl has established
-              precedent for meta actions in terminal multiplexers (tmux uses
+              Coding-agent CLIs and shell programs heavily use Alt-key combinations. Ctrl has
+              established precedent for meta actions in terminal multiplexers (tmux uses
               <code>Ctrl+B</code>
               , screen uses
               <code>Ctrl+A</code>
@@ -143,7 +141,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+N</code></td>
-                <td>New project or session</td>
+                <td>New session (opens repo picker)</td>
                 <td>
                   <strong>N</strong>
                   ew
@@ -189,7 +187,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+J</code></td>
-                <td>Select next project or session</td>
+                <td>Select next session</td>
                 <td>
                   Vim:
                   <strong>j</strong>
@@ -198,7 +196,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+K</code></td>
-                <td>Select previous project or session</td>
+                <td>Select previous session</td>
                 <td>
                   Vim:
                   <strong>k</strong>
@@ -216,19 +214,11 @@
               </tr>
               <tr>
                 <td><code>Ctrl+D</code></td>
-                <td>Delete session or project</td>
+                <td>Delete session</td>
                 <td>
                   Vim:
                   <strong>d</strong>
                   = delete
-                </td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+E</code></td>
-                <td>Edit settings (roles, MCP servers, skills)</td>
-                <td>
-                  <strong>E</strong>
-                  dit
                 </td>
               </tr>
               <tr>
@@ -265,7 +255,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+Z</code></td>
-                <td>Undo session/project delete</td>
+                <td>Undo session delete</td>
                 <td>
                   <strong>Z</strong>
                   = undo
@@ -280,6 +270,19 @@
                 </td>
               </tr>
               <tr>
+                <td>
+                  <code>Ctrl+Y</code>
+                  /
+                  <code>F4</code>
+                </td>
+                <td>Pick TUI theme</td>
+                <td>
+                  Color
+                  <strong>Y</strong>
+                  oke
+                </td>
+              </tr>
+              <tr>
                 <td><code>F1</code></td>
                 <td>Toggle keybindings help</td>
                 <td>Universal</td>
@@ -289,6 +292,11 @@
                 <td>Toggle info panel</td>
                 <td>Next to F1</td>
               </tr>
+              <tr>
+                <td><code>F3</code></td>
+                <td>Toggle file viewer</td>
+                <td>Next to F2</td>
+              </tr>
             </tbody>
           </table>
 
@@ -296,7 +304,7 @@
             List Navigation
             <a href="#list-navigation" class="heading-anchor">#</a>
           </h2>
-          <p>When the project list or session list is focused:</p>
+          <p>When the session list is focused:</p>
           <table>
             <thead>
               <tr>
@@ -339,17 +347,12 @@
           <p>
             Press
             <code>/</code>
-            in the project or session list to open a fuzzy search bar. The search bar appears below
-            the active section.
+            in the session list to open a fuzzy search bar. The search bar appears below the list.
           </p>
           <ul>
             <li>
-              <strong>Project search</strong>
-              matches against the project name.
-            </li>
-            <li>
               <strong>Session search</strong>
-              matches against the session name, role, and worktree branch.
+              matches against the session name, agent, and worktree branch.
             </li>
           </ul>
           <p>
@@ -416,42 +419,6 @@
             Modal Keybindings
             <a href="#modals" class="heading-anchor">#</a>
           </h2>
-
-          <h3>Session mode selector</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>j</code>
-                  /
-                  <code>Down</code>
-                </td>
-                <td>Next mode</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>k</code>
-                  /
-                  <code>Up</code>
-                </td>
-                <td>Previous mode</td>
-              </tr>
-              <tr>
-                <td><code>Enter</code></td>
-                <td>Select mode</td>
-              </tr>
-              <tr>
-                <td><code>Esc</code></td>
-                <td>Cancel</td>
-              </tr>
-            </tbody>
-          </table>
 
           <h3>Branch selector (Worktree mode)</h3>
           <table>
@@ -542,12 +509,18 @@
             </tbody>
           </table>
 
-          <h2 id="role-editor">
-            Role Editor
-            <a href="#role-editor" class="heading-anchor">#</a>
+          <h2 id="agent-picker">
+            Agent Picker
+            <a href="#agent-picker" class="heading-anchor">#</a>
           </h2>
-
-          <h3>Role list (inside settings overlay)</h3>
+          <p>
+            The
+            <code>Ctrl+N</code>
+            new-session flow ends with an agent picker. The agent picker is skipped when only one
+            agent is defined in
+            <code>agents.toml</code>
+            .
+          </p>
           <table>
             <thead>
               <tr>
@@ -562,7 +535,7 @@
                   /
                   <code>Down</code>
                 </td>
-                <td>Next role</td>
+                <td>Next agent</td>
               </tr>
               <tr>
                 <td>
@@ -570,55 +543,15 @@
                   /
                   <code>Up</code>
                 </td>
-                <td>Previous role</td>
-              </tr>
-              <tr>
-                <td><code>a</code></td>
-                <td>Add new role</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>e</code>
-                  /
-                  <code>Enter</code>
-                </td>
-                <td>Edit selected role</td>
-              </tr>
-              <tr>
-                <td><code>d</code></td>
-                <td>Delete selected role</td>
-              </tr>
-              <tr>
-                <td><code>Esc</code></td>
-                <td>Save and close</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h3>Role detail form</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>Tab</code>
-                  /
-                  <code>Shift+Tab</code>
-                </td>
-                <td>Cycle fields</td>
+                <td>Previous agent</td>
               </tr>
               <tr>
                 <td><code>Enter</code></td>
-                <td>Save role</td>
+                <td>Confirm selection</td>
               </tr>
               <tr>
                 <td><code>Esc</code></td>
-                <td>Discard changes</td>
+                <td>Cancel session creation</td>
               </tr>
             </tbody>
           </table>

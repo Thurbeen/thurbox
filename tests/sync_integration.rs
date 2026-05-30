@@ -13,7 +13,7 @@ fn make_session(id: SessionId, name: &str) -> SharedSession {
     SharedSession {
         id,
         name: name.to_string(),
-        role: "developer".to_string(),
+        agent: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
         agent_session_id: Some(format!("claude-{name}")),
@@ -358,7 +358,7 @@ fn db_session_metadata_preserved_across_instances() {
     let session = SharedSession {
         id: session_id,
         name: "Dev Session".to_string(),
-        role: "developer".to_string(),
+        agent: "developer".to_string(),
         backend_id: "thurbox:@0".to_string(),
         backend_type: "tmux".to_string(),
         agent_session_id: Some("claude-123".to_string()),
@@ -377,7 +377,7 @@ fn db_session_metadata_preserved_across_instances() {
     let s = &sessions[0];
     assert_eq!(s.id, session_id);
     assert_eq!(s.name, "Dev Session");
-    assert_eq!(s.role, "developer");
+    assert_eq!(s.agent, "developer");
     assert_eq!(s.backend_id, "thurbox:@0");
     assert_eq!(s.agent_session_id, Some("claude-123".to_string()));
     assert_eq!(s.cwd, Some(PathBuf::from("/home/dev")));
@@ -485,53 +485,4 @@ fn poll_for_changes_respects_interval() {
 
     let result = sync::poll_for_changes(&mut sync_state, &mut db).unwrap();
     assert!(result.is_none());
-}
-
-#[test]
-fn poll_detects_global_role_change_even_when_delta_empty() {
-    use thurbox::session::{RoleConfig, RolePermissions};
-
-    let temp = tempfile::NamedTempFile::new().unwrap();
-    let path = temp.path();
-
-    let mut db_poller = Database::open(path).unwrap();
-    let db_writer = Database::open(path).unwrap();
-
-    let mut sync_state = sync::SyncState::with_interval(std::time::Duration::from_millis(0));
-
-    // Initialize change tracking
-    let _ = db_poller.has_external_changes().unwrap();
-    // Set initial snapshot so first poll doesn't see false positives
-    let initial = db_poller.load_shared_state().unwrap();
-    sync_state.set_initial_snapshot(initial);
-
-    // External writer modifies only the global roles table
-    db_writer
-        .replace_global_roles(&[RoleConfig {
-            name: "ops".to_string(),
-            description: "Operations".to_string(),
-            permissions: RolePermissions {
-                allowed_tools: vec!["Bash".to_string(), "Read".to_string()],
-                ..RolePermissions::default()
-            },
-        }])
-        .unwrap();
-
-    // Poll should detect the DB change even though session/project delta is empty
-    std::thread::sleep(std::time::Duration::from_millis(1));
-    let result = sync::poll_for_changes(&mut sync_state, &mut db_poller).unwrap();
-    assert!(result.is_some());
-    let result = result.unwrap();
-    assert!(result.db_changed);
-    // The session/project delta is empty — only global roles changed
-    assert!(result.delta.is_empty());
-
-    // Verify the poller can read the updated global roles
-    let roles = db_poller.list_global_roles().unwrap();
-    assert_eq!(roles.len(), 1);
-    assert_eq!(roles[0].name, "ops");
-    assert_eq!(
-        roles[0].permissions.allowed_tools,
-        vec!["Bash".to_string(), "Read".to_string()]
-    );
 }

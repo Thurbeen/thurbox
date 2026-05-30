@@ -11,7 +11,7 @@ use super::theme::Theme;
 /// View-only entry for the restore sessions modal.
 pub struct DeletedSessionEntry {
     pub name: String,
-    pub role: String,
+    pub agent: String,
     pub deleted_ago: String,
     pub has_worktrees: bool,
 }
@@ -48,7 +48,7 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
             let wt_indicator = if entry.has_worktrees { " [wt]" } else { "" };
             let text = format!(
                 " {} ({}) {}{} ",
-                entry.name, entry.role, entry.deleted_ago, wt_indicator
+                entry.name, entry.agent, entry.deleted_ago, wt_indicator
             );
             if selected {
                 Line::from(Span::styled(text, Theme::selected_item()))

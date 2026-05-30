@@ -125,22 +125,11 @@ fn storage_module_isolation() {
 }
 
 #[test]
-fn mcp_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp");
-    let violations = check_no_imports(&module_dir, &["app", "agent", "ui", "git"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("mcp", &violations)
-    );
-}
-
-#[test]
 fn session_ops_module_isolation() {
     let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session_ops");
     // session_ops must not pull in TUI state or the PTY-attached backend.
     // It talks to tmux through the narrow helpers in `agent::tmux` via
-    // fully-qualified paths (not `use`), same pattern as the mcp module.
+    // fully-qualified paths (not `use`), same pattern as the cli module.
     let violations = check_no_imports(&module_dir, &["app", "ui", "agent"]);
     assert!(
         violations.is_empty(),

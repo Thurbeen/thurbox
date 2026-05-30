@@ -8,9 +8,9 @@ edition = "2021"
 build = "build.rs"
 authors = ["LeTuR <magicletur@protonmail.com>"]
 license = "MIT"
-description = "A TUI for orchestrating multiple Claude Code instances with repository management"
+description = "A TUI for orchestrating multiple coding-agent CLI sessions in persistent tmux panels"
 repository = "https://github.com/Thurbeen/thurbox"
-keywords = ["tui", "claude", "git", "cli"]
+keywords = ["tui", "agent", "tmux", "git", "cli"]
 categories = ["command-line-utilities"]
 
 [dependencies]
@@ -55,25 +55,15 @@ arboard = "3"
 # Temporary directories (used by tests and session_ops)
 tempfile = "3"
 
-# MCP server
-rmcp = { version = "1.0", features = ["server", "transport-io", "transport-streamable-http-server", "schemars"] }
+# JSON (session metadata, keybindings, agent config)
 serde_json = "1"
 
-# MCP HTTP transport + CLI
+# CLI argument parsing (thurbox-cli)
 clap = { version = "4", features = ["derive"] }
-tokio-util = "0.7"
-axum = "0.8"
-
-[[bin]]
-name = "thurbox-mcp"
-path = "src/bin/thurbox-mcp.rs"
 
 [[bin]]
 name = "thurbox-cli"
 path = "src/bin/thurbox-cli.rs"
-
-[dev-dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 
 # Development tool requirements (install with `cargo binstall` or `cargo install`)
 [package.metadata.dev-tools]

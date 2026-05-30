@@ -13,7 +13,7 @@ use super::Database;
 pub struct DeletedSessionInfo {
     pub id: SessionId,
     pub name: String,
-    pub role: String,
+    pub agent: String,
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub deleted_at: u64,
@@ -44,14 +44,14 @@ impl Database {
 
         if existing.is_some() {
             self.conn.execute(
-                "UPDATE sessions SET name = ?1, role = ?2, \
+                "UPDATE sessions SET name = ?1, agent = ?2, \
                  backend_id = ?3, backend_type = ?4, agent_session_id = ?5, \
                  cwd = ?6, additional_dirs = ?7, shell_backend_id = ?8, \
                  updated_at = ?9, deleted_at = NULL \
                  WHERE id = ?10",
                 params![
                     session.name,
-                    session.role,
+                    session.agent,
                     session.backend_id,
                     session.backend_type,
                     session.agent_session_id,
@@ -73,14 +73,14 @@ impl Database {
             )?;
         } else {
             self.conn.execute(
-                "INSERT INTO sessions (id, name, role, backend_id, backend_type, \
+                "INSERT INTO sessions (id, name, agent, backend_id, backend_type, \
                  agent_session_id, cwd, additional_dirs, shell_backend_id, \
                  created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id_str,
                     session.name,
-                    session.role,
+                    session.agent,
                     session.backend_id,
                     session.backend_type,
                     session.agent_session_id,
@@ -161,7 +161,7 @@ impl Database {
 
     fn query_sessions(&self, condition: &str) -> rusqlite::Result<Vec<SharedSession>> {
         let sql = format!(
-            "SELECT s.id, s.name, s.role, s.backend_id, s.backend_type, \
+            "SELECT s.id, s.name, s.agent, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
@@ -199,7 +199,7 @@ impl Database {
                 SharedSession {
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
-                    role: row.get(2)?,
+                    agent: row.get(2)?,
                     backend_id: row.get(3)?,
                     backend_type: row.get(4)?,
                     agent_session_id: row.get(5)?,
@@ -300,7 +300,7 @@ impl Database {
 
     fn query_deleted_sessions(&self, condition: &str) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         let sql = format!(
-            "SELECT s.id, s.name, s.role, s.agent_session_id, \
+            "SELECT s.id, s.name, s.agent, s.agent_session_id, \
              s.cwd, s.deleted_at, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
@@ -331,7 +331,7 @@ impl Database {
                 DeletedSessionInfo {
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
-                    role: row.get(2)?,
+                    agent: row.get(2)?,
                     agent_session_id: row.get(3)?,
                     cwd: cwd.map(PathBuf::from),
                     deleted_at: deleted_at as u64,
@@ -371,7 +371,7 @@ mod tests {
         SharedSession {
             id: SessionId::default(),
             name: name.to_string(),
-            role: "developer".to_string(),
+            agent: "claude".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
             agent_session_id: None,
@@ -394,7 +394,7 @@ mod tests {
         let sessions = db.list_active_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "Session 1");
-        assert_eq!(sessions[0].role, "developer");
+        assert_eq!(sessions[0].agent, "claude");
     }
 
     #[test]
@@ -405,13 +405,13 @@ mod tests {
         db.upsert_session(&session).unwrap();
 
         session.name = "Renamed".to_string();
-        session.role = "reviewer".to_string();
+        session.agent = "codex".to_string();
         db.upsert_session(&session).unwrap();
 
         let sessions = db.list_active_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "Renamed");
-        assert_eq!(sessions[0].role, "reviewer");
+        assert_eq!(sessions[0].agent, "codex");
     }
 
     #[test]

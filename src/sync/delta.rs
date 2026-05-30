@@ -88,7 +88,7 @@ impl StateDelta {
 /// Ignores tombstone state since delta computation filters those out.
 fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
     old.name != new.name
-        || old.role != new.role
+        || old.agent != new.agent
         || old.backend_id != new.backend_id
         || old.backend_type != new.backend_type
         || old.agent_session_id != new.agent_session_id
@@ -106,7 +106,7 @@ mod tests {
         SharedSession {
             id,
             name: name.to_string(),
-            role: "developer".to_string(),
+            agent: "claude".to_string(),
             backend_id: "thurbox:@0".to_string(),
             backend_type: "tmux".to_string(),
             agent_session_id: None,
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn session_changed_detects_role_change() {
+    fn session_changed_detects_agent_change() {
         let session_id = SessionId::default();
 
         let mut old_state = SharedState::new();
@@ -225,13 +225,13 @@ mod tests {
 
         let mut new_state = SharedState::new();
         let mut s = make_session(session_id, "Session");
-        s.role = "reviewer".to_string();
+        s.agent = "codex".to_string();
         new_state.sessions.push(s);
 
         let delta = StateDelta::compute(&old_state, &new_state);
 
         assert_eq!(delta.updated_sessions.len(), 1);
-        assert_eq!(delta.updated_sessions[0].role, "reviewer");
+        assert_eq!(delta.updated_sessions[0].agent, "codex");
     }
 
     #[test]

@@ -1,12 +1,13 @@
+pub mod agent_config;
 pub mod backend;
-pub mod claude;
 pub mod control_mode;
+pub mod generic;
 pub mod input;
 pub mod provider;
 pub mod registry;
-pub mod skill_staging;
 pub mod tmux;
 
 pub use backend::{Session, SessionBackend};
+pub use generic::GenericProvider;
 pub use provider::AgentProvider;
 pub use registry::BackendRegistry;

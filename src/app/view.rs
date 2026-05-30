@@ -15,11 +15,9 @@ use crate::session::{Action, Category, KeyBindings, KeyChord, SessionInfo};
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
-    branch_selector_modal, file_viewer, info_panel, layout, mcp_server_picker_modal,
-    profile_picker_modal, project_list, restore_sessions_modal, role_editor_modal,
-    role_selector_modal, schedule_command_modal, scheduled_commands_list_modal, session_mode_modal,
-    session_name_modal, skill_picker_modal, status_bar, terminal_view, theme_picker_modal,
-    worktree_name_modal,
+    agent_picker_modal, branch_selector_modal, file_viewer, info_panel, layout, project_list,
+    restore_sessions_modal, schedule_command_modal, scheduled_commands_list_modal,
+    session_name_modal, status_bar, terminal_view, theme_picker_modal, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -195,16 +193,6 @@ impl App {
             render_help_overlay(frame, &self.keybindings);
         }
 
-        // Session mode modal
-        if let super::modals::Modal::SessionMode(ref sm) = self.modal {
-            session_mode_modal::render_session_mode_modal(
-                frame,
-                &session_mode_modal::SessionModeState {
-                    selected_index: sm.index,
-                },
-            );
-        }
-
         // Worktree name modal
         if let super::modals::Modal::WorktreeName(ref wn) = self.modal {
             let base = self.pending_base_branch.as_deref().unwrap_or("");
@@ -240,26 +228,9 @@ impl App {
             );
         }
 
-        // Profile picker modal
-        if let super::modals::Modal::ProfilePicker(ref pp) = self.modal {
-            profile_picker_modal::render_profile_picker_modal(
-                frame,
-                &profile_picker_modal::ProfilePickerState {
-                    profiles: &pp.profiles,
-                    selected_index: pp.index,
-                },
-            );
-        }
-
-        // Role selector modal
-        if let super::modals::Modal::RoleSelector(ref rsel) = self.modal {
-            role_selector_modal::render_role_selector_modal(
-                frame,
-                &role_selector_modal::RoleSelectorState {
-                    roles: &rsel.roles,
-                    selected_index: rsel.index,
-                },
-            );
+        // Agent picker modal
+        if let super::modals::Modal::AgentPicker(ref ap) = self.modal {
+            agent_picker_modal::render_agent_picker_modal(frame, ap);
         }
 
         // Theme picker modal
@@ -273,177 +244,6 @@ impl App {
             );
         }
 
-        // MCP server picker modal
-        if let super::modals::Modal::McpServerPicker(ref msp) = self.modal {
-            mcp_server_picker_modal::render_mcp_server_picker_modal(
-                frame,
-                &mcp_server_picker_modal::McpServerPickerState {
-                    servers: &self.global_mcp_servers,
-                    selected: &msp.selected,
-                    index: msp.index,
-                },
-            );
-        }
-
-        // Skill picker modal
-        if let super::modals::Modal::SkillPicker(ref sp) = self.modal {
-            skill_picker_modal::render_skill_picker_modal(
-                frame,
-                &skill_picker_modal::SkillPickerState {
-                    skills: &sp.skills,
-                    selected: &sp.selected,
-                    index: sp.index,
-                },
-            );
-        }
-
-        // Settings overlay (tabbed list of roles / MCP servers / skills / profiles)
-        if self.show_settings
-            && !self.show_role_editor
-            && !self.show_mcp_editor
-            && !self.show_skill_editor
-            && !self.show_profile_editor
-        {
-            crate::ui::settings_overlay::render_settings_overlay(
-                frame,
-                &crate::ui::settings_overlay::SettingsOverlayState {
-                    tab: self.settings_tab,
-                    roles: &self.global_roles,
-                    role_index: self.role_editor_list_index,
-                    mcp_servers: &self.global_mcp_servers,
-                    mcp_index: self.mcp_server_list_index,
-                    skills: &self.global_skills,
-                    skill_index: self.skill_list_index,
-                    profiles: &self.global_profiles,
-                    profile_index: self.profile_list_index,
-                },
-            );
-        }
-
-        // Role editor modal (detail form, overlays edit-project modal)
-        if self.show_role_editor {
-            role_editor_modal::render_role_editor_modal(
-                frame,
-                &role_editor_modal::RoleEditorState {
-                    name: self.role_editor_name.value(),
-                    name_cursor: self.role_editor_name.cursor_pos(),
-                    description: self.role_editor_description.value(),
-                    description_cursor: self.role_editor_description.cursor_pos(),
-                    allowed_tools: &self.role_editor_allowed_tools.items,
-                    allowed_tools_index: self.role_editor_allowed_tools.selected,
-                    allowed_tools_mode: self.role_editor_allowed_tools.mode,
-                    allowed_tools_input: self.role_editor_allowed_tools.input.value(),
-                    allowed_tools_input_cursor: self.role_editor_allowed_tools.input.cursor_pos(),
-                    disallowed_tools: &self.role_editor_disallowed_tools.items,
-                    disallowed_tools_index: self.role_editor_disallowed_tools.selected,
-                    disallowed_tools_mode: self.role_editor_disallowed_tools.mode,
-                    disallowed_tools_input: self.role_editor_disallowed_tools.input.value(),
-                    disallowed_tools_input_cursor: self
-                        .role_editor_disallowed_tools
-                        .input
-                        .cursor_pos(),
-                    system_prompt: self.role_editor_system_prompt.value(),
-                    system_prompt_cursor: self.role_editor_system_prompt.cursor_pos(),
-                    env: &self.role_editor_env.items,
-                    env_index: self.role_editor_env.selected,
-                    env_mode: self.role_editor_env.mode,
-                    env_input: self.role_editor_env.input.value(),
-                    env_input_cursor: self.role_editor_env.input.cursor_pos(),
-                    focused_field: self.role_editor_field,
-                },
-            );
-        }
-
-        // Skill editor modal (detail form for global skills)
-        if self.show_skill_editor {
-            use crate::ui::{
-                centered_fixed_height_rect, render_modal_frame, render_text_field,
-                render_text_field_with_suggestion,
-            };
-            let area = centered_fixed_height_rect(50, 8, frame.area());
-            let inner = render_modal_frame(frame, area, "Skill Editor");
-            if inner.height >= 4 && inner.width >= 10 {
-                let chunks = ratatui::layout::Layout::default()
-                    .direction(ratatui::layout::Direction::Vertical)
-                    .constraints([
-                        ratatui::layout::Constraint::Length(3),
-                        ratatui::layout::Constraint::Length(3),
-                    ])
-                    .split(inner);
-
-                render_text_field(
-                    frame,
-                    chunks[0],
-                    "Name",
-                    self.skill_editor_name.value(),
-                    self.skill_editor_name.cursor_pos(),
-                    self.skill_editor_field == super::SkillEditorField::Name,
-                );
-                render_text_field_with_suggestion(
-                    frame,
-                    chunks[1],
-                    "Path",
-                    self.skill_editor_path.value(),
-                    self.skill_editor_path.cursor_pos(),
-                    self.skill_editor_field == super::SkillEditorField::Path,
-                    self.skill_editor_path_suggestion.as_deref(),
-                );
-            }
-        }
-
-        // Profile editor modal (detail form for global profiles)
-        if self.show_profile_editor {
-            crate::ui::profile_editor_modal::render_profile_editor_modal(
-                frame,
-                &crate::ui::profile_editor_modal::ProfileEditorState {
-                    name: self.profile_editor_name.value(),
-                    name_cursor: self.profile_editor_name.cursor_pos(),
-                    description: self.profile_editor_description.value(),
-                    description_cursor: self.profile_editor_description.cursor_pos(),
-                    roles: &self.profile_editor_roles.items,
-                    roles_index: self.profile_editor_roles.selected,
-                    roles_mode: self.profile_editor_roles.mode,
-                    roles_input: self.profile_editor_roles.input.value(),
-                    roles_input_cursor: self.profile_editor_roles.input.cursor_pos(),
-                    mcp_servers: &self.profile_editor_mcp_servers.items,
-                    mcp_servers_index: self.profile_editor_mcp_servers.selected,
-                    mcp_servers_mode: self.profile_editor_mcp_servers.mode,
-                    mcp_servers_input: self.profile_editor_mcp_servers.input.value(),
-                    mcp_servers_input_cursor: self.profile_editor_mcp_servers.input.cursor_pos(),
-                    skills: &self.profile_editor_skills.items,
-                    skills_index: self.profile_editor_skills.selected,
-                    skills_mode: self.profile_editor_skills.mode,
-                    skills_input: self.profile_editor_skills.input.value(),
-                    skills_input_cursor: self.profile_editor_skills.input.cursor_pos(),
-                    focused_field: self.profile_editor_field,
-                },
-            );
-        }
-
-        // MCP editor modal (detail form for global MCP servers)
-        if self.show_mcp_editor {
-            crate::ui::mcp_editor_modal::render_mcp_editor_modal(
-                frame,
-                &crate::ui::mcp_editor_modal::McpEditorState {
-                    name: self.mcp_editor_name.value(),
-                    name_cursor: self.mcp_editor_name.cursor_pos(),
-                    command: self.mcp_editor_command.value(),
-                    command_cursor: self.mcp_editor_command.cursor_pos(),
-                    args: &self.mcp_editor_args.items,
-                    args_index: self.mcp_editor_args.selected,
-                    args_mode: self.mcp_editor_args.mode,
-                    args_input: self.mcp_editor_args.input.value(),
-                    args_input_cursor: self.mcp_editor_args.input.cursor_pos(),
-                    env: &self.mcp_editor_env.items,
-                    env_index: self.mcp_editor_env.selected,
-                    env_mode: self.mcp_editor_env.mode,
-                    env_input: self.mcp_editor_env.input.value(),
-                    env_input_cursor: self.mcp_editor_env.input.cursor_pos(),
-                    focused_field: self.mcp_editor_field,
-                },
-            );
-        }
-
         // Restore sessions modal
         if let super::modals::Modal::RestoreSessions(ref rsm) = self.modal {
             let entries: Vec<restore_sessions_modal::DeletedSessionEntry> = rsm
@@ -451,7 +251,7 @@ impl App {
                 .iter()
                 .map(|d| restore_sessions_modal::DeletedSessionEntry {
                     name: d.name.clone(),
-                    role: d.role.clone(),
+                    agent: d.agent.clone(),
                     deleted_ago: format_time_ago(d.deleted_at),
                     has_worktrees: !d.worktrees.is_empty(),
                 })
@@ -531,29 +331,6 @@ impl App {
                     search_active: rp.focus == super::modals::RepoPickerFocus::Search
                         || !rp.search_input.value().is_empty(),
                     filtered_indices: &rp.filtered_indices,
-                },
-            );
-        }
-
-        // Discard confirmation overlay
-        if self.show_discard_confirmation {
-            let confirm_area = crate::ui::centered_fixed_height_rect(40, 5, frame.area());
-            let inner =
-                crate::ui::render_modal_frame_danger(frame, confirm_area, "Unsaved Changes");
-            let text = Line::from(vec![
-                Span::styled(
-                    " Discard changes? ",
-                    Style::default().fg(Theme::text_primary()),
-                ),
-                Span::styled("y", Theme::keybind()),
-                Span::styled("/", Style::default().fg(Theme::text_muted())),
-                Span::styled("n", Theme::keybind()),
-            ]);
-            frame.render_widget(
-                Paragraph::new(text),
-                Rect {
-                    y: inner.y + inner.height / 2,
-                    ..inner
                 },
             );
         }

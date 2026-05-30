@@ -60,14 +60,15 @@ pub fn render_info_panel(
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("Role: ", Theme::label()),
+        Span::styled("Agent: ", Theme::label()),
         Span::styled(
-            &info.role,
+            &info.agent,
             Style::default()
                 .fg(Theme::role_name())
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+
     // ── Repos ──
     append_repos_section(&mut lines, info);
 

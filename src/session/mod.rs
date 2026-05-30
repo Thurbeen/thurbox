@@ -1,6 +1,8 @@
+pub mod agent_def;
 pub mod keybindings;
 pub mod theme_config;
 
+pub use agent_def::{AgentDef, AgentRegistry};
 pub use keybindings::{Action, Category, KeyBindings, KeyChord};
 pub use theme_config::{ThemePalette, ThemePreset};
 
@@ -11,320 +13,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Default role name assigned when no explicit role is configured.
-pub const DEFAULT_ROLE_NAME: &str = "developer";
-
-/// Default permissions for the built-in "developer" role.
-/// Uses `acceptEdits` so Write/Edit tools are auto-approved.
-pub fn default_developer_permissions() -> RolePermissions {
-    RolePermissions {
-        permission_mode: Some("acceptEdits".to_string()),
-        ..RolePermissions::default()
-    }
-}
-
-/// Built-in "developer" role seeded into projects that have no roles.
-pub fn default_developer_role() -> RoleConfig {
-    RoleConfig {
-        name: DEFAULT_ROLE_NAME.to_string(),
-        description: String::new(),
-        permissions: default_developer_permissions(),
-    }
-}
-
-/// Validated role name type that prevents invalid states.
-/// Role names must be non-empty and at most 64 characters.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct RoleName(String);
-
-impl RoleName {
-    /// Create a new role name with validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RoleNameError` if:
-    /// - The name is empty or only whitespace
-    /// - The name exceeds 64 characters
-    pub fn new(name: impl Into<String>) -> Result<Self, RoleNameError> {
-        let name = name.into();
-        let trimmed = name.trim();
-
-        if trimmed.is_empty() {
-            return Err(RoleNameError::Empty);
-        }
-
-        if trimmed.len() > 64 {
-            return Err(RoleNameError::TooLong);
-        }
-
-        Ok(Self(trimmed.to_string()))
-    }
-
-    /// Get the role name as a string slice.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Consume the RoleName and return the inner String.
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
-impl fmt::Display for RoleName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::str::FromStr for RoleName {
-    type Err = RoleNameError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
-/// Error type for invalid role names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RoleNameError {
-    /// Role name is empty or only whitespace.
-    Empty,
-    /// Role name exceeds 64 characters.
-    TooLong,
-}
-
-impl fmt::Display for RoleNameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(f, "Role name cannot be empty"),
-            Self::TooLong => write!(f, "Role name cannot exceed 64 characters"),
-        }
-    }
-}
-
-impl std::error::Error for RoleNameError {}
-
-/// Permission flags passed to the Claude CLI when spawning a session.
-///
-/// Maps directly to Claude Code CLI flags:
-/// - `permission_mode` → `--permission-mode` (default, plan, acceptEdits, dontAsk, bypassPermissions)
-/// - `allowed_tools` → `--allowed-tools` (tools that auto-approve without prompting)
-/// - `disallowed_tools` → `--disallowed-tools` (tools blocked entirely)
-/// - `tools` → `--tools` (restrict available tool set)
-/// - `append_system_prompt` → `--append-system-prompt` (extra instructions)
-///
-/// Tools not in either allowed or disallowed lists follow the `permission_mode` behavior.
-/// If a tool appears in both lists, deny takes precedence.
-///
-/// See `docs/MCP_ROLES.md` for the complete configuration guide.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RolePermissions {
-    /// Base permission behavior. Valid values: `default`, `plan`, `acceptEdits`,
-    /// `dontAsk`, `bypassPermissions`. When `None`, Claude uses its default mode.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_mode: Option<String>,
-    /// Tools that auto-approve without user prompt (e.g. `["Read", "Bash(git:*)"]`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
-    /// Tools that are blocked entirely — Claude cannot invoke them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-    /// Restrict available tool set. `"default"` = all, `""` = none, or comma-separated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<String>,
-    /// Text appended to Claude's system prompt for sessions using this role.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub append_system_prompt: Option<String>,
-    /// Environment variables injected into the spawned session process.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
-}
-
-/// A named role definition.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RoleConfig {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(flatten)]
-    pub permissions: RolePermissions,
-}
-
-/// Skill configuration — a named reference to a local skill directory.
-///
-/// Skills are directories containing a `SKILL.md` file that Claude Code
-/// auto-discovers from `~/.claude/skills/` (global) or `.claude/skills/`
-/// (project-level). Thurbox symlinks selected skills into the session's
-/// `.claude/skills/` before spawning.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SkillConfig {
-    pub name: String,
-    pub path: PathBuf,
-}
-
-/// MCP server configuration matching Claude Code's `mcpServers` format.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct McpServerConfig {
-    pub name: String,
-    pub command: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
-}
-
-impl McpServerConfig {
-    /// Build the `{"mcpServers": { ... }}` JSON document that Claude Code expects.
-    ///
-    /// Used by `--mcp-config` CLI flag (local sessions) and `.mcp.json` file
-    /// generation (VM/container sessions).
-    pub fn to_mcp_json(servers: &[Self]) -> serde_json::Value {
-        let mut map = serde_json::Map::new();
-        for srv in servers {
-            let mut entry = serde_json::Map::new();
-            entry.insert(
-                "command".into(),
-                serde_json::Value::String(srv.command.clone()),
-            );
-            if !srv.args.is_empty() {
-                entry.insert("args".into(), serde_json::json!(srv.args));
-            }
-            if !srv.env.is_empty() {
-                entry.insert("env".into(), serde_json::json!(srv.env));
-            }
-            map.insert(srv.name.clone(), serde_json::Value::Object(entry));
-        }
-        serde_json::json!({ "mcpServers": map })
-    }
-}
-
-/// A named bundle of roles + MCP servers + skills.
-///
-/// Profiles are preset session configurations: users select a profile and
-/// the referenced roles/MCP servers/skills are applied together at spawn
-/// time. Role permissions are merged via [`merge_role_permissions`] when
-/// multiple roles are listed, so small single-purpose roles compose into
-/// richer capabilities (e.g. "reviewer + docs-writer").
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProfileConfig {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    /// Role names applied in order. Empty list = fall back to default role.
-    /// Order matters for merge tiebreaks (see [`merge_role_permissions`]).
-    #[serde(default)]
-    pub roles: Vec<String>,
-    /// MCP server names attached when this profile is applied.
-    #[serde(default)]
-    pub mcp_servers: Vec<String>,
-    /// Skill names staged when this profile is applied.
-    #[serde(default)]
-    pub skills: Vec<String>,
-}
-
-/// Name of the single seeded default profile (see [`default_profiles`]).
-pub const DEFAULT_PROFILE_ORCHESTRATOR: &str = "orchestrator";
-
-/// Built-in profiles seeded into empty profile tables on first migration.
-///
-/// Mirrors [`default_developer_role`]: a pure function returning the seed
-/// list, no DB access. The storage layer calls this once when the
-/// `profiles` table is empty after migration to v20.
-pub fn default_profiles() -> Vec<ProfileConfig> {
-    vec![ProfileConfig {
-        name: DEFAULT_PROFILE_ORCHESTRATOR.to_string(),
-        description: "Delegates work to worker sessions via the orchestrate skill.".to_string(),
-        roles: vec![DEFAULT_ROLE_NAME.to_string()],
-        mcp_servers: Vec::new(),
-        skills: vec!["orchestrate".to_string()],
-    }]
-}
-
-/// Rank a Claude Code permission mode string by permissiveness.
-///
-/// Higher rank = more permissive. Used by [`merge_role_permissions`] to
-/// pick the most permissive mode when multiple roles set one. Unknown
-/// mode strings rank as the lowest tier so a plugin-introduced mode
-/// cannot silently outrank a known mode without admin review.
-///
-/// Known modes (least → most permissive): `plan`, `default`, `acceptEdits`,
-/// `bypassPermissions`.
-pub fn permission_mode_rank(mode: &str) -> u8 {
-    match mode {
-        "plan" => 1,
-        "default" => 2,
-        "acceptEdits" => 3,
-        "bypassPermissions" => 4,
-        _ => 0,
-    }
-}
-
-/// Merge `RolePermissions` from multiple roles into a single composite.
-///
-/// Semantics:
-/// - `permission_mode`: most permissive (see [`permission_mode_rank`]).
-///   `None` contributions are ignored. If no role sets a mode, result is
-///   `None`.
-/// - `allowed_tools` / `disallowed_tools`: set-union, dedup, stable-sorted.
-/// - `tools`: first non-`None` in input order.
-/// - `append_system_prompt`: concatenate non-empty parts in input order,
-///   separated by `\n\n`.
-/// - `env`: merge in input order, later role wins on key collision.
-///
-/// Single-input case is a pass-through (same allocations aside). Empty
-/// input returns [`RolePermissions::default`].
-pub fn merge_role_permissions(parts: &[RolePermissions]) -> RolePermissions {
-    if parts.is_empty() {
-        return RolePermissions::default();
-    }
-
-    let mut permission_mode: Option<String> = None;
-    let mut best_rank: u8 = 0;
-    let mut allowed = std::collections::BTreeSet::<String>::new();
-    let mut disallowed = std::collections::BTreeSet::<String>::new();
-    let mut tools: Option<String> = None;
-    let mut prompt_parts: Vec<&str> = Vec::new();
-    let mut env: HashMap<String, String> = HashMap::new();
-
-    for part in parts {
-        if let Some(mode) = part.permission_mode.as_deref() {
-            let rank = permission_mode_rank(mode);
-            if rank > best_rank || permission_mode.is_none() {
-                best_rank = rank;
-                permission_mode = Some(mode.to_string());
-            }
-        }
-        allowed.extend(part.allowed_tools.iter().cloned());
-        disallowed.extend(part.disallowed_tools.iter().cloned());
-        if tools.is_none() {
-            tools = part.tools.clone();
-        }
-        if let Some(p) = part.append_system_prompt.as_deref() {
-            if !p.is_empty() {
-                prompt_parts.push(p);
-            }
-        }
-        for (k, v) in &part.env {
-            env.insert(k.clone(), v.clone());
-        }
-    }
-
-    let append_system_prompt = if prompt_parts.is_empty() {
-        None
-    } else {
-        Some(prompt_parts.join("\n\n"))
-    };
-
-    RolePermissions {
-        permission_mode,
-        allowed_tools: allowed.into_iter().collect(),
-        disallowed_tools: disallowed.into_iter().collect(),
-        tools,
-        append_system_prompt,
-        env,
-    }
-}
+/// Default agent name used when none is configured. Matches the `default`
+/// entry of the seeded `agents.toml`; the live default comes from the loaded
+/// [`AgentRegistry`].
+pub const DEFAULT_AGENT_NAME: &str = "claude";
 
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
@@ -411,14 +103,15 @@ pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
     pub status: SessionStatus,
-    pub role: String,
+    /// Name of the coding agent driving this session (e.g. `"claude"`).
+    pub agent: String,
     pub worktrees: Vec<WorktreeInfo>,
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub additional_dirs: Vec<PathBuf>,
     pub backend_id: Option<String>,
     pub shell_backend_id: Option<String>,
-    /// Agent metrics from Claude CLI statusline.
+    /// Agent metrics from the agent's statusline (Claude only).
     pub agent_metrics: Option<AgentMetrics>,
     /// Whether this is the admin session (internal, never user-visible).
     pub is_admin: bool,
@@ -434,7 +127,7 @@ impl SessionInfo {
             id: SessionId::default(),
             name,
             status: SessionStatus::Busy,
-            role: DEFAULT_ROLE_NAME.to_string(),
+            agent: DEFAULT_AGENT_NAME.to_string(),
             worktrees: Vec::new(),
             agent_session_id: None,
             cwd: None,
@@ -446,6 +139,15 @@ impl SessionInfo {
             repo_display_names: Vec::new(),
         }
     }
+}
+
+/// A queued command for a session, inserted by MCP and processed by the TUI.
+#[derive(Debug, Clone)]
+pub struct SessionCommand {
+    pub id: i64,
+    pub session_id: SessionId,
+    pub command: String,
+    pub created_at: u64,
 }
 
 /// A time-scheduled command for a session, inserted by MCP and executed by the TUI tick loop.
@@ -462,335 +164,69 @@ pub struct ScheduledCommand {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
+    /// Resume an existing agent session (process restart of a known session).
     pub resume_session_id: Option<String>,
+    /// Pin a session id on a fresh spawn (agents that support it).
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
-    pub additional_dirs: Vec<PathBuf>,
-    pub role: String,
-    pub permissions: RolePermissions,
-    /// Fork from an existing session's conversation.
-    ///
-    /// When set, the CLI is invoked with `--resume <fork_session_id> --fork-session`
-    /// to create a new session that branches from the parent's conversation history.
+    /// Name of the agent definition to launch (looked up in the registry).
+    pub agent: String,
+    /// Fork from an existing session's conversation (agents that support it).
     pub fork_session_id: Option<String>,
-    /// MCP servers to pass to Claude Code via `--mcp-config`.
-    ///
-    /// Populated from the MCP server picker during session creation/restart/fork.
-    /// For local sessions these are passed as a CLI flag; for VM/container sessions
-    /// they are written to `.mcp.json` in the remote working directory.
-    pub mcp_servers: Vec<McpServerConfig>,
-    /// Skills to symlink into the session's `.claude/skills/` directory.
-    ///
-    /// Populated from the skill picker during session creation. Each skill
-    /// directory is symlinked into the working directory before spawning
-    /// so Claude Code auto-discovers them.
-    pub skills: Vec<SkillConfig>,
+    /// Environment variables injected into the spawned session process
+    /// (thurbox-internal: session id, metrics dir, etc.).
+    pub env: HashMap<String, String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
-
-    #[test]
-    fn role_name_valid() {
-        let name = RoleName::new("developer").unwrap();
-        assert_eq!(name.as_str(), "developer");
-    }
-
-    #[test]
-    fn role_name_with_spaces_trimmed() {
-        let name = RoleName::new("  admin  ").unwrap();
-        assert_eq!(name.as_str(), "admin");
-    }
-
-    #[test]
-    fn role_name_empty_rejected() {
-        assert_eq!(RoleName::new(""), Err(RoleNameError::Empty));
-        assert_eq!(RoleName::new("   "), Err(RoleNameError::Empty));
-    }
-
-    #[test]
-    fn role_name_too_long_rejected() {
-        let long_name = "a".repeat(65);
-        assert_eq!(RoleName::new(long_name), Err(RoleNameError::TooLong));
-    }
-
-    #[test]
-    fn role_name_max_length_accepted() {
-        let max_name = "a".repeat(64);
-        let name = RoleName::new(max_name.clone()).unwrap();
-        assert_eq!(name.as_str(), max_name);
-    }
-
-    #[test]
-    fn role_name_display() {
-        let name = RoleName::new("test_role").unwrap();
-        assert_eq!(name.to_string(), "test_role");
-    }
-
-    #[test]
-    fn role_name_from_str() {
-        let name = RoleName::from_str("editor").unwrap();
-        assert_eq!(name.as_str(), "editor");
-
-        let err = RoleName::from_str("");
-        assert_eq!(err, Err(RoleNameError::Empty));
-    }
-
-    #[test]
-    fn role_name_into_string() {
-        let name = RoleName::new("maintainer").unwrap();
-        let owned = name.into_string();
-        assert_eq!(owned, "maintainer");
-    }
-
-    #[test]
-    fn role_name_hash() {
-        use std::collections::HashSet;
-        let name1 = RoleName::new("reviewer").unwrap();
-        let name2 = RoleName::new("reviewer").unwrap();
-
-        let mut set = HashSet::new();
-        set.insert(name1);
-        // Same value should not increase size due to hash equality
-        set.insert(name2);
-        assert_eq!(set.len(), 1);
-    }
 
     #[test]
     fn session_id_display_is_uuid_format() {
         let id = SessionId::default();
         let display = id.to_string();
-        // UUID v4 format: 8-4-4-4-12 hex chars
         assert_eq!(display.len(), 36);
         assert_eq!(display.chars().filter(|&c| c == '-').count(), 4);
     }
 
     #[test]
     fn session_id_default_is_unique() {
-        let id1 = SessionId::default();
-        let id2 = SessionId::default();
-        assert_ne!(id1, id2);
+        assert_ne!(SessionId::default(), SessionId::default());
     }
 
     #[test]
-    fn session_status_display() {
+    fn session_status_display_and_icon() {
         assert_eq!(SessionStatus::Busy.to_string(), "Busy");
-        assert_eq!(SessionStatus::Waiting.to_string(), "Waiting");
-        assert_eq!(SessionStatus::Idle.to_string(), "Idle");
-        assert_eq!(SessionStatus::Error.to_string(), "Error");
-    }
-
-    #[test]
-    fn session_status_icon() {
-        assert_eq!(SessionStatus::Busy.icon(), "●");
-        assert_eq!(SessionStatus::Waiting.icon(), "◉");
         assert_eq!(SessionStatus::Idle.icon(), "○");
         assert_eq!(SessionStatus::Error.icon(), "✗");
     }
 
     #[test]
-    fn session_info_new_starts_busy() {
+    fn session_info_new_defaults() {
         let info = SessionInfo::new("Test".to_string());
         assert_eq!(info.name, "Test");
         assert_eq!(info.status, SessionStatus::Busy);
-    }
-
-    #[test]
-    fn session_info_new_has_no_worktree() {
-        let info = SessionInfo::new("Test".to_string());
+        assert_eq!(info.agent, DEFAULT_AGENT_NAME);
         assert!(info.worktrees.is_empty());
-    }
-
-    #[test]
-    fn session_info_new_has_no_agent_session_id() {
-        let info = SessionInfo::new("Test".to_string());
         assert!(info.agent_session_id.is_none());
-    }
-
-    #[test]
-    fn session_info_new_has_no_cwd() {
-        let info = SessionInfo::new("Test".to_string());
         assert!(info.cwd.is_none());
-    }
-
-    #[test]
-    fn session_info_new_has_no_additional_dirs() {
-        let info = SessionInfo::new("Test".to_string());
-        assert!(info.additional_dirs.is_empty());
-    }
-
-    #[test]
-    fn session_info_new_has_no_backend_id() {
-        let info = SessionInfo::new("Test".to_string());
         assert!(info.backend_id.is_none());
     }
 
     #[test]
-    fn session_info_new_has_developer_role() {
-        let info = SessionInfo::new("Test".to_string());
-        assert_eq!(info.role, DEFAULT_ROLE_NAME);
+    fn default_agent_name_is_claude() {
+        assert_eq!(DEFAULT_AGENT_NAME, "claude");
     }
 
     #[test]
-    fn default_role_name_is_developer() {
-        assert_eq!(DEFAULT_ROLE_NAME, "developer");
-    }
-
-    #[test]
-    fn default_developer_permissions_has_accept_edits() {
-        let perms = default_developer_permissions();
-        assert_eq!(perms.permission_mode, Some("acceptEdits".to_string()));
-    }
-
-    #[test]
-    fn default_developer_permissions_has_no_tool_restrictions() {
-        let perms = default_developer_permissions();
-        assert!(perms.allowed_tools.is_empty());
-        assert!(perms.disallowed_tools.is_empty());
-        assert!(perms.tools.is_none());
-        assert!(perms.append_system_prompt.is_none());
-        assert!(perms.env.is_empty());
-    }
-
-    #[test]
-    fn default_developer_role_has_correct_name_and_permissions() {
-        let role = default_developer_role();
-        assert_eq!(role.name, DEFAULT_ROLE_NAME);
-        assert_eq!(role.description, "");
-        assert_eq!(
-            role.permissions.permission_mode,
-            Some("acceptEdits".to_string())
-        );
-        assert!(role.permissions.allowed_tools.is_empty());
-        assert!(role.permissions.disallowed_tools.is_empty());
-    }
-
-    #[test]
-    fn session_config_default_has_all_none() {
+    fn session_config_default_is_empty() {
         let config = SessionConfig::default();
         assert!(config.resume_session_id.is_none());
         assert!(config.agent_session_id.is_none());
         assert!(config.cwd.is_none());
-        assert!(config.additional_dirs.is_empty());
-        assert_eq!(config.role, "");
-        assert_eq!(config.permissions, RolePermissions::default());
-    }
-
-    #[test]
-    fn role_permissions_default_is_empty() {
-        let perms = RolePermissions::default();
-        assert!(perms.permission_mode.is_none());
-        assert!(perms.allowed_tools.is_empty());
-        assert!(perms.disallowed_tools.is_empty());
-        assert!(perms.tools.is_none());
-        assert!(perms.append_system_prompt.is_none());
-        assert!(perms.env.is_empty());
-    }
-
-    #[test]
-    fn role_permissions_serde_roundtrip() {
-        let perms = RolePermissions {
-            permission_mode: Some("plan".to_string()),
-            allowed_tools: vec!["Read".to_string(), "Bash(git:*)".to_string()],
-            disallowed_tools: vec![],
-            tools: None,
-            append_system_prompt: Some("Be careful".to_string()),
-            env: HashMap::new(),
-        };
-        let serialized = toml::to_string_pretty(&perms).unwrap();
-        let deserialized: RolePermissions = toml::from_str(&serialized).unwrap();
-        assert_eq!(perms, deserialized);
-    }
-
-    #[test]
-    fn role_permissions_all_fields_serde_roundtrip() {
-        let perms = RolePermissions {
-            permission_mode: Some("plan".to_string()),
-            allowed_tools: vec!["Read".to_string(), "Bash(git:*)".to_string()],
-            disallowed_tools: vec!["Edit".to_string()],
-            tools: Some("default".to_string()),
-            append_system_prompt: Some("Be careful".to_string()),
-            env: HashMap::new(),
-        };
-        let serialized = toml::to_string_pretty(&perms).unwrap();
-        let deserialized: RolePermissions = toml::from_str(&serialized).unwrap();
-        assert_eq!(perms, deserialized);
-    }
-
-    #[test]
-    fn role_permissions_env_serde_roundtrip() {
-        let perms = RolePermissions {
-            env: HashMap::from([
-                ("API_KEY".to_string(), "sk-secret".to_string()),
-                ("DEBUG".to_string(), "1".to_string()),
-            ]),
-            ..RolePermissions::default()
-        };
-        let serialized = toml::to_string_pretty(&perms).unwrap();
-        let deserialized: RolePermissions = toml::from_str(&serialized).unwrap();
-        assert_eq!(perms, deserialized);
-    }
-
-    #[test]
-    fn role_config_serde_roundtrip() {
-        let role = RoleConfig {
-            name: "reviewer".to_string(),
-            description: "Read-only code review".to_string(),
-            permissions: RolePermissions {
-                permission_mode: Some("plan".to_string()),
-                allowed_tools: vec!["Read".to_string()],
-                ..RolePermissions::default()
-            },
-        };
-        let serialized = toml::to_string_pretty(&role).unwrap();
-        let deserialized: RoleConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(role, deserialized);
-    }
-
-    #[test]
-    fn role_config_flatten_includes_permission_fields() {
-        let role = RoleConfig {
-            name: "test".to_string(),
-            description: String::new(),
-            permissions: RolePermissions {
-                permission_mode: Some("plan".to_string()),
-                ..RolePermissions::default()
-            },
-        };
-        let serialized = toml::to_string_pretty(&role).unwrap();
-        assert!(serialized.contains("permission_mode"));
-        assert!(serialized.contains("plan"));
-    }
-
-    #[test]
-    fn mcp_server_config_serde_roundtrip() {
-        let config = McpServerConfig {
-            name: "test-server".to_string(),
-            command: "npx".to_string(),
-            args: vec!["-y".to_string(), "@example/mcp-server".to_string()],
-            env: HashMap::from([
-                ("API_KEY".to_string(), "secret".to_string()),
-                ("DEBUG".to_string(), "1".to_string()),
-            ]),
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        let deserialized: McpServerConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(config, deserialized);
-    }
-
-    #[test]
-    fn mcp_server_config_empty_fields_omitted() {
-        let config = McpServerConfig {
-            name: "minimal".to_string(),
-            command: "server".to_string(),
-            args: vec![],
-            env: HashMap::new(),
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        assert!(!json.contains("args"));
-        assert!(!json.contains("env"));
+        assert_eq!(config.agent, "");
+        assert!(config.env.is_empty());
     }
 
     #[test]
@@ -801,279 +237,6 @@ mod tests {
             branch: "feat".to_string(),
         };
         assert_eq!(wt.repo_path, PathBuf::from("/repo"));
-        assert_eq!(
-            wt.worktree_path,
-            PathBuf::from("/repo/.git/thurbox-worktrees/feat")
-        );
         assert_eq!(wt.branch, "feat");
-    }
-
-    #[test]
-    fn to_mcp_json_with_all_fields() {
-        let servers = vec![McpServerConfig {
-            name: "github".to_string(),
-            command: "npx".to_string(),
-            args: vec!["-y".to_string(), "server-github".to_string()],
-            env: HashMap::from([("TOKEN".to_string(), "ghp_xxx".to_string())]),
-        }];
-        let doc = McpServerConfig::to_mcp_json(&servers);
-        assert_eq!(doc["mcpServers"]["github"]["command"], "npx");
-        assert_eq!(
-            doc["mcpServers"]["github"]["args"],
-            serde_json::json!(["-y", "server-github"])
-        );
-        assert_eq!(
-            doc["mcpServers"]["github"]["env"],
-            serde_json::json!({"TOKEN": "ghp_xxx"})
-        );
-    }
-
-    #[test]
-    fn to_mcp_json_omits_empty_args_and_env() {
-        let servers = vec![McpServerConfig {
-            name: "simple".to_string(),
-            command: "/usr/bin/server".to_string(),
-            args: vec![],
-            env: HashMap::new(),
-        }];
-        let doc = McpServerConfig::to_mcp_json(&servers);
-        assert_eq!(doc["mcpServers"]["simple"]["command"], "/usr/bin/server");
-        assert!(doc["mcpServers"]["simple"].get("args").is_none());
-        assert!(doc["mcpServers"]["simple"].get("env").is_none());
-    }
-
-    #[test]
-    fn to_mcp_json_empty_servers() {
-        let doc = McpServerConfig::to_mcp_json(&[]);
-        assert_eq!(doc["mcpServers"], serde_json::json!({}));
-    }
-
-    #[test]
-    fn to_mcp_json_multiple_servers() {
-        let servers = vec![
-            McpServerConfig {
-                name: "a".to_string(),
-                command: "cmd-a".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-            },
-            McpServerConfig {
-                name: "b".to_string(),
-                command: "cmd-b".to_string(),
-                args: vec!["--flag".to_string()],
-                env: HashMap::new(),
-            },
-        ];
-        let doc = McpServerConfig::to_mcp_json(&servers);
-        assert_eq!(doc["mcpServers"]["a"]["command"], "cmd-a");
-        assert_eq!(doc["mcpServers"]["b"]["command"], "cmd-b");
-        assert_eq!(
-            doc["mcpServers"]["b"]["args"],
-            serde_json::json!(["--flag"])
-        );
-    }
-
-    #[test]
-    fn permission_mode_ranks_known_modes() {
-        assert_eq!(permission_mode_rank("plan"), 1);
-        assert_eq!(permission_mode_rank("default"), 2);
-        assert_eq!(permission_mode_rank("acceptEdits"), 3);
-        assert_eq!(permission_mode_rank("bypassPermissions"), 4);
-        assert_eq!(permission_mode_rank("unknown"), 0);
-        assert_eq!(permission_mode_rank(""), 0);
-    }
-
-    #[test]
-    fn merge_role_permissions_empty_returns_default() {
-        let merged = merge_role_permissions(&[]);
-        assert_eq!(merged, RolePermissions::default());
-    }
-
-    #[test]
-    fn merge_role_permissions_single_role_preserves_all_fields() {
-        let perms = RolePermissions {
-            permission_mode: Some("plan".to_string()),
-            allowed_tools: vec!["Read".to_string()],
-            disallowed_tools: vec!["Edit".to_string()],
-            tools: Some("default".to_string()),
-            append_system_prompt: Some("hi".to_string()),
-            env: HashMap::from([("K".to_string(), "V".to_string())]),
-        };
-        let merged = merge_role_permissions(std::slice::from_ref(&perms));
-        assert_eq!(merged, perms);
-    }
-
-    #[test]
-    fn merge_role_permissions_most_permissive_mode_wins() {
-        let a = RolePermissions {
-            permission_mode: Some("plan".to_string()),
-            ..RolePermissions::default()
-        };
-        let b = RolePermissions {
-            permission_mode: Some("acceptEdits".to_string()),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a.clone(), b.clone()]);
-        assert_eq!(merged.permission_mode.as_deref(), Some("acceptEdits"));
-        let merged_rev = merge_role_permissions(&[b, a]);
-        assert_eq!(merged_rev.permission_mode.as_deref(), Some("acceptEdits"));
-    }
-
-    #[test]
-    fn merge_role_permissions_bypass_beats_default() {
-        let a = RolePermissions {
-            permission_mode: Some("default".to_string()),
-            ..RolePermissions::default()
-        };
-        let b = RolePermissions {
-            permission_mode: Some("bypassPermissions".to_string()),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a, b]);
-        assert_eq!(merged.permission_mode.as_deref(), Some("bypassPermissions"));
-    }
-
-    #[test]
-    fn merge_role_permissions_unknown_mode_does_not_outrank_known() {
-        let a = RolePermissions {
-            permission_mode: Some("custom".to_string()),
-            ..RolePermissions::default()
-        };
-        let b = RolePermissions {
-            permission_mode: Some("default".to_string()),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a, b]);
-        assert_eq!(merged.permission_mode.as_deref(), Some("default"));
-    }
-
-    #[test]
-    fn merge_role_permissions_unknown_alone_passes_through() {
-        let a = RolePermissions {
-            permission_mode: Some("custom".to_string()),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(std::slice::from_ref(&a));
-        assert_eq!(merged.permission_mode.as_deref(), Some("custom"));
-    }
-
-    #[test]
-    fn merge_role_permissions_none_contributions_ignored() {
-        let a = RolePermissions::default();
-        let b = RolePermissions {
-            permission_mode: Some("plan".to_string()),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a, b]);
-        assert_eq!(merged.permission_mode.as_deref(), Some("plan"));
-    }
-
-    #[test]
-    fn merge_role_permissions_unions_and_sorts_tool_lists() {
-        let a = RolePermissions {
-            allowed_tools: vec!["Read".to_string(), "Write".to_string()],
-            disallowed_tools: vec!["Delete".to_string()],
-            ..RolePermissions::default()
-        };
-        let b = RolePermissions {
-            allowed_tools: vec!["Edit".to_string(), "Read".to_string()],
-            disallowed_tools: vec!["Delete".to_string(), "Kill".to_string()],
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a, b]);
-        assert_eq!(
-            merged.allowed_tools,
-            vec!["Edit".to_string(), "Read".to_string(), "Write".to_string()]
-        );
-        assert_eq!(
-            merged.disallowed_tools,
-            vec!["Delete".to_string(), "Kill".to_string()]
-        );
-    }
-
-    #[test]
-    fn merge_role_permissions_concatenates_prompts_in_order() {
-        let a = RolePermissions {
-            append_system_prompt: Some("first".to_string()),
-            ..RolePermissions::default()
-        };
-        let b = RolePermissions {
-            append_system_prompt: None,
-            ..RolePermissions::default()
-        };
-        let c = RolePermissions {
-            append_system_prompt: Some("third".to_string()),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a, b, c]);
-        assert_eq!(
-            merged.append_system_prompt.as_deref(),
-            Some("first\n\nthird")
-        );
-    }
-
-    #[test]
-    fn merge_role_permissions_env_later_wins() {
-        let a = RolePermissions {
-            env: HashMap::from([
-                ("SHARED".to_string(), "from-a".to_string()),
-                ("A_ONLY".to_string(), "a".to_string()),
-            ]),
-            ..RolePermissions::default()
-        };
-        let b = RolePermissions {
-            env: HashMap::from([
-                ("SHARED".to_string(), "from-b".to_string()),
-                ("B_ONLY".to_string(), "b".to_string()),
-            ]),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a, b]);
-        assert_eq!(merged.env.get("SHARED"), Some(&"from-b".to_string()));
-        assert_eq!(merged.env.get("A_ONLY"), Some(&"a".to_string()));
-        assert_eq!(merged.env.get("B_ONLY"), Some(&"b".to_string()));
-    }
-
-    #[test]
-    fn merge_role_permissions_tools_takes_first_non_none() {
-        let a = RolePermissions {
-            tools: None,
-            ..RolePermissions::default()
-        };
-        let b = RolePermissions {
-            tools: Some("first".to_string()),
-            ..RolePermissions::default()
-        };
-        let c = RolePermissions {
-            tools: Some("second".to_string()),
-            ..RolePermissions::default()
-        };
-        let merged = merge_role_permissions(&[a, b, c]);
-        assert_eq!(merged.tools.as_deref(), Some("first"));
-    }
-
-    #[test]
-    fn default_profiles_includes_orchestrator() {
-        let profiles = default_profiles();
-        assert_eq!(profiles.len(), 1);
-        let orch = &profiles[0];
-        assert_eq!(orch.name, DEFAULT_PROFILE_ORCHESTRATOR);
-        assert_eq!(orch.roles, vec![DEFAULT_ROLE_NAME.to_string()]);
-        assert_eq!(orch.skills, vec!["orchestrate".to_string()]);
-        assert!(orch.mcp_servers.is_empty());
-    }
-
-    #[test]
-    fn profile_config_serde_roundtrip() {
-        let profile = ProfileConfig {
-            name: "dev".to_string(),
-            description: "dev bundle".to_string(),
-            roles: vec!["developer".to_string(), "reviewer".to_string()],
-            mcp_servers: vec!["github".to_string()],
-            skills: vec!["refactor".to_string()],
-        };
-        let json = serde_json::to_string(&profile).unwrap();
-        let roundtripped: ProfileConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(profile, roundtripped);
     }
 }

@@ -6,7 +6,7 @@
     <title>Features — Thurbox Docs</title>
     <meta
       name="description"
-      content="Thurbox features: session orchestration, git worktrees, role system, MCP server, and responsive UI."
+      content="Thurbox features: persistent coding-agent sessions, agent definitions, git worktrees, scheduled commands, and a responsive UI."
     />
     <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -63,20 +63,15 @@
           </ul>
           <h4>Reference</h4>
           <ul>
-            <li><a href="mcp.html">MCP Server</a></li>
-            <li><a href="roles.html">Role Configuration</a></li>
             <li><a href="architecture.html">Architecture</a></li>
           </ul>
           <h4>On This Page</h4>
           <ul>
-            <li><a href="#session-orchestration">Session Orchestration</a></li>
-            <li><a href="#project-management">Project Management</a></li>
-            <li><a href="#orchestrator-mode">Orchestrator Mode</a></li>
+            <li><a href="#session-orchestration">Sessions</a></li>
+            <li><a href="#agent-definitions">Agent Definitions</a></li>
             <li><a href="#scheduled-commands">Scheduled Commands</a></li>
             <li><a href="#git-worktrees">Git Worktrees</a></li>
             <li><a href="#worktree-sync">Worktree Sync</a></li>
-            <li><a href="#role-system">Role System</a></li>
-            <li><a href="#skill-management">Skill Management</a></li>
             <li><a href="#session-forking">Session Forking</a></li>
             <li><a href="#fuzzy-search">Fuzzy Search</a></li>
             <li><a href="#responsive-ui">Responsive UI</a></li>
@@ -100,20 +95,28 @@
           <h1>Features</h1>
 
           <h2 id="session-orchestration">
-            Session Orchestration
+            Sessions
             <a href="#session-orchestration" class="heading-anchor">#</a>
           </h2>
           <p>
-            Run multiple Claude Code instances side-by-side, each in its own tmux pane. Sessions
-            persist across crashes, restarts, and even multiple concurrent Thurbox instances &mdash;
-            tmux keeps them alive in the background.
+            Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. A session runs
+            one agent (Claude Code, Codex, Gemini CLI, opencode, aider, or your own), each with its
+            own default config. Sessions persist across crashes, restarts, and even multiple
+            concurrent Thurbox instances &mdash; tmux keeps them alive in the background.
           </p>
           <ul>
             <li>
+              Create a session with
+              <code>Ctrl+N</code>
+              : repo picker &rarr; session name &rarr; agent picker. The agent picker is skipped
+              when only one agent is defined.
+            </li>
+            <li>
               Restart a session with
               <code>Ctrl+R</code>
-              to pick up new role permissions while preserving conversation history via
+              to preserve conversation history when the agent supports resume (e.g. Claude's
               <code>--resume</code>
+              ).
             </li>
             <li>Each session displays elapsed time ("Waiting 45s", "Idle 2m")</li>
             <li>
@@ -130,7 +133,7 @@
               sends SIGINT to the active session.
             </li>
             <li>
-              Toggle a shell pane alongside the Claude session with
+              Toggle a shell pane alongside the agent session with
               <code>Ctrl+T</code>
             </li>
             <li>
@@ -139,67 +142,42 @@
             </li>
           </ul>
 
-          <h2 id="project-management">
-            Project Management
-            <a href="#project-management" class="heading-anchor">#</a>
+          <h2 id="agent-definitions">
+            Agent Definitions
+            <a href="#agent-definitions" class="heading-anchor">#</a>
           </h2>
           <p>
-            Organize work into projects, each with its own sessions and settings. The two-section
-            left sidebar shows all projects on top and the active project's sessions below.
+            The set of available agents is data, not code. On first run Thurbox seeds
+            <code>~/.config/thurbox/agents.toml</code>
+            with built-ins (claude, codex, gemini, opencode, aider). Edit the file to tweak an agent
+            or add a new one &mdash; no recompile required.
           </p>
           <ul>
             <li>
-              Multiple repositories per project &mdash; first repo becomes working directory, rest
-              passed via
-              <code>--add-dir</code>
+              Each
+              <code>[[agents]]</code>
+              entry has a
+              <code>command</code>
+              ,
+              <code>args</code>
+              (always passed &mdash; bake in flags like a model here if you want), and
+              argument-template groups (
+              <code>resume_args</code>
+              ,
+              <code>fork_args</code>
+              ,
+              <code>new_session_args</code>
+              ).
             </li>
             <li>
-              Edit global settings with
-              <code>Ctrl+E</code>
-              (roles, MCP servers, skills)
-            </li>
-            <li>Soft-deleted projects and sessions can be restored via Admin session or MCP API</li>
-            <li>
-              Built-in Admin project (pinned at index 0) provides conversational Thurbox management
-              via MCP
-            </li>
-          </ul>
-
-          <h2 id="orchestrator-mode">
-            Orchestrator Mode
-            <a href="#orchestrator-mode" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            The built-in Admin session can act as a multi-agent coordinator &mdash; spawning other
-            sessions, dispatching prompts to them, and reading back their output &mdash; all through
-            the
-            <code>thurbox-mcp</code>
-            server.
-          </p>
-          <ul>
-            <li>
-              <code>create_session</code>
-              spawns a new local-tmux session (optionally on a fresh git worktree) with a chosen
-              role, per-session MCP servers, and skills. Returns a UUID immediately; the TUI
-              processes the queued spawn on its next tick.
+              A group is appended only when its driving value is present, with
+              <code>{id}</code>
+              substituted. Selection precedence is fork &gt; resume &gt; new-session id.
             </li>
             <li>
-              <code>send_prompt</code>
-              types text into a session's pane and presses Enter after a short delay, so the target
-              Claude session receives it as a prompt.
-            </li>
-            <li>
-              <code>capture_session_output</code>
-              returns the rendered contents of a session's tmux pane (default 200 lines of
-              scrollback, capped at 10 000).
-            </li>
-            <li>
-              Typical loop: create a worker &rarr; poll
-              <code>get_session</code>
-              until status is
-              <code>Idle</code>
-              &rarr; send a prompt &rarr; poll again until idle &rarr; capture the output &rarr; act
-              on the response.
+              A session is fully described by its repos and agent. There is no per-session model
+              selection, permissions, prompt, tool, or skill configuration &mdash; those belong to
+              the agent CLI itself, which runs with its own default config.
             </li>
           </ul>
 
@@ -229,16 +207,9 @@
               prevents duplicate execution.
             </li>
             <li>
-              Scheduled commands are persisted in SQLite and can be managed programmatically via
-              four MCP tools:
-              <code>schedule_command</code>
-              ,
-              <code>list_scheduled_commands</code>
-              ,
-              <code>get_scheduled_command</code>
-              ,
-              <code>cancel_scheduled_command</code>
-              .
+              Scheduled commands are persisted in SQLite and can be managed headlessly via the
+              <code>thurbox-cli scheduled</code>
+              subcommands.
             </li>
           </ul>
 
@@ -253,14 +224,16 @@
               <code>Ctrl+N</code>
               ), choose "Worktree" mode to select a base branch and name a new branch
             </li>
-            <li>Thurbox creates the worktree and launches Claude inside it</li>
+            <li>Thurbox creates the worktree and launches the agent inside it</li>
             <li>
               Press
               <code>Ctrl+S</code>
               to sync all worktree sessions with
               <code>origin/main</code>
             </li>
-            <li>On rebase conflicts, Thurbox automatically sends a resolution prompt to Claude</li>
+            <li>
+              On rebase conflicts, Thurbox automatically sends a resolution prompt to the agent
+            </li>
             <li>Closing a session automatically removes the worktree</li>
             <li>Worktree sessions show the branch name in the terminal title and session list</li>
           </ul>
@@ -282,8 +255,7 @@
           </h2>
           <p>
             <code>Ctrl+S</code>
-            synchronizes all worktree sessions in the active project with their upstream default
-            branch.
+            synchronizes all worktree sessions with their upstream default branch.
           </p>
           <ul>
             <li>
@@ -306,78 +278,6 @@
             </li>
           </ul>
 
-          <h2 id="role-system">
-            Role System
-            <a href="#role-system" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Define global permission presets that control Claude's behavior. Each role specifies:
-          </p>
-          <ul>
-            <li>
-              A
-              <strong>permission mode</strong>
-              (
-              <code>default</code>
-              ,
-              <code>plan</code>
-              ,
-              <code>acceptEdits</code>
-              ,
-              <code>dontAsk</code>
-              ,
-              <code>bypassPermissions</code>
-              )
-            </li>
-            <li>
-              Lists of
-              <strong>allowed</strong>
-              and
-              <strong>disallowed</strong>
-              tools with scope patterns like
-              <code>Bash(git:*)</code>
-            </li>
-            <li>
-              Optional
-              <strong>system prompt</strong>
-              text appended to Claude's prompt
-            </li>
-            <li>
-              Optional
-              <strong>environment variables</strong>
-              injected into the session
-            </li>
-          </ul>
-          <p>
-            Manage roles from the TUI via
-            <code>Ctrl+E</code>
-            or programmatically through the
-            <a href="mcp.html">MCP server</a>
-            . See
-            <a href="roles.html">Role Configuration</a>
-            for the full guide.
-          </p>
-
-          <h2 id="skill-management">
-            Skill Management
-            <a href="#skill-management" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Attach Claude Code skills to sessions at creation time. Skills are symlinked into each
-            session's
-            <code>.claude/skills/</code>
-            directory and auto-discovered by Claude Code.
-          </p>
-          <ul>
-            <li>
-              Manage skills globally via
-              <code>Ctrl+E</code>
-              (Settings &rarr; Skills tab)
-            </li>
-            <li>Select which skills to attach during session creation flow</li>
-            <li>Skills are shared across all projects</li>
-          </ul>
-
           <h2 id="session-forking">
             Session Forking
             <a href="#session-forking" class="heading-anchor">#</a>
@@ -397,18 +297,13 @@
           <p>
             Press
             <code>/</code>
-            in the project or session list to open a fuzzy search bar. The bar appears directly
-            below the section being searched.
+            in the session list to open a fuzzy search bar. The bar appears directly below the list.
           </p>
           <ul>
             <li>
-              <strong>Project search</strong>
-              filters by project name.
-            </li>
-            <li>
               <strong>Session search</strong>
-              filters by session name, role name, or worktree branch &mdash; the three fields
-              visible in each session entry.
+              filters by session name, agent name, or worktree branch &mdash; the fields visible in
+              each session entry.
             </li>
             <li>
               Matched characters are highlighted with accent color. Non-matching entries are dimmed
@@ -445,7 +340,7 @@
               </tr>
               <tr>
                 <td>&gt;= 80 cols</td>
-                <td>Project/session sidebar + terminal</td>
+                <td>Session sidebar + terminal</td>
               </tr>
               <tr>
                 <td>&gt;= 120 cols</td>

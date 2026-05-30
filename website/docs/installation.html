@@ -63,8 +63,6 @@
           </ul>
           <h4>Reference</h4>
           <ul>
-            <li><a href="mcp.html">MCP Server</a></li>
-            <li><a href="roles.html">Role Configuration</a></li>
             <li><a href="architecture.html">Architecture</a></li>
           </ul>
           <h4>On This Page</h4>
@@ -261,18 +259,18 @@ cargo build --release"
                 <td>Session backend</td>
               </tr>
               <tr>
-                <td><strong>claude CLI</strong></td>
+                <td><strong>A coding-agent CLI</strong></td>
                 <td>Yes</td>
                 <td>
-                  AI coding assistant (
+                  e.g.
                   <a
                     href="https://github.com/anthropics/claude-code"
                     target="_blank"
                     rel="noopener"
                   >
-                    install
+                    claude
                   </a>
-                  )
+                  , codex, gemini, opencode, or aider &mdash; whichever agents you plan to run
                 </td>
               </tr>
               <tr>
@@ -298,36 +296,31 @@ cargo build --release"
               <strong>Launch Thurbox</strong>
               &mdash; run
               <code>thurbox</code>
-              in your terminal. The Admin session appears automatically.
-            </li>
-            <li>
-              <strong>Create a project</strong>
-              &mdash; press
-              <code>Ctrl+N</code>
-              with the project list focused. Enter a name and repository paths.
+              in your terminal. You'll see the session sidebar and a terminal panel.
             </li>
             <li>
               <strong>Create a session</strong>
-              &mdash; select your project, press
+              &mdash; press
               <code>Ctrl+N</code>
-              again. Choose a session mode (Normal or Worktree).
+              to open the repo picker. Pick repos (optionally a worktree), name the session, then
+              choose an agent and a model.
             </li>
             <li>
-              <strong>Work with Claude</strong>
-              &mdash; the terminal panel shows the live Claude Code session. All keys are forwarded
-              to the PTY.
+              <strong>Work with the agent</strong>
+              &mdash; the terminal panel shows the live agent session. All keys are forwarded to the
+              PTY.
             </li>
             <li>
               <strong>Navigate</strong>
               &mdash;
               <code>Ctrl+L</code>
-              cycles focus,
+              /
               <code>Ctrl+H</code>
-              jumps to project list,
+              cycle pane focus,
               <code>Ctrl+J</code>
               /
               <code>Ctrl+K</code>
-              switch items.
+              switch sessions.
             </li>
             <li>
               <strong>Quit</strong>
@@ -343,11 +336,13 @@ cargo build --release"
           </h2>
 
           <p>
-            All state (projects, sessions, roles) is stored in SQLite at
+            Session state is stored in SQLite at
             <code>~/.local/share/thurbox/thurbox.db</code>
             (
             <code>$XDG_DATA_HOME</code>
-            respected). Logs go to
+            respected). Agent definitions live in
+            <code>~/.config/thurbox/agents.toml</code>
+            (seeded on first run). Logs go to
             <code>~/.local/share/thurbox/thurbox.log</code>
             .
           </p>

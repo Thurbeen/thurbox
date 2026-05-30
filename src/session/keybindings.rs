@@ -17,9 +17,7 @@ use serde::{Deserialize, Serialize};
 pub enum Action {
     QuitApp,
     NewSession,
-    SpawnAdminSession,
     DeleteSession,
-    OpenSettings,
     OpenInEditor,
     OpenScheduledCommands,
     StartSync,
@@ -44,9 +42,7 @@ impl Action {
         &[
             Action::QuitApp,
             Action::NewSession,
-            Action::SpawnAdminSession,
             Action::DeleteSession,
-            Action::OpenSettings,
             Action::OpenInEditor,
             Action::OpenScheduledCommands,
             Action::StartSync,
@@ -71,9 +67,7 @@ impl Action {
         match self {
             Action::QuitApp => "Quit",
             Action::NewSession => "New session",
-            Action::SpawnAdminSession => "Spawn admin session",
             Action::DeleteSession => "Delete session",
-            Action::OpenSettings => "Open settings",
             Action::OpenInEditor => "Open in editor",
             Action::OpenScheduledCommands => "Scheduled commands",
             Action::StartSync => "Sync worktrees",
@@ -104,7 +98,6 @@ impl Action {
             | Action::PreviousSession => Category::Navigation,
 
             Action::NewSession
-            | Action::SpawnAdminSession
             | Action::DeleteSession
             | Action::RestartSession
             | Action::ForkSession
@@ -112,7 +105,7 @@ impl Action {
             | Action::UndoDelete
             | Action::OpenRestoreSessions => Category::Sessions,
 
-            Action::OpenSettings | Action::OpenInEditor | Action::StartSync => Category::Project,
+            Action::OpenInEditor | Action::StartSync => Category::Project,
 
             Action::QuitApp
             | Action::ToggleShell
@@ -130,9 +123,7 @@ impl Action {
         match self {
             Action::QuitApp => vec![KeyChord::ctrl('q')],
             Action::NewSession => vec![KeyChord::ctrl('n')],
-            Action::SpawnAdminSession => vec![KeyChord::ctrl('a')],
             Action::DeleteSession => vec![KeyChord::ctrl('d')],
-            Action::OpenSettings => vec![KeyChord::ctrl('e')],
             Action::OpenInEditor => vec![KeyChord::ctrl('o')],
             Action::OpenScheduledCommands => vec![KeyChord::ctrl('p')],
             Action::StartSync => vec![KeyChord::ctrl('s')],
@@ -494,9 +485,7 @@ mod tests {
             match a {
                 Action::QuitApp => 0,
                 Action::NewSession => 0,
-                Action::SpawnAdminSession => 0,
                 Action::DeleteSession => 0,
-                Action::OpenSettings => 0,
                 Action::OpenInEditor => 0,
                 Action::OpenScheduledCommands => 0,
                 Action::StartSync => 0,
@@ -515,9 +504,9 @@ mod tests {
                 Action::ToggleFileViewer => 0,
             }
         }
-        // 21 listed variants must equal Action::all().len(). If you add
+        // 19 listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 21;
+        const EXPECTED: usize = 19;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

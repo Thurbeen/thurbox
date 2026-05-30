@@ -36,10 +36,10 @@ pub fn render_terminal(
         } else if let Some(wt) = info.worktrees.first() {
             format!(
                 " {} ({}) [{}] [{}] ",
-                info.name, info.role, wt.branch, info.status
+                info.name, info.agent, wt.branch, info.status
             )
         } else {
-            format!(" {} ({}) [{}] ", info.name, info.role, info.status)
+            format!(" {} ({}) [{}] ", info.name, info.agent, info.status)
         };
         if scroll_offset > 0 {
             // Insert scroll indicator before the trailing space

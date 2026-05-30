@@ -312,42 +312,6 @@ pub fn skills_directory() -> Option<PathBuf> {
     resolve(PathKind::SkillsDir)
 }
 
-/// Enumerate disk-source skills as `SkillConfig` entries, sorted by name.
-///
-/// Each direct subdirectory of `skills_directory()` that contains a
-/// `SKILL.md` file is returned. Directories without `SKILL.md` are
-/// skipped silently so a half-populated template can't break discovery.
-/// Returns an empty vector when the directory does not exist.
-pub fn list_disk_skills() -> Vec<crate::session::SkillConfig> {
-    let Some(dir) = skills_directory() else {
-        return Vec::new();
-    };
-    if !dir.exists() {
-        return Vec::new();
-    }
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    let mut skills = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let path = entry.path();
-        if !path.join("SKILL.md").is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        // Skip hidden / unsafe names so we never pick up ".git" or similar.
-        if validate_safe_name(&name).is_err() {
-            continue;
-        }
-        skills.push(crate::session::SkillConfig { name, path });
-    }
-    skills.sort_by(|a, b| a.name.cmp(&b.name));
-    skills
-}
-
 /// Resolve the VM images directory path.
 ///
 /// Returns: `$XDG_DATA_HOME/thurbox/admin/images/` or
@@ -793,48 +757,6 @@ mod tests {
         assert!(path.ends_with("skills"));
 
         reset_to_xdg();
-    }
-
-    #[test]
-    fn list_disk_skills_returns_empty_when_directory_absent() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = TestPathGuard::new(temp.path());
-        // `admin/skills/` does not exist under the override base.
-        assert!(list_disk_skills().is_empty());
-    }
-
-    #[test]
-    fn list_disk_skills_finds_directories_with_skill_md() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = TestPathGuard::new(temp.path());
-
-        let dir = skills_directory().unwrap();
-        std::fs::create_dir_all(dir.join("publish")).unwrap();
-        std::fs::write(dir.join("publish/SKILL.md"), "---\nname: publish\n---\n").unwrap();
-        std::fs::create_dir_all(dir.join("orchestrate")).unwrap();
-        std::fs::write(dir.join("orchestrate/SKILL.md"), "---\n").unwrap();
-        // Directory without SKILL.md must be ignored.
-        std::fs::create_dir_all(dir.join("broken")).unwrap();
-        // Non-directory file at the top level must be ignored.
-        std::fs::write(dir.join("readme.txt"), "ignored").unwrap();
-
-        let skills = list_disk_skills();
-        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["orchestrate", "publish"]);
-        assert_eq!(skills[0].path, dir.join("orchestrate"));
-        assert_eq!(skills[1].path, dir.join("publish"));
-    }
-
-    #[test]
-    fn list_disk_skills_skips_unsafe_names() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = TestPathGuard::new(temp.path());
-
-        let dir = skills_directory().unwrap();
-        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
-        std::fs::write(dir.join(".hidden/SKILL.md"), "x").unwrap();
-
-        assert!(list_disk_skills().is_empty());
     }
 
     #[test]

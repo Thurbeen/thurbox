@@ -1,9 +1,11 @@
 # Thurbox
 
-An agentic IDE and agent orchestrator for your terminal.
-Run parallel Claude Code instances in persistent tmux panes —
-and let one of them drive the others. Sessions, roles, worktrees,
-skills, and MCP servers are first-class citizens.
+Run any coding-agent CLI in persistent terminal sessions.
+Thurbox is a multi-session TUI orchestrator that launches
+Claude Code, Codex, Gemini CLI, opencode, aider — or any agent
+you describe — inside persistent tmux panes that survive
+crashes, restarts, and reboots. Sessions, agents, and git
+worktrees are first-class citizens.
 
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -14,71 +16,67 @@ skills, and MCP servers are first-class citizens.
 
 ## Why Thurbox
 
-Running `claude` in several terminals gets you far — until you want
-to keep sessions alive across crashes, isolate them per-branch, or
-have one Claude delegate work to others. Thurbox adds:
+Running a coding agent in several terminals gets you far — until
+you want to keep sessions alive across crashes, isolate them
+per-branch, or juggle different agents side-by-side. Thurbox
+adds:
 
 - **Persistence** — sessions live in tmux and survive Thurbox
   crashes, restarts, and reboots. Reattach from any terminal with
   `tmux -L thurbox attach`.
-- **Parallelism** — many Claudes side-by-side, each with its own
-  repo(s), branch, role, and skills.
+- **Parallelism** — many agents side-by-side, each on its own
+  repo(s) and branch, each running the agent you chose.
+- **Any agent** — a session runs one coding-agent CLI selected at
+  creation time. Built-ins (claude, codex, gemini, opencode,
+  aider) are seeded into `~/.config/thurbox/agents.toml`; add your
+  own without recompiling.
 - **Git worktree isolation** — each session can spawn on a fresh
-  worktree; `Ctrl+S` syncs them with `origin/main` and asks Claude
-  to resolve rebase conflicts automatically.
-- **Orchestrator mode** — a built-in Admin session uses the
-  `thurbox-mcp` server to `create_session`, `send_prompt`, and
-  `capture_session_output` on other sessions. Say "spawn a reviewer
-  on the api repo and audit auth.rs" and Thurbox coordinates it.
+  worktree; `Ctrl+S` syncs them with `origin/main` and asks the
+  agent to resolve rebase conflicts automatically.
 
 ## Main Features
 
 ### Sessions
 
-- Persistent tmux-backed panes, parallel Claudes, per-session
-  working dirs (multi-repo via `--add-dir`).
-- `Ctrl+R` restart with `--resume` preserves conversation; `Ctrl+F`
-  forks a session; `Ctrl+T` toggles a shell pane.
+- Persistent tmux-backed panes, parallel agents, per-session
+  working dirs.
+- Each session runs one coding agent; nothing else is configured
+  per session. Each agent runs with its own default config.
+- `Ctrl+R` restart preserves the conversation when the agent
+  supports resume; `Ctrl+F` forks a session; `Ctrl+T` toggles a
+  shell pane.
 - Fuzzy session search (`/`), clickable URLs, mouse selection +
   clipboard, scheduled commands (`Ctrl+P`), soft-delete with undo
   (`Ctrl+Z`) and restore (`Ctrl+U`).
 
+### Agent definitions
+
+- Agents are declared as data in `~/.config/thurbox/agents.toml`,
+  seeded with built-ins on first run and user-extensible. Each
+  agent has a `command`, `args` (always passed — bake in flags
+  like a model here if you want), and argument-template groups
+  (`resume_args`, `fork_args`, `new_session_args`). Each group is
+  appended only when its value is present, with `{id}`
+  substituted.
+
 ### Git worktrees
 
 - Pick "Worktree" in the new-session flow to branch off a base and
-  launch Claude inside the worktree. Closing the session removes
+  launch the agent inside the worktree. Closing the session removes
   it. `Ctrl+S` syncs all worktree sessions with `origin/main`.
-
-### Roles & skills
-
-- Global role presets define permission mode and allowed/disallowed
-  tools (e.g. `Bash(git:*)`). Skills are symlinked into the
-  session's `.claude/skills/` and auto-discovered. Edit everything
-  with `Ctrl+E`.
-
-### Orchestrator mode
-
-- The Admin session auto-configures `thurbox-mcp` and can spawn,
-  prompt, and observe other sessions — a multi-agent loop driven
-  conversationally. See
-  [docs/FEATURES.md#orchestrator-mode](docs/FEATURES.md#orchestrator-mode).
-
-### MCP server (`thurbox-mcp`)
-
-- 24 tools over stdio or Streamable HTTP for roles, sessions,
-  scheduled commands, editor config, and more. Shares the TUI's
-  SQLite DB so changes appear live.
 
 ### Responsive UI
 
 - `< 80` cols: terminal only · `>= 80`: sidebar + terminal ·
   `>= 120`: sidebar + terminal + info panel. Vim-inspired keys
-  throughout.
+  throughout. Pick a theme with `Ctrl+Y` (or `F4`).
 
 ## Prerequisites
 
 - **tmux >= 3.2**
-- **claude CLI** — [anthropics/claude-code](https://github.com/anthropics/claude-code)
+- **A coding-agent CLI** — e.g.
+  [claude](https://github.com/anthropics/claude-code), codex,
+  gemini, opencode, or aider (whichever agents you plan to run)
 - **git** (required for worktree features)
 - **Rust 1.75+** (only to build from source)
 
@@ -115,49 +113,61 @@ cargo build --release
 ## Getting Started
 
 1. **Launch** — run `thurbox`. You'll see a sidebar on the left
-   with a pinned **Admin** session at index 0 (that's your
-   conversational control plane), and an empty terminal on the
-   right.
+   listing your sessions and a terminal panel on the right.
 2. **Create your first session** — press `Ctrl+N` to open the repo
    picker. Toggle repos with `Space`; press `w` on a repo to mark
    it as worktree mode (you'll be prompted for a base branch and
-   new branch name). Confirm with `Enter`, then optionally pick a
-   role, MCP servers, and skills.
-3. **Work with Claude** — the right pane is a live Claude session.
-   All keys are forwarded to the PTY; `Ctrl+C` copies if you have
-   a selection, otherwise sends SIGINT.
+   new branch name). Confirm with `Enter`, name the session, then
+   pick an **agent**. The agent picker is skipped when only one
+   agent is defined.
+3. **Work with the agent** — the right pane is a live agent
+   session. All keys are forwarded to the PTY; `Ctrl+C` copies if
+   you have a selection, otherwise sends SIGINT.
 4. **Navigate** — `Ctrl+J` / `Ctrl+K` move between sessions in the
    sidebar; `Ctrl+L` / `Ctrl+H` cycle focus between panes.
-   `Ctrl+O` opens the session's worktree in your editor; `Ctrl+E`
-   edits global settings.
+   `Ctrl+O` opens the session's worktree in your editor.
 5. **Quit without killing** — `Ctrl+Q` detaches all sessions.
    Tmux keeps them running; relaunch `thurbox` and they resume.
 
 See the full [keybindings](#keybindings) below.
 
-## Orchestrator Mode in 30 Seconds
+## Agents
 
-The Admin session is already wired up to `thurbox-mcp`. Focus it
-and ask:
+A session launches exactly one coding-agent CLI. Agents are
+described as data in `~/.config/thurbox/agents.toml`, which is
+seeded with built-ins (claude, codex, gemini, opencode, aider) on
+first run. Edit the file to tweak an agent or add a new one — no
+recompile required.
 
-> Spawn a worker session on the `api` repo using the `reviewer`
-> role, tell it to audit `src/auth.rs` for missing permission
-> checks, wait for it to finish, and summarize its findings.
+Each `[[agents]]` entry maps the resume / fork / new-session ids
+onto argument-template groups. `args` is always passed (bake in
+any flags you want, e.g. a model); the resume / fork /
+new-session groups are appended only when their driving value is
+present, with `{id}` substituted token-by-token:
 
-Under the hood the Admin Claude calls `create_session` → polls
-`get_session` until `Idle` → `send_prompt` → `capture_session_output`.
-You'll see the new session appear in the sidebar; you can watch
-it work or ignore it until Admin reports back. Full details:
-[docs/FEATURES.md#orchestrator-mode](docs/FEATURES.md#orchestrator-mode).
+```toml
+default = "claude"
+
+[[agents]]
+name = "claude"
+command = "claude"
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+[[agents]]
+name = "codex"
+command = "codex"
+```
 
 ## Common Workflows
 
 - **Parallel branches** — `Ctrl+N`, pick a repo in Worktree mode,
   name a new branch. Repeat for a second branch. Two isolated
-  Claudes now work in parallel with no git contention.
-- **Conversational admin** — ask the Admin session "create a
-  `reviewer` role with read-only Bash and no Edit/Write". It calls
-  `set_roles` for you; the role appears in the `Ctrl+E` picker.
+  agents now work in parallel with no git contention.
+- **Mix agents** — run Claude Code on one repo and Codex on
+  another in side-by-side sessions; each session remembers its own
+  agent.
 - **Recover a crash** — if Thurbox dies, relaunch it: sessions
   resume from tmux. Prefer raw tmux? `tmux -L thurbox attach`.
 
@@ -178,15 +188,16 @@ it work or ignore it until Admin reports back. Full details:
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
-| `Ctrl+E` | Edit settings (roles, MCP servers, skills) | **E**dit |
 | `Ctrl+O` | Open active session's repos in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
+| `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
 | `F1` | Help overlay | Universal |
 | `F2` | Toggle info panel | Next to F1 |
+| `F3` | Toggle file viewer | Next to F2 |
 
 ### List Navigation
 
@@ -197,7 +208,7 @@ it work or ignore it until Admin reports back. Full details:
 | `/` | Fuzzy search (projects or sessions) |
 | `Enter` | Select / focus |
 
-Session search matches against name, role, and branch.
+Session search matches against name, agent, and branch.
 
 ### Terminal Scrollback and Selection
 
@@ -209,64 +220,36 @@ Session search matches against name, role, and branch.
 | Mouse drag | Select text |
 | Any other key | Snap to bottom + forward to PTY |
 
-## MCP Server
+## Headless CLI (`thurbox-cli`)
 
-The `thurbox-mcp` binary exposes Thurbox configuration over the
-Model Context Protocol. It supports stdio (default) and
-Streamable HTTP transports, and shares the same SQLite database
-as the TUI — changes appear immediately.
+The `thurbox-cli` binary drives Thurbox without the TUI — useful
+for scripting and automation. It shares the same SQLite database
+as the TUI, so changes appear live.
 
 ```bash
-cargo build --bin thurbox-mcp
-thurbox-mcp                                    # stdio (default)
-thurbox-mcp --transport streamable-http        # HTTP on 127.0.0.1:8080
-thurbox-mcp --transport streamable-http --port 9090  # custom port
+cargo build --bin thurbox-cli
+thurbox-cli session list
+thurbox-cli session create \
+  --name reviewer \
+  --repo-path /path/to/repo \
+  --agent codex
+thurbox-cli session send <uuid> "run the test suite"
+thurbox-cli session capture <uuid>
 ```
 
-### Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `list_roles` | List all global roles |
-| `set_roles` | Atomically replace all global roles |
-| `list_mcp_servers` | List all global MCP servers |
-| `set_mcp_servers` | Set global MCP servers |
-| `list_sessions` | List all active sessions |
-| `get_session` | Get a session by UUID |
-| `create_session` | Spawn a new local-tmux session (optionally on a fresh worktree) |
-| `send_prompt` | Send text to a session's terminal immediately (orchestrator mode) |
-| `capture_session_output` | Read rendered pane contents from a session |
-| `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
-| `restart_session` | Queue a session restart (TUI processes the command) |
-| `restore_session` | Restore a soft-deleted session |
-| `schedule_command` | Schedule text to be sent to a session at a future time |
-| `list_scheduled_commands` | List pending scheduled commands, optionally by session |
-| `get_scheduled_command` | Get a scheduled command by ID |
-| `cancel_scheduled_command` | Cancel a pending scheduled command |
-| `get_editor_command` | Get the editor command used by Ctrl+O |
-| `set_editor_command` | Set the editor command used by Ctrl+O |
-
-### Admin Session
-
-The TUI includes a built-in Admin session that auto-configures
-`thurbox-mcp` as an MCP server. Claude Code discovers the config
-automatically, enabling conversational role/session management
-inside the TUI. The Admin session is pinned at index 0 and
-cannot be edited or deleted.
-
-For the complete role configuration guide including permission
-modes, tool name format, and example role patterns, see
-[docs/MCP_ROLES.md](docs/MCP_ROLES.md).
+`session create` takes `--name`, `--repo-path`, `--agent`,
+`--worktree-branch`, and `--base-branch`; the agent falls back to
+the default in `agents.toml` when omitted.
 
 ## Architecture
 
 Thurbox follows **The Elm Architecture** (TEA):
 `Event → Message → update(model, msg) → view(model) → Frame`.
 All state lives in a single `App` model. Sessions run via a
-`SessionBackend` trait — the only backend is local tmux
-(`tmux -L thurbox`). Terminal output is parsed by
-`vt100::Parser` and rendered by `tui_term`. All persistent
-state (sessions, roles, MCP servers, skills) is stored in SQLite.
+`SessionBackend` trait backed by local tmux (`tmux -L thurbox`).
+Terminal output is parsed by `vt100::Parser` and rendered by
+`tui_term`. All persistent state (sessions, worktrees, scheduled
+commands) is stored in SQLite.
 
 ### Module Dependency Rules
 
@@ -274,7 +257,6 @@ state (sessions, roles, MCP servers, skills) is stored in SQLite.
 session  ← pure data types, no local imports
 agent    ← imports session only (NEVER ui or git)
 ui       ← imports session only (NEVER agent or git)
-mcp      ← imports storage, session, sync, paths only
 app      ← coordinator, imports all modules
 ```
 
@@ -289,9 +271,7 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architectural
   decisions with rationale
 - [docs/FEATURES.md](docs/FEATURES.md) — Feature-level design
-  choices (including orchestrator mode)
-- [docs/MCP_ROLES.md](docs/MCP_ROLES.md) — MCP role
-  configuration guide
+  choices (including agent definitions)
 
 ## Development
 
@@ -348,7 +328,7 @@ This project uses
 
 ```bash
 cog commit feat "add worktree management"
-cog commit fix "resolve memory leak" api
+cog commit fix "resolve memory leak" cli
 ```
 
 ### Commit Types
@@ -360,8 +340,7 @@ cog commit fix "resolve memory leak" api
 
 ### Valid Scopes
 
-`api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`,
-`mcp`
+`api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`
 
 ## Contributing
 
@@ -394,8 +373,7 @@ This project is licensed under the MIT License - see the
 - [vt100](https://github.com/doy/vt100-rust) — terminal
   emulation
 - [Claude Code CLI](https://github.com/anthropics/claude-code)
-  — AI coding assistant
-- [rmcp](https://github.com/anthropics/rmcp) — Rust MCP SDK
+  — one of the supported coding agents
 - [tmux](https://github.com/tmux/tmux) — terminal multiplexer
 
 ## Support

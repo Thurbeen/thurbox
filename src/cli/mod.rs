@@ -1,7 +1,6 @@
 //! Command-line interface dispatcher for the `thurbox-cli` binary.
 //!
-//! Each subcommand mirrors a tool exposed by the MCP server. Output is JSON
-//! matching the MCP tool result shape. Pass `--pretty` to pretty-print.
+//! Output is JSON; pass `--pretty` to pretty-print.
 //!
 //! The CLI is intentionally thin: it parses arguments, calls into
 //! `storage::Database`, `session_ops`, or the tmux helpers in
@@ -12,13 +11,10 @@ use clap::{Parser, Subcommand};
 use crate::storage::Database;
 
 pub mod editor;
-pub mod mcp_servers;
-pub mod roles;
 pub mod scheduled;
 pub mod sessions;
-pub mod skills;
 
-/// Thurbox CLI — manage roles, sessions, scheduled commands, and more.
+/// Thurbox CLI — manage sessions, scheduled commands, and more.
 #[derive(Parser, Debug)]
 #[command(name = "thurbox-cli", version, about)]
 pub struct Cli {
@@ -32,17 +28,6 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Manage global roles.
-    Role {
-        #[command(subcommand)]
-        action: roles::Action,
-    },
-    /// Manage global MCP servers.
-    #[command(name = "mcp-server")]
-    McpServer {
-        #[command(subcommand)]
-        action: mcp_servers::Action,
-    },
     /// Get/set the editor command (Ctrl+O in the TUI).
     Editor {
         #[command(subcommand)]
@@ -58,22 +43,14 @@ pub enum Command {
         #[command(subcommand)]
         action: scheduled::Action,
     },
-    /// Manage the skill registry (references to on-disk skill directories).
-    Skill {
-        #[command(subcommand)]
-        action: skills::Action,
-    },
 }
 
 /// Run a parsed CLI invocation against `db` and write JSON to stdout.
 pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
     let value = match cli.command {
-        Command::Role { action } => roles::run(action, db),
-        Command::McpServer { action } => mcp_servers::run(action, db),
         Command::Editor { action } => editor::run(action, db),
         Command::Session { action } => sessions::run(action, db),
         Command::Schedule { action } => scheduled::run(action, db),
-        Command::Skill { action } => skills::run(action, db),
     }?;
 
     let text = if cli.pretty {
@@ -85,55 +62,10 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
     Ok(())
 }
 
-// ── Shared helpers ─────────────────────────────────────────────────
-
-/// Read a file's contents as a UTF-8 string, returning a CLI-style error.
-pub(crate) fn read_file(path: &std::path::Path) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))
-}
-
-/// Validate that `name` is a safe single-segment filename (no slashes,
-/// dot-prefix, or `..`) — used by the `skill` CLI command.
-pub(crate) fn validate_safe_name(name: &str) -> Result<(), String> {
-    crate::paths::validate_safe_name(name)
-}
-
-/// Parse a JSON document that may be either a bare array or an object
-/// with a single `wrapper_key` field whose value is an array. Returns the
-/// array items. Used by `role set` / `mcp-server set` CLI commands.
-pub(crate) fn parse_array_or_wrapper(
-    content: &str,
-    wrapper_key: &str,
-) -> Result<Vec<serde_json::Value>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(content).map_err(|e| format!("Failed to parse JSON: {e}"))?;
-    let err = || format!("JSON must be an array or {{\"{wrapper_key}\":[...]}}");
-    match value {
-        serde_json::Value::Array(a) => Ok(a),
-        serde_json::Value::Object(mut o) => match o.remove(wrapper_key) {
-            Some(serde_json::Value::Array(a)) => Ok(a),
-            _ => Err(err()),
-        },
-        _ => Err(err()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
-
-    #[test]
-    fn parse_role_list() {
-        let cli = Cli::try_parse_from(["thurbox-cli", "role", "list"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Command::Role {
-                action: roles::Action::List
-            }
-        ));
-        assert!(!cli.pretty);
-    }
 
     #[test]
     fn pretty_flag_is_global() {
@@ -163,12 +95,8 @@ mod tests {
             "/tmp/repo",
             "--worktree-branch",
             "feat/x",
-            "--mcp-server",
-            "fs",
-            "--mcp-server",
-            "github",
-            "--skill",
-            "review",
+            "--agent",
+            "codex",
         ])
         .unwrap();
         let Command::Session {
@@ -176,8 +104,7 @@ mod tests {
                 sessions::Action::Create {
                     name,
                     repo_path,
-                    mcp_servers,
-                    skills,
+                    agent,
                     worktree_branch,
                     ..
                 },
@@ -188,8 +115,7 @@ mod tests {
         assert_eq!(name, "demo");
         assert_eq!(repo_path.to_string_lossy(), "/tmp/repo");
         assert_eq!(worktree_branch.as_deref(), Some("feat/x"));
-        assert_eq!(mcp_servers, vec!["fs", "github"]);
-        assert_eq!(skills, vec!["review"]);
+        assert_eq!(agent.as_deref(), Some("codex"));
     }
 
     #[test]

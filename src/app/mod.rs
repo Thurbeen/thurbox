@@ -1,6 +1,5 @@
 mod helpers;
 mod key_handlers;
-pub(crate) mod mcp_editor_modal;
 pub(crate) mod modals;
 mod state;
 mod view;
@@ -16,18 +15,17 @@ use ratatui::{
 };
 use tracing::{error, info, warn};
 
-use crate::agent::{BackendRegistry, Session, SessionBackend};
+use crate::agent::{BackendRegistry, GenericProvider, Session, SessionBackend};
 use crate::git;
 use crate::session::{
-    default_developer_permissions, default_developer_role, McpServerConfig, RoleConfig,
-    RolePermissions, ScheduledCommand, SessionConfig, SessionId, SessionInfo, SessionStatus,
-    SkillConfig, WorktreeInfo, DEFAULT_ROLE_NAME,
+    AgentRegistry, ScheduledCommand, SessionConfig, SessionId, SessionInfo, SessionStatus,
+    WorktreeInfo, DEFAULT_AGENT_NAME,
 };
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
-use crate::ui::{info_panel, layout, project_list, role_editor_modal};
+use crate::ui::{info_panel, layout, project_list};
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -48,63 +46,6 @@ const DEFERRED_INPUT_DELAY_TICKS: u64 = 10;
 
 /// How often to refresh system metrics (in ticks). At ~10ms per tick, 100 ≈ 1 second.
 const METRICS_REFRESH_TICKS: u64 = 100;
-
-/// MCP tool names auto-allowed in the admin session so Claude can manage
-/// Thurbox without repeated permission prompts.
-const ADMIN_MCP_TOOLS: &[&str] = &[
-    "mcp__thurbox__list_roles",
-    "mcp__thurbox__set_roles",
-    "mcp__thurbox__list_mcp_servers",
-    "mcp__thurbox__set_mcp_servers",
-    "mcp__thurbox__list_sessions",
-    "mcp__thurbox__get_session",
-    "mcp__thurbox__delete_session",
-    "mcp__thurbox__restart_session",
-    "mcp__thurbox__restore_session",
-    "mcp__thurbox__list_skills",
-    "mcp__thurbox__set_skills",
-    "mcp__thurbox__register_skill",
-    "mcp__thurbox__unregister_skill",
-    "mcp__thurbox__schedule_command",
-    "mcp__thurbox__list_scheduled_commands",
-    "mcp__thurbox__get_scheduled_command",
-    "mcp__thurbox__cancel_scheduled_command",
-    "mcp__thurbox__create_session",
-    "mcp__thurbox__send_prompt",
-    "mcp__thurbox__capture_session_output",
-];
-
-/// System prompt appended to the admin session to give Claude context about its
-/// role as the Thurbox management assistant.
-const ADMIN_SYSTEM_PROMPT: &str = "\
-You are the Thurbox admin assistant. Thurbox is a multi-session Claude Code TUI \
-orchestrator. Your role is to help the user manage their Thurbox setup using the \
-thurbox MCP tools available to you.
-
-You can:
-- Configure global roles (named permission presets applied to sessions)
-- Configure global MCP servers
-- List, inspect, delete, restart, and restore sessions
-- Register and manage skills
-
-When the user asks you to manage roles, sessions, or MCP servers, use \
-the appropriate thurbox MCP tool. Always list existing resources before making \
-changes so you have current state.
-
-Important: delete operations are soft-deletes (recoverable via undo in the TUI). \
-Role changes via set_roles are atomic replacements — include all desired roles, \
-not just new ones.
-
-Orchestrator mode: you can act as a coordinator that spawns and drives other \
-Claude sessions. Use `create_session` to spawn a new local-tmux session in a \
-repo (optionally on a fresh git worktree), `send_prompt` to dispatch a task to \
-that session's terminal, and `capture_session_output` to read the rendered \
-pane contents back. To know when a dispatched task is finished, poll \
-`get_session` — session status transitions to Idle/Waiting once the agent \
-stops producing output. Typical loop: create_session → wait until visible \
-→ send_prompt → poll get_session until idle → capture_session_output → act \
-on the response (delete_session, send another prompt, spawn more workers, \
-etc.).";
 
 /// Parse agent metrics from a Claude CLI statusline JSON value.
 fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics {
@@ -163,115 +104,14 @@ fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics 
     }
 }
 
-/// Build `RolePermissions` with all admin MCP tools pre-allowed.
-fn admin_mcp_permissions() -> RolePermissions {
-    RolePermissions {
-        allowed_tools: ADMIN_MCP_TOOLS.iter().map(|s| s.to_string()).collect(),
-        append_system_prompt: Some(ADMIN_SYSTEM_PROMPT.to_string()),
-        ..RolePermissions::default()
-    }
-}
-
-/// The role name used for admin sessions. Seeded into `global_roles` so it
-/// appears in the role picker and is preselected when spawning via `Ctrl+A`.
-const ADMIN_ROLE_NAME: &str = "admin";
-
-/// MCP server name pre-checked in the admin-spawn MCP picker.
-const ADMIN_DEFAULT_MCP: &str = "thurbox";
-
-/// Name prefix identifying admin sessions. Applied at spawn and used at
-/// restore to re-tag admin sessions loaded from the DB.
-const ADMIN_NAME_PREFIX: &str = "admin-";
-
-/// Build the `RoleConfig` stored under `ADMIN_ROLE_NAME`.
-fn admin_role() -> RoleConfig {
-    RoleConfig {
-        name: ADMIN_ROLE_NAME.to_string(),
-        description: "Thurbox admin assistant".to_string(),
-        permissions: admin_mcp_permissions(),
-    }
-}
-
-pub use modals::RoleEditorView;
-pub use modals::SettingsTab;
-
 pub use modals::ScheduleCommandField;
-
-/// State for an editable list of tool names (allowed or disallowed).
-pub(crate) struct ToolListState {
-    pub(crate) items: Vec<String>,
-    pub(crate) selected: usize,
-    pub(crate) mode: role_editor_modal::ToolListMode,
-    pub(crate) input: TextInput,
-}
-
-impl ToolListState {
-    fn new() -> Self {
-        Self {
-            items: Vec::new(),
-            selected: 0,
-            mode: role_editor_modal::ToolListMode::Browse,
-            input: TextInput::new(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.items.clear();
-        self.selected = 0;
-        self.mode = role_editor_modal::ToolListMode::Browse;
-        self.input.clear();
-    }
-
-    fn load(&mut self, tools: &[String]) {
-        self.items = tools.to_vec();
-        self.selected = 0;
-        self.mode = role_editor_modal::ToolListMode::Browse;
-        self.input.clear();
-    }
-
-    fn start_adding(&mut self) {
-        self.mode = role_editor_modal::ToolListMode::Adding;
-        self.input.clear();
-    }
-
-    fn confirm_add(&mut self) {
-        let val = self.input.value().trim().to_string();
-        if !val.is_empty() {
-            self.items.push(val);
-            self.selected = self.items.len() - 1;
-        }
-        self.mode = role_editor_modal::ToolListMode::Browse;
-    }
-
-    fn cancel_add(&mut self) {
-        self.mode = role_editor_modal::ToolListMode::Browse;
-    }
-
-    fn delete_selected(&mut self) {
-        if !self.items.is_empty() {
-            self.items.remove(self.selected);
-            if self.selected >= self.items.len() && self.selected > 0 {
-                self.selected -= 1;
-            }
-        }
-    }
-
-    fn move_down(&mut self) {
-        if !self.items.is_empty() && self.selected + 1 < self.items.len() {
-            self.selected += 1;
-        }
-    }
-
-    fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
-    }
-}
 
 pub(crate) struct TextInput {
     pub(crate) buffer: String,
     pub(crate) cursor: usize,
 }
 
+#[allow(dead_code)] // some editing methods only exercised by tests
 impl TextInput {
     fn new() -> Self {
         Self {
@@ -399,14 +239,6 @@ pub(crate) enum TerminalView {
     Shell,
 }
 
-/// Which field is focused in the skill editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum SkillEditorField {
-    #[default]
-    Name,
-    Path,
-}
-
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
 struct PendingDelete {
     session: Session,
@@ -419,7 +251,9 @@ pub struct App {
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
     backends: BackendRegistry,
-    provider: Arc<dyn crate::agent::AgentProvider>,
+    /// Registry of declarative agent definitions, used to build providers per
+    /// session at spawn/restart time.
+    pub(crate) agents: AgentRegistry,
     pub(crate) db: Database,
     pub(crate) focus: InputFocus,
     pub(crate) should_quit: bool,
@@ -440,55 +274,13 @@ pub struct App {
     pub(crate) pending_session_name: Option<String>,
     pub(crate) pending_spawn_config: Option<SessionConfig>,
     pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
+    /// Extra working directories (non-primary worktrees + normal repos) to
+    /// attach to the spawned session's `SessionInfo`. Consumed by
+    /// `do_spawn_session`.
+    pub(crate) pending_additional_dirs: Vec<PathBuf>,
     pub(crate) pending_fork: bool,
     pub(crate) pending_restart: bool,
     pub(crate) pending_spawn_name: Option<String>,
-    /// True while the current spawn originated from `Ctrl+A` (admin session).
-    /// Threaded through the picker chain so pickers open with admin-specific
-    /// defaults and the final `do_spawn_session` keeps `is_admin = true`.
-    pub(crate) pending_spawn_is_admin: bool,
-    pub(crate) show_settings: bool,
-    pub(crate) settings_tab: SettingsTab,
-    pub(crate) show_role_editor: bool,
-    pub(crate) role_editor_list_index: usize,
-    #[allow(dead_code)]
-    pub(crate) role_editor_view: RoleEditorView,
-    pub(crate) role_editor_field: role_editor_modal::RoleEditorField,
-    pub(crate) role_editor_name: TextInput,
-    pub(crate) role_editor_description: TextInput,
-    pub(crate) role_editor_allowed_tools: ToolListState,
-    pub(crate) role_editor_disallowed_tools: ToolListState,
-    pub(crate) role_editor_system_prompt: TextInput,
-    pub(crate) role_editor_env: ToolListState,
-    pub(crate) role_editor_editing_index: Option<usize>,
-    pub(crate) show_mcp_editor: bool,
-    pub(crate) mcp_editor_field: mcp_editor_modal::McpEditorField,
-    pub(crate) mcp_editor_name: TextInput,
-    pub(crate) mcp_editor_command: TextInput,
-    pub(crate) mcp_editor_args: ToolListState,
-    pub(crate) mcp_editor_env: ToolListState,
-    pub(crate) mcp_editor_editing_index: Option<usize>,
-    pub(crate) show_skill_editor: bool,
-    pub(crate) skill_editor_name: TextInput,
-    pub(crate) skill_editor_path: TextInput,
-    pub(crate) skill_editor_field: SkillEditorField,
-    pub(crate) skill_editor_editing_index: Option<usize>,
-    pub(crate) skill_editor_path_suggestion: Option<String>,
-    pub(crate) profile_list_index: usize,
-    pub(crate) show_profile_editor: bool,
-    pub(crate) profile_editor_name: TextInput,
-    pub(crate) profile_editor_description: TextInput,
-    pub(crate) profile_editor_roles: ToolListState,
-    pub(crate) profile_editor_mcp_servers: ToolListState,
-    pub(crate) profile_editor_skills: ToolListState,
-    pub(crate) profile_editor_field: crate::ui::profile_editor_modal::ProfileEditorField,
-    pub(crate) profile_editor_editing_index: Option<usize>,
-    /// Snapshot of role editor fields at open time for dirty detection.
-    pub(crate) role_editor_snapshot: Option<EditorSnapshot>,
-    /// Snapshot of MCP editor fields at open time for dirty detection.
-    pub(crate) mcp_editor_snapshot: Option<EditorSnapshot>,
-    /// Whether the "Discard unsaved changes?" confirmation is showing.
-    pub(crate) show_discard_confirmation: bool,
     /// Inter-instance DB sync (polls for changes from other thurbox instances).
     sync_state: SyncState,
     /// Worktree-to-main git sync (Ctrl+S).
@@ -526,19 +318,6 @@ pub struct App {
     /// Per-session fuzzy match positions (parallel to flat session list).
     /// Empty vec means no search is active.
     pub(crate) session_match_positions: Vec<Option<project_list::SessionMatch>>,
-    /// Cached global roles (loaded from DB, used for session spawning and role selection).
-    pub(crate) global_roles: Vec<RoleConfig>,
-    /// Cached global MCP servers (loaded from DB, used for session spawning and editing).
-    pub(crate) global_mcp_servers: Vec<McpServerConfig>,
-    /// Index into global_mcp_servers for the MCP server list in the edit modal.
-    pub(crate) mcp_server_list_index: usize,
-    /// Cached global skills (loaded from DB, used for session spawning and editing).
-    pub(crate) global_skills: Vec<SkillConfig>,
-    /// Index into global_skills for the skill list in the edit modal.
-    pub(crate) skill_list_index: usize,
-    /// Cached global profiles (loaded from DB, used for the Ctrl+N profile
-    /// picker step). An empty vec means the picker is skipped entirely.
-    pub(crate) global_profiles: Vec<crate::session::ProfileConfig>,
     /// Cached pending scheduled commands, refreshed every ~1 second.
     pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
@@ -550,12 +329,6 @@ pub struct App {
     pub(crate) keybindings: crate::session::KeyBindings,
 }
 
-/// Snapshot of editor field values for dirty detection.
-#[derive(Clone, PartialEq)]
-pub(crate) struct EditorSnapshot {
-    pub fields: Vec<String>,
-}
-
 const EDITOR_NOT_CONFIGURED: &str =
     "No editor configured — set `editor_command` via MCP or export $EDITOR/$VISUAL";
 
@@ -564,40 +337,9 @@ impl App {
         rows: u16,
         cols: u16,
         backends: BackendRegistry,
-        provider: Arc<dyn crate::agent::AgentProvider>,
+        agents: AgentRegistry,
         db: Database,
     ) -> Self {
-        // Load global roles from DB, seeding the default developer role if empty
-        // and ensuring the admin role is always present (so Ctrl+A can preselect
-        // it and users can see/edit it alongside their own roles). Admin is
-        // appended so user-authored role positions are preserved.
-        let mut global_roles = db.list_global_roles().unwrap_or_default();
-        let mut roles_changed = false;
-        if global_roles.is_empty() {
-            global_roles = vec![default_developer_role()];
-            roles_changed = true;
-        }
-        if !global_roles.iter().any(|r| r.name == ADMIN_ROLE_NAME) {
-            global_roles.push(admin_role());
-            roles_changed = true;
-        }
-        if roles_changed {
-            let _ = db.replace_global_roles(&global_roles);
-        }
-
-        // Load global MCP servers from DB.
-        let global_mcp_servers = db.list_global_mcp_servers().unwrap_or_default();
-
-        // Load global skills from DB. Disk-source skills are merged in at
-        // skill-picker time (see `effective_skills`) so the settings-tab
-        // editor never confuses a disk-discovered directory with a
-        // user-registered row.
-        let global_skills = db.list_global_skills().unwrap_or_default();
-
-        // Load global profiles from DB. Empty means the Ctrl+N profile step
-        // is skipped — users with no profiles see no UI change.
-        let global_profiles = db.list_global_profiles().unwrap_or_default();
-
         // Resolve the persisted active theme (defaults to Default if unset/unknown).
         let active_theme = db
             .get_active_theme()
@@ -635,7 +377,7 @@ impl App {
             sessions: Vec::new(),
             active_index: 0,
             backends,
-            provider,
+            agents,
             db,
             focus: InputFocus::SessionList,
             should_quit: false,
@@ -654,48 +396,10 @@ impl App {
             pending_session_name: None,
             pending_spawn_config: None,
             pending_spawn_worktrees: Vec::new(),
+            pending_additional_dirs: Vec::new(),
             pending_fork: false,
             pending_restart: false,
             pending_spawn_name: None,
-            pending_spawn_is_admin: false,
-            show_settings: false,
-            settings_tab: SettingsTab::Roles,
-            show_role_editor: false,
-            role_editor_list_index: 0,
-            role_editor_view: RoleEditorView::List,
-            role_editor_field: role_editor_modal::RoleEditorField::Name,
-            role_editor_name: TextInput::new(),
-            role_editor_description: TextInput::new(),
-            role_editor_allowed_tools: ToolListState::new(),
-            role_editor_disallowed_tools: ToolListState::new(),
-            role_editor_system_prompt: TextInput::new(),
-            role_editor_env: ToolListState::new(),
-            role_editor_editing_index: None,
-            show_mcp_editor: false,
-            mcp_editor_field: mcp_editor_modal::McpEditorField::Name,
-            mcp_editor_name: TextInput::new(),
-            mcp_editor_command: TextInput::new(),
-            mcp_editor_args: ToolListState::new(),
-            mcp_editor_env: ToolListState::new(),
-            mcp_editor_editing_index: None,
-            show_skill_editor: false,
-            skill_editor_name: TextInput::new(),
-            skill_editor_path: TextInput::new(),
-            skill_editor_field: SkillEditorField::Name,
-            skill_editor_editing_index: None,
-            skill_editor_path_suggestion: None,
-            profile_list_index: 0,
-            show_profile_editor: false,
-            profile_editor_name: TextInput::new(),
-            profile_editor_description: TextInput::new(),
-            profile_editor_roles: ToolListState::new(),
-            profile_editor_mcp_servers: ToolListState::new(),
-            profile_editor_skills: ToolListState::new(),
-            profile_editor_field: crate::ui::profile_editor_modal::ProfileEditorField::Name,
-            profile_editor_editing_index: None,
-            role_editor_snapshot: None,
-            mcp_editor_snapshot: None,
-            show_discard_confirmation: false,
             sync_state,
             worktree_sync_in_progress: false,
             worktree_sync_rx: None,
@@ -721,122 +425,29 @@ impl App {
             search_active: false,
             search_input: TextInput::new(),
             session_match_positions: Vec::new(),
-            global_roles,
-            global_mcp_servers,
-            mcp_server_list_index: 0,
-            global_skills,
-            skill_list_index: 0,
-            global_profiles,
             cached_pending_commands: Vec::new(),
             active_theme,
             keybindings,
         }
     }
 
-    /// Ensure the admin directory and `.mcp.json` exist.
-    ///
-    /// Creates a dedicated admin directory with a `.mcp.json` pointing to the
-    /// `thurbox-mcp` binary. The `.mcp.json` is rewritten on every startup to
-    /// pick up binary path changes after upgrades.
-    pub fn ensure_admin_setup(&mut self) {
-        let Some(admin_dir) = crate::paths::admin_directory() else {
-            tracing::warn!("Could not resolve admin directory path");
-            return;
-        };
-
-        if let Err(e) = std::fs::create_dir_all(&admin_dir) {
-            tracing::warn!("Failed to create admin directory: {e}");
-            return;
-        }
-
-        self.write_mcp_json(&admin_dir);
-    }
-
-    /// Set up the statusline script that Thurbox points Claude at for agent metrics.
-    ///
-    /// Creates a shell script that the Claude CLI pipes statusline JSON into,
-    /// which writes metrics to per-session files. The `statusLine` config that
-    /// references this script is written per-session into each session's
-    /// `CLAUDE_CONFIG_DIR` by `agent::skill_staging::prepare`, so the user's
-    /// global `~/.claude/settings.json` is never touched.
-    pub fn ensure_statusline_script(&self) {
-        let Some(script_path) = crate::paths::statusline_script_path() else {
-            return;
-        };
-        let Some(metrics_dir) = crate::paths::metrics_directory() else {
-            return;
-        };
-
-        // Ensure metrics directory exists.
-        if let Err(e) = std::fs::create_dir_all(&metrics_dir) {
-            tracing::warn!("Failed to create metrics directory: {e}");
-            return;
-        }
-
-        // Write statusline shell script.
-        // The script captures stdin JSON from the Claude CLI and saves it
-        // using the THURBOX_SESSION_ID env var as filename. If the env var
-        // is missing (e.g. sessions spawned before this feature), it falls
-        // back to extracting `session_id` from the JSON itself.
-        let script = format!(
-            "#!/bin/sh\n\
-             METRICS_DIR=\"${{THURBOX_METRICS_DIR:-{metrics_dir}}}\"\n\
-             mkdir -p \"$METRICS_DIR\"\n\
-             INPUT=$(cat)\n\
-             SID=\"$THURBOX_SESSION_ID\"\n\
-             if [ -z \"$SID\" ]; then\n\
-             \tSID=$(printf '%s' \"$INPUT\" | grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' \
-             | head -1 | sed 's/.*\"\\([^\"]*\\)\"$/\\1/')\n\
-             fi\n\
-             if [ -n \"$SID\" ]; then\n\
-             \tprintf '%s' \"$INPUT\" > \"$METRICS_DIR/$SID.json\"\n\
-             fi\n",
-            metrics_dir = metrics_dir.display()
-        );
-        if let Err(e) = std::fs::write(&script_path, &script) {
-            tracing::warn!("Failed to write statusline script: {e}");
-            return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-        }
-
-        // Clean up stale metrics files (sessions that no longer exist).
-        if let Ok(entries) = std::fs::read_dir(&metrics_dir) {
-            let active_sids: std::collections::HashSet<String> = self
-                .sessions
-                .iter()
-                .filter_map(|s| s.info.agent_session_id.clone())
-                .collect();
-            for entry in entries.flatten() {
-                if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
-                    if !active_sids.contains(stem) {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
-    }
-
-    /// Write `.mcp.json` into the admin directory.
-    ///
-    /// Rewritten on every startup to pick up binary path changes after upgrades.
-    fn write_mcp_json(&self, admin_dir: &std::path::Path) {
-        let mcp_binary = crate::paths::thurbox_mcp_binary();
-        let mcp_json = serde_json::json!({
-            "mcpServers": {
-                "thurbox": {
-                    "command": mcp_binary,
-                    "args": []
-                }
-            }
-        })
-        .to_string();
-        if let Err(e) = std::fs::write(admin_dir.join(".mcp.json"), &mcp_json) {
-            tracing::warn!("Failed to write .mcp.json: {e}");
-        }
+    /// Build an [`AgentProvider`](crate::agent::AgentProvider) for a session
+    /// config by looking its agent up in the registry. Falls back to the
+    /// registry default, then to the built-in default, so a stale/unknown agent
+    /// name never breaks spawning.
+    pub fn provider_for(&self, config: &SessionConfig) -> Arc<dyn crate::agent::AgentProvider> {
+        let def = self
+            .agents
+            .get(&config.agent)
+            .or_else(|| self.agents.default_agent())
+            .cloned()
+            .unwrap_or_else(|| {
+                crate::agent::agent_config::builtin_registry()
+                    .default_agent()
+                    .cloned()
+                    .expect("built-in registry always has a default agent")
+            });
+        Arc::new(GenericProvider::new(def))
     }
 
     /// Open the repo picker modal for creating a new session.
@@ -868,14 +479,7 @@ impl App {
         });
     }
 
-    pub(crate) fn spawn_session_in_repo(&mut self, repo_path: PathBuf) {
-        let config = SessionConfig {
-            cwd: Some(repo_path),
-            ..SessionConfig::default()
-        };
-        self.spawn_session_with_config(&config);
-    }
-
+    #[cfg(test)]
     fn next_session_name(&mut self) -> String {
         self.session_counter += 1;
         self.session_counter.to_string()
@@ -885,279 +489,54 @@ impl App {
         self.prepare_spawn(config.clone(), Vec::new());
     }
 
-    /// Spawn a new admin session directly, bypassing the repo picker.
+    /// Route session creation through the name modal, then agent selection.
     ///
-    /// Uses the admin directory as cwd and admin-specific permissions.
-    pub(crate) fn spawn_admin_session(&mut self) {
-        let admin_dir = crate::paths::admin_directory();
-
-        let config = SessionConfig {
-            cwd: admin_dir,
-            ..SessionConfig::default()
-        };
-        self.prepare_spawn_admin(config, Vec::new());
-    }
-
-    /// Route session creation through the name modal, then role selection.
-    ///
-    /// Shows an empty session-name modal. After the user enters a name, spawns
-    /// immediately if no roles or exactly one role is configured, or shows the
-    /// role selector modal for 2+ roles.
+    /// Shows an empty session-name modal. After the user enters a name, the
+    /// agent picker is shown, then spawn.
     pub(crate) fn prepare_spawn(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
         // Show session name modal (empty — user types from scratch).
         self.pending_spawn_config = Some(config);
         self.pending_spawn_worktrees = worktrees;
-        self.pending_spawn_is_admin = false;
         self.modal = modals::Modal::SessionName(modals::SessionNameModal::default());
     }
 
-    /// Spawn an admin session, bypassing the name modal.
-    fn prepare_spawn_admin(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
-        let raw_name = self.next_session_name();
-        let name = format!("{ADMIN_NAME_PREFIX}{raw_name}");
-        self.finish_prepare_spawn_admin(name, config, worktrees);
-    }
-
-    /// Continue spawn after the user has chosen a session name.
-    ///
-    /// Shows the profile picker when profiles are registered; otherwise routes
-    /// directly to role selection (2+ roles) or spawns with the single/default
-    /// role (0-1 roles).
+    /// Continue spawn after the user has chosen a session name: open the agent
+    /// picker populated from the registry. With zero or one agent the picker is
+    /// skipped and the session spawns immediately.
     fn finish_prepare_spawn(
         &mut self,
         name: String,
         config: SessionConfig,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        if !self.global_profiles.is_empty() {
-            self.pending_spawn_name = Some(name);
-            self.pending_spawn_config = Some(config);
-            self.pending_spawn_worktrees = worktrees;
-            self.modal = modals::Modal::ProfilePicker(modals::ProfilePickerModal {
-                index: 0,
-                profiles: self.global_profiles.clone(),
-            });
+        let names = self.agents.names();
+        if names.len() <= 1 {
+            let mut config = config;
+            config.agent = names
+                .first()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_string());
+            self.do_spawn_session(name, &config, worktrees, false);
             return;
         }
-        self.finish_prepare_spawn_after_profile(name, config, worktrees);
-    }
 
-    /// Continue spawn after the profile picker step has been resolved (either
-    /// because the user chose "No profile" or because no profiles are
-    /// registered). Routes to role selection for 2+ roles, auto-assigns the
-    /// single role for len==1, or falls back to the default role when empty.
-    pub(crate) fn finish_prepare_spawn_after_profile(
-        &mut self,
-        name: String,
-        mut config: SessionConfig,
-        worktrees: Vec<WorktreeInfo>,
-    ) {
-        let roles = self.effective_roles();
-
-        match roles.len() {
-            0 => {
-                // No roles configured — spawn with default developer permissions.
-                config.role = DEFAULT_ROLE_NAME.to_string();
-                config.permissions = default_developer_permissions();
-                self.maybe_show_mcp_picker(name, config, worktrees, false);
-            }
-            1 => {
-                // Exactly one role — auto-assign it.
-                config.role = roles[0].name.clone();
-                config.permissions = roles[0].permissions.clone();
-                self.maybe_show_mcp_picker(name, config, worktrees, false);
-            }
-            _ => {
-                // 2+ roles — show the role selector.
-                self.pending_spawn_name = Some(name);
-                self.pending_spawn_config = Some(config);
-                self.pending_spawn_worktrees = worktrees;
-                self.modal =
-                    modals::Modal::RoleSelector(modals::RoleSelectorModal { index: 0, roles });
-            }
-        }
-    }
-
-    /// Apply a `ProfileConfig` to a `SessionConfig`: resolve and merge role
-    /// permissions, attach the profile's MCP servers and skills, set the
-    /// display role string to `profile:<name>`. Unknown role/MCP/skill
-    /// names referenced by the profile are silently dropped — they were
-    /// validated at `register_profile` time but may disappear if the admin
-    /// later deletes the referent; skipping keeps spawn working.
-    pub(crate) fn apply_profile_to_config(
-        &self,
-        profile: &crate::session::ProfileConfig,
-        config: &mut SessionConfig,
-    ) {
-        // Roles → merged permissions. Empty profile.roles falls back to
-        // the default role (mirrors `resolve_role_with_profile` in
-        // `session_ops/spawn.rs`).
-        let role_parts: Vec<_> = if profile.roles.is_empty() {
-            vec![default_developer_permissions()]
-        } else {
-            profile
-                .roles
-                .iter()
-                .filter_map(|name| self.global_roles.iter().find(|r| &r.name == name))
-                .map(|r| r.permissions.clone())
-                .collect()
-        };
-        if role_parts.is_empty() {
-            config.permissions = default_developer_permissions();
-        } else {
-            config.permissions = crate::session::merge_role_permissions(&role_parts);
-        }
-        config.role = format!("profile:{}", profile.name);
-
-        // Attached MCP servers — lookup by name against the cached registry.
-        config.mcp_servers = profile
-            .mcp_servers
+        let default = self.agents.default_name();
+        let selected_index = names.iter().position(|n| *n == default).unwrap_or(0);
+        let choices = self
+            .agents
+            .agents
             .iter()
-            .filter_map(|name| {
-                self.global_mcp_servers
-                    .iter()
-                    .find(|s| &s.name == name)
-                    .cloned()
+            .map(|a| crate::ui::agent_picker_modal::AgentChoice {
+                name: a.name.clone(),
+                command: a.command.clone(),
             })
             .collect();
-
-        // Attached skills — lookup by name against the effective (disk + registered) set.
-        let effective = self.effective_skills();
-        config.skills = profile
-            .skills
-            .iter()
-            .filter_map(|name| effective.iter().find(|s| &s.name == name).cloned())
-            .collect();
-    }
-
-    /// Route through MCP server picker if global MCP servers exist, otherwise spawn directly.
-    ///
-    /// VM/container sessions skip this picker (they get MCP servers via `.mcp.json`
-    /// written during provisioning). Admin sessions DO see the picker so the user
-    /// can tweak defaults — only "thurbox" is pre-checked in that case.
-    fn maybe_show_mcp_picker(
-        &mut self,
-        name: String,
-        config: SessionConfig,
-        worktrees: Vec<WorktreeInfo>,
-        is_admin: bool,
-    ) {
-        if self.global_mcp_servers.is_empty() {
-            self.maybe_show_skill_picker(name, config, worktrees, is_admin);
-        } else {
-            self.pending_spawn_name = Some(name);
-            self.pending_spawn_config = Some(config);
-            self.pending_spawn_worktrees = worktrees;
-            self.open_mcp_picker(is_admin);
-        }
-    }
-
-    /// Show the MCP server picker modal.
-    ///
-    /// Non-admin: all servers selected by default.
-    /// Admin: only `ADMIN_DEFAULT_MCP` pre-checked.
-    fn open_mcp_picker(&mut self, is_admin: bool) {
-        let selected: Vec<bool> = if is_admin {
-            self.global_mcp_servers
-                .iter()
-                .map(|s| s.name == ADMIN_DEFAULT_MCP)
-                .collect()
-        } else {
-            vec![true; self.global_mcp_servers.len()]
-        };
-        self.modal =
-            modals::Modal::McpServerPicker(modals::McpServerPickerModal { index: 0, selected });
-    }
-
-    /// Show the skill picker if skills are configured, otherwise spawn directly.
-    ///
-    /// Inserted between MCP picker and `do_spawn_session()` in the creation chain.
-    /// Admin sessions see the picker too (with nothing pre-checked) so the user
-    /// can opt into skills explicitly.
-    fn maybe_show_skill_picker(
-        &mut self,
-        name: String,
-        config: SessionConfig,
-        worktrees: Vec<WorktreeInfo>,
-        is_admin: bool,
-    ) {
-        let skills = self.effective_skills();
-        if skills.is_empty() {
-            self.pending_spawn_is_admin = false;
-            self.do_spawn_session(name, &config, worktrees, is_admin);
-        } else {
-            self.pending_spawn_name = Some(name);
-            self.pending_spawn_config = Some(config);
-            self.pending_spawn_worktrees = worktrees;
-            self.open_skill_picker(is_admin, skills);
-        }
-    }
-
-    /// Show the skill picker modal.
-    ///
-    /// Non-admin: all skills selected by default.
-    /// Admin: nothing pre-checked — user opts in explicitly.
-    fn open_skill_picker(&mut self, is_admin: bool, skills: Vec<SkillConfig>) {
-        let selected = if is_admin {
-            vec![false; skills.len()]
-        } else {
-            vec![true; skills.len()]
-        };
-        self.modal = modals::Modal::SkillPicker(modals::SkillPickerModal {
-            index: 0,
-            selected,
-            skills,
-        });
-    }
-
-    /// Effective skill set shown to users at spawn time: disk-source skills
-    /// from `~/.local/share/thurbox/admin/skills/` merged with SQLite
-    /// registry rows. Registry entries shadow disk-source entries of the
-    /// same name — see `Database::list_effective_skills`. The settings
-    /// editor intentionally does **not** use this merged view; it edits
-    /// only the registry so dropping a directory under `admin/skills/` never
-    /// looks like a stray row the user has to clean up.
-    pub(crate) fn effective_skills(&self) -> Vec<SkillConfig> {
-        self.db
-            .list_effective_skills()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(s, _source)| s)
-            .collect()
-    }
-
-    /// Registry roles + plugin-contributed roles (registry wins on name
-    /// collision — matches `Database::list_effective_roles`). Used by the
-    /// role-selector modal so plugin-contributed roles are pickable; falls
-    /// back to the editable `self.global_roles` cache if the DB read fails.
-    pub(crate) fn effective_roles(&self) -> Vec<RoleConfig> {
-        self.db
-            .list_effective_roles()
-            .map(|rows| rows.into_iter().map(|(r, _src)| r).collect())
-            .unwrap_or_else(|_| self.global_roles.clone())
-    }
-
-    /// Continue admin spawn — routes through the normal picker chain (role →
-    /// MCP → skill) with admin-specific defaults preselected. The user can
-    /// override any default before the session spawns.
-    fn finish_prepare_spawn_admin(
-        &mut self,
-        name: String,
-        config: SessionConfig,
-        worktrees: Vec<WorktreeInfo>,
-    ) {
-        let roles = self.effective_roles();
-        let admin_index = roles
-            .iter()
-            .position(|r| r.name == ADMIN_ROLE_NAME)
-            .unwrap_or(0);
-        self.pending_spawn_is_admin = true;
         self.pending_spawn_name = Some(name);
         self.pending_spawn_config = Some(config);
         self.pending_spawn_worktrees = worktrees;
-        self.modal = modals::Modal::RoleSelector(modals::RoleSelectorModal {
-            index: admin_index,
-            roles,
+        self.modal = modals::Modal::AgentPicker(crate::ui::agent_picker_modal::AgentPickerState {
+            choices,
+            selected_index,
         });
     }
 
@@ -1169,32 +548,21 @@ impl App {
             return;
         };
 
-        let role = session.info.role.clone();
+        let agent = session.info.agent.clone();
         let cwd = session.info.cwd.clone();
-        let additional_dirs = session.info.additional_dirs.clone();
 
-        let permissions = self.resolve_role_permissions(&role);
-        let resume_session_id =
-            crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &permissions);
-        let config = SessionConfig {
-            resume_session_id,
-            agent_session_id: Some(agent_session_id),
+        let mut config = SessionConfig {
+            resume_session_id: None,
+            agent_session_id: Some(agent_session_id.clone()),
             cwd,
-            additional_dirs,
-            role,
-            permissions,
+            agent,
             fork_session_id: None,
-            mcp_servers: vec![],
-            skills: vec![],
+            ..SessionConfig::default()
         };
+        config.resume_session_id =
+            crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &config.env);
 
-        if self.global_mcp_servers.is_empty() {
-            self.do_restart(config);
-        } else {
-            self.pending_spawn_config = Some(config);
-            self.pending_restart = true;
-            self.open_mcp_picker(false);
-        }
+        self.do_restart(config);
     }
 
     /// Execute the actual restart with the finalized config.
@@ -1295,24 +663,19 @@ impl App {
             return;
         };
 
-        let role = session.info.role.clone();
+        let agent = session.info.agent.clone();
         let cwd = session.info.cwd.clone();
-        let additional_dirs = session.info.additional_dirs.clone();
         let worktrees = session.info.worktrees.clone();
         let source_name = session.info.name.clone();
         let fork_session_id = session.info.agent_session_id.clone();
 
-        let permissions = self.resolve_role_permissions(&role);
         let config = SessionConfig {
             resume_session_id: None,
             agent_session_id: None,
             cwd,
-            additional_dirs,
-            role,
-            permissions,
+            agent,
             fork_session_id,
-            mcp_servers: vec![],
-            skills: vec![],
+            ..SessionConfig::default()
         };
 
         self.pending_spawn_config = Some(config);
@@ -1343,11 +706,6 @@ impl App {
         // Remove from the session list (do NOT kill backend or remove worktrees yet)
         let removed_session = self.sessions.remove(self.active_index);
         let session_name = removed_session.info.name.clone();
-
-        // Clean up per-session claude-home staging dir.
-        if let Some(ref asid) = removed_session.info.agent_session_id {
-            crate::agent::skill_staging::cleanup(asid);
-        }
 
         // Clean up terminal view state
         self.session_terminal_views.remove(&session_id);
@@ -1473,21 +831,18 @@ impl App {
             .map(|wt| wt.worktree_path.clone())
             .or(deleted.cwd.clone());
 
-        let permissions = self.resolve_role_permissions(&deleted.role);
         let config = SessionConfig {
             resume_session_id: deleted.agent_session_id.clone(),
             agent_session_id: deleted.agent_session_id,
             cwd,
-            additional_dirs: Vec::new(),
-            role: deleted.role,
-            permissions,
+            agent: deleted.agent,
             fork_session_id: None,
-            mcp_servers: vec![],
-            skills: vec![],
+            ..SessionConfig::default()
         };
 
         let session_name = deleted.name.clone();
         let (rows, cols) = self.content_area_size();
+        let provider = self.provider_for(&config);
 
         match Session::spawn(
             session_name.clone(),
@@ -1495,7 +850,7 @@ impl App {
             cols,
             &config,
             self.backends.default_backend(),
-            &self.provider,
+            &provider,
         ) {
             Ok(mut session) => {
                 session.info.id = deleted.id;
@@ -1520,7 +875,7 @@ impl App {
     /// Used when updating or adopting sessions from shared state.
     fn apply_shared_session_metadata(session: &mut Session, shared: &sync::SharedSession) {
         session.info.name = shared.name.clone();
-        session.info.role = shared.role.clone();
+        session.info.agent = shared.agent.clone();
         session.info.cwd = shared.cwd.clone();
         session.info.additional_dirs = shared.additional_dirs.clone();
         session.info.agent_session_id = shared.agent_session_id.clone();
@@ -1782,90 +1137,6 @@ impl App {
         false
     }
 
-    pub(crate) fn submit_role_editor(&mut self) {
-        let name = self.role_editor_name.value().trim().to_string();
-        if name.is_empty() {
-            self.set_error("Role name cannot be empty");
-            return;
-        }
-
-        // Check uniqueness (exclude the role being edited)
-        let duplicate = self
-            .global_roles
-            .iter()
-            .enumerate()
-            .any(|(i, r)| r.name == name && Some(i) != self.role_editor_editing_index);
-        if duplicate {
-            self.set_error(format!("Role name '{name}' already exists"));
-            return;
-        }
-
-        let allowed_tools = self.role_editor_allowed_tools.items.clone();
-        let disallowed_tools = self.role_editor_disallowed_tools.items.clone();
-
-        let system_prompt = self.role_editor_system_prompt.value().trim().to_string();
-        let append_system_prompt = if system_prompt.is_empty() {
-            None
-        } else {
-            Some(system_prompt)
-        };
-
-        // Parse env KEY=VALUE items into a HashMap
-        let env: HashMap<String, String> = self
-            .role_editor_env
-            .items
-            .iter()
-            .filter_map(|item| {
-                let (k, v) = item.split_once('=')?;
-                let k = k.trim();
-                if k.is_empty() {
-                    return None;
-                }
-                Some((k.to_string(), v.to_string()))
-            })
-            .collect();
-
-        // Preserve fields not exposed in the editor (permission_mode, tools)
-        let base_permissions = self
-            .role_editor_editing_index
-            .and_then(|idx| self.global_roles.get(idx))
-            .map(|r| &r.permissions);
-
-        let role = RoleConfig {
-            name,
-            description: self.role_editor_description.value().trim().to_string(),
-            permissions: RolePermissions {
-                permission_mode: base_permissions.and_then(|p| p.permission_mode.clone()),
-                allowed_tools,
-                disallowed_tools,
-                tools: base_permissions.and_then(|p| p.tools.clone()),
-                append_system_prompt,
-                env,
-            },
-        };
-
-        match self.role_editor_editing_index {
-            Some(idx) => {
-                self.global_roles[idx] = role;
-            }
-            None => {
-                self.global_roles.push(role);
-                self.role_editor_list_index = self.global_roles.len() - 1;
-            }
-        }
-
-        // Persist to DB
-        if let Err(e) = self.db.replace_global_roles(&self.global_roles) {
-            error!("Failed to save global roles: {e}");
-            self.set_error(format!("Failed to save roles: {e}"));
-            return;
-        }
-
-        self.set_status(StatusLevel::Success, "Role saved");
-        self.show_role_editor = false;
-        self.role_editor_snapshot = None;
-    }
-
     pub(crate) fn spawn_worktree_session(
         &mut self,
         repo_paths: &[PathBuf],
@@ -1905,9 +1176,9 @@ impl App {
         let normal_repos = std::mem::take(&mut self.pending_normal_repos);
         let mut additional_dirs: Vec<PathBuf> = worktree_paths[1..].to_vec();
         additional_dirs.extend(normal_repos);
+        self.pending_additional_dirs = additional_dirs;
         let config = SessionConfig {
             cwd: Some(worktree_paths[0].clone()),
-            additional_dirs,
             ..SessionConfig::default()
         };
 
@@ -1929,84 +1200,33 @@ impl App {
         let (rows, cols) = self.content_area_size();
 
         let mut config = config.clone();
+        if config.agent.is_empty() {
+            config.agent = self.agents.default_name();
+        }
         if config.agent_session_id.is_none() {
             config.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
         }
 
+        let additional_dirs = std::mem::take(&mut self.pending_additional_dirs);
+
         // Inject statusline env vars so the metrics script knows which session this is.
         if let Some(ref sid) = config.agent_session_id {
-            config
-                .permissions
-                .env
-                .insert("THURBOX_SESSION_ID".into(), sid.clone());
+            config.env.insert("THURBOX_SESSION_ID".into(), sid.clone());
         }
         if let Some(metrics_dir) = crate::paths::metrics_directory() {
-            config.permissions.env.insert(
+            config.env.insert(
                 "THURBOX_METRICS_DIR".into(),
                 metrics_dir.to_string_lossy().into(),
             );
         }
 
-        // Inject session context into the system prompt for new sessions so the
-        // agent is aware of its repos, worktrees, branches, and sibling sessions.
-        let is_new_session = config.resume_session_id.is_none() && config.fork_session_id.is_none();
-        if is_new_session && !is_admin {
-            let other_sessions: Vec<&SessionInfo> = self
-                .sessions
-                .iter()
-                .map(|s| &s.info)
-                .filter(|i| !i.is_admin)
-                .collect();
-
-            let context_prompt = helpers::build_session_context_prompt(
-                &name,
-                &config.role,
-                &worktrees,
-                config.cwd.as_deref(),
-                &config.additional_dirs,
-                &other_sessions,
-            );
-
-            if !context_prompt.is_empty() {
-                let existing = config
-                    .permissions
-                    .append_system_prompt
-                    .take()
-                    .unwrap_or_default();
-                config.permissions.append_system_prompt = Some(if existing.is_empty() {
-                    context_prompt
-                } else {
-                    format!("{context_prompt}\n\n{existing}")
-                });
-            }
-        }
-
         let backend: Arc<dyn SessionBackend> = Arc::clone(self.backends.default_backend());
-        let spawn_name = name;
 
-        // Stage selected skills so Claude Code auto-discovers them on startup.
-        //
-        // We build a per-session claude-home directory OUTSIDE the worktree and
-        // point Claude at it via CLAUDE_CONFIG_DIR. This avoids polluting the
-        // repo with `.claude/skills/` symlinks that could be accidentally
-        // committed.
-        if !config.skills.is_empty() {
-            if let Some(ref sid) = config.agent_session_id {
-                match crate::agent::skill_staging::prepare(sid, &config.skills) {
-                    Ok(path) => {
-                        config
-                            .permissions
-                            .env
-                            .insert("CLAUDE_CONFIG_DIR".to_string(), path.display().to_string());
-                    }
-                    Err(e) => warn!("Failed to stage skills: {e}"),
-                }
-            }
-        }
-
-        match Session::spawn(spawn_name, rows, cols, &config, &backend, &self.provider) {
+        let provider = self.provider_for(&config);
+        match Session::spawn(name, rows, cols, &config, &backend, &provider) {
             Ok(mut session) => {
                 session.info.worktrees = worktrees;
+                session.info.additional_dirs = additional_dirs;
 
                 resolve_repo_display_names(&mut session.info);
                 self.sessions.push(session);
@@ -2101,7 +1321,7 @@ impl App {
             .map(|s| {
                 let info = &s.info;
                 let name = crate::fuzzy::fuzzy_match(query, &info.name).map(|m| m.positions);
-                let role = crate::fuzzy::fuzzy_match(query, &info.role).map(|m| m.positions);
+                let agent = crate::fuzzy::fuzzy_match(query, &info.agent).map(|m| m.positions);
                 let branch = info
                     .worktrees
                     .first()
@@ -2114,7 +1334,7 @@ impl App {
                     .map(|m| m.positions);
                 let status_str = info.status.to_string();
                 let status = crate::fuzzy::fuzzy_match(query, &status_str).map(|m| m.positions);
-                project_list::SessionMatch::from_matches(name, role, branch, cwd, status)
+                project_list::SessionMatch::from_matches(name, agent, branch, cwd, status)
             })
             .collect();
         // Snap to first match if current selection is a non-match.
@@ -2228,22 +1448,6 @@ impl App {
         // Poll for external state changes from other thurbox instances (DB-based)
         if let Ok(Some(result)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
             if result.db_changed {
-                // Reload global state that lives outside the session/project delta.
-                if let Ok(roles) = self.db.list_global_roles() {
-                    if roles != self.global_roles {
-                        self.global_roles = roles;
-                    }
-                }
-                if let Ok(servers) = self.db.list_global_mcp_servers() {
-                    if servers != self.global_mcp_servers {
-                        self.global_mcp_servers = servers;
-                    }
-                }
-                if let Ok(skills) = self.db.list_global_skills() {
-                    if skills != self.global_skills {
-                        self.global_skills = skills;
-                    }
-                }
                 // Pick up theme changes made by other thurbox processes (e.g.
                 // an MCP `set_theme` call from another session).
                 if let Ok(Some(name)) = self.db.get_active_theme() {
@@ -2535,15 +1739,21 @@ impl App {
 
             let (rows, cols) = self.content_area_size();
             if let Some(disc) = matching_discovered {
-                let env = self.resolve_role_permissions(&shared_session.role).env;
+                let provider = {
+                    let cfg = SessionConfig {
+                        agent: shared_session.agent.clone(),
+                        ..SessionConfig::default()
+                    };
+                    self.provider_for(&cfg)
+                };
                 match Session::adopt(
                     shared_session.name.clone(),
                     rows,
                     cols,
                     &disc.backend_id,
                     &backend,
-                    &self.provider,
-                    env,
+                    &provider,
+                    HashMap::new(),
                 ) {
                     Ok(mut adopted_session) => {
                         // Preserve the original session ID from shared
@@ -2590,20 +1800,17 @@ impl App {
                     .map(|wt| wt.worktree_path.clone())
                     .or(shared_session.cwd.clone());
 
-                let permissions = self.resolve_role_permissions(&shared_session.role);
-                let resume_session_id =
-                    crate::session_ops::resume_id_if_transcript_exists(agent_sid, &permissions);
-                let config = SessionConfig {
-                    resume_session_id,
+                let mut config = SessionConfig {
+                    resume_session_id: None,
                     agent_session_id: Some(agent_sid.clone()),
                     cwd,
-                    additional_dirs: shared_session.additional_dirs.clone(),
-                    role: shared_session.role.clone(),
-                    permissions,
+                    agent: shared_session.agent.clone(),
                     fork_session_id: None,
-                    mcp_servers: vec![],
-                    skills: vec![],
+                    ..SessionConfig::default()
                 };
+                config.resume_session_id =
+                    crate::session_ops::resume_id_if_transcript_exists(agent_sid, &config.env);
+                let provider = self.provider_for(&config);
 
                 if let Ok(mut spawned) = Session::spawn(
                     shared_session.name.clone(),
@@ -2611,10 +1818,11 @@ impl App {
                     cols,
                     &config,
                     &backend,
-                    &self.provider,
+                    &provider,
                 ) {
                     spawned.info.id = shared_session.id;
                     spawned.info.worktrees = worktree_infos;
+                    spawned.info.additional_dirs = shared_session.additional_dirs.clone();
                     self.sessions.push(spawned);
                     self.save_state();
                     tracing::debug!(
@@ -2669,182 +1877,6 @@ impl App {
         self.set_status(StatusLevel::Info, text.into());
     }
 
-    /// Capture current role editor field values as a snapshot for dirty detection.
-    fn capture_role_editor_snapshot(&self) -> EditorSnapshot {
-        EditorSnapshot {
-            fields: vec![
-                self.role_editor_name.value().to_string(),
-                self.role_editor_description.value().to_string(),
-                self.role_editor_allowed_tools.items.join("\n"),
-                self.role_editor_disallowed_tools.items.join("\n"),
-                self.role_editor_system_prompt.value().to_string(),
-                self.role_editor_env.items.join("\n"),
-            ],
-        }
-    }
-
-    /// Capture current MCP editor field values as a snapshot for dirty detection.
-    fn capture_mcp_editor_snapshot(&self) -> EditorSnapshot {
-        EditorSnapshot {
-            fields: vec![
-                self.mcp_editor_name.value().to_string(),
-                self.mcp_editor_command.value().to_string(),
-                self.mcp_editor_args.items.join("\n"),
-                self.mcp_editor_env.items.join("\n"),
-            ],
-        }
-    }
-
-    /// Check if the role editor has unsaved changes compared to its snapshot.
-    fn is_role_editor_dirty(&self) -> bool {
-        match &self.role_editor_snapshot {
-            Some(snapshot) => *snapshot != self.capture_role_editor_snapshot(),
-            None => false,
-        }
-    }
-
-    /// Check if the MCP editor has unsaved changes compared to its snapshot.
-    fn is_mcp_editor_dirty(&self) -> bool {
-        match &self.mcp_editor_snapshot {
-            Some(snapshot) => *snapshot != self.capture_mcp_editor_snapshot(),
-            None => false,
-        }
-    }
-
-    /// Close the role editor, clearing snapshot and confirmation state.
-    fn close_role_editor(&mut self) {
-        self.show_role_editor = false;
-        self.role_editor_snapshot = None;
-        self.show_discard_confirmation = false;
-    }
-
-    /// Close the MCP editor, clearing snapshot and confirmation state.
-    fn close_mcp_editor(&mut self) {
-        self.show_mcp_editor = false;
-        self.mcp_editor_snapshot = None;
-        self.show_discard_confirmation = false;
-        self.mcp_editor_field = crate::app::mcp_editor_modal::McpEditorField::Name;
-    }
-
-    /// Open the skill editor for a new skill.
-    fn open_new_skill_editor(&mut self) {
-        self.skill_editor_name.set("");
-        self.skill_editor_path.set("");
-        self.skill_editor_field = SkillEditorField::Name;
-        self.skill_editor_editing_index = None;
-        self.skill_editor_path_suggestion = None;
-        self.show_skill_editor = true;
-    }
-
-    /// Open the skill editor for an existing skill at the given index.
-    fn open_skill_for_editing(&mut self, idx: usize) {
-        if let Some(skill) = self.global_skills.get(idx) {
-            self.skill_editor_name.set(&skill.name);
-            self.skill_editor_path.set(&skill.path.to_string_lossy());
-            self.skill_editor_field = SkillEditorField::Name;
-            self.skill_editor_editing_index = Some(idx);
-            self.skill_editor_path_suggestion = None;
-            self.show_skill_editor = true;
-        }
-    }
-
-    /// Save the current skill editor state and close.
-    fn submit_skill_editor(&mut self) {
-        let name = self.skill_editor_name.value().trim().to_string();
-        let path = self.skill_editor_path.value().trim().to_string();
-        if name.is_empty() || path.is_empty() {
-            return;
-        }
-        let skill = SkillConfig {
-            name,
-            path: PathBuf::from(path),
-        };
-        if let Some(idx) = self.skill_editor_editing_index {
-            if idx < self.global_skills.len() {
-                self.global_skills[idx] = skill;
-            }
-        } else {
-            self.global_skills.push(skill);
-        }
-        self.show_skill_editor = false;
-    }
-
-    /// Close the skill editor without saving.
-    fn close_skill_editor(&mut self) {
-        self.show_skill_editor = false;
-        self.skill_editor_path_suggestion = None;
-    }
-
-    /// Recompute the path suggestion for the skill editor's path field.
-    fn update_skill_editor_path_suggestion(&mut self) {
-        let value = self.skill_editor_path.value().to_string();
-        let at_end = self.skill_editor_path.cursor_pos() == value.chars().count();
-        if at_end && !value.is_empty() {
-            self.skill_editor_path_suggestion = crate::paths::complete_directory_path(&value);
-        } else {
-            self.skill_editor_path_suggestion = None;
-        }
-    }
-
-    /// Open the profile editor to create a new profile.
-    pub(crate) fn open_new_profile_editor(&mut self) {
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        self.profile_editor_name.set("");
-        self.profile_editor_description.set("");
-        self.profile_editor_roles.reset();
-        self.profile_editor_mcp_servers.reset();
-        self.profile_editor_skills.reset();
-        self.profile_editor_field = ProfileEditorField::Name;
-        self.profile_editor_editing_index = None;
-        self.show_profile_editor = true;
-    }
-
-    /// Open the profile editor for an existing profile at the given index.
-    pub(crate) fn open_profile_for_editing(&mut self, idx: usize) {
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        let Some(profile) = self.global_profiles.get(idx) else {
-            return;
-        };
-        self.profile_editor_name.set(&profile.name);
-        self.profile_editor_description.set(&profile.description);
-        self.profile_editor_roles.load(&profile.roles);
-        self.profile_editor_mcp_servers.load(&profile.mcp_servers);
-        self.profile_editor_skills.load(&profile.skills);
-        self.profile_editor_field = ProfileEditorField::Name;
-        self.profile_editor_editing_index = Some(idx);
-        self.show_profile_editor = true;
-    }
-
-    /// Save the current profile editor state into `global_profiles` and close.
-    /// Persistence to the DB happens when the settings overlay closes, matching
-    /// the role/MCP/skill editor flow.
-    pub(crate) fn submit_profile_editor(&mut self) {
-        let name = self.profile_editor_name.value().trim().to_string();
-        if name.is_empty() {
-            return;
-        }
-        let profile = crate::session::ProfileConfig {
-            name,
-            description: self.profile_editor_description.value().trim().to_string(),
-            roles: self.profile_editor_roles.items.clone(),
-            mcp_servers: self.profile_editor_mcp_servers.items.clone(),
-            skills: self.profile_editor_skills.items.clone(),
-        };
-        if let Some(idx) = self.profile_editor_editing_index {
-            if idx < self.global_profiles.len() {
-                self.global_profiles[idx] = profile;
-            }
-        } else {
-            self.global_profiles.push(profile);
-        }
-        self.show_profile_editor = false;
-    }
-
-    /// Close the profile editor without saving.
-    pub(crate) fn close_profile_editor(&mut self) {
-        self.show_profile_editor = false;
-    }
-
     /// Persist session state to the SQLite database.
     ///
     /// Only writes sessions and the session counter. Project mutations
@@ -2870,7 +1902,7 @@ impl App {
         sync::SharedSession {
             id: session.info.id,
             name: session.info.name.clone(),
-            role: session.info.role.clone(),
+            agent: session.info.agent.clone(),
             backend_id: session.backend_id().to_string(),
             backend_type: session.backend_name().to_string(),
             agent_session_id: session.info.agent_session_id.clone(),
@@ -2958,12 +1990,11 @@ impl App {
     ) {
         let name = shared.name.clone();
         let session_id = shared.id;
-        let is_admin = name.starts_with(ADMIN_NAME_PREFIX);
 
-        let role = if shared.role.is_empty() {
-            DEFAULT_ROLE_NAME.to_string()
+        let agent = if shared.agent.is_empty() {
+            DEFAULT_AGENT_NAME.to_string()
         } else {
-            shared.role.clone()
+            shared.agent.clone()
         };
 
         let worktrees: Vec<WorktreeInfo> =
@@ -2984,7 +2015,10 @@ impl App {
             .unwrap_or_else(|| self.backends.default_backend().clone());
 
         // Try to adopt the existing backend session.
-        let env = self.resolve_role_permissions(&role).env;
+        let provider = self.provider_for(&SessionConfig {
+            agent: agent.clone(),
+            ..SessionConfig::default()
+        });
         let adopted = matching_discovered.and_then(|disc| {
             let (rows, cols) = self.content_area_size();
             match Session::adopt(
@@ -2993,8 +2027,8 @@ impl App {
                 cols,
                 &disc.backend_id,
                 &backend,
-                &self.provider,
-                env.clone(),
+                &provider,
+                HashMap::new(),
             ) {
                 Ok(session) => Some(session),
                 Err(e) => {
@@ -3009,9 +2043,8 @@ impl App {
             session.info.agent_session_id = Some(agent_session_id.clone());
             session.info.cwd = shared.cwd.clone();
             session.info.additional_dirs = shared.additional_dirs.clone();
-            session.info.role = role;
+            session.info.agent = agent;
             session.info.worktrees = worktrees.clone();
-            session.info.is_admin = is_admin;
             resolve_repo_display_names(&mut session.info);
 
             // Re-adopt shell pane if one was persisted
@@ -3040,22 +2073,18 @@ impl App {
                 error!("Failed to soft-delete stale session {session_id}: {e}");
             }
 
-            let permissions = self.resolve_role_permissions(&role);
-            let resume_session_id =
-                crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &permissions);
-
-            let config = SessionConfig {
-                resume_session_id,
-                agent_session_id: Some(agent_session_id),
+            let mut config = SessionConfig {
+                resume_session_id: None,
+                agent_session_id: Some(agent_session_id.clone()),
                 cwd: shared.cwd,
-                additional_dirs: shared.additional_dirs,
-                role,
-                permissions,
+                agent,
                 fork_session_id: None,
-                mcp_servers: vec![],
-                skills: vec![],
+                ..SessionConfig::default()
             };
-            self.do_spawn_session(name, &config, worktrees, is_admin);
+            config.resume_session_id =
+                crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &config.env);
+            self.pending_additional_dirs = shared.additional_dirs;
+            self.do_spawn_session(name, &config, worktrees, false);
         }
     }
 
@@ -3081,24 +2110,6 @@ impl App {
         discovered
             .iter()
             .find(|d| d.name == expected_name && d.is_alive)
-    }
-
-    /// Resolve a role name to its permissions, preferring registry roles over
-    /// plugin-contributed ones (matches `Database::list_effective_roles`
-    /// precedence). `self.global_roles` is the editable DB cache and excludes
-    /// plugin contributions, so we re-merge here on each spawn — role lookups
-    /// are infrequent and roles are tiny.
-    fn resolve_role_permissions(&self, role_name: &str) -> RolePermissions {
-        if let Ok(effective) = self.db.list_effective_roles() {
-            if let Some((role, _src)) = effective.iter().find(|(r, _)| r.name == role_name) {
-                return role.permissions.clone();
-            }
-        }
-        if role_name == DEFAULT_ROLE_NAME {
-            default_developer_permissions()
-        } else {
-            RolePermissions::default()
-        }
     }
 
     /// Process due scheduled commands from the database (fallback).
@@ -3384,20 +2395,6 @@ fn resolve_repo_display_names(info: &mut SessionInfo) {
     info.repo_display_names = names;
 }
 
-// Test-only helper accessors for modal state.
-//
-// These provide ergonomic access to fields that moved into the Modal enum,
-// so tests don't need to destructure the modal everywhere.
-#[cfg(test)]
-impl App {
-    /// Set up the role editor overlay.
-    /// Used by tests that need the role editor in isolation.
-    fn open_empty_role_editor(&mut self) {
-        self.role_editor_view = RoleEditorView::List;
-        self.show_role_editor = true;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -3628,7 +2625,16 @@ mod tests {
     }
 
     fn stub_provider() -> Arc<dyn crate::agent::AgentProvider> {
-        Arc::new(crate::agent::claude::ClaudeProvider)
+        Arc::new(crate::agent::GenericProvider::new(
+            crate::agent::agent_config::builtin_registry()
+                .default_agent()
+                .unwrap()
+                .clone(),
+        ))
+    }
+
+    fn stub_agents() -> AgentRegistry {
+        crate::agent::agent_config::builtin_registry()
     }
 
     fn stub_backend() -> BackendRegistry {
@@ -3647,7 +2653,7 @@ mod tests {
             24,
             120,
             BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
+            stub_agents(),
             test_db(),
         );
         for _i in 0..count {
@@ -3804,14 +2810,14 @@ mod tests {
 
     #[test]
     fn page_scroll_amount_is_half_content_height() {
-        let app = App::new(50, 100, stub_backend(), stub_provider(), test_db());
+        let app = App::new(50, 100, stub_backend(), stub_agents(), test_db());
         // rows = 50 - 4 = 46, half = 23
         assert_eq!(app.page_scroll_amount(), 23);
     }
 
     #[test]
     fn page_scroll_amount_small_terminal() {
-        let app = App::new(6, 80, stub_backend(), stub_provider(), test_db());
+        let app = App::new(6, 80, stub_backend(), stub_agents(), test_db());
         // rows = 6 - 4 = 2, half = 1
         assert_eq!(app.page_scroll_amount(), 1);
     }
@@ -3825,13 +2831,13 @@ mod tests {
 
     #[test]
     fn next_session_name_starts_at_one() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         assert_eq!(app.next_session_name(), "1");
     }
 
     #[test]
     fn next_session_name_increments() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         assert_eq!(app.next_session_name(), "1");
         assert_eq!(app.next_session_name(), "2");
         assert_eq!(app.next_session_name(), "3");
@@ -3839,89 +2845,12 @@ mod tests {
 
     #[test]
     fn next_session_name_continues_from_restored_counter() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.session_counter = 5;
         assert_eq!(app.next_session_name(), "6");
     }
 
     // --- Role editor tests ---
-
-    #[test]
-    fn open_role_editor_has_seeded_developer_role() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_role_editor();
-        assert!(app.show_role_editor);
-        // Seeded: developer + admin (admin appended).
-        assert_eq!(app.global_roles.len(), 2);
-        assert_eq!(app.global_roles[0].name, "developer");
-        assert_eq!(app.global_roles[1].name, ADMIN_ROLE_NAME);
-        assert_eq!(app.role_editor_view, RoleEditorView::List);
-    }
-
-    #[test]
-    fn open_role_editor_clones_existing_roles() {
-        use crate::session::{RoleConfig, RolePermissions};
-
-        let db = test_db();
-        db.replace_global_roles(&[RoleConfig {
-            name: "ops".to_string(),
-            description: "Operations".to_string(),
-            permissions: RolePermissions::default(),
-        }])
-        .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
-        app.open_role_editor();
-        // DB had "ops"; App::new appends "admin" to guarantee it exists.
-        assert_eq!(app.global_roles.len(), 2);
-        assert_eq!(app.global_roles[0].name, "ops");
-        assert_eq!(app.global_roles[1].name, ADMIN_ROLE_NAME);
-    }
-
-    #[test]
-    fn role_editor_submit_uses_allowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_empty_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        for c in "reviewer".chars() {
-            app.role_editor_name.insert(c);
-        }
-        app.role_editor_allowed_tools.items.push("Read".to_string());
-        app.role_editor_allowed_tools
-            .items
-            .push("Bash(git:*)".to_string());
-        app.submit_role_editor();
-        let role = app
-            .global_roles
-            .iter()
-            .find(|r| r.name == "reviewer")
-            .unwrap();
-        assert_eq!(
-            role.permissions.allowed_tools,
-            vec!["Read".to_string(), "Bash(git:*)".to_string()]
-        );
-    }
-
-    #[test]
-    fn role_editor_submit_uses_disallowed_tools_list() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_empty_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        for c in "restricted".chars() {
-            app.role_editor_name.insert(c);
-        }
-    }
-
-    #[test]
-    fn role_editor_name_validation_rejects_empty() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_empty_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        // Try to submit with empty name
-        app.submit_role_editor();
-        assert!(app.status_message.is_some());
-        // Should still be in editor view
-        assert_eq!(app.role_editor_view, RoleEditorView::Editor);
-    }
 
     #[test]
     fn text_input_set_replaces_content_and_moves_cursor_to_end() {
@@ -3942,436 +2871,6 @@ mod tests {
         assert_eq!(input.cursor_pos(), 0);
     }
 
-    #[test]
-    fn role_editor_name_validation_rejects_duplicate() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        // App::new() seeds the developer role and appends the admin role,
-        // so we start with 2.
-        let initial_count = app.global_roles.len();
-        assert_eq!(initial_count, 2);
-
-        app.open_empty_role_editor();
-        // Add a new role
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        app.role_editor_name.set("custom");
-        app.submit_role_editor();
-        assert_eq!(app.global_roles.len(), initial_count + 1);
-
-        // Try to add a second role with the same name
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        app.role_editor_name.set("custom");
-        app.submit_role_editor();
-        assert!(app.status_message.is_some());
-        assert!(app
-            .status_message
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("already exists"));
-        // Should still be in editor view, role count unchanged
-        assert_eq!(app.role_editor_view, RoleEditorView::Editor);
-        assert_eq!(app.global_roles.len(), initial_count + 1);
-    }
-
-    #[test]
-    fn role_editor_edit_preserves_permission_mode_and_tools() {
-        use crate::session::{RoleConfig, RolePermissions};
-
-        let db = test_db();
-        db.replace_global_roles(&[RoleConfig {
-            name: "custom".to_string(),
-            description: "Custom role".to_string(),
-            permissions: RolePermissions {
-                permission_mode: Some("plan".to_string()),
-                allowed_tools: vec!["Read".to_string()],
-                disallowed_tools: vec![],
-                tools: Some("default".to_string()),
-                append_system_prompt: Some("Be careful".to_string()),
-                env: HashMap::new(),
-            },
-        }])
-        .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
-        app.open_role_editor();
-        app.open_role_for_editing(0);
-
-        // Modify the name and submit
-        app.role_editor_name.set("custom-v2");
-        app.submit_role_editor();
-
-        let role = &app.global_roles[0];
-        assert_eq!(role.name, "custom-v2");
-        // permission_mode and tools are not exposed in the editor
-        assert_eq!(role.permissions.permission_mode, Some("plan".to_string()));
-        assert_eq!(role.permissions.tools, Some("default".to_string()));
-        // system prompt is loaded and re-saved unchanged
-        assert_eq!(
-            role.permissions.append_system_prompt,
-            Some("Be careful".to_string())
-        );
-    }
-
-    #[test]
-    fn role_editor_new_role_has_no_extra_fields() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_empty_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        app.role_editor_name.set("new-role");
-        app.submit_role_editor();
-
-        let role = app
-            .global_roles
-            .iter()
-            .find(|r| r.name == "new-role")
-            .unwrap();
-        assert!(role.permissions.permission_mode.is_none());
-        assert!(role.permissions.tools.is_none());
-        assert!(role.permissions.append_system_prompt.is_none());
-    }
-
-    #[test]
-    fn open_role_for_editing_populates_fields() {
-        use crate::session::{RoleConfig, RolePermissions};
-
-        let db = test_db();
-        let reviewer = RoleConfig {
-            name: "reviewer".to_string(),
-            description: "Read-only".to_string(),
-            permissions: RolePermissions {
-                permission_mode: Some("plan".to_string()),
-                allowed_tools: vec!["Read".to_string(), "Bash(git:*)".to_string()],
-                disallowed_tools: vec!["Edit".to_string()],
-                ..RolePermissions::default()
-            },
-        };
-        db.replace_global_roles(&[reviewer]).unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
-        app.open_role_editor();
-        app.open_role_for_editing(0);
-
-        assert_eq!(app.role_editor_name.value(), "reviewer");
-        assert_eq!(app.role_editor_description.value(), "Read-only");
-        assert_eq!(
-            app.role_editor_allowed_tools.items,
-            vec!["Read".to_string(), "Bash(git:*)".to_string()]
-        );
-        assert_eq!(
-            app.role_editor_disallowed_tools.items,
-            vec!["Edit".to_string()]
-        );
-        assert_eq!(app.role_editor_editing_index, Some(0));
-    }
-
-    #[test]
-    fn role_editor_tab_cycles_fields_forward() {
-        use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-
-        assert_eq!(app.role_editor_field, RoleEditorField::Name);
-        app.handle_role_editor_editor_key(KeyCode::Tab);
-        assert_eq!(app.role_editor_field, RoleEditorField::Description);
-        app.handle_role_editor_editor_key(KeyCode::Tab);
-        assert_eq!(app.role_editor_field, RoleEditorField::AllowedTools);
-        app.handle_role_editor_editor_key(KeyCode::Tab);
-        assert_eq!(app.role_editor_field, RoleEditorField::DisallowedTools);
-        app.handle_role_editor_editor_key(KeyCode::Tab);
-        assert_eq!(app.role_editor_field, RoleEditorField::SystemPrompt);
-        app.handle_role_editor_editor_key(KeyCode::Tab);
-        assert_eq!(app.role_editor_field, RoleEditorField::Env);
-        app.handle_role_editor_editor_key(KeyCode::Tab);
-        assert_eq!(app.role_editor_field, RoleEditorField::Name);
-    }
-
-    #[test]
-    fn role_editor_backtab_cycles_fields_backward() {
-        use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-
-        assert_eq!(app.role_editor_field, RoleEditorField::Name);
-        app.handle_role_editor_editor_key(KeyCode::BackTab);
-        assert_eq!(app.role_editor_field, RoleEditorField::Env);
-        app.handle_role_editor_editor_key(KeyCode::BackTab);
-        assert_eq!(app.role_editor_field, RoleEditorField::SystemPrompt);
-        app.handle_role_editor_editor_key(KeyCode::BackTab);
-        assert_eq!(app.role_editor_field, RoleEditorField::DisallowedTools);
-        app.handle_role_editor_editor_key(KeyCode::BackTab);
-        assert_eq!(app.role_editor_field, RoleEditorField::AllowedTools);
-        app.handle_role_editor_editor_key(KeyCode::BackTab);
-        assert_eq!(app.role_editor_field, RoleEditorField::Description);
-        app.handle_role_editor_editor_key(KeyCode::BackTab);
-        assert_eq!(app.role_editor_field, RoleEditorField::Name);
-    }
-
-    #[test]
-    fn role_editor_esc_closes_overlay() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_empty_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        assert_eq!(app.role_editor_view, RoleEditorView::Editor);
-
-        app.handle_role_editor_editor_key(KeyCode::Esc);
-        // Esc now closes the role editor overlay
-        assert!(!app.show_role_editor);
-    }
-
-    #[test]
-    fn role_editor_delete_adjusts_list_index() {
-        use crate::session::{RoleConfig, RolePermissions};
-
-        let db = test_db();
-        db.replace_global_roles(&[
-            RoleConfig {
-                name: "a".to_string(),
-                description: String::new(),
-                permissions: RolePermissions::default(),
-            },
-            RoleConfig {
-                name: "b".to_string(),
-                description: String::new(),
-                permissions: RolePermissions::default(),
-            },
-        ])
-        .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
-        app.open_role_editor();
-        // After App::new appends admin, the list is [a, b, admin]. Select "b".
-        app.role_editor_list_index = 1;
-        // Delete it → [a, admin].
-        app.handle_role_editor_list_key(KeyCode::Char('d'));
-        assert_eq!(app.global_roles.len(), 2);
-        assert_eq!(app.role_editor_list_index, 1);
-    }
-
-    #[test]
-    fn role_editor_submit_clears_error_on_success() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        let initial_count = app.global_roles.len();
-        app.open_empty_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-
-        // Trigger an error by submitting with empty name
-        app.submit_role_editor();
-        assert!(app.status_message.is_some());
-
-        // Now provide a valid name and submit again
-        app.role_editor_name.set("valid-role");
-        app.submit_role_editor();
-        assert!(app
-            .status_message
-            .as_ref()
-            .map_or(true, |m| m.level != StatusLevel::Error));
-        assert_eq!(app.global_roles.len(), initial_count + 1);
-    }
-
-    #[test]
-    fn tool_list_state_add_and_confirm() {
-        let mut tls = ToolListState::new();
-        assert!(tls.items.is_empty());
-
-        tls.start_adding();
-        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Adding);
-
-        for c in "Bash(git:*)".chars() {
-            tls.input.insert(c);
-        }
-    }
-
-    #[test]
-    fn tool_list_state_add_and_cancel() {
-        let mut tls = ToolListState::new();
-        tls.start_adding();
-        for c in "Read".chars() {
-            tls.input.insert(c);
-        }
-    }
-
-    #[test]
-    fn tool_list_state_confirm_empty_input_is_no_op() {
-        let mut tls = ToolListState::new();
-        tls.start_adding();
-        tls.confirm_add();
-        assert!(tls.items.is_empty());
-    }
-
-    #[test]
-    fn tool_list_state_confirm_whitespace_input_is_no_op() {
-        let mut tls = ToolListState::new();
-        tls.start_adding();
-        tls.input.insert(' ');
-        tls.input.insert(' ');
-        tls.confirm_add();
-        assert!(tls.items.is_empty());
-    }
-
-    #[test]
-    fn tool_list_state_delete_adjusts_index() {
-        let mut tls = ToolListState::new();
-        tls.items = vec!["A".into(), "B".into(), "C".into()];
-        tls.selected = 2;
-        tls.delete_selected();
-        assert_eq!(tls.items, vec!["A".to_string(), "B".to_string()]);
-        assert_eq!(tls.selected, 1);
-    }
-
-    #[test]
-    fn tool_list_state_delete_from_empty_is_no_op() {
-        let mut tls = ToolListState::new();
-        tls.delete_selected();
-        assert!(tls.items.is_empty());
-    }
-
-    #[test]
-    fn tool_list_state_navigation() {
-        let mut tls = ToolListState::new();
-        tls.items = vec!["A".into(), "B".into(), "C".into()];
-        assert_eq!(tls.selected, 0);
-
-        tls.move_down();
-        assert_eq!(tls.selected, 1);
-        tls.move_down();
-        assert_eq!(tls.selected, 2);
-        tls.move_down(); // at end, should not advance
-        assert_eq!(tls.selected, 2);
-
-        tls.move_up();
-        assert_eq!(tls.selected, 1);
-        tls.move_up();
-        assert_eq!(tls.selected, 0);
-        tls.move_up(); // at start, should not go negative
-        assert_eq!(tls.selected, 0);
-    }
-
-    #[test]
-    fn tool_list_state_load_resets_state() {
-        let mut tls = ToolListState::new();
-        tls.items = vec!["old".into()];
-        tls.selected = 0;
-        tls.mode = role_editor_modal::ToolListMode::Adding;
-        tls.input.insert('x');
-
-        tls.load(&["new1".to_string(), "new2".to_string()]);
-        assert_eq!(tls.items, vec!["new1".to_string(), "new2".to_string()]);
-        assert_eq!(tls.selected, 0);
-        assert_eq!(tls.mode, role_editor_modal::ToolListMode::Browse);
-        assert_eq!(tls.input.value(), "");
-    }
-
-    #[test]
-    fn tool_browse_add_via_key_handler() {
-        use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-
-        // Navigate to AllowedTools
-        app.role_editor_field = RoleEditorField::AllowedTools;
-
-        // Press 'a' to start adding
-        app.handle_role_editor_editor_key(KeyCode::Char('a'));
-        assert_eq!(
-            app.role_editor_allowed_tools.mode,
-            role_editor_modal::ToolListMode::Adding
-        );
-
-        // Type "Read" and confirm
-        for c in "Read".chars() {
-            app.handle_role_editor_editor_key(KeyCode::Char(c));
-        }
-    }
-
-    #[test]
-    fn tool_browse_delete_via_key_handler() {
-        use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        app.role_editor_field = RoleEditorField::AllowedTools;
-        app.role_editor_allowed_tools.items = vec!["Read".into(), "Write".into()];
-        app.role_editor_allowed_tools.selected = 0;
-
-        app.handle_role_editor_editor_key(KeyCode::Char('d'));
-        assert_eq!(
-            app.role_editor_allowed_tools.items,
-            vec!["Write".to_string()]
-        );
-    }
-
-    #[test]
-    fn tool_adding_esc_cancels() {
-        use role_editor_modal::RoleEditorField;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.open_role_editor();
-        app.handle_role_editor_list_key(KeyCode::Char('a'));
-        app.role_editor_field = RoleEditorField::DisallowedTools;
-
-        // Start adding, type something, then cancel
-        app.handle_role_editor_editor_key(KeyCode::Char('a'));
-        app.handle_role_editor_editor_key(KeyCode::Char('X'));
-        app.handle_role_editor_editor_key(KeyCode::Esc);
-
-        assert!(app.role_editor_disallowed_tools.items.is_empty());
-        assert_eq!(
-            app.role_editor_disallowed_tools.mode,
-            role_editor_modal::ToolListMode::Browse
-        );
-    }
-
-    #[test]
-    fn system_prompt_loaded_and_saved() {
-        use crate::session::{RoleConfig, RolePermissions};
-
-        let db = test_db();
-        db.replace_global_roles(&[RoleConfig {
-            name: "dev".to_string(),
-            description: String::new(),
-            permissions: RolePermissions {
-                append_system_prompt: Some("Be safe".to_string()),
-                ..RolePermissions::default()
-            },
-        }])
-        .unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
-        app.open_role_editor();
-        app.open_role_for_editing(0);
-
-        // Verify it was loaded
-        assert_eq!(app.role_editor_system_prompt.value(), "Be safe");
-
-        // Modify and submit
-        app.role_editor_system_prompt.set("Be very safe");
-        app.submit_role_editor();
-
-        assert_eq!(
-            app.global_roles[0].permissions.append_system_prompt,
-            Some("Be very safe".to_string())
-        );
-    }
-
-    #[test]
-    fn app_new_seeds_global_developer_role_when_empty() {
-        let db = test_db();
-        // Global roles table is empty — App::new() seeds the developer role
-        // and appends the admin role.
-        let app = App::new(24, 120, stub_backend(), stub_provider(), db);
-
-        assert_eq!(app.global_roles.len(), 2);
-        assert_eq!(app.global_roles[0].name, "developer");
-        assert_eq!(
-            app.global_roles[0].permissions.permission_mode,
-            Some("acceptEdits".to_string())
-        );
-        assert_eq!(app.global_roles[1].name, ADMIN_ROLE_NAME);
-
-        // Verify both roles were persisted to DB (order is implementation-defined).
-        let reloaded = app.db.list_global_roles().unwrap();
-        assert_eq!(reloaded.len(), 2);
-        assert!(reloaded.iter().any(|r| r.name == "developer"));
-        assert!(reloaded.iter().any(|r| r.name == ADMIN_ROLE_NAME));
-    }
     #[test]
     fn ctrl_h_cycles_focus_backward_from_terminal() {
         let mut app = app_with_sessions(1);
@@ -4591,7 +3090,7 @@ mod tests {
 
     #[test]
     fn load_persisted_state_empty_db_returns_none() {
-        let app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         assert!(app.load_persisted_state_from_db().is_none());
     }
     #[test]
@@ -4602,7 +3101,7 @@ mod tests {
             24,
             120,
             BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
+            stub_agents(),
             test_db(),
         );
 
@@ -4621,7 +3120,7 @@ mod tests {
 
     #[test]
     fn save_state_persists_session_counter() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 120, stub_backend(), stub_agents(), test_db());
         app.session_counter = 42;
 
         app.save_state();
@@ -4631,35 +3130,6 @@ mod tests {
     }
 
     #[test]
-    fn session_to_shared_converts_correctly() {
-        let backend_arc = stub_backend_arc();
-        let provider = stub_provider();
-        let mut app = App::new(
-            24,
-            120,
-            BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
-            test_db(),
-        );
-
-        let mut session = Session::stub("test-session", &backend_arc, &provider);
-        session.info.role = "reviewer".to_string();
-        session.info.cwd = Some(PathBuf::from("/home/user"));
-        session.info.agent_session_id = Some("claude-xyz".to_string());
-
-        let sid = session.info.id;
-        app.sessions.push(session);
-
-        let shared = app.session_to_shared(&app.sessions[0]);
-        assert_eq!(shared.id, sid);
-        assert_eq!(shared.name, "test-session");
-        assert_eq!(shared.role, "reviewer");
-        assert_eq!(shared.cwd, Some(PathBuf::from("/home/user")));
-        assert_eq!(shared.agent_session_id, Some("claude-xyz".to_string()));
-        assert!(!shared.tombstone);
-        assert!(shared.tombstone_at.is_none());
-    }
-    #[test]
     fn session_to_shared_maps_worktree() {
         let backend_arc = stub_backend_arc();
         let provider = stub_provider();
@@ -4667,7 +3137,7 @@ mod tests {
             24,
             120,
             BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
+            stub_agents(),
             test_db(),
         );
 
@@ -4706,7 +3176,7 @@ mod tests {
             24,
             120,
             BackendRegistry::new(backend_arc.clone()),
-            provider.clone(),
+            stub_agents(),
             test_db(),
         );
 
@@ -4722,7 +3192,7 @@ mod tests {
     }
     #[test]
     fn set_error_creates_error_status() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.set_error("something failed");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
@@ -4731,7 +3201,7 @@ mod tests {
 
     #[test]
     fn set_status_creates_typed_status() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.set_status(StatusLevel::Success, "all good");
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Success);
@@ -4740,7 +3210,7 @@ mod tests {
 
     #[test]
     fn set_status_replaces_previous() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.set_error("old error");
         app.set_status(StatusLevel::Info, "new info");
         let msg = app.status_message.as_ref().unwrap();
@@ -4752,7 +3222,7 @@ mod tests {
 
     #[test]
     fn start_sync_with_no_sessions_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.start_sync();
         assert!(!app.worktree_sync_in_progress);
         let msg = app.status_message.as_ref().unwrap();
@@ -4762,7 +3232,7 @@ mod tests {
 
     #[test]
     fn start_sync_ignores_if_already_in_progress() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.worktree_sync_in_progress = true;
         app.status_message = None;
         app.start_sync();
@@ -4772,7 +3242,7 @@ mod tests {
 
     #[test]
     fn ctrl_s_triggers_start_sync() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
         // No sessions → info message
         let msg = app.status_message.as_ref().unwrap();
@@ -4856,7 +3326,7 @@ mod tests {
 
     #[test]
     fn tick_increments_tick_count() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         assert_eq!(app.tick_count, 0);
         app.tick();
         assert_eq!(app.tick_count, 1);
@@ -4866,7 +3336,7 @@ mod tests {
 
     #[test]
     fn finish_sync_all_synced_shows_success() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         let id = SessionId::default();
         app.worktree_sync_completed = vec![
             (id, git::SyncResult::Synced),
@@ -4880,7 +3350,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_errors_shows_error() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.worktree_sync_completed = vec![(
             SessionId::default(),
             git::SyncResult::Error("fetch failed".into()),
@@ -4894,7 +3364,7 @@ mod tests {
 
     #[test]
     fn finish_sync_with_conflicts_shows_info() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.worktree_sync_completed = vec![
             (SessionId::default(), git::SyncResult::Synced),
             (
@@ -4911,7 +3381,7 @@ mod tests {
 
     #[test]
     fn finish_sync_errors_take_priority_over_conflicts() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.worktree_sync_completed = vec![
             (
                 SessionId::default(),
@@ -4930,7 +3400,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_sends_at_correct_tick() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"hello".to_vec(), 5));
 
@@ -4947,7 +3417,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_inputs_retains_future_items() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         let id = SessionId::default();
         app.deferred_inputs.push((id, b"early".to_vec(), 5));
         app.deferred_inputs.push((id, b"late".to_vec(), 20));
@@ -4960,7 +3430,7 @@ mod tests {
 
     #[test]
     fn send_conflict_prompt_noop_for_unknown_session() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.send_conflict_prompt(SessionId::default());
         assert!(app.deferred_inputs.is_empty());
     }
@@ -4978,7 +3448,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_triggers_finish_when_all_received() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         let (tx, rx) = mpsc::channel();
         let id = SessionId::default();
 
@@ -4999,7 +3469,7 @@ mod tests {
 
     #[test]
     fn poll_sync_results_waits_for_all_pending() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         let (tx, rx) = mpsc::channel();
 
         tx.send((SessionId::default(), git::SyncResult::Synced))
@@ -5018,156 +3488,6 @@ mod tests {
         assert_eq!(app.worktree_sync_completed.len(), 1);
     }
 
-    #[test]
-    fn finish_prepare_spawn_admin_opens_role_picker_with_admin_preselected() {
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        // Admin must be among the effective roles (the source the picker
-        // uses) at a predictable position.
-        let effective = app.effective_roles();
-        let admin_index = effective
-            .iter()
-            .position(|r| r.name == ADMIN_ROLE_NAME)
-            .unwrap();
-
-        app.finish_prepare_spawn_admin("admin-1".to_string(), SessionConfig::default(), Vec::new());
-
-        match app.modal {
-            super::modals::Modal::RoleSelector(ref m) => {
-                assert_eq!(m.index, admin_index);
-                assert_eq!(m.roles.len(), effective.len());
-            }
-            _ => panic!("expected RoleSelector modal"),
-        }
-        assert!(app.pending_spawn_is_admin);
-        assert_eq!(app.pending_spawn_name.as_deref(), Some("admin-1"));
-        assert!(app.pending_spawn_config.is_some());
-    }
-
-    #[test]
-    fn open_mcp_picker_admin_preselects_only_default_mcp() {
-        use crate::session::McpServerConfig;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.global_mcp_servers = vec![
-            McpServerConfig {
-                name: "other".to_string(),
-                command: "x".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-            },
-            McpServerConfig {
-                name: ADMIN_DEFAULT_MCP.to_string(),
-                command: "x".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-            },
-            McpServerConfig {
-                name: "another".to_string(),
-                command: "x".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-            },
-        ];
-
-        app.open_mcp_picker(true);
-
-        match app.modal {
-            super::modals::Modal::McpServerPicker(ref m) => {
-                assert_eq!(m.selected, vec![false, true, false]);
-                assert_eq!(m.index, 0);
-            }
-            _ => panic!("expected McpServerPicker modal"),
-        }
-    }
-
-    #[test]
-    fn open_mcp_picker_non_admin_preselects_all() {
-        use crate::session::McpServerConfig;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        app.global_mcp_servers = vec![
-            McpServerConfig {
-                name: "a".to_string(),
-                command: "x".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-            },
-            McpServerConfig {
-                name: "b".to_string(),
-                command: "x".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-            },
-        ];
-
-        app.open_mcp_picker(false);
-
-        match app.modal {
-            super::modals::Modal::McpServerPicker(ref m) => {
-                assert_eq!(m.selected, vec![true, true]);
-            }
-            _ => panic!("expected McpServerPicker modal"),
-        }
-    }
-
-    #[test]
-    fn open_skill_picker_admin_preselects_none() {
-        use crate::session::SkillConfig;
-        use std::path::PathBuf;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        let skills = vec![
-            SkillConfig {
-                name: "a".to_string(),
-                path: PathBuf::from("/tmp/a"),
-            },
-            SkillConfig {
-                name: "b".to_string(),
-                path: PathBuf::from("/tmp/b"),
-            },
-        ];
-
-        app.open_skill_picker(true, skills);
-
-        match app.modal {
-            super::modals::Modal::SkillPicker(ref m) => {
-                assert_eq!(m.selected, vec![false, false]);
-                assert_eq!(m.skills.len(), 2);
-            }
-            _ => panic!("expected SkillPicker modal"),
-        }
-    }
-
-    #[test]
-    fn open_skill_picker_non_admin_preselects_all() {
-        use crate::session::SkillConfig;
-        use std::path::PathBuf;
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        let skills = vec![SkillConfig {
-            name: "a".to_string(),
-            path: PathBuf::from("/tmp/a"),
-        }];
-
-        app.open_skill_picker(false, skills);
-
-        match app.modal {
-            super::modals::Modal::SkillPicker(ref m) => {
-                assert_eq!(m.selected, vec![true]);
-                assert_eq!(m.skills.len(), 1);
-            }
-            _ => panic!("expected SkillPicker modal"),
-        }
-    }
-
-    #[test]
-    fn admin_mcp_permissions_contains_all_tools() {
-        let perms = super::admin_mcp_permissions();
-        assert_eq!(perms.allowed_tools.len(), super::ADMIN_MCP_TOOLS.len());
-        assert!(perms
-            .allowed_tools
-            .iter()
-            .all(|t| t.starts_with("mcp__thurbox__")));
-        assert!(perms.permission_mode.is_none());
-        assert!(perms.disallowed_tools.is_empty());
-        assert!(perms.append_system_prompt.is_some());
-    }
     #[test]
     fn format_time_ago_seconds() {
         let now = crate::sync::current_time_millis();
@@ -5273,7 +3593,7 @@ mod tests {
         sync::SharedSession {
             id: crate::session::SessionId::default(),
             name: name.to_string(),
-            role: String::new(),
+            agent: String::new(),
             backend_id: backend_id.to_string(),
             backend_type: "tmux".to_string(),
             agent_session_id: Some("agent-123".to_string()),
@@ -5345,193 +3665,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // --- handle_external_state_change adoption tests ---
-
-    /// Mock backend that records spawn/adopt calls and returns a
-    /// caller-configured discover() list. Used to verify that the
-    /// TUI's reaction to a CLI-created session adopts the existing
-    /// window rather than spawning a duplicate.
-    struct RecordingBackend {
-        discovered: Vec<crate::agent::backend::DiscoveredSession>,
-        spawn_calls: std::sync::atomic::AtomicUsize,
-        adopt_calls: std::sync::atomic::AtomicUsize,
-    }
-
-    impl RecordingBackend {
-        fn new(discovered: Vec<crate::agent::backend::DiscoveredSession>) -> Self {
-            Self {
-                discovered,
-                spawn_calls: std::sync::atomic::AtomicUsize::new(0),
-                adopt_calls: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-    }
-
-    impl SessionBackend for RecordingBackend {
-        fn name(&self) -> &str {
-            "local-tmux"
-        }
-        fn check_available(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn ensure_ready(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn spawn(
-            &self,
-            _: &str,
-            _: &str,
-            _: &[String],
-            _: Option<&Path>,
-            _: &std::collections::HashMap<String, String>,
-            _: u16,
-            _: u16,
-        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
-            self.spawn_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            anyhow::bail!("recording backend: spawn intentionally fails to avoid real tmux IO")
-        }
-        fn adopt(
-            &self,
-            _: &str,
-            _: u16,
-            _: u16,
-        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
-            self.adopt_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            anyhow::bail!("recording backend: adopt intentionally fails to avoid real tmux IO")
-        }
-        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
-            Ok(self.discovered.clone())
-        }
-        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
-            Ok(false)
-        }
-        fn kill(&self, _: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn detach(&self, _: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
-            Ok(None)
-        }
-    }
-
-    fn app_with_backend(backend: Arc<RecordingBackend>) -> App {
-        App::new(
-            24,
-            120,
-            BackendRegistry::new(backend.clone() as Arc<dyn SessionBackend>),
-            stub_provider(),
-            test_db(),
-        )
-    }
-
-    #[test]
-    fn handle_external_state_change_adopts_without_spawning_duplicate() {
-        // Simulates the live-TUI + headless-CLI race: the CLI just
-        // opened a tb-foo window (so discover() reports one), and the
-        // DB sync delta arrives with an empty backend_id. The TUI
-        // must name-match the existing window and NOT call spawn(),
-        // otherwise tmux would end up with two tb-foo windows and
-        // exact-match send-keys would fail with "ambiguous window".
-        let backend = Arc::new(RecordingBackend::new(vec![
-            crate::agent::backend::DiscoveredSession {
-                backend_id: "%42".into(),
-                name: "tb-foo".into(),
-                is_alive: true,
-            },
-        ]));
-        let mut app = app_with_backend(backend.clone());
-
-        let shared = sync::SharedSession {
-            id: crate::session::SessionId::default(),
-            name: "foo".into(),
-            role: String::new(),
-            backend_id: String::new(), // headless spawn stored it empty
-            backend_type: "local-tmux".into(),
-            agent_session_id: Some("agent-xyz".into()),
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        let delta = sync::StateDelta {
-            added_sessions: vec![shared],
-            removed_sessions: Vec::new(),
-            updated_sessions: Vec::new(),
-            counter_increment: 0,
-        };
-
-        app.handle_external_state_change(delta);
-
-        let spawn_calls = backend
-            .spawn_calls
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let adopt_calls = backend
-            .adopt_calls
-            .load(std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(
-            spawn_calls, 0,
-            "spawn must NOT be called when a matching tb-<name> window already exists"
-        );
-        assert_eq!(
-            adopt_calls, 1,
-            "adopt must be attempted once against the discovered window"
-        );
-    }
-
-    #[test]
-    fn handle_external_state_change_spawns_when_no_discovered_match() {
-        // Counterpart to the above: if discover() returns no matching
-        // window, the TUI should fall through to Session::spawn (the
-        // pre-existing restore path).
-        let backend = Arc::new(RecordingBackend::new(vec![]));
-        let mut app = app_with_backend(backend.clone());
-
-        let shared = sync::SharedSession {
-            id: crate::session::SessionId::default(),
-            name: "foo".into(),
-            role: String::new(),
-            backend_id: String::new(),
-            backend_type: "local-tmux".into(),
-            agent_session_id: Some("agent-xyz".into()),
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        let delta = sync::StateDelta {
-            added_sessions: vec![shared],
-            removed_sessions: Vec::new(),
-            updated_sessions: Vec::new(),
-            counter_increment: 0,
-        };
-
-        app.handle_external_state_change(delta);
-
-        assert_eq!(
-            backend
-                .adopt_calls
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-        assert_eq!(
-            backend
-                .spawn_calls
-                .load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
-    }
-
     // --- Modal flow tests ---
 
     #[test]
@@ -5564,7 +3697,7 @@ mod tests {
 
     #[test]
     fn send_paste_to_session_noop_when_no_sessions() {
-        let mut app = App::new(24, 80, stub_backend(), stub_provider(), test_db());
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         // Should not panic with no active sessions
         app.send_paste_to_session("hello");
     }
@@ -5574,380 +3707,5 @@ mod tests {
         let mut app = app_with_sessions(1);
         // Should return early without error for empty text
         app.send_paste_to_session("");
-    }
-
-    #[test]
-    fn finish_prepare_spawn_shows_profile_picker_when_profiles_exist() {
-        // `test_db` runs the full migration including the `orchestrator`
-        // seed, so `global_profiles` is non-empty by default.
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        assert!(
-            !app.global_profiles.is_empty(),
-            "seeded profile expected in fresh DB"
-        );
-
-        app.finish_prepare_spawn("sess".to_string(), SessionConfig::default(), Vec::new());
-
-        match app.modal {
-            super::modals::Modal::ProfilePicker(ref pp) => {
-                assert_eq!(pp.index, 0, "cursor starts on 'No profile' row");
-                assert_eq!(pp.profiles.len(), app.global_profiles.len());
-            }
-            _ => panic!("expected ProfilePicker modal, got {:?}", app.modal),
-        }
-        assert_eq!(app.pending_spawn_name.as_deref(), Some("sess"));
-        assert!(app.pending_spawn_config.is_some());
-    }
-
-    #[test]
-    fn finish_prepare_spawn_skips_profile_picker_when_registry_empty() {
-        let db = test_db();
-        // Wipe seeded profiles so we hit the "no profiles" branch.
-        db.replace_global_profiles(&[]).unwrap();
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), db);
-        assert!(app.global_profiles.is_empty());
-
-        app.finish_prepare_spawn("sess".to_string(), SessionConfig::default(), Vec::new());
-
-        // With seeded roles (developer + admin) the role selector opens.
-        match app.modal {
-            super::modals::Modal::RoleSelector(_) => {}
-            _ => panic!(
-                "expected RoleSelector when profiles empty, got {:?}",
-                app.modal
-            ),
-        }
-    }
-
-    #[test]
-    fn apply_profile_to_config_merges_roles_and_attaches_refs() {
-        use crate::session::{McpServerConfig, ProfileConfig, RoleConfig, RolePermissions};
-        let mut app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-
-        // Two roles with distinct allowed tools so we can prove the merge
-        // produced a union.
-        app.global_roles = vec![
-            RoleConfig {
-                name: "reader".to_string(),
-                description: String::new(),
-                permissions: RolePermissions {
-                    allowed_tools: vec!["Read".to_string()],
-                    ..Default::default()
-                },
-            },
-            RoleConfig {
-                name: "writer".to_string(),
-                description: String::new(),
-                permissions: RolePermissions {
-                    allowed_tools: vec!["Edit".to_string()],
-                    ..Default::default()
-                },
-            },
-        ];
-        app.global_mcp_servers = vec![McpServerConfig {
-            name: "thurbox".to_string(),
-            command: "x".to_string(),
-            args: vec![],
-            env: std::collections::HashMap::new(),
-        }];
-
-        let profile = ProfileConfig {
-            name: "multi".to_string(),
-            description: String::new(),
-            roles: vec!["reader".to_string(), "writer".to_string()],
-            mcp_servers: vec!["thurbox".to_string()],
-            skills: vec![],
-        };
-        let mut config = SessionConfig::default();
-        app.apply_profile_to_config(&profile, &mut config);
-
-        assert_eq!(config.role, "profile:multi");
-        assert!(config.permissions.allowed_tools.contains(&"Read".into()));
-        assert!(config.permissions.allowed_tools.contains(&"Edit".into()));
-        assert_eq!(config.mcp_servers.len(), 1);
-        assert_eq!(config.mcp_servers[0].name, "thurbox");
-    }
-
-    #[test]
-    fn apply_profile_with_empty_roles_falls_back_to_default_permissions() {
-        use crate::session::ProfileConfig;
-        let app = App::new(24, 120, stub_backend(), stub_provider(), test_db());
-        let profile = ProfileConfig {
-            name: "bare".to_string(),
-            description: String::new(),
-            roles: vec![],
-            mcp_servers: vec![],
-            skills: vec![],
-        };
-        let mut config = SessionConfig::default();
-        app.apply_profile_to_config(&profile, &mut config);
-
-        assert_eq!(config.role, "profile:bare");
-        // Default developer perms include the tools listed by `default_developer_permissions`.
-        let expected = default_developer_permissions();
-        assert_eq!(config.permissions.allowed_tools, expected.allowed_tools);
-    }
-
-    // --- Profile editor lifecycle tests ---
-
-    fn profile_editor_app() -> App {
-        App::new(24, 120, stub_backend(), stub_provider(), test_db())
-    }
-
-    #[test]
-    fn open_new_profile_editor_resets_state() {
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        let mut app = profile_editor_app();
-        // Pre-populate to verify reset clears everything.
-        app.profile_editor_name.set("stale");
-        app.profile_editor_description.set("stale");
-        app.profile_editor_roles.load(&["r".to_string()]);
-        app.profile_editor_editing_index = Some(99);
-
-        app.open_new_profile_editor();
-
-        assert!(app.show_profile_editor);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
-        assert_eq!(app.profile_editor_editing_index, None);
-        assert_eq!(app.profile_editor_name.value(), "");
-        assert_eq!(app.profile_editor_description.value(), "");
-        assert!(app.profile_editor_roles.items.is_empty());
-        assert!(app.profile_editor_mcp_servers.items.is_empty());
-        assert!(app.profile_editor_skills.items.is_empty());
-    }
-
-    #[test]
-    fn open_profile_for_editing_loads_existing_profile() {
-        use crate::session::ProfileConfig;
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        let mut app = profile_editor_app();
-        app.global_profiles.push(ProfileConfig {
-            name: "reviewer".to_string(),
-            description: "Read-only review bundle".to_string(),
-            roles: vec!["reviewer".to_string()],
-            mcp_servers: vec!["thurbox".to_string()],
-            skills: vec!["review".to_string(), "summarize".to_string()],
-        });
-        let idx = app.global_profiles.len() - 1;
-
-        app.open_profile_for_editing(idx);
-
-        assert!(app.show_profile_editor);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
-        assert_eq!(app.profile_editor_editing_index, Some(idx));
-        assert_eq!(app.profile_editor_name.value(), "reviewer");
-        assert_eq!(
-            app.profile_editor_description.value(),
-            "Read-only review bundle"
-        );
-        assert_eq!(app.profile_editor_roles.items, vec!["reviewer".to_string()]);
-        assert_eq!(
-            app.profile_editor_mcp_servers.items,
-            vec!["thurbox".to_string()]
-        );
-        assert_eq!(
-            app.profile_editor_skills.items,
-            vec!["review".to_string(), "summarize".to_string()]
-        );
-    }
-
-    #[test]
-    fn open_profile_for_editing_out_of_bounds_is_noop() {
-        let mut app = profile_editor_app();
-        let before = app.show_profile_editor;
-
-        app.open_profile_for_editing(app.global_profiles.len() + 10);
-
-        assert_eq!(app.show_profile_editor, before);
-    }
-
-    #[test]
-    fn submit_profile_editor_appends_new_profile() {
-        let mut app = profile_editor_app();
-        let start = app.global_profiles.len();
-        app.open_new_profile_editor();
-        app.profile_editor_name.set("custom");
-        app.profile_editor_description.set("My bundle");
-        app.profile_editor_roles.load(&["developer".to_string()]);
-        app.profile_editor_skills.load(&["orchestrate".to_string()]);
-
-        app.submit_profile_editor();
-
-        assert!(!app.show_profile_editor);
-        assert_eq!(app.global_profiles.len(), start + 1);
-        let added = app.global_profiles.last().expect("profile appended");
-        assert_eq!(added.name, "custom");
-        assert_eq!(added.description, "My bundle");
-        assert_eq!(added.roles, vec!["developer".to_string()]);
-        assert!(added.mcp_servers.is_empty());
-        assert_eq!(added.skills, vec!["orchestrate".to_string()]);
-    }
-
-    #[test]
-    fn submit_profile_editor_with_empty_name_is_ignored() {
-        let mut app = profile_editor_app();
-        let before = app.global_profiles.clone();
-        app.open_new_profile_editor();
-        // Name stays empty; whitespace-only also counts as empty.
-        app.profile_editor_name.set("   ");
-
-        app.submit_profile_editor();
-
-        assert!(
-            app.show_profile_editor,
-            "editor stays open on invalid submit"
-        );
-        assert_eq!(app.global_profiles, before);
-    }
-
-    #[test]
-    fn submit_profile_editor_with_editing_index_replaces_in_place() {
-        use crate::session::ProfileConfig;
-        let mut app = profile_editor_app();
-        app.global_profiles.push(ProfileConfig {
-            name: "old".to_string(),
-            description: String::new(),
-            roles: Vec::new(),
-            mcp_servers: Vec::new(),
-            skills: Vec::new(),
-        });
-        let idx = app.global_profiles.len() - 1;
-        let len_before = app.global_profiles.len();
-
-        app.open_profile_for_editing(idx);
-        app.profile_editor_name.set("renamed");
-        app.profile_editor_description.set("updated");
-
-        app.submit_profile_editor();
-
-        assert_eq!(app.global_profiles.len(), len_before);
-        assert_eq!(app.global_profiles[idx].name, "renamed");
-        assert_eq!(app.global_profiles[idx].description, "updated");
-    }
-
-    #[test]
-    fn submit_profile_editor_with_stale_editing_index_does_not_append() {
-        let mut app = profile_editor_app();
-        let before_len = app.global_profiles.len();
-        app.open_new_profile_editor();
-        app.profile_editor_name.set("ghost");
-        // Simulate an editing index that no longer maps to a live profile
-        // (e.g. the profile was deleted by another instance mid-edit).
-        app.profile_editor_editing_index = Some(before_len + 10);
-
-        app.submit_profile_editor();
-
-        assert_eq!(app.global_profiles.len(), before_len);
-        assert!(app.global_profiles.iter().all(|p| p.name != "ghost"));
-    }
-
-    #[test]
-    fn close_profile_editor_does_not_persist_changes() {
-        let mut app = profile_editor_app();
-        let before = app.global_profiles.clone();
-        app.open_new_profile_editor();
-        app.profile_editor_name.set("discarded");
-        app.profile_editor_roles.load(&["developer".to_string()]);
-
-        app.close_profile_editor();
-
-        assert!(!app.show_profile_editor);
-        assert_eq!(app.global_profiles, before);
-    }
-
-    #[test]
-    fn profile_editor_tab_cycles_fields_forward() {
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        let mut app = profile_editor_app();
-        app.open_new_profile_editor();
-
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
-        app.handle_profile_editor_key(KeyCode::Tab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Description);
-        app.handle_profile_editor_key(KeyCode::Tab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Roles);
-        app.handle_profile_editor_key(KeyCode::Tab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::McpServers);
-        app.handle_profile_editor_key(KeyCode::Tab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Skills);
-        app.handle_profile_editor_key(KeyCode::Tab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
-    }
-
-    #[test]
-    fn profile_editor_backtab_cycles_fields_backward() {
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        let mut app = profile_editor_app();
-        app.open_new_profile_editor();
-
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
-        app.handle_profile_editor_key(KeyCode::BackTab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Skills);
-        app.handle_profile_editor_key(KeyCode::BackTab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::McpServers);
-        app.handle_profile_editor_key(KeyCode::BackTab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Roles);
-        app.handle_profile_editor_key(KeyCode::BackTab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Description);
-        app.handle_profile_editor_key(KeyCode::BackTab);
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
-    }
-
-    #[test]
-    fn profile_editor_esc_in_text_field_closes_overlay() {
-        let mut app = profile_editor_app();
-        app.open_new_profile_editor();
-        assert!(app.show_profile_editor);
-
-        app.handle_profile_editor_key(KeyCode::Esc);
-
-        assert!(!app.show_profile_editor);
-    }
-
-    #[test]
-    fn profile_editor_typing_updates_name_field() {
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        let mut app = profile_editor_app();
-        app.open_new_profile_editor();
-        assert_eq!(app.profile_editor_field, ProfileEditorField::Name);
-
-        for c in "abc".chars() {
-            app.handle_profile_editor_key(KeyCode::Char(c));
-        }
-
-        assert_eq!(app.profile_editor_name.value(), "abc");
-    }
-
-    #[test]
-    fn profile_editor_list_field_add_pushes_item() {
-        use crate::ui::profile_editor_modal::ProfileEditorField;
-        use crate::ui::role_editor_modal::ToolListMode;
-        let mut app = profile_editor_app();
-        app.open_new_profile_editor();
-        app.profile_editor_field = ProfileEditorField::Roles;
-
-        // Enter Adding mode, type a role name, confirm with Enter.
-        app.handle_profile_editor_key(KeyCode::Char('a'));
-        assert_eq!(app.profile_editor_roles.mode, ToolListMode::Adding);
-        for c in "dev".chars() {
-            app.handle_profile_editor_key(KeyCode::Char(c));
-        }
-        app.handle_profile_editor_key(KeyCode::Enter);
-
-        assert_eq!(app.profile_editor_roles.mode, ToolListMode::Browse);
-        assert_eq!(app.profile_editor_roles.items, vec!["dev".to_string()]);
-    }
-
-    #[test]
-    fn settings_tab_cycle_reaches_profiles_between_skills_and_roles() {
-        let mut app = profile_editor_app();
-        app.show_settings = true;
-        app.settings_tab = SettingsTab::Skills;
-
-        app.handle_settings_key(KeyCode::Tab);
-        assert_eq!(app.settings_tab, SettingsTab::Profiles);
-
-        app.handle_settings_key(KeyCode::Tab);
-        assert_eq!(app.settings_tab, SettingsTab::Roles);
     }
 }

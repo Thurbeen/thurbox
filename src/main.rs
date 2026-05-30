@@ -8,9 +8,8 @@ use crossterm::event::{
 };
 use crossterm::execute;
 
-use thurbox::agent::claude::ClaudeProvider;
 use thurbox::agent::tmux::LocalTmuxBackend;
-use thurbox::agent::{AgentProvider, BackendRegistry, SessionBackend};
+use thurbox::agent::{BackendRegistry, SessionBackend};
 use thurbox::app::{App, AppMessage};
 use thurbox::storage::Database;
 
@@ -46,7 +45,9 @@ async fn main() -> Result<()> {
     local_tmux.check_available()?;
     local_tmux.ensure_ready()?;
     let backends = BackendRegistry::new(local_tmux);
-    let provider: Arc<dyn AgentProvider> = Arc::new(ClaudeProvider);
+
+    // Load (or seed) the coding-agent registry from ~/.config/thurbox/agents.toml.
+    let agents = thurbox::agent::agent_config::load_or_seed();
 
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
@@ -71,19 +72,12 @@ async fn main() -> Result<()> {
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let size = terminal.size()?;
 
-    let mut app = App::new(size.height, size.width, backends, provider, db);
+    let mut app = App::new(size.height, size.width, backends, agents, db);
 
     // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
         app.restore_sessions(sessions, counter);
     }
-
-    // Ensure admin project exists and .mcp.json is up to date
-    app.ensure_admin_setup();
-
-    // Write the statusline script; the per-session statusLine config is
-    // injected by skill_staging::prepare into each session's CLAUDE_CONFIG_DIR.
-    app.ensure_statusline_script();
 
     let res = run_loop(&mut terminal, &mut app).await;
 

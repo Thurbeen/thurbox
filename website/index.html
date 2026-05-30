@@ -6,7 +6,7 @@
     <title>Thurbox — The Agentic IDE</title>
     <meta
       name="description"
-      content="Thurbox is an agentic IDE and agent orchestrator. Run parallel Claude Code instances in persistent tmux panes — sessions, roles, and worktrees as first-class citizens."
+      content="Thurbox runs any coding-agent CLI (Claude Code, Codex, Gemini CLI, opencode, aider) in persistent tmux panes — sessions, agents, and git worktrees as first-class citizens."
     />
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -63,8 +63,9 @@
           IDE
         </h1>
         <p class="subtitle">
-          An agent orchestrator for your terminal. Run parallel Claude Code instances in persistent
-          tmux panes — and let one of them drive the others. Sessions survive crashes and restarts.
+          A multi-session orchestrator for your terminal. Run any coding-agent CLI — Claude Code,
+          Codex, Gemini CLI, opencode, aider, or your own — in parallel, persistent tmux panes that
+          survive crashes and restarts.
         </p>
         <div class="hero-ctas">
           <a href="#installation" class="btn btn-primary">Get Started</a>
@@ -84,7 +85,7 @@
             </div>
             <div class="terminal-body">
               <video src="assets/thurbox-demo.mp4" autoplay loop muted playsinline preload="none">
-                Thurbox demo showing multiple Claude Code sessions running in parallel
+                Thurbox demo showing multiple coding-agent sessions running in parallel
               </video>
             </div>
           </div>
@@ -97,14 +98,14 @@
       <div class="container">
         <div class="section-title">
           <h2>Features</h2>
-          <p>Everything you need to run Claude Code at scale</p>
+          <p>Everything you need to run coding agents at scale</p>
         </div>
         <div class="grid grid-3">
           <div class="card">
             <div class="card-icon">&#x1f5a5;</div>
-            <h3>Session Orchestration</h3>
+            <h3>Persistent Sessions</h3>
             <p>
-              Run multiple Claude Code instances side-by-side, each in its own tmux pane. Sessions
+              Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. Sessions
               persist across crashes, restarts, and multiple concurrent Thurbox instances.
             </p>
           </div>
@@ -120,28 +121,21 @@
           </div>
           <div class="card">
             <div class="card-icon">&#x1f916;</div>
-            <h3>Orchestrator Mode</h3>
+            <h3>Any Coding Agent</h3>
             <p>
-              The built-in Admin session uses
-              <code>thurbox-mcp</code>
-              to spawn other sessions, dispatch prompts, and read their output &mdash; multi-agent
-              workflows driven conversationally with
-              <code>create_session</code>
-              ,
-              <code>send_prompt</code>
-              , and
-              <code>capture_session_output</code>
-              .
+              A session runs one agent of your choice &mdash; Claude Code, Codex, Gemini CLI,
+              opencode, aider, or any CLI you describe. Each agent runs with its own default config.
+              Mix different agents across the sidebar.
             </p>
           </div>
           <div class="card">
             <div class="card-icon">&#x1f6e1;</div>
-            <h3>Role System</h3>
+            <h3>Agent Definitions</h3>
             <p>
-              Define global permission presets that control Claude's behavior. Configure permission
-              modes, allowed/denied tools, and scope patterns like
-              <code>Bash(git:*)</code>
-              .
+              Agents are declared as data in
+              <code>~/.config/thurbox/agents.toml</code>
+              , seeded with built-ins on first run. Add or tweak an agent &mdash; command and
+              argument templates &mdash; with no recompile.
             </p>
           </div>
           <div class="card">
@@ -151,31 +145,30 @@
               Press
               <code>Ctrl+P</code>
               to queue follow-up prompts or pace multi-step workflows. Commands fire via a
-              dual-track timer (tmux + app-level) that survives crashes, and are fully manageable
-              through MCP.
+              dual-track timer (tmux + app-level) that survives crashes, and are manageable from the
+              <code>thurbox-cli</code>
+              headless binary.
             </p>
           </div>
           <div class="card">
             <div class="card-icon">&#x1f9e9;</div>
-            <h3>Skill Management</h3>
+            <h3>Persistent tmux Sessions</h3>
             <p>
-              Attach Claude Code skills to sessions at creation time. Skills are symlinked into each
-              session's
-              <code>.claude/skills/</code>
-              directory and auto-discovered by Claude Code. Manage skills globally via
-              <code>Ctrl+E</code>
-              .
+              Every session runs in a dedicated
+              <code>tmux -L thurbox</code>
+              pane behind a single
+              <code>SessionBackend</code>
+              trait, so sessions survive crashes, restarts, and detaches.
             </p>
           </div>
           <div class="card">
             <div class="card-icon">&#x1f50c;</div>
-            <h3>MCP Server</h3>
+            <h3>Headless CLI</h3>
             <p>
               The
-              <code>thurbox-mcp</code>
-              binary exposes tools for managing roles, sessions, skills, profiles, MCP servers, and
-              scheduled commands over the Model Context Protocol. Manage everything conversationally
-              via the Admin session.
+              <code>thurbox-cli</code>
+              binary scripts everything from the terminal: create and drive sessions and schedule
+              commands, all sharing the TUI's SQLite database.
             </p>
           </div>
         </div>
@@ -219,7 +212,7 @@
             <span class="step-number">2</span>
             <div class="step-content">
               <h3>Launch</h3>
-              <p>Start Thurbox. The Admin session appears automatically.</p>
+              <p>Start Thurbox. The session sidebar and terminal panel appear.</p>
               <div class="terminal-frame">
                 <div class="terminal-header">
                   <div class="terminal-dot red"></div>
@@ -238,11 +231,11 @@
           <div class="step">
             <span class="step-number">3</span>
             <div class="step-content">
-              <h3>Create a Project</h3>
+              <h3>Create a Session</h3>
               <p>
                 Press
                 <code>Ctrl+N</code>
-                to create a project with one or more repository paths.
+                to pick repos, name the session, then choose an agent.
               </p>
               <div class="terminal-frame">
                 <div class="terminal-header">
@@ -252,10 +245,9 @@
                   <span class="terminal-title">thurbox</span>
                 </div>
                 <div class="terminal-body">
-                  <pre><code><span class="syn-comment"># With the project list focused:</span>
-<span class="syn-keyword">Ctrl+N</span>  <span class="syn-comment">Create new project</span>
-<span class="syn-comment"># Enter name: my-app</span>
-<span class="syn-comment"># Enter path: ~/projects/my-app</span></code></pre>
+                  <pre><code><span class="syn-keyword">Ctrl+N</span>  <span class="syn-comment">New session</span>
+<span class="syn-comment"># Pick repo: ~/projects/my-app</span>
+<span class="syn-comment"># Name: my-app   Agent: claude</span></code></pre>
                 </div>
               </div>
             </div>
@@ -266,8 +258,8 @@
             <div class="step-content">
               <h3>Start Coding</h3>
               <p>
-                Create sessions (optionally on a fresh git worktree), pick a role, and start working
-                with Claude. Let the Admin session orchestrate others for you.
+                Spin up sessions (optionally on a fresh git worktree) and start working with the
+                agent. Navigate, sync, and fork with Vim-inspired keys.
               </p>
               <div class="terminal-frame">
                 <div class="terminal-header">
@@ -282,7 +274,7 @@
 <span class="syn-keyword">Ctrl+J</span>  <span class="syn-comment">Switch between sessions</span>
 <span class="syn-keyword">Ctrl+S</span>  <span class="syn-comment">Sync worktrees with origin/main</span>
 <span class="syn-keyword">Ctrl+P</span>  <span class="syn-comment">Schedule a command for later</span>
-<span class="syn-keyword">Ctrl+E</span>  <span class="syn-comment">Edit settings (roles, MCP, skills)</span>
+<span class="syn-keyword">Ctrl+R</span>  <span class="syn-comment">Restart active session</span>
 <span class="syn-keyword">Ctrl+F</span>  <span class="syn-comment">Fork active session</span>
 <span class="syn-keyword">Ctrl+O</span>  <span class="syn-comment">Open repos in editor</span></code></pre>
                 </div>
@@ -347,11 +339,12 @@
                 &mdash; session backend
               </li>
               <li>
-                <strong>claude CLI</strong>
-                &mdash;
+                <strong>A coding-agent CLI</strong>
+                &mdash; e.g.
                 <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener">
-                  github.com/anthropics/claude-code
+                  claude
                 </a>
+                , codex, gemini, opencode, or aider
               </li>
               <li>
                 <strong>git</strong>

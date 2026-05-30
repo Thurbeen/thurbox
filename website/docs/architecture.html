@@ -6,7 +6,7 @@
     <title>Architecture — Thurbox Docs</title>
     <meta
       name="description"
-      content="Thurbox architecture: The Elm Architecture, module isolation, session backends, and design principles."
+      content="Thurbox architecture: The Elm Architecture, module isolation, the session backend, and design principles."
     />
     <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -63,8 +63,6 @@
           </ul>
           <h4>Reference</h4>
           <ul>
-            <li><a href="mcp.html">MCP Server</a></li>
-            <li><a href="roles.html">Role Configuration</a></li>
             <li><a href="architecture.html" class="current-page">Architecture</a></li>
           </ul>
           <h4>On This Page</h4>
@@ -72,7 +70,7 @@
             <li><a href="#tea">The Elm Architecture</a></li>
             <li><a href="#modules">Module Structure</a></li>
             <li><a href="#session-pipeline">Session Pipeline</a></li>
-            <li><a href="#multi-backend">Multi-Backend</a></li>
+            <li><a href="#backend">Session Backend</a></li>
             <li><a href="#async">Async Runtime</a></li>
             <li><a href="#persistence">Persistence</a></li>
             <li><a href="#principles">Core Principles</a></li>
@@ -132,7 +130,7 @@
               <span class="terminal-title">main.rs</span>
             </div>
             <div class="terminal-body">
-              <pre><code><span class="syn-keyword">tokio::main</span> <span class="syn-flag">&rarr;</span> init backends (<span class="syn-string">BackendRegistry</span>)
+              <pre><code><span class="syn-keyword">tokio::main</span> <span class="syn-flag">&rarr;</span> init backend (<span class="syn-string">LocalTmuxBackend</span>)
   <span class="syn-flag">&rarr;</span> open SQLite DB
   <span class="syn-flag">&rarr;</span> init terminal
   <span class="syn-flag">&rarr;</span> spawn/restore sessions
@@ -165,10 +163,8 @@
             </div>
             <div class="terminal-body">
               <pre><code><span class="syn-keyword">session</span>  <span class="syn-comment">&larr; pure data types, no project-local imports</span>
-<span class="syn-keyword">project</span>  <span class="syn-comment">&larr; imports session only</span>
-<span class="syn-keyword">agent</span>    <span class="syn-comment">&larr; imports session only (NEVER ui, git, or project)</span>
-<span class="syn-keyword">ui</span>       <span class="syn-comment">&larr; imports session and project only (NEVER agent or git)</span>
-<span class="syn-keyword">mcp</span>      <span class="syn-comment">&larr; imports storage, session, project, sync, paths only</span>
+<span class="syn-keyword">agent</span>    <span class="syn-comment">&larr; imports session only (NEVER ui or git)</span>
+<span class="syn-keyword">ui</span>       <span class="syn-comment">&larr; imports session only (NEVER agent or git)</span>
 <span class="syn-keyword">app</span>      <span class="syn-comment">&larr; coordinator, imports all modules</span></code></pre>
             </div>
           </div>
@@ -197,11 +193,23 @@
                 <td>
                   Side-effect layer.
                   <code>AgentProvider</code>
-                  trait abstracts CLI command construction.
+                  trait abstracts CLI command construction;
+                  <code>GenericProvider</code>
+                  launches any agent from its
+                  <code>AgentDef</code>
+                  .
+                  <code>agent_config::load_or_seed</code>
+                  reads
+                  <code>agents.toml</code>
+                  .
                   <code>Session</code>
                   wraps
                   <code>SessionBackend</code>
-                  .
+                  , backed by
+                  <code>LocalTmuxBackend</code>
+                  (
+                  <code>tmux -L thurbox</code>
+                  ).
                 </td>
               </tr>
               <tr>
@@ -215,19 +223,11 @@
                   <code>SessionInfo</code>
                   ,
                   <code>SessionConfig</code>
-                  . No logic beyond Display/Default.
-                </td>
-              </tr>
-              <tr>
-                <td><code>project/</code></td>
-                <td>
-                  Plain data:
-                  <code>ProjectId</code>
                   ,
-                  <code>ProjectConfig</code>
-                  ,
-                  <code>ProjectInfo</code>
-                  . Imports session only.
+                  <code>AgentDef</code>
+                  /
+                  <code>AgentRegistry</code>
+                  (declarative agent definitions). No logic beyond pure helpers.
                 </td>
               </tr>
               <tr>
@@ -240,11 +240,12 @@
                 </td>
               </tr>
               <tr>
-                <td><code>mcp/</code></td>
+                <td><code>cli/</code></td>
                 <td>
-                  MCP server (
-                  <code>thurbox-mcp</code>
-                  binary). Exposes CRUD over stdio or Streamable HTTP JSON-RPC.
+                  Headless automation (
+                  <code>thurbox-cli</code>
+                  binary). Session, VM, container, and scheduled-command subcommands sharing the
+                  TUI's SQLite database.
                 </td>
               </tr>
             </tbody>
@@ -322,33 +323,19 @@
             .
           </p>
 
-          <h2 id="multi-backend">
-            Multi-Backend Architecture
-            <a href="#multi-backend" class="heading-anchor">#</a>
+          <h2 id="backend">
+            Session Backend
+            <a href="#backend" class="heading-anchor">#</a>
           </h2>
           <p>
-            Sessions select their backend at creation time via a
-            <code>BackendRegistry</code>
-            . Each session stores its
-            <code>backend_type</code>
-            in the database.
+            Session lifecycle (spawn, adopt, resize, kill, detach, discover) is abstracted behind a
+            <code>SessionBackend</code>
+            trait. The only implementation is
+            <code>LocalTmuxBackend</code>
+            , which runs every session in a dedicated
+            <code>tmux -L thurbox</code>
+            server. The trait boundary keeps the app layer transport-agnostic.
           </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Backend</th>
-                <th>Transport</th>
-                <th>Use Case</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>LocalTmuxBackend</code></td>
-                <td><code>tmux -L thurbox</code></td>
-                <td>Local sessions</td>
-              </tr>
-            </tbody>
-          </table>
 
           <h2 id="async">
             Async Runtime

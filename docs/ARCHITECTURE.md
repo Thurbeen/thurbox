@@ -28,18 +28,20 @@ when multiple PTY sessions are producing concurrent output.
 ## ADR-2: Session pipeline — SessionBackend + vt100 + tui-term
 
 **Choice**: A `SessionBackend` trait abstracts session lifecycle
-(spawn, adopt, resize, kill, detach, discover). The default
-backend is `LocalTmuxBackend` (`tmux -L thurbox`).
+(spawn, adopt, resize, kill, detach, discover). Each session runs
+one coding-agent CLI inside the backend. The default backend is
+`LocalTmuxBackend` (`tmux -L thurbox`).
 `vt100::Parser` interprets escape sequences,
 `tui_term::PseudoTerminal` renders the parsed screen into ratatui.
 
-**Why**: tmux provides truly persistent sessions that survive
-thurbox crashes/restarts, multiple thurbox instances share the
-same running sessions, and external recovery is possible via
-`tmux -L thurbox attach`. The trait-based design keeps the
-session lifecycle decoupled from the rest of the app.
+**Why**: The trait-based design keeps the session transport
+behind a clean boundary so the app layer never touches tmux
+directly. tmux provides truly persistent sessions
+that survive thurbox crashes/restarts, multiple thurbox instances
+share the same running sessions, and external recovery is
+possible via `tmux -L thurbox attach`.
 
-**Previous design**: `portable-pty` spawned the `claude` CLI
+**Previous design**: `portable-pty` spawned the agent CLI
 directly. Sessions died when thurbox exited, terminal content was
 lost on restart, and multiple instances had no coordination.
 
@@ -157,11 +159,12 @@ specifically for `perf` / `flamegraph` workflows.
 
 ## ADR-8: State storage — SQLite
 
-**Choice**: All persistent state (sessions, roles, MCP servers,
-skills, worktrees, scheduled commands) is stored
-in a single SQLite database at
-`~/.local/share/thurbox/thurbox.db` (respects `$XDG_DATA_HOME`).
-WAL mode enables concurrent multi-instance access.
+**Choice**: All persistent state (sessions, worktrees, VMs,
+containers, scheduled commands) is stored in a single SQLite
+database at `~/.local/share/thurbox/thurbox.db` (respects
+`$XDG_DATA_HOME`). WAL mode enables concurrent multi-instance
+access. Agent definitions are the one exception: they live in a
+human-editable TOML file (see ADR-19), not the database.
 
 *This supersedes the original TOML file-based approach
 (`~/.config/thurbox/config.toml`), which was eliminated after
@@ -176,8 +179,9 @@ all editing UI — there is no need for a human-editable config file.
 
 - *TOML config file (previous)* — race conditions when multiple
   instances write concurrently; split source of truth between
-  config.toml (roles) and state files (sessions); no atomic
-  multi-key updates.
+  config.toml and state files (sessions); no atomic multi-key
+  updates. (Agent definitions are read-mostly and not subject to
+  concurrent writes, so they remain in TOML — see ADR-19.)
 - *JSON* — verbose for config, no atomic writes without
   temp-file-rename pattern.
 - *CLI flags only* — doesn't scale to multiple sessions and
@@ -190,19 +194,17 @@ all editing UI — there is no need for a human-editable config file.
 ## ADR-9: Flat session list (no project grouping)
 
 **Choice**: The sidebar is a single flat list of sessions. There
-is no "project" layer above sessions: roles, MCP servers, and
-skills are global presets attached to a session at creation time,
-and each session owns its own repo selection.
+is no "project" layer above sessions: each session picks its own
+agent and repo selection at creation time.
 
 **Why**: Earlier versions grouped sessions under projects (one
-project → many sessions, with shared repos and roles). In practice
-users created one session per task, so the project layer was pure
+project → many sessions, with shared repos). In practice users
+created one session per task, so the project layer was pure
 overhead — an extra navigation level, an extra creation step, and
 an extra deletion guard. Storage migration v16 dropped the
-`projects`, `project_repos`, `project_roles`, and
-`project_mcp_servers` tables and removed `project_id` columns
-from `sessions`. The Admin session pinned at index 0 guarantees
-the list is never empty.
+`projects`, `project_repos`, `project_vm_config`, and
+`project_container_config` tables and removed `project_id` columns
+from `sessions`, `vms`, and `containers`.
 
 **Rejected**:
 
@@ -223,10 +225,11 @@ the list is never empty.
 struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
-**Why**: A trait boundary keeps the app layer completely
-backend-agnostic. The only backend today is `LocalTmuxBackend`,
-but keeping the seam costs little and would let a future backend
-slot in without touching `App`, `Session`, or any UI code.
+**Why**: Keeping session lifecycle behind a trait boundary leaves
+the app layer completely backend-agnostic. The only backend today
+is local tmux (`LocalTmuxBackend`), but the seam means the
+transport can evolve without touching `App`, `Session`, or any UI
+code.
 
 **Trait methods**: `check_available`, `ensure_ready`, `spawn`,
 `adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`.
@@ -244,7 +247,7 @@ slot in without touching `App`, `Session`, or any UI code.
 **Rejected**:
 
 - *Async trait methods* — added complexity for no benefit since
-  the local tmux backend uses synchronous `Command::new("tmux")`.
+  the tmux backend uses synchronous `Command::new("tmux")`.
   Can be added via `async-trait` if a future backend needs it.
 
 ---
@@ -323,7 +326,7 @@ delivers pixel-perfect rendering with all original formatting.
 ## ADR-7b: Multi-Instance Sync — SQLite with PRAGMA data_version
 
 **Choice**: Multiple thurbox instances synchronize all state
-(sessions, roles, MCP servers, skills, worktrees)
+(sessions, worktrees, VMs, containers, scheduled commands)
 via a shared SQLite database
 (`~/.local/share/thurbox/thurbox.db`). Each instance polls
 `PRAGMA data_version` to detect external changes. SQLite's WAL mode
@@ -349,7 +352,7 @@ ownership restrictions.
 - **Graceful**: Single instance has zero polling overhead
 - **Collaborative**: All instances can interact with the same sessions
   simultaneously (like tmux attach with multiple clients)
-- **Single source of truth**: No split-brain between config.toml and DB
+- **Single source of truth**: No split-brain between state files and DB
 
 **Multi-Instance I/O Model**: Rather than using an ownership model
 to prevent duplicate I/O, each instance maintains its own control mode
@@ -367,8 +370,9 @@ I/O coordination.
 **Trade-offs**:
 
 - **Not human-readable**: Unlike TOML, users cannot directly edit state.
-  The TUI provides all editing UI (session creation, role editor, MCP
-  server editor, skill manager).
+  The TUI provides all editing UI (session creation, scheduling, theme
+  selection). Agent definitions are the deliberate exception and remain
+  hand-editable TOML (ADR-19).
 - **Independent terminal state**: Each instance maintains its own
   `vt100::Parser`, so concurrent updates may briefly diverge. Instances
   converge quickly as output is replayed.
@@ -390,42 +394,34 @@ I/O coordination.
   rebase issues, incompatible with non-repo environments.
 - *TOML file-based sync (previous approach)* — race conditions when
   multiple instances write concurrently; no atomic multi-key updates;
-  split source of truth between config.toml (roles) and state files
+  split source of truth between config.toml and state files
   (sessions) caused sync bugs.
 
 ---
 
-## ADR-13: MCP Server as Separate Binary
+## ADR-13: Headless CLI as Separate Binary
 
-**Choice**: The MCP (Model Context Protocol) server is a separate
-binary (`thurbox-mcp`) that shares the same SQLite database as the
-TUI. It exposes role, session, skill, profile, MCP-server, and
-scheduled-command management over stdio JSON-RPC (and optionally
-Streamable HTTP — see ADR-17) using the `rmcp` crate.
+**Choice**: Headless automation lives in a separate binary
+(`thurbox-cli`) that shares the same SQLite database as the TUI.
+It exposes session, VM, container, scheduled-command, and
+editor-command management as subcommands, printing JSON results.
 
-**Why**: A separate binary avoids coupling the MCP protocol stack
-to the TUI's event loop. The TUI already polls `PRAGMA data_version`
-every 250ms (ADR-7b), so changes made by the MCP server appear
-automatically — no new synchronization mechanism is needed.
-
-The `mcp` module follows the same isolation rules as other modules:
-it imports `storage`, `session`, `sync`, and `paths`, but never
-`app`, `agent`, `ui`, or `git`. This ensures the MCP server can
-operate without a terminal or tmux.
+**Why**: A separate binary keeps scripting/automation out of the
+TUI's event loop. The TUI already polls `PRAGMA data_version`
+every 250ms (ADR-7b), so changes made by `thurbox-cli` appear
+automatically — no new synchronization mechanism is needed. The
+`cli` module imports `storage`, `session`, `session_ops`, `sync`,
+and `agent::tmux`, but never `app` or `ui`, so it can operate
+without a terminal UI.
 
 **Rejected**:
 
-- *Embedded in the TUI binary* — would add MCP protocol dependencies
-  to the main binary, increase startup time, and require managing
-  a second I/O channel alongside the TUI's crossterm event loop.
-- *REST/gRPC server* — requires a listening port, adds networking
-  complexity, and MCP's stdio transport is the standard for CLI
-  tool integration with AI agents.
-- *Shared library with thin binary wrapper* — over-engineering;
-  the `thurbox` crate already exposes the needed types as `pub mod`.
-
-**See also**: [MCP_ROLES.md](MCP_ROLES.md) for role configuration
-via the MCP server (permission modes, tool patterns, examples).
+- *Embedded in the TUI binary* — would force the TUI to multiplex
+  a non-interactive command path alongside its crossterm event
+  loop.
+- *A long-running daemon* — adds operational complexity; the
+  shared SQLite DB plus tmux already provide the coordination a
+  one-shot CLI needs.
 
 ---
 
@@ -459,27 +455,48 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
 
 ---
 
-## ADR-17: Streamable HTTP transport for MCP server
+## ADR-19: Declarative agent definitions
 
-**Choice**: The `thurbox-mcp` binary supports a second transport
-(`--transport streamable-http`) that serves MCP over HTTP POST
-with optional SSE streaming, powered by axum and the `rmcp`
-crate's `StreamableHttpService`.
+**Choice**: Each session runs exactly one coding-agent CLI chosen
+at creation time; each agent runs with its own default config.
+Agents are described as **data** in `~/.config/thurbox/agents.toml`
+(sibling of any other config), seeded with built-ins (claude,
+codex, gemini, opencode, aider) on first run via
+`agent::agent_config::load_or_seed`. An `AgentDef` carries a
+`command`, `args` (always passed — bake in flags like a model
+here if you want), and argument-template groups (`resume_args`,
+`fork_args`, `new_session_args`). A single
+`agent::GenericProvider` (an `AgentProvider`) launches any defined
+agent by substituting `{id}` and appending each group only when
+its driving value is present.
 
-**Why**: Stdio transport works for local CLI tool integration
-(e.g., the Admin session's `.mcp.json`), but HTTP enables
-remote MCP clients, web dashboards, and multi-user setups.
-Streamable HTTP is the MCP standard for networked transports.
+**Why**: Thurbox started as Claude-Code-specific, with a hard-coded
+`ClaudeProvider` plus roles, skills, profiles, and an MCP/plugin
+surface tied to one agent's permission model. Generalizing to "run
+any coding agent" meant the launch contract had to be data, not
+code: users add or tweak agents by editing TOML, with no recompile
+and no per-session permission/prompt/tool configuration. The
+`session::AgentDef` / `AgentRegistry` types are pure data (no
+filesystem, no local imports) so they satisfy the `session/`
+isolation rule; the TOML loading and the provider bridge live in
+`agent`.
 
-**Defaults**: `127.0.0.1:8080`, path `/mcp`. Configurable via
-`--host` and `--port` flags.
+**Group precedence**: fork wins over resume, which wins over a
+fresh `new_session` id; static `args` follow. A group with no
+value is simply omitted — no "unresolved placeholder" heuristics.
+
+**Config, not DB**: Agent definitions deliberately live in TOML
+rather than SQLite (ADR-8). They are read-mostly, hand-editable,
+and shared across instances by re-reading the file — there is no
+concurrent-write hazard that would justify moving them into the
+database.
 
 **Rejected**:
 
-- *WebSocket transport* — not part of the MCP specification.
-  Streamable HTTP with SSE covers the same use cases.
-- *Always-on HTTP (no stdio)* — stdio is simpler for the
-  common case (local Admin session). HTTP is opt-in for
-  advanced deployments.
-
----
+- *Hard-coded providers per agent* — the previous `ClaudeProvider`
+  approach; adding an agent meant a code change and release.
+- *Per-session roles / permissions / prompts / tools* — removed
+  with the pivot. They were Claude-specific and did not generalize
+  across agents; a session now configures only its agent.
+- *Agent definitions in SQLite* — overkill for read-mostly,
+  user-authored config; TOML keeps them inspectable and diffable.

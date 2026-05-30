@@ -5,10 +5,20 @@ when working with code in this repository.
 
 ## Project
 
-Thurbox is a multi-session Claude Code TUI orchestrator built
-with Rust. It runs multiple `claude` CLI instances inside
-persistent tmux sessions, rendered as terminal panels via
-ratatui + tui-term. Sessions survive crashes/restarts.
+Thurbox is a multi-session coding-agent TUI orchestrator built
+with Rust. It runs multiple coding-agent CLI instances (Claude
+Code, Codex, Gemini CLI, opencode, aider, … — any CLI you
+define) inside persistent tmux sessions, rendered as terminal
+panels via ratatui + tui-term. Sessions survive crashes/restarts
+because tmux keeps the processes alive.
+
+Each session picks **which agent** to run from a declarative
+registry (`~/.config/thurbox/agents.toml`). Thurbox is
+agent-neutral: it knows nothing about any agent's model,
+permissions, prompts, or tools — only how to launch the CLI with
+the right `command + args`. Each agent uses its own default
+config (bake a model or other flags into the agent's `args` if
+you want them).
 
 ## Build & Development Commands
 
@@ -150,100 +160,69 @@ Enforced by cocogitto via pre-commit hooks.
 
 - **Types**: feat, fix, perf, refactor, docs, style, test,
   chore, ci, build, revert
-- **Scopes**: api, cli, ui, git, core, docs, deps, config, mcp
+- **Scopes**: cli, ui, git, core, docs, deps, config, agent
 - Use `cog commit feat "message"`
   or `cog commit fix "message" scope`
 
-## MCP Server
+## Agent Definitions
 
-A separate binary (`thurbox-mcp`) exposes Thurbox configuration
-over the Model Context Protocol. It supports stdio (default) and
-Streamable HTTP (`--transport streamable-http`) transports, and
-shares the same SQLite database as the TUI — changes appear
-automatically via `PRAGMA data_version` polling.
+The set of launchable coding agents is declared **as data** in
+`~/.config/thurbox/agents.toml`, seeded with built-ins
+(`claude`, `codex`, `gemini`, `opencode`, `aider`) on first run.
+Each `[[agents]]` entry is an `AgentDef`:
+
+```toml
+default = "claude"
+
+[[agents]]
+name = "claude"
+command = "claude"
+args = []                               # always passed; bake a model here if you want one
+resume_args = ["--resume", "{id}"]      # emitted when resuming
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]  # emitted on a fresh spawn
+
+[[agents]]
+name = "codex"
+command = "codex"
+```
+
+Each `*_args` group is appended only when its driving value is
+present, with `{id}` substituted; `args` is always passed. No
+model is ever passed — each agent uses its own default config
+(put `["--model", "opus"]` in `args` if you want to pin one).
+Agents that omit `resume_args` simply start fresh on restart (the
+live tmux process is what carries state across TUI restarts). Add
+your own `[[agents]]` entry to support any CLI — no recompile.
+
+- **Data type**: `session::AgentDef` / `session::AgentRegistry`
+  (`session/agent_def.rs`, pure data + substitution logic).
+- **Loading**: `agent::agent_config::load_or_seed()` reads/seeds
+  the TOML; `builtin_registry()` is the fallback.
+- **Launching**: `agent::GenericProvider` wraps an `AgentDef` and
+  implements the `AgentProvider` trait (`command()` +
+  `build_args(&SessionConfig)`). `App::provider_for(&config)`
+  picks the provider for the session's agent.
+
+A session stores only its **agent name**; there are no
+per-session model/permission/prompt/tool knobs.
+
+## thurbox-cli
+
+A second binary (`thurbox-cli`) drives the same SQLite-backed,
+tmux-hosted sessions headlessly (no TUI). It shares the database
+with the TUI; changes appear via `PRAGMA data_version` polling.
 
 ```bash
-cargo build --bin thurbox-mcp       # Build MCP server
-cargo run --bin thurbox-mcp         # Run stdio (default)
-thurbox-mcp --transport streamable-http        # HTTP on 127.0.0.1:8080
-thurbox-mcp --transport streamable-http --port 9090  # Custom port
+cargo build --bin thurbox-cli
+thurbox-cli session create --name demo --repo-path /path \
+    --agent codex --worktree-branch feat/x
+thurbox-cli session list | jq
 ```
 
-### Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `list_roles` | List all global roles |
-| `set_roles` | Atomically replace all global roles |
-| `list_mcp_servers` | List all global MCP servers |
-| `set_mcp_servers` | Set global MCP servers |
-| `list_sessions` | List all active sessions |
-| `get_session` | Get a session by UUID |
-| `delete_session` | Soft-delete a session (TUI cleans up tmux/worktree) |
-| `restart_session` | Restart a session synchronously (kills the tmux window and re-spawns claude with --resume) |
-| `restore_session` | Restore a soft-deleted session |
-| `list_skills` | List all effective skills (disk-source + registered) with source tag |
-| `set_skills` | Atomically replace all skill registry entries |
-| `register_skill` | Register/update a single skill reference (path must contain SKILL.md) |
-| `unregister_skill` | Remove a skill from the registry (never touches disk) |
-| `list_profiles` | List all effective profiles (bundled role/MCP/skill presets) |
-| `get_profile` | Get a single profile by name |
-| `set_profiles` | Atomically replace all global profiles |
-| `register_profile` | Register/update a single profile — referenced roles/MCP/skills must exist |
-| `unregister_profile` | Remove a profile from the registry |
-| `create_session` | Spawn a new local-tmux session (optionally on a fresh worktree) |
-| `send_prompt` | Send text to a session's terminal immediately (orchestrator mode) |
-| `capture_session_output` | Read rendered pane contents from a session |
-| `schedule_command` | Schedule text to be sent to a session at a future time |
-| `list_scheduled_commands` | List pending scheduled commands, optionally by session |
-| `get_scheduled_command` | Get a scheduled command by ID |
-| `cancel_scheduled_command` | Cancel a pending scheduled command |
-| `get_editor_command` | Get the editor command used by Ctrl+O |
-| `set_editor_command` | Set the editor command used by Ctrl+O |
-| `list_themes` | List available built-in TUI theme presets |
-| `get_theme` | Get the active TUI theme preset id |
-| `set_theme` | Set the active TUI theme (live-applied via data-version polling) |
-| `get_keybindings` | Get the user keybindings JSON document (or built-in defaults) |
-| `set_keybindings` | Replace `~/.config/thurbox/keybindings.json` (effective on next TUI start) |
-| `reset_keybindings` | Delete the keybindings override file, restoring defaults |
-
-**Role Management**: Roles are global presets.
-`set_roles` performs an atomic replacement — all existing roles
-are deleted and replaced in a single transaction. To add a role,
-include all existing roles plus the new one.
-See [`docs/MCP_ROLES.md`](docs/MCP_ROLES.md) for the complete
-role configuration guide including permission modes, tool name
-format, and example role patterns.
-
-**Profiles**: A profile is a named bundle of role, MCP server,
-and skill references applied together at session spawn. When
-multiple roles are listed, their `RolePermissions` are merged:
-union of `allowed_tools` and `disallowed_tools`, concatenated
-`append_system_prompt`, env maps merged with later-wins
-precedence, and the most-permissive `permission_mode` wins
-(ranked `plan` < `default` < `acceptEdits` < `bypassPermissions`;
-unknown modes rank lowest). Apply a profile via
-`create_session {"profile": "<name>"}` or `thurbox-cli session
-create --profile <name>`. Explicit `role`, `mcp_servers`, or
-`skills` on the spawn call override the profile's contribution
-for that field. One `orchestrator` profile is seeded by default
-(roles=`[developer]`, skills=`[orchestrate]`).
-
-### Admin Session (built-in MCP client)
-
-The TUI includes a global "Admin" session that auto-configures
-`thurbox-mcp` as an MCP server. On startup, Thurbox creates
-`~/.local/share/thurbox/admin/.mcp.json` and spawns an admin
-session there. Claude Code discovers the MCP config automatically,
-enabling conversational role/session management inside
-the TUI. See `docs/FEATURES.md` for details.
-
-### Module Isolation
-
-```text
-mcp → storage, session, sync, paths
-      (NEVER app, agent, ui, git)
-```
+Subcommands: `session` (create/list/get/delete/restore/restart/
+send/capture), `schedule`, `editor`. Pass `--pretty` for
+indented JSON.
 
 ## Architecture (TEA Pattern)
 
@@ -256,7 +235,6 @@ The app follows **The Elm Architecture**:
 session  ← pure data types, no local imports
 agent    ← imports session only (NEVER ui or git)
 ui       ← imports session only (NEVER agent or git)
-mcp      ← imports storage, session, sync, paths only
 app      ← coordinator, imports all modules
 ```
 
@@ -266,17 +244,19 @@ app      ← coordinator, imports all modules
   (`AppMessage` enum + `handle_key/resize`) + View.
   Owns all state, coordinates side effects.
 - **`agent/`** — Side-effect layer. `AgentProvider` trait
-  abstracts CLI command + arg construction (default:
-  `ClaudeProvider`). `Session` wraps a `SessionBackend`
-  trait. `BackendRegistry` holds the active backend
-  (`LocalTmuxBackend` using `tmux -L thurbox`).
+  abstracts CLI command + arg construction; `GenericProvider`
+  implements it from a declarative `AgentDef` (loaded via
+  `agent_config`). `Session` wraps a `SessionBackend`
+  trait. `BackendRegistry` holds the backends; the only
+  backend is `LocalTmuxBackend` (using `tmux -L thurbox`).
   Reads output into `Arc<Mutex<vt100::Parser>>`, writes input
   via mpsc channel. `input.rs` translates crossterm `KeyCode`
   → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
-  `SessionInfo`, `SessionConfig` (with optional `cwd`).
-  `default_developer_role()` provides the seeded developer role.
-  No logic beyond Display/Default impls.
+  `SessionInfo` (with `agent` name), `SessionConfig` (agent
+  name, ids, cwd, env), `AgentDef`/`AgentRegistry`.
+  Mostly Display/Default impls plus the agent-arg
+  substitution logic.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (session
@@ -284,16 +264,16 @@ app      ← coordinator, imports all modules
   `status_bar`, `repo_picker_modal` (repo selection with
   worktree toggle). `selection.rs` handles mouse-drag text
   selection, `links.rs` detects clickable URLs for Ctrl+Click.
-- **`mcp/`** — MCP server (`thurbox-mcp` binary). Exposes
-  role/session/skill/profile/MCP-server CRUD over stdio or
-  Streamable HTTP JSON-RPC. Shares the same SQLite database
-  as the TUI.
+  `agent_picker_modal` drives the new-session flow.
+- **`cli/`** — `thurbox-cli` subcommand dispatch (headless
+  session ops + scheduling + editor command).
 
 ### Event Loop (main.rs)
 
 ```text
-tokio::main → init local-tmux backend → open SQLite DB
-→ init terminal → spawn/restore sessions → loop {
+tokio::main → load AgentRegistry (agents.toml)
+  → init BackendRegistry (local-tmux)
+  → open SQLite DB → init terminal → spawn/restore sessions → loop {
     draw frame → poll crossterm events (10ms)
     → convert to AppMessage → app.update() → app.tick()
 } → app.shutdown() (detach sessions) → restore terminal
@@ -324,8 +304,9 @@ framework). Install with `prek install`. Stages:
 - Terminal state parsed by `vt100::Parser`,
   rendered by `tui_term::PseudoTerminal`
 - Sessions persist across restarts (tmux keeps them alive)
-- All state (sessions, roles) in SQLite:
-  `~/.local/share/thurbox/thurbox.db` (XDG_DATA_HOME respected)
+- Session state in SQLite:
+  `~/.local/share/thurbox/thurbox.db` (XDG_DATA_HOME respected);
+  agent definitions in `~/.config/thurbox/agents.toml`
 - Requires tmux >= 3.2
 
 ## Keybindings (Vim-Inspired)
@@ -345,7 +326,6 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
-| `Ctrl+E` | Edit settings (roles, MCP servers, skills) | **E**dit |
 | `Ctrl+O` | Open active session's worktree in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
@@ -362,10 +342,10 @@ Terminal forwards all non-Ctrl keys to the PTY.
 `Shift+arrows/PageUp/PageDown` for scrollback.
 
 These defaults can be overridden by writing
-`~/.config/thurbox/keybindings.json` (or via the MCP
-`set_keybindings` tool). The file maps an `Action` name to one or
-more chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`. Modal-internal
-keys (j/k/Enter/Esc inside selectors) are not customizable.
+`~/.config/thurbox/keybindings.json`. The file maps an `Action`
+name to one or more chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`.
+Modal-internal keys (j/k/Enter/Esc inside selectors) are not
+customizable.
 
 ## Themes
 
@@ -385,7 +365,6 @@ For rationale behind decisions, see `docs/`:
 - `docs/CONSTITUTION.md` — Core principles and non-negotiable rules
 - `docs/ARCHITECTURE.md` — Architectural decisions with rationale
 - `docs/FEATURES.md` — Feature-level design choices
-- `docs/MCP_ROLES.md` — MCP role configuration guide (permissions, tool patterns, examples)
 
 **Rule**: If a code change invalidates or extends a documented
 decision, update the relevant doc in the same PR.
