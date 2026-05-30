@@ -48,21 +48,46 @@ namcap PKGBUILD     # lint the recipe (if namcap is installed)
 namcap *.pkg.tar.zst
 ```
 
-## Bumping to a new release
+## Automated publishing (CI)
 
-1. Set `pkgver` to the new version (drop the `v` prefix) and reset
-   `pkgrel=1` in the relevant `PKGBUILD`.
-2. Refresh checksums: `updpkgsums`.
-3. Regenerate the metadata: `makepkg --printsrcinfo > .SRCINFO`.
-4. Rebuild to confirm: `makepkg -f`.
+New releases publish to the AUR **automatically**. The `publish-aur` job
+in [`.github/workflows/cd.yml`](../../.github/workflows/cd.yml) runs after
+the GitHub Release is created and, for each package:
 
-Pick a `pkgver` that has **published release assets** (check the GitHub
-releases page) — some tags exist without a completed binary release.
+1. bumps `pkgver` to the release version and resets `pkgrel=1`,
+2. recomputes `sha256sums` (`updpkgsums`) from the freshly released sources,
+3. regenerates `.SRCINFO`, and
+4. commits + pushes to the package's AUR git repo.
 
-## Publishing to the AUR
+The `pkgver`/`sha256sums` committed in this directory are therefore just a
+template/last-known-good — CI overrides them per release. The job is a
+no-op if nothing changed, and is skipped entirely when the SSH secret is
+absent (e.g. on forks).
 
-The AUR holds each package in its own git repo; this directory is just
-the source of truth. To publish/update:
+### One-time setup
+
+The job needs an SSH key that is registered on the AUR account and stored
+as the `AUR_SSH_PRIVATE_KEY` repository secret:
+
+```bash
+# 1. Generate a dedicated CI key (no passphrase)
+ssh-keygen -t ed25519 -C "thurbox-ci@aur" -f aur_ci -N ""
+
+# 2. Store the PRIVATE key as a GitHub Actions secret
+gh secret set AUR_SSH_PRIVATE_KEY < aur_ci
+
+# 3. Add the PUBLIC key (aur_ci.pub) to your AUR account at
+#    https://aur.archlinux.org/account  ->  "SSH Public Key"
+#    (paste it on a new line, keeping any existing keys)
+```
+
+The package must already exist on the AUR (initial import is manual, see
+below). After that, every release updates it automatically.
+
+## Manual publishing / initial import
+
+The AUR holds each package in its own git repo. For the first import (or a
+manual update):
 
 ```bash
 git clone ssh://aur@aur.archlinux.org/thurbox.git aur-thurbox
@@ -73,3 +98,8 @@ git push
 ```
 
 Repeat with `thurbox-bin/` against the `thurbox-bin.git` AUR repo.
+
+When bumping manually: set `pkgver` (drop the `v` prefix), reset
+`pkgrel=1`, run `updpkgsums`, regenerate `.SRCINFO`
+(`makepkg --printsrcinfo > .SRCINFO`), and confirm with `makepkg -f`.
+Pick a `pkgver` that has **published release assets** for `thurbox-bin`.

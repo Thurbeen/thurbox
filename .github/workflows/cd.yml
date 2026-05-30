@@ -222,3 +222,47 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish the Arch Linux AUR packages.
+  # Runs after `publish` so the GitHub Release assets (needed by thurbox-bin)
+  # and the tag's source tarball (needed by thurbox) are both available.
+  # Requires the AUR_SSH_PRIVATE_KEY secret; skipped automatically if unset.
+  publish-aur:
+    name: Publish AUR (${{ matrix.pkgname }})
+    needs: [check-release, create-tag, publish]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    # Hoisted so the publish step can be skipped when the secret is unset
+    # (the `secrets` context cannot be used directly in an `if` condition).
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pkgname: [thurbox, thurbox-bin]
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+
+      - name: Bump pkgver to the release version
+        run: |
+          PKGVER="${{ needs.check-release.outputs.version }}"
+          PKGVER="${PKGVER#v}"   # PKGBUILD pkgver is the bare semver
+          PKGBUILD="packaging/aur/${{ matrix.pkgname }}/PKGBUILD"
+          sed -i "s/^pkgver=.*/pkgver=${PKGVER}/" "$PKGBUILD"
+          sed -i "s/^pkgrel=.*/pkgrel=1/" "$PKGBUILD"
+          echo "Set ${{ matrix.pkgname }} to pkgver=${PKGVER}"
+
+      - name: Publish to the AUR
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
+        with:
+          pkgname: ${{ matrix.pkgname }}
+          pkgbuild: packaging/aur/${{ matrix.pkgname }}/PKGBUILD
+          updpkgsums: true   # recompute sha256sums from the freshly released sources
+          commit_username: thurbox-release-bot
+          commit_email: magicletur@protonmail.com
+          ssh_private_key: ${{ env.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.check-release.outputs.version }}"
