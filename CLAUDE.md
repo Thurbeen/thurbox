@@ -223,6 +223,48 @@ Subcommands: `session` (create/list/get/delete/restore/restart/
 send/capture), `schedule`, `editor`. Pass `--pretty` for
 indented JSON.
 
+## Demo Video
+
+The demo media (`docs/media/thurbox-demo.{gif,mp4}`) is
+**generated**, not hand-recorded. There are two pipelines, both
+driving the *real* TUI via [VHS](https://github.com/charmbracelet/vhs)
+(needs `vhs` + `ffmpeg` + `ttyd` + `tmux`) and writing GIF **and**
+MP4 straight into `docs/media/`:
+
+```bash
+scripts/demo/record.sh          # deterministic: canned in-binary demo agent
+scripts/demo/record-agents.sh   # showcase: real claude/opencode/codex/gemini
+```
+
+Both run fully isolated from your real environment — a dev build
+(`0.0.0-dev` → `dev_build` cfg) uses the `thurbox-dev` socket and
+XDG subdirs, and each script points `TMUX_TMPDIR` and
+`XDG_{DATA,CONFIG}_HOME` at a throwaway temp dir. **`TMUX_TMPDIR`
+is essential**: the `thurbox-dev` socket *name* is shared by every
+dev build, so without a private socket directory the cleanup
+`kill-server` would tear down dev sessions you already have running.
+
+- **`record.sh` (deterministic)**: each session runs an in-binary
+  replay agent. The script writes an `agents.toml` whose agents
+  point their `command` at the thurbox dev binary with the hidden
+  `__demo-agent <scenario>` subcommand; `src/main.rs` dispatches it
+  to `agent::demo::run_demo_agent()` (`src/agent/demo.rs`), which
+  streams a canned transcript (`src/agent/demo_scenarios/*.txt`,
+  embedded via `include_str!`) then idles. No API key, no network,
+  byte-stable output. `__demo-agent` is internal-only.
+- **`record-agents.sh` (real agents)**: seeds one session per
+  installed CLI (`claude`, `opencode`, `codex`, `gemini`) in a
+  throwaway sample repo and launches them with no prompt. It also
+  overrides `HOME`, so agents boot with fresh history/config (no
+  past conversations leak); CLIs that authenticate via the system
+  keyring stay logged in but show no account email on screen. The
+  tape exercises the info panel (`Ctrl+B`) and file viewer
+  (`Ctrl+E`) over the sample tree.
+
+`.github/workflows/pages.yml` copies the mp4 into
+`website/assets/` at deploy time and `README.md` embeds the gif,
+so regenerating these two files propagates everywhere.
+
 ## Architecture (TEA Pattern)
 
 The app follows **The Elm Architecture**:

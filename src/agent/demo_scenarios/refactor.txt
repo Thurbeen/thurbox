@@ -1,0 +1,19 @@
+> refactor the auth module to remove duplication
+
+# Scanning src/auth for repeated token-parsing logic.
+
+$ rg -n "jwt::decode" src/auth
+• found 3 near-identical implementations (login, refresh, verify)
+
+# Extracting one shared `decode_token` helper.
+
+- fn login()   { let claims = jwt::decode(t, &key, &val)?; /* ... */ }
+- fn refresh() { let claims = jwt::decode(t, &key, &val)?; /* ... */ }
+- fn verify()  { let claims = jwt::decode(t, &key, &val)?; /* ... */ }
++ fn decode_token(t: &str) -> Result<Claims> { jwt::decode(t, &key, &val) }
++ // login/refresh/verify now call decode_token(t)
+
+$ cargo test auth
+• 12 passed; 0 failed
+
+# Done — 3 call sites share one helper; behaviour unchanged.

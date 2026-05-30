@@ -137,9 +137,9 @@ impl Action {
             Action::FocusForward => vec![KeyChord::ctrl('l')],
             Action::NextSession => vec![KeyChord::ctrl('j')],
             Action::PreviousSession => vec![KeyChord::ctrl('k')],
-            Action::ToggleHelp => vec![KeyChord::function(1)],
-            Action::ToggleInfoPanel => vec![KeyChord::function(2)],
-            Action::ToggleFileViewer => vec![KeyChord::function(3)],
+            Action::ToggleHelp => vec![KeyChord::ctrl('g'), KeyChord::function(1)],
+            Action::ToggleInfoPanel => vec![KeyChord::ctrl('b'), KeyChord::function(2)],
+            Action::ToggleFileViewer => vec![KeyChord::ctrl('e'), KeyChord::function(3)],
         }
     }
 }
@@ -390,10 +390,25 @@ mod tests {
         let kb = KeyBindings::default();
         assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('q')));
         assert_eq!(kb.chord_for(Action::NewSession), Some(&KeyChord::ctrl('n')));
-        assert_eq!(
-            kb.chord_for(Action::ToggleHelp),
-            Some(&KeyChord::function(1))
-        );
+        assert_eq!(kb.chord_for(Action::ToggleHelp), Some(&KeyChord::ctrl('g')));
+    }
+
+    #[test]
+    fn function_key_actions_have_dual_ctrl_chord() {
+        // F-keys are unreliable over some terminals/recorders, so the panel
+        // toggles also accept a Ctrl chord (ctrl is primary, F-key secondary).
+        let kb = KeyBindings::default();
+        for (action, ctrl, f) in [
+            (Action::ToggleHelp, 'g', 1u8),
+            (Action::ToggleInfoPanel, 'b', 2),
+            (Action::ToggleFileViewer, 'e', 3),
+        ] {
+            assert_eq!(
+                kb.lookup(KeyCode::Char(ctrl), KeyModifiers::CONTROL),
+                Some(action)
+            );
+            assert_eq!(kb.lookup(KeyCode::F(f), KeyModifiers::NONE), Some(action));
+        }
     }
 
     #[test]

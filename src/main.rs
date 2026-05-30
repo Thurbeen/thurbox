@@ -15,6 +15,18 @@ use thurbox::storage::Database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Internal demo-replay agent (see src/agent/demo.rs). The demo-recording
+    // pipeline points an agent's command at this binary with `__demo-agent
+    // <scenario>`, so this must be handled before any terminal/TUI setup — it
+    // runs inside a thurbox session's tmux pane, not as the orchestrator.
+    {
+        let mut argv = std::env::args().skip(1);
+        if argv.next().as_deref() == Some("__demo-agent") {
+            let scenario = argv.next();
+            thurbox::agent::demo::run_demo_agent(scenario.as_deref().unwrap_or("default"));
+        }
+    }
+
     // Set up panic hook that restores terminal before printing the panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
