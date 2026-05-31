@@ -63,10 +63,10 @@
 }
 
 .docs-sidebar a.active {
-  color: var(--cyan);
-  border-left-color: var(--cyan);
+  color: var(--green);
+  border-left-color: var(--green);
   background: var(--bg-secondary);
-  text-shadow: var(--glow-red);
+  text-shadow: var(--glow-green);
 }
 
 .docs-sidebar a.current-page {
@@ -200,7 +200,7 @@ h3:hover .heading-anchor {
 }
 
 .docs-hub-card:hover .card {
-  border-color: var(--cyan);
+  border-color: var(--text-muted);
 }
 
 .docs-hub-card:hover .card h3 {
@@ -211,7 +211,7 @@ h3:hover .heading-anchor {
 .info-box {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--cyan);
+  border-left: 3px solid var(--green);
   border-radius: var(--border-radius-sm);
   padding: var(--space-md) var(--space-lg);
   margin-bottom: var(--space-lg);

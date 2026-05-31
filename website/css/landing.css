@@ -106,9 +106,7 @@
 }
 
 .hero-demo .terminal-frame {
-  box-shadow:
-    0 0 60px var(--term-glow),
-    0 20px 60px rgb(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px rgb(0, 0, 0, 0.6);
 }
 
 .hero-demo video {

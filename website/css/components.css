@@ -18,8 +18,7 @@
 
 .nav.scrolled {
   background: var(--bg-nav);
-  border-bottom-color: var(--cyan);
-  box-shadow: 0 0 12px rgb(255, 92, 84, 0.35);
+  border-bottom-color: var(--border);
   backdrop-filter: blur(12px);
 }
 
@@ -158,15 +157,12 @@
 .btn-secondary {
   background: transparent;
   color: var(--cyan);
-  border-color: var(--cyan);
+  border-color: var(--border);
 }
 
 .btn-secondary:hover {
-  color: #fff;
-  border-color: var(--cyan);
-  box-shadow:
-    0 0 16px rgb(255, 92, 84, 0.7),
-    inset 0 0 8px rgb(255, 92, 84, 0.35);
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
   text-shadow: var(--glow-red);
   transform: translateY(-1px);
 }
@@ -183,8 +179,8 @@
 }
 
 .card:hover {
-  border-color: var(--cyan);
-  box-shadow: 0 0 16px rgb(255, 92, 84, 0.35);
+  border-color: var(--text-muted);
+  box-shadow: 0 4px 14px rgb(0, 0, 0, 0.35);
 }
 
 .card-icon {
@@ -227,12 +223,10 @@
 /* ---- Terminal frame ---- */
 .terminal-frame {
   background: var(--bg-code);
-  border: 1px solid var(--cyan);
+  border: 1px solid var(--border);
   border-radius: var(--border-radius);
   overflow: hidden;
-  box-shadow:
-    0 0 30px var(--term-glow),
-    inset 0 0 40px rgb(255, 59, 48, 0.06);
+  box-shadow: 0 8px 30px rgb(0, 0, 0, 0.5);
 }
 
 .terminal-header {
