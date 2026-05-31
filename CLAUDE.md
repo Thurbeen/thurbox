@@ -167,7 +167,7 @@ Enforced by cocogitto via pre-commit hooks.
 
 The set of launchable coding agents is declared **as data** in
 `~/.config/thurbox/agents.toml`, seeded with built-ins
-(`claude`, `codex`, `gemini`, `opencode`, `aider`) on first run.
+(`claude`, `codex`, `gemini`, `opencode`, `aider`, `vibe`) on first run.
 Each `[[agents]]` entry is an `AgentDef`:
 
 ```toml

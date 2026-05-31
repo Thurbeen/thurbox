@@ -48,6 +48,10 @@ command = "opencode"
 [[agents]]
 name = "aider"
 command = "aider"
+
+[[agents]]
+name = "vibe"
+command = "vibe"
 "#;
 
 /// Path to the agent-definition config file:
@@ -121,6 +125,7 @@ mod tests {
         assert!(reg.get("gemini").is_some());
         assert!(reg.get("opencode").is_some());
         assert!(reg.get("aider").is_some());
+        assert!(reg.get("vibe").is_some());
         // Claude carries resume/fork groups; codex does not.
         assert!(!reg.get("claude").unwrap().resume_args.is_empty());
         assert!(reg.get("codex").unwrap().resume_args.is_empty());

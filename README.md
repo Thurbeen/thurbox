@@ -28,7 +28,7 @@ adds:
   repo(s) and branch, each running the agent you chose.
 - **Any agent** — a session runs one coding-agent CLI selected at
   creation time. Built-ins (claude, codex, gemini, opencode,
-  aider) are seeded into `~/.config/thurbox/agents.toml`; add your
+  aider, vibe) are seeded into `~/.config/thurbox/agents.toml`; add your
   own without recompiling.
 - **Git worktree isolation** — each session can spawn on a fresh
   worktree; `Ctrl+S` syncs them with `origin/main` and asks the
@@ -211,8 +211,8 @@ See the full [keybindings](#keybindings) below.
 
 A session launches exactly one coding-agent CLI. Agents are
 described as data in `~/.config/thurbox/agents.toml`, which is
-seeded with built-ins (claude, codex, gemini, opencode, aider) on
-first run. Edit the file to tweak an agent or add a new one — no
+seeded with built-ins (claude, codex, gemini, opencode, aider,
+vibe) on first run. Edit the file to tweak an agent or add a new one — no
 recompile required.
 
 Each `[[agents]]` entry maps the resume / fork / new-session ids
