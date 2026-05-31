@@ -68,6 +68,13 @@ pub fn render_info_panel(
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+    // Live activity from the agent-emitted OSC terminal title.
+    if let Some(activity) = info.agent_activity.as_deref() {
+        lines.push(Line::from(vec![
+            Span::styled("Activity: ", Theme::label()),
+            Span::styled(activity, Style::default().fg(Theme::text_secondary())),
+        ]));
+    }
 
     // ── Repos ──
     append_repos_section(&mut lines, info);

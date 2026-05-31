@@ -34,6 +34,7 @@ pub fn status_color(status: SessionStatus) -> Color {
         SessionStatus::Waiting => Theme::status_waiting(),
         SessionStatus::Idle => Theme::status_idle(),
         SessionStatus::Error => Theme::status_error(),
+        SessionStatus::Attention => Theme::accent_bright(),
     }
 }
 
@@ -463,6 +464,11 @@ mod tests {
         assert_eq!(status_color(SessionStatus::Waiting), Color::Yellow);
         assert_eq!(status_color(SessionStatus::Idle), Color::DarkGray);
         assert_eq!(status_color(SessionStatus::Error), Color::Red);
+        // Attention reuses the bright accent (distinct from the four above).
+        assert_eq!(
+            status_color(SessionStatus::Attention),
+            Theme::accent_bright()
+        );
     }
 
     #[test]

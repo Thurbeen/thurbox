@@ -14,7 +14,7 @@ use crate::session::SessionInfo;
 pub fn render_terminal(
     frame: &mut Frame,
     area: Rect,
-    parser: &mut vt100::Parser,
+    parser: &mut vt100::Parser<impl vt100::Callbacks>,
     info: &SessionInfo,
     level: FocusLevel,
     is_admin: bool,

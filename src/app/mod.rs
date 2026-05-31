@@ -906,7 +906,7 @@ impl App {
             .unwrap_or(TerminalView::Claude)
     }
 
-    pub(crate) fn with_active_parser(&self, f: impl FnOnce(&mut vt100::Parser)) {
+    pub(crate) fn with_active_parser(&self, f: impl FnOnce(&mut crate::agent::SessionParser)) {
         if let Some(session) = self.sessions.get(self.active_index) {
             let parser_arc = if self.active_terminal_view() == TerminalView::Shell {
                 session.shell_pane.as_ref().map(|sp| &sp.parser)
@@ -1415,13 +1415,34 @@ impl App {
     pub fn tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
 
-        for session in &mut self.sessions {
+        let active_index = self.active_index;
+        for (idx, session) in self.sessions.iter_mut().enumerate() {
+            // The active session is being watched, so acknowledge any pending
+            // attention signal (keeps it from flagging itself while focused).
+            if idx == active_index {
+                session.acknowledge_attention();
+            }
+            let needs_attention = session.needs_attention();
+
             session.info.status = if session.has_exited() {
                 SessionStatus::Idle
-            } else if session.millis_since_last_output() > ACTIVITY_TIMEOUT_MS {
-                SessionStatus::Waiting
-            } else {
+            } else if session.millis_since_last_output() <= ACTIVITY_TIMEOUT_MS {
+                // Actively producing output → working, regardless of past signals.
                 SessionStatus::Busy
+            } else if needs_attention {
+                // Quiet after a bell / OSC 9 / OSC 777 → finished or needs input.
+                SessionStatus::Attention
+            } else {
+                SessionStatus::Waiting
+            };
+
+            // Live activity text from the agent-emitted OSC terminal title.
+            session.info.agent_activity = session.agent_title();
+            // Surface the notification message only while attention is pending.
+            session.info.notification = if session.info.status == SessionStatus::Attention {
+                session.notification()
+            } else {
+                None
             };
         }
 

@@ -54,6 +54,9 @@ pub enum SessionStatus {
     Waiting,
     Idle,
     Error,
+    /// The agent signalled it finished or needs input (bell / OSC 9 / OSC 777).
+    /// Latched until the user looks at the session; sorts to the top of the list.
+    Attention,
 }
 
 impl SessionStatus {
@@ -63,6 +66,7 @@ impl SessionStatus {
             Self::Waiting => "◉",
             Self::Idle => "○",
             Self::Error => "✗",
+            Self::Attention => "▲",
         }
     }
 }
@@ -74,6 +78,7 @@ impl fmt::Display for SessionStatus {
             Self::Waiting => write!(f, "Waiting"),
             Self::Idle => write!(f, "Idle"),
             Self::Error => write!(f, "Error"),
+            Self::Attention => write!(f, "Needs attention"),
         }
     }
 }
@@ -113,6 +118,12 @@ pub struct SessionInfo {
     pub shell_backend_id: Option<String>,
     /// Agent metrics from the agent's statusline (Claude only).
     pub agent_metrics: Option<AgentMetrics>,
+    /// Latest OSC window title the agent emitted (live activity text),
+    /// captured from the terminal and refreshed each tick. Agent-neutral.
+    pub agent_activity: Option<String>,
+    /// Message text from the agent's latest attention notification (OSC 9/777),
+    /// shown as the status when `status == SessionStatus::Attention`.
+    pub notification: Option<String>,
     /// Whether this is the admin session (internal, never user-visible).
     pub is_admin: bool,
     /// Cached display names for repos, resolved from git remote or directory name.
@@ -135,6 +146,8 @@ impl SessionInfo {
             backend_id: None,
             shell_backend_id: None,
             agent_metrics: None,
+            agent_activity: None,
+            notification: None,
             is_admin: false,
             repo_display_names: Vec::new(),
         }
@@ -212,6 +225,10 @@ mod tests {
         assert!(info.agent_session_id.is_none());
         assert!(info.cwd.is_none());
         assert!(info.backend_id.is_none());
+        assert!(info.agent_metrics.is_none());
+        assert!(info.agent_activity.is_none());
+        assert!(info.notification.is_none());
+        assert_eq!(info.status, SessionStatus::Busy);
     }
 
     #[test]

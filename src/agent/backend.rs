@@ -21,6 +21,85 @@ pub(crate) fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// Captures terminal signals the agent emits into shared cells read by the app
+/// layer (mirrors the `last_output_at` side channel). The parser fires these
+/// callbacks while processing the PTY byte stream:
+///
+/// - **Title** (OSC `0`/`1`/`2`) → live activity text.
+/// - **Attention** — a terminal bell (`BEL`) or a desktop-notification escape
+///   (OSC `9`, OSC `777`) means the agent finished or needs input. We record
+///   the time of the latest such signal, plus its message text when the OSC
+///   carries one. This is how we surface a real "needs attention" state instead
+///   of timing-only Busy/Waiting.
+#[derive(Clone, Default)]
+pub struct TermSignals {
+    title: Arc<Mutex<Option<String>>>,
+    /// `now_millis()` of the most recent attention signal; `0` = none yet.
+    attention_at: Arc<AtomicU64>,
+    /// Message text from the most recent OSC 9/777 notification, if any.
+    notification: Arc<Mutex<Option<String>>>,
+}
+
+impl TermSignals {
+    fn store_title(&self, raw: &[u8]) {
+        let s = String::from_utf8_lossy(raw).trim().to_string();
+        if let Ok(mut guard) = self.title.lock() {
+            *guard = (!s.is_empty()).then_some(s);
+        }
+    }
+
+    /// Mark an attention signal, optionally with notification message text.
+    fn signal_attention(&self, message: Option<String>) {
+        self.attention_at.store(now_millis(), Ordering::Relaxed);
+        if let Some(msg) = message {
+            let msg = msg.trim().to_string();
+            if let Ok(mut guard) = self.notification.lock() {
+                *guard = (!msg.is_empty()).then_some(msg);
+            }
+        }
+    }
+}
+
+impl vt100::Callbacks for TermSignals {
+    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+        self.store_title(title);
+    }
+
+    fn set_window_icon_name(&mut self, _: &mut vt100::Screen, icon_name: &[u8]) {
+        // Some CLIs emit only OSC `1` (icon name); treat it as the title too.
+        self.store_title(icon_name);
+    }
+
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        // BEL: the cross-agent "done / needs you" signal (e.g. Claude's
+        // `preferredNotifChannel terminal_bell`). No message text.
+        self.signal_attention(None);
+    }
+
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        // Desktop-notification escapes carry the agent's status message.
+        //   OSC 9 ; <message>
+        //   OSC 777 ; notify ; <title> ; <body>
+        match params {
+            [b"9", msg] => self.signal_attention(Some(String::from_utf8_lossy(msg).into_owned())),
+            [b"777", kind, rest @ ..] if kind.eq_ignore_ascii_case(b"notify") => {
+                let msg = rest
+                    .iter()
+                    .map(|p| String::from_utf8_lossy(p))
+                    .collect::<Vec<_>>()
+                    .join(": ");
+                self.signal_attention(Some(msg));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Session terminal parser, specialized to capture terminal signals via
+/// [`TermSignals`]. The captured `Screen` is callback-independent, so
+/// rendering is unaffected.
+pub type SessionParser = vt100::Parser<TermSignals>;
+
 /// Metadata returned when discovering existing sessions from the backend.
 #[derive(Clone)]
 pub struct DiscoveredSession {
@@ -110,15 +189,18 @@ struct SessionIo {
 
 /// Wired-up I/O state: parser, channels, and exit tracking.
 struct WiredState {
-    parser: Arc<Mutex<vt100::Parser>>,
+    parser: Arc<Mutex<SessionParser>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
+    last_title: Arc<Mutex<Option<String>>>,
+    attention_at: Arc<AtomicU64>,
+    notification: Arc<Mutex<Option<String>>>,
 }
 
 /// A companion shell pane running alongside an agent session.
 pub struct ShellPane {
-    pub parser: Arc<Mutex<vt100::Parser>>,
+    pub parser: Arc<Mutex<SessionParser>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
     backend_id: String,
     /// Kept alive so the reader loop's Arc clone has a peer.
@@ -126,6 +208,9 @@ pub struct ShellPane {
     exited: Arc<AtomicBool>,
     #[allow(dead_code)]
     last_output_at: Arc<AtomicU64>,
+    /// Captured OSC title for the shell pane (unused; kept for symmetry).
+    #[allow(dead_code)]
+    last_title: Arc<Mutex<Option<String>>>,
 }
 
 impl ShellPane {
@@ -143,6 +228,7 @@ impl ShellPane {
             backend_id,
             exited: state.exited,
             last_output_at: state.last_output_at,
+            last_title: state.last_title,
         }
     }
 }
@@ -150,13 +236,23 @@ impl ShellPane {
 /// A running session connected to a backend.
 pub struct Session {
     pub info: SessionInfo,
-    pub parser: Arc<Mutex<vt100::Parser>>,
+    pub parser: Arc<Mutex<SessionParser>>,
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
     backend_id: String,
     backend: Arc<dyn SessionBackend>,
     provider: Arc<dyn AgentProvider>,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
+    /// Latest OSC window title the agent emitted (live activity text).
+    last_title: Arc<Mutex<Option<String>>>,
+    /// `now_millis()` of the latest attention signal (bell / OSC 9 / OSC 777).
+    attention_at: Arc<AtomicU64>,
+    /// Message text from the latest OSC 9/777 notification, if any.
+    notification: Arc<Mutex<Option<String>>>,
+    /// `now_millis()` of the last attention acknowledgement (set while the
+    /// session is the active one). Attention is pending when
+    /// `attention_at > attention_ack_at`.
+    attention_ack_at: u64,
     pub shell_pane: Option<ShellPane>,
     /// Session environment variables, passed to shell pane spawns.
     env: HashMap<String, String>,
@@ -251,7 +347,19 @@ impl Session {
 
     /// Create parser, spawn reader/writer loops for the given I/O handles.
     fn wire_up(rows: u16, cols: u16, io: SessionIo) -> (WiredState, String) {
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
+        let last_title = Arc::new(Mutex::new(None));
+        let attention_at = Arc::new(AtomicU64::new(0));
+        let notification = Arc::new(Mutex::new(None));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            rows,
+            cols,
+            1000,
+            TermSignals {
+                title: Arc::clone(&last_title),
+                attention_at: Arc::clone(&attention_at),
+                notification: Arc::clone(&notification),
+            },
+        )));
 
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(now_millis()));
@@ -271,6 +379,9 @@ impl Session {
             input_tx,
             exited,
             last_output_at,
+            last_title,
+            attention_at,
+            notification,
         };
         (state, io.backend_id)
     }
@@ -295,6 +406,10 @@ impl Session {
             provider: Arc::clone(provider),
             exited: state.exited,
             last_output_at: state.last_output_at,
+            last_title: state.last_title,
+            attention_at: state.attention_at,
+            notification: state.notification,
+            attention_ack_at: 0,
             shell_pane: None,
             env,
         }
@@ -302,7 +417,7 @@ impl Session {
 
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
-        parser: Arc<Mutex<vt100::Parser>>,
+        parser: Arc<Mutex<SessionParser>>,
         exited: Arc<AtomicBool>,
         last_output_at: Arc<AtomicU64>,
     ) {
@@ -377,6 +492,28 @@ impl Session {
 
     pub fn millis_since_last_output(&self) -> u64 {
         now_millis().saturating_sub(self.last_output_at.load(Ordering::Relaxed))
+    }
+
+    /// Latest OSC window title the agent emitted, if any (live activity text).
+    pub fn agent_title(&self) -> Option<String> {
+        self.last_title.lock().ok().and_then(|t| t.clone())
+    }
+
+    /// Whether the agent has signalled for attention (bell / OSC 9 / OSC 777)
+    /// since it was last acknowledged. Cleared via [`Self::acknowledge_attention`].
+    pub fn needs_attention(&self) -> bool {
+        self.attention_at.load(Ordering::Relaxed) > self.attention_ack_at
+    }
+
+    /// Message text from the latest attention notification, if any.
+    pub fn notification(&self) -> Option<String> {
+        self.notification.lock().ok().and_then(|n| n.clone())
+    }
+
+    /// Acknowledge any pending attention signal (called while the session is
+    /// the active/selected one — the user is already looking at it).
+    pub fn acknowledge_attention(&mut self) {
+        self.attention_ack_at = now_millis();
     }
 
     /// Return the backend-specific session identifier.
@@ -544,13 +681,22 @@ impl Session {
         let (input_tx, _input_rx) = mpsc::unbounded_channel();
         Self {
             info: SessionInfo::new(name.to_string()),
-            parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0))),
+            parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+                24,
+                80,
+                0,
+                TermSignals::default(),
+            ))),
             input_tx,
             backend_id: String::new(),
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
             exited: Arc::new(AtomicBool::new(false)),
             last_output_at: Arc::new(AtomicU64::new(now_millis())),
+            last_title: Arc::new(Mutex::new(None)),
+            attention_at: Arc::new(AtomicU64::new(0)),
+            notification: Arc::new(Mutex::new(None)),
+            attention_ack_at: 0,
             shell_pane: None,
             env: HashMap::new(),
         }
@@ -566,5 +712,68 @@ mod tests {
         let ms = now_millis();
         // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
+    }
+
+    #[test]
+    fn title_capture_extracts_osc_title() {
+        let title = Arc::new(Mutex::new(None));
+        let mut parser = vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals {
+                title: Arc::clone(&title),
+                ..Default::default()
+            },
+        );
+        // OSC 2 (set window title), BEL-terminated.
+        parser.process(b"\x1b]2;working on tests\x07");
+        assert_eq!(title.lock().unwrap().as_deref(), Some("working on tests"));
+
+        // OSC 0 (set icon name + title) updates it too.
+        parser.process(b"\x1b]0;done\x07");
+        assert_eq!(title.lock().unwrap().as_deref(), Some("done"));
+
+        // An empty title clears the cell rather than storing "".
+        parser.process(b"\x1b]2;\x07");
+        assert_eq!(*title.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn attention_signals_are_captured() {
+        let attention_at = Arc::new(AtomicU64::new(0));
+        let notification = Arc::new(Mutex::new(None));
+        let mut parser = vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals {
+                attention_at: Arc::clone(&attention_at),
+                notification: Arc::clone(&notification),
+                ..Default::default()
+            },
+        );
+
+        // No signal yet.
+        assert_eq!(attention_at.load(Ordering::Relaxed), 0);
+
+        // Terminal bell → attention, no message.
+        parser.process(b"\x07");
+        assert!(attention_at.load(Ordering::Relaxed) > 0);
+        assert_eq!(*notification.lock().unwrap(), None);
+
+        // OSC 9 desktop notification → attention + message text.
+        parser.process(b"\x1b]9;Claude is waiting for your input\x07");
+        assert_eq!(
+            notification.lock().unwrap().as_deref(),
+            Some("Claude is waiting for your input")
+        );
+
+        // OSC 777 notify form → attention + joined title/body.
+        parser.process(b"\x1b]777;notify;Claude;Task done\x07");
+        assert_eq!(
+            notification.lock().unwrap().as_deref(),
+            Some("Claude: Task done")
+        );
     }
 }

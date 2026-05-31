@@ -48,6 +48,36 @@ the agent ("the codex one"), occasionally the repo path. Indexing
 all four makes the search hit on the first attempt without forcing
 the user to remember which field to type into.
 
+### Live status & "needs attention"
+
+Each row is two lines: `<status-dot> <name>` with a right-aligned
+live status on line 1, and `<agent> · <repo>(<branch>)` on line 2.
+
+The status is richer than raw output-timing. We parse the agent's
+own terminal signals from its PTY (via the `vt100` callbacks already
+used for the window title):
+
+- **OSC title** (`0`/`1`/`2`) → shown as live activity when the agent
+  reports one (e.g. Gemini's `◇ Ready`).
+- **Attention** — a terminal bell (`BEL`) or a desktop-notification
+  escape (**OSC 9**, **OSC 777**) means the agent finished or is
+  waiting for input. This latches a distinct `Needs attention` status
+  (`▲`, accent colour) that shows the notification's message text when
+  present, and **sorts the session to the top of the list** so blocked
+  or finished agents surface first. It clears automatically once you
+  select the session (you're now looking at it).
+
+**Why signals instead of guessing?** Pure output-timing can only say
+"quiet for >1s"; it can't tell a thinking pause from "done" or "needs
+you". The agents already emit these signals — we just read them. This
+mirrors how dashboards like Orca surface working / waiting / finished.
+
+**Caveat (Claude in tmux):** Claude Code only emits the OSC 9 desktop
+notification for Ghostty/Kitty/iTerm2, so inside thurbox's tmux pane
+set `claude config set --global preferredNotifChannel terminal_bell`
+to get the bell we can detect. We capture bell + OSC 9 + OSC 777,
+whichever the agent produces.
+
 ---
 
 ## Session Creation
