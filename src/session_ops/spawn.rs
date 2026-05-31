@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::{SessionConfig, SessionId, DEFAULT_AGENT_NAME};
+use crate::session::{HostDef, SessionConfig, SessionId, DEFAULT_AGENT_NAME};
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
 
@@ -31,6 +31,9 @@ pub struct SpawnRequest {
     /// Optional pre-generated agent session UUID. When unset one is generated
     /// so callers can return it to the user immediately.
     pub agent_session_id: Option<String>,
+    /// Optional remote host name (from `hosts.toml`). When set, the session is
+    /// created on that host over SSH (worktree + tmux window live remotely).
+    pub host: Option<String>,
 }
 
 /// Result returned on successful headless spawn.
@@ -50,7 +53,11 @@ pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<Spawn
     validate_session_name(&req.name)?;
 
     let agent_name = resolve_agent_name(req.agent.as_deref());
-    let (cwd, worktrees) = resolve_cwd(&req)?;
+
+    // Resolve the optional remote host. `backend_type` is `local-tmux` or
+    // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
+    let (backend_type, host) = resolve_host(req.host.as_deref())?;
+    let (cwd, worktrees) = resolve_cwd(&req, host.as_ref())?;
 
     let agent_session_id = req
         .agent_session_id
@@ -61,25 +68,39 @@ pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<Spawn
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(cwd.clone()),
         agent: agent_name.clone(),
+        backend: (backend_type != LOCAL_TMUX_BACKEND_TYPE).then(|| backend_type.clone()),
         ..SessionConfig::default()
     };
     super::inject_thurbox_env(&mut config, &agent_session_id);
 
     let (command, args) = super::build_agent_invocation(&config);
 
-    crate::agent::tmux::spawn_window(&req.name, &command, &args, Some(&cwd), &config.env)
-        .map_err(|e| format!("Failed to spawn tmux window: {e}"))?;
+    // Remote spawns drive the SSH backend's control mode to learn the real pane
+    // id; local spawns leave `backend_id` empty for the TUI to resolve by name.
+    let backend_id = match host.as_ref() {
+        Some(h) => crate::agent::tmux::spawn_window_remote(
+            h,
+            &req.name,
+            &command,
+            &args,
+            Some(&cwd),
+            &config.env,
+        )
+        .map_err(|e| format!("Failed to spawn remote tmux window: {e:#}"))?,
+        None => {
+            crate::agent::tmux::spawn_window(&req.name, &command, &args, Some(&cwd), &config.env)
+                .map_err(|e| format!("Failed to spawn tmux window: {e}"))?;
+            String::new()
+        }
+    };
 
     let session_id = SessionId::default();
     let shared = SharedSession {
         id: session_id,
         name: req.name.clone(),
         agent: agent_name.clone(),
-        // No pane_id is available without control mode. Leave `backend_id`
-        // empty so `App::find_matching_discovered` falls back to matching by
-        // the sanitized window name.
-        backend_id: String::new(),
-        backend_type: LOCAL_TMUX_BACKEND_TYPE.to_string(),
+        backend_id,
+        backend_type,
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(cwd.clone()),
         additional_dirs: Vec::new(),
@@ -126,12 +147,15 @@ fn resolve_agent_name(requested: Option<&str>) -> String {
 /// Returns the bare repo path when no worktree branch is given; otherwise
 /// creates the worktree and returns its path plus a single
 /// [`SharedWorktree`] entry.
-fn resolve_cwd(req: &SpawnRequest) -> Result<(PathBuf, Vec<SharedWorktree>), String> {
+fn resolve_cwd(
+    req: &SpawnRequest,
+    host: Option<&HostDef>,
+) -> Result<(PathBuf, Vec<SharedWorktree>), String> {
     let Some(branch) = req.worktree_branch.as_deref() else {
         return Ok((req.repo_path.clone(), Vec::new()));
     };
     let base_branch = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
-    let path = crate::git::create_worktree(&req.repo_path, branch, base_branch)
+    let path = crate::git::create_worktree_on(host, &req.repo_path, branch, base_branch)
         .map_err(|e| format!("Failed to create worktree {branch} off {base_branch}: {e}"))?;
     let wt = SharedWorktree {
         repo_path: req.repo_path.clone(),
@@ -139,6 +163,26 @@ fn resolve_cwd(req: &SpawnRequest) -> Result<(PathBuf, Vec<SharedWorktree>), Str
         branch: branch.to_string(),
     };
     Ok((path, vec![wt]))
+}
+
+/// Resolve `--host` to `(backend_type, host)`.
+///
+/// `None`/empty → the local backend. A named host must exist in `hosts.toml`,
+/// otherwise an error is returned listing the available hosts.
+fn resolve_host(host_name: Option<&str>) -> Result<(String, Option<HostDef>), String> {
+    let Some(name) = host_name.filter(|n| !n.is_empty()) else {
+        return Ok((LOCAL_TMUX_BACKEND_TYPE.to_string(), None));
+    };
+    let registry = crate::agent::host_config::load_or_seed();
+    match registry.get(name) {
+        Some(h) => Ok((h.backend_name(), Some(h.clone()))),
+        None => {
+            let available = registry.names().join(", ");
+            Err(format!(
+                "Unknown host '{name}'. Configure it in hosts.toml. Available: [{available}]"
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -158,6 +202,7 @@ mod tests {
             base_branch: None,
             agent: None,
             agent_session_id: None,
+            host: None,
         }
     }
 
@@ -183,5 +228,42 @@ mod tests {
     fn resolve_agent_name_uses_explicit() {
         assert_eq!(resolve_agent_name(Some("codex")), "codex");
         assert_eq!(resolve_agent_name(Some("")), DEFAULT_AGENT_NAME);
+    }
+
+    #[test]
+    fn resolve_host_none_is_local() {
+        let (backend_type, host) = resolve_host(None).unwrap();
+        assert_eq!(backend_type, LOCAL_TMUX_BACKEND_TYPE);
+        assert!(host.is_none());
+        // Empty string is treated the same as None.
+        let (backend_type, host) = resolve_host(Some("")).unwrap();
+        assert_eq!(backend_type, LOCAL_TMUX_BACKEND_TYPE);
+        assert!(host.is_none());
+    }
+
+    #[test]
+    fn resolve_host_unknown_errors_with_guidance() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let err = resolve_host(Some("nope")).unwrap_err();
+        assert!(err.contains("Unknown host 'nope'"), "got: {err}");
+        assert!(err.contains("hosts.toml"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_host_reads_configured_host() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[[hosts]]\nname = \"devbox\"\ndestination = \"me@devbox\"\n",
+        )
+        .unwrap();
+
+        let (backend_type, host) = resolve_host(Some("devbox")).unwrap();
+        assert_eq!(backend_type, "ssh:devbox");
+        assert_eq!(host.unwrap().destination, "me@devbox");
     }
 }

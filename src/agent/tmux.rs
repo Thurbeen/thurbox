@@ -1304,6 +1304,33 @@ pub fn spawn_window(
     Ok(())
 }
 
+/// Headless spawn of an agent window on a remote host over SSH.
+///
+/// Returns the remote tmux pane id (`%N`). Unlike the local [`spawn_window`]
+/// (which leaves `backend_id` empty for the TUI to resolve by name), this drives
+/// the SSH backend's control mode to learn the real pane id up front. The
+/// control-mode connection is dropped when this returns; the remote tmux keeps
+/// the window alive for the TUI to adopt later.
+pub fn spawn_window_remote(
+    host: &crate::session::HostDef,
+    session_name: &str,
+    command: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    env: &HashMap<String, String>,
+) -> Result<String> {
+    let backend = TmuxBackend::from_host(host);
+    backend
+        .check_available()
+        .context("remote host is unreachable or tmux is missing")?;
+    backend.ensure_ready()?;
+    let window_name = agent_window_name(session_name);
+    // Headless: no live terminal, so use a sane default geometry. The TUI
+    // resizes the pane to its real dimensions when it adopts the session.
+    let spawned = backend.spawn(&window_name, command, args, cwd, env, 24, 80)?;
+    Ok(spawned.backend_id)
+}
+
 /// Kill the tmux window `tb-<session_name>` if it exists.
 pub fn kill_window(session_name: &str) -> Result<()> {
     let target = window_target(session_name);

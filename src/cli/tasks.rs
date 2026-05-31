@@ -191,6 +191,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 base_branch: base_branch.clone(),
                 agent: agent.clone(),
                 agent_session_id: None,
+                host: None,
             };
             crate::session_ops::spawn_session_headless(db, req)?;
             crate::agent::tmux::send_prompt_after_delay(&name, &prompt, BOOT_DELAY_SECS)

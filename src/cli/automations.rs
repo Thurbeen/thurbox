@@ -321,6 +321,7 @@ fn fire_headless(db: &Database, auto: &Automation) -> (AutomationRunStatus, Stri
                 base_branch: base_branch.clone(),
                 agent: agent.clone(),
                 agent_session_id: None,
+                host: None,
             };
             match crate::session_ops::spawn_session_headless(db, req) {
                 Ok(_) => {

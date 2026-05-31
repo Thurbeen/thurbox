@@ -36,6 +36,10 @@ pub enum Action {
         /// Base branch for the worktree (default: main).
         #[arg(long)]
         base_branch: Option<String>,
+        /// Remote host to run the session on (name from `hosts.toml`). The
+        /// worktree and tmux window are created on that host over SSH.
+        #[arg(long)]
+        host: Option<String>,
     },
     /// Soft-delete a session.
     ///
@@ -99,6 +103,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             agent,
             worktree_branch,
             base_branch,
+            host,
         } => {
             let req = crate::session_ops::SpawnRequest {
                 name,
@@ -107,6 +112,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 base_branch,
                 agent,
                 agent_session_id: None,
+                host,
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             Ok(json!({
