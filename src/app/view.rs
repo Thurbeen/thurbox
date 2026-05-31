@@ -15,8 +15,8 @@ use crate::session::{Action, Category, KeyBindings, KeyChord, SessionInfo};
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
-    agent_picker_modal, branch_selector_modal, file_viewer, info_panel, layout, project_list,
-    restore_sessions_modal, schedule_command_modal, scheduled_commands_list_modal,
+    agent_picker_modal, automation_editor_modal, automations_list_modal, automations_panel,
+    branch_selector_modal, file_viewer, info_panel, layout, project_list, restore_sessions_modal,
     session_name_modal, status_bar, terminal_view, theme_picker_modal, worktree_name_modal,
 };
 
@@ -24,8 +24,12 @@ use super::{App, InputFocus, TerminalView};
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
-        let areas =
-            layout::compute_layout(frame.area(), self.show_info_panel, self.show_file_viewer);
+        let areas = layout::compute_layout(
+            frame.area(),
+            self.show_info_panel,
+            self.show_file_viewer,
+            self.cached_automations.len(),
+        );
 
         let active_name = self
             .sessions
@@ -65,7 +69,9 @@ impl App {
             use crate::ui::FocusLevel;
             let list_focus = match self.focus {
                 InputFocus::SessionList => FocusLevel::Focused,
-                InputFocus::Terminal | InputFocus::FileViewer => FocusLevel::Active,
+                InputFocus::Automations | InputFocus::Terminal | InputFocus::FileViewer => {
+                    FocusLevel::Active
+                }
             };
 
             let match_count = self
@@ -96,18 +102,49 @@ impl App {
             );
         }
 
+        // Automations pane (beneath the session list in the left column)
+        if let Some(auto_area) = areas.automations_panel {
+            let now = crate::sync::current_time_millis();
+            let entries: Vec<automations_panel::AutomationPaneEntry> = self
+                .cached_automations
+                .iter()
+                .map(|a| automations_panel::AutomationPaneEntry {
+                    name: a.name.clone(),
+                    summary: super::format_automation_summary(a, now),
+                    enabled: a.enabled,
+                })
+                .collect();
+            let focus = if self.focus == InputFocus::Automations {
+                crate::ui::FocusLevel::Focused
+            } else {
+                crate::ui::FocusLevel::Inactive
+            };
+            let selected = self
+                .automation_panel_index
+                .min(entries.len().saturating_sub(1));
+            automations_panel::render_automations_pane(
+                frame,
+                auto_area,
+                &automations_panel::AutomationsPaneState {
+                    entries: &entries,
+                    selected,
+                    focus,
+                },
+            );
+        }
+
         // Info panel
         if let Some(info_area) = areas.info_panel {
             if let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) {
                 let now = crate::sync::current_time_millis();
-                let scheduled_entries: Vec<info_panel::ScheduledCommandEntry> = self
-                    .cached_pending_commands
+                let automation_entries: Vec<info_panel::AutomationEntry> = self
+                    .cached_automations
                     .iter()
-                    .filter(|cmd| cmd.session_id == info.id)
-                    .map(|cmd| {
-                        let remaining = cmd.scheduled_at.saturating_sub(now);
-                        info_panel::ScheduledCommandEntry {
-                            command_preview: truncate_str(&cmd.command_text, 30),
+                    .filter(|a| a.enabled && a.next_run_at.is_some())
+                    .map(|a| {
+                        let remaining = a.next_run_at.unwrap_or(now).saturating_sub(now);
+                        info_panel::AutomationEntry {
+                            label: truncate_str(&a.name, 30),
                             countdown: format_countdown(remaining),
                         }
                     })
@@ -117,7 +154,7 @@ impl App {
                     info_area,
                     info,
                     Some(&self.system_metrics),
-                    &scheduled_entries,
+                    &automation_entries,
                 );
             }
         }
@@ -141,7 +178,9 @@ impl App {
         // Terminal
         let terminal_focus = match self.focus {
             InputFocus::Terminal => crate::ui::FocusLevel::Focused,
-            InputFocus::SessionList | InputFocus::FileViewer => crate::ui::FocusLevel::Active,
+            InputFocus::SessionList | InputFocus::Automations | InputFocus::FileViewer => {
+                crate::ui::FocusLevel::Active
+            }
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
         match self.sessions.get(self.active_index) {
@@ -170,6 +209,7 @@ impl App {
 
         let focus_label = match self.focus {
             InputFocus::SessionList => "Sessions",
+            InputFocus::Automations => "Automations",
             InputFocus::Terminal if is_shell_view => "Shell",
             InputFocus::Terminal => "Terminal",
             InputFocus::FileViewer => "Files",
@@ -183,7 +223,7 @@ impl App {
                 focus_label,
                 sync_in_progress: self.worktree_sync_in_progress,
                 tick_count: self.tick_count,
-                pending_scheduled_count: self.cached_pending_commands.len(),
+                automation_count: self.cached_automations.iter().filter(|a| a.enabled).count(),
                 file_viewer_open: self.show_file_viewer,
             },
         );
@@ -265,50 +305,59 @@ impl App {
             );
         }
 
-        // Schedule command modal
-        if let super::modals::Modal::ScheduleCommand(ref sc) = self.modal {
-            let session_name = sc
-                .editing
-                .as_ref()
-                .map(|ed| ed.session_name.as_str())
-                .unwrap_or_else(|| {
-                    self.sessions
-                        .get(self.active_index)
-                        .map(|s| s.info.name.as_str())
-                        .unwrap_or("?")
-                });
-            schedule_command_modal::render_schedule_command_modal(
+        // Automation editor modal
+        if let super::modals::Modal::AutomationEditor(ref m) = self.modal {
+            // Live preview of when this schedule will next fire (or the
+            // validation error for the current input).
+            let now = crate::sync::current_time_millis();
+            let preview = match m.build_schedule(now) {
+                Ok(sched) => match sched.next_after(now, m.timezone().as_deref()) {
+                    Some(next) => format!("in {}", format_countdown(next.saturating_sub(now))),
+                    None => "never (check schedule)".to_string(),
+                },
+                Err(e) => e,
+            };
+            automation_editor_modal::render_automation_editor_modal(
                 frame,
-                &schedule_command_modal::ScheduleCommandState {
-                    command: sc.command.value(),
-                    command_cursor: sc.command.cursor_pos(),
-                    delay_minutes: sc.delay_minutes.value(),
-                    delay_cursor: sc.delay_minutes.cursor_pos(),
-                    focused_field: sc.field,
-                    session_name,
-                    editing: sc.editing.is_some(),
+                &automation_editor_modal::AutomationEditorState {
+                    editing: m.editing_id.is_some(),
+                    field: m.field,
+                    trigger_kind: m.trigger_kind,
+                    action: m.action,
+                    enabled: m.enabled,
+                    name: m.name.value(),
+                    delay: m.delay.value(),
+                    weekday: m.weekday,
+                    hour: m.hour,
+                    minute: m.minute,
+                    cron_expr: m.cron_expr.value(),
+                    timezone: m.timezone.value(),
+                    repo: m.repo.value(),
+                    worktree: m.worktree.value(),
+                    agent: m.agent.value(),
+                    prompt: m.prompt.value(),
+                    target_session: m.target_session.as_ref().map(|(_, name)| name.as_str()),
+                    preview: &preview,
                 },
             );
         }
 
-        // Scheduled commands list modal
-        if let super::modals::Modal::ScheduledCommandsList(ref scl) = self.modal {
-            let entries: Vec<scheduled_commands_list_modal::ScheduledCommandsListEntry> = scl
-                .commands
+        // Automations list modal
+        if let super::modals::Modal::AutomationsList(ref al) = self.modal {
+            let entries: Vec<automations_list_modal::AutomationsListEntry> = al
+                .entries
                 .iter()
-                .map(
-                    |e| scheduled_commands_list_modal::ScheduledCommandsListEntry {
-                        session_name: e.session_name.clone(),
-                        command_preview: e.command_text.clone(),
-                        countdown: e.countdown.clone(),
-                    },
-                )
+                .map(|e| automations_list_modal::AutomationsListEntry {
+                    name: e.name.clone(),
+                    summary: e.summary.clone(),
+                    enabled: e.enabled,
+                })
                 .collect();
-            scheduled_commands_list_modal::render_scheduled_commands_list_modal(
+            automations_list_modal::render_automations_list_modal(
                 frame,
-                &scheduled_commands_list_modal::ScheduledCommandsListState {
+                &automations_list_modal::AutomationsListState {
                     entries: &entries,
-                    selected_index: scl.index,
+                    selected_index: al.index,
                 },
             );
         }

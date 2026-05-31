@@ -1,4 +1,7 @@
 pub mod agent_picker_modal;
+pub mod automation_editor_modal;
+pub mod automations_list_modal;
+pub mod automations_panel;
 pub mod branch_selector_modal;
 pub mod file_viewer;
 pub mod info_panel;
@@ -7,8 +10,6 @@ pub mod links;
 pub mod project_list;
 pub mod repo_picker_modal;
 pub mod restore_sessions_modal;
-pub mod schedule_command_modal;
-pub mod scheduled_commands_list_modal;
 pub mod selection;
 pub mod session_name_modal;
 pub mod status_bar;

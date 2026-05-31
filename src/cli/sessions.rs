@@ -128,7 +128,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 "killed_window": report.killed_window,
                 "removed_worktrees": report.removed_worktrees,
                 "worktree_errors": report.worktree_errors,
-                "cancelled_scheduled": report.cancelled_scheduled,
+                "disabled_automations": report.disabled_automations,
             }))
         }
         Action::Restore { uuid } => {
@@ -322,8 +322,17 @@ mod tests {
             tombstone_at: None,
         };
         db.upsert_session(&shared).unwrap();
-        let future = crate::sync::current_time_millis() + 60_000;
-        let cmd = db.create_scheduled_command(id, "noop", future).unwrap();
+        let auto = db
+            .create_automation(&crate::storage::automations::NewAutomation {
+                name: "noop".into(),
+                enabled: true,
+                schedule: crate::session::AutomationSchedule::Once { at: u64::MAX },
+                timezone: None,
+                action: crate::session::AutomationAction::Send { session_id: id },
+                prompt: "noop".into(),
+                next_run_at: Some(u64::MAX),
+            })
+            .unwrap();
 
         let v = run(
             Action::Delete {
@@ -335,15 +344,11 @@ mod tests {
         .unwrap();
         assert_eq!(v["deleted"], true);
         assert_eq!(v["forced"], false);
-        assert_eq!(v["cancelled_scheduled"], 0);
+        assert_eq!(v["disabled_automations"], 0);
 
-        // Row is soft-deleted but recoverable; scheduled command is intact.
+        // Row is soft-deleted but recoverable; the automation is untouched.
         assert!(db.get_session_by_id(id).unwrap().is_none());
-        assert!(db
-            .list_pending_scheduled_commands()
-            .unwrap()
-            .iter()
-            .any(|c| c.id == cmd));
+        assert!(db.get_automation(auto).unwrap().unwrap().enabled);
         let restored = run(
             Action::Restore {
                 uuid: id.to_string(),

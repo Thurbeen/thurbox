@@ -73,7 +73,7 @@
             <li><a href="#search">Search</a></li>
             <li><a href="#terminal-scrollback">Terminal Scrollback</a></li>
             <li><a href="#modals">Modal Keybindings</a></li>
-            <li><a href="#scheduled-commands">Scheduled Commands</a></li>
+            <li><a href="#automations">Automations</a></li>
             <li><a href="#agent-picker">Agent Picker</a></li>
           </ul>
         </aside>
@@ -162,7 +162,7 @@
               </tr>
               <tr>
                 <td><code>Ctrl+P</code></td>
-                <td>Schedule command for active session</td>
+                <td>Automations (scheduled agent runs)</td>
                 <td>
                   <strong>P</strong>
                   rogram
@@ -476,16 +476,22 @@
             </tbody>
           </table>
 
-          <h2 id="scheduled-commands">
-            Scheduled Commands
-            <a href="#scheduled-commands" class="heading-anchor">#</a>
+          <h2 id="automations">
+            Automations
+            <a href="#automations" class="heading-anchor">#</a>
           </h2>
           <p>
+            A dedicated Automations pane sits beneath the session list (always present). It joins
+            the
+            <code>Ctrl+H</code>
+            /
+            <code>Ctrl+L</code>
+            focus cycle;
             <code>Ctrl+P</code>
-            opens a modal to schedule text that will be sent to the active session after a delay.
+            opens the same list as a modal at any width.
           </p>
 
-          <h3>Schedule command modal</h3>
+          <h3>Automations pane / list (focused)</h3>
           <table>
             <thead>
               <tr>
@@ -495,12 +501,78 @@
             </thead>
             <tbody>
               <tr>
-                <td><code>Tab</code></td>
-                <td>Switch between Command and Delay fields</td>
+                <td>
+                  <code>Ctrl+N</code>
+                  /
+                  <code>n</code>
+                </td>
+                <td>New automation (opens the editor)</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>j</code>
+                  /
+                  <code>k</code>
+                </td>
+                <td>Select previous / next automation</td>
+              </tr>
+              <tr>
+                <td><code>Space</code></td>
+                <td>Toggle enabled / disabled</td>
+              </tr>
+              <tr>
+                <td><code>r</code></td>
+                <td>Run now</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>e</code>
+                  /
+                  <code>Enter</code>
+                </td>
+                <td>Edit</td>
+              </tr>
+              <tr>
+                <td><code>d</code></td>
+                <td>Delete</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Automation editor</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>Tab</code>
+                  /
+                  <code>&uarr;</code>
+                  <code>&darr;</code>
+                </td>
+                <td>Move between fields</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>&larr;</code>
+                  <code>&rarr;</code>
+                  /
+                  <code>Space</code>
+                </td>
+                <td>Adjust the focused selector / stepper (trigger, time, action)</td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+E</code></td>
+                <td>Toggle enabled</td>
               </tr>
               <tr>
                 <td><code>Enter</code></td>
-                <td>Submit scheduled command</td>
+                <td>Save</td>
               </tr>
               <tr>
                 <td><code>Esc</code></td>

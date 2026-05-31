@@ -19,7 +19,7 @@ pub enum Action {
     NewSession,
     DeleteSession,
     OpenInEditor,
-    OpenScheduledCommands,
+    OpenAutomations,
     StartSync,
     ToggleShell,
     ForkSession,
@@ -44,7 +44,7 @@ impl Action {
             Action::NewSession,
             Action::DeleteSession,
             Action::OpenInEditor,
-            Action::OpenScheduledCommands,
+            Action::OpenAutomations,
             Action::StartSync,
             Action::ToggleShell,
             Action::ForkSession,
@@ -69,7 +69,7 @@ impl Action {
             Action::NewSession => "New session",
             Action::DeleteSession => "Delete session",
             Action::OpenInEditor => "Open in editor",
-            Action::OpenScheduledCommands => "Scheduled commands",
+            Action::OpenAutomations => "Automations",
             Action::StartSync => "Sync worktrees",
             Action::ToggleShell => "Toggle shell view",
             Action::ForkSession => "Fork session",
@@ -101,7 +101,7 @@ impl Action {
             | Action::DeleteSession
             | Action::RestartSession
             | Action::ForkSession
-            | Action::OpenScheduledCommands
+            | Action::OpenAutomations
             | Action::UndoDelete
             | Action::OpenRestoreSessions => Category::Sessions,
 
@@ -125,7 +125,7 @@ impl Action {
             Action::NewSession => vec![KeyChord::ctrl('n')],
             Action::DeleteSession => vec![KeyChord::ctrl('d')],
             Action::OpenInEditor => vec![KeyChord::ctrl('o')],
-            Action::OpenScheduledCommands => vec![KeyChord::ctrl('p')],
+            Action::OpenAutomations => vec![KeyChord::ctrl('p')],
             Action::StartSync => vec![KeyChord::ctrl('s')],
             Action::ToggleShell => vec![KeyChord::ctrl('t')],
             Action::ForkSession => vec![KeyChord::ctrl('f')],
@@ -502,7 +502,7 @@ mod tests {
                 Action::NewSession => 0,
                 Action::DeleteSession => 0,
                 Action::OpenInEditor => 0,
-                Action::OpenScheduledCommands => 0,
+                Action::OpenAutomations => 0,
                 Action::StartSync => 0,
                 Action::ToggleShell => 0,
                 Action::ForkSession => 0,

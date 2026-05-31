@@ -220,8 +220,24 @@ thurbox-cli session list | jq
 ```
 
 Subcommands: `session` (create/list/get/delete/restore/restart/
-send/capture), `schedule`, `editor`. Pass `--pretty` for
-indented JSON.
+send/capture), `automation` (alias `auto`:
+create/list/show/edit/remove/run/runs/tick), `editor`. Pass
+`--pretty` for indented JSON.
+
+Automations fire even when the TUI is closed: a tmux heartbeat
+keeper window (`automation-heartbeat`, armed on TUI startup and on
+`automation create`) loops `automation tick` every 60 s and keeps
+the tmux server alive. `packaging/` ships opt-in systemd/launchd
+units for reboot-proof firing. Concurrent firers are de-duplicated
+by `Database::claim_due_automation` (atomic CAS), so the TUI, the
+keeper, and an OS timer never double-fire.
+
+In the TUI, automations also get a dedicated **Automations pane**
+beneath the session list (left column). It is always present
+(showing `none` when empty); when it has entries it becomes a focus
+target in the `Ctrl+H`/`Ctrl+L` cycle, and once focused `j`/`k`
+select and `Space`/`r`/`e`/`d` toggle/run/edit/delete the selected
+automation (same actions as the Ctrl+P modal).
 
 ## Demo Video
 
@@ -367,7 +383,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+N` | New session (opens repo picker) | **N**ew |
 | `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
-| `Ctrl+P` | Scheduled commands (list/cancel/new) | **P**rogram |
+| `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |

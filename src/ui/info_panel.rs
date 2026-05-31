@@ -9,9 +9,9 @@ use ratatui::{
 use super::theme::Theme;
 use crate::session::{AgentMetrics, SessionInfo};
 
-/// View-only entry for scheduled commands shown in the info panel.
-pub struct ScheduledCommandEntry {
-    pub command_preview: String,
+/// View-only entry for upcoming automations shown in the info panel.
+pub struct AutomationEntry {
+    pub label: String,
     pub countdown: String,
 }
 
@@ -34,7 +34,7 @@ pub fn render_info_panel(
     area: Rect,
     info: &SessionInfo,
     metrics: Option<&SystemMetrics>,
-    scheduled_commands: &[ScheduledCommandEntry],
+    automations: &[AutomationEntry],
 ) {
     let block = Block::default()
         .title(" Info ")
@@ -121,21 +121,18 @@ pub fn render_info_panel(
         lines.extend(ram_lines);
     }
 
-    // ── Scheduled commands section ──
-    if !scheduled_commands.is_empty() {
+    // ── Automations section ──
+    if !automations.is_empty() {
         lines.push(separator(inner_width));
         lines.push(Line::from(Span::styled(
-            format!("Scheduled ({})", scheduled_commands.len()),
+            format!("Automations ({})", automations.len()),
             Theme::section_header(),
         )));
-        for entry in scheduled_commands {
+        for entry in automations {
             lines.push(Line::from(vec![
                 Span::styled(&entry.countdown, Style::default().fg(Theme::accent())),
                 Span::styled("  ", Style::default()),
-                Span::styled(
-                    &entry.command_preview,
-                    Style::default().fg(Theme::text_secondary()),
-                ),
+                Span::styled(&entry.label, Style::default().fg(Theme::text_secondary())),
             ]));
         }
     }

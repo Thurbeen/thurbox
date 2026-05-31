@@ -1,0 +1,26 @@
+# Reboot-proof automation firing for thurbox (systemd user service).
+#
+# This is the OPT-IN, guaranteed alternative to thurbox's default tmux
+# heartbeat keeper. It runs `thurbox-cli automation tick` once per activation;
+# the companion .timer drives the cadence. Firing is claim-based, so this is
+# safe to run alongside a live TUI and the tmux keeper — no double-firing.
+#
+# Install (Linux):
+#   mkdir -p ~/.config/systemd/user
+#   cp packaging/systemd/thurbox-automations.{service,timer} ~/.config/systemd/user/
+#   # adjust ExecStart below if thurbox-cli is not on PATH for systemd
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now thurbox-automations.timer
+#
+# Verify:  systemctl --user list-timers | grep thurbox
+# Logs:    journalctl --user -u thurbox-automations.service
+
+[Unit]
+Description=Fire due thurbox automations (headless)
+Documentation=https://github.com/Thurbeen/thurbox
+
+[Service]
+Type=oneshot
+# Use an absolute path if thurbox-cli is not on systemd's PATH, e.g.
+#   ExecStart=%h/.local/bin/thurbox-cli automation tick
+ExecStart=%h/.local/bin/thurbox-cli automation tick

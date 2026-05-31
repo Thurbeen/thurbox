@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 23;
+pub const SCHEMA_VERSION: u32 = 24;
 
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
@@ -59,18 +59,38 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_sessions_active
             ON sessions(id) WHERE deleted_at IS NULL;
 
-        CREATE TABLE IF NOT EXISTS scheduled_commands (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id     TEXT NOT NULL,
-            command_text   TEXT NOT NULL,
-            scheduled_at   INTEGER NOT NULL,
-            created_at     INTEGER NOT NULL,
-            executed_at    INTEGER,
-            cancelled_at   INTEGER
+        CREATE TABLE IF NOT EXISTS automations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT NOT NULL,
+            enabled         INTEGER NOT NULL DEFAULT 1,
+            schedule_kind   TEXT NOT NULL,
+            schedule_spec   TEXT NOT NULL,
+            timezone        TEXT,
+            action_kind     TEXT NOT NULL,
+            target_session  TEXT,
+            repo_path       TEXT,
+            worktree_branch TEXT,
+            base_branch     TEXT,
+            agent           TEXT,
+            prompt          TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            last_run_at     INTEGER,
+            next_run_at     INTEGER
         );
-        CREATE INDEX IF NOT EXISTS idx_scheduled_commands_pending
-            ON scheduled_commands(scheduled_at)
-            WHERE executed_at IS NULL AND cancelled_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_automations_due
+            ON automations(next_run_at)
+            WHERE enabled = 1 AND next_run_at IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS automation_runs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id INTEGER NOT NULL,
+            started_at    INTEGER NOT NULL,
+            status        TEXT NOT NULL,
+            detail        TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
+            ON automation_runs(automation_id, started_at);
 
         CREATE TABLE IF NOT EXISTS repo_bookmarks (
             repo_path    TEXT PRIMARY KEY,
@@ -586,6 +606,70 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 24 {
+        // v23 → v24: replace the one-shot `scheduled_commands` table with the
+        // unified `automations` concept (one-shot OR recurring cron, send OR
+        // spawn actions) plus a `automation_runs` history table. Pending
+        // one-shot scheduled commands are migrated forward as `once`/`send`
+        // automations; executed/cancelled ones are dropped with the table.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS automations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                enabled         INTEGER NOT NULL DEFAULT 1,
+                schedule_kind   TEXT NOT NULL,
+                schedule_spec   TEXT NOT NULL,
+                timezone        TEXT,
+                action_kind     TEXT NOT NULL,
+                target_session  TEXT,
+                repo_path       TEXT,
+                worktree_branch TEXT,
+                base_branch     TEXT,
+                agent           TEXT,
+                prompt          TEXT NOT NULL,
+                created_at      INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL,
+                last_run_at     INTEGER,
+                next_run_at     INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_automations_due
+                ON automations(next_run_at)
+                WHERE enabled = 1 AND next_run_at IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS automation_runs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                automation_id INTEGER NOT NULL,
+                started_at    INTEGER NOT NULL,
+                status        TEXT NOT NULL,
+                detail        TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
+                ON automation_runs(automation_id, started_at);",
+        )?;
+
+        // Only migrate if the legacy table is present (fresh DBs created at v24
+        // never had it).
+        let has_legacy: bool = conn
+            .prepare(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_commands'",
+            )?
+            .exists([])?;
+        if has_legacy {
+            conn.execute_batch(
+                "INSERT INTO automations
+                    (name, enabled, schedule_kind, schedule_spec, timezone,
+                     action_kind, target_session, prompt,
+                     created_at, updated_at, last_run_at, next_run_at)
+                 SELECT
+                    'migrated-' || id, 1, 'once', CAST(scheduled_at AS TEXT), NULL,
+                    'send', session_id, command_text,
+                    created_at, created_at, NULL, scheduled_at
+                 FROM scheduled_commands
+                 WHERE executed_at IS NULL AND cancelled_at IS NULL;
+                 DROP TABLE IF EXISTS scheduled_commands;",
+            )?;
+        }
+    }
+
     if version < SCHEMA_VERSION {
         conn.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -617,13 +701,63 @@ mod tests {
         assert!(tables.contains(&"sessions".to_string()));
         assert!(tables.contains(&"worktrees".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
-        assert!(tables.contains(&"scheduled_commands".to_string()));
+        assert!(tables.contains(&"automations".to_string()));
+        assert!(tables.contains(&"automation_runs".to_string()));
         assert!(tables.contains(&"repo_bookmarks".to_string()));
+        // The legacy one-shot table is replaced by `automations`.
+        assert!(!tables.contains(&"scheduled_commands".to_string()));
         // Dropped Claude-config tables should NOT exist.
         assert!(!tables.contains(&"roles".to_string()));
         assert!(!tables.contains(&"mcp_servers".to_string()));
         assert!(!tables.contains(&"skills".to_string()));
         assert!(!tables.contains(&"profiles".to_string()));
+    }
+
+    #[test]
+    fn migration_v24_moves_pending_scheduled_commands() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal legacy (v23) state: metadata + a scheduled_commands table with
+        // one pending and one already-executed row.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '23');
+             CREATE TABLE scheduled_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+                command_text TEXT NOT NULL, scheduled_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL, executed_at INTEGER, cancelled_at INTEGER);
+             INSERT INTO scheduled_commands
+                (session_id, command_text, scheduled_at, created_at, executed_at, cancelled_at)
+                VALUES ('s1', 'pending cmd', 5000, 100, NULL, NULL),
+                       ('s1', 'done cmd', 6000, 100, 6000, NULL);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // Legacy table is dropped.
+        let has_legacy: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_commands'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(!has_legacy, "scheduled_commands should be dropped");
+
+        // Only the pending row is carried forward, as a once/send automation.
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM automations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let (kind, action, prompt, next): (String, String, String, i64) = conn
+            .query_row(
+                "SELECT schedule_kind, action_kind, prompt, next_run_at FROM automations",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "once");
+        assert_eq!(action, "send");
+        assert_eq!(prompt, "pending cmd");
+        assert_eq!(next, 5000);
     }
 
     #[test]

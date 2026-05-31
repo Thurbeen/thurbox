@@ -6,7 +6,7 @@
     <title>Features — Thurbox Docs</title>
     <meta
       name="description"
-      content="Thurbox features: persistent coding-agent sessions, agent definitions, git worktrees, scheduled commands, and a responsive UI."
+      content="Thurbox features: persistent coding-agent sessions, agent definitions, git worktrees, automations, and a responsive UI."
     />
     <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -69,7 +69,7 @@
           <ul>
             <li><a href="#session-orchestration">Sessions</a></li>
             <li><a href="#agent-definitions">Agent Definitions</a></li>
-            <li><a href="#scheduled-commands">Scheduled Commands</a></li>
+            <li><a href="#automations">Automations</a></li>
             <li><a href="#git-worktrees">Git Worktrees</a></li>
             <li><a href="#worktree-sync">Worktree Sync</a></li>
             <li><a href="#session-forking">Session Forking</a></li>
@@ -203,35 +203,67 @@
             </li>
           </ul>
 
-          <h2 id="scheduled-commands">
-            Scheduled Commands
-            <a href="#scheduled-commands" class="heading-anchor">#</a>
+          <h2 id="automations">
+            Automations
+            <a href="#automations" class="heading-anchor">#</a>
           </h2>
           <p>
-            Press
+            Named, scheduled agent runs. An automation fires on a schedule and either
+            <strong>sends</strong>
+            a prompt to a running session or
+            <strong>spawns</strong>
+            a fresh session (optionally on a new git worktree) and prompts it. Press
             <code>Ctrl+P</code>
-            to schedule text that will be sent to the active session after a configurable delay.
-            Useful for queuing follow-up prompts or pacing multi-step workflows.
+            for the full list, or use the always-present Automations pane beneath the session list.
           </p>
           <ul>
             <li>
-              Modal with two fields: command text and delay in minutes.
-              <code>Tab</code>
-              switches fields,
-              <code>Enter</code>
-              submits,
-              <code>Esc</code>
-              cancels.
+              Schedules are one-shot (a relative delay) or recurring cron, with friendly
+              <code>hourly</code>
+              /
+              <code>daily</code>
+              /
+              <code>weekdays</code>
+              /
+              <code>weekly</code>
+              presets and an optional timezone. The editor needs no cron knowledge: the trigger is a
+              selector, the time is set with steppers, and a live preview shows the next fire.
             </li>
             <li>
-              Dual-track execution: a tmux external timer fires independently of Thurbox (survives
-              crashes), and an app-level tick loop provides a safety net. Whichever fires first
-              prevents duplicate execution.
+              The Automations pane joins the
+              <code>Ctrl+H</code>
+              /
+              <code>Ctrl+L</code>
+              focus cycle; once focused,
+              <code>Ctrl+N</code>
+              creates and
+              <code>j</code>
+              /
+              <code>k</code>
+              /
+              <code>Space</code>
+              /
+              <code>r</code>
+              /
+              <code>e</code>
+              /
+              <code>d</code>
+              select / toggle / run / edit / delete.
             </li>
             <li>
-              Scheduled commands are persisted in SQLite and can be managed headlessly via the
-              <code>thurbox-cli scheduled</code>
-              subcommands.
+              Automations fire even when the TUI is closed &mdash; a detached tmux heartbeat keeper
+              runs them every minute (and keeps the tmux server alive), with opt-in systemd/launchd
+              units for reboot-proof firing. Concurrent firers are de-duplicated by an atomic claim,
+              so nothing double-fires.
+            </li>
+            <li>
+              Everything is persisted in SQLite (
+              <code>automations</code>
+              +
+              <code>automation_runs</code>
+              history) and scriptable headlessly via
+              <code>thurbox-cli automation create/list/edit/run/runs/tick</code>
+              .
             </li>
           </ul>
 

@@ -160,7 +160,7 @@ specifically for `perf` / `flamegraph` workflows.
 ## ADR-8: State storage — SQLite
 
 **Choice**: All persistent state (sessions, worktrees, VMs,
-containers, scheduled commands) is stored in a single SQLite
+containers, automations) is stored in a single SQLite
 database at `~/.local/share/thurbox/thurbox.db` (respects
 `$XDG_DATA_HOME`). WAL mode enables concurrent multi-instance
 access. Agent definitions are the one exception: they live in a
@@ -188,6 +188,41 @@ all editing UI — there is no need for a human-editable config file.
   long-lived configuration.
 - *Embedded in CLAUDE.md* — mixes repo-specific AI guidance with
   application configuration; wrong separation of concerns.
+
+---
+
+## ADR-8b: Automations fire with or without the TUI
+
+**Choice**: Automations fire from three places that all funnel
+through one headless entry point, `thurbox-cli automation tick`:
+the TUI tick loop, a detached **tmux heartbeat keeper** window
+(`automation-heartbeat`, armed on TUI startup and on `automation
+create`, looping `tick` every 60 s), and optional systemd/launchd
+units (`packaging/`) for reboot-proof firing. Concurrency is made
+safe by **claim-based firing** — `Database::claim_due_automation`
+advances `next_run_at` with an atomic compare-and-swap, so exactly
+one firer wins per due automation.
+
+**Why**: The previous one-shot "scheduled command" fired even with
+the TUI shut down by riding tmux's `run-shell` timers; the new
+model must keep that durability for recurring + spawn automations.
+A live keeper window both runs the heartbeat and keeps the tmux
+server alive (a bare pending `run-shell` job does not), so even
+spawn-only automations fire with no other sessions. Claim-first
+ordering gives at-most-once semantics (a crash loses a run rather
+than double-firing), the right default for agent prompts. tmux is
+local-only; the send/spawn dispatch sits behind a seam so a future
+remote/SSH `SessionBackend` (ADR-2) slots in without changing the
+scheduler.
+
+**Rejected**:
+
+- *Per-automation `run-shell` timers (old style)* — precise to the
+  second but require bookkeeping + re-arming N timers on startup; a
+  single polling keeper is simpler and naturally handles
+  create/edit/delete.
+- *A bespoke long-running daemon* — duplicates what tmux (already
+  required) and systemd/launchd provide; more moving parts.
 
 ---
 
@@ -326,7 +361,7 @@ delivers pixel-perfect rendering with all original formatting.
 ## ADR-7b: Multi-Instance Sync — SQLite with PRAGMA data_version
 
 **Choice**: Multiple thurbox instances synchronize all state
-(sessions, worktrees, VMs, containers, scheduled commands)
+(sessions, worktrees, VMs, containers, automations)
 via a shared SQLite database
 (`~/.local/share/thurbox/thurbox.db`). Each instance polls
 `PRAGMA data_version` to detect external changes. SQLite's WAL mode

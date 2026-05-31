@@ -11,9 +11,9 @@
 //! ```
 
 pub mod audit;
+pub mod automations;
 pub mod keybindings;
 pub mod repo_bookmarks;
-mod scheduled_commands;
 mod schema;
 mod sessions;
 mod settings;

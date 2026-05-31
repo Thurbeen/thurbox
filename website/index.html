@@ -149,14 +149,21 @@
           </div>
           <div class="card">
             <div class="card-icon">&#x23f0;</div>
-            <h3>Scheduled Commands</h3>
+            <h3>Automations</h3>
             <p>
-              Press
+              Named, scheduled agent runs &mdash; one-shot or recurring (cron, with
+              <code>daily</code>
+              /
+              <code>weekly</code>
+              presets). On schedule they
+              <strong>send</strong>
+              a prompt to a session or
+              <strong>spawn</strong>
+              a fresh one. Manage them from the always-on
               <code>Ctrl+P</code>
-              to queue follow-up prompts or pace multi-step workflows. Commands fire via a
-              dual-track timer (tmux + app-level) that survives crashes, and are manageable from the
+              pane (or the
               <code>thurbox-cli</code>
-              headless binary.
+              headless binary); they fire even when the TUI is closed.
             </p>
           </div>
           <div class="card">
@@ -282,7 +289,7 @@
 <span class="syn-keyword">Ctrl+L</span>  <span class="syn-comment">Cycle focus to terminal</span>
 <span class="syn-keyword">Ctrl+J</span>  <span class="syn-comment">Switch between sessions</span>
 <span class="syn-keyword">Ctrl+S</span>  <span class="syn-comment">Sync worktrees with origin/main</span>
-<span class="syn-keyword">Ctrl+P</span>  <span class="syn-comment">Schedule a command for later</span>
+<span class="syn-keyword">Ctrl+P</span>  <span class="syn-comment">Automations (scheduled agent runs)</span>
 <span class="syn-keyword">Ctrl+R</span>  <span class="syn-comment">Restart active session</span>
 <span class="syn-keyword">Ctrl+F</span>  <span class="syn-comment">Fork active session</span>
 <span class="syn-keyword">Ctrl+O</span>  <span class="syn-comment">Open repos in editor</span></code></pre>

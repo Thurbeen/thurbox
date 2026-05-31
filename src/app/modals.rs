@@ -119,59 +119,427 @@ pub struct RestoreSessionsModal {
     pub index: usize,
 }
 
-// ── ScheduleCommandModal ────────────────────────────────────────────────
+// ── AutomationEditorModal ───────────────────────────────────────────────
 
+/// What action a triggered automation performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScheduleCommandField {
+pub enum AutomationActionKind {
+    /// Paste the prompt into an existing session.
     #[default]
-    Command,
+    Send,
+    /// Spawn a new session and prompt it.
+    Spawn,
+}
+
+/// How an automation's schedule is entered in the editor. Cycled with the
+/// arrow keys so users never type a cron expression or magic trigger string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TriggerKind {
+    /// Fire once after a relative delay (e.g. `30m`).
+    Once,
+    /// Every hour at a chosen minute.
+    Hourly,
+    /// Every day at a chosen time.
+    #[default]
+    Daily,
+    /// Mon–Fri at a chosen time.
+    Weekdays,
+    /// A chosen weekday at a chosen time.
+    Weekly,
+    /// Raw cron expression (power users).
+    Cron,
+}
+
+impl TriggerKind {
+    /// All kinds in cycle order.
+    const ALL: [TriggerKind; 6] = [
+        TriggerKind::Once,
+        TriggerKind::Hourly,
+        TriggerKind::Daily,
+        TriggerKind::Weekdays,
+        TriggerKind::Weekly,
+        TriggerKind::Cron,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TriggerKind::Once => "once",
+            TriggerKind::Hourly => "hourly",
+            TriggerKind::Daily => "daily",
+            TriggerKind::Weekdays => "weekdays",
+            TriggerKind::Weekly => "weekly",
+            TriggerKind::Cron => "cron",
+        }
+    }
+
+    fn step(self, delta: i32) -> Self {
+        let idx = Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as i32;
+        let len = Self::ALL.len() as i32;
+        Self::ALL[(idx + delta).rem_euclid(len) as usize]
+    }
+}
+
+/// Focusable field in the automation editor. The set shown depends on the
+/// current [`TriggerKind`] and action (see `AutomationEditorModal::visible_fields`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutomationField {
+    #[default]
+    Name,
+    /// Trigger-kind selector (cycled with ←/→).
+    Trigger,
+    /// Relative delay text (Once).
     Delay,
+    /// Weekday stepper (Weekly).
+    Weekday,
+    /// Hour-of-day stepper.
+    Hour,
+    /// Minute stepper.
+    Minute,
+    /// Raw cron expression text (Cron).
+    CronExpr,
+    Timezone,
+    Action,
+    Repo,
+    Worktree,
+    Agent,
+    Prompt,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ScheduleCommandModal {
-    pub command: TextInput,
-    pub delay_minutes: TextInput,
-    pub field: ScheduleCommandField,
-    /// When editing an existing command, holds the original command ID to cancel on submit
-    /// and the session ID + name to preserve the target session.
-    pub editing: Option<EditingCommand>,
-}
-
-/// State preserved when editing an existing scheduled command.
+/// Editor form for creating or editing an automation.
 #[derive(Debug, Clone)]
-pub struct EditingCommand {
-    pub id: i64,
-    pub session_id: crate::session::SessionId,
-    pub session_name: String,
+pub struct AutomationEditorModal {
+    /// `Some` when editing an existing automation.
+    pub editing_id: Option<i64>,
+    pub name: TextInput,
+    /// How the schedule is specified.
+    pub trigger_kind: TriggerKind,
+    /// Relative delay text for `Once` (e.g. `30m`, `2h`, `1h30m`).
+    pub delay: TextInput,
+    /// Weekday for `Weekly`: 0 = Sunday … 6 = Saturday.
+    pub weekday: u32,
+    /// Hour-of-day 0–23 for daily/weekdays/weekly.
+    pub hour: u32,
+    /// Minute 0–59 for hourly/daily/weekdays/weekly.
+    pub minute: u32,
+    /// Raw cron expression for `Cron`.
+    pub cron_expr: TextInput,
+    /// Optional IANA timezone.
+    pub timezone: TextInput,
+    pub action: AutomationActionKind,
+    /// Spawn action: repository path.
+    pub repo: TextInput,
+    /// Spawn action: optional worktree branch.
+    pub worktree: TextInput,
+    /// Spawn action: optional agent name.
+    pub agent: TextInput,
+    pub prompt: TextInput,
+    pub enabled: bool,
+    pub field: AutomationField,
+    /// Send action: target session (id + display name), captured at open.
+    pub target_session: Option<(crate::session::SessionId, String)>,
 }
 
-impl ScheduleCommandModal {
-    /// Return a mutable reference to whichever text field is currently focused.
-    pub fn active_field_mut(&mut self) -> &mut TextInput {
-        match self.field {
-            ScheduleCommandField::Command => &mut self.command,
-            ScheduleCommandField::Delay => &mut self.delay_minutes,
+impl Default for AutomationEditorModal {
+    fn default() -> Self {
+        Self {
+            editing_id: None,
+            name: TextInput::default(),
+            trigger_kind: TriggerKind::default(),
+            delay: {
+                let mut t = TextInput::default();
+                t.set("30m");
+                t
+            },
+            weekday: 1, // Monday
+            hour: 9,
+            minute: 0,
+            cron_expr: TextInput::default(),
+            timezone: TextInput::default(),
+            action: AutomationActionKind::default(),
+            repo: TextInput::default(),
+            worktree: TextInput::default(),
+            agent: TextInput::default(),
+            prompt: TextInput::default(),
+            enabled: true,
+            field: AutomationField::default(),
+            target_session: None,
         }
     }
 }
 
-// ── ScheduledCommandsListModal ──────────────────────────────────────────
+impl AutomationEditorModal {
+    /// The fields shown for the current trigger kind + action, in display and
+    /// navigation order.
+    pub fn visible_fields(&self) -> Vec<AutomationField> {
+        use AutomationField::*;
+        let mut fields = vec![Name, Trigger];
+        match self.trigger_kind {
+            TriggerKind::Once => fields.push(Delay),
+            TriggerKind::Hourly => fields.push(Minute),
+            TriggerKind::Daily | TriggerKind::Weekdays => fields.extend([Hour, Minute]),
+            TriggerKind::Weekly => fields.extend([Weekday, Hour, Minute]),
+            TriggerKind::Cron => fields.push(CronExpr),
+        }
+        // Timezone only matters for wall-clock (cron) schedules, not a relative
+        // one-shot delay.
+        if self.trigger_kind != TriggerKind::Once {
+            fields.push(Timezone);
+        }
+        fields.push(Action);
+        if self.action == AutomationActionKind::Spawn {
+            fields.extend([Repo, Worktree, Agent]);
+        }
+        fields.push(Prompt);
+        fields
+    }
 
-/// An entry in the scheduled commands list modal.
-#[derive(Debug, Clone)]
-pub struct ScheduledCommandListEntry {
-    pub id: i64,
-    pub session_name: String,
-    pub command_text: String,
-    pub countdown: String,
+    /// Move focus to the next visible field (wraps).
+    pub fn next_field(&mut self) {
+        let fields = self.visible_fields();
+        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
+        self.field = fields[(idx + 1) % fields.len()];
+    }
+
+    /// Move focus to the previous visible field (wraps).
+    pub fn prev_field(&mut self) {
+        let fields = self.visible_fields();
+        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
+        self.field = fields[(idx + fields.len() - 1) % fields.len()];
+    }
+
+    /// The focused text field, or `None` for selector/stepper fields (which are
+    /// adjusted with ←/→ instead — see [`is_adjustable`](Self::is_adjustable)).
+    pub fn active_field_mut(&mut self) -> Option<&mut TextInput> {
+        use AutomationField::*;
+        Some(match self.field {
+            Name => &mut self.name,
+            Delay => &mut self.delay,
+            CronExpr => &mut self.cron_expr,
+            Timezone => &mut self.timezone,
+            Repo => &mut self.repo,
+            Worktree => &mut self.worktree,
+            Agent => &mut self.agent,
+            Prompt => &mut self.prompt,
+            Trigger | Weekday | Hour | Minute | Action => return None,
+        })
+    }
+
+    /// Whether the focused field is a selector/stepper adjusted with ←/→/Space
+    /// rather than edited as text.
+    pub fn is_adjustable(&self) -> bool {
+        use AutomationField::*;
+        matches!(self.field, Trigger | Weekday | Hour | Minute | Action)
+    }
+
+    /// Adjust the focused selector/stepper by `delta` (−1 for ←, +1 for →/Space).
+    pub fn adjust(&mut self, delta: i32) {
+        use AutomationField::*;
+        match self.field {
+            Trigger => self.trigger_kind = self.trigger_kind.step(delta),
+            Action => self.toggle_action(),
+            Weekday => self.weekday = wrap_add(self.weekday, delta, 7),
+            Hour => self.hour = wrap_add(self.hour, delta, 24),
+            Minute => self.minute = wrap_add(self.minute, delta, 60),
+            _ => {}
+        }
+    }
+
+    /// Toggle between Send and Spawn actions.
+    pub fn toggle_action(&mut self) {
+        self.action = match self.action {
+            AutomationActionKind::Send => AutomationActionKind::Spawn,
+            AutomationActionKind::Spawn => AutomationActionKind::Send,
+        };
+    }
+
+    /// The IANA timezone the user entered, if any.
+    pub fn timezone(&self) -> Option<String> {
+        let tz = self.timezone.value().trim();
+        (!tz.is_empty()).then(|| tz.to_string())
+    }
+
+    /// Build the [`AutomationSchedule`] described by the current fields, relative
+    /// to `now` (used for the `Once` delay). Returns a user-facing error string
+    /// for invalid input.
+    pub fn build_schedule(&self, now: u64) -> Result<crate::session::AutomationSchedule, String> {
+        use crate::session::automation::{parse_duration, preset_to_cron, SchedulePreset};
+        use crate::session::AutomationSchedule;
+        Ok(match self.trigger_kind {
+            TriggerKind::Once => {
+                let ms = parse_duration(self.delay.value().trim())
+                    .ok_or("Delay must look like 30m, 2h, 1h30m, or 1d")?;
+                AutomationSchedule::Once {
+                    at: now.saturating_add(ms),
+                }
+            }
+            TriggerKind::Hourly => AutomationSchedule::Cron {
+                expr: preset_to_cron(SchedulePreset::Hourly, self.hour, self.minute, self.weekday),
+            },
+            TriggerKind::Daily => AutomationSchedule::Cron {
+                expr: preset_to_cron(SchedulePreset::Daily, self.hour, self.minute, self.weekday),
+            },
+            TriggerKind::Weekdays => AutomationSchedule::Cron {
+                expr: preset_to_cron(
+                    SchedulePreset::Weekdays,
+                    self.hour,
+                    self.minute,
+                    self.weekday,
+                ),
+            },
+            TriggerKind::Weekly => AutomationSchedule::Cron {
+                expr: preset_to_cron(SchedulePreset::Weekly, self.hour, self.minute, self.weekday),
+            },
+            TriggerKind::Cron => {
+                let expr = self.cron_expr.value().trim();
+                if expr.is_empty() {
+                    return Err("Cron expression cannot be empty".into());
+                }
+                AutomationSchedule::Cron {
+                    expr: expr.to_string(),
+                }
+            }
+        })
+    }
+
+    /// Build an editor pre-filled from an existing automation, reverse-mapping
+    /// the schedule back into structured fields where possible.
+    pub fn from_automation(
+        auto: &crate::session::Automation,
+        session_name: Option<String>,
+    ) -> Self {
+        use crate::session::{AutomationAction, AutomationSchedule};
+        let mut m = Self {
+            editing_id: Some(auto.id),
+            enabled: auto.enabled,
+            ..Self::default()
+        };
+        m.name.set(&auto.name);
+        match &auto.schedule {
+            AutomationSchedule::Once { at } => {
+                m.trigger_kind = TriggerKind::Once;
+                let remaining = at.saturating_sub(crate::sync::current_time_millis());
+                m.delay.set(&format_duration_short(remaining));
+            }
+            AutomationSchedule::Cron { expr } => match recognize_cron(expr) {
+                Some((kind, hour, minute, weekday)) => {
+                    m.trigger_kind = kind;
+                    m.hour = hour;
+                    m.minute = minute;
+                    m.weekday = weekday;
+                }
+                None => {
+                    m.trigger_kind = TriggerKind::Cron;
+                    m.cron_expr.set(expr);
+                }
+            },
+        }
+        if let Some(tz) = &auto.timezone {
+            m.timezone.set(tz);
+        }
+        m.prompt.set(&auto.prompt);
+        match &auto.action {
+            AutomationAction::Send { session_id } => {
+                m.action = AutomationActionKind::Send;
+                m.target_session = Some((
+                    *session_id,
+                    session_name.unwrap_or_else(|| session_id.to_string()),
+                ));
+            }
+            AutomationAction::Spawn {
+                repo_path,
+                worktree_branch,
+                agent,
+                ..
+            } => {
+                m.action = AutomationActionKind::Spawn;
+                m.repo.set(&repo_path.to_string_lossy());
+                if let Some(w) = worktree_branch {
+                    m.worktree.set(w);
+                }
+                if let Some(a) = agent {
+                    m.agent.set(a);
+                }
+            }
+        }
+        m
+    }
 }
 
-/// Modal state for listing and cancelling pending scheduled commands.
+/// Add `delta` to `v` modulo `modulus`, wrapping (e.g. hour 23 +1 → 0).
+fn wrap_add(v: u32, delta: i32, modulus: u32) -> u32 {
+    (v as i32 + delta).rem_euclid(modulus as i32) as u32
+}
+
+/// Format a millisecond duration as a compact, re-enterable string like
+/// `1h30m` (matching [`crate::session::automation::parse_duration`]).
+fn format_duration_short(ms: u64) -> String {
+    let total_secs = ms / 1000;
+    let days = total_secs / 86_400;
+    let hours = (total_secs % 86_400) / 3_600;
+    let mins = (total_secs % 3_600) / 60;
+    let mut out = String::new();
+    if days > 0 {
+        out.push_str(&format!("{days}d"));
+    }
+    if hours > 0 {
+        out.push_str(&format!("{hours}h"));
+    }
+    if mins > 0 || out.is_empty() {
+        out.push_str(&format!("{mins}m"));
+    }
+    out
+}
+
+/// Best-effort reverse mapping of a cron expression generated by this editor
+/// back into `(TriggerKind, hour, minute, weekday)`. Returns `None` for
+/// expressions that don't match a known preset shape (those stay raw `Cron`).
+fn recognize_cron(expr: &str) -> Option<(TriggerKind, u32, u32, u32)> {
+    let f: Vec<&str> = expr.split_whitespace().collect();
+    if f.len() != 5 {
+        return None;
+    }
+    let (min, hour, dom, mon, dow) = (f[0], f[1], f[2], f[3], f[4]);
+    if dom != "*" || mon != "*" {
+        return None;
+    }
+    let minute: u32 = min.parse().ok()?;
+    if minute >= 60 {
+        return None;
+    }
+    // Hourly: `m * * * *`.
+    if hour == "*" && dow == "*" {
+        return Some((TriggerKind::Hourly, 0, minute, 1));
+    }
+    let h: u32 = hour.parse().ok()?;
+    if h >= 24 {
+        return None;
+    }
+    match dow {
+        "*" => Some((TriggerKind::Daily, h, minute, 1)),
+        "1-5" => Some((TriggerKind::Weekdays, h, minute, 1)),
+        single => {
+            let d: u32 = single.parse().ok()?;
+            (d <= 6).then_some((TriggerKind::Weekly, h, minute, d))
+        }
+    }
+}
+
+// ── AutomationsListModal ────────────────────────────────────────────────
+
+/// An entry in the automations list modal.
+#[derive(Debug, Clone)]
+pub struct AutomationListEntry {
+    pub id: i64,
+    pub name: String,
+    pub summary: String,
+    pub enabled: bool,
+}
+
+/// Modal state for listing and managing automations.
 #[derive(Debug, Clone, Default)]
-pub struct ScheduledCommandsListModal {
+pub struct AutomationsListModal {
     pub index: usize,
-    pub commands: Vec<ScheduledCommandListEntry>,
+    pub entries: Vec<AutomationListEntry>,
 }
 
 // ── RepoPickerModal ─────────────────────────────────────────────────────
@@ -233,8 +601,8 @@ pub enum Modal {
     WorktreeName(WorktreeNameModal),
     AgentPicker(crate::ui::agent_picker_modal::AgentPickerState),
     RestoreSessions(RestoreSessionsModal),
-    ScheduleCommand(ScheduleCommandModal),
-    ScheduledCommandsList(ScheduledCommandsListModal),
+    AutomationEditor(AutomationEditorModal),
+    AutomationsList(AutomationsListModal),
     RepoPicker(RepoPickerModal),
     SessionName(SessionNameModal),
     ThemePicker(ThemePickerModal),
@@ -361,52 +729,133 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_command_modal_default() {
-        let modal = ScheduleCommandModal::default();
-        assert_eq!(modal.command.value(), "");
-        assert_eq!(modal.delay_minutes.value(), "");
-        assert_eq!(modal.field, ScheduleCommandField::Command);
+    fn test_automation_editor_default() {
+        let modal = AutomationEditorModal::default();
+        assert_eq!(modal.name.value(), "");
+        assert_eq!(modal.field, AutomationField::Name);
+        assert_eq!(modal.trigger_kind, TriggerKind::Daily);
+        assert_eq!(modal.hour, 9);
+        assert_eq!(modal.minute, 0);
+        assert_eq!(modal.action, AutomationActionKind::Send);
+        assert!(modal.enabled, "new automations default to enabled");
+        assert!(modal.editing_id.is_none());
     }
 
     #[test]
-    fn test_schedule_command_active_field_returns_command() {
-        let mut modal = ScheduleCommandModal::default();
-        modal.active_field_mut().insert('a');
-        assert_eq!(modal.command.value(), "a");
-        assert_eq!(modal.delay_minutes.value(), "");
+    fn test_automation_editor_active_field() {
+        let mut modal = AutomationEditorModal::default();
+        modal.active_field_mut().unwrap().insert('x');
+        assert_eq!(modal.name.value(), "x");
+        // Selector/stepper fields have no text input.
+        for f in [
+            AutomationField::Trigger,
+            AutomationField::Hour,
+            AutomationField::Minute,
+            AutomationField::Action,
+        ] {
+            modal.field = f;
+            assert!(modal.active_field_mut().is_none(), "{f:?} is not text");
+            assert!(modal.is_adjustable());
+        }
     }
 
     #[test]
-    fn test_schedule_command_active_field_returns_delay() {
-        let mut modal = ScheduleCommandModal {
-            field: ScheduleCommandField::Delay,
+    fn test_automation_editor_daily_field_order_for_send() {
+        let mut modal = AutomationEditorModal::default(); // Daily + Send
+        let order: Vec<_> = (0..7)
+            .map(|_| {
+                let f = modal.field;
+                modal.next_field();
+                f
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                AutomationField::Name,
+                AutomationField::Trigger,
+                AutomationField::Hour,
+                AutomationField::Minute,
+                AutomationField::Timezone,
+                AutomationField::Action,
+                AutomationField::Prompt,
+            ]
+        );
+        assert_eq!(modal.field, AutomationField::Name);
+    }
+
+    #[test]
+    fn test_automation_editor_steppers_wrap() {
+        let mut modal = AutomationEditorModal {
+            hour: 23,
+            field: AutomationField::Hour,
             ..Default::default()
         };
-        modal.active_field_mut().insert('5');
-        assert_eq!(modal.delay_minutes.value(), "5");
-        assert_eq!(modal.command.value(), "");
+        modal.adjust(1);
+        assert_eq!(modal.hour, 0);
+        modal.adjust(-1);
+        assert_eq!(modal.hour, 23);
+
+        modal.minute = 0;
+        modal.field = AutomationField::Minute;
+        modal.adjust(-1);
+        assert_eq!(modal.minute, 59);
+
+        modal.field = AutomationField::Trigger;
+        modal.trigger_kind = TriggerKind::Once;
+        modal.adjust(-1);
+        assert_eq!(modal.trigger_kind, TriggerKind::Cron, "wraps backward");
     }
 
     #[test]
-    fn test_schedule_command_field_toggle() {
-        let field = ScheduleCommandField::Command;
-        assert_ne!(field, ScheduleCommandField::Delay);
+    fn test_automation_editor_build_schedule() {
+        use crate::session::AutomationSchedule;
+        let mut modal = AutomationEditorModal::default(); // Daily 09:00
+        assert_eq!(
+            modal.build_schedule(0).unwrap(),
+            AutomationSchedule::Cron {
+                expr: "0 9 * * *".into()
+            }
+        );
 
-        let field = ScheduleCommandField::default();
-        assert_eq!(field, ScheduleCommandField::Command);
+        modal.trigger_kind = TriggerKind::Weekdays;
+        assert_eq!(
+            modal.build_schedule(0).unwrap(),
+            AutomationSchedule::Cron {
+                expr: "0 9 * * 1-5".into()
+            }
+        );
+
+        modal.trigger_kind = TriggerKind::Once;
+        modal.delay.set("30m");
+        assert_eq!(
+            modal.build_schedule(1000).unwrap(),
+            AutomationSchedule::Once {
+                at: 1_800_000 + 1000
+            }
+        );
+
+        modal.delay.set("bogus");
+        assert!(modal.build_schedule(0).is_err());
     }
 
     #[test]
-    fn test_schedule_command_modal_editing_default_is_none() {
-        let modal = ScheduleCommandModal::default();
-        assert!(modal.editing.is_none());
+    fn test_automation_editor_spawn_shows_extra_fields() {
+        let mut modal = AutomationEditorModal {
+            action: AutomationActionKind::Spawn,
+            ..Default::default()
+        };
+        assert!(modal.visible_fields().contains(&AutomationField::Repo));
+        modal.toggle_action();
+        assert_eq!(modal.action, AutomationActionKind::Send);
+        assert!(!modal.visible_fields().contains(&AutomationField::Repo));
     }
 
     #[test]
-    fn test_scheduled_commands_list_modal_default() {
-        let modal = ScheduledCommandsListModal::default();
+    fn test_automations_list_modal_default() {
+        let modal = AutomationsListModal::default();
         assert_eq!(modal.index, 0);
-        assert!(modal.commands.is_empty());
+        assert!(modal.entries.is_empty());
     }
 
     #[test]
@@ -445,17 +894,70 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_command_modal_with_editing() {
-        let mut modal = ScheduleCommandModal::default();
-        modal.command.set("test cmd");
-        modal.delay_minutes.set("5");
-        modal.editing = Some(EditingCommand {
-            id: 42,
-            session_id: "test-session".parse().unwrap_or_default(),
-            session_name: "my-session".to_string(),
-        });
-        assert_eq!(modal.command.value(), "test cmd");
-        assert_eq!(modal.editing.as_ref().unwrap().id, 42);
-        assert_eq!(modal.editing.as_ref().unwrap().session_name, "my-session");
+    fn test_automation_editor_from_spawn_automation() {
+        use crate::session::{Automation, AutomationAction, AutomationSchedule};
+        let auto = Automation {
+            id: 7,
+            name: "nightly".into(),
+            enabled: false,
+            schedule: AutomationSchedule::Cron {
+                expr: "0 9 * * 1-5".into(),
+            },
+            timezone: Some("UTC".into()),
+            action: AutomationAction::Spawn {
+                repo_path: "/tmp/repo".into(),
+                worktree_branch: Some("feat/x".into()),
+                base_branch: None,
+                agent: Some("codex".into()),
+            },
+            prompt: "triage".into(),
+            created_at: 0,
+            updated_at: 0,
+            last_run_at: None,
+            next_run_at: None,
+        };
+        let modal = AutomationEditorModal::from_automation(&auto, None);
+        assert_eq!(modal.editing_id, Some(7));
+        assert!(!modal.enabled);
+        // `0 9 * * 1-5` is recognized as the Weekdays preset at 09:00.
+        assert_eq!(modal.trigger_kind, TriggerKind::Weekdays);
+        assert_eq!(modal.hour, 9);
+        assert_eq!(modal.minute, 0);
+        assert_eq!(modal.action, AutomationActionKind::Spawn);
+        assert_eq!(modal.repo.value(), "/tmp/repo");
+        assert_eq!(modal.worktree.value(), "feat/x");
+        assert_eq!(modal.agent.value(), "codex");
+    }
+
+    #[test]
+    fn test_recognize_cron_presets_and_raw() {
+        assert_eq!(
+            recognize_cron("30 * * * *"),
+            Some((TriggerKind::Hourly, 0, 30, 1))
+        );
+        assert_eq!(
+            recognize_cron("0 9 * * *"),
+            Some((TriggerKind::Daily, 9, 0, 1))
+        );
+        assert_eq!(
+            recognize_cron("0 9 * * 1-5"),
+            Some((TriggerKind::Weekdays, 9, 0, 1))
+        );
+        assert_eq!(
+            recognize_cron("15 8 * * 3"),
+            Some((TriggerKind::Weekly, 8, 15, 3))
+        );
+        // Anything irregular stays raw.
+        assert_eq!(recognize_cron("0 9 1 * *"), None);
+        assert_eq!(recognize_cron("*/5 * * * *"), None);
+        assert_eq!(recognize_cron("0 9 * *"), None);
+    }
+
+    #[test]
+    fn test_format_duration_short() {
+        assert_eq!(format_duration_short(1_800_000), "30m");
+        assert_eq!(format_duration_short(5_400_000), "1h30m");
+        assert_eq!(format_duration_short(90_000_000), "1d1h");
+        assert_eq!(format_duration_short(0), "0m");
     }
 }

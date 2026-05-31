@@ -197,7 +197,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+N` | Global | New session (opens repo picker) | **N**ew |
 | `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
-| `Ctrl+P` | Global | Schedule command for active session | **P**rogram |
+| `Ctrl+P` | Global | Automations (scheduled agent runs) | **P**rogram |
 | `Ctrl+T` | Global | Toggle shell pane alongside the agent session | **T**erminal |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
@@ -302,71 +302,140 @@ editor of choice can open them as a workspace.
 
 ---
 
-## Scheduled Commands
+## Automations
 
-`Ctrl+P` opens a modal to schedule text that will be sent to the
-active session after a configurable delay. This is useful for
-queuing follow-up prompts, running maintenance commands, or pacing
-multi-step workflows without manual intervention.
+`Ctrl+P` opens the automations list. An **automation** is a named,
+enable/disable-able task that fires on a schedule (one-shot or
+recurring) and, when it fires, either pastes a prompt into an
+existing session (**send**) or spawns a new session — optionally on
+a fresh git worktree — and prompts it (**spawn**). This is the
+Thurbox analogue of "scheduled agent runs": queue follow-up
+prompts, run nightly maintenance, or kick off a fresh triage
+session every weekday morning.
 
-### Ctrl+P modal
+Automations replace the older one-shot "scheduled commands"
+feature; a one-shot is simply an automation with a `once` schedule.
 
-The modal has two fields:
+### Schedules
 
-- **Command** — the text to send to the session's PTY.
-- **Delay (minutes)** — a positive integer specifying how many
-  minutes to wait before sending.
+A schedule is either:
 
-`Tab` switches between fields. `Enter` submits the scheduled
-command, `Esc` cancels. The delay field only accepts digits.
+- **once** — fire a single time at an absolute timestamp
+  (`at:<unix_millis>`), then disable itself.
+- **cron** — a standard 5-field Unix cron expression (day-of-week
+  `0`–`6`, `0` = Sunday). Friendly presets compile to cron:
+  `hourly`, `daily`, `weekdays`, `weekly`, combined with an
+  `HH:MM` time and optional IANA timezone (DST-correct via
+  `chrono-tz`; defaults to system local time).
 
-### Dual-track execution
+`next_run_at` (unix millis) is computed from the schedule and is
+the dispatcher's scan key. After each fire it is recomputed; a
+spent one-shot clears it and disables the automation.
 
-Scheduled commands use two independent execution paths for
-reliability:
+### Actions
 
-1. **Tmux external timer** — `tmux run-shell -b -d <seconds>`
-   fires a shell script after the delay. The script checks the
-   database for a cancellation flag before sending the command via
-   `tmux send-keys`. This path is independent of the Thurbox
-   process and survives crashes or restarts.
-2. **App tick-loop safety net** — the TUI's tick loop polls the
-   `scheduled_commands` table once per second for due commands.
-   When found, it sends the command text via bracketed paste mode
-   with a deferred Enter keystroke (~100 ms later).
+- **send** — bracketed-paste the prompt into the target session,
+  followed by a deferred Enter. Skipped (and logged as such) if the
+  target session is not currently running.
+- **spawn** — create a session named `auto-<id>` (reusing it on
+  later fires, including after a TUI restart where it is restored
+  by name), optionally creating a worktree off a base branch, with
+  the chosen agent. The prompt is delivered after a short boot
+  delay so the agent CLI has time to start.
 
-Both paths mark the `executed_at` timestamp on completion.
-Whichever fires first prevents the other from executing a second
-time.
+### Execution model
 
-**Why dual-track?** The tmux timer guarantees execution even if
-Thurbox crashes. The app tick loop guarantees execution even if
-the tmux timer encounters an edge case. Together they provide a
-reliability guarantee: once scheduled, the command will execute.
+Automations fire from **three** places, all going through the same
+`thurbox-cli automation tick` logic and made safe by **claim-based
+firing** (see below):
+
+1. **TUI tick loop** (`process_automations`, ~1 s cadence) — while
+   the TUI is open. On startup it runs an immediate catch-up pass
+   so runs missed while the TUI was down fire once on boot.
+2. **tmux heartbeat keeper** — a detached `automation-heartbeat`
+   window (armed on TUI startup and on `thurbox-cli automation
+   create`) that loops `thurbox-cli automation tick` every 60 s.
+   Because it is a live tmux window it also keeps the tmux server
+   alive, so automations — **including spawn** — fire even after
+   the TUI is closed and even with no other sessions open. This
+   restores (and generalizes) the old scheduled-command behavior
+   of firing while the TUI is shut down.
+3. **Optional OS timer** — `packaging/systemd` / `packaging/launchd`
+   units run the same `tick` for reboot-proof, tmux-independent
+   firing. Opt-in.
+
+**Claim-based firing (no double-fire).** Before acting, every firer
+performs an atomic compare-and-swap
+(`Database::claim_due_automation`): it advances `next_run_at` *only
+if* the row still holds the value it observed as due. Exactly one
+firer wins; the rest skip. So the TUI, the keeper, and an OS timer
+can all run at once without an automation firing twice. Ordering is
+claim-then-act (at-most-once): a crash between claim and side effect
+loses a run rather than duplicating one.
+
+**Headless send vs spawn.** `send` types into the still-alive tmux
+window (`send_prompt_now`). `spawn` creates the session headlessly
+(`spawn_session_headless`); the prompt is delivered via a short
+deferred `tmux run-shell` timer once the agent boots, and the TUI
+adopts the `auto-<id>` session by name on its next startup. All of
+this is local-tmux scoped today; a future remote/SSH `SessionBackend`
+would plug into the same dispatch seam.
+
+### Automations pane
+
+A dedicated **Automations** pane sits beneath the session list in
+the left column. It is **always present** (showing `none` when
+empty) as long as the column is tall enough for both lists; its
+height grows with the automation count (capped). Each row reads
+`● name — schedule · action · next-run`. It is always part of the
+`Ctrl+H`/`Ctrl+L` focus cycle (between the session list and the
+terminal). Once focused: **`Ctrl+N` creates a new automation**
+(just like `Ctrl+N` creates a session elsewhere — it works even on
+an empty pane), `n` also creates, `j`/`k` select, `Space` toggle
+enabled, `r` run-now, `e`/`Enter` edit, `d` (or `Ctrl+D`) delete.
+
+### Ctrl+P list + editor
+
+`Ctrl+P` opens the same set over the full list (a modal, available
+at any width). Keys: `n` new, `e`/`Enter` edit, `Space` toggle
+enabled, `r` run-now, `d` delete, `Esc` close.
+
+The editor avoids typing schedules by hand. **Trigger** is a
+selector cycled with `←/→` — `once`, `hourly`, `daily`,
+`weekdays`, `weekly`, or `cron` — and the form adapts to it:
+
+- `once` → an **In** delay field (`30m`, `2h`, `1h30m`, `1d`).
+- `hourly` → a **Minute** stepper.
+- `daily`/`weekdays` → **Hour** + **Minute** steppers.
+- `weekly` → a **Weekday** selector + Hour/Minute.
+- `cron` → a raw expression field for power users.
+
+`Hour`/`Minute`/`Weekday` are steppers (`←/→` adjust, wrapping);
+`Tab`/`↑↓` move between fields; `Space` also adjusts the focused
+selector/stepper; `^E` toggles enabled; `Enter` saves. A live
+**next:** line previews when the automation will fire (or shows
+the validation error for the current input). Editing an existing
+automation reverse-maps its cron back into the structured fields
+where it matches a known preset shape; otherwise it opens as raw
+`cron`.
 
 ### Persistence
 
-Scheduled commands are stored in the `scheduled_commands` SQLite
-table with fields for `session_id`, `command_text`, `scheduled_at`,
-`created_at`, `executed_at`, and `cancelled_at`. A partial index
-on `scheduled_at` (where pending) optimizes due-command queries.
-
-### Cancellation
-
-The `cancelled_at` timestamp prevents execution. When set:
-
-- The tmux timer's shell script checks the flag and skips sending.
-- The app tick loop's query excludes cancelled commands.
-
-Cancellation is atomic — it only succeeds if the command has not
-already been executed or cancelled.
+Automations live in the `automations` SQLite table (`name`,
+`enabled`, `schedule_kind`/`schedule_spec`, `timezone`,
+`action_kind` plus action columns, `prompt`, timestamps,
+`last_run_at`, `next_run_at`), with a partial index on
+`next_run_at` (where enabled and non-null) for the due-scan. Each
+fire appends to `automation_runs` (`status` = success/skipped/error
+plus a free-text `detail`) for history.
 
 ### Headless access (`thurbox-cli`)
 
-The `thurbox-cli scheduled` subcommands provide programmatic
-access to schedule, list, and cancel commands without the TUI.
-They share the same `scheduled_commands` table, so the TUI's
-tick-loop safety net still applies.
+`thurbox-cli automation` (alias `auto`) provides
+`create`/`list`/`show`/`edit`/`remove`/`run`/`runs`/`tick` without
+the TUI, sharing the same tables. `run` marks an automation due;
+`tick` fires all currently-due automations headlessly (this is what
+the tmux keeper and the optional OS timers invoke).
 
 ---
 

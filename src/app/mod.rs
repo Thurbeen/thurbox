@@ -18,8 +18,8 @@ use tracing::{error, info, warn};
 use crate::agent::{BackendRegistry, GenericProvider, Session, SessionBackend};
 use crate::git;
 use crate::session::{
-    AgentRegistry, ScheduledCommand, SessionConfig, SessionId, SessionInfo, SessionStatus,
-    WorktreeInfo, DEFAULT_AGENT_NAME,
+    AgentRegistry, Automation, AutomationAction, AutomationRunStatus, AutomationSchedule,
+    SessionConfig, SessionId, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_AGENT_NAME,
 };
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
@@ -104,7 +104,11 @@ fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics 
     }
 }
 
-pub use modals::ScheduleCommandField;
+pub use modals::{AutomationActionKind, AutomationField, TriggerKind};
+
+/// Ticks (~10 ms each) to wait after spawning a session before pasting its
+/// automation prompt, giving the agent CLI time to come up (~3 s).
+const AGENT_BOOT_DELAY_TICKS: u64 = 300;
 
 pub(crate) struct TextInput {
     pub(crate) buffer: String,
@@ -228,6 +232,8 @@ pub struct StatusMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFocus {
     SessionList,
+    /// The automations pane beneath the session list.
+    Automations,
     Terminal,
     FileViewer,
 }
@@ -318,8 +324,10 @@ pub struct App {
     /// Per-session fuzzy match positions (parallel to flat session list).
     /// Empty vec means no search is active.
     pub(crate) session_match_positions: Vec<Option<project_list::SessionMatch>>,
-    /// Cached pending scheduled commands, refreshed every ~1 second.
-    pub(crate) cached_pending_commands: Vec<ScheduledCommand>,
+    /// Cached automations for the UI, refreshed every ~1 second.
+    pub(crate) cached_automations: Vec<Automation>,
+    /// Selected row in the focusable automations pane.
+    pub(crate) automation_panel_index: usize,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
     /// every render. Kept in sync with `db.set_active_theme` writes.
     pub(crate) active_theme: crate::session::ThemePreset,
@@ -425,7 +433,8 @@ impl App {
             search_active: false,
             search_input: TextInput::new(),
             session_match_positions: Vec::new(),
-            cached_pending_commands: Vec::new(),
+            cached_automations: Vec::new(),
+            automation_panel_index: 0,
             active_theme,
             keybindings,
         }
@@ -985,7 +994,12 @@ impl App {
         use crate::ui::links;
 
         let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let areas = layout::compute_layout(area, self.show_info_panel, self.show_file_viewer);
+        let areas = layout::compute_layout(
+            area,
+            self.show_info_panel,
+            self.show_file_viewer,
+            self.cached_automations.len(),
+        );
         let border_block = Block::default().borders(Borders::ALL);
 
         // Ctrl+Click: URL opening (terminal-relative, existing behavior)
@@ -1485,12 +1499,14 @@ impl App {
             }
         }
 
-        // Process scheduled commands (once per second)
-        self.process_scheduled_commands();
+        // Fire due automations. The first tick forces an immediate catch-up
+        // pass so automations missed while the TUI was down run right away;
+        // afterwards it runs on the regular ~1 s cadence.
+        self.process_automations(self.tick_count == 1);
 
-        // Refresh cached pending commands for UI (same cadence)
+        // Refresh cached automations for the UI (same cadence).
         if self.tick_count % 100 == 0 {
-            self.refresh_pending_commands();
+            self.refresh_automations();
         }
 
         // Refresh system metrics periodically
@@ -2139,240 +2155,417 @@ impl App {
     /// scheduling time. This tick-loop catches commands whose tmux timer
     /// failed or was never set (e.g., scheduled while Thurbox was down).
     /// Throttled to once per second (~100 ticks at 10ms each).
-    fn process_scheduled_commands(&mut self) {
-        if self.tick_count % 100 != 0 {
+    /// Fire any due automations. Called once per ~second from `tick()`; pass
+    /// `force = true` for the one-shot startup catch-up pass (ignores cadence).
+    fn process_automations(&mut self, force: bool) {
+        if !force && self.tick_count % 100 != 0 {
             return;
         }
-
-        let commands = match self.db.due_scheduled_commands() {
-            Ok(cmds) => cmds,
+        let now = crate::sync::current_time_millis();
+        let due = match self.db.due_automations(now) {
+            Ok(autos) => autos,
             Err(e) => {
-                error!("Failed to fetch due scheduled commands: {e}");
+                error!("Failed to fetch due automations: {e}");
                 return;
             }
         };
-
-        for cmd in commands {
-            // Skip if we don't have this session — the tmux timer can handle it independently.
-            let Some(session) = self.sessions.iter().find(|s| s.info.id == cmd.session_id) else {
-                continue;
-            };
-
-            let mut paste = b"\x1b[200~".to_vec();
-            paste.extend_from_slice(cmd.command_text.as_bytes());
-            paste.extend_from_slice(b"\x1b[201~");
-            if let Err(e) = session.send_input(paste) {
-                error!(
-                    "Failed to send scheduled command {} to session {}: {e}",
-                    cmd.id, cmd.session_id
-                );
-            } else {
-                self.deferred_inputs.push((
-                    cmd.session_id,
-                    b"\r".to_vec(),
-                    self.tick_count + DEFERRED_INPUT_DELAY_TICKS,
-                ));
-                info!(
-                    "Executed scheduled command {} for session {}",
-                    cmd.id, cmd.session_id
-                );
+        for auto in due {
+            // Claim before firing so a concurrent headless `automation tick`
+            // (keeper window / systemd) can't double-fire the same automation.
+            // Claim advances the schedule; `None` disables a spent one-shot.
+            let next = auto.schedule.next_after(now, auto.timezone.as_deref());
+            match self
+                .db
+                .claim_due_automation(auto.id, auto.next_run_at.unwrap_or(0), next, now)
+            {
+                Ok(true) => {}
+                Ok(false) => continue, // another firer won the claim
+                Err(e) => {
+                    error!("Failed to claim automation {}: {e}", auto.id);
+                    continue;
+                }
             }
-
-            // Mark as executed to prevent the tmux timer from duplicating
-            if let Err(e) = self.db.mark_scheduled_command_executed(cmd.id) {
-                error!(
-                    "Failed to mark scheduled command {} as executed: {e}",
-                    cmd.id
-                );
+            let (status, detail) = self.fire_automation(&auto);
+            if let Err(e) = self.db.record_automation_run(auto.id, status, &detail) {
+                error!("Failed to record run for automation {}: {e}", auto.id);
             }
         }
     }
 
-    /// Open the scheduled commands list modal showing all pending commands.
-    fn open_scheduled_commands_list(&mut self) {
-        self.refresh_pending_commands();
-        let commands: Vec<modals::ScheduledCommandListEntry> = self
-            .cached_pending_commands
-            .iter()
-            .map(|cmd| {
-                let session_name = self
-                    .sessions
-                    .iter()
-                    .find(|s| s.info.id == cmd.session_id)
-                    .map(|s| s.info.name.clone())
-                    .unwrap_or_else(|| "?".to_string());
-                let now = crate::sync::current_time_millis();
-                let remaining = cmd.scheduled_at.saturating_sub(now);
-                modals::ScheduledCommandListEntry {
-                    id: cmd.id,
-                    session_name,
-                    command_text: cmd.command_text.clone(),
-                    countdown: view::format_countdown(remaining),
+    /// Execute a single automation's action, returning its run status + detail.
+    fn fire_automation(&mut self, auto: &Automation) -> (AutomationRunStatus, String) {
+        match &auto.action {
+            AutomationAction::Send { session_id } => {
+                if self.sessions.iter().any(|s| s.info.id == *session_id) {
+                    self.send_prompt_to_session(*session_id, &auto.prompt, 0);
+                    info!("Automation {} sent prompt to {}", auto.id, session_id);
+                    (
+                        AutomationRunStatus::Success,
+                        format!("sent to {session_id}"),
+                    )
+                } else {
+                    (
+                        AutomationRunStatus::Skipped,
+                        "target session not running".to_string(),
+                    )
                 }
+            }
+            AutomationAction::Spawn {
+                repo_path,
+                worktree_branch,
+                base_branch,
+                agent,
+            } => match self.spawn_for_automation(
+                auto,
+                repo_path,
+                worktree_branch.as_deref(),
+                base_branch.as_deref(),
+                agent.as_deref(),
+            ) {
+                Ok(session_id) => (
+                    AutomationRunStatus::Success,
+                    format!("session {session_id}"),
+                ),
+                Err(e) => {
+                    error!("Automation {} spawn failed: {e}", auto.id);
+                    (AutomationRunStatus::Error, e)
+                }
+            },
+        }
+    }
+
+    /// Paste `text` into a session as a bracketed paste, then queue an Enter.
+    /// `boot_delay_ticks` delays the paste itself — pass 0 for a session that is
+    /// already running, or [`AGENT_BOOT_DELAY_TICKS`] for one just spawned so
+    /// its agent CLI has time to come up.
+    fn send_prompt_to_session(&mut self, session_id: SessionId, text: &str, boot_delay_ticks: u64) {
+        let mut paste = b"\x1b[200~".to_vec();
+        paste.extend_from_slice(text.as_bytes());
+        paste.extend_from_slice(b"\x1b[201~");
+
+        if boot_delay_ticks == 0 {
+            let Some(session) = self.sessions.iter().find(|s| s.info.id == session_id) else {
+                return;
+            };
+            if let Err(e) = session.send_input(paste) {
+                error!("Failed to send prompt to session {session_id}: {e}");
+                return;
+            }
+            self.deferred_inputs.push((
+                session_id,
+                b"\r".to_vec(),
+                self.tick_count + DEFERRED_INPUT_DELAY_TICKS,
+            ));
+        } else {
+            // Defer both paste and Enter so the freshly spawned agent can boot.
+            let paste_at = self.tick_count + boot_delay_ticks;
+            self.deferred_inputs.push((session_id, paste, paste_at));
+            self.deferred_inputs.push((
+                session_id,
+                b"\r".to_vec(),
+                paste_at + DEFERRED_INPUT_DELAY_TICKS,
+            ));
+        }
+    }
+
+    /// Spawn (or reuse) the session for a `Spawn` automation and queue its
+    /// prompt. Each automation owns one session named `auto-<id>`; a recurring
+    /// automation reuses that session on later fires (and after a TUI restart,
+    /// where it is restored from the database by name).
+    fn spawn_for_automation(
+        &mut self,
+        auto: &Automation,
+        repo_path: &std::path::Path,
+        worktree_branch: Option<&str>,
+        base_branch: Option<&str>,
+        agent: Option<&str>,
+    ) -> Result<SessionId, String> {
+        let name = format!("auto-{}", auto.id);
+
+        // Reuse an existing session (this run or restored after restart).
+        if let Some(existing) = self.sessions.iter().find(|s| s.info.name == name) {
+            let id = existing.info.id;
+            self.send_prompt_to_session(id, &auto.prompt, 0);
+            return Ok(id);
+        }
+
+        let worktrees = if let Some(branch) = worktree_branch {
+            let base = base_branch.unwrap_or("main");
+            let path = git::create_worktree(repo_path, branch, base)
+                .map_err(|e| format!("create worktree {branch} off {base}: {e}"))?;
+            vec![WorktreeInfo {
+                repo_path: repo_path.to_path_buf(),
+                worktree_path: path,
+                branch: branch.to_string(),
+            }]
+        } else {
+            Vec::new()
+        };
+
+        let cwd = worktrees
+            .first()
+            .map(|w| w.worktree_path.clone())
+            .unwrap_or_else(|| repo_path.to_path_buf());
+        let mut config = SessionConfig {
+            cwd: Some(cwd),
+            ..SessionConfig::default()
+        };
+        if let Some(a) = agent {
+            config.agent = a.to_string();
+        }
+
+        self.do_spawn_session(name.clone(), &config, worktrees, false);
+        let session = self
+            .sessions
+            .iter()
+            .find(|s| s.info.name == name)
+            .ok_or_else(|| "session spawn failed".to_string())?;
+        let id = session.info.id;
+        self.send_prompt_to_session(id, &auto.prompt, AGENT_BOOT_DELAY_TICKS);
+        Ok(id)
+    }
+
+    /// Open the automations list modal.
+    fn open_automations_list(&mut self) {
+        self.refresh_automations();
+        let now = crate::sync::current_time_millis();
+        let entries: Vec<modals::AutomationListEntry> = self
+            .cached_automations
+            .iter()
+            .map(|a| modals::AutomationListEntry {
+                id: a.id,
+                name: a.name.clone(),
+                summary: format_automation_summary(a, now),
+                enabled: a.enabled,
             })
             .collect();
-        self.modal = modals::Modal::ScheduledCommandsList(modals::ScheduledCommandsListModal {
-            index: 0,
-            commands,
-        });
+        self.modal =
+            modals::Modal::AutomationsList(modals::AutomationsListModal { index: 0, entries });
     }
 
-    /// Open the schedule-command modal for the active session.
-    fn open_schedule_command_modal(&mut self) {
-        if self.sessions.is_empty() {
-            self.set_error("No active session to schedule a command for");
-            return;
+    /// Open a blank automation editor. A new `Send` automation defaults to the
+    /// active session as its target.
+    fn open_automation_editor(&mut self) {
+        let mut modal = modals::AutomationEditorModal::default();
+        if let Some(s) = self.sessions.get(self.active_index) {
+            modal.target_session = Some((s.info.id, s.info.name.clone()));
         }
-        self.modal = modals::Modal::ScheduleCommand(modals::ScheduleCommandModal::default());
+        self.modal = modals::Modal::AutomationEditor(modal);
     }
 
-    /// Open the schedule-command modal pre-filled for editing an existing command.
-    fn open_edit_scheduled_command(&mut self, entry: modals::ScheduledCommandListEntry) {
-        let now = crate::sync::current_time_millis();
-        let cached = self
-            .cached_pending_commands
-            .iter()
-            .find(|cmd| cmd.id == entry.id);
-        let remaining_minutes = cached
-            .map(|cmd| cmd.scheduled_at.saturating_sub(now) / 60_000)
-            .unwrap_or(1)
-            .max(1);
-        let session_id = cached.map(|cmd| cmd.session_id).unwrap_or_default();
-
-        let mut modal = modals::ScheduleCommandModal::default();
-        modal.command.set(&entry.command_text);
-        modal.delay_minutes.set(&remaining_minutes.to_string());
-        modal.editing = Some(modals::EditingCommand {
-            id: entry.id,
-            session_id,
-            session_name: entry.session_name.clone(),
-        });
-        self.modal = modals::Modal::ScheduleCommand(modal);
-    }
-
-    /// Validate and submit the schedule-command modal.
-    fn submit_schedule_command(&mut self) {
-        let modals::Modal::ScheduleCommand(ref sc) = self.modal else {
+    /// Open the editor pre-filled for an existing automation.
+    fn open_edit_automation(&mut self, id: i64) {
+        let Some(auto) = self.cached_automations.iter().find(|a| a.id == id).cloned() else {
             return;
         };
-        let command_text = sc.command.value().trim().to_string();
-        if command_text.is_empty() {
-            self.set_error("Command cannot be empty");
-            return;
-        }
-        let delay_minutes: u64 = match sc.delay_minutes.value().trim().parse() {
-            Ok(v) if v > 0 => v,
-            _ => {
-                self.set_error("Delay must be a positive number of minutes");
-                return;
-            }
+        let session_name = match &auto.action {
+            AutomationAction::Send { session_id } => self
+                .sessions
+                .iter()
+                .find(|s| s.info.id == *session_id)
+                .map(|s| s.info.name.clone()),
+            AutomationAction::Spawn { .. } => None,
         };
-        let editing = sc.editing.clone();
-
-        let (session_id, session_name) = self.resolve_schedule_session(&editing);
-        let Some(session_id) = session_id else {
-            self.set_error("No active session");
-            return;
-        };
-
-        let delay_seconds = delay_minutes * 60;
-        let now = crate::sync::current_time_millis();
-        let scheduled_at = now + delay_seconds * 1000;
-
-        let id = match self
-            .db
-            .create_scheduled_command(session_id, &command_text, scheduled_at)
-        {
-            Ok(id) => id,
-            Err(e) => {
-                error!("Failed to create scheduled command: {e}");
-                self.set_error("Failed to schedule command");
-                return;
-            }
-        };
-
-        if let Some(ref ed) = editing {
-            let _ = self.db.cancel_scheduled_command(ed.id);
-        }
-        self.setup_tmux_timer(&session_name, &command_text, delay_seconds, id);
-        self.modal.close();
-        self.refresh_pending_commands();
-        let verb = if editing.is_some() {
-            "updated"
-        } else {
-            "scheduled"
-        };
-        self.set_status(
-            StatusLevel::Success,
-            format!("Command {verb} for {session_name} in {delay_minutes}m"),
+        self.modal = modals::Modal::AutomationEditor(
+            modals::AutomationEditorModal::from_automation(&auto, session_name),
         );
     }
 
-    /// Resolve the target session for a scheduled command (editing or active).
-    fn resolve_schedule_session(
-        &self,
-        editing: &Option<modals::EditingCommand>,
-    ) -> (Option<SessionId>, String) {
-        if let Some(ref ed) = editing {
-            return (Some(ed.session_id), ed.session_name.clone());
-        }
-        match self.sessions.get(self.active_index) {
-            Some(s) => (Some(s.info.id), s.info.name.clone()),
-            None => (None, String::new()),
-        }
-    }
+    /// Validate and submit the automation editor (create or update).
+    fn submit_automation_editor(&mut self) {
+        let modals::Modal::AutomationEditor(ref m) = self.modal else {
+            return;
+        };
+        let m = m.clone();
 
-    /// Set up a tmux background timer for a scheduled command.
-    fn setup_tmux_timer(
-        &self,
-        session_name: &str,
-        command_text: &str,
-        delay_seconds: u64,
-        id: i64,
-    ) {
-        if let Some(db_path) = crate::paths::database_file() {
-            if let Err(e) = crate::agent::tmux::schedule_tmux_command(
-                session_name,
-                command_text,
-                delay_seconds,
-                id,
-                &db_path,
-            ) {
-                warn!("Failed to set tmux timer for command {id}: {e}");
-            }
+        let name = m.name.value().trim().to_string();
+        if name.is_empty() {
+            self.set_error("Name cannot be empty");
+            return;
         }
-    }
-
-    /// Refresh the cached list of pending scheduled commands from the database.
-    fn refresh_pending_commands(&mut self) {
-        match self.db.list_pending_scheduled_commands() {
-            Ok(cmds) => self.cached_pending_commands = cmds,
-            Err(e) => error!("Failed to list pending commands: {e}"),
+        let prompt = m.prompt.value().trim().to_string();
+        if prompt.is_empty() {
+            self.set_error("Prompt cannot be empty");
+            return;
         }
-    }
 
-    /// Cancel a scheduled command by ID and refresh the cache.
-    fn cancel_scheduled_command_by_id(&mut self, id: i64) {
-        match self.db.cancel_scheduled_command(id) {
-            Ok(true) => {
-                self.refresh_pending_commands();
-                self.set_status(StatusLevel::Success, "Scheduled command cancelled");
-            }
-            Ok(false) => self.set_error("Command already executed or cancelled"),
+        let now = crate::sync::current_time_millis();
+        let schedule = match m.build_schedule(now) {
+            Ok(s) => s,
             Err(e) => {
-                error!("Failed to cancel scheduled command {id}: {e}");
-                self.set_error("Failed to cancel command");
+                self.set_error(e);
+                return;
+            }
+        };
+
+        let timezone = m.timezone();
+
+        let action = match m.action {
+            modals::AutomationActionKind::Send => {
+                let Some((session_id, _)) = m.target_session else {
+                    self.set_error("No target session for send action");
+                    return;
+                };
+                AutomationAction::Send { session_id }
+            }
+            modals::AutomationActionKind::Spawn => {
+                let repo = m.repo.value().trim();
+                if repo.is_empty() {
+                    self.set_error("Repo path required for spawn action");
+                    return;
+                }
+                let worktree = m.worktree.value().trim();
+                let agent = m.agent.value().trim();
+                AutomationAction::Spawn {
+                    repo_path: repo.into(),
+                    worktree_branch: (!worktree.is_empty()).then(|| worktree.to_string()),
+                    base_branch: None,
+                    agent: (!agent.is_empty()).then(|| agent.to_string()),
+                }
+            }
+        };
+
+        let next_run_at = m
+            .enabled
+            .then(|| schedule.next_after(now, timezone.as_deref()))
+            .flatten();
+
+        let result = match m.editing_id {
+            Some(id) => match self.db.get_automation(id) {
+                Ok(Some(mut auto)) => {
+                    auto.name = name;
+                    auto.prompt = prompt;
+                    auto.schedule = schedule;
+                    auto.timezone = timezone;
+                    auto.action = action;
+                    auto.enabled = m.enabled;
+                    auto.next_run_at = next_run_at;
+                    self.db.update_automation(&auto)
+                }
+                Ok(None) => {
+                    self.set_error("Automation no longer exists");
+                    return;
+                }
+                Err(e) => Err(e),
+            },
+            None => {
+                let new = crate::storage::automations::NewAutomation {
+                    name,
+                    enabled: m.enabled,
+                    schedule,
+                    timezone,
+                    action,
+                    prompt,
+                    next_run_at,
+                };
+                self.db.create_automation(&new).map(|_| ())
+            }
+        };
+
+        if let Err(e) = result {
+            error!("Failed to save automation: {e}");
+            self.set_error("Failed to save automation");
+            return;
+        }
+        self.modal.close();
+        self.refresh_automations();
+        self.set_status(StatusLevel::Success, "Automation saved");
+    }
+
+    /// Refresh the cached automations from the database.
+    fn refresh_automations(&mut self) {
+        match self.db.list_automations() {
+            Ok(autos) => self.cached_automations = autos,
+            Err(e) => error!("Failed to list automations: {e}"),
+        }
+        // Keep the pane selection in range. The pane stays focusable even when
+        // empty (so Ctrl+N can create the first automation), so focus is left
+        // where it is.
+        if self.cached_automations.is_empty() {
+            self.automation_panel_index = 0;
+        } else if self.automation_panel_index >= self.cached_automations.len() {
+            self.automation_panel_index = self.cached_automations.len() - 1;
+        }
+    }
+
+    /// Toggle an automation's enabled state, recomputing `next_run_at` on enable.
+    fn toggle_automation_by_id(&mut self, id: i64) {
+        let Ok(Some(mut auto)) = self.db.get_automation(id) else {
+            return;
+        };
+        auto.enabled = !auto.enabled;
+        auto.next_run_at = if auto.enabled {
+            auto.schedule
+                .next_after(crate::sync::current_time_millis(), auto.timezone.as_deref())
+        } else {
+            None
+        };
+        if let Err(e) = self.db.update_automation(&auto) {
+            error!("Failed to toggle automation {id}: {e}");
+        }
+        self.refresh_automations();
+    }
+
+    /// Mark an automation due so the next tick fires it.
+    fn run_automation_by_id(&mut self, id: i64) {
+        match self.db.trigger_automation_now(id) {
+            Ok(true) => {
+                self.refresh_automations();
+                self.set_status(StatusLevel::Success, "Automation will run now");
+            }
+            Ok(false) => self.set_error("Automation not found"),
+            Err(e) => {
+                error!("Failed to trigger automation {id}: {e}");
+                self.set_error("Failed to trigger automation");
+            }
+        }
+    }
+
+    /// Delete an automation by ID and refresh the cache.
+    fn delete_automation_by_id(&mut self, id: i64) {
+        match self.db.delete_automation(id) {
+            Ok(true) => {
+                self.refresh_automations();
+                self.set_status(StatusLevel::Success, "Automation deleted");
+            }
+            Ok(false) => self.set_error("Automation not found"),
+            Err(e) => {
+                error!("Failed to delete automation {id}: {e}");
+                self.set_error("Failed to delete automation");
             }
         }
     }
 
     pub(crate) fn content_area_size(&self) -> (u16, u16) {
         let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let terminal =
-            layout::compute_layout(area, self.show_info_panel, self.show_file_viewer).terminal;
+        let terminal = layout::compute_layout(
+            area,
+            self.show_info_panel,
+            self.show_file_viewer,
+            self.cached_automations.len(),
+        )
+        .terminal;
         let inner = Block::default().borders(Borders::ALL).inner(terminal);
         (inner.height, inner.width)
     }
+}
+
+/// One-line summary of an automation for the list modal:
+/// `<schedule> · <action> · <when>`.
+fn format_automation_summary(auto: &Automation, now: u64) -> String {
+    let schedule = match &auto.schedule {
+        AutomationSchedule::Once { .. } => "once".to_string(),
+        AutomationSchedule::Cron { expr } => expr.clone(),
+    };
+    let action = auto.action.kind();
+    let when = if !auto.enabled {
+        "disabled".to_string()
+    } else if let Some(next) = auto.next_run_at {
+        format!("in {}", view::format_countdown(next.saturating_sub(now)))
+    } else {
+        "—".to_string()
+    };
+    format!("{schedule} · {action} · {when}")
 }
 
 /// Populate `repo_display_names` on a session from worktree repo paths,
@@ -2871,6 +3064,49 @@ mod tests {
         assert_eq!(app.next_session_name(), "6");
     }
 
+    #[test]
+    fn automations_pane_focus_cycle_and_nav() {
+        use crate::session::{AutomationAction, AutomationSchedule};
+        let make = |id: i64, name: &str| Automation {
+            id,
+            name: name.into(),
+            enabled: true,
+            schedule: AutomationSchedule::Once { at: 0 },
+            timezone: None,
+            action: AutomationAction::Send {
+                session_id: SessionId::default(),
+            },
+            prompt: "p".into(),
+            created_at: 0,
+            updated_at: 0,
+            last_run_at: None,
+            next_run_at: None,
+        };
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+
+        // The pane is always in the cycle (even empty), so Ctrl+N there can
+        // create the first automation: forward from the list lands on it.
+        app.focus = InputFocus::SessionList;
+        assert_eq!(app.cycle_focus_forward(), InputFocus::Automations);
+        app.focus = InputFocus::Terminal;
+        assert_eq!(app.cycle_focus_backward(), InputFocus::Automations);
+
+        // With automations present it behaves the same.
+        app.cached_automations = vec![make(1, "a"), make(2, "b")];
+        app.focus = InputFocus::SessionList;
+        assert_eq!(app.cycle_focus_forward(), InputFocus::Automations);
+
+        // j/k navigate, clamped to the list bounds.
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.handle_automations_pane_key(KeyCode::Char('j'));
+        assert_eq!(app.automation_panel_index, 1);
+        app.handle_automations_pane_key(KeyCode::Char('j'));
+        assert_eq!(app.automation_panel_index, 1, "clamped at last");
+        app.handle_automations_pane_key(KeyCode::Char('k'));
+        assert_eq!(app.automation_panel_index, 0);
+    }
+
     // --- Role editor tests ---
 
     #[test]
@@ -2896,6 +3132,9 @@ mod tests {
     fn ctrl_h_cycles_focus_backward_from_terminal() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::Terminal;
+        // Backward from the terminal lands on the always-present automations pane.
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Automations);
         app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
         assert_eq!(app.focus, InputFocus::SessionList);
     }
@@ -3063,6 +3302,9 @@ mod tests {
     fn ctrl_l_cycles_focus() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::SessionList;
+        // SessionList → Automations → Terminal → SessionList (no file viewer).
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Automations);
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(app.focus, InputFocus::Terminal);
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);

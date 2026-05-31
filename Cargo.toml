@@ -6,6 +6,8 @@ edition = "2021"
 # Build script injects version from THURBOX_RELEASE_VERSION env variable (set by CI)
 # Fallback to version above for local development builds
 build = "build.rs"
+# `cargo run` (no --bin) launches the TUI; thurbox-cli is the headless binary.
+default-run = "thurbox"
 authors = ["LeTuR <magicletur@protonmail.com>"]
 license = "MIT"
 description = "A TUI for orchestrating multiple coding-agent CLI sessions in persistent tmux panels"
@@ -60,6 +62,11 @@ serde_json = "1"
 
 # CLI argument parsing (thurbox-cli)
 clap = { version = "4", features = ["derive"] }
+
+# Date/time + cron scheduling (automations)
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono-tz = "0.10"
+cron = "0.15"
 
 [[bin]]
 name = "thurbox-cli"

@@ -92,11 +92,8 @@ const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 /// Timeout for waiting for a control mode command response.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Delay (in seconds) between sending command text and pressing Enter via tmux,
-/// giving the target application time to process the input.
-const SEND_KEYS_ENTER_DELAY_SECS: &str = "0.2";
-
-/// Same delay as a `Duration`, used by the synchronous `send_prompt_now` path.
+/// Delay between sending command text and pressing Enter via tmux, used by the
+/// synchronous `send_prompt_now` path.
 const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Hard cap on the number of scrollback lines `capture_pane_text` will return.
@@ -859,65 +856,11 @@ impl SessionBackend for LocalTmuxBackend {
     }
 }
 
-/// Schedule a command to be sent to a tmux session window after a delay.
-///
-/// Uses `tmux run-shell -b -d <seconds>` so the timer fires independently of
-/// Thurbox. Before sending, the shell script checks `cancelled_at` in the DB
-/// (via `sqlite3` CLI) and marks `executed_at` after sending.
-pub fn schedule_tmux_command(
-    session_name: &str,
-    command_text: &str,
-    delay_seconds: u64,
-    command_id: i64,
-    db_path: &Path,
-) -> Result<()> {
-    let escaped_text = shell_escape(command_text);
-    let escaped_db = shell_escape(&db_path.display().to_string());
-    let target = window_target(session_name);
-    let escaped_target = shell_escape(&target);
-
-    // Shell script that checks cancellation before sending, then marks executed.
-    // Sends the text first, waits for the app to process, then sends Enter.
-    let script = format!(
-        "cancelled=$(sqlite3 {escaped_db} \
-         \"SELECT cancelled_at FROM scheduled_commands WHERE id={command_id};\"); \
-         if [ -z \"$cancelled\" ]; then \
-         tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} {escaped_text}; \
-         sleep {SEND_KEYS_ENTER_DELAY_SECS}; \
-         tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} Enter; \
-         sqlite3 {escaped_db} \
-         \"UPDATE scheduled_commands SET executed_at=$(date +%s)000 WHERE id={command_id};\"; \
-         fi"
-    );
-
-    let status = Command::new("tmux")
-        .arg("-L")
-        .arg(TMUX_SOCKET)
-        .arg("run-shell")
-        .arg("-b")
-        .arg("-d")
-        .arg(delay_seconds.to_string())
-        .arg(script)
-        .status()
-        .context("Failed to spawn tmux run-shell for scheduled command")?;
-
-    if !status.success() {
-        bail!(
-            "tmux run-shell exited with status {} for command {}",
-            status,
-            command_id
-        );
-    }
-
-    Ok(())
-}
-
 /// Send text immediately to a session pane (no scheduling), followed by Enter.
 ///
-/// Used by the MCP `send_prompt` tool. Targets the tmux window named
-/// `tb-<session_name>` in the thurbox tmux session and uses the same
-/// "type text → brief delay → press Enter" sequence that `schedule_tmux_command`
-/// uses so the target app has time to process the typed input.
+/// Targets the tmux window named `tb-<session_name>` in the thurbox tmux
+/// session and uses a "type text → brief delay → press Enter" sequence so the
+/// target app has time to process the typed input.
 pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
     let target = window_target(session_name);
 
@@ -939,6 +882,138 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
         bail!("tmux send-keys (Enter) exited with status {status}");
     }
     Ok(())
+}
+
+/// Window name for the headless automation heartbeat keeper. Deliberately NOT
+/// `tb-` prefixed so [`LocalTmuxBackend::discover`] ignores it — it is
+/// infrastructure, not a session.
+const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
+
+/// How often the heartbeat keeper invokes `automation tick`.
+const HEARTBEAT_INTERVAL_SECS: u64 = 60;
+
+/// List the window names in the thurbox tmux session (empty if the server is
+/// not running).
+fn list_window_names() -> Vec<String> {
+    let Ok(out) = Command::new("tmux")
+        .args([
+            "-L",
+            TMUX_SOCKET,
+            "list-windows",
+            "-t",
+            TMUX_SESSION,
+            "-F",
+            "#{window_name}",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Whether the agent window `tb-<session_name>` currently exists in the thurbox
+/// tmux server. Used by the headless dispatcher to skip `send` automations
+/// whose target session is no longer running rather than failing into a dead
+/// pane.
+pub fn window_exists(session_name: &str) -> bool {
+    let want = agent_window_name(session_name);
+    list_window_names().contains(&want)
+}
+
+/// Schedule a one-shot prompt delivery into a session's window after
+/// `delay_secs`, via a detached `tmux run-shell` timer.
+///
+/// Used by the headless automation dispatcher to deliver a Spawn automation's
+/// prompt once the freshly launched agent CLI has had time to boot — offline
+/// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
+pub fn send_prompt_after_delay(session_name: &str, text: &str, delay_secs: u64) -> Result<()> {
+    let escaped_target = shell_escape(&window_target(session_name));
+    let escaped_text = shell_escape(text);
+    // run-shell executes the script via the server's shell; escape accordingly.
+    let script = format!(
+        "tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} {escaped_text}; \
+         sleep 0.2; \
+         tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} Enter"
+    );
+    let status = Command::new("tmux")
+        .args([
+            "-L",
+            TMUX_SOCKET,
+            "run-shell",
+            "-b",
+            "-d",
+            &delay_secs.to_string(),
+            &script,
+        ])
+        .status()
+        .context("Failed to schedule tmux run-shell for deferred prompt")?;
+    if !status.success() {
+        bail!("tmux run-shell (deferred prompt) exited with status {status}");
+    }
+    Ok(())
+}
+
+/// Ensure the automation heartbeat keeper window is running.
+///
+/// Creates a detached tmux window that loops `<cli_path> automation tick` every
+/// `HEARTBEAT_INTERVAL_SECS` seconds, so automations fire even with no TUI
+/// attached. The live window also keeps the tmux server alive, so spawn-only
+/// automations work with no other sessions. Idempotent — a no-op when the
+/// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
+pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
+    ensure_tmux_session_headless()?;
+    if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
+        return Ok(());
+    }
+    // The loop body runs via the server's shell, so escape the CLI path.
+    let cli = shell_escape(&cli_path.display().to_string());
+    let loop_cmd = format!(
+        "while true; do {cli} automation tick >/dev/null 2>&1; sleep {HEARTBEAT_INTERVAL_SECS}; done"
+    );
+    let status = Command::new("tmux")
+        .args([
+            "-L",
+            TMUX_SOCKET,
+            "new-window",
+            "-d",
+            "-t",
+            TMUX_SESSION,
+            "-n",
+            HEARTBEAT_WINDOW,
+            &loop_cmd,
+        ])
+        .status()
+        .context("Failed to create automation heartbeat window")?;
+    if !status.success() {
+        bail!("tmux new-window (heartbeat) exited with status {status}");
+    }
+    debug!("Armed automation heartbeat keeper window");
+    Ok(())
+}
+
+/// Resolve the path to the `thurbox-cli` binary that sits next to the currently
+/// running executable (TUI or CLI), falling back to a bare `thurbox-cli` on
+/// `PATH` when resolution fails.
+pub fn resolve_cli_binary() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.file_name().and_then(|n| n.to_str()) == Some("thurbox-cli") {
+            return exe;
+        }
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("thurbox-cli");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    std::path::PathBuf::from("thurbox-cli")
 }
 
 /// Capture the rendered contents of a session's pane.

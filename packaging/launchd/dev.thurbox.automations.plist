@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Reboot-proof automation firing for thurbox (macOS launchd user agent).
+
+  OPT-IN, guaranteed alternative to thurbox's default tmux heartbeat keeper.
+  Runs `thurbox-cli automation tick` every 60 seconds. Firing is claim-based,
+  so it is safe alongside a live TUI and the tmux keeper.
+
+  Install (macOS):
+    cp packaging/launchd/dev.thurbox.automations.plist ~/Library/LaunchAgents/
+    # edit the ProgramArguments path below if thurbox-cli is elsewhere
+    launchctl load -w ~/Library/LaunchAgents/dev.thurbox.automations.plist
+
+  Verify:   launchctl list | grep thurbox
+  Unload:   launchctl unload -w ~/Library/LaunchAgents/dev.thurbox.automations.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.thurbox.automations</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Replace with an absolute path, e.g. /Users/you/.local/bin/thurbox-cli -->
+        <string>thurbox-cli</string>
+        <string>automation</string>
+        <string>tick</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/tmp/thurbox-automations.err.log</string>
+</dict>
+</plist>

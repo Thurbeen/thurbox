@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand};
 
 use crate::storage::Database;
 
+pub mod automations;
 pub mod editor;
-pub mod scheduled;
 pub mod sessions;
 
 /// Thurbox CLI — manage sessions, scheduled commands, and more.
@@ -38,10 +38,11 @@ pub enum Command {
         #[command(subcommand)]
         action: sessions::Action,
     },
-    /// Manage scheduled commands.
-    Schedule {
+    /// Manage automations (scheduled agent runs).
+    #[command(alias = "auto")]
+    Automation {
         #[command(subcommand)]
-        action: scheduled::Action,
+        action: automations::Action,
     },
 }
 
@@ -50,7 +51,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
     let value = match cli.command {
         Command::Editor { action } => editor::run(action, db),
         Command::Session { action } => sessions::run(action, db),
-        Command::Schedule { action } => scheduled::run(action, db),
+        Command::Automation { action } => automations::run(action, db),
     }?;
 
     let text = if cli.pretty {
@@ -138,27 +139,53 @@ mod tests {
     }
 
     #[test]
-    fn parse_schedule_create_requires_args() {
+    fn parse_automation_create_requires_args() {
         assert!(
-            Cli::try_parse_from(["thurbox-cli", "schedule", "create"]).is_err(),
+            Cli::try_parse_from(["thurbox-cli", "automation", "create"]).is_err(),
             "missing required args should fail"
         );
         let cli = Cli::try_parse_from([
             "thurbox-cli",
-            "schedule",
+            "automation",
             "create",
+            "--name",
+            "nightly",
+            "--trigger",
+            "weekdays",
+            "--time",
+            "09:00",
             "--session",
             "00000000-0000-0000-0000-000000000000",
-            "--at",
-            "9999999999999",
-            "--command",
-            "ls",
+            "--prompt",
+            "triage",
         ])
         .unwrap();
         assert!(matches!(
             cli.command,
-            Command::Schedule {
-                action: scheduled::Action::Create { .. }
+            Command::Automation {
+                action: automations::Action::Create { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn automation_alias_auto_parses() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "auto", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Automation {
+                action: automations::Action::List
+            }
+        ));
+    }
+
+    #[test]
+    fn automation_tick_parses() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "automation", "tick"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Automation {
+                action: automations::Action::Tick
             }
         ));
     }

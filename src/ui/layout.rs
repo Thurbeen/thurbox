@@ -2,19 +2,60 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 pub struct PanelAreas {
     pub header: Rect,
+    /// Session list area (top of the left column).
     pub left_panel: Option<Rect>,
+    /// Automations pane, below the session list in the left column. Always
+    /// present (even with zero automations) as long as the column is tall
+    /// enough to fit both lists; its height grows with the automation count.
+    pub automations_panel: Option<Rect>,
     pub info_panel: Option<Rect>,
     pub file_viewer: Option<Rect>,
     pub terminal: Rect,
     pub footer: Rect,
 }
 
+/// Max rows (including borders) the automations pane may occupy.
+const AUTOMATIONS_PANE_MAX_ROWS: u16 = 10;
+/// Minimum rows the automations pane occupies (border + one content row), so it
+/// stays visible even with zero automations.
+const AUTOMATIONS_PANE_MIN_ROWS: u16 = 3;
+/// Minimum rows the session list keeps when the automations pane is shown.
+const SESSIONS_MIN_ROWS: u16 = 3;
+
+/// Split a left-column rect into (sessions, automations). The automations pane
+/// is always present (its height grows with `automation_count`, with a minimum
+/// so an empty pane still shows) unless the column is too short for both lists.
+fn split_left_column(col: Rect, automation_count: usize) -> (Rect, Option<Rect>) {
+    let desired =
+        (automation_count as u16 + 2).clamp(AUTOMATIONS_PANE_MIN_ROWS, AUTOMATIONS_PANE_MAX_ROWS);
+    let auto_h = desired.min(col.height.saturating_sub(SESSIONS_MIN_ROWS));
+    if auto_h < AUTOMATIONS_PANE_MIN_ROWS {
+        return (col, None); // not enough vertical room — keep sessions only
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(SESSIONS_MIN_ROWS),
+            Constraint::Length(auto_h),
+        ])
+        .split(col);
+    (rows[0], Some(rows[1]))
+}
+
 /// Compute panel layout areas based on terminal dimensions and optional
 /// right-side panel visibility.
 ///
 /// At width ≥ 120, the layout becomes `list | info? | terminal | file_viewer?`
-/// with info (15%) and file_viewer (20%) appearing only when requested.
-pub fn compute_layout(area: Rect, show_info_panel: bool, show_file_viewer: bool) -> PanelAreas {
+/// with info (15%) and file_viewer (20%) appearing only when requested. The
+/// left column is further split into a session list and an always-present
+/// automations pane beneath it (whenever the column is tall enough);
+/// `automation_count` only sizes that pane.
+pub fn compute_layout(
+    area: Rect,
+    show_info_panel: bool,
+    show_file_viewer: bool,
+    automation_count: usize,
+) -> PanelAreas {
     // Compact mode: when the terminal is shorter than 20 rows, drop the
     // header line entirely so the content + footer get every row available.
     let header_height = if area.height < 20 { 0 } else { 1 };
@@ -36,6 +77,7 @@ pub fn compute_layout(area: Rect, show_info_panel: bool, show_file_viewer: bool)
         return PanelAreas {
             header,
             left_panel: None,
+            automations_panel: None,
             info_panel: None,
             file_viewer: None,
             terminal: content,
@@ -61,7 +103,6 @@ pub fn compute_layout(area: Rect, show_info_panel: bool, show_file_viewer: bool)
             .constraints(constraints)
             .split(content);
 
-        let left_panel = Some(horizontal[0]);
         let mut idx = 1;
         let info_panel = if show_info_panel {
             let r = horizontal[idx];
@@ -78,9 +119,11 @@ pub fn compute_layout(area: Rect, show_info_panel: bool, show_file_viewer: bool)
             None
         };
 
+        let (left_panel, automations_panel) = split_left_column(horizontal[0], automation_count);
         return PanelAreas {
             header,
-            left_panel,
+            left_panel: Some(left_panel),
+            automations_panel,
             info_panel,
             file_viewer,
             terminal,
@@ -94,9 +137,11 @@ pub fn compute_layout(area: Rect, show_info_panel: bool, show_file_viewer: bool)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(content);
 
+    let (left_panel, automations_panel) = split_left_column(horizontal[0], automation_count);
     PanelAreas {
         header,
-        left_panel: Some(horizontal[0]),
+        left_panel: Some(left_panel),
+        automations_panel,
         info_panel: None,
         file_viewer: None,
         terminal: horizontal[1],
@@ -114,7 +159,7 @@ mod tests {
 
     #[test]
     fn narrow_terminal_hides_left_panel() {
-        let areas = compute_layout(area(79, 24), false, false);
+        let areas = compute_layout(area(79, 24), false, false, 0);
         assert!(areas.left_panel.is_none());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_none());
@@ -122,7 +167,7 @@ mod tests {
 
     #[test]
     fn normal_width_shows_two_panels() {
-        let areas = compute_layout(area(100, 24), false, false);
+        let areas = compute_layout(area(100, 24), false, false, 0);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_none());
@@ -130,7 +175,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_with_info_panel_shows_three_panels() {
-        let areas = compute_layout(area(120, 24), true, false);
+        let areas = compute_layout(area(120, 24), true, false, 0);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_some());
         assert!(areas.file_viewer.is_none());
@@ -138,7 +183,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_without_info_panel_shows_two_panels() {
-        let areas = compute_layout(area(120, 24), false, false);
+        let areas = compute_layout(area(120, 24), false, false, 0);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_none());
@@ -146,7 +191,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_with_file_viewer_only() {
-        let areas = compute_layout(area(160, 24), false, true);
+        let areas = compute_layout(area(160, 24), false, true, 0);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_some());
@@ -154,7 +199,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_with_info_and_file_viewer() {
-        let areas = compute_layout(area(160, 24), true, true);
+        let areas = compute_layout(area(160, 24), true, true, 0);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_some());
         assert!(areas.file_viewer.is_some());
@@ -166,14 +211,14 @@ mod tests {
 
     #[test]
     fn header_and_footer_are_one_line() {
-        let areas = compute_layout(area(100, 24), false, false);
+        let areas = compute_layout(area(100, 24), false, false, 0);
         assert_eq!(areas.header.height, 1);
         assert_eq!(areas.footer.height, 1);
     }
 
     #[test]
     fn compact_mode_hides_header_below_20_rows() {
-        let areas = compute_layout(area(100, 19), false, false);
+        let areas = compute_layout(area(100, 19), false, false, 0);
         assert_eq!(areas.header.height, 0);
         assert_eq!(areas.footer.height, 1);
         assert!(areas.left_panel.is_some());
@@ -181,25 +226,25 @@ mod tests {
 
     #[test]
     fn header_returns_at_20_rows() {
-        let areas = compute_layout(area(100, 20), false, false);
+        let areas = compute_layout(area(100, 20), false, false, 0);
         assert_eq!(areas.header.height, 1);
     }
 
     #[test]
     fn info_panel_ignored_below_120_cols() {
-        let areas = compute_layout(area(119, 24), true, false);
+        let areas = compute_layout(area(119, 24), true, false, 0);
         assert!(areas.info_panel.is_none());
     }
 
     #[test]
     fn file_viewer_ignored_below_120_cols() {
-        let areas = compute_layout(area(119, 24), false, true);
+        let areas = compute_layout(area(119, 24), false, true, 0);
         assert!(areas.file_viewer.is_none());
     }
 
     fn terminal_inner(width: u16, height: u16, show_info: bool) -> (u16, u16) {
         use ratatui::widgets::{Block, Borders};
-        let terminal = compute_layout(area(width, height), show_info, false).terminal;
+        let terminal = compute_layout(area(width, height), show_info, false, 0).terminal;
         let inner = Block::default().borders(Borders::ALL).inner(terminal);
         (inner.height, inner.width)
     }
@@ -231,5 +276,45 @@ mod tests {
         let (rows, cols) = terminal_inner(60, 24, false);
         assert_eq!(cols, 58);
         assert_eq!(rows, 20);
+    }
+
+    #[test]
+    fn automations_pane_present_even_when_empty() {
+        // Zero automations still get a minimum-height pane (so it's discoverable).
+        let areas = compute_layout(area(100, 24), false, false, 0);
+        assert!(areas.left_panel.is_some());
+        let autos = areas.automations_panel.expect("empty pane still shown");
+        assert_eq!(autos.height, AUTOMATIONS_PANE_MIN_ROWS);
+    }
+
+    #[test]
+    fn automations_pane_appears_below_sessions() {
+        let areas = compute_layout(area(100, 30), false, false, 2);
+        let sessions = areas.left_panel.unwrap();
+        let autos = areas.automations_panel.expect("automations pane shown");
+        // Same column, automations stacked beneath the session list.
+        assert_eq!(sessions.x, autos.x);
+        assert_eq!(sessions.width, autos.width);
+        assert_eq!(autos.y, sessions.y + sessions.height);
+        // 2 automations + 2 border rows = 4 rows tall.
+        assert_eq!(autos.height, 4);
+        assert!(sessions.height >= SESSIONS_MIN_ROWS);
+    }
+
+    #[test]
+    fn automations_pane_height_is_capped() {
+        let areas = compute_layout(area(100, 60), false, false, 50);
+        assert_eq!(
+            areas.automations_panel.unwrap().height,
+            AUTOMATIONS_PANE_MAX_ROWS
+        );
+    }
+
+    #[test]
+    fn automations_pane_hidden_when_column_too_short() {
+        // Content height ≈ 4 rows leaves no room for both lists.
+        let areas = compute_layout(area(100, 6), false, false, 3);
+        assert!(areas.left_panel.is_some());
+        assert!(areas.automations_panel.is_none());
     }
 }

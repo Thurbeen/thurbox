@@ -90,15 +90,15 @@ impl App {
             return;
         }
 
-        // Schedule command modal captures all input
-        if matches!(self.modal, super::modals::Modal::ScheduleCommand(_)) {
-            self.handle_schedule_command_key(code);
+        // Automation editor modal captures all input
+        if matches!(self.modal, super::modals::Modal::AutomationEditor(_)) {
+            self.handle_automation_editor_key(code, mods);
             return;
         }
 
-        // Scheduled commands list modal captures all input
-        if matches!(self.modal, super::modals::Modal::ScheduledCommandsList(_)) {
-            self.handle_scheduled_commands_list_key(code);
+        // Automations list modal captures all input
+        if matches!(self.modal, super::modals::Modal::AutomationsList(_)) {
+            self.handle_automations_list_key(code);
             return;
         }
 
@@ -141,15 +141,20 @@ impl App {
 
         match self.focus {
             InputFocus::SessionList => self.handle_session_list_key(code),
+            InputFocus::Automations => self.handle_automations_pane_key(code),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
             InputFocus::FileViewer => self.handle_file_viewer_key(code, mods),
         }
     }
 
-    /// Cycle focus forward (Ctrl+L). Skips FileViewer when not visible.
-    fn cycle_focus_forward(&self) -> InputFocus {
+    /// Cycle focus forward (Ctrl+L). The automations pane is always in the cycle
+    /// (between the session list and terminal) — even when empty, so `Ctrl+N`
+    /// there can create the first automation. The file viewer joins only when
+    /// visible.
+    pub(crate) fn cycle_focus_forward(&self) -> InputFocus {
         match self.focus {
-            InputFocus::SessionList => InputFocus::Terminal,
+            InputFocus::SessionList => InputFocus::Automations,
+            InputFocus::Automations => InputFocus::Terminal,
             InputFocus::Terminal => {
                 if self.show_file_viewer {
                     InputFocus::FileViewer
@@ -161,8 +166,8 @@ impl App {
         }
     }
 
-    /// Cycle focus backward (Ctrl+H). Skips FileViewer when not visible.
-    fn cycle_focus_backward(&self) -> InputFocus {
+    /// Cycle focus backward (Ctrl+H).
+    pub(crate) fn cycle_focus_backward(&self) -> InputFocus {
         match self.focus {
             InputFocus::SessionList => {
                 if self.show_file_viewer {
@@ -171,8 +176,50 @@ impl App {
                     InputFocus::Terminal
                 }
             }
-            InputFocus::Terminal => InputFocus::SessionList,
+            InputFocus::Terminal => InputFocus::Automations,
+            InputFocus::Automations => InputFocus::SessionList,
             InputFocus::FileViewer => InputFocus::Terminal,
+        }
+    }
+
+    /// Handle keys while the automations pane is focused: navigate and drive the
+    /// same toggle/run/edit/delete actions as the Ctrl+P modal. (Ctrl+N to
+    /// create is handled globally in `dispatch_action`, so it works here too,
+    /// including on an empty pane.)
+    pub(crate) fn handle_automations_pane_key(&mut self, code: KeyCode) {
+        // Creating works regardless of whether the pane has entries.
+        if matches!(code, KeyCode::Char('n')) {
+            self.open_automation_editor();
+            return;
+        }
+        let count = self.cached_automations.len();
+        if count == 0 {
+            return; // empty pane: nav/actions are no-ops
+        }
+        if self.automation_panel_index >= count {
+            self.automation_panel_index = count - 1;
+        }
+        let id = self.cached_automations[self.automation_panel_index].id;
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.automation_panel_index + 1 < count {
+                    self.automation_panel_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.automation_panel_index = self.automation_panel_index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') => self.toggle_automation_by_id(id),
+            KeyCode::Char('r') => self.run_automation_by_id(id),
+            KeyCode::Char('e') | KeyCode::Enter => self.open_edit_automation(id),
+            KeyCode::Char('d') => {
+                self.delete_automation_by_id(id);
+                let new_count = self.cached_automations.len();
+                if new_count > 0 && self.automation_panel_index >= new_count {
+                    self.automation_panel_index = new_count - 1;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -520,56 +567,77 @@ impl App {
         }
     }
 
-    fn handle_schedule_command_key(&mut self, code: KeyCode) {
-        use super::modals::ScheduleCommandField;
-
-        let super::modals::Modal::ScheduleCommand(ref mut sc) = self.modal else {
+    fn handle_automation_editor_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let super::modals::Modal::AutomationEditor(ref mut m) = self.modal else {
             return;
         };
+        // Selector/stepper fields (trigger, weekday, hour, minute, action) are
+        // adjusted with ←/→/Space; text fields edit as usual.
+        let adjustable = m.is_adjustable();
         match code {
-            KeyCode::Esc => {
-                self.modal.close();
+            KeyCode::Esc => self.modal.close(),
+            KeyCode::Enter => self.submit_automation_editor(),
+            KeyCode::Char('e') if mods.contains(KeyModifiers::CONTROL) => {
+                m.enabled = !m.enabled;
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                sc.field = match sc.field {
-                    ScheduleCommandField::Command => ScheduleCommandField::Delay,
-                    ScheduleCommandField::Delay => ScheduleCommandField::Command,
-                };
-            }
-            KeyCode::Enter => {
-                self.submit_schedule_command();
-            }
+            KeyCode::Tab | KeyCode::Down => m.next_field(),
+            KeyCode::BackTab | KeyCode::Up => m.prev_field(),
+            KeyCode::Left if adjustable => m.adjust(-1),
+            KeyCode::Right | KeyCode::Char(' ') if adjustable => m.adjust(1),
             KeyCode::Char(c) => {
-                if sc.field == ScheduleCommandField::Delay && !c.is_ascii_digit() {
-                    return;
+                if let Some(field) = m.active_field_mut() {
+                    field.insert(c);
                 }
-                sc.active_field_mut().insert(c);
             }
-            KeyCode::Backspace => sc.active_field_mut().backspace(),
-            KeyCode::Delete => sc.active_field_mut().delete(),
-            KeyCode::Left => sc.active_field_mut().move_left(),
-            KeyCode::Right => sc.active_field_mut().move_right(),
-            KeyCode::Home => sc.active_field_mut().home(),
-            KeyCode::End => sc.active_field_mut().end(),
+            KeyCode::Backspace => {
+                if let Some(field) = m.active_field_mut() {
+                    field.backspace();
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(field) = m.active_field_mut() {
+                    field.delete();
+                }
+            }
+            KeyCode::Left => {
+                if let Some(field) = m.active_field_mut() {
+                    field.move_left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(field) = m.active_field_mut() {
+                    field.move_right();
+                }
+            }
+            KeyCode::Home => {
+                if let Some(field) = m.active_field_mut() {
+                    field.home();
+                }
+            }
+            KeyCode::End => {
+                if let Some(field) = m.active_field_mut() {
+                    field.end();
+                }
+            }
             _ => {}
         }
     }
 
-    fn handle_scheduled_commands_list_key(&mut self, code: KeyCode) {
-        if let super::modals::Modal::ScheduledCommandsList(ref mut scl) = self.modal {
+    fn handle_automations_list_key(&mut self, code: KeyCode) {
+        if let super::modals::Modal::AutomationsList(ref mut al) = self.modal {
             match code {
                 KeyCode::Esc => {
                     self.modal.close();
                     return;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if scl.index + 1 < scl.commands.len() {
-                        scl.index += 1;
+                    if al.index + 1 < al.entries.len() {
+                        al.index += 1;
                     }
                     return;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    scl.index = scl.index.saturating_sub(1);
+                    al.index = al.index.saturating_sub(1);
                     return;
                 }
                 _ => {}
@@ -577,51 +645,58 @@ impl App {
         }
 
         match code {
-            KeyCode::Enter => self.cancel_selected_scheduled_command(),
             KeyCode::Char('n') => {
                 self.modal.close();
-                self.open_schedule_command_modal();
+                self.open_automation_editor();
             }
-            KeyCode::Char('e') => self.edit_selected_scheduled_command(),
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if let Some(id) = self.selected_automation_id() {
+                    self.modal.close();
+                    self.open_edit_automation(id);
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(id) = self.selected_automation_id() {
+                    self.toggle_automation_by_id(id);
+                    self.refresh_automations_list_modal();
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(id) = self.selected_automation_id() {
+                    self.run_automation_by_id(id);
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(id) = self.selected_automation_id() {
+                    self.delete_automation_by_id(id);
+                    self.refresh_automations_list_modal();
+                }
+            }
             _ => {}
         }
     }
 
-    /// Cancel the currently selected command in the list modal.
-    fn cancel_selected_scheduled_command(&mut self) {
-        let id = {
-            let super::modals::Modal::ScheduledCommandsList(ref mut scl) = self.modal else {
-                return;
-            };
-            if scl.commands.is_empty() {
-                return;
-            }
-            let entry = scl.commands.remove(scl.index);
-            if scl.index >= scl.commands.len() && scl.index > 0 {
-                scl.index -= 1;
-            }
-            entry.id
+    /// The id of the selected automation in the list modal, if any.
+    fn selected_automation_id(&self) -> Option<i64> {
+        let super::modals::Modal::AutomationsList(ref al) = self.modal else {
+            return None;
         };
-        self.cancel_scheduled_command_by_id(id);
-        if let super::modals::Modal::ScheduledCommandsList(ref scl) = self.modal {
-            if scl.commands.is_empty() {
+        al.entries.get(al.index).map(|e| e.id)
+    }
+
+    /// Rebuild the list modal entries after a mutation, preserving selection.
+    fn refresh_automations_list_modal(&mut self) {
+        let index = match self.modal {
+            super::modals::Modal::AutomationsList(ref al) => al.index,
+            _ => return,
+        };
+        self.open_automations_list();
+        if let super::modals::Modal::AutomationsList(ref mut al) = self.modal {
+            al.index = index.min(al.entries.len().saturating_sub(1));
+            if al.entries.is_empty() {
                 self.modal.close();
             }
         }
-    }
-
-    /// Open the edit modal for the currently selected command in the list.
-    fn edit_selected_scheduled_command(&mut self) {
-        let entry = {
-            let super::modals::Modal::ScheduledCommandsList(ref scl) = self.modal else {
-                return;
-            };
-            if scl.commands.is_empty() {
-                return;
-            }
-            scl.commands[scl.index].clone()
-        };
-        self.open_edit_scheduled_command(entry);
     }
 
     fn handle_agent_picker_key(&mut self, code: KeyCode) {
@@ -667,12 +742,24 @@ impl App {
                 true
             }
             Action::NewSession => {
-                self.open_repo_picker();
+                // On the automations pane, Ctrl+N creates a new automation
+                // (mirrors `n`); elsewhere it starts the new-session wizard.
+                if self.focus == InputFocus::Automations {
+                    self.open_automation_editor();
+                } else {
+                    self.open_repo_picker();
+                }
                 true
             }
             Action::DeleteSession => match self.focus {
                 InputFocus::SessionList | InputFocus::FileViewer => {
                     self.close_active_session();
+                    true
+                }
+                // On the automations pane, Ctrl+D deletes the selected
+                // automation (mirrors the pane's `d` key).
+                InputFocus::Automations => {
+                    self.handle_automations_pane_key(KeyCode::Char('d'));
                     true
                 }
                 InputFocus::Terminal => false, // forward to PTY
@@ -684,8 +771,8 @@ impl App {
                     true
                 }
             },
-            Action::OpenScheduledCommands => {
-                self.open_scheduled_commands_list();
+            Action::OpenAutomations => {
+                self.open_automations_list();
                 true
             }
             Action::StartSync => {

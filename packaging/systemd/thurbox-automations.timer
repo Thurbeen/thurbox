@@ -1,0 +1,16 @@
+# Drives thurbox-automations.service on a 1-minute cadence, surviving reboots.
+# See thurbox-automations.service for install instructions.
+
+[Unit]
+Description=Fire due thurbox automations every minute
+Documentation=https://github.com/Thurbeen/thurbox
+
+[Timer]
+# First run shortly after login, then every minute.
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

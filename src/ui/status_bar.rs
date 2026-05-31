@@ -65,7 +65,7 @@ pub struct FooterState<'a> {
     pub focus_label: &'a str,
     pub sync_in_progress: bool,
     pub tick_count: u64,
-    pub pending_scheduled_count: usize,
+    pub automation_count: usize,
     pub file_viewer_open: bool,
 }
 
@@ -124,9 +124,9 @@ fn push_idle_counts<'a>(spans: &mut Vec<Span<'a>>, state: &FooterState<'a>) {
         format!(" {} session(s) ", state.session_count),
         Style::default().fg(Theme::text_secondary()),
     ));
-    if state.pending_scheduled_count > 0 {
+    if state.automation_count > 0 {
         spans.push(Span::styled(
-            format!(" {} scheduled ", state.pending_scheduled_count),
+            format!(" {} automation(s) ", state.automation_count),
             Style::default()
                 .fg(Theme::text_primary())
                 .bg(Theme::accent()),

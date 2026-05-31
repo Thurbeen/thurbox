@@ -91,6 +91,15 @@ async fn main() -> Result<()> {
         app.restore_sessions(sessions, counter);
     }
 
+    // Arm the tmux heartbeat keeper so automations keep firing after the TUI is
+    // closed (best-effort: a missing/old tmux just means TUI-only firing).
+    {
+        let cli = thurbox::agent::tmux::resolve_cli_binary();
+        if let Err(e) = thurbox::agent::tmux::ensure_automation_heartbeat(&cli) {
+            tracing::warn!("Failed to arm automation heartbeat: {e}");
+        }
+    }
+
     let res = run_loop(&mut terminal, &mut app).await;
 
     app.shutdown();

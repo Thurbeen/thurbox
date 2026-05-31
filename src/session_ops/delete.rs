@@ -12,7 +12,7 @@ pub struct ForceDeleteReport {
     pub killed_window: bool,
     pub removed_worktrees: Vec<String>,
     pub worktree_errors: Vec<String>,
-    pub cancelled_scheduled: usize,
+    pub disabled_automations: usize,
 }
 
 /// Soft-delete a session and (when `force`) also tear down its runtime
@@ -52,9 +52,9 @@ pub fn delete_session_headless(
             }
         }
 
-        report.cancelled_scheduled = db
-            .cancel_scheduled_commands_for_session(session_id)
-            .map_err(|e| format!("cancel_scheduled_commands_for_session: {e}"))?;
+        report.disabled_automations = db
+            .disable_send_automations_for_session(session_id)
+            .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
     }
 
     db.soft_delete_session(session_id)
@@ -89,39 +89,52 @@ mod tests {
         id
     }
 
+    fn send_automation(db: &Database, session_id: SessionId, name: &str) -> i64 {
+        use crate::session::{AutomationAction, AutomationSchedule};
+        use crate::storage::automations::NewAutomation;
+        db.create_automation(&NewAutomation {
+            name: name.into(),
+            enabled: true,
+            schedule: AutomationSchedule::Once { at: u64::MAX },
+            timezone: None,
+            action: AutomationAction::Send { session_id },
+            prompt: "noop".into(),
+            next_run_at: Some(u64::MAX),
+        })
+        .unwrap()
+    }
+
     #[test]
     fn soft_delete_without_force_leaves_no_side_effects() {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session(&db, "demo");
 
-        // Queue a scheduled command — should NOT be cancelled without force.
-        let future = crate::sync::current_time_millis() + 60_000;
-        let cmd = db.create_scheduled_command(id, "noop", future).unwrap();
+        // Send automation targeting the session — should survive a soft delete.
+        let auto = send_automation(&db, id, "noop");
 
         let report = delete_session_headless(&db, id, false).unwrap();
         assert!(!report.killed_window);
         assert!(report.removed_worktrees.is_empty());
-        assert_eq!(report.cancelled_scheduled, 0);
+        assert_eq!(report.disabled_automations, 0);
 
         // Row is soft-deleted.
         assert!(db.get_session_by_id(id).unwrap().is_none());
-        // Scheduled command is still pending.
-        let pending = db.list_pending_scheduled_commands().unwrap();
-        assert!(pending.iter().any(|c| c.id == cmd));
+        // The automation is still enabled.
+        assert!(db.get_automation(auto).unwrap().unwrap().enabled);
     }
 
     #[test]
-    fn force_delete_cancels_scheduled_commands() {
+    fn force_delete_disables_send_automations() {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session(&db, "demo");
 
-        let future = crate::sync::current_time_millis() + 60_000;
-        db.create_scheduled_command(id, "a", future).unwrap();
-        db.create_scheduled_command(id, "b", future).unwrap();
+        let a = send_automation(&db, id, "a");
+        let b = send_automation(&db, id, "b");
 
         let report = delete_session_headless(&db, id, true).unwrap();
-        assert_eq!(report.cancelled_scheduled, 2);
-        assert!(db.list_pending_scheduled_commands().unwrap().is_empty());
+        assert_eq!(report.disabled_automations, 2);
+        assert!(!db.get_automation(a).unwrap().unwrap().enabled);
+        assert!(!db.get_automation(b).unwrap().unwrap().enabled);
     }
 
     #[test]

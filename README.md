@@ -46,12 +46,31 @@ adds:
   supports resume; `Ctrl+F` forks a session; `Ctrl+T` toggles a
   shell pane.
 - Fuzzy session search (`/`), clickable URLs, mouse selection +
-  clipboard, scheduled commands (`Ctrl+P`), soft-delete with undo
+  clipboard, automations (`Ctrl+P`), soft-delete with undo
   (`Ctrl+Z`) and restore (`Ctrl+U`).
 
 Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
 
 ![Session creation workflow](./docs/media/thurbox-session-creation.gif)
+
+### Automations
+
+- Named, scheduled agent runs — one-shot or recurring (cron, with
+  friendly `hourly`/`daily`/`weekdays`/`weekly` presets). When one
+  fires it either **sends** a prompt to a running session or
+  **spawns** a fresh session (optionally on a new worktree) and
+  prompts it.
+- A dedicated **Automations pane** sits below the session list;
+  focus it and press `Ctrl+N` to create (or `Space`/`r`/`e`/`d` to
+  toggle/run/edit/delete). The editor needs no cron knowledge — the
+  trigger is a selector and the time is set with steppers, with a
+  live "next fire" preview.
+- Fires even when the TUI is closed via a tmux heartbeat keeper
+  (with opt-in systemd/launchd units for reboot-proof firing), and
+  is fully scriptable headless: `thurbox-cli automation
+  create/list/edit/run/tick`.
+
+![Automations demo](./docs/media/automations-demo.gif)
 
 ### Agent definitions
 
@@ -238,7 +257,7 @@ command = "codex"
 | `Ctrl+N` | New session (opens repo picker) | **N**ew |
 | `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
-| `Ctrl+P` | Scheduled commands (list/cancel/new) | **P**rogram |
+| `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
@@ -305,8 +324,8 @@ Thurbox follows **The Elm Architecture** (TEA):
 All state lives in a single `App` model. Sessions run via a
 `SessionBackend` trait backed by local tmux (`tmux -L thurbox`).
 Terminal output is parsed by `vt100::Parser` and rendered by
-`tui_term`. All persistent state (sessions, worktrees, scheduled
-commands) is stored in SQLite.
+`tui_term`. All persistent state (sessions, worktrees, automations)
+is stored in SQLite.
 
 ### Module Dependency Rules
 
