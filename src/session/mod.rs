@@ -228,6 +228,9 @@ pub struct SessionConfig {
     pub cwd: Option<PathBuf>,
     /// Name of the agent definition to launch (looked up in the registry).
     pub agent: String,
+    /// Backend to spawn on (registry name, e.g. `ssh:devbox`). `None`/empty
+    /// selects the registry default (`local-tmux`).
+    pub backend: Option<String>,
     /// Fork from an existing session's conversation (agents that support it).
     pub fork_session_id: Option<String>,
     /// Environment variables injected into the spawned session process

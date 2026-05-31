@@ -1376,6 +1376,30 @@ impl App {
         }
     }
 
+    /// Resolve the backend a session should spawn on, ensuring it is ready.
+    ///
+    /// Looks up `config.backend` in the registry (falling back to the default
+    /// local backend), then calls `ensure_ready()` so a remote backend's SSH
+    /// control-mode connection is established lazily on first use. Returns a
+    /// status-line-friendly error if the backend is unknown or unreachable.
+    pub(crate) fn backend_for(
+        &self,
+        config: &SessionConfig,
+    ) -> Result<Arc<dyn SessionBackend>, String> {
+        let backend = match config.backend.as_deref() {
+            Some(name) if !name.is_empty() => self
+                .backends
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("Unknown backend '{name}'"))?,
+            _ => self.backends.default_backend().clone(),
+        };
+        backend
+            .ensure_ready()
+            .map_err(|e| format!("Backend '{}' not ready: {e:#}", backend.name()))?;
+        Ok(backend)
+    }
+
     pub(crate) fn do_spawn_session(
         &mut self,
         name: String,
@@ -1416,7 +1440,14 @@ impl App {
             &additional_dirs,
         );
 
-        let backend: Arc<dyn SessionBackend> = Arc::clone(self.backends.default_backend());
+        let backend = match self.backend_for(&config) {
+            Ok(b) => b,
+            Err(e) => {
+                error!("Failed to select backend: {e}");
+                self.set_error(e);
+                return;
+            }
+        };
 
         let provider = self.provider_for(&config);
         match Session::spawn(name, rows, cols, &config, &backend, &provider) {
@@ -4113,6 +4144,38 @@ mod tests {
             app.active_index = 0;
         }
         app
+    }
+
+    #[test]
+    fn backend_for_defaults_to_registry_default() {
+        let app = app_with_sessions(0);
+        let config = SessionConfig::default();
+        let backend = app.backend_for(&config).expect("default backend");
+        assert_eq!(backend.name(), "stub");
+    }
+
+    #[test]
+    fn backend_for_empty_name_uses_default() {
+        let app = app_with_sessions(0);
+        let config = SessionConfig {
+            backend: Some(String::new()),
+            ..SessionConfig::default()
+        };
+        let backend = app.backend_for(&config).expect("default backend");
+        assert_eq!(backend.name(), "stub");
+    }
+
+    #[test]
+    fn backend_for_unknown_backend_errors() {
+        let app = app_with_sessions(0);
+        let config = SessionConfig {
+            backend: Some("ssh:does-not-exist".into()),
+            ..SessionConfig::default()
+        };
+        match app.backend_for(&config) {
+            Ok(b) => panic!("expected error, got backend {}", b.name()),
+            Err(err) => assert!(err.contains("Unknown backend"), "got: {err}"),
+        }
     }
 
     #[test]
