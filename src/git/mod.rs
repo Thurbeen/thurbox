@@ -3,13 +3,114 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::warn;
 
 use crate::paths;
+use crate::session::HostDef;
+
+/// POSIX single-quote escaping for a token sent to a remote shell over SSH.
+/// Simple tokens (paths, branch names, flags) pass through unquoted.
+fn sh_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b'=' | b',')
+        })
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Build a `git` [`Command`] targeting `cwd`, run either locally or over SSH.
+///
+/// For the remote variant the command becomes
+/// `ssh <opts> <dest> git -C <cwd> <args…>`, with each remote token
+/// shell-escaped so it survives the remote login shell's re-splitting.
+fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
+    match host {
+        None => {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(cwd);
+            cmd.args(args);
+            cmd
+        }
+        Some(h) => {
+            let mut cmd = Command::new("ssh");
+            cmd.args(&h.ssh_opts);
+            cmd.arg(&h.destination);
+            cmd.arg(sh_quote("git"));
+            cmd.arg(sh_quote("-C"));
+            cmd.arg(sh_quote(&cwd.to_string_lossy()));
+            for a in args {
+                cmd.arg(sh_quote(a));
+            }
+            cmd
+        }
+    }
+}
+
+/// Cache of resolved remote `$HOME` directories, keyed by ssh destination, so
+/// we only pay one round-trip per host.
+fn remote_home_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Resolve the remote `$HOME` for a host, caching the result.
+fn remote_home(host: &HostDef) -> Result<String> {
+    if let Ok(guard) = remote_home_cache().lock() {
+        if let Some(home) = guard.get(&host.destination) {
+            return Ok(home.clone());
+        }
+    }
+    let mut cmd = Command::new("ssh");
+    cmd.args(&host.ssh_opts);
+    cmd.arg(&host.destination);
+    // The remote shell expands $HOME; we pass it literally.
+    cmd.arg("echo").arg("$HOME");
+    let output = cmd
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to resolve remote $HOME over ssh")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ssh echo $HOME failed: {}", stderr.trim());
+    }
+    let home = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if home.is_empty() {
+        anyhow::bail!("remote $HOME resolved empty for {}", host.destination);
+    }
+    if let Ok(mut guard) = remote_home_cache().lock() {
+        guard.insert(host.destination.clone(), home.clone());
+    }
+    Ok(home)
+}
+
+/// Deterministic worktree directory path for a repo + branch on the given host.
+///
+/// Local hosts use [`worktree_path`]. Remote hosts place worktrees under the
+/// host's `worktrees_dir` (or `$HOME/.local/share/thurbox/worktrees` resolved
+/// over ssh), preserving the same `<repo-hash>/<sanitized-branch>` layout.
+fn worktree_path_for(host: Option<&HostDef>, repo_path: &Path, branch: &str) -> Result<PathBuf> {
+    match host {
+        None => worktree_path(repo_path, branch).context("failed to resolve worktrees directory"),
+        Some(h) => {
+            let base = match &h.worktrees_dir {
+                Some(dir) => dir.clone(),
+                None => format!("{}/.local/share/thurbox/worktrees", remote_home(h)?),
+            };
+            let mut hasher = DefaultHasher::new();
+            repo_path.display().to_string().hash(&mut hasher);
+            let repo_hash = format!("{:016x}", hasher.finish());
+            let sanitized = branch.replace('/', "-");
+            Ok(PathBuf::from(base).join(repo_hash).join(sanitized))
+        }
+    }
+}
 
 /// Global cache for repo display names (path → name).
 static REPO_NAME_CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, String>>> =
@@ -112,9 +213,12 @@ fn parse_repo_name_from_url(url: &str) -> Option<String> {
 
 /// List local branch names for a repo.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["branch", "--format=%(refname:short)"])
-        .current_dir(repo_path)
+    list_branches_on(None, repo_path)
+}
+
+/// [`list_branches`], optionally on a remote `host`.
+pub fn list_branches_on(host: Option<&HostDef>, repo_path: &Path) -> Result<Vec<String>> {
+    let output = git_command(host, repo_path, &["branch", "--format=%(refname:short)"])
         .output()
         .context("failed to run git branch")?;
 
@@ -137,21 +241,34 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
 /// Creates `new_branch` starting from `base_branch`.
 /// Path format: `~/.local/share/thurbox/worktrees/<repo-hash>/<sanitized-branch>`
 pub fn create_worktree(repo_path: &Path, new_branch: &str, base_branch: &str) -> Result<PathBuf> {
-    let wt_path =
-        worktree_path(repo_path, new_branch).context("failed to resolve worktrees directory")?;
+    create_worktree_on(None, repo_path, new_branch, base_branch)
+}
 
-    let output = Command::new("git")
-        .args([
+/// [`create_worktree`], optionally on a remote `host` (via `ssh <dest> git …`).
+/// On a remote host the worktree is created under the host's remote worktrees
+/// directory and the returned path is a remote path.
+pub fn create_worktree_on(
+    host: Option<&HostDef>,
+    repo_path: &Path,
+    new_branch: &str,
+    base_branch: &str,
+) -> Result<PathBuf> {
+    let wt_path = worktree_path_for(host, repo_path, new_branch)?;
+
+    let output = git_command(
+        host,
+        repo_path,
+        &[
             "worktree",
             "add",
             "-b",
             new_branch,
             &wt_path.display().to_string(),
             base_branch,
-        ])
-        .current_dir(repo_path)
-        .output()
-        .context("failed to run git worktree add")?;
+        ],
+    )
+    .output()
+    .context("failed to run git worktree add")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -189,16 +306,27 @@ pub fn create_or_attach_worktree(
 
 /// Remove a git worktree (force removal).
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args([
+    remove_worktree_on(None, repo_path, worktree_path)
+}
+
+/// [`remove_worktree`], optionally on a remote `host`.
+pub fn remove_worktree_on(
+    host: Option<&HostDef>,
+    repo_path: &Path,
+    worktree_path: &Path,
+) -> Result<()> {
+    let output = git_command(
+        host,
+        repo_path,
+        &[
             "worktree",
             "remove",
             "--force",
             &worktree_path.display().to_string(),
-        ])
-        .current_dir(repo_path)
-        .output()
-        .context("failed to run git worktree remove")?;
+        ],
+    )
+    .output()
+    .context("failed to run git worktree remove")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -213,7 +341,16 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
 /// Tries `git symbolic-ref refs/remotes/origin/HEAD` first (most reliable),
 /// then falls back to checking for `main` or `master` among local branches.
 pub fn default_branch(repo_path: &Path, local_branches: &[String]) -> Option<String> {
-    if let Some(name) = default_branch_from_remote(repo_path) {
+    default_branch_on(None, repo_path, local_branches)
+}
+
+/// [`default_branch`], optionally on a remote `host`.
+pub fn default_branch_on(
+    host: Option<&HostDef>,
+    repo_path: &Path,
+    local_branches: &[String],
+) -> Option<String> {
+    if let Some(name) = default_branch_from_remote_on(host, repo_path) {
         if local_branches.iter().any(|b| b == &name) {
             return Some(name);
         }
@@ -231,12 +368,19 @@ pub fn default_branch(repo_path: &Path, local_branches: &[String]) -> Option<Str
 
 /// Query the remote's default branch via `git symbolic-ref`.
 pub fn default_branch_from_remote(repo_path: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"])
-        .current_dir(repo_path)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    default_branch_from_remote_on(None, repo_path)
+}
+
+/// [`default_branch_from_remote`], optionally on a remote `host`.
+pub fn default_branch_from_remote_on(host: Option<&HostDef>, repo_path: &Path) -> Option<String> {
+    let output = git_command(
+        host,
+        repo_path,
+        &["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+    )
+    .stderr(Stdio::null())
+    .output()
+    .ok()?;
 
     if !output.status.success() {
         return None;
@@ -274,9 +418,12 @@ pub fn add_existing_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> 
 
 /// Check whether a local branch exists in the repository.
 pub fn branch_exists(repo_path: &Path, branch: &str) -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--verify", branch])
-        .current_dir(repo_path)
+    branch_exists_on(None, repo_path, branch)
+}
+
+/// [`branch_exists`], optionally on a remote `host`.
+pub fn branch_exists_on(host: Option<&HostDef>, repo_path: &Path, branch: &str) -> bool {
+    git_command(host, repo_path, &["rev-parse", "--verify", branch])
         .stderr(Stdio::null())
         .stdout(Stdio::null())
         .status()
@@ -957,6 +1104,99 @@ mod tests {
 
         try_remove_by_age(&lock);
         assert!(lock.exists(), "fresh lock should be preserved");
+    }
+
+    // ── remote / ssh helpers ────────────────────────────────────────
+
+    fn host(dest: &str, wt_dir: Option<&str>) -> HostDef {
+        HostDef {
+            name: "h".into(),
+            destination: dest.into(),
+            socket: None,
+            session: None,
+            ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
+            worktrees_dir: wt_dir.map(|s| s.to_string()),
+        }
+    }
+
+    fn program_and_args(cmd: &Command) -> (String, Vec<String>) {
+        (
+            cmd.get_program().to_string_lossy().into_owned(),
+            cmd.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn sh_quote_passes_simple_tokens() {
+        assert_eq!(sh_quote("feat-x"), "feat-x");
+        assert_eq!(sh_quote("/home/me/repo"), "/home/me/repo");
+    }
+
+    #[test]
+    fn sh_quote_wraps_specials() {
+        assert_eq!(sh_quote("a b"), "'a b'");
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        assert_eq!(sh_quote(""), "''");
+    }
+
+    #[test]
+    fn git_command_local_uses_git_with_args() {
+        let cmd = git_command(None, Path::new("/repo"), &["branch", "--list"]);
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "git");
+        assert_eq!(args, ["branch", "--list"]);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/repo")));
+    }
+
+    #[test]
+    fn git_command_remote_wraps_in_ssh() {
+        let h = host("me@box", None);
+        let cmd = git_command(
+            Some(&h),
+            Path::new("/srv/repo"),
+            &["worktree", "add", "-b", "x"],
+        );
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "ssh");
+        assert_eq!(
+            args,
+            [
+                "-o",
+                "ControlMaster=auto",
+                "me@box",
+                "git",
+                "-C",
+                "/srv/repo",
+                "worktree",
+                "add",
+                "-b",
+                "x",
+            ]
+        );
+        // No local current_dir is set for the remote variant.
+        assert_eq!(cmd.get_current_dir(), None);
+    }
+
+    #[test]
+    fn worktree_path_for_remote_uses_configured_dir() {
+        let h = host("me@box", Some("/data/wt"));
+        let path = worktree_path_for(Some(&h), Path::new("/srv/repo"), "feature/foo").unwrap();
+        // base / <repo-hash> / <sanitized-branch>
+        let s = path.display().to_string();
+        assert!(s.starts_with("/data/wt/"), "got {s}");
+        assert!(s.ends_with("/feature-foo"), "got {s}");
+    }
+
+    #[test]
+    fn worktree_path_for_local_matches_worktree_path() {
+        let base = PathBuf::from("/test/data");
+        let _guard = TestPathGuard::new(&base);
+        let repo = Path::new("/home/user/repo");
+        let via_for = worktree_path_for(None, repo, "main").unwrap();
+        let direct = worktree_path(repo, "main").unwrap();
+        assert_eq!(via_for, direct);
     }
 
     // ── parse_repo_name_from_url ────────────────────────────────────
