@@ -40,6 +40,11 @@ set -eu
 ALL_TAPES="agents file-manager info-panel theme session-creation automations"
 TAPES="${*:-$ALL_TAPES}"
 
+# thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
+# see src/session/theme_config.rs). The `theme` clip switches away from it to show
+# the picker, so we re-apply this before EVERY tape to keep all videos on-brand.
+DEMO_THEME="${DEMO_THEME:-doom}"
+
 # --- Locate the repo root (this script lives in scripts/demo/) ---------------
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
@@ -56,7 +61,7 @@ done
 
 # --- Preflight: required tools ----------------------------------------------
 missing=
-for tool in cargo git tmux vhs; do
+for tool in cargo git tmux vhs sqlite3; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then
@@ -97,6 +102,7 @@ export XDG_STATE_HOME="$DEMO_HOME/state"
 export XDG_CACHE_HOME="$DEMO_HOME/cache"
 export TMUX_TMPDIR="$DEMO_HOME/tmux"     # isolate the tmux socket DIRECTORY
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"   # dev_build subdir
+DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"  # SQLite db (dev_build subdir)
 mkdir -p "$HOME" "$CFG_DIR" "$XDG_DATA_HOME" "$XDG_STATE_HOME" \
     "$XDG_CACHE_HOME" "$TMUX_TMPDIR"
 
@@ -166,8 +172,20 @@ sleep 6
 # --- Record -----------------------------------------------------------------
 # Each tape declares its own Output paths, so one VHS run == one output pair.
 # Loop over the requested tapes, rendering each into docs/media/.
+# Persist the TUI theme into the seeded db so the next launched TUI starts in it.
+# The db + metadata table already exist (the `session create` calls above opened
+# them). No TUI is running between vhs invocations, so this write is conflict-free.
+set_theme() {
+    sqlite3 "$DB_FILE" \
+        "INSERT INTO metadata (key, value) VALUES ('active_theme', '$1') \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+}
+
 for tape in $TAPES; do
-    echo "==> Recording $tape.tape ..."
+    # Re-apply before every tape: the `theme` clip switches themes (and persists
+    # the change), so without this any tape after it would start on the wrong one.
+    set_theme "$DEMO_THEME"
+    echo "==> Recording $tape.tape (theme: $DEMO_THEME) ..."
     vhs "$SCRIPT_DIR/$tape.tape"
 done
 
