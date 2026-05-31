@@ -3,6 +3,7 @@ pub mod backend;
 pub mod control_mode;
 pub mod demo;
 pub mod generic;
+pub mod host_config;
 pub mod input;
 pub mod provider;
 pub mod registry;
