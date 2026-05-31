@@ -92,7 +92,7 @@ pub enum ThemePreset {
     GruvboxLight,
     /// Solarized Light — Ethan Schoonover's classic light palette.
     SolarizedLight,
-    /// Doom — dark hellish palette inspired by Doom Eternal with fiery orange accents.
+    /// Doom — dark hellish palette inspired by Doom Eternal with bright red and neon green.
     Doom,
 }
 
