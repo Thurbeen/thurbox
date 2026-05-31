@@ -30,7 +30,8 @@ when multiple PTY sessions are producing concurrent output.
 **Choice**: A `SessionBackend` trait abstracts session lifecycle
 (spawn, adopt, resize, kill, detach, discover). Each session runs
 one coding-agent CLI inside the backend. The default backend is
-`LocalTmuxBackend` (`tmux -L thurbox`).
+local tmux (`tmux -L thurbox`); the same `TmuxBackend` also runs
+over SSH for remote hosts (ADR-13).
 `vt100::Parser` interprets escape sequences,
 `tui_term::PseudoTerminal` renders the parsed screen into ratatui.
 
@@ -261,9 +262,10 @@ struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
 **Why**: Keeping session lifecycle behind a trait boundary leaves
-the app layer completely backend-agnostic. The only backend today
-is local tmux (`LocalTmuxBackend`), but the seam means the
-transport can evolve without touching `App`, `Session`, or any UI
+the app layer completely backend-agnostic. The backends today are
+local tmux and one SSH backend per configured host (both
+`TmuxBackend` over a `TmuxTransport`; see ADR-13), and the seam means
+the transport can evolve without touching `App`, `Session`, or any UI
 code.
 
 **Trait methods**: `check_available`, `ensure_ready`, `spawn`,
@@ -355,6 +357,69 @@ delivers pixel-perfect rendering with all original formatting.
   tmux bugs #641/#2989, required `mkfifo`/`stdbuf`/`cat` in the
   data path, no flow control, timing race on initial capture.
 - *Screen/dtach* — less widely available, fewer features.
+
+---
+
+## ADR-13: Remote sessions via an SSH tmux transport
+
+**Choice**: Run agent sessions on a remote host by launching the
+same tmux control-mode protocol over SSH. `LocalTmuxBackend` is
+generalized into `TmuxBackend { transport, socket, session, name }`
+where `transport: TmuxTransport` is either `Local` (a bare
+`Command::new("tmux")`) or `Ssh { destination, ssh_opts }`
+(`ssh <dest> tmux …`). The transport's *only* job is to build the
+`Command`; everything downstream — the control-mode reader/writer
+threads, pane registration, `send-keys`/`%output` — is byte-for-byte
+identical (`control_mode.rs` was already transport-agnostic).
+
+Remote hosts are declared as data in `~/.config/thurbox/hosts.toml`
+(`session::HostDef`/`HostRegistry`, loaded by
+`agent::host_config::load_or_seed`), each registered as a backend
+named `ssh:<host>` via `TmuxBackend::from_host`.
+
+**Why**: The local-vs-remote difference is exactly one line (how the
+tmux process is launched). The per-session control commands travel
+over the stdin pipe, not ssh argv, so only the one-time
+`attach-session` launch crosses the ssh boundary. Relying on the
+system `ssh` binary + `~/.ssh/config` keeps auth/keys/multiplexing
+out of thurbox (ControlMaster/ControlPersist + ServerAliveInterval
+are recommended in the seeded `ssh_opts`).
+
+**Key design decisions**:
+
+- **Lazy registration**: SSH backends are registered but *not*
+  connected at startup (`check_available`/`ensure_ready` deferred to
+  first use via `App::backend_for`), so a down host never blocks the
+  TUI.
+- **Selection**: `SessionConfig.backend` (`ssh:<host>` or `None`).
+  The TUI shows a host picker as the first new-session step (skipped
+  when no hosts are configured); `thurbox-cli session create --host`
+  is the headless equivalent.
+- **Persistence/restore**: `backend_type` already round-trips in
+  SQLite; restore was changed to discover windows **per backend** so
+  remote sessions re-adopt against their own host's tmux.
+- **Remote worktrees**: `git::*_on(host, …)` variants run
+  `ssh <dest> git -C <repo> …`. Remote worktree paths resolve under
+  the host's `worktrees_dir` (or `$HOME/.local/share/thurbox/…`
+  resolved + cached over ssh).
+
+**Module placement**: `HostDef`/`HostRegistry` live in `session/`
+(the dependency sink) so both `agent` (builds the backend) and `git`
+(runs git over SSH) can depend on them without violating the
+module-isolation rules.
+
+**Riskiest area**: SSH reconnect on a flapping link — `reconnect_control`
+reopens the ssh connection; ControlMaster + keepalives mitigate
+stalls. Worth the most manual testing.
+
+**Rejected**:
+
+- *A `TmuxTransport` trait with `Box<dyn>`* — an enum with two
+  variants is simpler; promote to a trait only if a third transport
+  (e.g. container exec) appears.
+- *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
+  agent forwarding, and multiplexing that the system `ssh` already
+  provides.
 
 ---
 

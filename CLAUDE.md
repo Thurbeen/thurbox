@@ -249,6 +249,50 @@ single `App::session_member_dirs` list that also feeds the rendered
 repo names, and `App::resolve_process_cwd` picks workspace-vs-primary.
 Single-repo sessions are unchanged (`cwd` = the repo directly).
 
+## Remote SSH Sessions
+
+Sessions can run on a **remote host** over SSH while the TUI runs
+locally. Remote hosts are declared as data in
+`~/.config/thurbox/hosts.toml` (seeded commented-out on first run,
+so a fresh install has zero remote hosts and behaves as before):
+
+```toml
+[[hosts]]
+name = "devbox"               # registered as backend "ssh:devbox"
+destination = "me@devbox"     # resolved via ~/.ssh/config
+ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]
+# socket / session   = optional remote tmux -L / session-name overrides
+# worktrees_dir       = optional absolute remote worktrees dir
+```
+
+How it works: `TmuxBackend` is transport-neutral
+(`agent::transport::TmuxTransport`). The local backend launches
+`tmux -L thurbox …`; a remote backend launches
+`ssh <dest> tmux -L thurbox …`. The tmux **control-mode** protocol
+(`control_mode.rs`) is byte-identical over either transport — only
+the one-time process launch differs. Each host registers a backend
+named `ssh:<name>` (`TmuxBackend::from_host`, registered lazily in
+`main.rs`: a down host must not block startup, so
+`check_available`/`ensure_ready` are deferred to first use via
+`App::backend_for`).
+
+- **Data**: `session::HostDef`/`HostRegistry` (pure data, in
+  `session/` so both `agent` and `git` can use it). **Loading**:
+  `agent::host_config::load_or_seed()`.
+- **Selection**: `SessionConfig.backend` (`ssh:<host>` or `None` =
+  local). The TUI new-session flow shows a **host picker** first
+  (skipped when no hosts are configured); the chosen host runs git
+  worktree creation + branch listing on that host over SSH.
+- **Worktrees**: `git::*_on(host, …)` variants run `git` over
+  `ssh <dest> git -C <repo> …`. Remote worktrees live under the
+  host's `worktrees_dir` (or `$HOME/.local/share/thurbox/worktrees`
+  resolved + cached over ssh).
+- **Persistence/restore**: `backend_type` already round-trips in
+  SQLite; restore discovers windows **per backend** so remote
+  sessions re-adopt against their own host.
+- **Headless**: `thurbox-cli session create --host <name>` spawns
+  remotely (see below).
+
 ## thurbox-cli
 
 A second binary (`thurbox-cli`) drives the same SQLite-backed,
@@ -259,6 +303,9 @@ with the TUI; changes appear via `PRAGMA data_version` polling.
 cargo build --bin thurbox-cli
 thurbox-cli session create --name demo --repo-path /path \
     --agent codex --worktree-branch feat/x
+# Spawn on a remote host from hosts.toml (worktree + tmux live remotely):
+thurbox-cli session create --name demo --repo-path /srv/repo \
+    --host devbox --worktree-branch feat/x
 thurbox-cli session list | jq
 ```
 
@@ -550,14 +597,19 @@ app      ← coordinator, imports all modules
   abstracts CLI command + arg construction; `GenericProvider`
   implements it from a declarative `AgentDef` (loaded via
   `agent_config`). `Session` wraps a `SessionBackend`
-  trait. `BackendRegistry` holds the backends; the only
-  backend is `LocalTmuxBackend` (using `tmux -L thurbox`).
-  Reads output into `Arc<Mutex<vt100::Parser>>`, writes input
-  via mpsc channel. `input.rs` translates crossterm `KeyCode`
-  → xterm ANSI bytes.
+  trait. `BackendRegistry` holds the backends, keyed by name.
+  `TmuxBackend` runs tmux over a `TmuxTransport` (`transport.rs`):
+  `Local` (`tmux -L thurbox`) for the default `local-tmux`
+  backend, or `Ssh` (`ssh <dest> tmux …`) for each remote host
+  in `hosts.toml` (registered as `ssh:<host>`, loaded via
+  `host_config`). The control-mode protocol (`control_mode.rs`)
+  is identical over either transport. Reads output into
+  `Arc<Mutex<vt100::Parser>>`, writes input via mpsc channel.
+  `input.rs` translates crossterm `KeyCode` → xterm ANSI bytes.
 - **`session/`** — Plain data: `SessionId`, `SessionStatus`,
   `SessionInfo` (with `agent` name), `SessionConfig` (agent
-  name, ids, cwd, env), `AgentDef`/`AgentRegistry`.
+  name, backend name, ids, cwd, env), `AgentDef`/`AgentRegistry`,
+  `HostDef`/`HostRegistry` (remote SSH hosts).
   Mostly Display/Default impls plus the agent-arg
   substitution logic.
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
@@ -605,7 +657,9 @@ framework). Install with `prek install`. Stages:
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- Session backend: `LocalTmuxBackend` (`tmux -L thurbox`)
+- Session backend: `TmuxBackend` over a `TmuxTransport`
+  (local `tmux -L thurbox`, or `ssh <dest> tmux …` for
+  `ssh:<host>` backends from `hosts.toml`)
 - Output reader runs in `tokio::task::spawn_blocking`
   (blocking I/O), writer in `tokio::spawn` (async)
 - Terminal state parsed by `vt100::Parser`,
@@ -613,7 +667,8 @@ framework). Install with `prek install`. Stages:
 - Sessions persist across restarts (tmux keeps them alive)
 - Session state in SQLite:
   `~/.local/share/thurbox/thurbox.db` (XDG_DATA_HOME respected);
-  agent definitions in `~/.config/thurbox/agents.toml`
+  agent definitions in `~/.config/thurbox/agents.toml`;
+  remote SSH hosts in `~/.config/thurbox/hosts.toml`
 - Requires tmux >= 3.2
 
 ## Keybindings (Vim-Inspired)

@@ -123,16 +123,21 @@ whichever the agent produces.
 session. Each step has a sensible default and can be skipped when
 not applicable.
 
-1. **Repo picker** — fuzzy-searchable list of bookmarked repo
+1. **Host picker** — choose where the session runs: `local`, or any
+   remote SSH host defined in `hosts.toml`. Skipped entirely when no
+   remote hosts are configured (preserving the local-only flow). For
+   a remote host the repo picker opens to a typed remote path and the
+   worktree + tmux window are created on that host over SSH.
+2. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base, `d` deletes the bookmark, and a path-input
    field with filesystem autocomplete adds new bookmarks. The
    first selected repo becomes the session's `cwd`; the rest may be
    exposed to the agent depending on the agent's own flags.
-2. **Base branch selector** — worktree mode only.
-3. **Session name** — free text identifier shown in the sidebar.
-4. **New branch name** — worktree mode only.
-5. **Agent picker** — choose which coding agent runs in this
+3. **Base branch selector** — worktree mode only.
+4. **Session name** — free text identifier shown in the sidebar.
+5. **New branch name** — worktree mode only.
+6. **Agent picker** — choose which coding agent runs in this
    session. Skipped when only one agent is defined in
    `agents.toml`.
 
@@ -225,6 +230,41 @@ resume_args = ["resume", "--last"]   # id-less: last session in cwd
 fork_args = ["fork", "--last"]
 resume_latest = true
 ```
+
+### Remote SSH sessions
+
+Like agents, remote hosts are **data**. A session can run on a
+remote machine over SSH while the TUI stays local. Hosts are
+declared in `~/.config/thurbox/hosts.toml` (seeded commented-out, so
+a fresh install has none and behaves exactly as before):
+
+```toml
+[[hosts]]
+name = "devbox"            # selectable as backend "ssh:devbox"
+destination = "me@devbox"  # resolved via ~/.ssh/config
+ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
+```
+
+Each host becomes a session backend named `ssh:<name>`. Thurbox
+shells out to the system `ssh` binary, so authentication, keys, and
+connection multiplexing come from your `~/.ssh/config` — thurbox
+never handles credentials. The same tmux control-mode protocol runs
+over the SSH pipe, so remote sessions get identical persistence,
+multi-instance sharing, and restore-on-startup as local ones; the
+worktree and agent process live on the remote host.
+
+**Why a config file rather than ad-hoc destinations?** Named hosts
+give the picker stable, readable entries and let `backend_type`
+round-trip cleanly through the database so a remote session re-adopts
+on the correct host after a restart.
+
+**Why lean on `~/.ssh/config`?** Re-implementing SSH auth, agent
+forwarding, and ControlMaster multiplexing would be a large, fragile
+surface. Deferring to the system `ssh` keeps thurbox out of the
+credential path and inherits whatever the user already configured.
+
+Headless: `thurbox-cli session create --host devbox --repo-path
+/srv/repo --worktree-branch feat/x` does the same over the CLI.
 
 ---
 
