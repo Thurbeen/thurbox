@@ -18,20 +18,23 @@
 
 .nav.scrolled {
   background: var(--bg-nav);
-  border-bottom-color: var(--border);
+  border-bottom-color: var(--cyan);
+  box-shadow: 0 0 12px rgb(255, 92, 84, 0.35);
   backdrop-filter: blur(12px);
 }
 
 .nav-brand {
-  font-family: var(--font-mono);
-  font-size: 1.25rem;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 400;
+  text-transform: uppercase;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: 0.02em;
 }
 
 .nav-brand span {
   color: var(--cyan);
+  text-shadow: var(--glow-red);
 }
 
 .nav-links {
@@ -115,17 +118,20 @@
   }
 }
 
-/* ---- Buttons ---- */
+/* ---- Buttons — arcade style ---- */
 .btn {
   display: inline-flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: 0.75rem 1.5rem;
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 600;
+  padding: 0.85rem 1.5rem;
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  font-weight: 400;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   border-radius: var(--border-radius);
-  border: 1px solid transparent;
+  border: 2px solid transparent;
   cursor: pointer;
   transition: all var(--transition);
   text-decoration: none;
@@ -133,23 +139,36 @@
 
 .btn-primary {
   background: var(--green);
-  color: var(--bg-primary);
+  color: #0a2e0a;
+  border-color: var(--green);
+  box-shadow:
+    0 0 10px rgb(110, 255, 110, 0.5),
+    inset 0 0 6px rgb(255, 255, 255, 0.25);
 }
 
 .btn-primary:hover {
-  background: #4cc764;
-  color: var(--bg-primary);
+  background: #8cff8c;
+  color: #0a2e0a;
+  box-shadow:
+    0 0 18px rgb(110, 255, 110, 0.85),
+    inset 0 0 8px rgb(255, 255, 255, 0.35);
+  transform: translateY(-1px);
 }
 
 .btn-secondary {
   background: transparent;
-  color: var(--text-primary);
-  border-color: var(--border);
+  color: var(--cyan);
+  border-color: var(--cyan);
 }
 
 .btn-secondary:hover {
-  border-color: var(--text-secondary);
-  color: var(--text-primary);
+  color: #fff;
+  border-color: var(--cyan);
+  box-shadow:
+    0 0 16px rgb(255, 92, 84, 0.7),
+    inset 0 0 8px rgb(255, 92, 84, 0.35);
+  text-shadow: var(--glow-red);
+  transform: translateY(-1px);
 }
 
 /* ---- Cards ---- */
@@ -158,11 +177,14 @@
   border: 1px solid var(--border);
   border-radius: var(--border-radius);
   padding: var(--space-lg);
-  transition: border-color var(--transition);
+  transition:
+    border-color var(--transition),
+    box-shadow var(--transition);
 }
 
 .card:hover {
-  border-color: var(--text-muted);
+  border-color: var(--cyan);
+  box-shadow: 0 0 16px rgb(255, 92, 84, 0.35);
 }
 
 .card-icon {
@@ -205,10 +227,12 @@
 /* ---- Terminal frame ---- */
 .terminal-frame {
   background: var(--bg-code);
-  border: 1px solid var(--border);
+  border: 1px solid var(--cyan);
   border-radius: var(--border-radius);
   overflow: hidden;
-  box-shadow: 0 0 30px var(--term-glow);
+  box-shadow:
+    0 0 30px var(--term-glow),
+    inset 0 0 40px rgb(255, 59, 48, 0.06);
 }
 
 .terminal-header {
@@ -345,6 +369,7 @@
 
 .footer a:hover {
   color: var(--cyan);
+  text-shadow: var(--glow-red);
 }
 
 /* ---- Step numbers ---- */
@@ -354,13 +379,43 @@
   justify-content: center;
   width: 32px;
   height: 32px;
-  background: var(--cyan);
-  color: var(--bg-primary);
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 0.875rem;
+  background: var(--green);
+  color: #0a2e0a;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 0.7rem;
   border-radius: 50%;
+  box-shadow: var(--glow-green);
   flex-shrink: 0;
+}
+
+/* ---- Retro flicker (brand/hero) ---- */
+@keyframes flicker {
+  0%,
+  19%,
+  21%,
+  23%,
+  25%,
+  54%,
+  56%,
+  100% {
+    opacity: 1;
+  }
+  20%,
+  24%,
+  55% {
+    opacity: 0.82;
+  }
+}
+
+.flicker {
+  animation: flicker 4.5s infinite steps(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flicker {
+    animation: none;
+  }
 }
 
 /* ---- GitHub icon (inline SVG) ---- */

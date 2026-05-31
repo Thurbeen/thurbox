@@ -1,36 +1,43 @@
 :root {
-  /* Backgrounds */
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-card: #21262d;
-  --bg-code: #0a0e14;
-  --bg-hover: #30363d;
-  --bg-nav: rgb(13, 17, 23, 0.95);
+  /* Backgrounds — Doom Eternal hellish red-black */
+  --bg-primary: #1a080a;
+  --bg-secondary: #2a0f12;
+  --bg-card: #2a0f12;
+  --bg-code: #120607;
+  --bg-hover: #40151e;
+  --bg-nav: rgb(26, 8, 10, 0.92);
 
   /* Text */
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #484f58;
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0a0;
+  --text-muted: #606060;
 
-  /* Accents */
-  --green: #3fb950;
-  --cyan: #56d4dd;
-  --yellow: #d29922;
-  --purple: #bc8cff;
-  --red: #f85149;
-  --blue: #58a6ff;
+  /* Accents — bright red is the primary accent slot (was cyan) */
+  --green: #6eff6e;
+  --cyan: #ff5c54;
+  --yellow: #ffb627;
+  --purple: #ff8c8c;
+  --red: #ff3b30;
+  --blue: #00d9ff;
 
   /* Borders */
-  --border: #30363d;
-  --border-light: #21262d;
+  --border: #40151e;
+  --border-light: #2a0f12;
 
-  /* Terminal chrome */
-  --term-dot-red: #ff5f57;
-  --term-dot-yellow: #febc2e;
-  --term-dot-green: #28c840;
-  --term-glow: rgb(86, 212, 221, 0.15);
+  /* Terminal chrome — classic arcade button colors */
+  --term-dot-red: #ff3b30;
+  --term-dot-yellow: #ffb627;
+  --term-dot-green: #6eff6e;
+  --term-glow: rgb(255, 92, 84, 0.25);
+
+  /* Retro neon glows */
+  --glow-red: 0 0 6px rgb(255, 92, 84, 0.9), 0 0 14px rgb(255, 59, 48, 0.55);
+  --glow-green: 0 0 6px rgb(110, 255, 110, 0.9), 0 0 14px rgb(110, 255, 110, 0.5);
+  --glow-cyan: 0 0 6px rgb(0, 217, 255, 0.9), 0 0 14px rgb(0, 217, 255, 0.5);
+  --scanline: rgb(0, 0, 0, 0.28);
 
   /* Typography */
+  --font-display: 'Press Start 2P', 'JetBrains Mono', monospace;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
@@ -47,8 +54,8 @@
   --container-max: 1200px;
   --nav-height: 64px;
   --sidebar-width: 260px;
-  --border-radius: 8px;
-  --border-radius-sm: 4px;
+  --border-radius: 0;
+  --border-radius-sm: 0;
 
   /* Transitions */
   --transition: 200ms ease;

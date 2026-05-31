@@ -1,18 +1,51 @@
 /* ---- Hero ---- */
 .hero {
+  position: relative;
   padding-top: calc(var(--nav-height) + var(--space-3xl));
   padding-bottom: var(--space-3xl);
   text-align: center;
+  overflow: hidden;
+}
+
+/* CRT grid + ember backdrop */
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgb(255, 59, 48, 0.18), transparent 55%),
+    linear-gradient(rgb(255, 92, 84, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255, 92, 84, 0.05) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    44px 44px,
+    44px 44px;
+  mask-image: linear-gradient(to bottom, #000 40%, transparent);
+}
+
+.hero .container {
+  position: relative;
+  z-index: 1;
 }
 
 .hero h1 {
-  font-size: clamp(2rem, 5vw, 3.25rem);
-  margin-bottom: var(--space-md);
-  letter-spacing: -0.03em;
+  font-size: clamp(1.6rem, 5vw, 2.75rem);
+  margin-bottom: var(--space-lg);
+  letter-spacing: 0.01em;
+  animation: flicker 4.5s infinite steps(1);
 }
 
 .hero h1 .accent {
-  color: var(--cyan);
+  color: var(--green);
+  text-shadow: var(--glow-green);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero h1 {
+    animation: none;
+  }
 }
 
 .hero .subtitle {

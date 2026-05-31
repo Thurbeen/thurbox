@@ -66,6 +66,7 @@
   color: var(--cyan);
   border-left-color: var(--cyan);
   background: var(--bg-secondary);
+  text-shadow: var(--glow-red);
 }
 
 .docs-sidebar a.current-page {
@@ -88,7 +89,9 @@
   border-radius: 50%;
   font-size: 1.25rem;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgb(0, 0, 0, 0.4);
+  box-shadow:
+    0 4px 12px rgb(0, 0, 0, 0.4),
+    0 0 16px rgb(255, 92, 84, 0.6);
   align-items: center;
   justify-content: center;
 }

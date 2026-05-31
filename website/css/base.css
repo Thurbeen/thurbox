@@ -17,8 +17,27 @@ body {
   line-height: 1.6;
   color: var(--text-primary);
   background-color: var(--bg-primary);
+  background-image: radial-gradient(ellipse at 50% -10%, rgb(255, 59, 48, 0.12), transparent 60%);
+  background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* CRT scanline overlay — single global, click-through */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 2px,
+    var(--scanline) 3px,
+    var(--scanline) 3px
+  );
+  mix-blend-mode: multiply;
 }
 
 h1,
@@ -33,11 +52,23 @@ h6 {
   color: var(--text-primary);
 }
 
+/* Press Start 2P for the largest display headings only — wide & blocky */
+h1,
+h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  line-height: 1.5;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--cyan);
+  text-shadow: var(--glow-red);
+}
+
 h1 {
-  font-size: 2.5rem;
+  font-size: 2.25rem;
 }
 h2 {
-  font-size: 1.75rem;
+  font-size: 1.4rem;
 }
 h3 {
   font-size: 1.25rem;
@@ -47,13 +78,16 @@ h4 {
 }
 
 a {
-  color: var(--cyan);
+  color: var(--green);
   text-decoration: none;
-  transition: color var(--transition);
+  transition:
+    color var(--transition),
+    text-shadow var(--transition);
 }
 
 a:hover {
   color: var(--green);
+  text-shadow: var(--glow-green);
 }
 
 p {
@@ -134,6 +168,6 @@ hr {
 }
 
 ::selection {
-  background: rgb(86, 212, 221, 0.3);
-  color: var(--text-primary);
+  background: rgb(255, 92, 84, 0.4);
+  color: #fff;
 }
