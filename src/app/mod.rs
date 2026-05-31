@@ -2058,7 +2058,20 @@ impl App {
             let matching_backend_id = {
                 let discovered = discovered_by_backend
                     .entry(shared_session.backend_type.clone())
-                    .or_insert_with(|| backend.discover().unwrap_or_default());
+                    .or_insert_with(|| {
+                        // A remote backend needs its control-mode connection up
+                        // before adopt(); ready it lazily on first use here.
+                        match backend.ensure_ready() {
+                            Ok(()) => backend.discover().unwrap_or_default(),
+                            Err(e) => {
+                                tracing::warn!(
+                                    backend = backend.name(),
+                                    "Backend not ready for adopted session: {e}"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    });
                 Self::find_matching_discovered(&shared_session, discovered)
                     .map(|disc| disc.backend_id.clone())
             };
@@ -2300,34 +2313,62 @@ impl App {
 
     /// Restore sessions from the database on startup.
     ///
-    /// All sessions live on the local-tmux backend and are restored
-    /// synchronously by querying tmux for existing windows.
+    /// Sessions are restored synchronously by querying each session's backend
+    /// for its existing tmux windows. Sessions persisted with a remote
+    /// (`ssh:<host>`) `backend_type` are matched against that host's tmux, not
+    /// the local one; a remote backend whose host is unreachable degrades to
+    /// "no discovered windows" so its sessions are skipped rather than blocking
+    /// startup.
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
 
-        let mut local_sessions = Vec::new();
-        for shared in sessions {
-            if shared.agent_session_id.is_none() {
-                continue; // Skip sessions without a claude session ID
+        // Only sessions with an agent_session_id are resumable.
+        let resumable: Vec<sync::SharedSession> = sessions
+            .into_iter()
+            .filter(|s| s.agent_session_id.is_some())
+            .collect();
+
+        // Discover existing windows per backend. Each distinct backend_type is
+        // readied + discovered at most once (a remote backend needs its
+        // control-mode connection up before adopt()).
+        let mut discovered_by_backend: HashMap<
+            String,
+            Vec<crate::agent::backend::DiscoveredSession>,
+        > = HashMap::new();
+        for shared in &resumable {
+            if discovered_by_backend.contains_key(&shared.backend_type) {
+                continue;
             }
-            local_sessions.push(shared);
+            let backend = self
+                .backends
+                .get(&shared.backend_type)
+                .cloned()
+                .unwrap_or_else(|| self.backends.default_backend().clone());
+
+            let disc = match backend.ensure_ready() {
+                Ok(()) => backend.discover().unwrap_or_else(|e| {
+                    warn!(
+                        backend = backend.name(),
+                        "Failed to discover sessions from backend: {e}"
+                    );
+                    Vec::new()
+                }),
+                Err(e) => {
+                    warn!(
+                        backend = backend.name(),
+                        "Backend not ready during restore; skipping its sessions: {e}"
+                    );
+                    Vec::new()
+                }
+            };
+            discovered_by_backend.insert(shared.backend_type.clone(), disc);
         }
 
-        // --- Local-tmux sessions: restore synchronously (fast) ---
-        // Discover existing sessions from the default (local-tmux) backend only.
-        let mut discovered = Vec::new();
-        let default_backend = self.backends.default_backend().clone();
-        match default_backend.discover() {
-            Ok(disc) => discovered.extend(disc),
-            Err(e) => {
-                warn!(
-                    backend = default_backend.name(),
-                    "Failed to discover sessions from backend: {e}"
-                );
-            }
-        }
-
-        for shared in local_sessions {
+        for shared in resumable {
+            let discovered = discovered_by_backend
+                .get(&shared.backend_type)
+                .cloned()
+                .unwrap_or_default();
             self.restore_single_session(shared, &discovered);
         }
 
@@ -2335,7 +2376,8 @@ impl App {
         self.save_state();
     }
 
-    /// Restore a single local-tmux session synchronously (used during startup).
+    /// Restore a single session synchronously (used during startup). The
+    /// backend is selected from the session's persisted `backend_type`.
     fn restore_single_session(
         &mut self,
         shared: sync::SharedSession,
