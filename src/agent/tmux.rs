@@ -14,6 +14,7 @@ use crate::agent::control_mode::{
     self, shell_escape, CommandResponse, ControlModeReader, ControlModeWriter, Notification,
     PaneSendersMapShared, PANE_CHANNEL_CAPACITY,
 };
+use crate::agent::transport::TmuxTransport;
 
 /// Dedicated tmux socket name — isolates thurbox sessions from the user's tmux.
 /// Dev builds use "thurbox-dev" to avoid interfering with an installed release binary.
@@ -89,6 +90,32 @@ fn window_target(session_name: &str) -> String {
 /// Minimum tmux version required.
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 
+/// Parse a `tmux -V` version string (e.g. `"tmux 3.4"`, `"tmux 3.3a"`) into a
+/// `(major, minor)` pair. Shared by the local and remote backends.
+fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
+    // Parse "tmux X.Y" or "tmux X.Ya" (e.g., "tmux 3.4" or "tmux 3.3a").
+    let version_part = version_str.strip_prefix("tmux ").unwrap_or(version_str);
+
+    let parts: Vec<&str> = version_part.split('.').collect();
+    if parts.len() < 2 {
+        bail!("Cannot parse tmux version from: {version_str}");
+    }
+
+    let major: u32 = parts[0].parse().context(format!(
+        "Cannot parse tmux major version from: {version_str}"
+    ))?;
+    // Minor might have a trailing letter (e.g., "3a"), strip non-digits.
+    let minor_str: String = parts[1]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let minor: u32 = minor_str.parse().context(format!(
+        "Cannot parse tmux minor version from: {version_str}"
+    ))?;
+
+    Ok((major, minor))
+}
+
 /// Timeout for waiting for a control mode command response.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -99,18 +126,32 @@ const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_mil
 /// Hard cap on the number of scrollback lines `capture_pane_text` will return.
 const MAX_CAPTURE_LINES: u32 = 10_000;
 
-/// Local tmux backend — sessions persist in `tmux -L thurbox`.
+/// A tmux backend — sessions persist in `tmux -L <socket>` on either the local
+/// machine or a remote host reached over SSH.
 ///
-/// Uses tmux control mode (`-C`) for all I/O after `ensure_ready()`.
-pub struct LocalTmuxBackend {
+/// Uses tmux control mode (`-C`) for all I/O after `ensure_ready()`. The only
+/// thing that differs between local and remote is the [`TmuxTransport`] used to
+/// launch the `tmux` process; the protocol layer is identical.
+pub struct TmuxBackend {
+    /// How `tmux` is launched (local `Command` vs `ssh <dest> tmux …`).
+    transport: TmuxTransport,
+    /// tmux socket name passed via `-L` (e.g. `thurbox`).
+    socket: String,
+    /// tmux session name grouping all thurbox windows.
+    session: String,
+    /// Backend name used by the registry / persisted `backend_type`
+    /// (`local-tmux` or `ssh:<host>`).
+    name: String,
     control: Mutex<Option<ControlMode>>,
 }
 
-impl Default for LocalTmuxBackend {
+/// The local tmux backend. Thin alias-constructor over [`TmuxBackend`] kept for
+/// existing call sites; `LocalTmuxBackend::new()` builds a local-transport backend.
+pub type LocalTmuxBackend = TmuxBackend;
+
+impl Default for TmuxBackend {
     fn default() -> Self {
-        Self {
-            control: Mutex::new(None),
-        }
+        Self::local()
     }
 }
 
@@ -131,17 +172,13 @@ struct ControlMode {
 }
 
 impl ControlMode {
-    /// Start a control mode connection to the thurbox tmux session.
-    fn start() -> Result<Self> {
+    /// Start a control mode connection to the thurbox tmux session over the
+    /// given transport (local or ssh).
+    fn start(transport: &TmuxTransport, socket: &str, session: &str) -> Result<Self> {
         // -C (single C): control mode with echo — works with piped stdin.
         // -CC (double C) requires a TTY and fails with "tcgetattr: Inappropriate ioctl".
-        let mut child = Command::new("tmux")
-            .arg("-L")
-            .arg(TMUX_SOCKET)
-            .arg("-C")
-            .arg("attach-session")
-            .arg("-t")
-            .arg(TMUX_SESSION)
+        let mut child = transport
+            .tmux_command(socket, &["-C", "attach-session", "-t", session])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -420,29 +457,56 @@ fn is_recv_timeout(err: &anyhow::Error) -> bool {
     })
 }
 
-impl LocalTmuxBackend {
+impl TmuxBackend {
+    /// Build the local tmux backend (`tmux -L thurbox`).
     pub fn new() -> Self {
-        Self::default()
+        Self::local()
+    }
+
+    /// Build the local tmux backend, named `local-tmux`.
+    pub fn local() -> Self {
+        Self {
+            transport: TmuxTransport::Local,
+            socket: TMUX_SOCKET.to_string(),
+            session: TMUX_SESSION.to_string(),
+            name: "local-tmux".to_string(),
+            control: Mutex::new(None),
+        }
+    }
+
+    /// Build a tmux backend over an explicit transport (used by the SSH backend).
+    pub fn with_transport(
+        transport: TmuxTransport,
+        socket: impl Into<String>,
+        session: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport,
+            socket: socket.into(),
+            session: session.into(),
+            name: name.into(),
+            control: Mutex::new(None),
+        }
     }
 
     /// Run a tmux command and return its stdout (used before control mode is available).
     fn tmux_output(&self, args: &[&str]) -> Result<String> {
-        let output = Self::run_tmux(args)?;
+        let output = self.run_tmux(args)?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     /// Run a tmux command, returning Ok(()) on success (used before control mode is available).
     fn tmux_run(&self, args: &[&str]) -> Result<()> {
-        Self::run_tmux(args)?;
+        self.run_tmux(args)?;
         Ok(())
     }
 
     /// Execute a tmux command on the thurbox socket and check for errors.
-    fn run_tmux(args: &[&str]) -> Result<std::process::Output> {
-        let output = Command::new("tmux")
-            .arg("-L")
-            .arg(TMUX_SOCKET)
-            .args(args)
+    fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
+        let output = self
+            .transport
+            .tmux_command(&self.socket, args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -458,14 +522,16 @@ impl LocalTmuxBackend {
 
     /// Check if the thurbox tmux session exists.
     fn session_exists(&self) -> bool {
-        self.tmux_run(&["has-session", "-t", TMUX_SESSION]).is_ok()
+        self.tmux_run(&["has-session", "-t", &self.session]).is_ok()
     }
 
     /// Apply initial config to the tmux server.
     fn apply_config(&self) -> Result<()> {
         // Use a non-login shell so that macOS path_helper (/etc/zprofile)
         // doesn't clobber PATH additions from ~/.zshenv (e.g. cargo, asdf).
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        // For a remote backend the local `$SHELL` path may not exist on the
+        // remote host, so fall back to a POSIX shell there.
+        let shell = self.config_shell();
         self.tmux_run(&["set-option", "-s", "default-command", &shell])?;
 
         // Server-wide options
@@ -487,10 +553,21 @@ impl LocalTmuxBackend {
             ("window-size", "manual"),
         ];
         for (key, val) in &session_opts {
-            self.tmux_run(&["set-option", "-t", TMUX_SESSION, key, val])?;
+            self.tmux_run(&["set-option", "-t", &self.session, key, val])?;
         }
 
         Ok(())
+    }
+
+    /// The shell tmux should use for `default-command`. Local uses the user's
+    /// `$SHELL`; a remote backend uses a POSIX shell that is guaranteed to exist
+    /// on the remote host.
+    fn config_shell(&self) -> String {
+        if self.transport.is_remote() {
+            "/bin/sh".to_string()
+        } else {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        }
     }
 
     /// Build the shell command string to pass to tmux new-window.
@@ -532,7 +609,11 @@ impl LocalTmuxBackend {
             .lock()
             .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
         *guard = None; // Drop dead ControlMode (triggers cleanup)
-        *guard = Some(ControlMode::start()?);
+        *guard = Some(ControlMode::start(
+            &self.transport,
+            &self.socket,
+            &self.session,
+        )?);
         debug!("Control mode reconnected successfully");
         Ok(())
     }
@@ -650,44 +731,29 @@ impl LocalTmuxBackend {
     }
 }
 
-impl SessionBackend for LocalTmuxBackend {
+impl SessionBackend for TmuxBackend {
     fn name(&self) -> &str {
-        "local-tmux"
+        &self.name
     }
 
     fn check_available(&self) -> Result<()> {
-        let output = Command::new("tmux")
-            .arg("-V")
+        // `tmux -L <socket> -V` prints the version without connecting, and over
+        // the SSH transport this verifies remote connectivity at the same time.
+        let output = self
+            .transport
+            .tmux_command(&self.socket, &["-V"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .context("tmux is not installed or not in PATH")?;
 
         if !output.status.success() {
-            bail!("tmux -V failed");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux -V failed: {}", stderr.trim());
         }
 
         let version_str = String::from_utf8_lossy(&output.stdout);
-        let version_str = version_str.trim();
-        // Parse "tmux X.Y" or "tmux X.Ya" (e.g., "tmux 3.4" or "tmux 3.3a")
-        let version_part = version_str.strip_prefix("tmux ").unwrap_or(version_str);
-
-        let parts: Vec<&str> = version_part.split('.').collect();
-        if parts.len() < 2 {
-            bail!("Cannot parse tmux version from: {version_str}");
-        }
-
-        let major: u32 = parts[0].parse().context(format!(
-            "Cannot parse tmux major version from: {version_str}"
-        ))?;
-        // Minor might have a trailing letter (e.g., "3a"), strip non-digits.
-        let minor_str: String = parts[1]
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        let minor: u32 = minor_str.parse().context(format!(
-            "Cannot parse tmux minor version from: {version_str}"
-        ))?;
+        let (major, minor) = parse_tmux_version(version_str.trim())?;
 
         if (major, minor) < MIN_TMUX_VERSION {
             bail!(
@@ -697,35 +763,27 @@ impl SessionBackend for LocalTmuxBackend {
             );
         }
 
-        debug!("tmux version: {version_str}");
+        debug!("tmux version: {}", version_str.trim());
         Ok(())
     }
 
     fn ensure_ready(&self) -> Result<()> {
         if !self.session_exists() {
-            debug!("Creating tmux session '{TMUX_SESSION}' on socket '{TMUX_SOCKET}'");
-            let output = Command::new("tmux")
-                .arg("-L")
-                .arg(TMUX_SOCKET)
-                .args([
-                    "new-session",
-                    "-d",
-                    "-s",
-                    TMUX_SESSION,
-                    "-x",
-                    "80",
-                    "-y",
-                    "24",
-                ])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .context("Failed to create tmux session")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("Failed to create tmux session: {}", stderr.trim());
-            }
+            debug!(
+                "Creating tmux session '{}' on socket '{}'",
+                self.session, self.socket
+            );
+            self.run_tmux(&[
+                "new-session",
+                "-d",
+                "-s",
+                &self.session,
+                "-x",
+                "80",
+                "-y",
+                "24",
+            ])
+            .context("Failed to create tmux session")?;
 
             self.apply_config()?;
         }
@@ -737,7 +795,11 @@ impl SessionBackend for LocalTmuxBackend {
             .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
         if guard.is_none() {
             debug!("Starting tmux control mode");
-            *guard = Some(ControlMode::start()?);
+            *guard = Some(ControlMode::start(
+                &self.transport,
+                &self.socket,
+                &self.session,
+            )?);
         }
 
         Ok(())
@@ -764,8 +826,9 @@ impl SessionBackend for LocalTmuxBackend {
             .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
             .collect();
         let escaped_window_name = shell_escape(window_name);
+        let session = &self.session;
         let cmd = format!(
-            "new-window -t {TMUX_SESSION} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
+            "new-window -t {session} -n {escaped_window_name} -P -F '#{{pane_id}}'{cwd_part}{env_part} {shell_cmd}"
         );
         let result = self.ctrl_command(&cmd)?;
         let pane_id = result.trim().to_string();
@@ -798,13 +861,14 @@ impl SessionBackend for LocalTmuxBackend {
                 .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
             if let Some(ref ctrl) = *guard {
                 ctrl.send_command(&format!(
-                    "list-windows -t {TMUX_SESSION} -F '#{{pane_id}}|#{{window_name}}|#{{pane_dead}}'"
+                    "list-windows -t {} -F '#{{pane_id}}|#{{window_name}}|#{{pane_dead}}'",
+                    self.session
                 ))?
             } else {
                 self.tmux_output(&[
                     "list-windows",
                     "-t",
-                    TMUX_SESSION,
+                    &self.session,
                     "-F",
                     "#{pane_id}|#{window_name}|#{pane_dead}",
                 ])?
@@ -1284,6 +1348,28 @@ mod tests {
     #[test]
     fn shell_escape_tool_pattern() {
         assert_eq!(shell_escape("Read Bash(git:*)"), "'Read Bash(git:*)'");
+    }
+
+    // --- parse_tmux_version tests ---
+
+    #[test]
+    fn parse_tmux_version_plain() {
+        assert_eq!(parse_tmux_version("tmux 3.4").unwrap(), (3, 4));
+    }
+
+    #[test]
+    fn parse_tmux_version_trailing_letter() {
+        assert_eq!(parse_tmux_version("tmux 3.3a").unwrap(), (3, 3));
+    }
+
+    #[test]
+    fn parse_tmux_version_without_prefix() {
+        assert_eq!(parse_tmux_version("3.2").unwrap(), (3, 2));
+    }
+
+    #[test]
+    fn parse_tmux_version_rejects_garbage() {
+        assert!(parse_tmux_version("not a version").is_err());
     }
 
     // --- build_shell_command tests ---

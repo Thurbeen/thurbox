@@ -7,6 +7,7 @@ pub mod input;
 pub mod provider;
 pub mod registry;
 pub mod tmux;
+pub mod transport;
 
 pub use backend::{Session, SessionBackend, SessionParser};
 pub use generic::GenericProvider;
