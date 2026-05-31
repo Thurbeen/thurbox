@@ -240,6 +240,7 @@ impl App {
             Modal::AutomationEditor(_) => self.handle_automation_editor_key(code, mods),
             Modal::AutomationsList(_) => self.handle_automations_list_key(code),
             Modal::AgentPicker(_) => self.handle_agent_picker_key(code),
+            Modal::HostPicker(_) => self.handle_host_picker_key(code),
             Modal::ThemePicker(_) => self.handle_theme_picker_key(code),
             Modal::RepoPicker(_) => self.handle_repo_picker_key(code, mods),
             Modal::TaskActionPicker(_) => self.handle_task_action_picker_key(code),
@@ -1066,6 +1067,41 @@ impl App {
         }
     }
 
+    fn handle_host_picker_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::HostPicker(ref mut hp) = self.modal else {
+            return;
+        };
+        let choice_count = hp.choices.len();
+        match code {
+            KeyCode::Esc => {
+                self.modal.close();
+                self.pending_backend = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down if hp.selected_index + 1 < choice_count => {
+                hp.selected_index += 1;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                hp.selected_index = hp.selected_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let backend = hp
+                    .choices
+                    .get(hp.selected_index)
+                    .map(|c| c.backend.clone())
+                    .unwrap_or_default();
+                self.modal.close();
+                // Empty backend == local default.
+                self.pending_backend = if backend.is_empty() {
+                    None
+                } else {
+                    Some(backend)
+                };
+                self.open_repo_picker();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_agent_picker_key(&mut self, code: KeyCode) {
         let super::modals::Modal::AgentPicker(ref mut ap) = self.modal else {
             return;
@@ -1291,7 +1327,7 @@ impl App {
             // A manual new-session must not inherit a task prompt left over from
             // a cancelled task-spawn.
             self.pending_task_prompt = None;
-            self.open_repo_picker();
+            self.start_new_session();
         }
     }
 
@@ -1421,19 +1457,27 @@ impl App {
     }
 
     pub(crate) fn start_branch_selection(&mut self) {
+        // Resolve the remote host (if any) so branch listing targets the
+        // session's machine. Cloned so we don't hold a borrow on `self`.
+        let host = self
+            .host_for_backend(self.pending_backend.as_deref())
+            .cloned();
+        let host = host.as_ref();
+
         let Some(repo_path) = self.pending_repo_path.clone() else {
             return;
         };
+        let repo_path = repo_path.as_path();
 
-        Self::fetch_pending_repos(&repo_path, self.pending_all_repos.as_ref());
+        Self::fetch_pending_repos(host, repo_path, self.pending_all_repos.as_ref());
 
-        match crate::git::list_branches(&repo_path) {
+        match crate::git::list_branches_on(host, repo_path) {
             Ok(branches) if branches.is_empty() => {
                 self.set_error("No branches found in repository");
                 self.pending_repo_path = None;
             }
             Ok(branches) => {
-                let branches = Self::ordered_branch_list(&repo_path, branches);
+                let branches = Self::ordered_branch_list(host, repo_path, branches);
                 self.modal =
                     super::modals::Modal::BranchSelector(super::modals::BranchSelectorModal {
                         index: 0,
@@ -1451,17 +1495,18 @@ impl App {
     /// Fetch origin for the primary repo and any extra worktree repos so
     /// branch lists are up-to-date. Failures are non-fatal (logged only).
     fn fetch_pending_repos(
+        host: Option<&crate::session::HostDef>,
         repo_path: &std::path::Path,
         all_repos: Option<&Vec<std::path::PathBuf>>,
     ) {
-        if let Err(e) = crate::git::git_fetch(repo_path) {
+        if let Err(e) = crate::git::git_fetch_on(host, repo_path) {
             warn!("git fetch origin failed (continuing): {e:#}");
         }
         let Some(all_repos) = all_repos else {
             return;
         };
         for extra_repo in all_repos.iter().skip(1) {
-            if let Err(e) = crate::git::git_fetch(extra_repo) {
+            if let Err(e) = crate::git::git_fetch_on(host, extra_repo) {
                 warn!(
                     "git fetch origin failed for {} (continuing): {e:#}",
                     extra_repo.display()
@@ -1472,9 +1517,13 @@ impl App {
 
     /// Order a branch list for the selector: the local default branch first,
     /// then `origin/<default>` (remote-based branching) pinned at the very top.
-    fn ordered_branch_list(repo_path: &std::path::Path, mut branches: Vec<String>) -> Vec<String> {
+    fn ordered_branch_list(
+        host: Option<&crate::session::HostDef>,
+        repo_path: &std::path::Path,
+        mut branches: Vec<String>,
+    ) -> Vec<String> {
         // Move the default branch to front so it's pre-selected.
-        if let Some(default) = crate::git::default_branch(repo_path, &branches) {
+        if let Some(default) = crate::git::default_branch_on(host, repo_path, &branches) {
             if let Some(pos) = branches.iter().position(|b| b == &default) {
                 let branch = branches.remove(pos);
                 branches.insert(0, branch);
@@ -1482,11 +1531,11 @@ impl App {
         }
 
         // Insert origin/<default> at position 0 for remote-based branching.
-        let remote_ref = crate::git::default_branch_from_remote(repo_path)
+        let remote_ref = crate::git::default_branch_from_remote_on(host, repo_path)
             .map(|name| format!("origin/{name}"))
             .or_else(|| {
                 for candidate in ["origin/main", "origin/master"] {
-                    if crate::git::branch_exists(repo_path, candidate) {
+                    if crate::git::branch_exists_on(host, repo_path, candidate) {
                         return Some(candidate.to_string());
                     }
                 }
@@ -1684,6 +1733,9 @@ impl App {
     /// Commit the typed path in the repo-picker input: add or re-select the
     /// bookmark, persist it, clear the input, and refresh the filter.
     fn repo_picker_commit_path_input(&mut self) {
+        // For a remote target the path is a remote path: don't expand `~`
+        // against the local home, and don't persist it as a local bookmark.
+        let remote = self.pending_backend.is_some();
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
@@ -1692,7 +1744,11 @@ impl App {
             self.recompute_repo_filter();
             return;
         }
-        let expanded = paths::expand_tilde(&path);
+        let expanded = if remote {
+            std::path::PathBuf::from(&path)
+        } else {
+            paths::expand_tilde(&path)
+        };
         // If the path is already represented, just select it (no duplicate row
         // and no duplicate DB entry). A path already shown as a parent's child
         // must NOT also be persisted as a standalone bookmark.
@@ -1709,7 +1765,7 @@ impl App {
             rp.push_row(expanded.clone(), true, false, false); // auto-select newly added
             true
         };
-        if persist {
+        if persist && !remote {
             if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
                 error!("Failed to save repo bookmark: {e}");
             }
@@ -1817,10 +1873,14 @@ impl App {
         self.modal.close();
 
         if worktree_repos.is_empty() && normal_repos.is_empty() {
-            // No repos selected — spawn with HOME as cwd
+            // No repos selected — spawn with HOME as cwd. For a remote target,
+            // leave cwd unset so the remote session starts in its own default
+            // directory (local $HOME is meaningless there).
             let mut config = SessionConfig::default();
-            if let Some(home) = std::env::var_os("HOME") {
-                config.cwd = Some(std::path::PathBuf::from(home));
+            if self.pending_backend.is_none() {
+                if let Some(home) = std::env::var_os("HOME") {
+                    config.cwd = Some(std::path::PathBuf::from(home));
+                }
             }
             self.spawn_session_with_config(&config);
         } else if !worktree_repos.is_empty() {

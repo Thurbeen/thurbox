@@ -449,6 +449,11 @@ impl App {
             agent_picker_modal::render_agent_picker_modal(frame, ap);
         }
 
+        // Host picker modal
+        if let super::modals::Modal::HostPicker(ref hp) = self.modal {
+            crate::ui::host_picker_modal::render_host_picker_modal(frame, hp);
+        }
+
         // Theme picker modal
         if let super::modals::Modal::ThemePicker(ref tp) = self.modal {
             theme_picker_modal::render_theme_picker_modal(

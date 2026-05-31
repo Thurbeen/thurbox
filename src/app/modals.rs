@@ -1113,6 +1113,7 @@ pub enum Modal {
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
     AgentPicker(crate::ui::agent_picker_modal::AgentPickerState),
+    HostPicker(crate::ui::host_picker_modal::HostPickerState),
     RestoreSessions(RestoreSessionsModal),
     AutomationEditor(AutomationEditorModal),
     AutomationsList(AutomationsListModal),

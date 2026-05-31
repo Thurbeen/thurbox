@@ -62,9 +62,10 @@ async fn main() -> Result<()> {
     // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
     // slow host must not block TUI startup, so check_available()/ensure_ready()
     // are deferred to first spawn/restore (see App::backend_for).
-    for host in thurbox::agent::host_config::load_or_seed().hosts {
+    let hosts = thurbox::agent::host_config::load_or_seed();
+    for host in &hosts.hosts {
         tracing::debug!(host = %host.name, dest = %host.destination, "Registering SSH backend");
-        backends.register(Arc::new(TmuxBackend::from_host(&host)));
+        backends.register(Arc::new(TmuxBackend::from_host(host)));
     }
 
     // Load (or seed) the coding-agent registry from ~/.config/thurbox/agents.toml.
@@ -94,6 +95,7 @@ async fn main() -> Result<()> {
     let size = terminal.size()?;
 
     let mut app = App::new(size.height, size.width, backends, agents, db);
+    app.set_hosts(hosts);
 
     // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {

@@ -1,0 +1,47 @@
+use ratatui::{
+    layout::{Constraint, Direction, Layout},
+    widgets::{List, ListItem, Paragraph},
+    Frame,
+};
+
+use super::{
+    centered_fixed_height_rect, render_modal_frame, selector_list_item, selector_nav_footer,
+};
+
+/// One selectable host row: display label + the backend name it maps to
+/// (`local-tmux` or `ssh:<host>`).
+#[derive(Debug, Clone, Default)]
+pub struct HostChoice {
+    /// Display label (e.g. `local` or `devbox  (me@devbox)`).
+    pub label: String,
+    /// Backend name spawned on. Empty string means the local default backend.
+    pub backend: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HostPickerState {
+    pub choices: Vec<HostChoice>,
+    pub selected_index: usize,
+}
+
+pub fn render_host_picker_modal(frame: &mut Frame, state: &HostPickerState) {
+    let height = (state.choices.len() as u16) + 3;
+    let area = centered_fixed_height_rect(50, height, frame.area());
+
+    let inner = render_modal_frame(frame, area, "Run On");
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let items: Vec<ListItem<'_>> = state
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(i, c)| selector_list_item(&c.label, i == state.selected_index))
+        .collect();
+
+    frame.render_widget(List::new(items), chunks[0]);
+    frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[1]);
+}

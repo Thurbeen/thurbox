@@ -478,9 +478,12 @@ fn git_stash(worktree_path: &Path) -> Result<bool> {
 
 /// Fetch from origin.
 pub fn git_fetch(worktree_path: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args(["fetch", "origin"])
-        .current_dir(worktree_path)
+    git_fetch_on(None, worktree_path)
+}
+
+/// [`git_fetch`], optionally on a remote `host`.
+pub fn git_fetch_on(host: Option<&HostDef>, worktree_path: &Path) -> Result<()> {
+    let output = git_command(host, worktree_path, &["fetch", "origin"])
         .output()
         .context("failed to run git fetch")?;
 

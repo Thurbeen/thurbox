@@ -7,6 +7,7 @@ pub mod branch_selector_modal;
 pub mod file_viewer;
 pub mod global_search;
 pub mod highlight;
+pub mod host_picker_modal;
 pub mod info_panel;
 pub mod layout;
 pub mod links;

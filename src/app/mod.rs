@@ -287,6 +287,13 @@ pub struct App {
     /// Registry of declarative agent definitions, used to build providers per
     /// session at spawn/restart time.
     pub(crate) agents: AgentRegistry,
+    /// Configured remote SSH hosts (from `hosts.toml`), used to resolve the
+    /// `HostDef` for a session's `ssh:<host>` backend when running git over SSH.
+    pub(crate) hosts: crate::session::HostRegistry,
+    /// Backend chosen for the in-progress new-session flow (`ssh:<host>`), or
+    /// `None` for the local default. Set by the host picker, cleared when the
+    /// flow completes or is cancelled.
+    pub(crate) pending_backend: Option<String>,
     pub(crate) db: Database,
     pub(crate) focus: InputFocus,
     pub(crate) should_quit: bool,
@@ -463,6 +470,8 @@ impl App {
             active_index: 0,
             backends,
             agents,
+            hosts: crate::session::HostRegistry::default(),
+            pending_backend: None,
             db,
             focus: InputFocus::SessionList,
             should_quit: false,
@@ -554,14 +563,56 @@ impl App {
             })
     }
 
+    /// Entry point for the new-session wizard.
+    ///
+    /// When remote hosts are configured (`hosts.toml`), first shows the host
+    /// picker so the user can choose where the session runs; otherwise goes
+    /// straight to the repo picker (preserving the local-only UX).
+    pub(crate) fn start_new_session(&mut self) {
+        // Clear any choice left over from a previously cancelled flow.
+        self.pending_backend = None;
+
+        if self.hosts.is_empty() {
+            self.open_repo_picker();
+            return;
+        }
+
+        let mut choices = vec![crate::ui::host_picker_modal::HostChoice {
+            label: "local".to_string(),
+            backend: String::new(),
+        }];
+        for host in &self.hosts.hosts {
+            choices.push(crate::ui::host_picker_modal::HostChoice {
+                label: format!("{}  ({})", host.name, host.destination),
+                backend: host.backend_name(),
+            });
+        }
+        self.modal = modals::Modal::HostPicker(crate::ui::host_picker_modal::HostPickerState {
+            choices,
+            selected_index: 0,
+        });
+    }
+
     /// Open the repo picker modal for creating a new session.
     ///
     /// Loads bookmarks from the database, pre-selects repos from the active
-    /// project (if any), and shows the repo picker modal.
+    /// project (if any), and shows the repo picker modal. For a remote target
+    /// (`pending_backend` set) local bookmarks don't apply, so the picker opens
+    /// empty with the path input focused for a typed remote path.
     pub(crate) fn open_repo_picker(&mut self) {
-        let bookmarks = self.load_repo_bookmarks();
+        // Local bookmarks point at local paths, so they're meaningless for a
+        // remote target: open the picker empty with the path input focused.
+        let remote = self.pending_backend.is_some();
+        let bookmarks = if remote {
+            Vec::new()
+        } else {
+            self.load_repo_bookmarks()
+        };
         let mut rp = modals::RepoPickerModal::default();
         Self::rebuild_repo_picker_rows(&mut rp, bookmarks);
+        if remote {
+            rp.focus = modals::RepoPickerFocus::Input;
+        }
         self.modal = modals::Modal::RepoPicker(rp);
     }
 
@@ -656,7 +707,12 @@ impl App {
     }
 
     pub(crate) fn spawn_session_with_config(&mut self, config: &SessionConfig) {
-        self.prepare_spawn(config.clone(), Vec::new());
+        let mut config = config.clone();
+        // Apply the host chosen in the new-session wizard (None = local).
+        if config.backend.is_none() {
+            config.backend = self.pending_backend.take();
+        }
+        self.prepare_spawn(config, Vec::new());
     }
 
     /// Route session creation through the name modal, then agent selection.
@@ -1330,11 +1386,16 @@ impl App {
         base_branch: &str,
         session_name: Option<String>,
     ) {
+        // Resolve the remote host (if any) so worktrees are created on the
+        // session's target machine over SSH. Consume the wizard's choice.
+        let backend = self.pending_backend.take();
+        let host = self.host_for_backend(backend.as_deref()).cloned();
+
         let mut worktree_infos = Vec::new();
         let mut worktree_paths = Vec::new();
 
         for repo_path in repo_paths {
-            match git::create_worktree(repo_path, new_branch, base_branch) {
+            match git::create_worktree_on(host.as_ref(), repo_path, new_branch, base_branch) {
                 Ok(worktree_path) => {
                     worktree_infos.push(WorktreeInfo {
                         repo_path: repo_path.clone(),
@@ -1346,8 +1407,11 @@ impl App {
                 Err(e) => {
                     // Roll back already-created worktrees
                     for info in &worktree_infos {
-                        if let Err(re) = git::remove_worktree(&info.repo_path, &info.worktree_path)
-                        {
+                        if let Err(re) = git::remove_worktree_on(
+                            host.as_ref(),
+                            &info.repo_path,
+                            &info.worktree_path,
+                        ) {
                             error!("Failed to roll back worktree: {re}");
                         }
                     }
@@ -1365,6 +1429,7 @@ impl App {
         self.pending_additional_dirs = additional_dirs;
         let config = SessionConfig {
             cwd: Some(worktree_paths[0].clone()),
+            backend,
             ..SessionConfig::default()
         };
 
@@ -1373,6 +1438,29 @@ impl App {
             self.finish_prepare_spawn(name, config, worktree_infos);
         } else {
             self.prepare_spawn(config, worktree_infos);
+        }
+    }
+
+    /// Install the configured remote-host registry (from `hosts.toml`). Called
+    /// once at startup after the SSH backends are registered.
+    pub fn set_hosts(&mut self, hosts: crate::session::HostRegistry) {
+        self.hosts = hosts;
+    }
+
+    /// Resolve the [`HostDef`] for a backend name, or `None` for the local
+    /// backend. Used to run git operations (worktree create/remove, branch
+    /// listing) on the correct host.
+    ///
+    /// [`HostDef`]: crate::session::HostDef
+    pub(crate) fn host_for_backend(
+        &self,
+        backend: Option<&str>,
+    ) -> Option<&crate::session::HostDef> {
+        let name = backend?;
+        if name.starts_with(crate::session::SSH_BACKEND_PREFIX) {
+            self.hosts.get_by_backend(name)
+        } else {
+            None
         }
     }
 
@@ -4186,6 +4274,64 @@ mod tests {
             app.active_index = 0;
         }
         app
+    }
+
+    #[test]
+    fn start_new_session_skips_host_picker_when_no_hosts() {
+        let mut app = app_with_sessions(0);
+        app.start_new_session();
+        // No hosts configured → straight to the repo picker, no host step.
+        assert!(matches!(app.modal, modals::Modal::RepoPicker(_)));
+        assert!(app.pending_backend.is_none());
+    }
+
+    #[test]
+    fn start_new_session_shows_host_picker_with_hosts() {
+        let mut app = app_with_sessions(0);
+        app.set_hosts(crate::session::HostRegistry {
+            hosts: vec![crate::session::HostDef {
+                name: "devbox".into(),
+                destination: "me@devbox".into(),
+                socket: None,
+                session: None,
+                ssh_opts: vec![],
+                worktrees_dir: None,
+            }],
+        });
+        app.start_new_session();
+        match app.modal {
+            modals::Modal::HostPicker(ref hp) => {
+                // "local" first, then each ssh host.
+                assert_eq!(hp.choices.len(), 2);
+                assert_eq!(hp.choices[0].backend, "");
+                assert_eq!(hp.choices[1].backend, "ssh:devbox");
+            }
+            ref other => panic!("expected host picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn host_for_backend_resolves_ssh_only() {
+        let mut app = app_with_sessions(0);
+        app.set_hosts(crate::session::HostRegistry {
+            hosts: vec![crate::session::HostDef {
+                name: "devbox".into(),
+                destination: "me@devbox".into(),
+                socket: None,
+                session: None,
+                ssh_opts: vec![],
+                worktrees_dir: None,
+            }],
+        });
+        assert!(app.host_for_backend(None).is_none());
+        assert!(app.host_for_backend(Some("local-tmux")).is_none());
+        assert_eq!(
+            app.host_for_backend(Some("ssh:devbox"))
+                .unwrap()
+                .destination,
+            "me@devbox"
+        );
+        assert!(app.host_for_backend(Some("ssh:unknown")).is_none());
     }
 
     #[test]
