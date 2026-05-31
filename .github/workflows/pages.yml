@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+      # Demo media is copied into website/assets/ at deploy time, so a change to
+      # the rendered videos must also redeploy the site (e.g. after re-running
+      # scripts/demo/record.sh). Without this the live site keeps stale mp4s.
+      - 'docs/media/**'
   workflow_dispatch:
 
 permissions:
