@@ -490,6 +490,29 @@ impl TmuxBackend {
         }
     }
 
+    /// Build a remote tmux backend that runs `tmux` over SSH on `host`. The
+    /// backend is named `ssh:<host.name>` and uses the same socket/session
+    /// names as the local backend unless the host overrides them.
+    pub fn from_host(host: &crate::session::HostDef) -> Self {
+        let socket = host
+            .socket
+            .clone()
+            .unwrap_or_else(|| TMUX_SOCKET.to_string());
+        let session = host
+            .session
+            .clone()
+            .unwrap_or_else(|| TMUX_SESSION.to_string());
+        Self::with_transport(
+            TmuxTransport::Ssh {
+                destination: host.destination.clone(),
+                ssh_opts: host.ssh_opts.clone(),
+            },
+            socket,
+            session,
+            host.backend_name(),
+        )
+    }
+
     /// Run a tmux command and return its stdout (used before control mode is available).
     fn tmux_output(&self, args: &[&str]) -> Result<String> {
         let output = self.run_tmux(args)?;
@@ -1661,6 +1684,46 @@ mod tests {
         let backend = LocalTmuxBackend::new();
         let guard = backend.control.lock().unwrap();
         assert!(guard.is_none());
+    }
+
+    #[test]
+    fn local_backend_is_named_local_tmux_with_local_transport() {
+        let backend = LocalTmuxBackend::new();
+        assert_eq!(backend.name(), "local-tmux");
+        assert!(!backend.transport.is_remote());
+    }
+
+    #[test]
+    fn from_host_builds_named_ssh_backend() {
+        let host = crate::session::HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            socket: None,
+            session: None,
+            ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
+            worktrees_dir: None,
+        };
+        let backend = TmuxBackend::from_host(&host);
+        assert_eq!(backend.name(), "ssh:devbox");
+        assert!(backend.transport.is_remote());
+        // Falls back to the default socket/session when the host omits them.
+        assert_eq!(backend.socket, TMUX_SOCKET);
+        assert_eq!(backend.session, TMUX_SESSION);
+    }
+
+    #[test]
+    fn from_host_honors_socket_and_session_overrides() {
+        let host = crate::session::HostDef {
+            name: "vm".into(),
+            destination: "vm".into(),
+            socket: Some("tb-vm".into()),
+            session: Some("sess-vm".into()),
+            ssh_opts: vec![],
+            worktrees_dir: None,
+        };
+        let backend = TmuxBackend::from_host(&host);
+        assert_eq!(backend.socket, "tb-vm");
+        assert_eq!(backend.session, "sess-vm");
     }
 
     #[test]

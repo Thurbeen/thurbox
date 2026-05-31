@@ -8,7 +8,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 
-use thurbox::agent::tmux::LocalTmuxBackend;
+use thurbox::agent::tmux::{LocalTmuxBackend, TmuxBackend};
 use thurbox::agent::{BackendRegistry, SessionBackend};
 use thurbox::app::{App, AppMessage};
 use thurbox::storage::Database;
@@ -56,7 +56,16 @@ async fn main() -> Result<()> {
     let local_tmux: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
     local_tmux.check_available()?;
     local_tmux.ensure_ready()?;
-    let backends = BackendRegistry::new(local_tmux);
+    let mut backends = BackendRegistry::new(local_tmux);
+
+    // Register one SSH backend per configured remote host
+    // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
+    // slow host must not block TUI startup, so check_available()/ensure_ready()
+    // are deferred to first spawn/restore (see App::backend_for).
+    for host in thurbox::agent::host_config::load_or_seed().hosts {
+        tracing::debug!(host = %host.name, dest = %host.destination, "Registering SSH backend");
+        backends.register(Arc::new(TmuxBackend::from_host(&host)));
+    }
 
     // Load (or seed) the coding-agent registry from ~/.config/thurbox/agents.toml.
     let agents = thurbox::agent::agent_config::load_or_seed();
