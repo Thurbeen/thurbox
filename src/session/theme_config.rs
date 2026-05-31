@@ -92,6 +92,8 @@ pub enum ThemePreset {
     GruvboxLight,
     /// Solarized Light — Ethan Schoonover's classic light palette.
     SolarizedLight,
+    /// Doom — dark hellish palette inspired by Doom Eternal with fiery orange accents.
+    Doom,
 }
 
 impl ThemePreset {
@@ -106,6 +108,7 @@ impl ThemePreset {
             Self::TokyoNightDay => "tokyo-night-day",
             Self::GruvboxLight => "gruvbox-light",
             Self::SolarizedLight => "solarized-light",
+            Self::Doom => "doom",
         }
     }
 
@@ -120,6 +123,7 @@ impl ThemePreset {
             Self::TokyoNightDay => "Tokyo Night Day",
             Self::GruvboxLight => "Gruvbox Light",
             Self::SolarizedLight => "Solarized Light",
+            Self::Doom => "Doom",
         }
     }
 
@@ -134,6 +138,7 @@ impl ThemePreset {
             "tokyo-night-day" => Some(Self::TokyoNightDay),
             "gruvbox-light" => Some(Self::GruvboxLight),
             "solarized-light" => Some(Self::SolarizedLight),
+            "doom" => Some(Self::Doom),
             _ => None,
         }
     }
@@ -148,6 +153,7 @@ impl ThemePreset {
             Self::TokyoNightDay,
             Self::GruvboxLight,
             Self::SolarizedLight,
+            Self::Doom,
         ]
     }
 
@@ -162,6 +168,7 @@ impl ThemePreset {
             Self::TokyoNightDay => tokyo_night_day_palette(),
             Self::GruvboxLight => gruvbox_light_palette(),
             Self::SolarizedLight => solarized_light_palette(),
+            Self::Doom => doom_palette(),
         }
     }
 
@@ -555,6 +562,42 @@ fn solarized_light_palette() -> ThemePalette {
         modal_bg: base3,
         modal_border: blue,
         base_bg: base3,
+    }
+    .build()
+}
+
+fn doom_palette() -> ThemePalette {
+    let red = Color::Rgb(0xFF, 0x3B, 0x30);
+    let bright_red = Color::Rgb(0xFF, 0x5C, 0x54);
+    let bright_green = Color::Rgb(0x6E, 0xFF, 0x6E);
+    let cyan = Color::Rgb(0x00, 0xD9, 0xFF);
+    let text = Color::Rgb(0xE0, 0xE0, 0xE0);
+    let subtext = Color::Rgb(0xA0, 0xA0, 0xA0);
+    let muted = Color::Rgb(0x60, 0x60, 0x60);
+    let surface = Color::Rgb(0x2A, 0x0F, 0x12);
+    let bg_dark = Color::Rgb(0x1A, 0x08, 0x0A);
+    let highlight = Color::Rgb(0x40, 0x15, 0x1E);
+    PaletteSlots {
+        accent: bright_red,
+        accent_bright: bright_green,
+        green: bright_green,
+        yellow: red,
+        red,
+        text_primary: text,
+        text_secondary: subtext,
+        text_muted: muted,
+        border_unfocused: highlight,
+        role_name: bright_red,
+        branch_name: bright_green,
+        search_bar: cyan,
+        admin_badge: red,
+        keybind_hint: red,
+        selection_bg: highlight,
+        selection_fg: bright_green,
+        modal_dim_bg: bg_dark,
+        modal_bg: surface,
+        modal_border: bright_red,
+        base_bg: bg_dark,
     }
     .build()
 }
