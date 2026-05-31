@@ -1,18 +1,18 @@
 :root {
-  /* Backgrounds — Doom Eternal hellish red-black */
-  --bg-primary: #1a080a;
-  --bg-secondary: #2a0f12;
-  --bg-card: #2a0f12;
-  --bg-code: #120607;
-  --bg-hover: #40151e;
-  --bg-nav: rgb(26, 8, 10, 0.92);
+  /* Backgrounds — neutral warm-charcoal (Doom is an accent, not the whole room) */
+  --bg-primary: #15120f;
+  --bg-secondary: #1e1a16;
+  --bg-card: #1e1a16;
+  --bg-code: #0d0b09;
+  --bg-hover: #2a241e;
+  --bg-nav: rgb(21, 18, 15, 0.92);
 
   /* Text */
   --text-primary: #e0e0e0;
   --text-secondary: #a0a0a0;
-  --text-muted: #606060;
+  --text-muted: #6b6358;
 
-  /* Accents — bright red is the primary accent slot (was cyan) */
+  /* Accents — Doom red is the primary accent slot (was cyan) */
   --green: #6eff6e;
   --cyan: #ff5c54;
   --yellow: #ffb627;
@@ -21,20 +21,20 @@
   --blue: #00d9ff;
 
   /* Borders */
-  --border: #40151e;
-  --border-light: #2a0f12;
+  --border: #36302a;
+  --border-light: #26211c;
 
   /* Terminal chrome — classic arcade button colors */
   --term-dot-red: #ff3b30;
   --term-dot-yellow: #ffb627;
   --term-dot-green: #6eff6e;
-  --term-glow: rgb(255, 92, 84, 0.25);
+  --term-glow: rgb(255, 92, 84, 0.16);
 
-  /* Retro neon glows */
-  --glow-red: 0 0 6px rgb(255, 92, 84, 0.9), 0 0 14px rgb(255, 59, 48, 0.55);
-  --glow-green: 0 0 6px rgb(110, 255, 110, 0.9), 0 0 14px rgb(110, 255, 110, 0.5);
-  --glow-cyan: 0 0 6px rgb(0, 217, 255, 0.9), 0 0 14px rgb(0, 217, 255, 0.5);
-  --scanline: rgb(0, 0, 0, 0.28);
+  /* Retro neon glows (used sparingly, as a wink to Doom) */
+  --glow-red: 0 0 5px rgb(255, 92, 84, 0.7), 0 0 12px rgb(255, 59, 48, 0.4);
+  --glow-green: 0 0 5px rgb(110, 255, 110, 0.7), 0 0 12px rgb(110, 255, 110, 0.4);
+  --glow-cyan: 0 0 5px rgb(0, 217, 255, 0.7), 0 0 12px rgb(0, 217, 255, 0.4);
+  --scanline: rgb(0, 0, 0, 0.14);
 
   /* Typography */
   --font-display: 'Press Start 2P', 'JetBrains Mono', monospace;

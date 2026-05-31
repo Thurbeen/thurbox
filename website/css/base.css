@@ -17,7 +17,7 @@ body {
   line-height: 1.6;
   color: var(--text-primary);
   background-color: var(--bg-primary);
-  background-image: radial-gradient(ellipse at 50% -10%, rgb(255, 59, 48, 0.12), transparent 60%);
+  background-image: radial-gradient(ellipse at 50% -10%, rgb(255, 59, 48, 0.05), transparent 55%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
