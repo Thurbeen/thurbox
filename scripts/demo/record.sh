@@ -1,36 +1,63 @@
 #!/usr/bin/env sh
-# Regenerate the Thurbox demo media (docs/media/thurbox-demo.{gif,mp4}).
+# Regenerate ALL Thurbox demo media in one pass, using REAL coding-agent CLIs.
 #
-# Fully automated and reproducible: drives the REAL thurbox TUI via VHS, but
-# every session runs a deterministic in-binary "demo agent" (canned transcript)
-# instead of a real coding-agent CLI — so there is no API key, no network, and
-# no nondeterminism. Runs entirely isolated from your real thurbox:
+# This single script records every video pair under docs/media/:
 #
-#   * TMUX_TMPDIR points at a throwaway dir, so the demo's `thurbox-dev` tmux
-#     server lives in its OWN socket directory — separate from any dev build of
-#     thurbox you may already be running (which also uses the `thurbox-dev`
-#     socket NAME, just under the default /tmp/tmux-UID dir). Without this, the
-#     cleanup `kill-server` would tear down your live dev sessions.
-#   * XDG_DATA_HOME / XDG_CONFIG_HOME point at a throwaway temp dir
+#   * thurbox-demo.{gif,mp4}            (agents.tape          — the hero demo)
+#   * thurbox-file-manager.{gif,mp4}    (file-manager.tape)
+#   * thurbox-info-panel.{gif,mp4}      (info-panel.tape)
+#   * thurbox-theme.{gif,mp4}           (theme.tape)
+#   * thurbox-session-creation.{gif,mp4}(session-creation.tape)
+#   * automations-demo.{gif,mp4}        (automations.tape)
 #
-# Requirements: cargo, git, tmux, and vhs (https://github.com/charmbracelet/vhs)
-# with ffmpeg + ttyd available to it.
+# Every clip drives the actual `claude`, `opencode`, `codex` and `gemini` CLIs —
+# one per thurbox session — to showcase real multi-agent orchestration. No prompt
+# is sent to any agent; they are launched and left on their start screens.
 #
-# Usage:  scripts/demo/record.sh
+# Isolation (so this never touches your real thurbox, tmux, or agent accounts):
+#   * HOME points at a throwaway dir  -> agents boot FRESH (no account/email or
+#     past conversations leak into the video). Some CLIs may show a login/welcome
+#     screen rather than a chat UI; that is expected for a clean-room recording.
+#   * TMUX_TMPDIR points at a throwaway dir -> the `thurbox-dev` tmux server lives
+#     in its own socket directory, so cleanup can't kill dev sessions you already
+#     have running.
+#   * XDG_{DATA,CONFIG,STATE,CACHE}_HOME point at a throwaway dir.
+#
+# Requirements: cargo, git, tmux, vhs (+ ffmpeg + ttyd) and whichever agent CLIs
+# you want to feature (claude / opencode / codex / gemini). Missing agents are
+# skipped with a warning.
+#
+# Usage:  scripts/demo/record.sh [tape-stem ...]
+#
+#   With no args, records every tape below. Pass one or more tape stems to
+#   re-record only a subset, e.g. `record.sh theme automations`.
 
 set -eu
+
+# Tapes to record (stems of scripts/demo/<stem>.tape), hero first. `agents` is
+# the combined hero demo (docs/media/thurbox-demo.*); the rest are per-feature
+# clips (`automations` -> automations-demo.*, others -> thurbox-<stem>.*).
+ALL_TAPES="agents file-manager info-panel theme session-creation automations"
+TAPES="${*:-$ALL_TAPES}"
 
 # --- Locate the repo root (this script lives in scripts/demo/) ---------------
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT"
 
+# Validate requested tapes exist before doing any expensive setup.
+for tape in $TAPES; do
+    if [ ! -f "$SCRIPT_DIR/$tape.tape" ]; then
+        echo "error: no such tape: $SCRIPT_DIR/$tape.tape" >&2
+        echo "  available: $ALL_TAPES" >&2
+        exit 1
+    fi
+done
+
 # --- Preflight: required tools ----------------------------------------------
 missing=
 for tool in cargo git tmux vhs; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        missing="$missing $tool"
-    fi
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then
     echo "error: missing required tool(s):$missing" >&2
@@ -38,70 +65,117 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
+# Which agent CLIs are available? Feature only the ones present.
+AGENTS=
+for a in claude opencode codex gemini; do
+    if command -v "$a" >/dev/null 2>&1; then
+        AGENTS="$AGENTS $a"
+    else
+        echo "warning: '$a' not found on PATH — skipping it in the demo" >&2
+    fi
+done
+if [ -z "$AGENTS" ]; then
+    echo "error: none of claude/opencode/codex/gemini are installed" >&2
+    exit 1
+fi
+
 # --- Build the dev binaries (version 0.0.0-dev => dev_build cfg) -------------
+# Build BEFORE the HOME override so cargo still finds ~/.cargo.
 echo "==> Building thurbox (dev) ..."
 cargo build --bin thurbox --bin thurbox-cli
 
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
 CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
-export THURBOX_BIN   # consumed by scripts/demo/thurbox.tape
+export THURBOX_BIN   # consumed by the tapes (they `exec "$THURBOX_BIN"`)
 
 # --- Isolated environment ----------------------------------------------------
 DEMO_HOME=$(mktemp -d "${TMPDIR:-/tmp}/thurbox-demo.XXXXXX")
+export HOME="$DEMO_HOME/home"            # fresh agent auth (no real creds/history)
 export XDG_DATA_HOME="$DEMO_HOME/data"
 export XDG_CONFIG_HOME="$DEMO_HOME/config"
+export XDG_STATE_HOME="$DEMO_HOME/state"
+export XDG_CACHE_HOME="$DEMO_HOME/cache"
 export TMUX_TMPDIR="$DEMO_HOME/tmux"     # isolate the tmux socket DIRECTORY
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"   # dev_build subdir
-mkdir -p "$CFG_DIR" "$XDG_DATA_HOME" "$TMUX_TMPDIR"
+mkdir -p "$HOME" "$CFG_DIR" "$XDG_DATA_HOME" "$XDG_STATE_HOME" \
+    "$XDG_CACHE_HOME" "$TMUX_TMPDIR"
 
 cleanup() {
-    # Killing the isolated tmux server reaps the demo-agent panes. The extra
-    # pkill is a narrowly-scoped safety net keyed on the internal-only
-    # `__demo-agent` argv pointed at THIS build's binary, so it can never touch
-    # an unrelated thurbox the user is running in another worktree.
+    # The isolated tmux server (in TMUX_TMPDIR) hosts every agent pane, so this
+    # single kill reaps all the real agent processes too — and cannot reach any
+    # tmux server outside this throwaway directory.
     tmux -L thurbox-dev kill-server >/dev/null 2>&1 || true
-    pkill -f "$THURBOX_BIN __demo-agent" >/dev/null 2>&1 || true
     rm -rf "$DEMO_HOME"
 }
 trap cleanup EXIT INT TERM
 
-# --- Demo agent registry: each "agent" replays a scenario --------------------
-# Multiple agents let pre-seeded sessions show different transcripts. `default`
-# is "demo" so any extra session created during recording also replays.
-cat > "$CFG_DIR/agents.toml" <<EOF
-default = "demo"
+# --- Agent registry: one entry per available CLI, launched with no args ------
+{
+    first=$(printf '%s\n' $AGENTS | head -n1)
+    echo "default = \"$first\""
+    for a in $AGENTS; do
+        printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$a"
+    done
+} > "$CFG_DIR/agents.toml"
 
-[[agents]]
-name = "demo"
-command = "$THURBOX_BIN"
-args = ["__demo-agent", "default"]
+# --- A throwaway sample repo so the file viewer shows a realistic tree --------
+DEMO_REPO="$DEMO_HOME/sample-project"
+mkdir -p "$DEMO_REPO/src" "$DEMO_REPO/tests" "$DEMO_REPO/docs"
+cat > "$DEMO_REPO/README.md" <<'EOF'
+# sample-project
 
-[[agents]]
-name = "demo-snake"
-command = "$THURBOX_BIN"
-args = ["__demo-agent", "snake"]
-
-[[agents]]
-name = "demo-refactor"
-command = "$THURBOX_BIN"
-args = ["__demo-agent", "refactor"]
+A tiny demo repository used to showcase the Thurbox file viewer.
 EOF
+cat > "$DEMO_REPO/src/main.rs" <<'EOF'
+fn main() {
+    println!("hello from sample-project");
+}
+EOF
+cat > "$DEMO_REPO/src/lib.rs" <<'EOF'
+pub fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+EOF
+cat > "$DEMO_REPO/tests/basic.rs" <<'EOF'
+#[test]
+fn it_adds() {
+    assert_eq!(sample_project::add(2, 2), 4);
+}
+EOF
+cat > "$DEMO_REPO/docs/ARCHITECTURE.md" <<'EOF'
+# Architecture
 
-# --- A throwaway git repo for the sessions to live in ------------------------
-DEMO_REPO="$DEMO_HOME/playground"
+Sample document for the file-viewer demo.
+EOF
 git init -q "$DEMO_REPO"
+git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo add -A
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo \
-    commit -q --allow-empty -m "init"
+    commit -q -m "init sample project"
 
-# --- Pre-seed a couple of sessions so the TUI opens populated ----------------
-echo "==> Seeding demo sessions ..."
-"$CLI_BIN" session create --name snake    --repo-path "$DEMO_REPO" --agent demo-snake    >/dev/null
-"$CLI_BIN" session create --name refactor --repo-path "$DEMO_REPO" --agent demo-refactor >/dev/null
+# --- Pre-seed one session per agent so the TUI opens populated ---------------
+echo "==> Seeding one session per agent:$AGENTS"
+for a in $AGENTS; do
+    "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
+done
+
+# Give the real CLIs a moment to boot before VHS starts capturing. Each tape
+# relaunches the TUI against the same seeded sessions, so they only need to be
+# warm once.
+sleep 6
 
 # --- Record -----------------------------------------------------------------
-echo "==> Recording with VHS ..."
-vhs "$SCRIPT_DIR/thurbox.tape"
+# Each tape declares its own Output paths, so one VHS run == one output pair.
+# Loop over the requested tapes, rendering each into docs/media/.
+for tape in $TAPES; do
+    echo "==> Recording $tape.tape ..."
+    vhs "$SCRIPT_DIR/$tape.tape"
+done
 
-echo "==> Done. Updated:"
-echo "    docs/media/thurbox-demo.gif"
-echo "    docs/media/thurbox-demo.mp4"
+echo "==> Done. Updated docs/media/ for tape(s):$([ "$TAPES" = "$ALL_TAPES" ] && echo " all" || echo " $TAPES")"
+for tape in $TAPES; do
+    case "$tape" in
+        agents)      echo "    thurbox-demo.{gif,mp4}" ;;
+        automations) echo "    automations-demo.{gif,mp4}" ;;
+        *)           echo "    thurbox-$tape.{gif,mp4}" ;;
+    esac
+done

@@ -1,6 +1,6 @@
 # VHS tape — Thurbox session-creation workflow feature clip.
 #
-# Do NOT run directly — run `scripts/demo/record-agents.sh session-creation`,
+# Do NOT run directly — run `scripts/demo/record.sh session-creation`,
 # which builds the dev binary, sets up the isolated env, seeds one session per
 # real agent CLI in a sample repo, and exports $THURBOX_BIN.
 #
@@ -17,7 +17,7 @@ Set Padding 16
 Set Theme "Catppuccin Mocha"
 Set PlaybackSpeed 1.0
 
-# Launch the dev binary (isolated env from record-agents.sh).
+# Launch the dev binary (isolated env from record.sh).
 Hide
 Type `exec "$THURBOX_BIN"`
 Enter

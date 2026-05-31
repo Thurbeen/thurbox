@@ -39,3 +39,7 @@ temp/
 # Node (website linting tools)
 node_modules/
 .claude/scheduled_tasks.lock
+.aider*
+
+# Local orchestrator/agent worker workspaces (stray nested checkouts)
+thurbox/

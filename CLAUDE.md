@@ -241,52 +241,56 @@ automation (same actions as the Ctrl+P modal).
 
 ## Demo Video
 
-The demo media (`docs/media/thurbox-demo.{gif,mp4}`) is
-**generated**, not hand-recorded. There are two pipelines, both
-driving the *real* TUI via [VHS](https://github.com/charmbracelet/vhs)
-(needs `vhs` + `ffmpeg` + `ttyd` + `tmux`) and writing GIF **and**
-MP4 straight into `docs/media/`:
+The demo media is **generated**, not hand-recorded. A single
+script drives the *real* TUI via
+[VHS](https://github.com/charmbracelet/vhs) (needs `vhs` +
+`ffmpeg` + `ttyd` + `tmux`) and writes GIF **and** MP4 straight
+into `docs/media/`:
 
 ```bash
-scripts/demo/record.sh          # deterministic: canned in-binary demo agent
-scripts/demo/record-agents.sh   # showcase: real claude/opencode/codex/gemini
+scripts/demo/record.sh                 # regenerate ALL demo videos
+scripts/demo/record.sh theme automations   # re-record a subset
 ```
 
-`record-agents.sh` records the combined hero demo
-(`thurbox-demo.*`) **and** one clip per feature
-(`thurbox-{file-manager,info-panel,theme,session-creation}.*`),
-one VHS tape each (`scripts/demo/<feature>.tape`). Pass tape
-stems to re-record a subset, e.g.
-`scripts/demo/record-agents.sh theme file-manager`.
+`record.sh` records every video pair in one pass: the combined
+hero demo (`thurbox-demo.*` via `agents.tape`), one clip per
+feature (`thurbox-{file-manager,info-panel,theme,session-creation}.*`),
+and the automations demo (`automations-demo.*` via
+`automations.tape`) — one VHS tape each
+(`scripts/demo/<feature>.tape`). With no args it records all of
+them; pass tape stems to re-record a subset (the `agents` stem is
+the hero, `automations` is the automations clip, every other stem
+maps to `thurbox-<stem>.*`).
 
-Both run fully isolated from your real environment — a dev build
+Every clip uses **real agent CLIs**: the script seeds one session
+per installed CLI (`claude`, `opencode`, `codex`, `gemini`) in a
+throwaway sample repo and launches them with no prompt. It
+overrides `HOME`, so agents boot with fresh history/config (no
+past conversations leak); CLIs that authenticate via the system
+keyring stay logged in but show no account email on screen. The
+tapes exercise the session list, info panel (`Ctrl+B`), file
+viewer (`Ctrl+E`), theme picker, session-creation flow, and the
+Automations pane over the seeded sessions and sample tree.
+
+It runs fully isolated from your real environment — a dev build
 (`0.0.0-dev` → `dev_build` cfg) uses the `thurbox-dev` socket and
-XDG subdirs, and each script points `TMUX_TMPDIR` and
-`XDG_{DATA,CONFIG}_HOME` at a throwaway temp dir. **`TMUX_TMPDIR`
-is essential**: the `thurbox-dev` socket *name* is shared by every
-dev build, so without a private socket directory the cleanup
-`kill-server` would tear down dev sessions you already have running.
+XDG subdirs, and the script points `TMUX_TMPDIR` and
+`XDG_{DATA,CONFIG,STATE,CACHE}_HOME` at a throwaway temp dir.
+**`TMUX_TMPDIR` is essential**: the `thurbox-dev` socket *name* is
+shared by every dev build, so without a private socket directory
+the cleanup `kill-server` would tear down dev sessions you already
+have running.
 
-- **`record.sh` (deterministic)**: each session runs an in-binary
-  replay agent. The script writes an `agents.toml` whose agents
-  point their `command` at the thurbox dev binary with the hidden
-  `__demo-agent <scenario>` subcommand; `src/main.rs` dispatches it
-  to `agent::demo::run_demo_agent()` (`src/agent/demo.rs`), which
-  streams a canned transcript (`src/agent/demo_scenarios/*.txt`,
-  embedded via `include_str!`) then idles. No API key, no network,
-  byte-stable output. `__demo-agent` is internal-only.
-- **`record-agents.sh` (real agents)**: seeds one session per
-  installed CLI (`claude`, `opencode`, `codex`, `gemini`) in a
-  throwaway sample repo and launches them with no prompt. It also
-  overrides `HOME`, so agents boot with fresh history/config (no
-  past conversations leak); CLIs that authenticate via the system
-  keyring stay logged in but show no account email on screen. The
-  tape exercises the info panel (`Ctrl+B`) and file viewer
-  (`Ctrl+E`) over the sample tree.
+The hidden `__demo-agent <scenario>` subcommand (`src/main.rs` →
+`agent::demo::run_demo_agent()` in `src/agent/demo.rs`, streaming
+canned `src/agent/demo_scenarios/*.txt`) still exists in the
+binary but is **no longer used by the recording pipeline** — the
+deterministic recording path was retired in favor of the single
+real-agents script.
 
-`.github/workflows/pages.yml` copies the mp4 into
-`website/assets/` at deploy time and `README.md` embeds the gif,
-so regenerating these two files propagates everywhere.
+`.github/workflows/pages.yml` copies the mp4s into
+`website/assets/` at deploy time and `README.md` embeds the gifs,
+so regenerating these files propagates everywhere.
 
 ## Architecture (TEA Pattern)
 

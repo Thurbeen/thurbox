@@ -1,8 +1,8 @@
 # VHS tape for the Thurbox Automations feature demo.
 #
-# Do NOT run this directly — run `scripts/demo/record-automations.sh`, which
-# builds the dev binary, sets up an isolated environment, pre-seeds a demo
-# session, and exports the env vars this tape relies on ($THURBOX_BIN).
+# Do NOT run this directly — run `scripts/demo/record.sh automations`, which
+# builds the dev binary, sets up an isolated environment, seeds one session per
+# real agent CLI, and exports the env vars this tape relies on ($THURBOX_BIN).
 #
 # Requires: vhs (charmbracelet/vhs) + ffmpeg + ttyd. VHS has no function-key
 # commands, so this uses Ctrl-key bindings + Tab / arrows only.
@@ -25,7 +25,7 @@ Enter
 Sleep 2s
 Show
 
-# A session is pre-seeded; the always-present Automations pane sits beneath the
+# Sessions are pre-seeded; the always-present Automations pane sits beneath the
 # session list in the left column.
 Sleep 2500ms
 

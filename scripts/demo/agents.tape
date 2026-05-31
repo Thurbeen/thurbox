@@ -1,6 +1,6 @@
 # VHS tape for the Thurbox REAL-AGENTS demo video.
 #
-# Do NOT run this directly — run `scripts/demo/record-agents.sh`, which builds
+# Do NOT run this directly — run `scripts/demo/record.sh`, which builds
 # the dev binary, sets up an isolated environment, seeds one session per real
 # agent CLI, and exports $THURBOX_BIN. See that script for context.
 #
@@ -18,7 +18,7 @@ Set Padding 16
 Set Theme "Catppuccin Mocha"
 Set PlaybackSpeed 1.0
 
-# Launch the dev binary (isolated env from record-agents.sh).
+# Launch the dev binary (isolated env from record.sh).
 Hide
 Type `exec "$THURBOX_BIN"`
 Enter

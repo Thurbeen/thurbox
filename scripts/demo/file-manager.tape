@@ -1,6 +1,6 @@
 # VHS tape — Thurbox file manager (file viewer) feature clip.
 #
-# Do NOT run directly — run `scripts/demo/record-agents.sh file-manager`, which
+# Do NOT run directly — run `scripts/demo/record.sh file-manager`, which
 # builds the dev binary, sets up the isolated env, seeds one session per real
 # agent CLI in a sample repo, and exports $THURBOX_BIN.
 #
@@ -17,7 +17,7 @@ Set Padding 16
 Set Theme "Catppuccin Mocha"
 Set PlaybackSpeed 1.0
 
-# Launch the dev binary (isolated env from record-agents.sh).
+# Launch the dev binary (isolated env from record.sh).
 Hide
 Type `exec "$THURBOX_BIN"`
 Enter
