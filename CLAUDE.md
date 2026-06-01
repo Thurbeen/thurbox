@@ -292,6 +292,11 @@ named `ssh:<name>` (`TmuxBackend::from_host`, registered lazily in
   sessions re-adopt against their own host.
 - **Headless**: `thurbox-cli session create --host <name>` spawns
   remotely (see below).
+- **Local e2e**: `scripts/dev/remote-ssh-test.sh up` spins a
+  throwaway Podman container (sshd + tmux + git) and `… test` runs
+  an isolated headless smoke test asserting a session lands on the
+  `ssh:podman` backend (state under `target/`, never touches your
+  real `~/.ssh`/`~/.config`).
 
 ## thurbox-cli
 
