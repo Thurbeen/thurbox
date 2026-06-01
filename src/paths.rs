@@ -78,6 +78,9 @@ pub enum PathKind {
     MetricsDir,
     /// Git worktrees: `~/.local/share/thurbox/worktrees/`
     WorktreesDir,
+    /// Per-session multi-repo symlink workspaces:
+    /// `~/.local/share/thurbox/workspaces/`
+    WorkspacesDir,
     /// User keybindings JSON file: `~/.config/thurbox/keybindings.json`
     KeybindingsFile,
 }
@@ -135,6 +138,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
         PathKind::LogDir => xdg_data_subpath(&[]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
         PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
+        PathKind::WorkspacesDir => xdg_data_subpath(&["workspaces"]),
         PathKind::KeybindingsFile => xdg_config_subpath("keybindings.json"),
     }
 }
@@ -147,6 +151,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::Database => base.join("thurbox.db"),
         PathKind::MetricsDir => base.join("metrics"),
         PathKind::WorktreesDir => base.join("worktrees"),
+        PathKind::WorkspacesDir => base.join("workspaces"),
         PathKind::KeybindingsFile => base.join("keybindings.json"),
     }
 }
@@ -203,6 +208,14 @@ pub fn metrics_directory() -> Option<PathBuf> {
 /// Returns: `$XDG_DATA_HOME/thurbox/worktrees/` or `$HOME/.local/share/thurbox/worktrees/`
 pub fn worktrees_directory() -> Option<PathBuf> {
     resolve(PathKind::WorktreesDir)
+}
+
+/// Resolve the multi-repo workspaces directory path.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/workspaces/` or
+/// `$HOME/.local/share/thurbox/workspaces/`
+pub fn workspaces_directory() -> Option<PathBuf> {
+    resolve(PathKind::WorkspacesDir)
 }
 
 /// Resolve the user keybindings file path.

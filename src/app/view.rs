@@ -129,7 +129,7 @@ impl App {
                 session_search_active: !self.session_match_positions.is_empty(),
                 match_count,
                 total_count,
-                first_non_admin_index: ordered.first_non_admin_index,
+                headers: &ordered.headers,
             },
         );
     }

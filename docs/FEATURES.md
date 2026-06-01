@@ -63,9 +63,39 @@ used for the window title):
   escape (**OSC 9**, **OSC 777**) means the agent finished or is
   waiting for input. This latches a distinct `Needs attention` status
   (`▲`, accent colour) that shows the notification's message text when
-  present, and **sorts the session to the top of the list** so blocked
-  or finished agents surface first. It clears automatically once you
-  select the session (you're now looking at it).
+  present, and **floats the session to the top** so blocked or finished
+  agents surface first (see *Smart ordering* below). It clears
+  automatically once you select the session (you're now looking at it).
+
+### Smart ordering & repo groups
+
+The list is ordered by **activity and status**, then **grouped by
+repository** under subtle headers (`── webapp ─────`):
+
+- Within a group, sessions sort by status rank
+  (`Attention → running → Idle → Error`), tie-broken by stable insertion
+  order. `Busy` and `Waiting` deliberately **share one "running" rank**: a
+  live agent flickers across the ~1s output boundary every tick, so ranking
+  them apart (or sorting by live recency) would make active sessions churn up
+  and down the list endlessly. Ordering is a pure function of *status* and
+  *stable order*, never of live timing — so the list only re-sorts on a real
+  transition (a session needs attention, or exits).
+- Groups are ordered by their **most-urgent member**, then by name, so a repo
+  holding an `Attention` session bubbles above a merely-running one.
+- The group key is the **set of repos a session spans** (order-independent), so
+  a multi-repo session forms its own group with a combined header
+  (`webapp + infra`) rather than being filed arbitrarily under one repo;
+  sessions touching the same set cluster together. Sessions with no repo share a
+  `(no repo)` group.
+- The **admin** session stays pinned at the very top, headerless.
+
+**Why group by repo?** With several parallel agents the dominant question
+is "which project is this?" — clustering same-repo sessions answers it at a
+glance while urgency still wins globally (an `Attention` session never hides
+below a quiet repo). A single comparator
+(`ui::project_list::compute_session_order`) drives both rendering and
+`Ctrl+J`/`Ctrl+K` navigation, so the keyboard always steps through the exact
+order shown.
 
 **Why signals instead of guessing?** Pure output-timing can only say
 "quiet for >1s"; it can't tell a thinking pause from "done" or "needs
@@ -111,6 +141,17 @@ so it makes sense to pick repos at creation time rather than
 inheriting from a parent grouping. Mixed sessions are supported:
 some repos may be worktree-based (new branch created) while others
 are added as-is.
+
+**How does one agent reach multiple repos?** Agent CLIs disagree on
+how (or whether) to accept extra directories, so thurbox stays
+agent-neutral: a multi-repo session is launched in a per-session
+**symlink workspace** (`~/.local/share/thurbox/workspaces/<id>/`)
+holding one symlink per repo, with the agent's cwd set there. Every
+agent then sees each repo as a subdirectory — no per-agent flags and
+no `agents.toml` changes. The workspace is only symlinks, rebuilt
+idempotently on each launch and removed (without touching the repos)
+when the session is deleted. Single-repo sessions launch directly in
+the repo as before.
 
 **Why per-session agent?** Different tasks suit different agents.
 Choosing the agent at creation time keeps each session

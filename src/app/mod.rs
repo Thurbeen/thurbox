@@ -608,7 +608,9 @@ impl App {
         };
 
         let agent = session.info.agent.clone();
-        let cwd = session.info.cwd.clone();
+        // Rebuild the process cwd: the primary repo for a single-repo session,
+        // or the (idempotently rebuilt) symlink workspace for a multi-repo one.
+        let cwd = session_process_cwd(&session.info);
 
         let mut config = SessionConfig {
             resume_session_id: None,
@@ -820,11 +822,14 @@ impl App {
     /// so that restored sessions (Ctrl+U) can reuse them without re-cloning.
     fn finalize_pending_delete(&mut self) {
         if let Some(pending) = self.pending_delete.take() {
-            // Clean up agent metrics file.
+            // Clean up derived per-session artifacts (rebuilt on restore): the
+            // agent metrics file and the multi-repo symlink workspace. Worktrees
+            // are intentionally left on disk for Ctrl+U restore.
             if let Some(ref sid) = pending.session.info.agent_session_id {
                 if let Some(metrics_dir) = crate::paths::metrics_directory() {
                     let _ = std::fs::remove_file(metrics_dir.join(format!("{sid}.json")));
                 }
+                let _ = crate::workspace::remove_workspace(sid);
             }
             pending.session.kill();
         }
@@ -996,11 +1001,14 @@ impl App {
 
         match current {
             TerminalView::Claude => {
-                // Lazily create the shell pane if it doesn't exist
+                // Lazily create the shell pane if it doesn't exist. Start it in
+                // the same launch cwd as the agent (the multi-repo workspace when
+                // there is one), so switching to the terminal lands you there.
                 if needs_shell {
                     let (rows, cols) = self.content_area_size();
+                    let shell_cwd = session_process_cwd(&self.sessions[self.active_index].info);
                     let session = &mut self.sessions[self.active_index];
-                    if let Err(e) = session.ensure_shell_pane(rows, cols) {
+                    if let Err(e) = session.ensure_shell_pane(rows, cols, shell_cwd.as_deref()) {
                         error!("Failed to create shell pane: {e}");
                         self.set_error(format!("Failed to create shell: {e:#}"));
                         return;
@@ -1284,11 +1292,23 @@ impl App {
             );
         }
 
+        // For a multi-repo session, launch the agent in a symlink workspace that
+        // gathers every member dir; `info.cwd` keeps the primary repo (restored
+        // after spawn). Single-repo sessions are unchanged.
+        let primary_cwd = config.cwd.clone();
+        config.cwd = resolve_process_cwd(
+            config.agent_session_id.as_deref(),
+            primary_cwd.clone(),
+            &worktrees,
+            &additional_dirs,
+        );
+
         let backend: Arc<dyn SessionBackend> = Arc::clone(self.backends.default_backend());
 
         let provider = self.provider_for(&config);
         match Session::spawn(name, rows, cols, &config, &backend, &provider) {
             Ok(mut session) => {
+                session.info.cwd = primary_cwd;
                 session.info.worktrees = worktrees;
                 session.info.additional_dirs = additional_dirs;
 
@@ -1325,14 +1345,14 @@ impl App {
 
     /// Indices into `self.sessions` in the order they are rendered.
     ///
-    /// Mirrors `ui::project_list::OrderedSessions::new`: admin sessions
-    /// are pinned to the top (stable), the rest follow DB order. Used by
-    /// the session-navigation helpers so `Ctrl+J`/`Ctrl+K` step through
-    /// the list the user actually sees.
+    /// Delegates to the same `ui::project_list::compute_session_order` the
+    /// rendering widget uses, so `Ctrl+J`/`Ctrl+K` step through the list in the
+    /// exact order the user sees (admin pinned, then repo groups ordered by
+    /// activity/status).
     fn render_order_indices(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.sessions.len()).collect();
-        order.sort_by_key(|&i| !self.sessions[i].info.is_admin);
-        order
+        let infos: Vec<&crate::session::SessionInfo> =
+            self.sessions.iter().map(|s| &s.info).collect();
+        crate::ui::project_list::compute_session_order(&infos).order
     }
 
     /// Whether the active session is the first row in render order (top of the
@@ -1359,6 +1379,14 @@ impl App {
     pub(crate) fn select_last_session(&mut self) {
         if let Some(&last) = self.render_order_indices().last() {
             self.active_index = last;
+        }
+    }
+
+    /// Select the first session in render order — used when looping down out of
+    /// the automations pane back to the top of the session list.
+    pub(crate) fn select_first_session(&mut self) {
+        if let Some(&first) = self.render_order_indices().first() {
+            self.active_index = first;
         }
     }
 
@@ -2965,42 +2993,106 @@ fn format_automation_summary(auto: &Automation, now: u64) -> String {
 /// Populate `repo_display_names` on a session from worktree repo paths,
 /// cwd, and additional_dirs, using git remote names where available.
 ///
-/// The order matches `build_repo_entries`: worktree repos first (by their
-/// original `repo_path`), then non-worktree additional dirs.
+/// Thin wrapper over [`session_member_dirs`] — the single source of truth for
+/// *which* directories a session spans and in what order — keeping the displayed
+/// repo names and the workspace symlink set from ever drifting.
 fn resolve_repo_display_names(info: &mut SessionInfo) {
-    let mut names = Vec::new();
+    info.repo_display_names =
+        session_member_dirs(info.cwd.as_deref(), &info.worktrees, &info.additional_dirs)
+            .into_iter()
+            .filter_map(|(name, _)| name)
+            .collect();
+}
 
-    // Collect worktree checkout paths for filtering additional_dirs later.
-    let wt_paths: std::collections::HashSet<&std::path::Path> = info
-        .worktrees
+/// The `(display_name, directory)` pairs a session spans, in display order:
+/// worktree repos first (name from the original `repo_path`, dir = the checkout),
+/// then non-worktree `additional_dirs`; or the lone `cwd` repo when there are no
+/// worktrees. `name` is `None` only for pathological paths with no resolvable
+/// name. This is the canonical member set used for both the repo-name display and
+/// the multi-repo symlink workspace.
+fn session_member_dirs(
+    cwd: Option<&std::path::Path>,
+    worktrees: &[WorktreeInfo],
+    additional_dirs: &[PathBuf],
+) -> Vec<(Option<String>, PathBuf)> {
+    let mut members: Vec<(Option<String>, PathBuf)> = Vec::new();
+
+    let wt_paths: std::collections::HashSet<&std::path::Path> = worktrees
         .iter()
         .map(|wt| wt.worktree_path.as_path())
         .collect();
 
-    if !info.worktrees.is_empty() {
-        // Worktree repos: resolve from original repo_path (has git remote).
-        for wt in &info.worktrees {
-            if let Some(name) = git::repo_display_name(&wt.repo_path) {
-                names.push(name);
-            }
+    if !worktrees.is_empty() {
+        for wt in worktrees {
+            members.push((
+                git::repo_display_name(&wt.repo_path),
+                wt.worktree_path.clone(),
+            ));
         }
-    } else if let Some(ref cwd) = info.cwd {
-        // No worktrees: use cwd as the primary repo.
-        if let Some(name) = git::repo_display_name(cwd) {
-            names.push(name);
-        }
+    } else if let Some(cwd) = cwd {
+        members.push((git::repo_display_name(cwd), cwd.to_path_buf()));
     }
 
-    // Non-worktree additional dirs (skip paths that are worktree checkouts).
-    for dir in &info.additional_dirs {
+    for dir in additional_dirs {
         if !wt_paths.contains(dir.as_path()) {
-            if let Some(name) = git::repo_display_name(dir) {
-                names.push(name);
-            }
+            members.push((git::repo_display_name(dir), dir.clone()));
         }
     }
 
-    info.repo_display_names = names;
+    members
+}
+
+/// The directory the agent process should launch in.
+///
+/// For a single-member session that's the member itself (`primary_cwd`). For a
+/// multi-member session it is a per-session **symlink workspace** (built
+/// idempotently from the members) so the agent sees every repo as a
+/// subdirectory — agent-neutral, needing no per-CLI flag. On any failure it
+/// falls back to `primary_cwd`.
+fn resolve_process_cwd(
+    agent_session_id: Option<&str>,
+    primary_cwd: Option<PathBuf>,
+    worktrees: &[WorktreeInfo],
+    additional_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    let members = session_member_dirs(primary_cwd.as_deref(), worktrees, additional_dirs);
+    if members.len() < 2 {
+        return primary_cwd;
+    }
+    let Some(id) = agent_session_id else {
+        return primary_cwd;
+    };
+
+    let pairs: Vec<(String, PathBuf)> = members
+        .into_iter()
+        .map(|(name, dir)| {
+            let label = name
+                .or_else(|| dir.file_name().and_then(|s| s.to_str()).map(String::from))
+                .unwrap_or_else(|| "repo".to_string());
+            (label, dir)
+        })
+        .collect();
+
+    match crate::workspace::ensure_workspace(id, &pairs) {
+        Ok(ws) => Some(ws),
+        Err(e) => {
+            error!("Failed to build multi-repo workspace: {e}");
+            primary_cwd
+        }
+    }
+}
+
+/// The launch cwd for an *existing* session, derived from its persisted
+/// `SessionInfo`: the multi-repo symlink workspace, or the primary repo when
+/// single-repo. Used by the restart and shell-pane paths, which must agree on
+/// the cwd so the companion shell lands exactly where the agent runs.
+fn session_process_cwd(info: &SessionInfo) -> Option<PathBuf> {
+    resolve_process_cwd(
+        info.agent_session_id.as_deref(),
+        info.cwd.clone(),
+        &info.worktrees,
+        &info.additional_dirs,
+    )
 }
 
 #[cfg(test)]
@@ -3349,6 +3441,28 @@ mod tests {
     }
 
     #[test]
+    fn switch_follows_activity_and_repo_group_order() {
+        use crate::session::SessionStatus;
+        // DB order: [webapp/Busy, infra/Attention, webapp/Busy].
+        let mut app = app_with_sessions(3);
+        app.sessions[0].info.repo_display_names = vec!["webapp".to_string()];
+        app.sessions[0].info.status = SessionStatus::Busy;
+        app.sessions[1].info.repo_display_names = vec!["infra".to_string()];
+        app.sessions[1].info.status = SessionStatus::Attention;
+        app.sessions[2].info.repo_display_names = vec!["webapp".to_string()];
+        app.sessions[2].info.status = SessionStatus::Busy;
+
+        // Rendered order: infra group (Attention) first → [1], then webapp → [0, 2].
+        app.active_index = 1;
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 0, "infra/attn → webapp/0");
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 2, "webapp/0 → webapp/2");
+        app.switch_session_forward();
+        assert_eq!(app.active_index, 1, "webapp/2 → wrap to infra/attn");
+    }
+
+    #[test]
     fn switch_with_single_session_is_noop() {
         let mut app = app_with_sessions(1);
         app.active_index = 0;
@@ -3491,16 +3605,66 @@ mod tests {
         app.focus = InputFocus::AutomationEditor;
         assert_eq!(app.cycle_focus_backward(), InputFocus::Automations);
 
-        // j/k navigate, clamped to the list bounds.
+        // j/k navigate within the pane; past either end they loop out into the
+        // session list (the column is circular).
         app.cached_automations = vec![make(1, "a"), make(2, "b")];
         app.focus = InputFocus::Automations;
         app.automation_panel_index = 0;
         app.handle_automations_pane_key(KeyCode::Char('j'));
         assert_eq!(app.automation_panel_index, 1);
-        app.handle_automations_pane_key(KeyCode::Char('j'));
-        assert_eq!(app.automation_panel_index, 1, "clamped at last");
         app.handle_automations_pane_key(KeyCode::Char('k'));
         assert_eq!(app.automation_panel_index, 0);
+        // j past the last automation loops out to the session list.
+        app.automation_panel_index = 1;
+        app.handle_automations_pane_key(KeyCode::Char('j'));
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    #[test]
+    fn session_and_automation_navigation_forms_a_loop() {
+        use crate::session::{AutomationAction, AutomationSchedule};
+        let make = |id: i64, name: &str| Automation {
+            id,
+            name: name.into(),
+            enabled: true,
+            schedule: AutomationSchedule::Once { at: 0 },
+            timezone: None,
+            action: AutomationAction::Send {
+                session_id: SessionId::default(),
+            },
+            prompt: "p".into(),
+            created_at: 0,
+            updated_at: 0,
+            last_run_at: None,
+            next_run_at: None,
+        };
+        let mut app = app_with_sessions(2);
+        app.cached_automations = vec![make(1, "a"), make(2, "b")];
+
+        // Down past the last session drops into the automations pane.
+        app.focus = InputFocus::SessionList;
+        app.active_index = 1; // last session in render order
+        app.handle_session_list_key(KeyCode::Char('j'));
+        assert_eq!(app.focus, InputFocus::Automations);
+        assert_eq!(app.automation_panel_index, 0);
+
+        // Down past the last automation loops to the TOP session.
+        app.handle_automations_pane_key(KeyCode::Char('j')); // a → b
+        assert_eq!(app.automation_panel_index, 1);
+        app.handle_automations_pane_key(KeyCode::Char('j')); // past last → top session
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert_eq!(app.active_index, 0, "looped to first session");
+
+        // Up from the first session loops to the LAST automation.
+        app.handle_session_list_key(KeyCode::Char('k'));
+        assert_eq!(app.focus, InputFocus::Automations);
+        assert_eq!(app.automation_panel_index, 1, "looped to last automation");
+
+        // And k at the top automation hands back up to the last session.
+        app.automation_panel_index = 0;
+        app.handle_automations_pane_key(KeyCode::Char('k'));
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert_eq!(app.active_index, 1, "back to last session");
     }
 
     // --- Role editor tests ---
@@ -3788,13 +3952,17 @@ mod tests {
     }
 
     #[test]
-    fn k_at_first_session_does_not_wrap() {
+    fn k_at_first_session_loops_to_last_automation() {
         let mut app = app_with_sessions(3);
+        add_test_automation(&mut app, "a");
+        add_test_automation(&mut app, "b");
         app.focus = InputFocus::SessionList;
         app.active_index = 0;
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(app.focus, InputFocus::SessionList);
-        assert_eq!(app.active_index, 0);
+        // Above the first session the column loops to the bottom: the last
+        // automation in the pane.
+        assert_eq!(app.focus, InputFocus::Automations);
+        assert_eq!(app.automation_panel_index, 1);
     }
 
     #[test]
@@ -3817,14 +3985,16 @@ mod tests {
     }
 
     #[test]
-    fn j_at_bottom_automation_stays_put() {
-        let mut app = app_with_sessions(1);
+    fn j_at_bottom_automation_loops_to_first_session() {
+        let mut app = app_with_sessions(2);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.active_index = 1;
+        app.automation_panel_index = 0; // the only (= last) automation
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.focus, InputFocus::Automations);
-        assert_eq!(app.automation_panel_index, 0);
+        // Past the last automation the column loops back to the top session.
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert_eq!(app.active_index, 0, "looped to first session");
     }
 
     #[test]
@@ -4317,6 +4487,87 @@ mod tests {
         assert_eq!(shared.additional_dirs[0], PathBuf::from("/repo2"));
         assert_eq!(shared.additional_dirs[1], PathBuf::from("/repo3"));
     }
+
+    // --- multi-repo member resolution + workspace cwd ---
+
+    #[test]
+    fn member_dirs_worktree_first_then_additional() {
+        let worktrees = vec![WorktreeInfo {
+            repo_path: PathBuf::from("/src/webapp"),
+            worktree_path: PathBuf::from("/wt/webapp/feat"),
+            branch: "feat".into(),
+        }];
+        let additional = vec![PathBuf::from("/src/infra")];
+        let members = session_member_dirs(None, &worktrees, &additional);
+
+        // Worktree repo: name from repo_path, dir = the checkout. Then the
+        // non-worktree additional dir.
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].0.as_deref(), Some("webapp"));
+        assert_eq!(members[0].1, PathBuf::from("/wt/webapp/feat"));
+        assert_eq!(members[1].0.as_deref(), Some("infra"));
+        assert_eq!(members[1].1, PathBuf::from("/src/infra"));
+    }
+
+    #[test]
+    fn member_dirs_no_worktrees_uses_cwd_first() {
+        let cwd = PathBuf::from("/src/primary");
+        let additional = vec![PathBuf::from("/src/other")];
+        let members = session_member_dirs(Some(&cwd), &[], &additional);
+
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].1, PathBuf::from("/src/primary"));
+        assert_eq!(members[1].1, PathBuf::from("/src/other"));
+    }
+
+    #[test]
+    fn process_cwd_single_member_is_primary() {
+        let cwd = PathBuf::from("/src/only");
+        let out = resolve_process_cwd(Some("id-1"), Some(cwd.clone()), &[], &[]);
+        assert_eq!(out, Some(cwd));
+    }
+
+    #[test]
+    fn process_cwd_multi_member_is_workspace() {
+        let base = std::env::temp_dir().join("thurbox-procwd-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let _g = crate::paths::TestPathGuard::new(&base);
+
+        let primary = base.join("repo-a");
+        let other = base.join("repo-b");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        let out = resolve_process_cwd(
+            Some("sess-x"),
+            Some(primary.clone()),
+            &[],
+            std::slice::from_ref(&other),
+        )
+        .unwrap();
+
+        // cwd is now a workspace under the workspaces root, with a symlink per repo.
+        let ws_root = crate::paths::workspaces_directory().unwrap();
+        assert!(out.starts_with(&ws_root), "{out:?} not under {ws_root:?}");
+        assert_eq!(std::fs::read_link(out.join("repo-a")).unwrap(), primary);
+        assert_eq!(std::fs::read_link(out.join("repo-b")).unwrap(), other);
+    }
+
+    #[test]
+    fn process_cwd_multi_member_without_session_id_falls_back_to_primary() {
+        // No agent_session_id → no stable name for a workspace → use the primary
+        // repo (and don't touch the filesystem).
+        let primary = PathBuf::from("/src/a");
+        let other = PathBuf::from("/src/b");
+        let out = resolve_process_cwd(
+            None,
+            Some(primary.clone()),
+            &[],
+            std::slice::from_ref(&other),
+        );
+        assert_eq!(out, Some(primary));
+    }
+
     #[test]
     fn set_error_creates_error_status() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());

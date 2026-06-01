@@ -600,11 +600,20 @@ impl Session {
         debug!("Session detached");
     }
 
-    /// Lazily spawn a companion shell pane in the same cwd.
+    /// Lazily spawn a companion shell pane.
     ///
-    /// Uses `$SHELL` (fallback `/bin/sh`) as the command.
-    /// The window name uses `tbs-` prefix to distinguish from the agent's `tb-` windows.
-    pub fn ensure_shell_pane(&mut self, rows: u16, cols: u16) -> Result<()> {
+    /// `cwd` is the directory the shell starts in — the caller passes the
+    /// session's *launch* cwd (the multi-repo symlink workspace when there is
+    /// one, so the shell lands where the agent does), falling back to the
+    /// primary repo (`info.cwd`) when `None`. Uses `$SHELL` (fallback `/bin/sh`)
+    /// as the command. The window name uses the `tbs-` prefix to distinguish
+    /// from the agent's `tb-` windows.
+    pub fn ensure_shell_pane(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<()> {
         if self.shell_pane.is_some() {
             return Ok(());
         }
@@ -613,16 +622,11 @@ impl Session {
         let window_name = crate::agent::tmux::shell_window_name(&self.info.name);
 
         let env = self.env.clone();
+        let cwd = cwd.or(self.info.cwd.as_deref());
 
-        let spawned = self.backend.spawn(
-            &window_name,
-            &shell_cmd,
-            &[],
-            self.info.cwd.as_deref(),
-            &env,
-            rows,
-            cols,
-        )?;
+        let spawned = self
+            .backend
+            .spawn(&window_name, &shell_cmd, &[], cwd, &env, rows, cols)?;
 
         let (state, backend_id) = Self::wire_up(
             rows,

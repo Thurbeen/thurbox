@@ -52,6 +52,14 @@ pub fn delete_session_headless(
             }
         }
 
+        // Tear down the multi-repo symlink workspace (if any). Only the symlinks
+        // are removed — the underlying repos are untouched.
+        if let Some(asid) = &session.agent_session_id {
+            if let Err(e) = crate::workspace::remove_workspace(asid) {
+                tracing::warn!("remove_workspace({asid}) failed: {e}");
+            }
+        }
+
         report.disabled_automations = db
             .disable_send_automations_for_session(session_id)
             .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;

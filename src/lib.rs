@@ -12,3 +12,4 @@ pub mod storage;
 pub mod sync;
 pub mod ui;
 pub mod usage;
+pub mod workspace;

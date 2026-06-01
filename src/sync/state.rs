@@ -68,7 +68,10 @@ pub struct SharedSession {
     /// Working directory (if specified).
     pub cwd: Option<PathBuf>,
 
-    /// Additional directories the agent CLI has access to via `--add-dir`.
+    /// Extra directories (beyond `cwd`) this session spans. When a session has
+    /// more than one member dir, the agent is launched in a per-session symlink
+    /// workspace gathering them all (see `crate::workspace`), so every agent —
+    /// not just those with an `--add-dir`-style flag — can reach them.
     pub additional_dirs: Vec<PathBuf>,
 
     /// Worktree information (if session uses git worktrees).

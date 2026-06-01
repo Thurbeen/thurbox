@@ -206,6 +206,28 @@ your own `[[agents]]` entry to support any CLI — no recompile.
 A session stores only its **agent name**; there are no
 per-session model/permission/prompt/tool knobs.
 
+### Multi-repo sessions (symlink workspace)
+
+A session can span several repositories (the repo picker allows
+multiple). Because agent CLIs differ wildly in how — or whether —
+they accept extra directories, thurbox does **not** pass per-agent
+`--add-dir`-style flags. Instead, when a session has more than one
+member directory it is launched in a per-session **symlink
+workspace**: `~/.local/share/thurbox/workspaces/<agent_session_id>/`
+holds one symlink per repo (worktree checkout or plain dir), and the
+agent process is started there (`cwd` = the workspace). Every agent
+then sees each repo as a subdirectory — fully agent-neutral, no
+`agents.toml` changes.
+
+`SessionInfo.cwd` keeps the **primary** repo (for display / editor /
+git context); the workspace is a spawn-time process-cwd detail,
+derived idempotently on every launch from the persisted members and
+never stored. `workspace::ensure_workspace` / `remove_workspace`
+(`src/workspace.rs`) build and tear it down; the member set is the
+single `App::session_member_dirs` list that also feeds the rendered
+repo names, and `App::resolve_process_cwd` picks workspace-vs-primary.
+Single-repo sessions are unchanged (`cwd` = the repo directly).
+
 ## thurbox-cli
 
 A second binary (`thurbox-cli`) drives the same SQLite-backed,
@@ -235,10 +257,13 @@ keeper, and an OS timer never double-fire.
 In the TUI, automations also get a dedicated **Automations pane**
 beneath the session list (left column). It is always present
 (showing `none` when empty) and is treated as **part of the session
-pane**: it forms one continuous vertical list with the session list,
-so pressing `j` past the last session drops focus into the pane and
-`k` at the top automation hands focus back to the last session. It
-is **not** a separate stop in the `Ctrl+H`/`Ctrl+L` cycle (which
+pane**: it forms one continuous, **circular** vertical list with the
+session list. `j` past the last session drops focus into the pane and
+`k` at the top automation hands focus back to the last session; the
+ends wrap too — `j` past the last automation loops to the **top** of
+the session list, and `k` above the first session loops to the
+**last** automation. It is **not** a separate stop in the
+`Ctrl+H`/`Ctrl+L` cycle (which
 treats it like the session list). Once focused, `j`/`k` select,
 `Space`/`r`/`d` toggle/run/delete the selected automation, and `n`
 creates one.
@@ -365,7 +390,11 @@ app      ← coordinator, imports all modules
 - **`ui/`** — Pure rendering functions. `layout.rs` computes
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (session
-  list with repo/branch display), `terminal_view`, `info_panel`,
+  list with repo/branch display; `compute_session_order` is the
+  single comparator that orders sessions by activity/status and
+  groups them by repo under headers — shared with `App`'s
+  `Ctrl+J/K` navigation so the two never drift),
+  `terminal_view`, `info_panel`,
   `status_bar`, `repo_picker_modal` (repo selection with
   worktree toggle). `selection.rs` handles mouse-drag text
   selection, `links.rs` detects clickable URLs for Ctrl+Click.

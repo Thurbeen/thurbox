@@ -246,6 +246,19 @@ impl App {
             self.refresh_automation_view();
             return;
         }
+        // `j`/Down past the last automation (or in an empty pane) loops around to
+        // the TOP of the session list, so sessions+automations form one circular
+        // column.
+        if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
+            if count == 0 || self.automation_panel_index + 1 >= count {
+                self.focus = InputFocus::SessionList;
+                self.select_first_session();
+            } else {
+                self.automation_panel_index += 1;
+            }
+            self.refresh_automation_view();
+            return;
+        }
         // `Enter`/`e` focuses the central-pane editor (like `Enter` on a session
         // focuses its terminal); on an empty pane it starts a new automation.
         if matches!(code, KeyCode::Enter | KeyCode::Char('e')) {
@@ -265,14 +278,6 @@ impl App {
         }
         let id = self.cached_automations[self.automation_panel_index].id;
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                // Stay put at the bottom — the automations pane is the last
-                // section of the left column.
-                if self.automation_panel_index + 1 < count {
-                    self.automation_panel_index += 1;
-                    self.refresh_automation_view();
-                }
-            }
             KeyCode::Char(' ') => {
                 self.toggle_automation_by_id(id);
                 self.sync_automation_editor();
@@ -421,7 +426,7 @@ impl App {
         }
     }
 
-    fn handle_session_list_key(&mut self, code: KeyCode) {
+    pub(crate) fn handle_session_list_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 // Past the last session, flow down into the automations pane so
@@ -435,8 +440,13 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                // Top of the column — stay put (don't wrap around).
-                if !self.active_is_first_in_order() {
+                // Above the first session, loop around to the bottom of the
+                // column: the last automation (its pane is always present).
+                if self.active_is_first_in_order() {
+                    self.focus = InputFocus::Automations;
+                    self.automation_panel_index = self.cached_automations.len().saturating_sub(1);
+                    self.refresh_automation_view();
+                } else {
                     self.switch_session_backward();
                 }
             }

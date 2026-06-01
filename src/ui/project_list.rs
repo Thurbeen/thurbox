@@ -57,40 +57,183 @@ impl SessionMatch {
     }
 }
 
-/// Display-ordered view of the session list with admin sessions pinned to the
-/// top. All fields are parallel arrays aligned to the rendered order.
+/// Rank a session status for ordering. Lower ranks sort closer to the top:
+/// sessions that need you first, then running, then exited, then errored.
+///
+/// `Busy` and `Waiting` share one **running** rank on purpose. A live agent
+/// flickers across the ~1s "recent output" boundary every tick (`Busy` while
+/// emitting, `Waiting` in the gaps), so ranking them apart would make active
+/// sessions churn up and down the list endlessly. The status *dot* still shows
+/// the distinction; only the ordering ignores it.
+fn status_rank(status: crate::session::SessionStatus) -> u8 {
+    use crate::session::SessionStatus::{Attention, Busy, Error, Idle, Waiting};
+    match status {
+        Attention => 0,
+        Busy | Waiting => 1,
+        Idle => 2,
+        Error => 3,
+    }
+}
+
+/// Fallback label/key for a session that spans no repos.
+const NO_REPO_GROUP: &str = "(no repo)";
+
+/// The canonical grouping **key** for a non-admin session: the *set* of repos it
+/// spans (sorted + de-duplicated), so sessions touching the same repos cluster
+/// together regardless of selection order (`{infra, webapp}` == `{webapp,
+/// infra}`). Multi-repo sessions thus form their own group, distinct from the
+/// single-repo groups of their constituent repos. Falls back to a shared
+/// `(no repo)` bucket.
+///
+/// The `\0` join separator can't occur in a repo name, so distinct sets never
+/// collide. This is only a map key — never displayed (see [`group_display`]).
+fn group_key(info: &SessionInfo) -> String {
+    if info.repo_display_names.is_empty() {
+        return NO_REPO_GROUP.to_string();
+    }
+    let mut names: Vec<&str> = info.repo_display_names.iter().map(String::as_str).collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join("\0")
+}
+
+/// The header **label** shown for a session's repo group: its repos joined with
+/// ` + ` in the session's natural order (primary repo first), de-duplicated.
+/// Falls back to `(no repo)`.
+fn group_display(info: &SessionInfo) -> String {
+    if info.repo_display_names.is_empty() {
+        return NO_REPO_GROUP.to_string();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let parts: Vec<&str> = info
+        .repo_display_names
+        .iter()
+        .map(String::as_str)
+        .filter(|n| seen.insert(*n))
+        .collect();
+    parts.join(" + ")
+}
+
+/// Canonical render order for the session list, shared by the rendering widget
+/// (`OrderedSessions`) and keyboard navigation (`App::render_order_indices`) so
+/// the two never drift.
+///
+/// Ordering (top → bottom):
+///   1. Admin session(s) pinned at the top, headerless.
+///   2. Repo groups, each ordered by its most-urgent member (and then by name),
+///      so a repo holding an `Attention` session bubbles above a merely-running
+///      one. Each group's first row carries the repo header label.
+///   3. Within a group: by status rank, then original index for stability.
+///
+/// The order is intentionally a pure function of *status* and *stable insertion
+/// order* — never of live recency. Recency (`millis_since_last_output`) changes
+/// every tick for active sessions, so using it as a sort key made `Busy`
+/// sessions reorder endlessly. Status changes are discrete and meaningful
+/// (→`Attention`, →`Idle`), so the list only re-sorts when something real
+/// happens. See [`status_rank`] for why `Busy`/`Waiting` are not split.
+pub struct SessionOrder {
+    /// Input indices in render order.
+    pub order: Vec<usize>,
+    /// Parallel to `order`: `Some(label)` on each group's first row, else `None`.
+    /// Admin rows are always `None` (no header).
+    pub headers: Vec<Option<String>>,
+}
+
+pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
+    struct Group {
+        /// Header label, or `None` for the admin bucket (rendered headerless).
+        label: Option<String>,
+        is_admin: bool,
+        members: Vec<usize>,
+    }
+
+    let mut groups: Vec<Group> = Vec::new();
+    let mut admin_idx: Option<usize> = None;
+    let mut key_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for (i, info) in sessions.iter().enumerate() {
+        let gi = if info.is_admin {
+            *admin_idx.get_or_insert_with(|| {
+                groups.push(Group {
+                    label: None,
+                    is_admin: true,
+                    members: Vec::new(),
+                });
+                groups.len() - 1
+            })
+        } else {
+            // Group by the canonical repo-set key; the header shows the
+            // natural-order ` + ` join from the first session in the group.
+            *key_to_idx.entry(group_key(info)).or_insert_with(|| {
+                groups.push(Group {
+                    label: Some(group_display(info)),
+                    is_admin: false,
+                    members: Vec::new(),
+                });
+                groups.len() - 1
+            })
+        };
+        groups[gi].members.push(i);
+    }
+
+    // Within each group: status rank, then original index (stable — no recency).
+    for g in &mut groups {
+        g.members
+            .sort_by_key(|&i| (status_rank(sessions[i].status), i));
+    }
+
+    // Groups: admin first; then by most-urgent member (min status rank), then
+    // label for determinism. No recency term, so active groups don't churn.
+    groups.sort_by(|a, b| {
+        let key = |g: &Group| {
+            let rank = g
+                .members
+                .iter()
+                .map(|&i| status_rank(sessions[i].status))
+                .min()
+                .unwrap_or(u8::MAX);
+            (!g.is_admin, rank, g.label.clone().unwrap_or_default())
+        };
+        key(a).cmp(&key(b))
+    });
+
+    let mut order = Vec::with_capacity(sessions.len());
+    let mut headers = Vec::with_capacity(sessions.len());
+    for g in &groups {
+        for (j, &i) in g.members.iter().enumerate() {
+            order.push(i);
+            headers.push(if j == 0 { g.label.clone() } else { None });
+        }
+    }
+
+    SessionOrder { order, headers }
+}
+
+/// Display-ordered view of the session list. All fields are parallel arrays
+/// aligned to the rendered order produced by [`compute_session_order`].
 pub struct OrderedSessions<'a> {
     pub sessions: Vec<&'a SessionInfo>,
     pub elapsed_ms: Vec<u64>,
     pub match_positions: Vec<Option<SessionMatch>>,
     pub active_index: usize,
-    /// Index of the first non-admin row, or `None` if no non-admin sessions.
-    pub first_non_admin_index: Option<usize>,
+    /// Parallel to `sessions`: `Some(label)` on each repo group's first row,
+    /// used to render a subtle header above it. `None` elsewhere.
+    pub headers: Vec<Option<String>>,
 }
 
 impl<'a> OrderedSessions<'a> {
-    /// Reorder the parallel arrays so admin sessions come first (stable), and
-    /// remap `active_index` and `match_positions` to follow the new order.
+    /// Reorder the parallel arrays into render order, remapping `active_index`
+    /// and `match_positions` to follow it.
     pub fn new(
         sessions: &[&'a SessionInfo],
         elapsed_ms: &[u64],
         match_positions: &[Option<SessionMatch>],
         active_index: usize,
     ) -> Self {
-        let n = sessions.len();
-        let mut order: Vec<usize> = (0..n).collect();
-        // Admin sessions stay pinned at the top (preserving the divider below
-        // them); within the non-admin group, sessions needing attention float
-        // to the top so finished/blocked agents are seen first. Stable sort
-        // keeps original order among equal keys.
-        order.sort_by_key(|&i| {
-            (
-                !sessions[i].is_admin,
-                sessions[i].status != crate::session::SessionStatus::Attention,
-            )
-        });
+        // Ordering depends only on status + stable index, never on `elapsed_ms`
+        // (which is still used below for the per-row elapsed display).
+        let SessionOrder { order, headers } = compute_session_order(sessions);
 
-        let first_non_admin_index = order.iter().position(|&i| !sessions[i].is_admin);
         let ordered_sessions = order.iter().map(|&i| sessions[i]).collect();
         let ordered_elapsed = order.iter().map(|&i| elapsed_ms[i]).collect();
         let ordered_matches = order
@@ -104,7 +247,7 @@ impl<'a> OrderedSessions<'a> {
             elapsed_ms: ordered_elapsed,
             match_positions: ordered_matches,
             active_index: new_active,
-            first_non_admin_index,
+            headers,
         }
     }
 }
@@ -136,10 +279,9 @@ pub struct LeftPanelState<'a> {
     pub match_count: usize,
     /// Total number of sessions (for search count display).
     pub total_count: usize,
-    /// Index of the first non-admin session in the ordered list. When `Some`
-    /// and > 0, a subtle divider is rendered above that row to separate admin
-    /// sessions (pinned at the top) from the rest.
-    pub first_non_admin_index: Option<usize>,
+    /// Parallel to `sessions`: `Some(label)` on each repo group's first row,
+    /// rendered as a subtle header above that row. `None` elsewhere.
+    pub headers: &'a [Option<String>],
 }
 
 pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelState<'_>) {
@@ -178,7 +320,7 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.session_match_positions,
         state.session_search_active,
         state.search_query,
-        state.first_non_admin_index,
+        state.headers,
     );
 
     if let Some(area) = search_area {
@@ -433,7 +575,7 @@ fn render_session_section(
     match_positions: &[Option<SessionMatch>],
     search_active: bool,
     search_query: &str,
-    first_non_admin_index: Option<usize>,
+    headers: &[Option<String>],
 ) {
     let mut block = focus_block(" Sessions ", level);
 
@@ -458,6 +600,13 @@ fn render_session_section(
     // Available width inside the block (subtract 2 for borders)
     let inner_width = area.width.saturating_sub(2) as usize;
 
+    // Header row that each row belongs to, so a group's header highlights
+    // whenever *any* of its members is the active row — not just the first.
+    let group_of = header_group_of(headers);
+    let active_group = show_selection
+        .then(|| group_of.get(active_index).copied())
+        .flatten();
+
     let mut item_heights: Vec<u16> = Vec::with_capacity(sessions.len());
 
     let items: Vec<ListItem> = sessions
@@ -481,10 +630,13 @@ fn render_session_section(
                 build_session_line2(info, session_match, is_dimmed, search_query),
             ];
 
-            // Prepend a subtle divider above the first non-admin session when
-            // admin sessions are pinned above it.
-            if first_non_admin_index == Some(i) && i > 0 {
-                item_lines.insert(0, divider_line(inner_width));
+            // Prepend a subtle repo-group header above the first session of
+            // each group. The first non-admin header also separates the pinned
+            // admin block from the rest. The header is highlighted when the
+            // active row lives anywhere in its group.
+            if let Some(Some(label)) = headers.get(i) {
+                let selected = active_group == Some(i);
+                item_lines.insert(0, group_header_line(label, inner_width, selected));
             }
 
             item_heights.push(item_lines.len() as u16);
@@ -523,13 +675,39 @@ fn render_empty_sessions(frame: &mut Frame, area: Rect, block: ratatui::widgets:
     frame.render_widget(text, area);
 }
 
-/// A subtle full-width divider used above the first non-admin session.
-fn divider_line(inner_width: usize) -> Line<'static> {
-    let divider_width = inner_width.max(1);
-    Line::from(Span::styled(
-        "\u{2500}".repeat(divider_width),
-        Style::default().fg(Theme::text_muted()),
-    ))
+/// For each row, the index of the group header row it belongs to. Lets a group's
+/// header highlight whenever *any* member row is the active one, not just the
+/// group's first row. Rows before the first header (e.g. the pinned admin block)
+/// map to row 0, which is harmless since those rows carry no header.
+fn header_group_of(headers: &[Option<String>]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(headers.len());
+    let mut current = 0;
+    for (i, h) in headers.iter().enumerate() {
+        if h.is_some() {
+            current = i;
+        }
+        out.push(current);
+    }
+    out
+}
+
+/// A full-width repo-group header: `── label ──────────`. Muted by default;
+/// painted with the selection background when the active row is in its group.
+fn group_header_line(label: &str, inner_width: usize, selected: bool) -> Line<'static> {
+    let style = if selected {
+        Style::default()
+            .bg(Theme::selection_bg())
+            .fg(Theme::selection_fg())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Theme::text_muted())
+    };
+    let mut text = format!("\u{2500}\u{2500} {label} ");
+    let used = text.chars().count();
+    if inner_width > used {
+        text.push_str(&"\u{2500}".repeat(inner_width - used));
+    }
+    Line::from(Span::styled(text, style))
 }
 
 /// Resolve the right-aligned live status text for a session row. Priority:
@@ -1118,7 +1296,12 @@ mod tests {
         let names: Vec<_> = ordered.sessions.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["admin-a", "admin-b", "normal-1", "normal-2"]);
         assert_eq!(ordered.elapsed_ms, vec![20, 40, 10, 30]);
-        assert_eq!(ordered.first_non_admin_index, Some(2));
+        // Admin rows are headerless; the single non-admin "(no repo)" group
+        // carries its header on its first row.
+        assert_eq!(
+            ordered.headers,
+            vec![None, None, Some("(no repo)".to_string()), None]
+        );
     }
 
     #[test]
@@ -1138,22 +1321,22 @@ mod tests {
     }
 
     #[test]
-    fn ordered_sessions_no_admins_has_no_divider_beyond_zero() {
+    fn ordered_sessions_no_admins_header_on_first_row() {
         let n1 = info("n1", false);
         let n2 = info("n2", false);
         let sessions = vec![&n1, &n2];
         let ordered = OrderedSessions::new(&sessions, &[0, 0], &[None, None], 0);
-        // Divider is gated by `Some(i) && i > 0`; with no admins the index is 0.
-        assert_eq!(ordered.first_non_admin_index, Some(0));
+        // Single "(no repo)" group: header on row 0, none after.
+        assert_eq!(ordered.headers, vec![Some("(no repo)".to_string()), None]);
     }
 
     #[test]
-    fn ordered_sessions_all_admins_has_no_non_admin_index() {
+    fn ordered_sessions_all_admins_have_no_headers() {
         let a1 = info("a1", true);
         let a2 = info("a2", true);
         let sessions = vec![&a1, &a2];
         let ordered = OrderedSessions::new(&sessions, &[0, 0], &[None, None], 0);
-        assert_eq!(ordered.first_non_admin_index, None);
+        assert_eq!(ordered.headers, vec![None, None]);
     }
 
     #[test]
@@ -1162,7 +1345,7 @@ mod tests {
         let ordered = OrderedSessions::new(&sessions, &[], &[], 0);
         assert!(ordered.sessions.is_empty());
         assert_eq!(ordered.active_index, 0);
-        assert_eq!(ordered.first_non_admin_index, None);
+        assert!(ordered.headers.is_empty());
     }
 
     #[test]
@@ -1186,6 +1369,198 @@ mod tests {
             ordered.match_positions[1].as_ref().map(|m| m.name.clone()),
             Some(vec![0, 1])
         );
+    }
+
+    // --- compute_session_order (grouping + activity) ---
+
+    fn info_repo(name: &str, repo: &str, status: SessionStatus) -> SessionInfo {
+        info_repos(name, &[repo], status)
+    }
+
+    fn info_repos(name: &str, repos: &[&str], status: SessionStatus) -> SessionInfo {
+        let mut s = SessionInfo::new(name.to_string());
+        s.status = status;
+        s.repo_display_names = repos.iter().map(|r| r.to_string()).collect();
+        s
+    }
+
+    fn order_names<'a>(sessions: &[&'a SessionInfo]) -> Vec<&'a str> {
+        compute_session_order(sessions)
+            .order
+            .into_iter()
+            .map(|i| sessions[i].name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn groups_keep_same_repo_sessions_together() {
+        let a = info_repo("a", "webapp", SessionStatus::Waiting);
+        let b = info_repo("b", "infra", SessionStatus::Waiting);
+        let c = info_repo("c", "webapp", SessionStatus::Waiting);
+        let sessions = vec![&a, &b, &c];
+        // Equal status: groups ordered by label ("infra" < "webapp"),
+        // members of each group adjacent.
+        let names = order_names(&sessions);
+        assert_eq!(names, vec!["b", "a", "c"]);
+    }
+
+    #[test]
+    fn group_with_more_urgent_member_bubbles_up() {
+        // "infra" only has a Waiting session; "webapp" has an Attention one, so
+        // the webapp group sorts above infra even though infra sorts first by name.
+        let waiting = info_repo("infra-1", "infra", SessionStatus::Waiting);
+        let attn = info_repo("web-attn", "webapp", SessionStatus::Attention);
+        let busy = info_repo("web-busy", "webapp", SessionStatus::Busy);
+        let sessions = vec![&waiting, &attn, &busy];
+        let names = order_names(&sessions);
+        // webapp group first (has Attention), ordered Attention then running within.
+        assert_eq!(names, vec!["web-attn", "web-busy", "infra-1"]);
+    }
+
+    #[test]
+    fn busy_and_waiting_share_a_rank_and_keep_stable_order() {
+        // A live agent flickers Busy↔Waiting every tick; that must not reorder
+        // the list. Both rank as "running", so order stays the insertion order.
+        let a = info_repo("a", "webapp", SessionStatus::Busy);
+        let b = info_repo("b", "webapp", SessionStatus::Waiting);
+        let c = info_repo("c", "webapp", SessionStatus::Busy);
+        let sessions = vec![&a, &b, &c];
+        assert_eq!(order_names(&sessions), vec!["a", "b", "c"]);
+
+        // Flip a's status Busy→Waiting and b's Waiting→Busy: order is unchanged.
+        let a2 = info_repo("a", "webapp", SessionStatus::Waiting);
+        let b2 = info_repo("b", "webapp", SessionStatus::Busy);
+        let flipped = vec![&a2, &b2, &c];
+        assert_eq!(order_names(&flipped), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn admin_pinned_above_all_repo_groups_headerless() {
+        let mut admin = info_repo("admin", "webapp", SessionStatus::Idle);
+        admin.is_admin = true;
+        let attn = info_repo("web-attn", "webapp", SessionStatus::Attention);
+        let sessions = vec![&attn, &admin];
+        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let names: Vec<_> = order.iter().map(|&i| sessions[i].name.as_str()).collect();
+        // Admin first despite being Idle and despite the attention session.
+        assert_eq!(names, vec!["admin", "web-attn"]);
+        // Admin row headerless; the webapp group header sits on its first row.
+        assert_eq!(headers, vec![None, Some("webapp".to_string())]);
+    }
+
+    #[test]
+    fn headers_label_only_first_row_of_each_group() {
+        let a = info_repo("a", "webapp", SessionStatus::Busy);
+        let b = info_repo("b", "webapp", SessionStatus::Busy);
+        let c = info_repo("c", "infra", SessionStatus::Attention);
+        let sessions = vec![&a, &b, &c];
+        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let labelled: Vec<(&str, Option<String>)> = order
+            .iter()
+            .zip(headers.iter())
+            .map(|(&i, h)| (sessions[i].name.as_str(), h.clone()))
+            .collect();
+        // infra (Attention) group first with its header, then webapp group.
+        assert_eq!(
+            labelled,
+            vec![
+                ("c", Some("infra".to_string())),
+                ("a", Some("webapp".to_string())),
+                ("b", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_repo_sessions_share_one_group() {
+        let a = info("a", false);
+        let b = info("b", false);
+        let sessions = vec![&a, &b];
+        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        assert_eq!(order, vec![0, 1]);
+        assert_eq!(headers, vec![Some("(no repo)".to_string()), None]);
+    }
+
+    #[test]
+    fn multi_repo_session_forms_its_own_composite_group() {
+        // A {webapp}, B {webapp, infra}, C {infra}: three distinct groups, the
+        // multi-repo session is NOT folded into either single-repo group.
+        let a = info_repo("a", "webapp", SessionStatus::Waiting);
+        let b = info_repos("b", &["webapp", "infra"], SessionStatus::Waiting);
+        let c = info_repo("c", "infra", SessionStatus::Waiting);
+        let sessions = vec![&a, &b, &c];
+
+        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let labelled: Vec<(&str, Option<String>)> = order
+            .iter()
+            .zip(headers.iter())
+            .map(|(&i, h)| (sessions[i].name.as_str(), h.clone()))
+            .collect();
+        // Groups ordered by label: "infra" < "webapp" < "webapp + infra".
+        assert_eq!(
+            labelled,
+            vec![
+                ("c", Some("infra".to_string())),
+                ("a", Some("webapp".to_string())),
+                ("b", Some("webapp + infra".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_repos_collapse_to_one_group() {
+        // A repo set with the same repo twice (e.g. two worktrees of one repo)
+        // groups under that single repo, alongside a plain single-repo session.
+        let multi = info_repos("multi", &["webapp", "webapp"], SessionStatus::Waiting);
+        let single = info_repo("single", "webapp", SessionStatus::Waiting);
+        let sessions = vec![&multi, &single];
+
+        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        // Same canonical key → one group; header is the de-duplicated display.
+        assert_eq!(order, vec![0, 1]);
+        assert_eq!(headers, vec![Some("webapp".to_string()), None]);
+    }
+
+    #[test]
+    fn multi_repo_grouping_is_order_independent() {
+        // Same repo *set*, different selection order → one group; the header
+        // reflects the first session's natural order.
+        let b = info_repos("b", &["webapp", "infra"], SessionStatus::Waiting);
+        let d = info_repos("d", &["infra", "webapp"], SessionStatus::Waiting);
+        let sessions = vec![&b, &d];
+
+        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        assert_eq!(
+            order
+                .iter()
+                .map(|&i| sessions[i].name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "d"]
+        );
+        // Single composite group, header from the first member ("b").
+        assert_eq!(headers, vec![Some("webapp + infra".to_string()), None]);
+    }
+
+    // --- header_group_of (group-header highlight membership) ---
+
+    #[test]
+    fn header_group_of_maps_each_row_to_its_header() {
+        // Two groups: rows 0-1 under header 0, rows 2-4 under header 2.
+        let headers = vec![
+            Some("a".to_string()),
+            None,
+            Some("b".to_string()),
+            None,
+            None,
+        ];
+        assert_eq!(header_group_of(&headers), vec![0, 0, 2, 2, 2]);
+    }
+
+    #[test]
+    fn header_group_of_admin_rows_before_first_header_map_to_zero() {
+        // Admin rows (no header) precede the first group header at row 2.
+        let headers = vec![None, None, Some("repo".to_string()), None];
+        assert_eq!(header_group_of(&headers), vec![0, 0, 2, 2]);
     }
 
     // --- visible_count_from_heights ---
