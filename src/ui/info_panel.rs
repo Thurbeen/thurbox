@@ -35,6 +35,7 @@ pub fn render_info_panel(
     info: &SessionInfo,
     metrics: Option<&SystemMetrics>,
     automations: &[AutomationEntry],
+    usage: Option<&crate::session::AgentUsage>,
 ) {
     let block = Block::default()
         .title(" Info ")
@@ -75,9 +76,27 @@ pub fn render_info_panel(
             Span::styled(activity, Style::default().fg(Theme::text_secondary())),
         ]));
     }
+    // Latest signal the agent pushed (OSC 9/777 notification). Highlighted while
+    // the session is in the attention state, muted otherwise.
+    if let Some(signal) = info.notification.as_deref() {
+        let value_style = if info.status == crate::session::SessionStatus::Attention {
+            Style::default().fg(super::status_color(info.status))
+        } else {
+            Style::default().fg(Theme::text_muted())
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Signal:   ", Theme::label()),
+            Span::styled(signal, value_style),
+        ]));
+    }
 
     // ── Repos ──
     append_repos_section(&mut lines, info);
+
+    // ── Git change summary (real git state of the worktree) ──
+    if let Some(ref git) = info.git_stats {
+        append_git_section(&mut lines, git);
+    }
 
     // ── Session CPU/RAM ──
     if let Some(m) = metrics {
@@ -98,6 +117,13 @@ pub fn render_info_panel(
     // ── Agent section (Claude CLI metrics) ──
     if let Some(ref metrics) = info.agent_metrics {
         append_agent_section(&mut lines, metrics, inner_width);
+    }
+
+    // ── Usage / rate-limits (account-level, the `/usage` equivalent) ──
+    if let Some(u) = usage {
+        if !u.is_empty() {
+            append_usage_section(&mut lines, u, inner_width);
+        }
     }
 
     // ── System Resources section (global CPU/RAM) ──
@@ -155,6 +181,34 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
     };
     lines.push(Line::from(Span::styled(header, Theme::section_header())));
 
+    // Cost (headline number, only when the agent reports a non-zero spend).
+    if let Some(cost) = metrics.total_cost_usd {
+        if cost > 0.0 {
+            lines.push(Line::from(vec![
+                Span::styled("Cost:    ", Theme::label()),
+                Span::styled(format_cost(cost), Style::default().fg(Theme::accent())),
+            ]));
+        }
+    }
+
+    // Elapsed wall time, with API time as a muted aside when present.
+    if let Some(ms) = metrics.total_duration_ms {
+        let mut spans = vec![
+            Span::styled("Time:    ", Theme::label()),
+            Span::styled(
+                format_duration(ms),
+                Style::default().fg(Theme::text_primary()),
+            ),
+        ];
+        if let Some(api_ms) = metrics.total_api_duration_ms.filter(|&v| v > 0) {
+            spans.push(Span::styled(
+                format!("  (api {})", format_duration(api_ms)),
+                Style::default().fg(Theme::text_muted()),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
     // Tokens
     if metrics.total_input_tokens.is_some() || metrics.total_output_tokens.is_some() {
         let input = metrics
@@ -174,9 +228,14 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
         ]));
     }
 
-    // Context window gauge
+    // Context window gauge. When the window size is known, show the gauge as
+    // used/total tokens rather than a bare percentage.
     if let Some(pct) = metrics.used_percentage {
-        let gauge = render_gauge_lines("Context", pct as f32, None, inner_width);
+        let suffix = metrics.context_window_size.map(|size| {
+            let used = (size as f64 * pct as f64 / 100.0).round() as u64;
+            format!("{}/{}", format_tokens(used), format_tokens(size))
+        });
+        let gauge = render_gauge_lines("Context", pct as f32, suffix, inner_width);
         lines.extend(gauge);
     }
 
@@ -266,6 +325,116 @@ fn append_repos_section<'a>(lines: &mut Vec<Line<'a>>, info: &'a SessionInfo) {
     }
 }
 
+/// Append the git change-summary lines (uncommitted diff + sync state).
+fn append_git_section(lines: &mut Vec<Line<'_>>, git: &crate::session::GitStats) {
+    // Changes line: only when there is something uncommitted.
+    if git.files_changed > 0 || git.dirty {
+        let files = if git.files_changed == 1 {
+            "1 file".to_string()
+        } else {
+            format!("{} files", git.files_changed)
+        };
+        let mut spans = vec![
+            Span::styled("Changes: ", Theme::label()),
+            Span::styled(files, Style::default().fg(Theme::text_primary())),
+            Span::raw(" "),
+            Span::styled(
+                format!("+{}", git.insertions),
+                Style::default().fg(Theme::status_busy()),
+            ),
+            Span::styled(" / ", Style::default().fg(Theme::text_muted())),
+            Span::styled(
+                format!("-{}", git.deletions),
+                Style::default().fg(Theme::status_error()),
+            ),
+        ];
+        if git.dirty && git.files_changed == 0 {
+            spans.push(Span::styled(
+                " dirty",
+                Style::default().fg(Theme::text_muted()),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // Sync line: only when ahead of / behind the base branch.
+    if git.ahead > 0 || git.behind > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("Sync:    ", Theme::label()),
+            Span::styled(
+                format!("↑{} ↓{}", git.ahead, git.behind),
+                Style::default().fg(Theme::text_muted()),
+            ),
+        ]));
+    }
+}
+
+/// Current Unix time in seconds (for usage reset countdowns).
+fn epoch_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Format a seconds countdown compactly: `"now"`, `"5m"`, `"1h 12m"`, `"4d 3h"`.
+fn format_countdown_secs(secs: u64) -> String {
+    if secs == 0 {
+        return "now".to_string();
+    }
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    let mins = (secs % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else if mins > 0 {
+        format!("{mins}m")
+    } else {
+        "<1m".to_string()
+    }
+}
+
+/// Append the account-level usage / rate-limit section (the `/usage`
+/// equivalent): one gauge per window with used-% and a reset countdown.
+fn append_usage_section(
+    lines: &mut Vec<Line<'_>>,
+    usage: &crate::session::AgentUsage,
+    width: usize,
+) {
+    lines.push(separator(width));
+    let header = match &usage.plan {
+        Some(plan) => format!("Usage ({plan})"),
+        None => "Usage".to_string(),
+    };
+    lines.push(Line::from(Span::styled(header, Theme::section_header())));
+
+    if usage.windows.is_empty() {
+        if let Some(note) = &usage.note {
+            lines.push(Line::from(Span::styled(
+                note.clone(),
+                Style::default().fg(Theme::text_muted()),
+            )));
+        }
+        return;
+    }
+
+    let now = epoch_now_secs();
+    for w in &usage.windows {
+        let suffix = match w.resets_at {
+            Some(reset) => format!(
+                "{:.0}%  {}",
+                w.used_percent,
+                format_countdown_secs(reset.saturating_sub(now))
+            ),
+            None => format!("{:.0}%", w.used_percent),
+        };
+        let gauge = render_gauge_lines(&w.label, w.used_percent, Some(suffix), width);
+        lines.extend(gauge);
+    }
+}
+
 fn separator(width: usize) -> Line<'static> {
     Line::from(Span::styled(
         "─".repeat(width),
@@ -335,6 +504,34 @@ fn human_bytes(bytes: u64) -> (f64, f64, &'static str) {
         (b / MB, MB, "MB")
     } else {
         (b / KB, KB, "KB")
+    }
+}
+
+/// Format a USD cost like `$0.0423` (4 dp below $1, 2 dp at/above $1).
+fn format_cost(usd: f64) -> String {
+    if usd >= 1.0 {
+        format!("${usd:.2}")
+    } else {
+        format!("${usd:.4}")
+    }
+}
+
+/// Format a millisecond duration as a compact human string:
+/// `"820ms"`, `"45s"`, `"1m 23s"`, `"2h 05m"`.
+fn format_duration(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
+    }
+    let total_secs = ms / 1_000;
+    let secs = total_secs % 60;
+    let mins = (total_secs / 60) % 60;
+    let hours = total_secs / 3_600;
+    if hours > 0 {
+        format!("{hours}h {mins:02}m")
+    } else if mins > 0 {
+        format!("{mins}m {secs:02}s")
+    } else {
+        format!("{secs}s")
     }
 }
 
@@ -511,5 +708,167 @@ mod tests {
     fn format_tokens_millions() {
         assert_eq!(format_tokens(1_000_000), "1.0M");
         assert_eq!(format_tokens(2_500_000), "2.5M");
+    }
+
+    // ── format_cost tests ──
+
+    #[test]
+    fn format_cost_sub_dollar_uses_four_dp() {
+        assert_eq!(format_cost(0.0423), "$0.0423");
+        assert_eq!(format_cost(0.0), "$0.0000");
+    }
+
+    #[test]
+    fn format_cost_dollar_and_above_uses_two_dp() {
+        assert_eq!(format_cost(1.0), "$1.00");
+        assert_eq!(format_cost(12.345), "$12.35");
+    }
+
+    // ── format_duration tests ──
+
+    #[test]
+    fn format_duration_millis() {
+        assert_eq!(format_duration(0), "0ms");
+        assert_eq!(format_duration(820), "820ms");
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        assert_eq!(format_duration(1_000), "1s");
+        assert_eq!(format_duration(45_000), "45s");
+    }
+
+    #[test]
+    fn format_duration_minutes() {
+        assert_eq!(format_duration(83_000), "1m 23s");
+        assert_eq!(format_duration(600_000), "10m 00s");
+    }
+
+    #[test]
+    fn format_duration_hours() {
+        assert_eq!(format_duration(3_600_000), "1h 00m");
+        assert_eq!(format_duration(7_500_000), "2h 05m");
+    }
+
+    // ── append_git_section tests ──
+
+    fn render_git(git: &crate::session::GitStats) -> String {
+        let mut lines: Vec<Line> = Vec::new();
+        append_git_section(&mut lines, git);
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn git_section_shows_changes_and_sync() {
+        let git = crate::session::GitStats {
+            files_changed: 3,
+            insertions: 120,
+            deletions: 8,
+            dirty: true,
+            ahead: 2,
+            behind: 0,
+        };
+        let out = render_git(&git);
+        assert!(out.contains("Changes:"));
+        assert!(out.contains("3 files"));
+        assert!(out.contains("+120"));
+        assert!(out.contains("-8"));
+        assert!(out.contains("Sync:"));
+        assert!(out.contains("↑2 ↓0"));
+    }
+
+    #[test]
+    fn git_section_singular_file_and_no_sync() {
+        let git = crate::session::GitStats {
+            files_changed: 1,
+            insertions: 5,
+            deletions: 0,
+            dirty: true,
+            ahead: 0,
+            behind: 0,
+        };
+        let out = render_git(&git);
+        assert!(out.contains("1 file"));
+        assert!(!out.contains("files"));
+        assert!(!out.contains("Sync:"));
+    }
+
+    #[test]
+    fn git_section_clean_repo_is_empty() {
+        let git = crate::session::GitStats::default();
+        assert_eq!(render_git(&git), "");
+    }
+
+    // ── usage section tests ──
+
+    #[test]
+    fn format_countdown_variants() {
+        assert_eq!(format_countdown_secs(0), "now");
+        assert_eq!(format_countdown_secs(30), "<1m");
+        assert_eq!(format_countdown_secs(5 * 60), "5m");
+        assert_eq!(format_countdown_secs(3600 + 12 * 60), "1h 12m");
+        assert_eq!(format_countdown_secs(4 * 86400 + 3 * 3600), "4d 3h");
+    }
+
+    fn render_usage(u: &crate::session::AgentUsage) -> String {
+        let mut lines: Vec<Line> = Vec::new();
+        append_usage_section(&mut lines, u, 24);
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn usage_section_renders_plan_and_windows() {
+        let u = crate::session::AgentUsage {
+            windows: vec![
+                crate::session::UsageWindow {
+                    label: "5h".into(),
+                    used_percent: 42.0,
+                    resets_at: None,
+                },
+                crate::session::UsageWindow {
+                    label: "Week".into(),
+                    used_percent: 18.0,
+                    resets_at: None,
+                },
+            ],
+            plan: Some("max".into()),
+            note: None,
+        };
+        let out = render_usage(&u);
+        assert!(out.contains("Usage (max)"));
+        assert!(out.contains("5h"));
+        assert!(out.contains("42%"));
+        assert!(out.contains("Week"));
+        assert!(out.contains("18%"));
+    }
+
+    #[test]
+    fn usage_section_renders_note_when_no_windows() {
+        let u = crate::session::AgentUsage {
+            windows: vec![],
+            plan: None,
+            note: Some("not logged in".into()),
+        };
+        let out = render_usage(&u);
+        assert!(out.contains("Usage"));
+        assert!(out.contains("not logged in"));
     }
 }

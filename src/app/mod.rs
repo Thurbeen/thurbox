@@ -47,6 +47,16 @@ const DEFERRED_INPUT_DELAY_TICKS: u64 = 10;
 /// How often to refresh system metrics (in ticks). At ~10ms per tick, 100 ≈ 1 second.
 const METRICS_REFRESH_TICKS: u64 = 100;
 
+/// How often to refresh git stats for the active session (in ticks). Git stats
+/// shell out to `git`, so they run on a slower cadence than other metrics
+/// (~5 s) and only for the visible session.
+const GIT_REFRESH_TICKS: u64 = 500;
+
+/// How often to refresh account usage / rate-limits (in ticks). At ~10ms per
+/// tick, 30000 ≈ 5 minutes. Usage windows are coarse and fetching hits the
+/// network, so this is deliberately slow; fires once early then every 5 min.
+const USAGE_REFRESH_TICKS: u64 = 30_000;
+
 /// Parse agent metrics from a Claude CLI statusline JSON value.
 fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics {
     use crate::session::AgentMetrics;
@@ -335,6 +345,14 @@ pub struct App {
     /// `~/.config/thurbox/keybindings.json` on startup, falling back to defaults
     /// when the file is missing or malformed.
     pub(crate) keybindings: crate::session::KeyBindings,
+    /// Account-level usage/rate-limit info per agent name (the `/usage`
+    /// equivalent), fetched in the background and shown for the active
+    /// session's agent. Account-global, so keyed by agent rather than session.
+    pub(crate) usage: HashMap<String, crate::session::AgentUsage>,
+    /// Sends background usage-fetch results back to the app loop.
+    usage_tx: mpsc::Sender<(String, crate::session::AgentUsage)>,
+    /// Receives background usage-fetch results, drained each tick.
+    usage_rx: mpsc::Receiver<(String, crate::session::AgentUsage)>,
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
@@ -380,6 +398,8 @@ impl App {
         if let Ok(initial_state) = db.load_shared_state() {
             sync_state.set_initial_snapshot(initial_state);
         }
+
+        let (usage_tx, usage_rx) = mpsc::channel();
 
         Self {
             sessions: Vec::new(),
@@ -437,6 +457,9 @@ impl App {
             automation_panel_index: 0,
             active_theme,
             keybindings,
+            usage: HashMap::new(),
+            usage_tx,
+            usage_rx,
         }
     }
 
@@ -1452,12 +1475,10 @@ impl App {
 
             // Live activity text from the agent-emitted OSC terminal title.
             session.info.agent_activity = session.agent_title();
-            // Surface the notification message only while attention is pending.
-            session.info.notification = if session.info.status == SessionStatus::Attention {
-                session.notification()
-            } else {
-                None
-            };
+            // Retain the agent's latest pushed notification (OSC 9/777) so the
+            // info panel can show it as a persistent "last signal", not only
+            // while the session is in the attention state.
+            session.info.notification = session.notification();
         }
 
         // Poll for sync results from background worktree sync threads
@@ -1513,6 +1534,74 @@ impl App {
         if self.tick_count % METRICS_REFRESH_TICKS == 0 {
             self.refresh_system_metrics();
         }
+
+        // Refresh git stats for the active session on a slower cadence.
+        if self.tick_count % GIT_REFRESH_TICKS == 0 {
+            self.refresh_active_git_stats();
+        }
+
+        // Drain any completed background usage fetches into the cache.
+        while let Ok((agent, usage)) = self.usage_rx.try_recv() {
+            self.usage.insert(agent, usage);
+        }
+        // Kick off usage fetches early and then on a slow cadence.
+        if self.tick_count % USAGE_REFRESH_TICKS == 1 {
+            self.spawn_usage_fetches();
+        }
+    }
+
+    /// Spawn background usage/rate-limit fetches for each distinct supported
+    /// agent currently in the session list. Results return via `usage_tx` and
+    /// are drained in [`Self::tick`]. Network/process work runs off the UI
+    /// thread; unsupported agents are skipped entirely.
+    fn spawn_usage_fetches(&self) {
+        let mut seen = std::collections::HashSet::new();
+        for session in &self.sessions {
+            let agent = session.info.agent.clone();
+            if !crate::usage::is_supported(&agent) || !seen.insert(agent.clone()) {
+                continue;
+            }
+            let tx = self.usage_tx.clone();
+            tokio::spawn(async move {
+                let usage = crate::usage::fetch(&agent).await;
+                let _ = tx.send((agent, usage));
+            });
+        }
+    }
+
+    /// Compute aggregated git stats (diff + dirty + ahead/behind) for the
+    /// active session's worktree(s) and store them on its `SessionInfo`.
+    /// Shells out to `git`, so it runs only for the visible session.
+    fn refresh_active_git_stats(&mut self) {
+        let Some(session) = self.sessions.get_mut(self.active_index) else {
+            return;
+        };
+
+        // Aggregate across all worktrees; fall back to the cwd if there are none.
+        let paths: Vec<std::path::PathBuf> = if session.info.worktrees.is_empty() {
+            session.info.cwd.iter().cloned().collect()
+        } else {
+            session
+                .info
+                .worktrees
+                .iter()
+                .map(|wt| wt.worktree_path.clone())
+                .collect()
+        };
+
+        let mut agg: Option<crate::session::GitStats> = None;
+        for path in &paths {
+            if let Some(stats) = crate::git::worktree_stats(path) {
+                let acc = agg.get_or_insert_with(Default::default);
+                acc.files_changed += stats.files_changed;
+                acc.insertions += stats.insertions;
+                acc.deletions += stats.deletions;
+                acc.dirty |= stats.dirty;
+                acc.ahead += stats.ahead;
+                acc.behind += stats.behind;
+            }
+        }
+        session.info.git_stats = agg;
     }
 
     /// Collect CPU/RAM metrics from sysinfo and poll agent metrics files.

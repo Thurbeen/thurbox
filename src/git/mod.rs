@@ -512,10 +512,108 @@ pub fn sync_worktree(worktree_path: &Path) -> SyncResult {
     SyncResult::Synced
 }
 
+/// Run `git <args>` in `cwd`, returning stdout on success (`None` otherwise).
+fn run_git_capture(args: &[&str], cwd: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Sum `git diff --numstat` output into `(files_changed, insertions, deletions)`.
+/// Binary files (`-\t-\tpath`) count toward `files_changed` with zero lines.
+fn parse_numstat(out: &str) -> (usize, usize, usize) {
+    let (mut files, mut ins, mut dels) = (0usize, 0usize, 0usize);
+    for line in out.lines() {
+        let mut cols = line.split('\t');
+        let added = cols.next();
+        let deleted = cols.next();
+        let path = cols.next();
+        if path.is_none() {
+            continue;
+        }
+        files += 1;
+        if let Some(n) = added.and_then(|s| s.parse::<usize>().ok()) {
+            ins += n;
+        }
+        if let Some(n) = deleted.and_then(|s| s.parse::<usize>().ok()) {
+            dels += n;
+        }
+    }
+    (files, ins, dels)
+}
+
+/// Whether the worktree has any uncommitted changes (staged, unstaged, or
+/// untracked). Returns `false` if git cannot be queried.
+pub fn worktree_is_dirty(cwd: &Path) -> bool {
+    run_git_capture(&["status", "--porcelain"], cwd)
+        .map(|o| !o.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Commits the worktree's HEAD is `(ahead, behind)` relative to its upstream
+/// (`@{upstream}`), falling back to `origin/main` then `origin/master`.
+/// Returns `(0, 0)` when no base can be resolved.
+pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
+    let base = ["@{upstream}", "origin/main", "origin/master"]
+        .into_iter()
+        .find(|r| run_git_capture(&["rev-parse", "--verify", "--quiet", r], cwd).is_some());
+    let Some(base) = base else {
+        return (0, 0);
+    };
+    // `--left-right --count <base>...HEAD` → "<behind>\t<ahead>".
+    let range = format!("{base}...HEAD");
+    let Some(out) = run_git_capture(&["rev-list", "--left-right", "--count", &range], cwd) else {
+        return (0, 0);
+    };
+    let mut parts = out.split_whitespace();
+    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (ahead, behind)
+}
+
+/// Compute combined git stats (uncommitted diff + dirty + ahead/behind) for a
+/// worktree. Returns `None` when the path is not a usable git worktree.
+pub fn worktree_stats(cwd: &Path) -> Option<crate::session::GitStats> {
+    // Bail early if this path isn't inside a git work tree.
+    run_git_capture(&["rev-parse", "--is-inside-work-tree"], cwd)?;
+    let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
+    let (files_changed, insertions, deletions) = parse_numstat(&numstat);
+    let (ahead, behind) = ahead_behind(cwd);
+    Some(crate::session::GitStats {
+        files_changed,
+        insertions,
+        deletions,
+        dirty: worktree_is_dirty(cwd),
+        ahead,
+        behind,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::paths::TestPathGuard;
+
+    #[test]
+    fn parse_numstat_sums_changes() {
+        let (files, ins, dels) = parse_numstat("1\t2\tfile.rs\n3\t4\tother.rs\n-\t-\tbin.png\n");
+        assert_eq!(files, 3);
+        assert_eq!(ins, 4);
+        assert_eq!(dels, 6);
+    }
+
+    #[test]
+    fn parse_numstat_empty_is_zero() {
+        assert_eq!(parse_numstat(""), (0, 0, 0));
+    }
 
     /// Compute the 16-char hex repo hash used in worktree paths.
     fn repo_hash(repo_path: &Path) -> String {

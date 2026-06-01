@@ -11,3 +11,4 @@ pub mod session_ops;
 pub mod storage;
 pub mod sync;
 pub mod ui;
+pub mod usage;

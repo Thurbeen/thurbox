@@ -137,6 +137,7 @@ impl App {
         if let Some(info_area) = areas.info_panel {
             if let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) {
                 let now = crate::sync::current_time_millis();
+                let agent_usage = self.usage.get(&info.agent);
                 let automation_entries: Vec<info_panel::AutomationEntry> = self
                     .cached_automations
                     .iter()
@@ -155,6 +156,7 @@ impl App {
                     info,
                     Some(&self.system_metrics),
                     &automation_entries,
+                    agent_usage,
                 );
             }
         }

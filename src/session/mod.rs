@@ -109,6 +109,52 @@ pub struct AgentMetrics {
     pub cli_version: Option<String>,
 }
 
+/// Real git state for a session's worktree(s), computed by the app/git layer
+/// and surfaced in the info panel. Aggregated across all of a session's
+/// worktrees. Agent-neutral (derived from git, not the agent CLI).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitStats {
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+    /// Whether the worktree has uncommitted changes.
+    pub dirty: bool,
+    /// Commits ahead of the upstream/base branch.
+    pub ahead: usize,
+    /// Commits behind the upstream/base branch.
+    pub behind: usize,
+}
+
+/// One account-level rate-limit window (e.g. Claude's 5-hour or weekly), as
+/// shown by an agent's `/usage` command. Agent-neutral.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageWindow {
+    /// Short label, e.g. "5h", "Week", or a model id.
+    pub label: String,
+    /// Percent of the window consumed, 0–100.
+    pub used_percent: f32,
+    /// Unix epoch seconds when the window resets, if known.
+    pub resets_at: Option<u64>,
+}
+
+/// Account-level usage/rate-limit info for an agent, fetched from the vendor
+/// (the `/usage`-equivalent). Account-global, not per-session. Agent-neutral.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgentUsage {
+    pub windows: Vec<UsageWindow>,
+    /// Plan/tier label when known (e.g. "max", "pro").
+    pub plan: Option<String>,
+    /// Human note when no windows are available (not logged in, API error…).
+    pub note: Option<String>,
+}
+
+impl AgentUsage {
+    /// Nothing worth rendering (no windows and no note).
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty() && self.note.is_none()
+    }
+}
+
 pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
@@ -129,6 +175,9 @@ pub struct SessionInfo {
     /// Message text from the agent's latest attention notification (OSC 9/777),
     /// shown as the status when `status == SessionStatus::Attention`.
     pub notification: Option<String>,
+    /// Real git state of the session's worktree(s), refreshed periodically by
+    /// the app layer. `None` until first computed (or for non-git sessions).
+    pub git_stats: Option<GitStats>,
     /// Whether this is the admin session (internal, never user-visible).
     pub is_admin: bool,
     /// Cached display names for repos, resolved from git remote or directory name.
@@ -153,6 +202,7 @@ impl SessionInfo {
             agent_metrics: None,
             agent_activity: None,
             notification: None,
+            git_stats: None,
             is_admin: false,
             repo_display_names: Vec::new(),
         }
