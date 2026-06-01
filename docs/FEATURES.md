@@ -339,9 +339,12 @@ spent one-shot clears it and disables the automation.
   target session is not currently running.
 - **spawn** — create a session named `auto-<id>` (reusing it on
   later fires, including after a TUI restart where it is restored
-  by name), optionally creating a worktree off a base branch, with
-  the chosen agent. The prompt is delivered after a short boot
-  delay so the agent CLI has time to start.
+  by name), optionally on a worktree off a base branch, with the
+  chosen agent. The prompt is delivered after a short boot delay so
+  the agent CLI has time to start. Worktree provisioning is
+  **idempotent** (`git::create_or_attach_worktree`): if the session
+  was closed but its worktree/branch still exist, a later fire
+  reuses them rather than failing with "branch already exists".
 
 ### Execution model
 
@@ -387,12 +390,44 @@ A dedicated **Automations** pane sits beneath the session list in
 the left column. It is **always present** (showing `none` when
 empty) as long as the column is tall enough for both lists; its
 height grows with the automation count (capped). Each row reads
-`● name — schedule · action · next-run`. It is always part of the
-`Ctrl+H`/`Ctrl+L` focus cycle (between the session list and the
-terminal). Once focused: **`Ctrl+N` creates a new automation**
-(just like `Ctrl+N` creates a session elsewhere — it works even on
-an empty pane), `n` also creates, `j`/`k` select, `Space` toggle
-enabled, `r` run-now, `e`/`Enter` edit, `d` (or `Ctrl+D`) delete.
+`● name — schedule · action · next-run`. It is treated as **part of
+the session pane**: it forms one continuous vertical list with the
+session list, so `j` past the last session drops focus into the
+pane and `k` at the top automation hands focus back to the last
+session. Once focused: `j`/`k` select, `Space` toggle enabled, `r`
+run-now, `d` (or `Ctrl+D`) delete, and **`Ctrl+N`/`n` create a new
+automation** (works even on an empty pane).
+
+The pane behaves **exactly like the session list**, with the
+central pane as its terminal-equivalent: while the pane is focused,
+the central pane shows a **single editor** for the selected
+automation (a live, read-only-looking preview — no separate "info"
+screen). Pressing **`Enter`** (or **`Ctrl+L`**, or `e`) moves focus
+*into* that editor — just like `Enter`/`Ctrl+L` on a session focuses
+its terminal — where you can change fields; **`Ctrl+H`** (or `Esc`)
+returns to the list. `Enter` in the editor saves; `Esc` discards.
+`Ctrl+E` toggles the automation's enabled flag from inside the
+editor (the global file-viewer binding is suppressed there).
+
+The scoped automation's **run history** is shown beneath the editor:
+each row reads `<status> <clock time> <relative age> <detail>` with
+the status (`ok`/`error`/`skipped`) colour-coded and bold. Press
+`Ctrl+L` again (from the editor) to focus the history panel, then
+`j`/`k` to move the cursor over runs; the panel footer shows its
+shortcuts — **`r` runs the automation now**, **`Enter` jumps to the
+session that run touched** (the send target / spawned session, when
+it's still open), `Esc` returns to the editor. While in this whole
+context the session list above
+de-emphasises itself (no accent border, no selected-row highlight)
+since the active session is irrelevant there.
+
+`Ctrl+L`/`Ctrl+H` cycle **within the current context only** — the
+automation ring is `Automations → editor → run history` and wraps
+back to `Automations` (it never jumps off to a session; returning to
+the list discards unsaved edits, just like `Esc`). The session ring
+is the usual `SessionList → Terminal` (+ file viewer). Switching
+*between* the two contexts is done with `j`/`k` in the left column,
+not the focus cycle.
 
 ### Ctrl+P list + editor
 
@@ -410,14 +445,21 @@ selector cycled with `←/→` — `once`, `hourly`, `daily`,
 - `weekly` → a **Weekday** selector + Hour/Minute.
 - `cron` → a raw expression field for power users.
 
-`Hour`/`Minute`/`Weekday` are steppers (`←/→` adjust, wrapping);
-`Tab`/`↑↓` move between fields; `Space` also adjusts the focused
-selector/stepper; `^E` toggles enabled; `Enter` saves. A live
-**next:** line previews when the automation will fire (or shows
-the validation error for the current input). Editing an existing
-automation reverse-maps its cron back into the structured fields
-where it matches a known preset shape; otherwise it opens as raw
-`cron`.
+**Action** is a `‹ send ›`/`‹ spawn ›` selector. For **send**, a
+**Target** selector (also cycled with `←/→`) lets you pick which
+running session receives the prompt — it defaults to the active
+session and lists every session; saving is rejected if none exist.
+For **spawn**, the **Repo**/**Worktree**/**Agent** text fields
+appear instead (a leading `~` in the repo path is expanded).
+
+`Hour`/`Minute`/`Weekday`/`Action`/`Target` are steppers/selectors
+(`←/→` adjust, wrapping); `Tab`/`↑↓` move between fields; `Space`
+also adjusts the focused selector/stepper; `^E` toggles enabled;
+`Enter` saves. A live **next:** line previews when the automation
+will fire (or shows the validation error for the current input).
+Editing an existing automation reverse-maps its cron back into the
+structured fields where it matches a known preset shape; otherwise
+it opens as raw `cron`.
 
 ### Persistence
 

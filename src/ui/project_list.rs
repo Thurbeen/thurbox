@@ -112,6 +112,10 @@ impl<'a> OrderedSessions<'a> {
 pub struct LeftPanelState<'a> {
     pub sessions: &'a [&'a SessionInfo],
     pub active_session: usize,
+    /// Whether to highlight the active-session row. `false` hides the selection
+    /// entirely (e.g. while the automations pane is focused, where the active
+    /// session is irrelevant).
+    pub show_selection: bool,
     /// Elapsed millis since last output, parallel to `sessions`.
     pub session_elapsed_ms: &'a [u64],
     /// Focus level for the session list.
@@ -167,6 +171,7 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         session_area,
         state.sessions,
         state.active_session,
+        state.show_selection,
         state.session_elapsed_ms,
         state.session_focus,
         state.session_list_state,
@@ -408,6 +413,7 @@ fn render_session_section(
     area: Rect,
     sessions: &[&SessionInfo],
     active_index: usize,
+    show_selection: bool,
     elapsed_ms: &[u64],
     level: FocusLevel,
     list_state: &mut ListState,
@@ -458,7 +464,7 @@ fn render_session_section(
         .iter()
         .enumerate()
         .map(|(i, info)| {
-            let is_active = i == active_index;
+            let is_active = i == active_index && show_selection;
             let is_admin = info.is_admin;
 
             // Determine if this session is dimmed (search active + no match).
@@ -617,7 +623,7 @@ fn render_session_section(
             .add_modifier(Modifier::BOLD),
     );
 
-    list_state.select(Some(active_index));
+    list_state.select(show_selection.then_some(active_index));
     frame.render_stateful_widget(list, area, list_state);
 
     render_scroll_indicators_variable(frame, area, list_state, &item_heights);

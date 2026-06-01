@@ -129,6 +129,37 @@ impl App {
         // Any key press clears text selection (but the key still performs its action)
         self.text_selection = None;
 
+        // The in-pane automation editor / run-history capture input like the
+        // overlay modal — so editor chords (e.g. Ctrl+E to toggle enabled) reach
+        // the form instead of firing a global binding (Ctrl+E = file viewer).
+        // Focus navigation (Ctrl+L/H) and quit still pass through to the global
+        // handler so you can move between panes.
+        if matches!(
+            self.focus,
+            InputFocus::AutomationEditor | InputFocus::AutomationRunHistory
+        ) {
+            let passthrough = matches!(
+                self.keybindings.lookup(code, mods),
+                Some(
+                    crate::session::Action::FocusForward
+                        | crate::session::Action::FocusBackward
+                        | crate::session::Action::QuitApp
+                )
+            );
+            if !passthrough {
+                match self.focus {
+                    InputFocus::AutomationEditor => {
+                        self.handle_automation_editor_pane_key(code, mods)
+                    }
+                    InputFocus::AutomationRunHistory => {
+                        self.handle_automation_run_history_key(code)
+                    }
+                    _ => unreachable!(),
+                }
+                return;
+            }
+        }
+
         // Global keybindings (always active) — driven by user-customizable
         // `KeyBindings`. Some actions intentionally yield to the PTY when the
         // terminal is focused (e.g. Ctrl+R = bash reverse-search) — those are
@@ -142,44 +173,67 @@ impl App {
         match self.focus {
             InputFocus::SessionList => self.handle_session_list_key(code),
             InputFocus::Automations => self.handle_automations_pane_key(code),
+            InputFocus::AutomationEditor => self.handle_automation_editor_pane_key(code, mods),
+            InputFocus::AutomationRunHistory => self.handle_automation_run_history_key(code),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
             InputFocus::FileViewer => self.handle_file_viewer_key(code, mods),
         }
     }
 
-    /// Cycle focus forward (Ctrl+L). The automations pane is always in the cycle
-    /// (between the session list and terminal) — even when empty, so `Ctrl+N`
-    /// there can create the first automation. The file viewer joins only when
-    /// visible.
-    pub(crate) fn cycle_focus_forward(&self) -> InputFocus {
+    /// The ordered focus ring for the **current context**. `Ctrl+L`/`Ctrl+H`
+    /// cycle *within* this ring; switching between the session and automation
+    /// contexts is done with `j`/`k` in the left column (not the focus cycle).
+    ///
+    /// - Session context: `SessionList → Terminal` (+ `FileViewer` when shown).
+    /// - Automation context: `Automations → editor` (+ `run history` for an
+    ///   existing automation).
+    ///
+    /// So cycling out of the automation editor/history wraps back to the
+    /// **Automations** pane (returning to the selected automation, like `Esc`),
+    /// never off to a session.
+    fn focus_ring(&self) -> Vec<InputFocus> {
+        use InputFocus::*;
         match self.focus {
-            InputFocus::SessionList => InputFocus::Automations,
-            InputFocus::Automations => InputFocus::Terminal,
-            InputFocus::Terminal => {
-                if self.show_file_viewer {
-                    InputFocus::FileViewer
-                } else {
-                    InputFocus::SessionList
+            Automations | AutomationEditor | AutomationRunHistory => {
+                let mut ring = vec![Automations, AutomationEditor];
+                // The run-history panel exists only for an existing automation.
+                if self.scoped_automation_id().is_some() {
+                    ring.push(AutomationRunHistory);
                 }
+                ring
             }
-            InputFocus::FileViewer => InputFocus::SessionList,
+            SessionList | Terminal | FileViewer => {
+                let mut ring = vec![SessionList, Terminal];
+                if self.show_file_viewer {
+                    ring.push(FileViewer);
+                }
+                ring
+            }
         }
     }
 
-    /// Cycle focus backward (Ctrl+H).
+    /// Cycle focus forward (Ctrl+L) within the current context's ring.
+    pub(crate) fn cycle_focus_forward(&self) -> InputFocus {
+        let ring = self.focus_ring();
+        let pos = ring.iter().position(|f| *f == self.focus).unwrap_or(0);
+        ring[(pos + 1) % ring.len()]
+    }
+
+    /// Cycle focus backward (Ctrl+H) within the current context's ring.
     pub(crate) fn cycle_focus_backward(&self) -> InputFocus {
-        match self.focus {
-            InputFocus::SessionList => {
-                if self.show_file_viewer {
-                    InputFocus::FileViewer
-                } else {
-                    InputFocus::Terminal
-                }
-            }
-            InputFocus::Terminal => InputFocus::Automations,
-            InputFocus::Automations => InputFocus::SessionList,
-            InputFocus::FileViewer => InputFocus::Terminal,
+        let ring = self.focus_ring();
+        let pos = ring.iter().position(|f| *f == self.focus).unwrap_or(0);
+        ring[(pos + ring.len() - 1) % ring.len()]
+    }
+
+    /// Shared bookkeeping after a focus change via the `Ctrl+L`/`Ctrl+H` cycle:
+    /// keep the in-pane editor + run history in sync, and start the run-history
+    /// selection at the top (newest run) when entering that panel.
+    fn on_focus_changed(&mut self) {
+        if self.focus == InputFocus::AutomationRunHistory {
+            self.automation_run_index = 0;
         }
+        self.refresh_automation_view();
     }
 
     /// Handle keys while the automations pane is focused: navigate and drive the
@@ -189,12 +243,35 @@ impl App {
     pub(crate) fn handle_automations_pane_key(&mut self, code: KeyCode) {
         // Creating works regardless of whether the pane has entries.
         if matches!(code, KeyCode::Char('n')) {
-            self.open_automation_editor();
+            self.new_automation_in_pane();
             return;
         }
         let count = self.cached_automations.len();
+        // `k`/Up at the top row (or in an empty pane) flows focus back up into
+        // the session list, so the left column behaves as one vertical list.
+        if matches!(code, KeyCode::Char('k') | KeyCode::Up) {
+            if self.automation_panel_index == 0 || count == 0 {
+                self.focus = InputFocus::SessionList;
+                self.select_last_session();
+            } else {
+                self.automation_panel_index -= 1;
+            }
+            self.refresh_automation_view();
+            return;
+        }
+        // `Enter`/`e` focuses the central-pane editor (like `Enter` on a session
+        // focuses its terminal); on an empty pane it starts a new automation.
+        if matches!(code, KeyCode::Enter | KeyCode::Char('e')) {
+            if count == 0 {
+                self.new_automation_in_pane();
+            } else {
+                self.enter_automation_editor();
+            }
+            self.refresh_selected_automation_runs();
+            return;
+        }
         if count == 0 {
-            return; // empty pane: nav/actions are no-ops
+            return; // empty pane: remaining nav/actions are no-ops
         }
         if self.automation_panel_index >= count {
             self.automation_panel_index = count - 1;
@@ -202,23 +279,94 @@ impl App {
         let id = self.cached_automations[self.automation_panel_index].id;
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
+                // Stay put at the bottom — the automations pane is the last
+                // section of the left column.
                 if self.automation_panel_index + 1 < count {
                     self.automation_panel_index += 1;
+                    self.refresh_automation_view();
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.automation_panel_index = self.automation_panel_index.saturating_sub(1);
+            KeyCode::Char(' ') => {
+                self.toggle_automation_by_id(id);
+                self.sync_automation_editor();
             }
-            KeyCode::Char(' ') => self.toggle_automation_by_id(id),
             KeyCode::Char('r') => self.run_automation_by_id(id),
-            KeyCode::Char('e') | KeyCode::Enter => self.open_edit_automation(id),
             KeyCode::Char('d') => {
                 self.delete_automation_by_id(id);
                 let new_count = self.cached_automations.len();
                 if new_count > 0 && self.automation_panel_index >= new_count {
                     self.automation_panel_index = new_count - 1;
                 }
+                self.refresh_automation_view();
             }
+            _ => {}
+        }
+    }
+
+    /// Handle keys while editing the scoped automation in the central pane.
+    /// `Enter` saves (and returns to the list), `Esc` discards; field navigation
+    /// is shared with the overlay editor. `Ctrl+L`/`Ctrl+H` are handled earlier
+    /// as global focus actions, so they move focus out of / back into the editor.
+    fn handle_automation_editor_pane_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        // No editor yet (e.g. focused an empty pane): allow create / leave only.
+        let Some(editor) = self.automation_editor.as_mut() else {
+            match code {
+                KeyCode::Char('n') => self.new_automation_in_pane(),
+                KeyCode::Esc => self.focus = InputFocus::Automations,
+                _ => {}
+            }
+            return;
+        };
+        match editor.handle_key(code, mods) {
+            super::modals::EditorOutcome::Continue => {}
+            super::modals::EditorOutcome::Save => {
+                let Some(editor) = self.automation_editor.clone() else {
+                    return;
+                };
+                if self.save_automation(&editor) {
+                    // A brand-new automation lands at the top of the list.
+                    if editor.editing_id.is_none() {
+                        self.automation_panel_index = 0;
+                    }
+                    self.focus = InputFocus::Automations;
+                    self.refresh_automation_view();
+                }
+            }
+            super::modals::EditorOutcome::Cancel => {
+                // Discard edits and restore the preview for the selection.
+                self.focus = InputFocus::Automations;
+                self.refresh_automation_view();
+            }
+        }
+    }
+
+    /// Handle keys while the run-history panel is focused: `j`/`k` move the
+    /// selected run, `r` triggers a fresh run of the scoped automation, and
+    /// `Esc` returns to the editor.
+    fn handle_automation_run_history_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let len = self.cached_automation_runs.len();
+                if len > 0 && self.automation_run_index + 1 < len {
+                    self.automation_run_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.automation_run_index = self.automation_run_index.saturating_sub(1);
+            }
+            // Trigger a fresh run of the scoped automation now. (`run_automation_by_id`
+            // refreshes the caches; the new run record lands on a later tick.)
+            KeyCode::Char('r') => {
+                if let Some(id) = self.scoped_automation_id() {
+                    self.run_automation_by_id(id);
+                }
+            }
+            // Jump to the session this run touched (the send target / spawned
+            // session), when it's still open.
+            KeyCode::Enter => {
+                self.open_run_related_session();
+            }
+            KeyCode::Esc => self.focus = InputFocus::AutomationEditor,
             _ => {}
         }
     }
@@ -289,10 +437,21 @@ impl App {
     fn handle_session_list_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.switch_session_forward();
+                // Past the last session, flow down into the automations pane so
+                // the left column reads as one continuous list.
+                if self.active_is_last_in_order() {
+                    self.focus = InputFocus::Automations;
+                    self.automation_panel_index = 0;
+                    self.refresh_automation_view();
+                } else {
+                    self.switch_session_forward();
+                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.switch_session_backward();
+                // Top of the column — stay put (don't wrap around).
+                if !self.active_is_first_in_order() {
+                    self.switch_session_backward();
+                }
             }
             KeyCode::Enter => {
                 self.focus = InputFocus::Terminal;
@@ -567,59 +726,17 @@ impl App {
         }
     }
 
+    /// Drive the centered-overlay automation editor (the Ctrl+P list path).
+    /// Field navigation is shared with the in-pane editor via
+    /// [`AutomationEditorModal::handle_key`].
     fn handle_automation_editor_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let super::modals::Modal::AutomationEditor(ref mut m) = self.modal else {
             return;
         };
-        // Selector/stepper fields (trigger, weekday, hour, minute, action) are
-        // adjusted with ←/→/Space; text fields edit as usual.
-        let adjustable = m.is_adjustable();
-        match code {
-            KeyCode::Esc => self.modal.close(),
-            KeyCode::Enter => self.submit_automation_editor(),
-            KeyCode::Char('e') if mods.contains(KeyModifiers::CONTROL) => {
-                m.enabled = !m.enabled;
-            }
-            KeyCode::Tab | KeyCode::Down => m.next_field(),
-            KeyCode::BackTab | KeyCode::Up => m.prev_field(),
-            KeyCode::Left if adjustable => m.adjust(-1),
-            KeyCode::Right | KeyCode::Char(' ') if adjustable => m.adjust(1),
-            KeyCode::Char(c) => {
-                if let Some(field) = m.active_field_mut() {
-                    field.insert(c);
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(field) = m.active_field_mut() {
-                    field.backspace();
-                }
-            }
-            KeyCode::Delete => {
-                if let Some(field) = m.active_field_mut() {
-                    field.delete();
-                }
-            }
-            KeyCode::Left => {
-                if let Some(field) = m.active_field_mut() {
-                    field.move_left();
-                }
-            }
-            KeyCode::Right => {
-                if let Some(field) = m.active_field_mut() {
-                    field.move_right();
-                }
-            }
-            KeyCode::Home => {
-                if let Some(field) = m.active_field_mut() {
-                    field.home();
-                }
-            }
-            KeyCode::End => {
-                if let Some(field) = m.active_field_mut() {
-                    field.end();
-                }
-            }
-            _ => {}
+        match m.handle_key(code, mods) {
+            super::modals::EditorOutcome::Continue => {}
+            super::modals::EditorOutcome::Save => self.submit_automation_editor(),
+            super::modals::EditorOutcome::Cancel => self.modal.close(),
         }
     }
 
@@ -742,10 +859,13 @@ impl App {
                 true
             }
             Action::NewSession => {
-                // On the automations pane, Ctrl+N creates a new automation
+                // In the automations context, Ctrl+N creates a new automation
                 // (mirrors `n`); elsewhere it starts the new-session wizard.
-                if self.focus == InputFocus::Automations {
-                    self.open_automation_editor();
+                if matches!(
+                    self.focus,
+                    InputFocus::Automations | InputFocus::AutomationEditor
+                ) {
+                    self.new_automation_in_pane();
                 } else {
                     self.open_repo_picker();
                 }
@@ -762,6 +882,9 @@ impl App {
                     self.handle_automations_pane_key(KeyCode::Char('d'));
                     true
                 }
+                // The editor / run-history capture their own keys earlier, so
+                // this is unreachable for them; yield just in case.
+                InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => false,
                 InputFocus::Terminal => false, // forward to PTY
             },
             Action::OpenInEditor => match self.focus {
@@ -814,11 +937,13 @@ impl App {
             Action::FocusBackward => {
                 self.clear_search();
                 self.focus = self.cycle_focus_backward();
+                self.on_focus_changed();
                 true
             }
             Action::FocusForward => {
                 self.clear_search();
                 self.focus = self.cycle_focus_forward();
+                self.on_focus_changed();
                 true
             }
             Action::NextSession => {

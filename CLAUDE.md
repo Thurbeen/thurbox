@@ -234,10 +234,47 @@ keeper, and an OS timer never double-fire.
 
 In the TUI, automations also get a dedicated **Automations pane**
 beneath the session list (left column). It is always present
-(showing `none` when empty); when it has entries it becomes a focus
-target in the `Ctrl+H`/`Ctrl+L` cycle, and once focused `j`/`k`
-select and `Space`/`r`/`e`/`d` toggle/run/edit/delete the selected
-automation (same actions as the Ctrl+P modal).
+(showing `none` when empty) and is treated as **part of the session
+pane**: it forms one continuous vertical list with the session list,
+so pressing `j` past the last session drops focus into the pane and
+`k` at the top automation hands focus back to the last session. It
+is **not** a separate stop in the `Ctrl+H`/`Ctrl+L` cycle (which
+treats it like the session list). Once focused, `j`/`k` select,
+`Space`/`r`/`d` toggle/run/delete the selected automation, and `n`
+creates one.
+
+The pane mirrors the session list, with the **central pane** as its
+terminal-equivalent: while the pane is focused the central pane
+shows a **single editor** for the selected automation (a live
+preview — there is no separate read-only "info" screen). Pressing
+`Enter`/`Ctrl+L` (or `e`) focuses that editor to change fields,
+exactly as `Enter`/`Ctrl+L` on a session focuses its terminal;
+`Ctrl+H`/`Esc` returns to the list, `Enter` saves, `Esc` discards,
+`Ctrl+E` toggles enabled. The scoped automation's run history
+(`db::list_automation_runs`, cached in `App::cached_automation_runs`)
+renders beneath the editor and is itself focusable
+([`InputFocus::AutomationRunHistory`], one more `Ctrl+L` past the
+editor): `j`/`k` select a run (`App::automation_run_index`), `r`
+triggers a fresh run, and `Enter` opens the session that run touched
+(`App::open_run_related_session` parses the session id out of the
+run's `detail` and switches to its terminal when still open).
+`Ctrl+L`/`Ctrl+H` cycle **within the current
+context's ring** (`App::focus_ring`) — the automation ring
+`Automations → editor → run history` wraps back to `Automations`
+(never to a session; landing on the list discards edits like `Esc`),
+the session ring is `SessionList → Terminal` (+ file viewer). Crossing
+contexts is via `j`/`k`, not the cycle. Because the in-pane
+editor/history would otherwise lose chords like `Ctrl+E` to global
+keybindings, `handle_key` captures input for those two focuses
+**before** the global lookup, letting only the focus-cycle/quit chords
+pass through. Implemented via
+the persistent `App::automation_editor` state (kept in sync by
+`App::sync_automation_editor`) and
+`ui::automation_editor_modal::render_automation_editor_into` +
+`ui::automation_detail::render_run_history`. The
+`Ctrl+P` list path opens the same editor as a centered overlay
+(`Modal::AutomationEditor`); both share
+`AutomationEditorModal::handle_key` + `App::save_automation`.
 
 ## Demo Video
 

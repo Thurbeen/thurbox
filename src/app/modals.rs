@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use crossterm::event::{KeyCode, KeyModifiers};
+
 use crate::storage::DeletedSessionInfo;
 
 // ── TextInput Helper ────────────────────────────────────────────────────────
@@ -199,6 +201,8 @@ pub enum AutomationField {
     CronExpr,
     Timezone,
     Action,
+    /// Send action: target-session selector (cycled with ←/→).
+    Target,
     Repo,
     Worktree,
     Agent,
@@ -235,8 +239,23 @@ pub struct AutomationEditorModal {
     pub prompt: TextInput,
     pub enabled: bool,
     pub field: AutomationField,
-    /// Send action: target session (id + display name), captured at open.
-    pub target_session: Option<(crate::session::SessionId, String)>,
+    /// Send action: the running sessions available as targets (id + display
+    /// name), captured at open and cycled with the `Target` field.
+    pub sessions: Vec<(crate::session::SessionId, String)>,
+    /// Index into `sessions` of the selected Send target.
+    pub target_index: usize,
+}
+
+/// Result of feeding a key to the automation editor — lets the caller decide
+/// what "save"/"cancel" mean (close an overlay vs. return focus to the pane).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorOutcome {
+    /// Key was consumed; stay in the editor.
+    Continue,
+    /// `Enter` — the caller should validate + persist the automation.
+    Save,
+    /// `Esc` — the caller should discard and leave the editor.
+    Cancel,
 }
 
 impl Default for AutomationEditorModal {
@@ -262,7 +281,8 @@ impl Default for AutomationEditorModal {
             prompt: TextInput::default(),
             enabled: true,
             field: AutomationField::default(),
-            target_session: None,
+            sessions: Vec::new(),
+            target_index: 0,
         }
     }
 }
@@ -286,8 +306,9 @@ impl AutomationEditorModal {
             fields.push(Timezone);
         }
         fields.push(Action);
-        if self.action == AutomationActionKind::Spawn {
-            fields.extend([Repo, Worktree, Agent]);
+        match self.action {
+            AutomationActionKind::Send => fields.push(Target),
+            AutomationActionKind::Spawn => fields.extend([Repo, Worktree, Agent]),
         }
         fields.push(Prompt);
         fields
@@ -320,7 +341,7 @@ impl AutomationEditorModal {
             Worktree => &mut self.worktree,
             Agent => &mut self.agent,
             Prompt => &mut self.prompt,
-            Trigger | Weekday | Hour | Minute | Action => return None,
+            Trigger | Weekday | Hour | Minute | Action | Target => return None,
         })
     }
 
@@ -328,7 +349,10 @@ impl AutomationEditorModal {
     /// rather than edited as text.
     pub fn is_adjustable(&self) -> bool {
         use AutomationField::*;
-        matches!(self.field, Trigger | Weekday | Hour | Minute | Action)
+        matches!(
+            self.field,
+            Trigger | Weekday | Hour | Minute | Action | Target
+        )
     }
 
     /// Adjust the focused selector/stepper by `delta` (−1 for ←, +1 for →/Space).
@@ -340,8 +364,92 @@ impl AutomationEditorModal {
             Weekday => self.weekday = wrap_add(self.weekday, delta, 7),
             Hour => self.hour = wrap_add(self.hour, delta, 24),
             Minute => self.minute = wrap_add(self.minute, delta, 60),
+            Target => {
+                let len = self.sessions.len();
+                if len > 0 {
+                    self.target_index =
+                        wrap_add(self.target_index as u32, delta, len as u32) as usize;
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Feed a key to the editor, mutating field state. Returns whether the
+    /// caller should save (`Enter`), cancel (`Esc`), or keep editing. Shared by
+    /// the centered overlay (Ctrl+P) and the in-pane editor so both behave
+    /// identically.
+    pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> EditorOutcome {
+        // Selector/stepper fields (trigger, weekday, hour, minute, action,
+        // target) are adjusted with ←/→/Space; text fields edit as usual.
+        let adjustable = self.is_adjustable();
+        match code {
+            KeyCode::Esc => return EditorOutcome::Cancel,
+            KeyCode::Enter => return EditorOutcome::Save,
+            KeyCode::Char('e') if mods.contains(KeyModifiers::CONTROL) => {
+                self.enabled = !self.enabled;
+            }
+            KeyCode::Tab | KeyCode::Down => self.next_field(),
+            KeyCode::BackTab | KeyCode::Up => self.prev_field(),
+            KeyCode::Left if adjustable => self.adjust(-1),
+            KeyCode::Right | KeyCode::Char(' ') if adjustable => self.adjust(1),
+            KeyCode::Char(c) => {
+                if let Some(field) = self.active_field_mut() {
+                    field.insert(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(field) = self.active_field_mut() {
+                    field.backspace();
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(field) = self.active_field_mut() {
+                    field.delete();
+                }
+            }
+            KeyCode::Left => {
+                if let Some(field) = self.active_field_mut() {
+                    field.move_left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(field) = self.active_field_mut() {
+                    field.move_right();
+                }
+            }
+            KeyCode::Home => {
+                if let Some(field) = self.active_field_mut() {
+                    field.home();
+                }
+            }
+            KeyCode::End => {
+                if let Some(field) = self.active_field_mut() {
+                    field.end();
+                }
+            }
+            _ => {}
+        }
+        EditorOutcome::Continue
+    }
+
+    /// Populate the available Send targets and select `selected` (falling back to
+    /// the first session when it isn't present).
+    pub fn set_target_sessions(
+        &mut self,
+        sessions: Vec<(crate::session::SessionId, String)>,
+        selected: Option<crate::session::SessionId>,
+    ) {
+        self.target_index = selected
+            .and_then(|id| sessions.iter().position(|(sid, _)| *sid == id))
+            .unwrap_or(0);
+        self.sessions = sessions;
+    }
+
+    /// The currently selected Send target (id + display name), if any sessions
+    /// are available.
+    pub fn selected_target(&self) -> Option<&(crate::session::SessionId, String)> {
+        self.sessions.get(self.target_index)
     }
 
     /// Toggle between Send and Spawn actions.
@@ -402,11 +510,10 @@ impl AutomationEditorModal {
     }
 
     /// Build an editor pre-filled from an existing automation, reverse-mapping
-    /// the schedule back into structured fields where possible.
-    pub fn from_automation(
-        auto: &crate::session::Automation,
-        session_name: Option<String>,
-    ) -> Self {
+    /// the schedule back into structured fields where possible. The caller is
+    /// responsible for populating the Send target list via
+    /// [`set_target_sessions`](Self::set_target_sessions) afterwards.
+    pub fn from_automation(auto: &crate::session::Automation) -> Self {
         use crate::session::{AutomationAction, AutomationSchedule};
         let mut m = Self {
             editing_id: Some(auto.id),
@@ -438,12 +545,10 @@ impl AutomationEditorModal {
         }
         m.prompt.set(&auto.prompt);
         match &auto.action {
-            AutomationAction::Send { session_id } => {
+            AutomationAction::Send { .. } => {
                 m.action = AutomationActionKind::Send;
-                m.target_session = Some((
-                    *session_id,
-                    session_name.unwrap_or_else(|| session_id.to_string()),
-                ));
+                // The target list + selected index are filled in by the caller
+                // via `set_target_sessions` (it has the running-session list).
             }
             AutomationAction::Spawn {
                 repo_path,
@@ -762,7 +867,7 @@ mod tests {
     #[test]
     fn test_automation_editor_daily_field_order_for_send() {
         let mut modal = AutomationEditorModal::default(); // Daily + Send
-        let order: Vec<_> = (0..7)
+        let order: Vec<_> = (0..8)
             .map(|_| {
                 let f = modal.field;
                 modal.next_field();
@@ -778,6 +883,8 @@ mod tests {
                 AutomationField::Minute,
                 AutomationField::Timezone,
                 AutomationField::Action,
+                // Send exposes a target-session selector after the action.
+                AutomationField::Target,
                 AutomationField::Prompt,
             ]
         );
@@ -916,7 +1023,7 @@ mod tests {
             last_run_at: None,
             next_run_at: None,
         };
-        let modal = AutomationEditorModal::from_automation(&auto, None);
+        let modal = AutomationEditorModal::from_automation(&auto);
         assert_eq!(modal.editing_id, Some(7));
         assert!(!modal.enabled);
         // `0 9 * * 1-5` is recognized as the Weekdays preset at 09:00.

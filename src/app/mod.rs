@@ -242,8 +242,15 @@ pub struct StatusMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFocus {
     SessionList,
-    /// The automations pane beneath the session list.
+    /// The automations pane beneath the session list (selecting an automation).
     Automations,
+    /// Editing the scoped automation in the central pane (like a session's
+    /// terminal — reached with `Enter`/`Ctrl+L` from the automations pane).
+    AutomationEditor,
+    /// Browsing the scoped automation's run history (beneath the editor),
+    /// reached with `Ctrl+L` from the editor. `j`/`k` select a run; `r` triggers
+    /// a fresh run.
+    AutomationRunHistory,
     Terminal,
     FileViewer,
 }
@@ -338,6 +345,22 @@ pub struct App {
     pub(crate) cached_automations: Vec<Automation>,
     /// Selected row in the focusable automations pane.
     pub(crate) automation_panel_index: usize,
+    /// Run history for the currently scoped automation, shown in the central
+    /// pane. Refreshed when the automations pane is focused / its selection
+    /// changes (see [`App::refresh_selected_automation_runs`]).
+    pub(crate) cached_automation_runs: Vec<crate::session::AutomationRun>,
+    /// Which automation `cached_automation_runs` belongs to, so the cache can be
+    /// invalidated when the selection moves.
+    pub(crate) cached_automation_runs_id: Option<i64>,
+    /// The editor for the automation currently scoped in the central pane. While
+    /// the automations pane is focused this mirrors the selected automation (a
+    /// live preview); while [`InputFocus::AutomationEditor`] is focused it holds
+    /// the in-progress edits. `None` when no automation is scoped.
+    pub(crate) automation_editor: Option<modals::AutomationEditorModal>,
+    /// Selected row in the run-history panel while
+    /// [`InputFocus::AutomationRunHistory`] is focused. Indexes
+    /// [`Self::cached_automation_runs`].
+    pub(crate) automation_run_index: usize,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
     /// every render. Kept in sync with `db.set_active_theme` writes.
     pub(crate) active_theme: crate::session::ThemePreset,
@@ -455,6 +478,10 @@ impl App {
             session_match_positions: Vec::new(),
             cached_automations: Vec::new(),
             automation_panel_index: 0,
+            cached_automation_runs: Vec::new(),
+            cached_automation_runs_id: None,
+            automation_editor: None,
+            automation_run_index: 0,
             active_theme,
             keybindings,
             usage: HashMap::new(),
@@ -1306,6 +1333,33 @@ impl App {
         let mut order: Vec<usize> = (0..self.sessions.len()).collect();
         order.sort_by_key(|&i| !self.sessions[i].info.is_admin);
         order
+    }
+
+    /// Whether the active session is the first row in render order (top of the
+    /// left column). Treats an empty list as "first" so `k` is a no-op there.
+    pub(crate) fn active_is_first_in_order(&self) -> bool {
+        match self.render_order_indices().first() {
+            Some(&first) => first == self.active_index,
+            None => true,
+        }
+    }
+
+    /// Whether the active session is the last row in render order (the bottom of
+    /// the session list, directly above the automations pane). Treats an empty
+    /// list as "last" so `j` falls straight through into the automations pane.
+    pub(crate) fn active_is_last_in_order(&self) -> bool {
+        match self.render_order_indices().last() {
+            Some(&last) => last == self.active_index,
+            None => true,
+        }
+    }
+
+    /// Select the last session in render order — used when navigating up out of
+    /// the automations pane back into the session list.
+    pub(crate) fn select_last_session(&mut self) {
+        if let Some(&last) = self.render_order_indices().last() {
+            self.active_index = last;
+        }
     }
 
     /// Switch to the next session in the **rendered** order (wraps around).
@@ -2378,9 +2432,16 @@ impl App {
             return Ok(id);
         }
 
+        // Expand a leading `~` — the path may have been typed by hand in the
+        // editor (or set via the CLI), and git/`current_dir` don't expand it.
+        let repo_path = crate::paths::expand_tilde(&repo_path.to_string_lossy());
+        let repo_path = repo_path.as_path();
+
         let worktrees = if let Some(branch) = worktree_branch {
             let base = base_branch.unwrap_or("main");
-            let path = git::create_worktree(repo_path, branch, base)
+            // Idempotent: a recurring automation reuses the worktree it made on
+            // the first fire instead of failing because the branch exists.
+            let path = git::create_or_attach_worktree(repo_path, branch, base)
                 .map_err(|e| format!("create worktree {branch} off {base}: {e}"))?;
             vec![WorktreeInfo {
                 repo_path: repo_path.to_path_buf(),
@@ -2432,50 +2493,158 @@ impl App {
             modals::Modal::AutomationsList(modals::AutomationsListModal { index: 0, entries });
     }
 
-    /// Open a blank automation editor. A new `Send` automation defaults to the
-    /// active session as its target.
+    /// Open a blank automation editor as a **centered overlay** (the Ctrl+P list
+    /// path). A new `Send` automation defaults to the active session. The
+    /// in-pane editor uses [`new_automation_in_pane`](Self::new_automation_in_pane)
+    /// instead.
     fn open_automation_editor(&mut self) {
-        let mut modal = modals::AutomationEditorModal::default();
-        if let Some(s) = self.sessions.get(self.active_index) {
-            modal.target_session = Some((s.info.id, s.info.name.clone()));
-        }
-        self.modal = modals::Modal::AutomationEditor(modal);
+        self.modal = modals::Modal::AutomationEditor(self.blank_automation_editor());
     }
 
-    /// Open the editor pre-filled for an existing automation.
+    /// `(id, name)` pairs for every session, used to populate the editor's Send
+    /// target selector.
+    fn session_target_choices(&self) -> Vec<(SessionId, String)> {
+        self.sessions
+            .iter()
+            .map(|s| (s.info.id, s.info.name.clone()))
+            .collect()
+    }
+
+    /// A blank editor for a new automation, with its Send target list populated
+    /// from the running sessions and defaulting to the active one.
+    fn blank_automation_editor(&self) -> modals::AutomationEditorModal {
+        let mut m = modals::AutomationEditorModal::default();
+        let active = self.sessions.get(self.active_index).map(|s| s.info.id);
+        m.set_target_sessions(self.session_target_choices(), active);
+        m
+    }
+
+    /// Open the centered-overlay editor pre-filled for an existing automation
+    /// (the Ctrl+P list path).
     fn open_edit_automation(&mut self, id: i64) {
         let Some(auto) = self.cached_automations.iter().find(|a| a.id == id).cloned() else {
             return;
         };
-        let session_name = match &auto.action {
-            AutomationAction::Send { session_id } => self
-                .sessions
-                .iter()
-                .find(|s| s.info.id == *session_id)
-                .map(|s| s.info.name.clone()),
-            AutomationAction::Spawn { .. } => None,
-        };
-        self.modal = modals::Modal::AutomationEditor(
-            modals::AutomationEditorModal::from_automation(&auto, session_name),
-        );
+        self.modal = modals::Modal::AutomationEditor(self.build_automation_editor(&auto));
     }
 
-    /// Validate and submit the automation editor (create or update).
+    /// Build an editor pre-filled from an existing automation, with its Send
+    /// target list populated from the running sessions.
+    fn build_automation_editor(&self, auto: &Automation) -> modals::AutomationEditorModal {
+        let mut m = modals::AutomationEditorModal::from_automation(auto);
+        let selected = match &auto.action {
+            AutomationAction::Send { session_id } => Some(*session_id),
+            AutomationAction::Spawn { .. } => None,
+        };
+        m.set_target_sessions(self.session_target_choices(), selected);
+        m
+    }
+
+    /// Keep the in-pane automation editor (`self.automation_editor`) in sync with
+    /// the current focus + selection:
+    /// - [`InputFocus::Automations`] → mirror the selected automation (preview).
+    /// - [`InputFocus::AutomationEditor`] → leave in-progress edits untouched.
+    /// - anything else → drop it (we're no longer in the automation context).
+    pub(crate) fn sync_automation_editor(&mut self) {
+        match self.focus {
+            InputFocus::Automations => {
+                self.automation_editor = self
+                    .cached_automations
+                    .get(self.automation_panel_index)
+                    .cloned()
+                    .map(|auto| self.build_automation_editor(&auto));
+            }
+            // Keep the editor + its run history intact while editing or
+            // browsing history.
+            InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => {}
+            _ => self.automation_editor = None,
+        }
+    }
+
+    /// The id of the automation currently scoped in the central pane (the one
+    /// being edited/previewed), if it's an existing automation.
+    pub(crate) fn scoped_automation_id(&self) -> Option<i64> {
+        self.automation_editor.as_ref().and_then(|m| m.editing_id)
+    }
+
+    /// Open the session associated with the selected run-history entry: its
+    /// `detail` embeds the send-target / spawned session id (e.g. `"session
+    /// <uuid>"`). Switches to that session's terminal when it's still open,
+    /// otherwise sets a status message.
+    pub(crate) fn open_run_related_session(&mut self) {
+        let Some(run) = self.cached_automation_runs.get(self.automation_run_index) else {
+            return;
+        };
+        // The detail is free text; pick out the first token that parses as a
+        // session id (the spawned / target session).
+        let session_id = run
+            .detail
+            .split_whitespace()
+            .find_map(|tok| tok.parse::<SessionId>().ok());
+        let Some(session_id) = session_id else {
+            self.set_status(StatusLevel::Info, "This run has no related session");
+            return;
+        };
+        match self.sessions.iter().position(|s| s.info.id == session_id) {
+            Some(idx) => {
+                self.active_index = idx;
+                self.focus = InputFocus::Terminal;
+                // Leaving the automation context clears the editor/run cache.
+                self.refresh_automation_view();
+            }
+            None => self.set_status(StatusLevel::Info, "Related session is no longer open"),
+        }
+    }
+
+    /// Start a brand-new automation in the central pane and focus the editor.
+    pub(crate) fn new_automation_in_pane(&mut self) {
+        self.automation_editor = Some(self.blank_automation_editor());
+        self.focus = InputFocus::AutomationEditor;
+    }
+
+    /// Re-sync the in-pane editor preview and the run-history cache after the
+    /// automations selection or an automation itself changes.
+    pub(crate) fn refresh_automation_view(&mut self) {
+        self.sync_automation_editor();
+        self.refresh_selected_automation_runs();
+    }
+
+    /// Move focus into the central-pane editor for the selected automation
+    /// (mirrors `Enter` on a session focusing its terminal).
+    pub(crate) fn enter_automation_editor(&mut self) {
+        // Build the editor for the current selection (focus is still
+        // `Automations`, so `sync` populates it), then focus it.
+        self.sync_automation_editor();
+        if self.automation_editor.is_some() {
+            self.focus = InputFocus::AutomationEditor;
+        }
+    }
+
+    /// Validate and submit the centered-overlay editor (create or update).
     fn submit_automation_editor(&mut self) {
         let modals::Modal::AutomationEditor(ref m) = self.modal else {
             return;
         };
         let m = m.clone();
+        if self.save_automation(&m) {
+            self.modal.close();
+        }
+    }
 
+    /// Validate `m` and persist it (create or update). Returns `true` on success;
+    /// on failure sets an error status and returns `false` (leaving the editor
+    /// open). Refreshes the cached automations on success. Shared by the overlay
+    /// and in-pane editors.
+    fn save_automation(&mut self, m: &modals::AutomationEditorModal) -> bool {
         let name = m.name.value().trim().to_string();
         if name.is_empty() {
             self.set_error("Name cannot be empty");
-            return;
+            return false;
         }
         let prompt = m.prompt.value().trim().to_string();
         if prompt.is_empty() {
             self.set_error("Prompt cannot be empty");
-            return;
+            return false;
         }
 
         let now = crate::sync::current_time_millis();
@@ -2483,7 +2652,7 @@ impl App {
             Ok(s) => s,
             Err(e) => {
                 self.set_error(e);
-                return;
+                return false;
             }
         };
 
@@ -2491,9 +2660,9 @@ impl App {
 
         let action = match m.action {
             modals::AutomationActionKind::Send => {
-                let Some((session_id, _)) = m.target_session else {
-                    self.set_error("No target session for send action");
-                    return;
+                let Some(session_id) = m.selected_target().map(|(id, _)| *id) else {
+                    self.set_error("No target session — start a session first");
+                    return false;
                 };
                 AutomationAction::Send { session_id }
             }
@@ -2501,12 +2670,14 @@ impl App {
                 let repo = m.repo.value().trim();
                 if repo.is_empty() {
                     self.set_error("Repo path required for spawn action");
-                    return;
+                    return false;
                 }
                 let worktree = m.worktree.value().trim();
                 let agent = m.agent.value().trim();
                 AutomationAction::Spawn {
-                    repo_path: repo.into(),
+                    // Expand `~` so the stored path is absolute (git and the
+                    // session cwd don't expand it themselves).
+                    repo_path: crate::paths::expand_tilde(repo),
                     worktree_branch: (!worktree.is_empty()).then(|| worktree.to_string()),
                     base_branch: None,
                     agent: (!agent.is_empty()).then(|| agent.to_string()),
@@ -2533,7 +2704,7 @@ impl App {
                 }
                 Ok(None) => {
                     self.set_error("Automation no longer exists");
-                    return;
+                    return false;
                 }
                 Err(e) => Err(e),
             },
@@ -2554,11 +2725,11 @@ impl App {
         if let Err(e) = result {
             error!("Failed to save automation: {e}");
             self.set_error("Failed to save automation");
-            return;
+            return false;
         }
-        self.modal.close();
         self.refresh_automations();
         self.set_status(StatusLevel::Success, "Automation saved");
+        true
     }
 
     /// Refresh the cached automations from the database.
@@ -2574,6 +2745,50 @@ impl App {
             self.automation_panel_index = 0;
         } else if self.automation_panel_index >= self.cached_automations.len() {
             self.automation_panel_index = self.cached_automations.len() - 1;
+        }
+        // Keep the central-pane run history fresh while the pane is scoped (e.g.
+        // a just-fired automation gains a new run).
+        self.refresh_selected_automation_runs();
+    }
+
+    /// Load the run history for the automation currently scoped in the central
+    /// pane. No-op (and clears the cache) unless the automations context is
+    /// active and points at a real automation.
+    pub(crate) fn refresh_selected_automation_runs(&mut self) {
+        // While editing / browsing history the runs belong to the scoped
+        // automation; in list preview they follow the highlighted row.
+        let editing_id = self.automation_editor.as_ref().and_then(|m| m.editing_id);
+        let selected_id = match self.focus {
+            InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => editing_id,
+            InputFocus::Automations => self
+                .cached_automations
+                .get(self.automation_panel_index)
+                .map(|a| a.id),
+            _ => None,
+        };
+        let Some(id) = selected_id else {
+            self.cached_automation_runs.clear();
+            self.cached_automation_runs_id = None;
+            self.automation_run_index = 0;
+            return;
+        };
+        match self.db.list_automation_runs(id, 20) {
+            Ok(runs) => {
+                self.cached_automation_runs = runs;
+                self.cached_automation_runs_id = Some(id);
+            }
+            Err(e) => {
+                error!("Failed to list automation runs for {id}: {e}");
+                self.cached_automation_runs.clear();
+                self.cached_automation_runs_id = None;
+            }
+        }
+        // Keep the run-history selection in range.
+        let len = self.cached_automation_runs.len();
+        if len == 0 {
+            self.automation_run_index = 0;
+        } else if self.automation_run_index >= len {
+            self.automation_run_index = len - 1;
         }
     }
 
@@ -2650,7 +2865,8 @@ fn format_automation_summary(auto: &Automation, now: u64) -> String {
     let when = if !auto.enabled {
         "disabled".to_string()
     } else if let Some(next) = auto.next_run_at {
-        format!("in {}", view::format_countdown(next.saturating_sub(now)))
+        // `format_countdown` already includes the "in " prefix.
+        view::format_countdown(next.saturating_sub(now))
     } else {
         "—".to_string()
     };
@@ -3173,19 +3389,21 @@ mod tests {
         };
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
 
-        // The pane is always in the cycle (even empty), so Ctrl+N there can
-        // create the first automation: forward from the list lands on it.
+        // The automations pane is reached via j/k (part of the left column), and
+        // its central counterpart is the editor: Ctrl+L/H from the pane move
+        // into the editor and back, just like SessionList ↔ Terminal.
         app.focus = InputFocus::SessionList;
-        assert_eq!(app.cycle_focus_forward(), InputFocus::Automations);
+        assert_eq!(app.cycle_focus_forward(), InputFocus::Terminal);
         app.focus = InputFocus::Terminal;
+        assert_eq!(app.cycle_focus_backward(), InputFocus::SessionList);
+        app.focus = InputFocus::Automations;
+        assert_eq!(app.cycle_focus_forward(), InputFocus::AutomationEditor);
+        assert_eq!(app.cycle_focus_backward(), InputFocus::AutomationEditor);
+        app.focus = InputFocus::AutomationEditor;
         assert_eq!(app.cycle_focus_backward(), InputFocus::Automations);
 
-        // With automations present it behaves the same.
-        app.cached_automations = vec![make(1, "a"), make(2, "b")];
-        app.focus = InputFocus::SessionList;
-        assert_eq!(app.cycle_focus_forward(), InputFocus::Automations);
-
         // j/k navigate, clamped to the list bounds.
+        app.cached_automations = vec![make(1, "a"), make(2, "b")];
         app.focus = InputFocus::Automations;
         app.automation_panel_index = 0;
         app.handle_automations_pane_key(KeyCode::Char('j'));
@@ -3221,9 +3439,8 @@ mod tests {
     fn ctrl_h_cycles_focus_backward_from_terminal() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::Terminal;
-        // Backward from the terminal lands on the always-present automations pane.
-        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(app.focus, InputFocus::Automations);
+        // Backward from the terminal lands on the session list (the automations
+        // pane is not a cycle stop — it's reached via j/k).
         app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
         assert_eq!(app.focus, InputFocus::SessionList);
     }
@@ -3391,9 +3608,8 @@ mod tests {
     fn ctrl_l_cycles_focus() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::SessionList;
-        // SessionList → Automations → Terminal → SessionList (no file viewer).
-        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        assert_eq!(app.focus, InputFocus::Automations);
+        // SessionList → Terminal → SessionList (no file viewer). The automations
+        // pane is not a cycle stop — it's reached via j/k from the list.
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(app.focus, InputFocus::Terminal);
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
@@ -3436,6 +3652,476 @@ mod tests {
         app.active_index = 0;
         app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert_eq!(app.active_index, 2);
+    }
+
+    // --- Unified left-column (session list ↔ automations) navigation ---
+
+    /// Add an enabled spawn automation to the DB and refresh the cache.
+    fn add_test_automation(app: &mut App, name: &str) {
+        let new = crate::storage::automations::NewAutomation {
+            name: name.to_string(),
+            enabled: true,
+            schedule: AutomationSchedule::Cron {
+                expr: "0 9 * * *".to_string(),
+            },
+            timezone: None,
+            action: AutomationAction::Spawn {
+                repo_path: std::path::PathBuf::from("/tmp/repo"),
+                worktree_branch: None,
+                base_branch: None,
+                agent: None,
+            },
+            prompt: "do stuff".to_string(),
+            next_run_at: None,
+        };
+        app.db.create_automation(&new).unwrap();
+        app.refresh_automations();
+    }
+
+    #[test]
+    fn j_at_last_session_enters_automations_pane() {
+        let mut app = app_with_sessions(3);
+        app.focus = InputFocus::SessionList;
+        app.active_index = 2; // last in render order (no admins)
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::Automations);
+        assert_eq!(app.automation_panel_index, 0);
+    }
+
+    #[test]
+    fn j_mid_session_list_advances_without_leaving() {
+        let mut app = app_with_sessions(3);
+        app.focus = InputFocus::SessionList;
+        app.active_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert_eq!(app.active_index, 1);
+    }
+
+    #[test]
+    fn k_at_first_session_does_not_wrap() {
+        let mut app = app_with_sessions(3);
+        app.focus = InputFocus::SessionList;
+        app.active_index = 0;
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert_eq!(app.active_index, 0);
+    }
+
+    #[test]
+    fn k_at_top_of_automations_returns_to_last_session() {
+        let mut app = app_with_sessions(3);
+        add_test_automation(&mut app, "nightly");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert_eq!(app.active_index, 2); // last in render order
+    }
+
+    #[test]
+    fn k_in_empty_automations_pane_returns_to_session_list() {
+        let mut app = app_with_sessions(2);
+        app.focus = InputFocus::Automations;
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    #[test]
+    fn j_at_bottom_automation_stays_put() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::Automations);
+        assert_eq!(app.automation_panel_index, 0);
+    }
+
+    #[test]
+    fn j_between_automations_advances_selection() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        add_test_automation(&mut app, "b");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.automation_panel_index, 1);
+    }
+
+    #[test]
+    fn n_in_automations_pane_focuses_new_editor() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::Automations;
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        // The central-pane editor is focused (no overlay modal), with a new
+        // (unsaved) automation.
+        assert_eq!(app.focus, InputFocus::AutomationEditor);
+        assert!(matches!(app.modal, modals::Modal::None));
+        let editor = app.automation_editor.as_ref().expect("editor present");
+        assert!(editor.editing_id.is_none(), "should be a new automation");
+    }
+
+    #[test]
+    fn enter_in_automations_pane_focuses_editor_for_existing() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::AutomationEditor);
+        assert!(matches!(app.modal, modals::Modal::None));
+        let editor = app.automation_editor.as_ref().expect("editor present");
+        assert!(
+            editor.editing_id.is_some(),
+            "should edit the existing automation"
+        );
+    }
+
+    #[test]
+    fn ctrl_l_from_automations_enters_editor_and_ctrl_h_returns() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        // Ctrl+L moves focus into the central-pane editor (like a session).
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::AutomationEditor);
+        // Ctrl+H returns to the automations list.
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Automations);
+    }
+
+    #[test]
+    fn navigating_automations_rebuilds_editor_preview() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        add_test_automation(&mut app, "b");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        let first = app.automation_editor.as_ref().unwrap().editing_id;
+        assert_eq!(first, Some(app.cached_automations[0].id));
+        // Moving down rebuilds the preview to mirror the next automation.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.automation_panel_index, 1);
+        let second = app.automation_editor.as_ref().unwrap().editing_id;
+        assert_eq!(second, Some(app.cached_automations[1].id));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn leaving_automation_context_clears_editor() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.sync_automation_editor();
+        assert!(app.automation_editor.is_some());
+        // Focusing a session drops the in-pane editor preview.
+        app.focus = InputFocus::SessionList;
+        app.sync_automation_editor();
+        assert!(app.automation_editor.is_none());
+    }
+
+    #[test]
+    fn editing_in_pane_and_saving_returns_to_list() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationEditor;
+        // Edit the name, then save with Enter.
+        if let Some(ed) = app.automation_editor.as_mut() {
+            ed.field = AutomationField::Name;
+            ed.name.set("renamed");
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::Automations);
+        let autos = app.db.list_automations().unwrap();
+        assert_eq!(autos.len(), 1);
+        assert_eq!(autos[0].name, "renamed");
+    }
+
+    #[test]
+    fn esc_in_pane_editor_discards_and_returns_to_list() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationEditor;
+        if let Some(ed) = app.automation_editor.as_mut() {
+            ed.name.set("scratch");
+        }
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::Automations);
+        // The discarded edit was not persisted.
+        let autos = app.db.list_automations().unwrap();
+        assert_eq!(autos[0].name, "a");
+    }
+
+    #[test]
+    fn ctrl_e_in_pane_editor_toggles_enabled_not_file_viewer() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationEditor;
+        let before = app.automation_editor.as_ref().unwrap().enabled;
+        let fv_before = app.show_file_viewer;
+        // Ctrl+E is the global file-viewer toggle, but the pane editor must
+        // capture it as "toggle enabled" instead.
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.show_file_viewer, fv_before,
+            "file viewer must not toggle"
+        );
+        assert_eq!(
+            app.automation_editor.as_ref().unwrap().enabled,
+            !before,
+            "Ctrl+E should flip the editor's enabled flag"
+        );
+    }
+
+    #[test]
+    fn cycle_wraps_back_to_automations_not_session() {
+        let mut app = app_with_sessions(2);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        // Automations → editor → run history → back to Automations (never lands
+        // on a session, mirroring how Esc returns to the selected automation).
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::AutomationEditor);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::AutomationRunHistory);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Automations);
+    }
+
+    #[test]
+    fn new_automation_editor_cycle_wraps_to_automations() {
+        // A brand-new automation has no run history, so the ring is just
+        // Automations ↔ editor — and Ctrl+L still returns to the list.
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::Automations;
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::AutomationEditor);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Automations);
+    }
+
+    #[test]
+    fn enter_on_run_opens_related_session() {
+        let mut app = app_with_sessions(2);
+        add_test_automation(&mut app, "a");
+        let auto_id = app.cached_automations[0].id;
+        // Record a run whose detail references session #1 (as fire_automation
+        // would: "session <uuid>").
+        let target = app.sessions[1].info.id;
+        app.db
+            .record_automation_run(
+                auto_id,
+                AutomationRunStatus::Success,
+                &format!("session {target}"),
+            )
+            .unwrap();
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationRunHistory;
+        app.refresh_selected_automation_runs();
+        app.automation_run_index = 0;
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(app.focus, InputFocus::Terminal);
+        assert_eq!(app.active_index, 1, "should jump to the referenced session");
+    }
+
+    #[test]
+    fn enter_on_run_without_session_stays_in_history() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        let auto_id = app.cached_automations[0].id;
+        // A skipped run has no session id in its detail.
+        app.db
+            .record_automation_run(
+                auto_id,
+                AutomationRunStatus::Skipped,
+                "target session not running",
+            )
+            .unwrap();
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationRunHistory;
+        app.refresh_selected_automation_runs();
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        // No related session → stay put in the run-history panel.
+        assert_eq!(app.focus, InputFocus::AutomationRunHistory);
+    }
+
+    #[test]
+    fn ctrl_l_from_editor_enters_run_history_then_back() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationEditor;
+        // Editor → run history → editor.
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::AutomationRunHistory);
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::AutomationEditor);
+    }
+
+    #[test]
+    fn run_history_jk_moves_selection_and_r_triggers_run() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        let id = app.cached_automations[0].id;
+        // Two recorded runs so j/k has something to move over.
+        app.db
+            .record_automation_run(id, AutomationRunStatus::Success, "one")
+            .unwrap();
+        app.db
+            .record_automation_run(id, AutomationRunStatus::Error, "two")
+            .unwrap();
+        app.focus = InputFocus::Automations;
+        app.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationRunHistory;
+        app.refresh_selected_automation_runs();
+        assert_eq!(app.automation_run_index, 0);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.automation_run_index, 1);
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.automation_run_index, 0);
+        // `r` marks the automation due (next_run_at in the past/now).
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        let auto = app.db.get_automation(id).unwrap().unwrap();
+        let now = crate::sync::current_time_millis();
+        assert!(
+            auto.next_run_at.map(|n| n <= now).unwrap_or(false),
+            "run-now should make the automation due"
+        );
+    }
+
+    #[test]
+    fn focusing_automations_loads_selected_run_history() {
+        let mut app = app_with_sessions(1);
+        add_test_automation(&mut app, "a");
+        let id = app.cached_automations[0].id;
+        app.db
+            .record_automation_run(id, AutomationRunStatus::Success, "spawned x")
+            .unwrap();
+        // While the pane is unfocused the run cache is empty.
+        assert!(app.cached_automation_runs.is_empty());
+        // Entering the pane (via j from the last/only session) loads it.
+        app.focus = InputFocus::SessionList;
+        app.active_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::Automations);
+        assert_eq!(app.cached_automation_runs_id, Some(id));
+        assert_eq!(app.cached_automation_runs.len(), 1);
+    }
+
+    #[test]
+    fn spawn_automation_expands_tilde_in_repo_path() {
+        let mut app = app_with_sessions(0);
+        let mut m = modals::AutomationEditorModal::default();
+        m.name.set("t");
+        m.prompt.set("hi");
+        m.action = AutomationActionKind::Spawn;
+        m.trigger_kind = TriggerKind::Daily; // yields a future next_run
+        m.repo.set("~/Repositories/thurbox");
+        app.modal = modals::Modal::AutomationEditor(m);
+
+        app.submit_automation_editor();
+
+        let autos = app.db.list_automations().unwrap();
+        assert_eq!(autos.len(), 1, "automation should have been created");
+        match &autos[0].action {
+            AutomationAction::Spawn { repo_path, .. } => {
+                let home = std::env::var("HOME").expect("HOME set in tests");
+                assert_eq!(
+                    repo_path,
+                    &std::path::PathBuf::from(home).join("Repositories/thurbox"),
+                    "leading ~ should be expanded to an absolute path"
+                );
+            }
+            other => panic!("expected a spawn action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_automation_target_defaults_to_active_and_is_selectable() {
+        let mut app = app_with_sessions(3);
+        app.active_index = 1;
+        app.open_automation_editor();
+
+        // The Send target defaults to the active session, and every session is
+        // offered as a choice.
+        {
+            let modals::Modal::AutomationEditor(ref m) = app.modal else {
+                panic!("expected the automation editor");
+            };
+            assert_eq!(m.sessions.len(), 3);
+            assert_eq!(
+                m.selected_target().map(|(id, _)| *id),
+                Some(app.sessions[1].info.id)
+            );
+        }
+
+        // Cycle the Target selector to the next session, then submit.
+        let expected_id;
+        {
+            let modals::Modal::AutomationEditor(ref mut m) = app.modal else {
+                panic!("expected the automation editor");
+            };
+            m.name.set("ping");
+            m.prompt.set("hi");
+            m.trigger_kind = TriggerKind::Daily;
+            m.field = AutomationField::Target;
+            m.adjust(1); // index 1 -> 2
+            expected_id = m.selected_target().map(|(id, _)| *id).unwrap();
+        }
+        app.submit_automation_editor();
+
+        let autos = app.db.list_automations().unwrap();
+        assert_eq!(autos.len(), 1);
+        match &autos[0].action {
+            AutomationAction::Send { session_id } => assert_eq!(*session_id, expected_id),
+            other => panic!("expected a send action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_automation_without_sessions_is_rejected() {
+        let mut app = app_with_sessions(0);
+        app.open_automation_editor();
+        {
+            let modals::Modal::AutomationEditor(ref mut m) = app.modal else {
+                panic!("expected the automation editor");
+            };
+            m.name.set("x");
+            m.prompt.set("y");
+            m.trigger_kind = TriggerKind::Daily;
+            // action defaults to Send, but there are no sessions to target.
+        }
+        app.submit_automation_editor();
+        assert_eq!(
+            app.db.list_automations().unwrap().len(),
+            0,
+            "a send automation with no target session must not be created"
+        );
     }
 
     // --- DB persistence tests ---

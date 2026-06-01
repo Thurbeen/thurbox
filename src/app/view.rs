@@ -67,12 +67,25 @@ impl App {
             );
 
             use crate::ui::FocusLevel;
+            let in_automation_context = matches!(
+                self.focus,
+                InputFocus::Automations
+                    | InputFocus::AutomationEditor
+                    | InputFocus::AutomationRunHistory
+            );
             let list_focus = match self.focus {
                 InputFocus::SessionList => FocusLevel::Focused,
-                InputFocus::Automations | InputFocus::Terminal | InputFocus::FileViewer => {
-                    FocusLevel::Active
-                }
+                // In the automations context the central pane shows the
+                // automation, not a session — so the session list reads as fully
+                // unfocused (no accent border, no selected-row highlight; see
+                // `show_selection`).
+                _ if in_automation_context => FocusLevel::Inactive,
+                InputFocus::Terminal | InputFocus::FileViewer => FocusLevel::Active,
+                _ => FocusLevel::Active,
             };
+            // Suppress the active-session row highlight while the automations
+            // context is active — the active session is irrelevant there.
+            let show_selection = !in_automation_context;
 
             let match_count = self
                 .session_match_positions
@@ -87,6 +100,7 @@ impl App {
                 &mut project_list::LeftPanelState {
                     sessions: &ordered.sessions,
                     active_session: ordered.active_index,
+                    show_selection,
                     session_elapsed_ms: &ordered.elapsed_ms,
                     session_focus: list_focus,
                     session_list_state: &mut self.session_list_state,
@@ -114,10 +128,14 @@ impl App {
                     enabled: a.enabled,
                 })
                 .collect();
-            let focus = if self.focus == InputFocus::Automations {
-                crate::ui::FocusLevel::Focused
-            } else {
-                crate::ui::FocusLevel::Inactive
+            let focus = match self.focus {
+                InputFocus::Automations => crate::ui::FocusLevel::Focused,
+                // While editing / browsing history in the central pane, keep the
+                // pane "active" so the row being worked on stays marked.
+                InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => {
+                    crate::ui::FocusLevel::Active
+                }
+                _ => crate::ui::FocusLevel::Inactive,
             };
             let selected = self
                 .automation_panel_index
@@ -177,41 +195,59 @@ impl App {
             file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
         }
 
-        // Terminal
+        // Central pane. In the automations context (the pane or its editor is
+        // focused) it shows a single automation editor — a live preview while
+        // the list is focused, editable once the editor itself is focused — with
+        // the scoped automation's run history beneath it. Everything else shows
+        // the session terminal.
         let terminal_focus = match self.focus {
             InputFocus::Terminal => crate::ui::FocusLevel::Focused,
-            InputFocus::SessionList | InputFocus::Automations | InputFocus::FileViewer => {
-                crate::ui::FocusLevel::Active
-            }
+            InputFocus::SessionList
+            | InputFocus::Automations
+            | InputFocus::AutomationEditor
+            | InputFocus::AutomationRunHistory
+            | InputFocus::FileViewer => crate::ui::FocusLevel::Active,
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
-        match self.sessions.get(self.active_index) {
-            Some(session) => {
-                let is_admin_project = session.info.is_admin;
-                let parser_arc = if is_shell_view {
-                    session.shell_pane.as_ref().map(|sp| &sp.parser)
-                } else {
-                    None
+
+        if matches!(
+            self.focus,
+            InputFocus::Automations
+                | InputFocus::AutomationEditor
+                | InputFocus::AutomationRunHistory
+        ) {
+            self.render_automation_workspace(frame, areas.terminal);
+        } else {
+            match self.sessions.get(self.active_index) {
+                Some(session) => {
+                    let is_admin_project = session.info.is_admin;
+                    let parser_arc = if is_shell_view {
+                        session.shell_pane.as_ref().map(|sp| &sp.parser)
+                    } else {
+                        None
+                    }
+                    .unwrap_or(&session.parser);
+                    if let Ok(mut parser) = parser_arc.lock() {
+                        terminal_view::render_terminal(
+                            frame,
+                            areas.terminal,
+                            &mut parser,
+                            &session.info,
+                            terminal_focus,
+                            is_admin_project,
+                            is_shell_view,
+                        );
+                    }
                 }
-                .unwrap_or(&session.parser);
-                if let Ok(mut parser) = parser_arc.lock() {
-                    terminal_view::render_terminal(
-                        frame,
-                        areas.terminal,
-                        &mut parser,
-                        &session.info,
-                        terminal_focus,
-                        is_admin_project,
-                        is_shell_view,
-                    );
-                }
+                None => terminal_view::render_empty_terminal(frame, areas.terminal),
             }
-            None => terminal_view::render_empty_terminal(frame, areas.terminal),
         }
 
         let focus_label = match self.focus {
             InputFocus::SessionList => "Sessions",
             InputFocus::Automations => "Automations",
+            InputFocus::AutomationEditor => "Edit Automation",
+            InputFocus::AutomationRunHistory => "Run history",
             InputFocus::Terminal if is_shell_view => "Shell",
             InputFocus::Terminal => "Terminal",
             InputFocus::FileViewer => "Files",
@@ -307,18 +343,12 @@ impl App {
             );
         }
 
-        // Automation editor modal
+        // Automation editor modal (centered overlay — the Ctrl+P list path).
         if let super::modals::Modal::AutomationEditor(ref m) = self.modal {
             // Live preview of when this schedule will next fire (or the
             // validation error for the current input).
             let now = crate::sync::current_time_millis();
-            let preview = match m.build_schedule(now) {
-                Ok(sched) => match sched.next_after(now, m.timezone().as_deref()) {
-                    Some(next) => format!("in {}", format_countdown(next.saturating_sub(now))),
-                    None => "never (check schedule)".to_string(),
-                },
-                Err(e) => e,
-            };
+            let preview = editor_preview(m, now);
             automation_editor_modal::render_automation_editor_modal(
                 frame,
                 &automation_editor_modal::AutomationEditorState {
@@ -338,8 +368,9 @@ impl App {
                     worktree: m.worktree.value(),
                     agent: m.agent.value(),
                     prompt: m.prompt.value(),
-                    target_session: m.target_session.as_ref().map(|(_, name)| name.as_str()),
+                    target_session: m.selected_target().map(|(_, name)| name.as_str()),
                     preview: &preview,
+                    focused: true,
                 },
             );
         }
@@ -424,6 +455,121 @@ impl App {
         } else {
             self.selected_text_cache = None;
         }
+    }
+
+    /// Render the single central-pane automation view: the editor for the
+    /// scoped automation (a preview while the list is focused, editable once the
+    /// editor is focused), with the automation's run history beneath it. Shows a
+    /// discoverability hint when there's nothing to edit.
+    fn render_automation_workspace(&self, frame: &mut Frame, area: Rect) {
+        let editing = self.focus == InputFocus::AutomationEditor;
+
+        let Some(m) = self.automation_editor.as_ref() else {
+            // Nothing scoped (e.g. an empty pane): render a create hint.
+            let block = ratatui::widgets::Block::default()
+                .title(" Automation ")
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_style(Style::default().fg(if editing {
+                    Theme::border_focused()
+                } else {
+                    Theme::border_unfocused()
+                }));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "No automations yet — press n to create one.",
+                    Style::default().fg(Theme::text_muted()),
+                ))),
+                inner,
+            );
+            return;
+        };
+
+        // Run history for the automation being edited (existing automations
+        // only). Shown only when the cache matches the scoped automation.
+        let show_history = m.editing_id.is_some() && self.cached_automation_runs_id == m.editing_id;
+        let runs: Vec<crate::ui::automation_detail::AutomationRunRow> = if show_history {
+            self.cached_automation_runs
+                .iter()
+                .map(|r| crate::ui::automation_detail::AutomationRunRow {
+                    status: r.status,
+                    at: format_clock(r.started_at),
+                    when: format_time_ago(r.started_at),
+                    detail: &r.detail,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Split the pane: editor (sized to its fields) on top, run history
+        // taking the remaining space beneath it (when shown).
+        let (editor_area, history_area) = if show_history {
+            let editor_h = (m.visible_fields().len() as u16 + 5).min(area.height.saturating_sub(4));
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(editor_h), Constraint::Min(3)])
+                .split(area);
+            (rows[0], Some(rows[1]))
+        } else {
+            (area, None)
+        };
+
+        let now = crate::sync::current_time_millis();
+        let preview = editor_preview(m, now);
+        automation_editor_modal::render_automation_editor_into(
+            frame,
+            editor_area,
+            &automation_editor_modal::AutomationEditorState {
+                editing: m.editing_id.is_some(),
+                field: m.field,
+                trigger_kind: m.trigger_kind,
+                action: m.action,
+                enabled: m.enabled,
+                name: m.name.value(),
+                delay: m.delay.value(),
+                weekday: m.weekday,
+                hour: m.hour,
+                minute: m.minute,
+                cron_expr: m.cron_expr.value(),
+                timezone: m.timezone.value(),
+                repo: m.repo.value(),
+                worktree: m.worktree.value(),
+                agent: m.agent.value(),
+                prompt: m.prompt.value(),
+                target_session: m.selected_target().map(|(_, n)| n.as_str()),
+                preview: &preview,
+                focused: editing,
+            },
+        );
+
+        if let Some(history_area) = history_area {
+            let history_focus = if self.focus == InputFocus::AutomationRunHistory {
+                crate::ui::FocusLevel::Focused
+            } else {
+                crate::ui::FocusLevel::Inactive
+            };
+            crate::ui::automation_detail::render_run_history(
+                frame,
+                history_area,
+                &runs,
+                self.automation_run_index,
+                history_focus,
+            );
+        }
+    }
+}
+
+/// Live preview of when the editor's current schedule will next fire, or the
+/// validation error for the current input.
+fn editor_preview(m: &super::modals::AutomationEditorModal, now: u64) -> String {
+    match m.build_schedule(now) {
+        Ok(sched) => match sched.next_after(now, m.timezone().as_deref()) {
+            Some(next) => format_countdown(next.saturating_sub(now)),
+            None => "never (check schedule)".to_string(),
+        },
+        Err(e) => e,
     }
 }
 
@@ -553,6 +699,16 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// Format a millisecond timestamp as an absolute local clock time
+/// (`"MM-DD HH:MM"`), for run-history rows.
+pub(super) fn format_clock(millis: u64) -> String {
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_millis_opt(millis as i64).single() {
+        Some(dt) => dt.format("%m-%d %H:%M").to_string(),
+        None => String::new(),
+    }
 }
 
 /// Format a millisecond timestamp as a human-readable "time ago" string.

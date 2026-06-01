@@ -1,7 +1,8 @@
 use ratatui::{
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
@@ -31,6 +32,10 @@ pub struct AutomationEditorState<'a> {
     pub target_session: Option<&'a str>,
     /// Human summary of when this will next fire (computed by the caller).
     pub preview: &'a str,
+    /// Whether the editor currently has keyboard focus. When `false` (an in-pane
+    /// preview), the active-field cursor/highlight is suppressed and the border
+    /// is drawn unfocused.
+    pub focused: bool,
 }
 
 /// Fields shown for the current trigger kind + action, in order. Mirrors
@@ -49,26 +54,58 @@ fn visible_fields(trigger: TriggerKind, action: AutomationActionKind) -> Vec<Aut
         fields.push(Timezone);
     }
     fields.push(Action);
-    if action == AutomationActionKind::Spawn {
-        fields.extend([Repo, Worktree, Agent]);
+    match action {
+        AutomationActionKind::Send => fields.push(Target),
+        AutomationActionKind::Spawn => fields.extend([Repo, Worktree, Agent]),
     }
     fields.push(Prompt);
     fields
 }
 
+/// Render the editor as a centered modal overlay (the `Ctrl+P` list path).
 pub fn render_automation_editor_modal(frame: &mut Frame, state: &AutomationEditorState<'_>) {
     let fields = visible_fields(state.trigger_kind, state.action);
     // One row per field + status + preview + spacing inside the modal frame.
     let height = fields.len() as u16 + 5;
     let area = centered_fixed_height_rect(60, height.min(22), frame.area());
 
-    let title = if state.editing {
+    let inner = render_modal_frame(frame, area, editor_title(state));
+    frame.render_widget(Paragraph::new(editor_lines(state)), inner);
+}
+
+/// Render the editor inline into a given area (the automations-pane central
+/// view), framed by a border whose style reflects [`AutomationEditorState::focused`].
+pub fn render_automation_editor_into(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AutomationEditorState<'_>,
+) {
+    let border = if state.focused {
+        Theme::border_focused()
+    } else {
+        Theme::border_unfocused()
+    };
+    let block = Block::default()
+        .title(format!(" {} ", editor_title(state)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(editor_lines(state)), inner);
+}
+
+fn editor_title(state: &AutomationEditorState<'_>) -> &'static str {
+    if state.editing {
         "Edit Automation"
     } else {
         "New Automation"
-    };
-    let inner = render_modal_frame(frame, area, title);
+    }
+}
 
+/// The editor body: one line per visible field, then the live schedule preview,
+/// enabled status, and the key-hint footer.
+fn editor_lines<'a>(state: &AutomationEditorState<'a>) -> Vec<Line<'a>> {
+    let fields = visible_fields(state.trigger_kind, state.action);
     let mut lines: Vec<Line> = fields
         .iter()
         .map(|f| field_line(*f, state, *f == state.field))
@@ -104,7 +141,7 @@ pub fn render_automation_editor_modal(frame: &mut Frame, state: &AutomationEdito
         Span::styled(" cancel", Theme::keybind_desc()),
     ]));
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    lines
 }
 
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -112,8 +149,11 @@ const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 fn field_line<'a>(
     field: AutomationField,
     state: &AutomationEditorState<'a>,
-    focused: bool,
+    is_active_field: bool,
 ) -> Line<'a> {
+    // Only show the active-field cursor/highlight when the editor itself is
+    // focused; an unfocused in-pane preview renders every field plainly.
+    let focused = is_active_field && state.focused;
     // (label, value, is_selector). Selector/stepper values are wrapped in
     // ‹ › guillemets to signal they are adjusted with ←/→, not typed.
     let (label, value, selector): (&str, String, bool) = match field {
@@ -130,6 +170,7 @@ fn field_line<'a>(
         AutomationField::CronExpr => ("cron", cron_display(state.cron_expr), false),
         AutomationField::Timezone => ("timezone", tz_display(state.timezone), false),
         AutomationField::Action => ("action", action_display(state), true),
+        AutomationField::Target => ("target", target_display(state), true),
         AutomationField::Repo => ("repo", state.repo.to_string(), false),
         AutomationField::Worktree => ("worktree", optional_display(state.worktree), false),
         AutomationField::Agent => ("agent", optional_display(state.agent), false),
@@ -194,10 +235,15 @@ fn optional_display(value: &str) -> String {
 
 fn action_display(state: &AutomationEditorState<'_>) -> String {
     match state.action {
-        AutomationActionKind::Send => {
-            let target = state.target_session.unwrap_or("(active session)");
-            format!("send → {target}")
-        }
+        AutomationActionKind::Send => "send".to_string(),
         AutomationActionKind::Spawn => "spawn".to_string(),
     }
+}
+
+/// The selected Send target session, or a hint when none are running.
+fn target_display(state: &AutomationEditorState<'_>) -> String {
+    state
+        .target_session
+        .unwrap_or("(no running sessions)")
+        .to_string()
 }

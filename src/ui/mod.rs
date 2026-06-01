@@ -1,4 +1,5 @@
 pub mod agent_picker_modal;
+pub mod automation_detail;
 pub mod automation_editor_modal;
 pub mod automations_list_modal;
 pub mod automations_panel;

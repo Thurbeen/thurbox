@@ -131,6 +131,32 @@ pub fn create_worktree(repo_path: &Path, new_branch: &str, base_branch: &str) ->
     Ok(wt_path)
 }
 
+/// Idempotently provision a worktree on `branch`, returning its directory.
+///
+/// Unlike [`create_worktree`] (which always passes `-b` and fails if the branch
+/// already exists), this is safe to call repeatedly — the case that recurring
+/// **spawn automations** hit on every fire:
+///
+/// - worktree directory already present → reuse it as-is;
+/// - branch exists but has no worktree → attach a worktree to it
+///   ([`add_existing_worktree`]);
+/// - neither exists → create the branch + worktree off `base_branch`.
+pub fn create_or_attach_worktree(
+    repo_path: &Path,
+    branch: &str,
+    base_branch: &str,
+) -> Result<PathBuf> {
+    let wt_path =
+        worktree_path(repo_path, branch).context("failed to resolve worktrees directory")?;
+    if wt_path.exists() {
+        return Ok(wt_path);
+    }
+    if branch_exists(repo_path, branch) {
+        return add_existing_worktree(repo_path, branch);
+    }
+    create_worktree(repo_path, branch, base_branch)
+}
+
 /// Remove a git worktree (force removal).
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
     let output = Command::new("git")
@@ -613,6 +639,54 @@ mod tests {
     #[test]
     fn parse_numstat_empty_is_zero() {
         assert_eq!(parse_numstat(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn create_or_attach_worktree_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("run git")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("file.txt"), "hi").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        let base = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let _guard = TestPathGuard::new(tmp.path().join("data"));
+
+        // First fire: creates the branch + worktree.
+        let p1 = create_or_attach_worktree(&repo, "feat/x", &base).expect("first creates");
+        assert!(p1.exists());
+        // Second fire: branch + dir already exist — must reuse, not fail.
+        let p2 = create_or_attach_worktree(&repo, "feat/x", &base).expect("second reuses");
+        assert_eq!(p1, p2);
+        // Worktree dir gone but branch remains: re-attach a worktree to it.
+        remove_worktree(&repo, &p1).expect("remove worktree");
+        let p3 = create_or_attach_worktree(&repo, "feat/x", &base).expect("third reattaches");
+        assert_eq!(p1, p3);
+        assert!(p3.exists());
     }
 
     /// Compute the 16-char hex repo hash used in worktree paths.
