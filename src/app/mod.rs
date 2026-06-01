@@ -1464,6 +1464,29 @@ impl App {
         }
     }
 
+    /// Resolve the backend for a *persisted* session by its `backend_type`, or
+    /// `None` when this instance cannot manage it.
+    ///
+    /// An unknown `ssh:<host>` backend (e.g. a host this instance hasn't loaded
+    /// from `hosts.toml`, or another instance configured) is **skipped** rather
+    /// than falling back to local — adopting a remote session on the local
+    /// backend would corrupt its `backend_type` and risk a pane-id collision
+    /// (tmux numbers panes `%N` per server, so a remote `%1` can match an
+    /// unrelated local `%1`). Legacy/local values (empty, `tmux`, `local-tmux`)
+    /// still fall back to the default local backend.
+    pub(crate) fn resolve_persisted_backend(
+        &self,
+        backend_type: &str,
+    ) -> Option<Arc<dyn SessionBackend>> {
+        if let Some(b) = self.backends.get(backend_type) {
+            return Some(b.clone());
+        }
+        if backend_type.starts_with(crate::session::SSH_BACKEND_PREFIX) {
+            return None;
+        }
+        Some(self.backends.default_backend().clone())
+    }
+
     /// Resolve the backend a session should spawn on, ensuring it is ready.
     ///
     /// Looks up `config.backend` in the registry (falling back to the default
@@ -2137,11 +2160,12 @@ impl App {
                 continue;
             }
 
-            let backend = self
-                .backends
-                .get(&shared_session.backend_type)
-                .cloned()
-                .unwrap_or_else(|| self.backends.default_backend().clone());
+            // Skip sessions whose backend this instance can't manage (e.g. a
+            // remote host not in our hosts.toml) — adopting them locally would
+            // corrupt backend_type and risk a pane-id collision.
+            let Some(backend) = self.resolve_persisted_backend(&shared_session.backend_type) else {
+                continue;
+            };
 
             let matching_backend_id = {
                 let discovered = discovered_by_backend
@@ -2427,11 +2451,13 @@ impl App {
             if discovered_by_backend.contains_key(&shared.backend_type) {
                 continue;
             }
-            let backend = self
-                .backends
-                .get(&shared.backend_type)
-                .cloned()
-                .unwrap_or_else(|| self.backends.default_backend().clone());
+            // Skip discovery for backends this instance can't manage (unknown
+            // remote hosts); their sessions are left un-adopted rather than
+            // misadopted on local.
+            let Some(backend) = self.resolve_persisted_backend(&shared.backend_type) else {
+                discovered_by_backend.insert(shared.backend_type.clone(), Vec::new());
+                continue;
+            };
 
             let disc = match backend.ensure_ready() {
                 Ok(()) => backend.discover().unwrap_or_else(|e| {
@@ -2489,11 +2515,11 @@ impl App {
         let matching_discovered = Self::find_matching_discovered(&shared, discovered);
 
         // Select the correct backend based on the persisted backend_type.
-        let backend = self
-            .backends
-            .get(&shared.backend_type)
-            .cloned()
-            .unwrap_or_else(|| self.backends.default_backend().clone());
+        // Skip sessions on a backend this instance can't manage (unknown remote
+        // host) rather than misadopting them on local.
+        let Some(backend) = self.resolve_persisted_backend(&shared.backend_type) else {
+            return;
+        };
 
         // Try to adopt the existing backend session.
         let provider = self.provider_for(&SessionConfig {
@@ -4332,6 +4358,28 @@ mod tests {
             "me@devbox"
         );
         assert!(app.host_for_backend(Some("ssh:unknown")).is_none());
+    }
+
+    #[test]
+    fn resolve_persisted_backend_skips_unknown_ssh_but_falls_back_for_local() {
+        let app = app_with_sessions(0);
+        // Known backend → resolved.
+        assert_eq!(
+            app.resolve_persisted_backend("stub")
+                .map(|b| b.name().to_string()),
+            Some("stub".to_string())
+        );
+        // Legacy/local values fall back to the default backend.
+        for legacy in ["", "tmux", "local-tmux"] {
+            assert_eq!(
+                app.resolve_persisted_backend(legacy)
+                    .map(|b| b.name().to_string()),
+                Some("stub".to_string()),
+                "legacy '{legacy}' should fall back to default"
+            );
+        }
+        // Unknown remote backend → skipped (None), never misadopted on local.
+        assert!(app.resolve_persisted_backend("ssh:nope").is_none());
     }
 
     #[test]
