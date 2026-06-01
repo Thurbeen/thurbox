@@ -130,7 +130,7 @@ fn group_display(info: &SessionInfo) -> String {
 /// every tick for active sessions, so using it as a sort key made `Busy`
 /// sessions reorder endlessly. Status changes are discrete and meaningful
 /// (→`Attention`, →`Idle`), so the list only re-sorts when something real
-/// happens. See [`status_rank`] for why `Busy`/`Waiting` are not split.
+/// happens. See `status_rank` for why `Busy`/`Waiting` are not split.
 pub struct SessionOrder {
     /// Input indices in render order.
     pub order: Vec<usize>,
