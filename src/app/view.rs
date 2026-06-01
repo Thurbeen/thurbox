@@ -31,6 +31,20 @@ impl App {
             self.cached_automations.len(),
         );
 
+        self.render_header(frame, areas.header);
+        self.render_left_panel(frame, areas.left_panel);
+        self.render_automations_pane(frame, areas.automations_panel);
+        self.render_info_panel(frame, areas.info_panel);
+        self.render_file_viewer(frame, areas.file_viewer);
+        self.render_central_pane(frame, areas.terminal);
+        self.render_footer(frame, areas.footer);
+        self.render_modals(frame);
+        self.repaint_theme_background(frame);
+        self.apply_selection_highlight(frame);
+    }
+
+    /// Render the top status-bar header with the active-session/theme badge.
+    fn render_header(&self, frame: &mut Frame, header: Rect) {
         let active_name = self
             .sessions
             .get(self.active_index)
@@ -38,168 +52,193 @@ impl App {
         let theme_label = self.active_theme.display_name();
         status_bar::render_header(
             frame,
-            areas.header,
+            header,
             Some(status_bar::HeaderBadge {
                 active_session: active_name,
                 theme_label,
             }),
         );
+    }
 
-        // Left panel (flat session list)
-        if let Some(left_area) = areas.left_panel {
-            // Build flat session list: all sessions, with tag names from projects
-            let all_sessions: Vec<&SessionInfo> = self.sessions.iter().map(|s| &s.info).collect();
-            self.session_elapsed_buf.clear();
-            for s in &self.sessions {
-                self.session_elapsed_buf.push(s.millis_since_last_output());
-            }
-
-            let session_elapsed_buf = self.session_elapsed_buf.clone();
-
-            // Pin admin sessions to the top of the list. All parallel arrays
-            // (elapsed, match_positions) and active_index are remapped so they
-            // stay aligned with the rendered order.
-            let ordered = project_list::OrderedSessions::new(
-                &all_sessions,
-                &session_elapsed_buf,
-                &self.session_match_positions,
-                self.active_index,
-            );
-
-            use crate::ui::FocusLevel;
-            let in_automation_context = matches!(
-                self.focus,
-                InputFocus::Automations
-                    | InputFocus::AutomationEditor
-                    | InputFocus::AutomationRunHistory
-            );
-            let list_focus = match self.focus {
-                InputFocus::SessionList => FocusLevel::Focused,
-                // In the automations context the central pane shows the
-                // automation, not a session — so the session list reads as fully
-                // unfocused (no accent border, no selected-row highlight; see
-                // `show_selection`).
-                _ if in_automation_context => FocusLevel::Inactive,
-                InputFocus::Terminal | InputFocus::FileViewer => FocusLevel::Active,
-                _ => FocusLevel::Active,
-            };
-            // Suppress the active-session row highlight while the automations
-            // context is active — the active session is irrelevant there.
-            let show_selection = !in_automation_context;
-
-            let match_count = self
-                .session_match_positions
-                .iter()
-                .filter(|m| m.is_some())
-                .count();
-            let total_count = ordered.sessions.len();
-
-            project_list::render_left_panel(
-                frame,
-                left_area,
-                &mut project_list::LeftPanelState {
-                    sessions: &ordered.sessions,
-                    active_session: ordered.active_index,
-                    show_selection,
-                    session_elapsed_ms: &ordered.elapsed_ms,
-                    session_focus: list_focus,
-                    session_list_state: &mut self.session_list_state,
-                    search_query: &self.search_input.buffer,
-                    search_active: self.search_active,
-                    search_cursor: self.search_input.cursor,
-                    session_match_positions: &ordered.match_positions,
-                    session_search_active: !self.session_match_positions.is_empty(),
-                    match_count,
-                    total_count,
-                    first_non_admin_index: ordered.first_non_admin_index,
-                },
-            );
+    /// Render the flat session list in the left panel (when present).
+    fn render_left_panel(&mut self, frame: &mut Frame, left_area: Option<Rect>) {
+        let Some(left_area) = left_area else {
+            return;
+        };
+        // Build flat session list: all sessions, with tag names from projects
+        let all_sessions: Vec<&SessionInfo> = self.sessions.iter().map(|s| &s.info).collect();
+        self.session_elapsed_buf.clear();
+        for s in &self.sessions {
+            self.session_elapsed_buf.push(s.millis_since_last_output());
         }
 
-        // Automations pane (beneath the session list in the left column)
-        if let Some(auto_area) = areas.automations_panel {
-            let now = crate::sync::current_time_millis();
-            let entries: Vec<automations_panel::AutomationPaneEntry> = self
-                .cached_automations
-                .iter()
-                .map(|a| automations_panel::AutomationPaneEntry {
-                    name: a.name.clone(),
-                    summary: super::format_automation_summary(a, now),
-                    enabled: a.enabled,
-                })
-                .collect();
-            let focus = match self.focus {
-                InputFocus::Automations => crate::ui::FocusLevel::Focused,
-                // While editing / browsing history in the central pane, keep the
-                // pane "active" so the row being worked on stays marked.
-                InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => {
-                    crate::ui::FocusLevel::Active
+        let session_elapsed_buf = self.session_elapsed_buf.clone();
+
+        // Pin admin sessions to the top of the list. All parallel arrays
+        // (elapsed, match_positions) and active_index are remapped so they
+        // stay aligned with the rendered order.
+        let ordered = project_list::OrderedSessions::new(
+            &all_sessions,
+            &session_elapsed_buf,
+            &self.session_match_positions,
+            self.active_index,
+        );
+
+        use crate::ui::FocusLevel;
+        let in_automation_context = matches!(
+            self.focus,
+            InputFocus::Automations
+                | InputFocus::AutomationEditor
+                | InputFocus::AutomationRunHistory
+        );
+        let list_focus = match self.focus {
+            InputFocus::SessionList => FocusLevel::Focused,
+            // In the automations context the central pane shows the
+            // automation, not a session — so the session list reads as fully
+            // unfocused (no accent border, no selected-row highlight; see
+            // `show_selection`).
+            _ if in_automation_context => FocusLevel::Inactive,
+            InputFocus::Terminal | InputFocus::FileViewer => FocusLevel::Active,
+            _ => FocusLevel::Active,
+        };
+        // Suppress the active-session row highlight while the automations
+        // context is active — the active session is irrelevant there.
+        let show_selection = !in_automation_context;
+
+        let match_count = self
+            .session_match_positions
+            .iter()
+            .filter(|m| m.is_some())
+            .count();
+        let total_count = ordered.sessions.len();
+
+        project_list::render_left_panel(
+            frame,
+            left_area,
+            &mut project_list::LeftPanelState {
+                sessions: &ordered.sessions,
+                active_session: ordered.active_index,
+                show_selection,
+                session_elapsed_ms: &ordered.elapsed_ms,
+                session_focus: list_focus,
+                session_list_state: &mut self.session_list_state,
+                search_query: &self.search_input.buffer,
+                search_active: self.search_active,
+                search_cursor: self.search_input.cursor,
+                session_match_positions: &ordered.match_positions,
+                session_search_active: !self.session_match_positions.is_empty(),
+                match_count,
+                total_count,
+                first_non_admin_index: ordered.first_non_admin_index,
+            },
+        );
+    }
+
+    /// Render the automations pane beneath the session list (when present).
+    fn render_automations_pane(&self, frame: &mut Frame, auto_area: Option<Rect>) {
+        let Some(auto_area) = auto_area else {
+            return;
+        };
+        let now = crate::sync::current_time_millis();
+        let entries: Vec<automations_panel::AutomationPaneEntry> = self
+            .cached_automations
+            .iter()
+            .map(|a| automations_panel::AutomationPaneEntry {
+                name: a.name.clone(),
+                summary: super::format_automation_summary(a, now),
+                enabled: a.enabled,
+            })
+            .collect();
+        let focus = match self.focus {
+            InputFocus::Automations => crate::ui::FocusLevel::Focused,
+            // While editing / browsing history in the central pane, keep the
+            // pane "active" so the row being worked on stays marked.
+            InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => {
+                crate::ui::FocusLevel::Active
+            }
+            _ => crate::ui::FocusLevel::Inactive,
+        };
+        let selected = self
+            .automation_panel_index
+            .min(entries.len().saturating_sub(1));
+        automations_panel::render_automations_pane(
+            frame,
+            auto_area,
+            &automations_panel::AutomationsPaneState {
+                entries: &entries,
+                selected,
+                focus,
+            },
+        );
+    }
+
+    /// Render the info panel for the active session (when present).
+    fn render_info_panel(&self, frame: &mut Frame, info_area: Option<Rect>) {
+        let Some(info_area) = info_area else {
+            return;
+        };
+        let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) else {
+            return;
+        };
+        let now = crate::sync::current_time_millis();
+        let agent_usage = self.usage.get(&info.agent);
+        let automation_entries: Vec<info_panel::AutomationEntry> = self
+            .cached_automations
+            .iter()
+            .filter(|a| a.enabled && a.next_run_at.is_some())
+            .map(|a| {
+                let remaining = a.next_run_at.unwrap_or(now).saturating_sub(now);
+                info_panel::AutomationEntry {
+                    label: truncate_str(&a.name, 30),
+                    countdown: format_countdown(remaining),
                 }
-                _ => crate::ui::FocusLevel::Inactive,
-            };
-            let selected = self
-                .automation_panel_index
-                .min(entries.len().saturating_sub(1));
-            automations_panel::render_automations_pane(
-                frame,
-                auto_area,
-                &automations_panel::AutomationsPaneState {
-                    entries: &entries,
-                    selected,
-                    focus,
-                },
-            );
-        }
+            })
+            .collect();
+        info_panel::render_info_panel(
+            frame,
+            info_area,
+            info,
+            Some(&self.system_metrics),
+            &automation_entries,
+            agent_usage,
+        );
+    }
 
-        // Info panel
-        if let Some(info_area) = areas.info_panel {
-            if let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) {
-                let now = crate::sync::current_time_millis();
-                let agent_usage = self.usage.get(&info.agent);
-                let automation_entries: Vec<info_panel::AutomationEntry> = self
-                    .cached_automations
-                    .iter()
-                    .filter(|a| a.enabled && a.next_run_at.is_some())
-                    .map(|a| {
-                        let remaining = a.next_run_at.unwrap_or(now).saturating_sub(now);
-                        info_panel::AutomationEntry {
-                            label: truncate_str(&a.name, 30),
-                            countdown: format_countdown(remaining),
-                        }
-                    })
-                    .collect();
-                info_panel::render_info_panel(
-                    frame,
-                    info_area,
-                    info,
-                    Some(&self.system_metrics),
-                    &automation_entries,
-                    agent_usage,
-                );
+    /// Render the file viewer in the right column (when present).
+    fn render_file_viewer(&mut self, frame: &mut Frame, fv_area: Option<Rect>) {
+        let Some(fv_area) = fv_area else {
+            return;
+        };
+        if let Some(session) = self.sessions.get(self.active_index) {
+            if self.file_viewer.needs_rebuild_for(&session.info) {
+                self.file_viewer.rebuild_from_session(&session.info);
             }
+        } else {
+            self.file_viewer.clear();
+        }
+        let fv_focus = match self.focus {
+            InputFocus::FileViewer => crate::ui::FocusLevel::Focused,
+            _ => crate::ui::FocusLevel::Inactive,
+        };
+        file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
+    }
+
+    /// Render the central pane. In the automations context (the pane or its
+    /// editor is focused) it shows a single automation editor — a live preview
+    /// while the list is focused, editable once the editor itself is focused —
+    /// with the scoped automation's run history beneath it. Everything else
+    /// shows the session terminal.
+    fn render_central_pane(&mut self, frame: &mut Frame, terminal: Rect) {
+        if matches!(
+            self.focus,
+            InputFocus::Automations
+                | InputFocus::AutomationEditor
+                | InputFocus::AutomationRunHistory
+        ) {
+            self.render_automation_workspace(frame, terminal);
+            return;
         }
 
-        // File viewer (right column)
-        if let Some(fv_area) = areas.file_viewer {
-            if let Some(session) = self.sessions.get(self.active_index) {
-                if self.file_viewer.needs_rebuild_for(&session.info) {
-                    self.file_viewer.rebuild_from_session(&session.info);
-                }
-            } else {
-                self.file_viewer.clear();
-            }
-            let fv_focus = match self.focus {
-                InputFocus::FileViewer => crate::ui::FocusLevel::Focused,
-                _ => crate::ui::FocusLevel::Inactive,
-            };
-            file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
-        }
-
-        // Central pane. In the automations context (the pane or its editor is
-        // focused) it shows a single automation editor — a live preview while
-        // the list is focused, editable once the editor itself is focused — with
-        // the scoped automation's run history beneath it. Everything else shows
-        // the session terminal.
         let terminal_focus = match self.focus {
             InputFocus::Terminal => crate::ui::FocusLevel::Focused,
             InputFocus::SessionList
@@ -210,39 +249,33 @@ impl App {
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
 
-        if matches!(
-            self.focus,
-            InputFocus::Automations
-                | InputFocus::AutomationEditor
-                | InputFocus::AutomationRunHistory
-        ) {
-            self.render_automation_workspace(frame, areas.terminal);
+        let Some(session) = self.sessions.get(self.active_index) else {
+            terminal_view::render_empty_terminal(frame, terminal);
+            return;
+        };
+        let is_admin_project = session.info.is_admin;
+        let parser_arc = if is_shell_view {
+            session.shell_pane.as_ref().map(|sp| &sp.parser)
         } else {
-            match self.sessions.get(self.active_index) {
-                Some(session) => {
-                    let is_admin_project = session.info.is_admin;
-                    let parser_arc = if is_shell_view {
-                        session.shell_pane.as_ref().map(|sp| &sp.parser)
-                    } else {
-                        None
-                    }
-                    .unwrap_or(&session.parser);
-                    if let Ok(mut parser) = parser_arc.lock() {
-                        terminal_view::render_terminal(
-                            frame,
-                            areas.terminal,
-                            &mut parser,
-                            &session.info,
-                            terminal_focus,
-                            is_admin_project,
-                            is_shell_view,
-                        );
-                    }
-                }
-                None => terminal_view::render_empty_terminal(frame, areas.terminal),
-            }
+            None
         }
+        .unwrap_or(&session.parser);
+        if let Ok(mut parser) = parser_arc.lock() {
+            terminal_view::render_terminal(
+                frame,
+                terminal,
+                &mut parser,
+                &session.info,
+                terminal_focus,
+                is_admin_project,
+                is_shell_view,
+            );
+        }
+    }
 
+    /// Render the bottom status-bar footer.
+    fn render_footer(&self, frame: &mut Frame, footer: Rect) {
+        let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
         let focus_label = match self.focus {
             InputFocus::SessionList => "Sessions",
             InputFocus::Automations => "Automations",
@@ -254,7 +287,7 @@ impl App {
         };
         status_bar::render_footer(
             frame,
-            areas.footer,
+            footer,
             &status_bar::FooterState {
                 session_count: self.sessions.len(),
                 status: self.status_message.as_ref(),
@@ -265,7 +298,10 @@ impl App {
                 file_viewer_open: self.show_file_viewer,
             },
         );
+    }
 
+    /// Render any active modal overlay on top of everything else.
+    fn render_modals(&self, frame: &mut Frame) {
         // Help overlay (rendered last, on top of everything)
         if matches!(self.modal, super::modals::Modal::Help) {
             render_help_overlay(frame, &self.keybindings);
@@ -416,45 +452,51 @@ impl App {
                 },
             );
         }
+    }
 
-        // Repaint cells that fell back to terminal-default colours with the
-        // active theme's background and primary text. Themes whose `app_bg`
-        // is `Color::Reset` (e.g. the ANSI-based Default preset) skip this
-        // step so they continue to honour the user's terminal palette.
+    /// Repaint cells that fell back to terminal-default colours with the
+    /// active theme's background and primary text. Themes whose `app_bg`
+    /// is `Color::Reset` (e.g. the ANSI-based Default preset) skip this
+    /// step so they continue to honour the user's terminal palette.
+    fn repaint_theme_background(&self, frame: &mut Frame) {
         let app_bg = Theme::app_bg();
-        if app_bg != ratatui::style::Color::Reset {
-            let text_primary = Theme::text_primary();
-            let area = frame.area();
-            let buf = frame.buffer_mut();
-            for y in area.y..area.y + area.height {
-                for x in area.x..area.x + area.width {
-                    let pos = ratatui::layout::Position::new(x, y);
-                    if let Some(cell) = buf.cell_mut(pos) {
-                        if cell.bg == ratatui::style::Color::Reset {
-                            cell.bg = app_bg;
-                        }
-                        if cell.fg == ratatui::style::Color::Reset {
-                            cell.fg = text_primary;
-                        }
+        if app_bg == ratatui::style::Color::Reset {
+            return;
+        }
+        let text_primary = Theme::text_primary();
+        let area = frame.area();
+        let buf = frame.buffer_mut();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                let pos = ratatui::layout::Position::new(x, y);
+                if let Some(cell) = buf.cell_mut(pos) {
+                    if cell.bg == ratatui::style::Color::Reset {
+                        cell.bg = app_bg;
+                    }
+                    if cell.fg == ratatui::style::Color::Reset {
+                        cell.fg = text_primary;
                     }
                 }
             }
         }
+    }
 
-        // Selection highlight and text cache — runs after all rendering.
-        if let Some(ref sel) = self.text_selection {
-            let sel_style = Style::default()
-                .bg(Theme::selection_bg())
-                .fg(Theme::selection_fg());
-            let sel_clone = sel.clone();
-
-            selection::highlight_buffer(frame.buffer_mut(), &sel_clone, sel_style);
-
-            let text = selection::extract_text_from_buffer(frame.buffer_mut(), &sel_clone);
-            self.selected_text_cache = if text.is_empty() { None } else { Some(text) };
-        } else {
+    /// Apply the selection highlight and refresh the selected-text cache —
+    /// runs after all rendering.
+    fn apply_selection_highlight(&mut self, frame: &mut Frame) {
+        let Some(ref sel) = self.text_selection else {
             self.selected_text_cache = None;
-        }
+            return;
+        };
+        let sel_style = Style::default()
+            .bg(Theme::selection_bg())
+            .fg(Theme::selection_fg());
+        let sel_clone = sel.clone();
+
+        selection::highlight_buffer(frame.buffer_mut(), &sel_clone, sel_style);
+
+        let text = selection::extract_text_from_buffer(frame.buffer_mut(), &sel_clone);
+        self.selected_text_cache = if text.is_empty() { None } else { Some(text) };
     }
 
     /// Render the single central-pane automation view: the editor for the

@@ -6,19 +6,11 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
     let shift = modifiers.contains(KeyModifiers::SHIFT);
     let alt = modifiers.contains(KeyModifiers::ALT);
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    let modifier_param = xterm_modifier(shift, alt, ctrl);
 
     // Ctrl+letter → control character (0x01..=0x1A), optionally wrapped with ESC for Alt
-    if ctrl && !shift {
-        if let KeyCode::Char(c) = code {
-            if c.is_ascii_alphabetic() {
-                let ctrl_byte = c.to_ascii_lowercase() as u8 - b'a' + 1;
-                return Some(if alt {
-                    vec![0x1b, ctrl_byte]
-                } else {
-                    vec![ctrl_byte]
-                });
-            }
-        }
+    if let Some(bytes) = ctrl_letter_bytes(code, shift, alt, ctrl) {
+        return Some(bytes);
     }
 
     // Shift+Enter → ESC [ 13;2u (xterm modifyOtherKeys / kitty protocol)
@@ -32,22 +24,13 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
     }
 
     // Cursor keys & navigation with modifiers: CSI 1;<mod> X
-    let modifier_param = xterm_modifier(shift, alt, ctrl);
-    if let Some(suffix) = cursor_key_suffix(code) {
-        return if modifier_param > 1 {
-            Some(format!("\x1b[1;{modifier_param}{suffix}").into_bytes())
-        } else {
-            Some(format!("\x1b[{suffix}").into_bytes())
-        };
+    if let Some(bytes) = cursor_key_bytes(code, modifier_param) {
+        return Some(bytes);
     }
 
     // Extended keys with modifiers: CSI <num>;<mod> ~
-    if let Some(num) = extended_key_num(code) {
-        return if modifier_param > 1 {
-            Some(format!("\x1b[{num};{modifier_param}~").into_bytes())
-        } else {
-            Some(format!("\x1b[{num}~").into_bytes())
-        };
+    if let Some(bytes) = extended_key_bytes(code, modifier_param) {
+        return Some(bytes);
     }
 
     // F-keys
@@ -57,40 +40,80 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
 
     // Alt wraps the inner byte with ESC prefix
     if alt {
-        if let KeyCode::Char(c) = code {
-            let mut buf = [0u8; 4];
-            let s = c.encode_utf8(&mut buf);
-            let mut result = vec![0x1b];
-            result.extend_from_slice(s.as_bytes());
-            return Some(result);
-        }
-        // Alt+Enter, Alt+Backspace, etc.
-        let inner = unmodified_key(code)?;
-        let mut result = vec![0x1b];
-        result.extend(inner);
-        return Some(result);
+        return alt_bytes(code);
     }
 
     // Shift+Char: just send the character (already uppercase/shifted by crossterm)
     if shift {
         if let KeyCode::Char(c) = code {
-            let mut buf = [0u8; 4];
-            let s = c.encode_utf8(&mut buf);
-            return Some(s.as_bytes().to_vec());
+            return Some(char_bytes(c));
         }
     }
 
     unmodified_key(code)
 }
 
+/// Encode a `char` as its UTF-8 bytes.
+fn char_bytes(c: char) -> Vec<u8> {
+    let mut buf = [0u8; 4];
+    c.encode_utf8(&mut buf).as_bytes().to_vec()
+}
+
+/// Ctrl+letter → control character (0x01..=0x1A), optionally ESC-wrapped for Alt.
+fn ctrl_letter_bytes(code: KeyCode, shift: bool, alt: bool, ctrl: bool) -> Option<Vec<u8>> {
+    if !ctrl || shift {
+        return None;
+    }
+    let KeyCode::Char(c) = code else {
+        return None;
+    };
+    if !c.is_ascii_alphabetic() {
+        return None;
+    }
+    let ctrl_byte = c.to_ascii_lowercase() as u8 - b'a' + 1;
+    Some(if alt {
+        vec![0x1b, ctrl_byte]
+    } else {
+        vec![ctrl_byte]
+    })
+}
+
+/// Cursor/navigation keys: CSI 1;<mod> X (or CSI X when unmodified).
+fn cursor_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
+    let suffix = cursor_key_suffix(code)?;
+    Some(if modifier_param > 1 {
+        format!("\x1b[1;{modifier_param}{suffix}").into_bytes()
+    } else {
+        format!("\x1b[{suffix}").into_bytes()
+    })
+}
+
+/// Extended keys (Insert/Delete/PageUp/PageDown): CSI <num>;<mod> ~ (or CSI <num> ~).
+fn extended_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
+    let num = extended_key_num(code)?;
+    Some(if modifier_param > 1 {
+        format!("\x1b[{num};{modifier_param}~").into_bytes()
+    } else {
+        format!("\x1b[{num}~").into_bytes()
+    })
+}
+
+/// Alt-modified key: ESC prefix wrapping the inner (unmodified) byte sequence.
+fn alt_bytes(code: KeyCode) -> Option<Vec<u8>> {
+    let inner = match code {
+        KeyCode::Char(c) => char_bytes(c),
+        // Alt+Enter, Alt+Backspace, etc.
+        _ => unmodified_key(code)?,
+    };
+    let mut result = vec![0x1b];
+    result.extend(inner);
+    Some(result)
+}
+
 /// Plain key without modifiers.
 fn unmodified_key(code: KeyCode) -> Option<Vec<u8>> {
     match code {
-        KeyCode::Char(c) => {
-            let mut buf = [0u8; 4];
-            let s = c.encode_utf8(&mut buf);
-            Some(s.as_bytes().to_vec())
-        }
+        KeyCode::Char(c) => Some(char_bytes(c)),
         KeyCode::Enter => Some(vec![b'\r']),
         KeyCode::Backspace => Some(vec![0x7f]),
         KeyCode::Tab => Some(vec![b'\t']),

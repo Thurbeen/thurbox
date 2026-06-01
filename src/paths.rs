@@ -342,6 +342,27 @@ fn longest_common_prefix(strings: &[String]) -> String {
     first[..prefix_len].to_string()
 }
 
+/// Directory names directly under `parent` that start with `prefix`. Hidden
+/// entries (`.`-prefixed) are included only when `prefix` itself is hidden.
+/// Returns an empty vec when `parent` can't be read.
+fn matching_dir_names(parent: &Path, prefix: &str) -> Vec<String> {
+    let show_hidden = prefix.starts_with('.');
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            if !show_hidden && name.starts_with('.') {
+                return None;
+            }
+            name.starts_with(prefix).then_some(name)
+        })
+        .collect()
+}
+
 /// Fish-style directory path completion.
 ///
 /// Given a partial path input, returns the suffix to complete it.
@@ -374,25 +395,7 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
         (parent, file_name.to_string())
     };
 
-    let entries = std::fs::read_dir(&parent).ok()?;
-
-    let show_hidden = prefix.starts_with('.');
-
-    let matches: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
-        .filter_map(|e| {
-            let name = e.file_name().to_str()?.to_string();
-            if !show_hidden && name.starts_with('.') {
-                return None;
-            }
-            if name.starts_with(&prefix) {
-                Some(name)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let matches = matching_dir_names(&parent, &prefix);
 
     if matches.is_empty() {
         return None;

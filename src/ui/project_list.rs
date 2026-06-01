@@ -326,36 +326,49 @@ fn render_search_bar(
         query
     };
 
-    let (before, after) = if cursor <= display_query.chars().count() {
-        let byte_pos = display_query
-            .char_indices()
-            .nth(cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(display_query.len());
-        (&display_query[..byte_pos], &display_query[byte_pos..])
-    } else {
-        (display_query, "")
-    };
+    let (before, after) = split_query_at_cursor(display_query, cursor);
 
     let mut spans = vec![Span::styled(prefix, style), Span::styled(before, style)];
-
-    if is_active {
-        let first_char_len = after.chars().next().map_or(0, |c| c.len_utf8());
-        let cursor_char = if first_char_len == 0 {
-            " "
-        } else {
-            &after[..first_char_len]
-        };
-        spans.push(Span::styled(cursor_char, Theme::cursor()));
-        let rest = &after[first_char_len..];
-        if !rest.is_empty() {
-            spans.push(Span::styled(rest, style));
-        }
-    } else {
-        spans.push(Span::styled(after, style));
-    }
+    push_search_after_spans(&mut spans, after, is_active, style);
 
     frame.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+/// Split a display query into the slices before and after the cursor.
+fn split_query_at_cursor(display_query: &str, cursor: usize) -> (&str, &str) {
+    if cursor > display_query.chars().count() {
+        return (display_query, "");
+    }
+    let byte_pos = display_query
+        .char_indices()
+        .nth(cursor)
+        .map(|(i, _)| i)
+        .unwrap_or(display_query.len());
+    (&display_query[..byte_pos], &display_query[byte_pos..])
+}
+
+/// Append the post-cursor spans, drawing the cursor cell when the bar is active.
+fn push_search_after_spans<'a>(
+    spans: &mut Vec<Span<'a>>,
+    after: &'a str,
+    is_active: bool,
+    style: Style,
+) {
+    if !is_active {
+        spans.push(Span::styled(after, style));
+        return;
+    }
+    let first_char_len = after.chars().next().map_or(0, |c| c.len_utf8());
+    let cursor_char = if first_char_len == 0 {
+        " "
+    } else {
+        &after[..first_char_len]
+    };
+    spans.push(Span::styled(cursor_char, Theme::cursor()));
+    let rest = &after[first_char_len..];
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest, style));
+    }
 }
 
 /// Build spans for a name with fuzzy-matched characters highlighted.
@@ -438,20 +451,7 @@ fn render_session_section(
     }
 
     if sessions.is_empty() {
-        let text = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "No sessions yet",
-                Style::default().fg(Theme::text_muted()),
-            )),
-            Line::from(Span::styled(
-                "Press Ctrl+N to create one",
-                Style::default().fg(Theme::text_muted()),
-            )),
-        ])
-        .block(block)
-        .alignment(ratatui::layout::Alignment::Center);
-        frame.render_widget(text, area);
+        render_empty_sessions(frame, area, block);
         return;
     }
 
@@ -465,150 +465,26 @@ fn render_session_section(
         .enumerate()
         .map(|(i, info)| {
             let is_active = i == active_index && show_selection;
-            let is_admin = info.is_admin;
-
-            // Determine if this session is dimmed (search active + no match).
             let session_match = match_positions.get(i).and_then(|m| m.as_ref());
             let is_dimmed = search_active && session_match.is_none();
-            let name_style = if is_dimmed {
-                Style::default().fg(Theme::text_muted())
-            } else if is_active {
-                Theme::selected_item()
-            } else {
-                Theme::normal_item()
-            };
-            let status_style = if is_dimmed {
-                Style::default().fg(Theme::text_muted())
-            } else {
-                Style::default().fg(super::status_color(info.status))
-            };
 
-            // ── Line 1: <status-dot> <name> ........... <status> ──
-            // The active row is signalled by the list's highlight background,
-            // so no extra pointer glyph is needed; admin sessions keep a gear.
-            let prefix_str = if is_admin {
-                format!(" \u{2699} {} ", info.status.icon())
-            } else {
-                format!(" {} ", info.status.icon())
-            };
-            let prefix_style = if is_admin && !is_dimmed {
-                Style::default().fg(Theme::admin_badge())
-            } else {
-                status_style
-            };
-
-            let mut line1_spans = vec![Span::styled(prefix_str.clone(), prefix_style)];
-            append_name_spans(
-                &mut line1_spans,
-                &info.name,
-                session_match.and_then(|m| m.positions(&m.name)),
-                name_style,
-            );
-
-            // Right-aligned live status. Priority:
-            //   1. Attention → the agent's notification message ("Needs attention").
-            //   2. The agent-reported OSC activity title (richer "insight").
-            //   3. Timing-based Busy/Waiting with elapsed time.
-            let status_text = if info.status == crate::session::SessionStatus::Attention {
-                info.notification
-                    .clone()
-                    .unwrap_or_else(|| info.status.to_string())
-            } else {
-                info.agent_activity
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
-                        format_status_with_elapsed(info.status, elapsed_ms.get(i).copied())
-                    })
-            };
-            let prefix_w = prefix_str.chars().count();
-            let name_w = info.name.chars().count();
-            let avail = inner_width.saturating_sub(prefix_w + name_w + 1);
-            let status_shown = truncate_ellipsis(&status_text, avail);
-            if !status_shown.is_empty() {
-                let used = prefix_w + name_w + status_shown.chars().count();
-                let gap = inner_width.saturating_sub(used).max(1);
-                line1_spans.push(Span::raw(" ".repeat(gap)));
-                line1_spans.push(Span::styled(status_shown, status_style));
-            }
-            let mut item_lines = vec![Line::from(line1_spans)];
-
-            // ── Line 2: <agent> · <repo>(<branch>), … ──
-            let entries = build_repo_entries(info);
-            let mut line2_spans: Vec<Span<'static>> = vec![Span::raw("   ")];
-
-            // Agent name (role-coloured, fuzzy-searchable).
-            let agent_style = if is_dimmed {
-                Style::default().fg(Theme::text_muted())
-            } else {
-                Style::default().fg(Theme::role_name())
-            };
-            match session_match.and_then(|m| m.positions(&m.agent)) {
-                Some(positions) if !positions.is_empty() => {
-                    line2_spans.extend(
-                        build_highlighted_spans(&info.agent, positions, agent_style)
-                            .into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(), s.style)),
-                    );
-                }
-                _ => line2_spans.push(Span::styled(info.agent.clone(), agent_style)),
-            }
-
-            // Repos (when any), separated from the agent by " · ".
-            if !entries.is_empty() {
-                let muted = Style::default().fg(Theme::text_muted());
-                line2_spans.push(Span::styled(" · ", muted));
-                if is_dimmed {
-                    line2_spans.push(Span::styled(format_repo_entries_plain(&entries), muted));
-                } else {
-                    let repo_style = Style::default().fg(Theme::text_primary());
-                    let branch_style = Style::default().fg(Theme::branch_name());
-
-                    let plain = format_repo_entries_plain(&entries);
-                    let search_positions = if !search_query.is_empty() {
-                        crate::fuzzy::fuzzy_match(search_query, &plain).map(|m| m.positions)
-                    } else {
-                        None
-                    };
-
-                    match search_positions {
-                        Some(ref positions) if !positions.is_empty() => {
-                            line2_spans.extend(
-                                build_highlighted_spans(&plain, positions, repo_style)
-                                    .into_iter()
-                                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
-                            );
-                        }
-                        _ => {
-                            // No (matching) search — render with colored branches.
-                            for (j, entry) in entries.iter().enumerate() {
-                                if j > 0 {
-                                    line2_spans.push(Span::styled(", ", muted));
-                                }
-                                line2_spans.push(Span::styled(entry.name.clone(), repo_style));
-                                if let Some(ref br) = entry.branch {
-                                    line2_spans.push(Span::styled("(", branch_style));
-                                    line2_spans.push(Span::styled(br.clone(), branch_style));
-                                    line2_spans.push(Span::styled(")", branch_style));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            item_lines.push(Line::from(line2_spans));
+            let mut item_lines = vec![
+                build_session_line1(
+                    info,
+                    i,
+                    session_match,
+                    is_active,
+                    is_dimmed,
+                    elapsed_ms,
+                    inner_width,
+                ),
+                build_session_line2(info, session_match, is_dimmed, search_query),
+            ];
 
             // Prepend a subtle divider above the first non-admin session when
             // admin sessions are pinned above it.
             if first_non_admin_index == Some(i) && i > 0 {
-                let divider_width = inner_width.max(1);
-                let divider = Line::from(Span::styled(
-                    "\u{2500}".repeat(divider_width),
-                    Style::default().fg(Theme::text_muted()),
-                ));
-                item_lines.insert(0, divider);
+                item_lines.insert(0, divider_line(inner_width));
             }
 
             item_heights.push(item_lines.len() as u16);
@@ -627,6 +503,202 @@ fn render_session_section(
     frame.render_stateful_widget(list, area, list_state);
 
     render_scroll_indicators_variable(frame, area, list_state, &item_heights);
+}
+
+/// Render the centered "no sessions yet" placeholder inside the given block.
+fn render_empty_sessions(frame: &mut Frame, area: Rect, block: ratatui::widgets::Block) {
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "No sessions yet",
+            Style::default().fg(Theme::text_muted()),
+        )),
+        Line::from(Span::styled(
+            "Press Ctrl+N to create one",
+            Style::default().fg(Theme::text_muted()),
+        )),
+    ])
+    .block(block)
+    .alignment(ratatui::layout::Alignment::Center);
+    frame.render_widget(text, area);
+}
+
+/// A subtle full-width divider used above the first non-admin session.
+fn divider_line(inner_width: usize) -> Line<'static> {
+    let divider_width = inner_width.max(1);
+    Line::from(Span::styled(
+        "\u{2500}".repeat(divider_width),
+        Style::default().fg(Theme::text_muted()),
+    ))
+}
+
+/// Resolve the right-aligned live status text for a session row. Priority:
+///   1. Attention → the agent's notification message ("Needs attention").
+///   2. The agent-reported OSC activity title (richer "insight").
+///   3. Timing-based Busy/Waiting with elapsed time.
+fn session_status_text(info: &SessionInfo, elapsed: Option<u64>) -> String {
+    if info.status == crate::session::SessionStatus::Attention {
+        return info
+            .notification
+            .clone()
+            .unwrap_or_else(|| info.status.to_string());
+    }
+    info.agent_activity
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format_status_with_elapsed(info.status, elapsed))
+}
+
+/// Build line 1 of a session entry: `<status-dot> <name> ........... <status>`.
+///
+/// The active row is signalled by the list's highlight background, so no extra
+/// pointer glyph is needed; admin sessions keep a gear.
+fn build_session_line1<'a>(
+    info: &'a SessionInfo,
+    i: usize,
+    session_match: Option<&SessionMatch>,
+    is_active: bool,
+    is_dimmed: bool,
+    elapsed_ms: &[u64],
+    inner_width: usize,
+) -> Line<'a> {
+    let name_style = if is_dimmed {
+        Style::default().fg(Theme::text_muted())
+    } else if is_active {
+        Theme::selected_item()
+    } else {
+        Theme::normal_item()
+    };
+    let status_style = if is_dimmed {
+        Style::default().fg(Theme::text_muted())
+    } else {
+        Style::default().fg(super::status_color(info.status))
+    };
+
+    let prefix_str = if info.is_admin {
+        format!(" \u{2699} {} ", info.status.icon())
+    } else {
+        format!(" {} ", info.status.icon())
+    };
+    let prefix_style = if info.is_admin && !is_dimmed {
+        Style::default().fg(Theme::admin_badge())
+    } else {
+        status_style
+    };
+
+    let mut line1_spans = vec![Span::styled(prefix_str.clone(), prefix_style)];
+    append_name_spans(
+        &mut line1_spans,
+        &info.name,
+        session_match.and_then(|m| m.positions(&m.name)),
+        name_style,
+    );
+
+    let status_text = session_status_text(info, elapsed_ms.get(i).copied());
+    let prefix_w = prefix_str.chars().count();
+    let name_w = info.name.chars().count();
+    let avail = inner_width.saturating_sub(prefix_w + name_w + 1);
+    let status_shown = truncate_ellipsis(&status_text, avail);
+    if !status_shown.is_empty() {
+        let used = prefix_w + name_w + status_shown.chars().count();
+        let gap = inner_width.saturating_sub(used).max(1);
+        line1_spans.push(Span::raw(" ".repeat(gap)));
+        line1_spans.push(Span::styled(status_shown, status_style));
+    }
+    Line::from(line1_spans)
+}
+
+/// Append the agent name (role-coloured, fuzzy-searchable) to line 2.
+fn push_agent_spans(
+    line2_spans: &mut Vec<Span<'static>>,
+    info: &SessionInfo,
+    session_match: Option<&SessionMatch>,
+    is_dimmed: bool,
+) {
+    let agent_style = if is_dimmed {
+        Style::default().fg(Theme::text_muted())
+    } else {
+        Style::default().fg(Theme::role_name())
+    };
+    match session_match.and_then(|m| m.positions(&m.agent)) {
+        Some(positions) if !positions.is_empty() => {
+            line2_spans.extend(
+                build_highlighted_spans(&info.agent, positions, agent_style)
+                    .into_iter()
+                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
+            );
+        }
+        _ => line2_spans.push(Span::styled(info.agent.clone(), agent_style)),
+    }
+}
+
+/// Append the repo entries (with branches) to line 2, after a " · " separator.
+fn push_repo_spans(
+    line2_spans: &mut Vec<Span<'static>>,
+    entries: &[RepoEntry],
+    is_dimmed: bool,
+    search_query: &str,
+) {
+    let muted = Style::default().fg(Theme::text_muted());
+    line2_spans.push(Span::styled(" · ", muted));
+
+    if is_dimmed {
+        line2_spans.push(Span::styled(format_repo_entries_plain(entries), muted));
+        return;
+    }
+
+    let repo_style = Style::default().fg(Theme::text_primary());
+    let branch_style = Style::default().fg(Theme::branch_name());
+
+    let plain = format_repo_entries_plain(entries);
+    let search_positions = if !search_query.is_empty() {
+        crate::fuzzy::fuzzy_match(search_query, &plain).map(|m| m.positions)
+    } else {
+        None
+    };
+
+    if let Some(positions) = search_positions.filter(|p| !p.is_empty()) {
+        line2_spans.extend(
+            build_highlighted_spans(&plain, &positions, repo_style)
+                .into_iter()
+                .map(|s| Span::styled(s.content.into_owned(), s.style)),
+        );
+        return;
+    }
+
+    // No (matching) search — render with colored branches.
+    for (j, entry) in entries.iter().enumerate() {
+        if j > 0 {
+            line2_spans.push(Span::styled(", ", muted));
+        }
+        line2_spans.push(Span::styled(entry.name.clone(), repo_style));
+        if let Some(ref br) = entry.branch {
+            line2_spans.push(Span::styled("(", branch_style));
+            line2_spans.push(Span::styled(br.clone(), branch_style));
+            line2_spans.push(Span::styled(")", branch_style));
+        }
+    }
+}
+
+/// Build line 2 of a session entry: `<agent> · <repo>(<branch>), …`.
+fn build_session_line2(
+    info: &SessionInfo,
+    session_match: Option<&SessionMatch>,
+    is_dimmed: bool,
+    search_query: &str,
+) -> Line<'static> {
+    let entries = build_repo_entries(info);
+    let mut line2_spans: Vec<Span<'static>> = vec![Span::raw("   ")];
+
+    push_agent_spans(&mut line2_spans, info, session_match, is_dimmed);
+
+    if !entries.is_empty() {
+        push_repo_spans(&mut line2_spans, &entries, is_dimmed, search_query);
+    }
+
+    Line::from(line2_spans)
 }
 
 /// A single repo entry with an optional branch (for worktree repos).

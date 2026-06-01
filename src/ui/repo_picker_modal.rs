@@ -67,22 +67,50 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
 
     // Search bar (when active)
     if let Some(area) = search_area {
-        let match_label = format!(
-            "Search ({}/{})",
-            state.filtered_indices.len(),
-            state.bookmarks.len()
-        );
-        render_text_field(
-            frame,
-            area,
-            &match_label,
-            state.search_query,
-            state.search_cursor,
-            state.focus == RepoPickerFocus::Search,
-        );
+        render_search_bar(frame, area, state);
     }
 
     // Bookmark list with checkboxes
+    render_bookmark_list(frame, list_area, state);
+
+    // Path input
+    render_text_field_with_suggestion(
+        frame,
+        input_area,
+        "Add Repo Path",
+        state.path_input,
+        state.path_cursor,
+        state.focus == RepoPickerFocus::Input,
+        state.path_suggestion,
+    );
+
+    // Footer
+    frame.render_widget(Paragraph::new(footer_line(state)), footer_area);
+}
+
+/// Render the search bar at the top of the modal (only shown when search is active).
+fn render_search_bar(frame: &mut Frame, area: ratatui::layout::Rect, state: &RepoPickerState<'_>) {
+    let match_label = format!(
+        "Search ({}/{})",
+        state.filtered_indices.len(),
+        state.bookmarks.len()
+    );
+    render_text_field(
+        frame,
+        area,
+        &match_label,
+        state.search_query,
+        state.search_cursor,
+        state.focus == RepoPickerFocus::Search,
+    );
+}
+
+/// Render the bookmark list with checkboxes, fuzzy highlighting, and scrolling.
+fn render_bookmark_list(
+    frame: &mut Frame,
+    list_area: ratatui::layout::Rect,
+    state: &RepoPickerState<'_>,
+) {
     let list_focused = state.focus == RepoPickerFocus::List;
     let border_color = if list_focused {
         Theme::border_focused()
@@ -111,88 +139,92 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
             Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(placeholder, list_inner_area);
-    } else {
-        let visible_count = list_inner_area.height as usize;
-        let scroll_offset = if state.list_index >= visible_count {
-            state.list_index - visible_count + 1
-        } else {
-            0
-        };
-
-        let items: Vec<ListItem<'_>> = state
-            .filtered_indices
-            .iter()
-            .enumerate()
-            .skip(scroll_offset)
-            .take(visible_count)
-            .map(|(vi, &real_idx)| {
-                let path = &state.bookmarks[real_idx];
-                let checked = state.selected[real_idx];
-                let is_wt = state.worktree[real_idx];
-                let is_cursor = vi == state.list_index && list_focused;
-
-                let style = if is_cursor {
-                    Theme::selected_item()
-                } else {
-                    Theme::normal_item()
-                };
-
-                let check = if checked { "[x] " } else { "[ ] " };
-                let display = path.display().to_string();
-
-                let mut spans = if !state.search_query.is_empty() {
-                    // Build spans with fuzzy highlight
-                    let positions = crate::fuzzy::fuzzy_match(state.search_query, &display)
-                        .map(|m| m.positions)
-                        .unwrap_or_default();
-                    let mut result = vec![Span::styled(check, style)];
-                    let mut last = 0;
-                    for &pos in &positions {
-                        if pos > last {
-                            result.push(Span::styled(display[last..pos].to_string(), style));
-                        }
-                        let end = display[pos..]
-                            .chars()
-                            .next()
-                            .map(|c| pos + c.len_utf8())
-                            .unwrap_or(pos + 1);
-                        result.push(Span::styled(
-                            display[pos..end].to_string(),
-                            Style::default().fg(Theme::accent()),
-                        ));
-                        last = end;
-                    }
-                    if last < display.len() {
-                        result.push(Span::styled(display[last..].to_string(), style));
-                    }
-                    result
-                } else {
-                    vec![Span::styled(format!("{check}{display}"), style)]
-                };
-
-                if checked && is_wt {
-                    spans.push(Span::styled(" [wt]", Style::default().fg(Theme::accent())));
-                }
-                ListItem::new(Line::from(spans))
-            })
-            .collect();
-
-        frame.render_widget(List::new(items), list_inner_area);
+        return;
     }
 
-    // Path input
-    render_text_field_with_suggestion(
-        frame,
-        input_area,
-        "Add Repo Path",
-        state.path_input,
-        state.path_cursor,
-        state.focus == RepoPickerFocus::Input,
-        state.path_suggestion,
-    );
+    let visible_count = list_inner_area.height as usize;
+    let scroll_offset = if state.list_index >= visible_count {
+        state.list_index - visible_count + 1
+    } else {
+        0
+    };
 
-    // Footer
-    let footer = match state.focus {
+    let items: Vec<ListItem<'_>> = state
+        .filtered_indices
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_count)
+        .map(|(vi, &real_idx)| bookmark_item(state, vi, real_idx, list_focused))
+        .collect();
+
+    frame.render_widget(List::new(items), list_inner_area);
+}
+
+/// Build a single bookmark list item (checkbox + path + optional `[wt]` marker).
+fn bookmark_item<'a>(
+    state: &RepoPickerState<'a>,
+    visible_index: usize,
+    real_idx: usize,
+    list_focused: bool,
+) -> ListItem<'a> {
+    let path = &state.bookmarks[real_idx];
+    let checked = state.selected[real_idx];
+    let is_wt = state.worktree[real_idx];
+    let is_cursor = visible_index == state.list_index && list_focused;
+
+    let style = if is_cursor {
+        Theme::selected_item()
+    } else {
+        Theme::normal_item()
+    };
+
+    let check = if checked { "[x] " } else { "[ ] " };
+    let display = path.display().to_string();
+
+    let mut spans = if state.search_query.is_empty() {
+        vec![Span::styled(format!("{check}{display}"), style)]
+    } else {
+        highlighted_spans(state.search_query, check, &display, style)
+    };
+
+    if checked && is_wt {
+        spans.push(Span::styled(" [wt]", Style::default().fg(Theme::accent())));
+    }
+    ListItem::new(Line::from(spans))
+}
+
+/// Build spans for a bookmark with fuzzy-match positions highlighted in the accent color.
+fn highlighted_spans(query: &str, check: &str, display: &str, style: Style) -> Vec<Span<'static>> {
+    let positions = crate::fuzzy::fuzzy_match(query, display)
+        .map(|m| m.positions)
+        .unwrap_or_default();
+    let mut result = vec![Span::styled(check.to_string(), style)];
+    let mut last = 0;
+    for &pos in &positions {
+        if pos > last {
+            result.push(Span::styled(display[last..pos].to_string(), style));
+        }
+        let end = display[pos..]
+            .chars()
+            .next()
+            .map(|c| pos + c.len_utf8())
+            .unwrap_or(pos + 1);
+        result.push(Span::styled(
+            display[pos..end].to_string(),
+            Style::default().fg(Theme::accent()),
+        ));
+        last = end;
+    }
+    if last < display.len() {
+        result.push(Span::styled(display[last..].to_string(), style));
+    }
+    result
+}
+
+/// Build the footer hint line for the current focus.
+fn footer_line(state: &RepoPickerState<'_>) -> Line<'static> {
+    match state.focus {
         RepoPickerFocus::List => Line::from(vec![
             Span::styled("j/k", Theme::keybind()),
             Span::styled(" nav  ", Theme::keybind_desc()),
@@ -230,6 +262,5 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
             Span::styled("Esc", Theme::keybind()),
             Span::styled(" clear  ", Theme::keybind_desc()),
         ]),
-    };
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    }
 }

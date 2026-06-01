@@ -171,48 +171,7 @@ impl Database {
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
-            let id_str: String = row.get(0)?;
-            let cwd: Option<String> = row.get(6)?;
-            let dirs_str: String = row.get(7)?;
-            let shell_backend_id: Option<String> = row.get(8)?;
-            let wt_repo: Option<String> = row.get(9)?;
-            let wt_path: Option<String> = row.get(10)?;
-            let wt_branch: Option<String> = row.get(11)?;
-
-            let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
-                Vec::new()
-            } else {
-                dirs_str.split('\n').map(PathBuf::from).collect()
-            };
-
-            let worktree = match (wt_repo, wt_path, wt_branch) {
-                (Some(repo), Some(path), Some(branch)) => Some(SharedWorktree {
-                    repo_path: PathBuf::from(repo),
-                    worktree_path: PathBuf::from(path),
-                    branch,
-                }),
-                _ => None,
-            };
-
-            Ok((
-                SharedSession {
-                    id: id_str.parse().unwrap_or_default(),
-                    name: row.get(1)?,
-                    agent: row.get(2)?,
-                    backend_id: row.get(3)?,
-                    backend_type: row.get(4)?,
-                    agent_session_id: row.get(5)?,
-                    cwd: cwd.map(PathBuf::from),
-                    additional_dirs,
-                    worktrees: Vec::new(),
-                    shell_backend_id,
-                    tombstone: false,
-                    tombstone_at: None,
-                },
-                worktree,
-            ))
-        })?;
+        let rows = stmt.query_map([], row_to_shared_session)?;
 
         // Collect rows, merging multiple worktree rows into the same session
         let mut sessions: Vec<SharedSession> = Vec::new();
@@ -318,14 +277,7 @@ impl Database {
             let wt_path: Option<String> = row.get(7)?;
             let wt_branch: Option<String> = row.get(8)?;
 
-            let worktree = match (wt_repo, wt_path, wt_branch) {
-                (Some(repo), Some(path), Some(branch)) => Some(SharedWorktree {
-                    repo_path: PathBuf::from(repo),
-                    worktree_path: PathBuf::from(path),
-                    branch,
-                }),
-                _ => None,
-            };
+            let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
 
             Ok((
                 DeletedSessionInfo {
@@ -361,6 +313,63 @@ impl Database {
 
         Ok(sessions)
     }
+}
+
+/// Build an optional [`SharedWorktree`] from the three nullable worktree
+/// columns of a joined row. Returns `None` unless all three are present.
+fn worktree_from_cols(
+    repo: Option<String>,
+    path: Option<String>,
+    branch: Option<String>,
+) -> Option<SharedWorktree> {
+    match (repo, path, branch) {
+        (Some(repo), Some(path), Some(branch)) => Some(SharedWorktree {
+            repo_path: PathBuf::from(repo),
+            worktree_path: PathBuf::from(path),
+            branch,
+        }),
+        _ => None,
+    }
+}
+
+/// Map a single joined `sessions × worktrees` row into a [`SharedSession`]
+/// plus its optional worktree (see `query_sessions` for the column order).
+fn row_to_shared_session(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(SharedSession, Option<SharedWorktree>)> {
+    let id_str: String = row.get(0)?;
+    let cwd: Option<String> = row.get(6)?;
+    let dirs_str: String = row.get(7)?;
+    let shell_backend_id: Option<String> = row.get(8)?;
+    let wt_repo: Option<String> = row.get(9)?;
+    let wt_path: Option<String> = row.get(10)?;
+    let wt_branch: Option<String> = row.get(11)?;
+
+    let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
+        Vec::new()
+    } else {
+        dirs_str.split('\n').map(PathBuf::from).collect()
+    };
+
+    let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
+
+    Ok((
+        SharedSession {
+            id: id_str.parse().unwrap_or_default(),
+            name: row.get(1)?,
+            agent: row.get(2)?,
+            backend_id: row.get(3)?,
+            backend_type: row.get(4)?,
+            agent_session_id: row.get(5)?,
+            cwd: cwd.map(PathBuf::from),
+            additional_dirs,
+            worktrees: Vec::new(),
+            shell_backend_id,
+            tombstone: false,
+            tombstone_at: None,
+        },
+        worktree,
+    ))
 }
 
 #[cfg(test)]

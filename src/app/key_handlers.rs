@@ -38,85 +38,13 @@ impl App {
     /// 2. Global keybindings (Ctrl+Q, Ctrl+N, etc.)
     /// 3. Focus-based handlers (ProjectList, SessionList, Terminal)
     pub(crate) fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        // Dismiss help overlay with Esc or F1 (toggle)
-        if matches!(self.modal, super::modals::Modal::Help) {
-            if code == KeyCode::Esc || code == KeyCode::F(1) {
-                self.modal.close();
-            }
+        // Help overlay + clipboard chords are routed before any modal handler.
+        if self.handle_priority_key(code, mods) {
             return;
         }
 
-        // Ctrl+V: paste. Routed before modal handlers so they don't swallow
-        // the literal 'v' — `paste_from_clipboard` knows whether a modal text
-        // input is open and routes the text accordingly.
-        if code == KeyCode::Char('v') && mods.contains(KeyModifiers::CONTROL) {
-            self.paste_from_clipboard();
-            return;
-        }
-
-        // Ctrl+C: copy active mouse-drag selection. Routed before modal
-        // handlers so users can copy text from inside any modal. Without an
-        // active selection, falls through to the normal handlers (e.g. SIGINT
-        // when the terminal is focused).
-        if code == KeyCode::Char('c')
-            && mods.contains(KeyModifiers::CONTROL)
-            && self.text_selection.is_some()
-        {
-            self.copy_selection_to_clipboard();
-            return;
-        }
-
-        // Restore sessions modal captures all input
-        if matches!(self.modal, super::modals::Modal::RestoreSessions(_)) {
-            self.handle_restore_sessions_key(code);
-            return;
-        }
-
-        // Branch selector modal captures all input
-        if matches!(self.modal, super::modals::Modal::BranchSelector(_)) {
-            self.handle_branch_selector_key(code);
-            return;
-        }
-
-        // Worktree name modal captures all input
-        if matches!(self.modal, super::modals::Modal::WorktreeName(_)) {
-            self.handle_worktree_name_key(code);
-            return;
-        }
-
-        // Session name modal captures all input
-        if matches!(self.modal, super::modals::Modal::SessionName(_)) {
-            self.handle_session_name_key(code);
-            return;
-        }
-
-        // Automation editor modal captures all input
-        if matches!(self.modal, super::modals::Modal::AutomationEditor(_)) {
-            self.handle_automation_editor_key(code, mods);
-            return;
-        }
-
-        // Automations list modal captures all input
-        if matches!(self.modal, super::modals::Modal::AutomationsList(_)) {
-            self.handle_automations_list_key(code);
-            return;
-        }
-
-        // Agent picker modal captures all input
-        if matches!(self.modal, super::modals::Modal::AgentPicker(_)) {
-            self.handle_agent_picker_key(code);
-            return;
-        }
-
-        // Theme picker modal captures all input
-        if matches!(self.modal, super::modals::Modal::ThemePicker(_)) {
-            self.handle_theme_picker_key(code);
-            return;
-        }
-
-        // Repo picker modal captures all input
-        if matches!(self.modal, super::modals::Modal::RepoPicker(_)) {
-            self.handle_repo_picker_key(code);
+        // An open modal captures all input.
+        if self.handle_modal_key_if_open(code, mods) {
             return;
         }
 
@@ -130,34 +58,9 @@ impl App {
         self.text_selection = None;
 
         // The in-pane automation editor / run-history capture input like the
-        // overlay modal — so editor chords (e.g. Ctrl+E to toggle enabled) reach
-        // the form instead of firing a global binding (Ctrl+E = file viewer).
-        // Focus navigation (Ctrl+L/H) and quit still pass through to the global
-        // handler so you can move between panes.
-        if matches!(
-            self.focus,
-            InputFocus::AutomationEditor | InputFocus::AutomationRunHistory
-        ) {
-            let passthrough = matches!(
-                self.keybindings.lookup(code, mods),
-                Some(
-                    crate::session::Action::FocusForward
-                        | crate::session::Action::FocusBackward
-                        | crate::session::Action::QuitApp
-                )
-            );
-            if !passthrough {
-                match self.focus {
-                    InputFocus::AutomationEditor => {
-                        self.handle_automation_editor_pane_key(code, mods)
-                    }
-                    InputFocus::AutomationRunHistory => {
-                        self.handle_automation_run_history_key(code)
-                    }
-                    _ => unreachable!(),
-                }
-                return;
-            }
+        // overlay modal (see `handle_automation_pane_capture`).
+        if self.handle_automation_pane_capture(code, mods) {
+            return;
         }
 
         // Global keybindings (always active) — driven by user-customizable
@@ -178,6 +81,90 @@ impl App {
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
             InputFocus::FileViewer => self.handle_file_viewer_key(code, mods),
         }
+    }
+
+    /// Help-overlay dismissal and clipboard chords, routed ahead of modal
+    /// handlers. Returns `true` if the key was consumed.
+    fn handle_priority_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        // Dismiss help overlay with Esc or F1 (toggle)
+        if matches!(self.modal, super::modals::Modal::Help) {
+            if code == KeyCode::Esc || code == KeyCode::F(1) {
+                self.modal.close();
+            }
+            return true;
+        }
+
+        // Ctrl+V: paste. Routed before modal handlers so they don't swallow
+        // the literal 'v' — `paste_from_clipboard` knows whether a modal text
+        // input is open and routes the text accordingly.
+        if code == KeyCode::Char('v') && mods.contains(KeyModifiers::CONTROL) {
+            self.paste_from_clipboard();
+            return true;
+        }
+
+        // Ctrl+C: copy active mouse-drag selection. Routed before modal
+        // handlers so users can copy text from inside any modal. Without an
+        // active selection, falls through to the normal handlers (e.g. SIGINT
+        // when the terminal is focused).
+        if code == KeyCode::Char('c')
+            && mods.contains(KeyModifiers::CONTROL)
+            && self.text_selection.is_some()
+        {
+            self.copy_selection_to_clipboard();
+            return true;
+        }
+
+        false
+    }
+
+    /// Route the key to the open modal's handler, if any. Returns `true` if a
+    /// modal was open and consumed the key.
+    fn handle_modal_key_if_open(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        use super::modals::Modal;
+        match self.modal {
+            Modal::RestoreSessions(_) => self.handle_restore_sessions_key(code),
+            Modal::BranchSelector(_) => self.handle_branch_selector_key(code),
+            Modal::WorktreeName(_) => self.handle_worktree_name_key(code),
+            Modal::SessionName(_) => self.handle_session_name_key(code),
+            Modal::AutomationEditor(_) => self.handle_automation_editor_key(code, mods),
+            Modal::AutomationsList(_) => self.handle_automations_list_key(code),
+            Modal::AgentPicker(_) => self.handle_agent_picker_key(code),
+            Modal::ThemePicker(_) => self.handle_theme_picker_key(code),
+            Modal::RepoPicker(_) => self.handle_repo_picker_key(code),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The in-pane automation editor / run-history capture input like the
+    /// overlay modal — so editor chords (e.g. Ctrl+E to toggle enabled) reach
+    /// the form instead of firing a global binding (Ctrl+E = file viewer).
+    /// Focus navigation (Ctrl+L/H) and quit still pass through to the global
+    /// handler so you can move between panes. Returns `true` if consumed.
+    fn handle_automation_pane_capture(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        if !matches!(
+            self.focus,
+            InputFocus::AutomationEditor | InputFocus::AutomationRunHistory
+        ) {
+            return false;
+        }
+        let passthrough = matches!(
+            self.keybindings.lookup(code, mods),
+            Some(
+                crate::session::Action::FocusForward
+                    | crate::session::Action::FocusBackward
+                    | crate::session::Action::QuitApp
+            )
+        );
+        if passthrough {
+            return false;
+        }
+        match self.focus {
+            InputFocus::AutomationEditor => self.handle_automation_editor_pane_key(code, mods),
+            InputFocus::AutomationRunHistory => self.handle_automation_run_history_key(code),
+            _ => unreachable!(),
+        }
+        true
     }
 
     /// The ordered focus ring for the **current context**. `Ctrl+L`/`Ctrl+H`
@@ -1012,56 +999,19 @@ impl App {
     }
 
     pub(crate) fn start_branch_selection(&mut self) {
-        let Some(repo_path) = self.pending_repo_path.as_ref() else {
+        let Some(repo_path) = self.pending_repo_path.clone() else {
             return;
         };
 
-        // Fetch origin so branches are up-to-date. Non-fatal on failure.
-        if let Err(e) = crate::git::git_fetch(repo_path) {
-            warn!("git fetch origin failed (continuing): {e:#}");
-        }
-        if let Some(ref all_repos) = self.pending_all_repos {
-            for extra_repo in all_repos.iter().skip(1) {
-                if let Err(e) = crate::git::git_fetch(extra_repo) {
-                    warn!(
-                        "git fetch origin failed for {} (continuing): {e:#}",
-                        extra_repo.display()
-                    );
-                }
-            }
-        }
+        Self::fetch_pending_repos(&repo_path, self.pending_all_repos.as_ref());
 
-        match crate::git::list_branches(repo_path) {
+        match crate::git::list_branches(&repo_path) {
             Ok(branches) if branches.is_empty() => {
                 self.set_error("No branches found in repository");
                 self.pending_repo_path = None;
             }
-            Ok(mut branches) => {
-                // Move the default branch to front so it's pre-selected.
-                if let Some(default) = crate::git::default_branch(repo_path, &branches) {
-                    if let Some(pos) = branches.iter().position(|b| b == &default) {
-                        let branch = branches.remove(pos);
-                        branches.insert(0, branch);
-                    }
-                }
-
-                // Insert origin/<default> at position 0 for remote-based branching.
-                let remote_ref = crate::git::default_branch_from_remote(repo_path)
-                    .map(|name| format!("origin/{name}"))
-                    .or_else(|| {
-                        for candidate in ["origin/main", "origin/master"] {
-                            if crate::git::branch_exists(repo_path, candidate) {
-                                return Some(candidate.to_string());
-                            }
-                        }
-                        None
-                    });
-                if let Some(ref remote) = remote_ref {
-                    if !branches.contains(remote) {
-                        branches.insert(0, remote.clone());
-                    }
-                }
-
+            Ok(branches) => {
+                let branches = Self::ordered_branch_list(&repo_path, branches);
                 self.modal =
                     super::modals::Modal::BranchSelector(super::modals::BranchSelectorModal {
                         index: 0,
@@ -1074,6 +1024,59 @@ impl App {
                 self.pending_repo_path = None;
             }
         }
+    }
+
+    /// Fetch origin for the primary repo and any extra worktree repos so
+    /// branch lists are up-to-date. Failures are non-fatal (logged only).
+    fn fetch_pending_repos(
+        repo_path: &std::path::Path,
+        all_repos: Option<&Vec<std::path::PathBuf>>,
+    ) {
+        if let Err(e) = crate::git::git_fetch(repo_path) {
+            warn!("git fetch origin failed (continuing): {e:#}");
+        }
+        let Some(all_repos) = all_repos else {
+            return;
+        };
+        for extra_repo in all_repos.iter().skip(1) {
+            if let Err(e) = crate::git::git_fetch(extra_repo) {
+                warn!(
+                    "git fetch origin failed for {} (continuing): {e:#}",
+                    extra_repo.display()
+                );
+            }
+        }
+    }
+
+    /// Order a branch list for the selector: the local default branch first,
+    /// then `origin/<default>` (remote-based branching) pinned at the very top.
+    fn ordered_branch_list(repo_path: &std::path::Path, mut branches: Vec<String>) -> Vec<String> {
+        // Move the default branch to front so it's pre-selected.
+        if let Some(default) = crate::git::default_branch(repo_path, &branches) {
+            if let Some(pos) = branches.iter().position(|b| b == &default) {
+                let branch = branches.remove(pos);
+                branches.insert(0, branch);
+            }
+        }
+
+        // Insert origin/<default> at position 0 for remote-based branching.
+        let remote_ref = crate::git::default_branch_from_remote(repo_path)
+            .map(|name| format!("origin/{name}"))
+            .or_else(|| {
+                for candidate in ["origin/main", "origin/master"] {
+                    if crate::git::branch_exists(repo_path, candidate) {
+                        return Some(candidate.to_string());
+                    }
+                }
+                None
+            });
+        if let Some(ref remote) = remote_ref {
+            if !branches.contains(remote) {
+                branches.insert(0, remote.clone());
+            }
+        }
+
+        branches
     }
 
     // ── Repo Picker Modal ────────────────────────────────────────────────
@@ -1110,46 +1113,69 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 rp.list_index = rp.list_index.saturating_sub(1);
             }
-            KeyCode::Char(' ') => {
-                if let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) {
-                    if let Some(sel) = rp.selected.get_mut(real_idx) {
-                        *sel = !*sel;
-                    }
-                }
-            }
-            KeyCode::Char('w') => {
-                if let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) {
-                    if let Some(wt) = rp.worktree.get_mut(real_idx) {
-                        *wt = !*wt;
-                        // Auto-select when toggling worktree on
-                        if *wt {
-                            if let Some(sel) = rp.selected.get_mut(real_idx) {
-                                *sel = true;
-                            }
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) {
-                    let path = rp.bookmarks[real_idx].clone();
-                    if let Err(e) = self.db.delete_repo_bookmark(&path) {
-                        error!("Failed to delete repo bookmark: {e}");
-                    }
-                    let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-                        return;
-                    };
-                    rp.bookmarks.remove(real_idx);
-                    rp.selected.remove(real_idx);
-                    rp.worktree.remove(real_idx);
-                    self.recompute_repo_filter();
-                }
-            }
+            KeyCode::Char(' ') => self.repo_picker_toggle_selected(),
+            KeyCode::Char('w') => self.repo_picker_toggle_worktree(),
+            KeyCode::Char('d') => self.repo_picker_delete_bookmark(),
             KeyCode::Enter => {
                 self.submit_repo_picker();
             }
             _ => {}
         }
+    }
+
+    /// Toggle the selected flag of the repo under the list cursor.
+    fn repo_picker_toggle_selected(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
+            return;
+        };
+        if let Some(sel) = rp.selected.get_mut(real_idx) {
+            *sel = !*sel;
+        }
+    }
+
+    /// Toggle the worktree flag of the repo under the cursor, auto-selecting it
+    /// when worktree mode is turned on.
+    fn repo_picker_toggle_worktree(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
+            return;
+        };
+        let Some(wt) = rp.worktree.get_mut(real_idx) else {
+            return;
+        };
+        *wt = !*wt;
+        // Auto-select when toggling worktree on
+        if *wt {
+            if let Some(sel) = rp.selected.get_mut(real_idx) {
+                *sel = true;
+            }
+        }
+    }
+
+    /// Delete the bookmark under the cursor from the DB and the modal lists.
+    fn repo_picker_delete_bookmark(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
+            return;
+        };
+        let path = rp.bookmarks[real_idx].clone();
+        if let Err(e) = self.db.delete_repo_bookmark(&path) {
+            error!("Failed to delete repo bookmark: {e}");
+        }
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        rp.bookmarks.remove(real_idx);
+        rp.selected.remove(real_idx);
+        rp.worktree.remove(real_idx);
+        self.recompute_repo_filter();
     }
 
     fn handle_repo_picker_input_key(&mut self, code: KeyCode) {
@@ -1178,31 +1204,7 @@ impl App {
                 return;
             }
             KeyCode::Enter => {
-                let path = rp.path_input.value().trim().to_string();
-                if !path.is_empty() {
-                    let expanded = paths::expand_tilde(&path);
-                    // Add to bookmarks list if not already present
-                    if !rp.bookmarks.contains(&expanded) {
-                        rp.bookmarks.push(expanded.clone());
-                        rp.selected.push(true); // auto-select newly added
-                        rp.worktree.push(false);
-                    } else {
-                        // Already in list — just select it
-                        if let Some(idx) = rp.bookmarks.iter().position(|p| p == &expanded) {
-                            rp.selected[idx] = true;
-                        }
-                    }
-                    // Persist as bookmark
-                    if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
-                        error!("Failed to save repo bookmark: {e}");
-                    }
-                    let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-                        return;
-                    };
-                    rp.path_input.clear();
-                    rp.path_suggestion = None;
-                }
-                self.recompute_repo_filter();
+                self.repo_picker_commit_path_input();
                 return;
             }
             KeyCode::Backspace => rp.path_input.backspace(),
@@ -1215,6 +1217,39 @@ impl App {
             _ => return,
         }
         self.update_repo_picker_path_suggestion();
+    }
+
+    /// Commit the typed path in the repo-picker input: add or re-select the
+    /// bookmark, persist it, clear the input, and refresh the filter.
+    fn repo_picker_commit_path_input(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let path = rp.path_input.value().trim().to_string();
+        if path.is_empty() {
+            self.recompute_repo_filter();
+            return;
+        }
+        let expanded = paths::expand_tilde(&path);
+        // Add to bookmarks list if not already present
+        if !rp.bookmarks.contains(&expanded) {
+            rp.bookmarks.push(expanded.clone());
+            rp.selected.push(true); // auto-select newly added
+            rp.worktree.push(false);
+        } else if let Some(idx) = rp.bookmarks.iter().position(|p| p == &expanded) {
+            // Already in list — just select it
+            rp.selected[idx] = true;
+        }
+        // Persist as bookmark
+        if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
+            error!("Failed to save repo bookmark: {e}");
+        }
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        rp.path_input.clear();
+        rp.path_suggestion = None;
+        self.recompute_repo_filter();
     }
 
     fn update_repo_picker_path_suggestion(&mut self) {
@@ -1292,21 +1327,7 @@ impl App {
             return;
         };
 
-        // Partition selected repos into worktree and normal sets.
-        let mut worktree_repos: Vec<std::path::PathBuf> = Vec::new();
-        let mut normal_repos: Vec<std::path::PathBuf> = Vec::new();
-        for (i, path) in rp.bookmarks.iter().enumerate() {
-            let selected = rp.selected.get(i).copied().unwrap_or(false);
-            if !selected {
-                continue;
-            }
-            let is_worktree = rp.worktree.get(i).copied().unwrap_or(false);
-            if is_worktree {
-                worktree_repos.push(path.clone());
-            } else {
-                normal_repos.push(path.clone());
-            }
-        }
+        let (worktree_repos, normal_repos) = Self::partition_selected_repos(rp);
 
         // Touch all selected bookmarks so they stay sorted by recency.
         for repo in worktree_repos.iter().chain(normal_repos.iter()) {
@@ -1345,6 +1366,25 @@ impl App {
             };
             self.spawn_session_with_config(&config);
         }
+    }
+
+    /// Split the selected bookmarks into (worktree repos, normal repos).
+    fn partition_selected_repos(
+        rp: &super::modals::RepoPickerModal,
+    ) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+        let mut worktree_repos: Vec<std::path::PathBuf> = Vec::new();
+        let mut normal_repos: Vec<std::path::PathBuf> = Vec::new();
+        for (i, path) in rp.bookmarks.iter().enumerate() {
+            if !rp.selected.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            if rp.worktree.get(i).copied().unwrap_or(false) {
+                worktree_repos.push(path.clone());
+            } else {
+                normal_repos.push(path.clone());
+            }
+        }
+        (worktree_repos, normal_repos)
     }
 }
 

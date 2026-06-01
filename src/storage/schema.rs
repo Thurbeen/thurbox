@@ -3,6 +3,9 @@ use rusqlite::Connection;
 /// Current schema version. Incremented when schema changes.
 pub const SCHEMA_VERSION: u32 = 24;
 
+/// A single migration step: applied when the stored version is below `target`.
+type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
+
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -129,544 +132,35 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )
         .unwrap_or(0);
 
-    if version < 3 {
-        // v2 → v3: add additional_dirs column to sessions
-        let _ = conn.execute(
-            "ALTER TABLE sessions ADD COLUMN additional_dirs TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-    }
+    // Each migration step is gated on the stored version and applied in order.
+    // Steps are extracted into helpers to keep this dispatcher flat.
+    let steps: &[MigrationStep] = &[
+        (3, migrate_v3_additional_dirs),
+        (4, migrate_v4_project_mcp_servers),
+        (5, migrate_v5_session_commands),
+        (6, migrate_v6_worktrees_pk),
+        (7, migrate_v7_shell_backend_id),
+        (8, migrate_v8_vms),
+        (9, migrate_v9_agent_session_id),
+        (10, migrate_v10_containers),
+        (11, migrate_v11_containerfile),
+        (12, migrate_v12_scheduled_commands),
+        (13, migrate_v13_roles),
+        (14, migrate_v14_mcp_servers),
+        (15, migrate_v15_nullable_project_id),
+        (16, migrate_v16_drop_projects),
+        (17, migrate_v17_skills),
+        (19, migrate_v19_plugins),
+        (20, migrate_v20_profiles),
+        (21, migrate_v21_drop_model),
+        (22, migrate_v22_drop_subsystems),
+        (23, migrate_v23_generic_agent),
+        (24, migrate_v24_automations),
+    ];
 
-    if version < 4 {
-        // v3 → v4: add project_mcp_servers table
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS project_mcp_servers (
-                project_id  TEXT NOT NULL REFERENCES projects(id),
-                server_name TEXT NOT NULL,
-                command     TEXT NOT NULL DEFAULT '',
-                args        TEXT NOT NULL DEFAULT '',
-                env         TEXT NOT NULL DEFAULT '',
-                created_at  INTEGER NOT NULL,
-                updated_at  INTEGER NOT NULL,
-                PRIMARY KEY (project_id, server_name)
-            );",
-        )?;
-    }
-
-    if version < 5 {
-        // v4 → v5: add session_commands table for MCP-driven session operations
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS session_commands (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id   TEXT NOT NULL,
-                command      TEXT NOT NULL,
-                created_at   INTEGER NOT NULL,
-                processed_at INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_session_commands_pending
-                ON session_commands(id) WHERE processed_at IS NULL;",
-        )?;
-    }
-
-    if version < 6 {
-        // v5 → v6: change worktrees PK from session_id to (session_id, repo_path)
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS worktrees_new (
-                session_id    TEXT NOT NULL REFERENCES sessions(id),
-                repo_path     TEXT NOT NULL,
-                worktree_path TEXT NOT NULL,
-                branch        TEXT NOT NULL,
-                created_at    INTEGER NOT NULL,
-                deleted_at    INTEGER,
-                PRIMARY KEY (session_id, repo_path)
-            );
-            INSERT OR IGNORE INTO worktrees_new
-                SELECT session_id, repo_path, worktree_path, branch, created_at, deleted_at
-                FROM worktrees;
-            DROP TABLE IF EXISTS worktrees;
-            ALTER TABLE worktrees_new RENAME TO worktrees;",
-        )?;
-    }
-
-    if version < 7 {
-        // v6 → v7: add shell_backend_id column to sessions
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN shell_backend_id TEXT", []);
-    }
-
-    if version < 8 {
-        // v7 → v8: add env column to project_roles, add VM tables for sandboxed sessions
-        let _ = conn.execute(
-            "ALTER TABLE project_roles ADD COLUMN env TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS vms (
-                id          TEXT PRIMARY KEY,
-                session_id  TEXT REFERENCES sessions(id),
-                project_id  TEXT REFERENCES projects(id),
-                state       TEXT NOT NULL DEFAULT 'stopped',
-                ssh_port    INTEGER NOT NULL,
-                base_image  TEXT NOT NULL,
-                cpus        INTEGER NOT NULL DEFAULT 2,
-                memory_mb   INTEGER NOT NULL DEFAULT 2048,
-                disk_gb     INTEGER NOT NULL DEFAULT 10,
-                qemu_pid    INTEGER,
-                error_msg   TEXT,
-                created_at  INTEGER NOT NULL,
-                updated_at  INTEGER NOT NULL,
-                deleted_at  INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS project_vm_config (
-                project_id   TEXT PRIMARY KEY REFERENCES projects(id),
-                base_image   TEXT,
-                cpus         INTEGER,
-                memory_mb    INTEGER,
-                disk_gb      INTEGER,
-                setup_script TEXT,
-                updated_at   INTEGER NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_vms_session
-                ON vms(session_id) WHERE deleted_at IS NULL;
-            CREATE INDEX IF NOT EXISTS idx_vms_project
-                ON vms(project_id) WHERE deleted_at IS NULL;",
-        )?;
-    }
-
-    if version < 9 {
-        // v8 → v9: rename claude_session_id → agent_session_id
-        let _ = conn.execute(
-            "ALTER TABLE sessions RENAME COLUMN claude_session_id TO agent_session_id",
-            [],
-        );
-    }
-
-    if version < 10 {
-        // v9 → v10: add containers and project_container_config tables
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS containers (
-                id                  TEXT PRIMARY KEY,
-                session_id          TEXT REFERENCES sessions(id),
-                project_id          TEXT REFERENCES projects(id),
-                state               TEXT NOT NULL DEFAULT 'stopped',
-                docker_container_id TEXT,
-                image               TEXT,
-                cpus                INTEGER NOT NULL DEFAULT 2,
-                memory_mb           INTEGER NOT NULL DEFAULT 2048,
-                firewall_enabled    INTEGER NOT NULL DEFAULT 1,
-                error_msg           TEXT,
-                created_at          INTEGER NOT NULL,
-                updated_at          INTEGER NOT NULL,
-                deleted_at          INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS project_container_config (
-                project_id       TEXT PRIMARY KEY REFERENCES projects(id),
-                image            TEXT,
-                cpus             INTEGER,
-                memory_mb        INTEGER,
-                firewall_enabled INTEGER,
-                updated_at       INTEGER NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_containers_session
-                ON containers(session_id) WHERE deleted_at IS NULL;
-            CREATE INDEX IF NOT EXISTS idx_containers_project
-                ON containers(project_id) WHERE deleted_at IS NULL;",
-        )?;
-    }
-
-    if version < 11 {
-        // v10 → v11: add containerfile column to containers and project_container_config
-        let _ = conn.execute("ALTER TABLE containers ADD COLUMN containerfile TEXT", []);
-        let _ = conn.execute(
-            "ALTER TABLE project_container_config ADD COLUMN containerfile TEXT",
-            [],
-        );
-    }
-
-    if version < 12 {
-        // v11 → v12: add scheduled_commands table for time-scheduled session inputs
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS scheduled_commands (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id     TEXT NOT NULL,
-                command_text   TEXT NOT NULL,
-                scheduled_at   INTEGER NOT NULL,
-                created_at     INTEGER NOT NULL,
-                executed_at    INTEGER,
-                cancelled_at   INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_scheduled_commands_pending
-                ON scheduled_commands(scheduled_at)
-                WHERE executed_at IS NULL AND cancelled_at IS NULL;",
-        )?;
-    }
-
-    if version < 13 {
-        // v12 → v13: add global `roles` table and seed from project_roles
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS roles (
-                role_name           TEXT PRIMARY KEY,
-                description         TEXT NOT NULL DEFAULT '',
-                permission_mode     TEXT,
-                allowed_tools       TEXT NOT NULL DEFAULT '',
-                disallowed_tools    TEXT NOT NULL DEFAULT '',
-                tools               TEXT,
-                append_system_prompt TEXT,
-                env                 TEXT NOT NULL DEFAULT '',
-                created_at          INTEGER NOT NULL,
-                updated_at          INTEGER NOT NULL
-            );
-            INSERT OR IGNORE INTO roles
-                (role_name, description, permission_mode, allowed_tools,
-                 disallowed_tools, tools, append_system_prompt, env,
-                 created_at, updated_at)
-                SELECT DISTINCT role_name, description, permission_mode, allowed_tools,
-                       disallowed_tools, tools, append_system_prompt, env,
-                       created_at, updated_at
-                FROM project_roles;",
-        )?;
-    }
-
-    if version < 14 {
-        // v13 → v14: add global `mcp_servers` table and seed from project_mcp_servers
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS mcp_servers (
-                server_name TEXT PRIMARY KEY,
-                command     TEXT NOT NULL DEFAULT '',
-                args        TEXT NOT NULL DEFAULT '',
-                env         TEXT NOT NULL DEFAULT '',
-                created_at  INTEGER NOT NULL,
-                updated_at  INTEGER NOT NULL
-            );
-            INSERT OR IGNORE INTO mcp_servers
-                (server_name, command, args, env, created_at, updated_at)
-                SELECT DISTINCT server_name, command, args, env,
-                       created_at, updated_at
-                FROM project_mcp_servers;",
-        )?;
-    }
-
-    if version < 15 {
-        // v14 → v15: make project_id nullable on sessions, add repo_bookmarks table
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS sessions_new;
-            CREATE TABLE sessions_new (
-                id                TEXT PRIMARY KEY,
-                name              TEXT NOT NULL,
-                project_id        TEXT REFERENCES projects(id),
-                role              TEXT NOT NULL DEFAULT 'developer',
-                backend_id        TEXT NOT NULL DEFAULT '',
-                backend_type      TEXT NOT NULL DEFAULT 'tmux',
-                agent_session_id  TEXT,
-                cwd               TEXT,
-                additional_dirs   TEXT NOT NULL DEFAULT '',
-                shell_backend_id  TEXT,
-                created_at        INTEGER NOT NULL,
-                updated_at        INTEGER NOT NULL,
-                deleted_at        INTEGER
-            );
-            PRAGMA foreign_keys = OFF;
-            INSERT INTO sessions_new (id, name, project_id, role, backend_id,
-                backend_type, agent_session_id, cwd, additional_dirs,
-                shell_backend_id, created_at, updated_at, deleted_at)
-                SELECT id, name,
-                    CASE WHEN project_id IN (SELECT id FROM projects) THEN project_id ELSE NULL END,
-                    role, backend_id,
-                    backend_type, agent_session_id, cwd, additional_dirs,
-                    shell_backend_id,
-                    COALESCE(created_at, 0),
-                    COALESCE(updated_at, 0),
-                    deleted_at
-                FROM sessions;
-            DROP TABLE sessions;
-            ALTER TABLE sessions_new RENAME TO sessions;
-            PRAGMA foreign_keys = ON;
-            CREATE INDEX IF NOT EXISTS idx_sessions_project
-                ON sessions(project_id) WHERE deleted_at IS NULL;
-            CREATE INDEX IF NOT EXISTS idx_sessions_active
-                ON sessions(id) WHERE deleted_at IS NULL;
-
-            CREATE TABLE IF NOT EXISTS repo_bookmarks (
-                repo_path    TEXT PRIMARY KEY,
-                label        TEXT,
-                last_used_at INTEGER NOT NULL,
-                use_count    INTEGER NOT NULL DEFAULT 1
-            );
-
-            INSERT OR IGNORE INTO repo_bookmarks (repo_path, last_used_at, use_count)
-                SELECT DISTINCT repo_path,
-                       COALESCE((SELECT MAX(s.updated_at) FROM sessions s
-                                  INNER JOIN projects p ON p.id = s.project_id
-                                  INNER JOIN project_repos pr ON pr.project_id = p.id
-                                  AND pr.repo_path = project_repos.repo_path), 0),
-                       1
-                FROM project_repos;",
-        )?;
-    }
-
-    if version < 16 {
-        // v15 → v16: remove project tables and project_id columns from sessions/vms/containers
-        conn.execute_batch(
-            "PRAGMA foreign_keys = OFF;
-
-            -- Recreate sessions without project_id
-            DROP TABLE IF EXISTS sessions_new;
-            CREATE TABLE sessions_new (
-                id                TEXT PRIMARY KEY,
-                name              TEXT NOT NULL,
-                role              TEXT NOT NULL DEFAULT 'developer',
-                backend_id        TEXT NOT NULL DEFAULT '',
-                backend_type      TEXT NOT NULL DEFAULT 'tmux',
-                agent_session_id  TEXT,
-                cwd               TEXT,
-                additional_dirs   TEXT NOT NULL DEFAULT '',
-                shell_backend_id  TEXT,
-                created_at        INTEGER NOT NULL,
-                updated_at        INTEGER NOT NULL,
-                deleted_at        INTEGER
-            );
-            INSERT INTO sessions_new (id, name, role, backend_id, backend_type,
-                agent_session_id, cwd, additional_dirs, shell_backend_id,
-                created_at, updated_at, deleted_at)
-                SELECT id, name, role, backend_id, backend_type,
-                    agent_session_id, cwd, additional_dirs, shell_backend_id,
-                    created_at, updated_at, deleted_at
-                FROM sessions;
-            DROP TABLE sessions;
-            ALTER TABLE sessions_new RENAME TO sessions;
-            CREATE INDEX IF NOT EXISTS idx_sessions_active
-                ON sessions(id) WHERE deleted_at IS NULL;
-
-            -- Recreate vms without project_id
-            DROP TABLE IF EXISTS vms_new;
-            CREATE TABLE vms_new (
-                id          TEXT PRIMARY KEY,
-                session_id  TEXT REFERENCES sessions(id),
-                state       TEXT NOT NULL DEFAULT 'stopped',
-                ssh_port    INTEGER NOT NULL,
-                base_image  TEXT NOT NULL,
-                cpus        INTEGER NOT NULL DEFAULT 2,
-                memory_mb   INTEGER NOT NULL DEFAULT 2048,
-                disk_gb     INTEGER NOT NULL DEFAULT 10,
-                qemu_pid    INTEGER,
-                error_msg   TEXT,
-                created_at  INTEGER NOT NULL,
-                updated_at  INTEGER NOT NULL,
-                deleted_at  INTEGER
-            );
-            INSERT INTO vms_new (id, session_id, state, ssh_port, base_image,
-                cpus, memory_mb, disk_gb, qemu_pid, error_msg,
-                created_at, updated_at, deleted_at)
-                SELECT id, session_id, state, ssh_port, base_image,
-                    cpus, memory_mb, disk_gb, qemu_pid, error_msg,
-                    created_at, updated_at, deleted_at
-                FROM vms;
-            DROP TABLE IF EXISTS vms;
-            ALTER TABLE vms_new RENAME TO vms;
-            CREATE INDEX IF NOT EXISTS idx_vms_session
-                ON vms(session_id) WHERE deleted_at IS NULL;
-
-            -- Recreate containers without project_id
-            DROP TABLE IF EXISTS containers_new;
-            CREATE TABLE containers_new (
-                id                  TEXT PRIMARY KEY,
-                session_id          TEXT REFERENCES sessions(id),
-                state               TEXT NOT NULL DEFAULT 'stopped',
-                docker_container_id TEXT,
-                image               TEXT,
-                cpus                INTEGER NOT NULL DEFAULT 2,
-                memory_mb           INTEGER NOT NULL DEFAULT 2048,
-                firewall_enabled    INTEGER NOT NULL DEFAULT 1,
-                containerfile       TEXT,
-                error_msg           TEXT,
-                created_at          INTEGER NOT NULL,
-                updated_at          INTEGER NOT NULL,
-                deleted_at          INTEGER
-            );
-            INSERT INTO containers_new (id, session_id, state, docker_container_id,
-                image, cpus, memory_mb, firewall_enabled, containerfile,
-                error_msg, created_at, updated_at, deleted_at)
-                SELECT id, session_id, state, docker_container_id,
-                    image, cpus, memory_mb, firewall_enabled, containerfile,
-                    error_msg, created_at, updated_at, deleted_at
-                FROM containers;
-            DROP TABLE IF EXISTS containers;
-            ALTER TABLE containers_new RENAME TO containers;
-            CREATE INDEX IF NOT EXISTS idx_containers_session
-                ON containers(session_id) WHERE deleted_at IS NULL;
-
-            -- Drop project tables
-            DROP TABLE IF EXISTS project_container_config;
-            DROP TABLE IF EXISTS project_vm_config;
-            DROP TABLE IF EXISTS project_mcp_servers;
-            DROP TABLE IF EXISTS project_roles;
-            DROP TABLE IF EXISTS project_repos;
-            DROP TABLE IF EXISTS projects;
-
-            PRAGMA foreign_keys = ON;",
-        )?;
-    }
-
-    if version < 17 {
-        // v16 → v17: add skills table for global skill management
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS skills (
-                skill_name TEXT PRIMARY KEY,
-                path       TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );",
-        )?;
-    }
-
-    if version < 19 {
-        // v18 → v19: add plugins + plugin_settings tables for the plugin bundle system
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS plugins (
-                plugin_name TEXT PRIMARY KEY,
-                path        TEXT NOT NULL,
-                version     TEXT NOT NULL DEFAULT '',
-                enabled     INTEGER NOT NULL DEFAULT 1,
-                created_at  INTEGER NOT NULL,
-                updated_at  INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS plugin_settings (
-                plugin_name TEXT NOT NULL,
-                key         TEXT NOT NULL,
-                value_json  TEXT NOT NULL,
-                updated_at  INTEGER NOT NULL,
-                PRIMARY KEY (plugin_name, key),
-                FOREIGN KEY (plugin_name) REFERENCES plugins(plugin_name) ON DELETE CASCADE
-            );",
-        )?;
-    }
-
-    if version < 20 {
-        // v19 → v20: add profiles table bundling roles + MCP servers + skills
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS profiles (
-                profile_name      TEXT PRIMARY KEY,
-                description       TEXT NOT NULL DEFAULT '',
-                role_names        TEXT NOT NULL DEFAULT '',
-                mcp_server_names  TEXT NOT NULL DEFAULT '',
-                skill_names       TEXT NOT NULL DEFAULT '',
-                created_at        INTEGER NOT NULL,
-                updated_at        INTEGER NOT NULL
-            );",
-        )?;
-    }
-
-    if version < 21 {
-        // v20 → v21: drop the sessions.model column. Model selection was
-        // removed from the product — the agent picks its own model now.
-        // Use ignore-on-error in case an older SQLite (<3.35) lacks DROP
-        // COLUMN support; the unused column is harmless.
-        let _ = conn.execute("ALTER TABLE sessions DROP COLUMN model", []);
-    }
-
-    if version < 22 {
-        // v21 → v22: drop tables for removed subsystems. VM, devcontainer,
-        // and process-plugin subsystems were removed to focus thurbox on
-        // the TUI surface; the session_commands queue is unused now that
-        // MCP `restart_session` / `create_session` run synchronously.
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS plugin_settings;
-             DROP TABLE IF EXISTS plugins;
-             DROP TABLE IF EXISTS vms;
-             DROP TABLE IF EXISTS containers;
-             DROP TABLE IF EXISTS project_vm_config;
-             DROP TABLE IF EXISTS project_container_config;
-             DROP TABLE IF EXISTS session_commands;",
-        )?;
-    }
-
-    if version < 23 {
-        // v22 → v23: pivot to a generic per-session agent. Add the `agent`
-        // column to sessions (existing rows default to "claude") and drop the
-        // now-unused Claude-config tables. Existing sessions/worktrees are kept.
-        let has_agent_col: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'agent'")?
-            .exists([])?;
-        if !has_agent_col {
-            conn.execute_batch(
-                "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude';",
-            )?;
-        }
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS profiles;
-             DROP TABLE IF EXISTS skills;
-             DROP TABLE IF EXISTS mcp_servers;
-             DROP TABLE IF EXISTS roles;
-             DELETE FROM metadata WHERE key = 'profiles_seeded';",
-        )?;
-    }
-
-    if version < 24 {
-        // v23 → v24: replace the one-shot `scheduled_commands` table with the
-        // unified `automations` concept (one-shot OR recurring cron, send OR
-        // spawn actions) plus a `automation_runs` history table. Pending
-        // one-shot scheduled commands are migrated forward as `once`/`send`
-        // automations; executed/cancelled ones are dropped with the table.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS automations (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                name            TEXT NOT NULL,
-                enabled         INTEGER NOT NULL DEFAULT 1,
-                schedule_kind   TEXT NOT NULL,
-                schedule_spec   TEXT NOT NULL,
-                timezone        TEXT,
-                action_kind     TEXT NOT NULL,
-                target_session  TEXT,
-                repo_path       TEXT,
-                worktree_branch TEXT,
-                base_branch     TEXT,
-                agent           TEXT,
-                prompt          TEXT NOT NULL,
-                created_at      INTEGER NOT NULL,
-                updated_at      INTEGER NOT NULL,
-                last_run_at     INTEGER,
-                next_run_at     INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_automations_due
-                ON automations(next_run_at)
-                WHERE enabled = 1 AND next_run_at IS NOT NULL;
-            CREATE TABLE IF NOT EXISTS automation_runs (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                automation_id INTEGER NOT NULL,
-                started_at    INTEGER NOT NULL,
-                status        TEXT NOT NULL,
-                detail        TEXT NOT NULL DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
-                ON automation_runs(automation_id, started_at);",
-        )?;
-
-        // Only migrate if the legacy table is present (fresh DBs created at v24
-        // never had it).
-        let has_legacy: bool = conn
-            .prepare(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_commands'",
-            )?
-            .exists([])?;
-        if has_legacy {
-            conn.execute_batch(
-                "INSERT INTO automations
-                    (name, enabled, schedule_kind, schedule_spec, timezone,
-                     action_kind, target_session, prompt,
-                     created_at, updated_at, last_run_at, next_run_at)
-                 SELECT
-                    'migrated-' || id, 1, 'once', CAST(scheduled_at AS TEXT), NULL,
-                    'send', session_id, command_text,
-                    created_at, created_at, NULL, scheduled_at
-                 FROM scheduled_commands
-                 WHERE executed_at IS NULL AND cancelled_at IS NULL;
-                 DROP TABLE IF EXISTS scheduled_commands;",
-            )?;
+    for &(target, step) in steps {
+        if version < target {
+            step(conn)?;
         }
     }
 
@@ -677,6 +171,551 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+/// v2 → v3: add additional_dirs column to sessions
+fn migrate_v3_additional_dirs(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN additional_dirs TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    Ok(())
+}
+
+/// v3 → v4: add project_mcp_servers table
+fn migrate_v4_project_mcp_servers(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_mcp_servers (
+            project_id  TEXT NOT NULL REFERENCES projects(id),
+            server_name TEXT NOT NULL,
+            command     TEXT NOT NULL DEFAULT '',
+            args        TEXT NOT NULL DEFAULT '',
+            env         TEXT NOT NULL DEFAULT '',
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (project_id, server_name)
+        );",
+    )
+}
+
+/// v4 → v5: add session_commands table for MCP-driven session operations
+fn migrate_v5_session_commands(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_commands (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   TEXT NOT NULL,
+            command      TEXT NOT NULL,
+            created_at   INTEGER NOT NULL,
+            processed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_commands_pending
+            ON session_commands(id) WHERE processed_at IS NULL;",
+    )
+}
+
+/// v5 → v6: change worktrees PK from session_id to (session_id, repo_path)
+fn migrate_v6_worktrees_pk(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS worktrees_new (
+            session_id    TEXT NOT NULL REFERENCES sessions(id),
+            repo_path     TEXT NOT NULL,
+            worktree_path TEXT NOT NULL,
+            branch        TEXT NOT NULL,
+            created_at    INTEGER NOT NULL,
+            deleted_at    INTEGER,
+            PRIMARY KEY (session_id, repo_path)
+        );
+        INSERT OR IGNORE INTO worktrees_new
+            SELECT session_id, repo_path, worktree_path, branch, created_at, deleted_at
+            FROM worktrees;
+        DROP TABLE IF EXISTS worktrees;
+        ALTER TABLE worktrees_new RENAME TO worktrees;",
+    )
+}
+
+/// v6 → v7: add shell_backend_id column to sessions
+fn migrate_v7_shell_backend_id(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN shell_backend_id TEXT", []);
+    Ok(())
+}
+
+/// v7 → v8: add env column to project_roles, add VM tables for sandboxed sessions
+fn migrate_v8_vms(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE project_roles ADD COLUMN env TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vms (
+            id          TEXT PRIMARY KEY,
+            session_id  TEXT REFERENCES sessions(id),
+            project_id  TEXT REFERENCES projects(id),
+            state       TEXT NOT NULL DEFAULT 'stopped',
+            ssh_port    INTEGER NOT NULL,
+            base_image  TEXT NOT NULL,
+            cpus        INTEGER NOT NULL DEFAULT 2,
+            memory_mb   INTEGER NOT NULL DEFAULT 2048,
+            disk_gb     INTEGER NOT NULL DEFAULT 10,
+            qemu_pid    INTEGER,
+            error_msg   TEXT,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            deleted_at  INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS project_vm_config (
+            project_id   TEXT PRIMARY KEY REFERENCES projects(id),
+            base_image   TEXT,
+            cpus         INTEGER,
+            memory_mb    INTEGER,
+            disk_gb      INTEGER,
+            setup_script TEXT,
+            updated_at   INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vms_session
+            ON vms(session_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_vms_project
+            ON vms(project_id) WHERE deleted_at IS NULL;",
+    )
+}
+
+/// v8 → v9: rename claude_session_id → agent_session_id
+fn migrate_v9_agent_session_id(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE sessions RENAME COLUMN claude_session_id TO agent_session_id",
+        [],
+    );
+    Ok(())
+}
+
+/// v9 → v10: add containers and project_container_config tables
+fn migrate_v10_containers(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS containers (
+            id                  TEXT PRIMARY KEY,
+            session_id          TEXT REFERENCES sessions(id),
+            project_id          TEXT REFERENCES projects(id),
+            state               TEXT NOT NULL DEFAULT 'stopped',
+            docker_container_id TEXT,
+            image               TEXT,
+            cpus                INTEGER NOT NULL DEFAULT 2,
+            memory_mb           INTEGER NOT NULL DEFAULT 2048,
+            firewall_enabled    INTEGER NOT NULL DEFAULT 1,
+            error_msg           TEXT,
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            deleted_at          INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS project_container_config (
+            project_id       TEXT PRIMARY KEY REFERENCES projects(id),
+            image            TEXT,
+            cpus             INTEGER,
+            memory_mb        INTEGER,
+            firewall_enabled INTEGER,
+            updated_at       INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_containers_session
+            ON containers(session_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_containers_project
+            ON containers(project_id) WHERE deleted_at IS NULL;",
+    )
+}
+
+/// v10 → v11: add containerfile column to containers and project_container_config
+fn migrate_v11_containerfile(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE containers ADD COLUMN containerfile TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE project_container_config ADD COLUMN containerfile TEXT",
+        [],
+    );
+    Ok(())
+}
+
+/// v11 → v12: add scheduled_commands table for time-scheduled session inputs
+fn migrate_v12_scheduled_commands(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS scheduled_commands (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     TEXT NOT NULL,
+            command_text   TEXT NOT NULL,
+            scheduled_at   INTEGER NOT NULL,
+            created_at     INTEGER NOT NULL,
+            executed_at    INTEGER,
+            cancelled_at   INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_commands_pending
+            ON scheduled_commands(scheduled_at)
+            WHERE executed_at IS NULL AND cancelled_at IS NULL;",
+    )
+}
+
+/// v12 → v13: add global `roles` table and seed from project_roles
+fn migrate_v13_roles(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS roles (
+            role_name           TEXT PRIMARY KEY,
+            description         TEXT NOT NULL DEFAULT '',
+            permission_mode     TEXT,
+            allowed_tools       TEXT NOT NULL DEFAULT '',
+            disallowed_tools    TEXT NOT NULL DEFAULT '',
+            tools               TEXT,
+            append_system_prompt TEXT,
+            env                 TEXT NOT NULL DEFAULT '',
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO roles
+            (role_name, description, permission_mode, allowed_tools,
+             disallowed_tools, tools, append_system_prompt, env,
+             created_at, updated_at)
+            SELECT DISTINCT role_name, description, permission_mode, allowed_tools,
+                   disallowed_tools, tools, append_system_prompt, env,
+                   created_at, updated_at
+            FROM project_roles;",
+    )
+}
+
+/// v13 → v14: add global `mcp_servers` table and seed from project_mcp_servers
+fn migrate_v14_mcp_servers(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS mcp_servers (
+            server_name TEXT PRIMARY KEY,
+            command     TEXT NOT NULL DEFAULT '',
+            args        TEXT NOT NULL DEFAULT '',
+            env         TEXT NOT NULL DEFAULT '',
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO mcp_servers
+            (server_name, command, args, env, created_at, updated_at)
+            SELECT DISTINCT server_name, command, args, env,
+                   created_at, updated_at
+            FROM project_mcp_servers;",
+    )
+}
+
+/// v14 → v15: make project_id nullable on sessions, add repo_bookmarks table
+fn migrate_v15_nullable_project_id(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS sessions_new;
+        CREATE TABLE sessions_new (
+            id                TEXT PRIMARY KEY,
+            name              TEXT NOT NULL,
+            project_id        TEXT REFERENCES projects(id),
+            role              TEXT NOT NULL DEFAULT 'developer',
+            backend_id        TEXT NOT NULL DEFAULT '',
+            backend_type      TEXT NOT NULL DEFAULT 'tmux',
+            agent_session_id  TEXT,
+            cwd               TEXT,
+            additional_dirs   TEXT NOT NULL DEFAULT '',
+            shell_backend_id  TEXT,
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL,
+            deleted_at        INTEGER
+        );
+        PRAGMA foreign_keys = OFF;
+        INSERT INTO sessions_new (id, name, project_id, role, backend_id,
+            backend_type, agent_session_id, cwd, additional_dirs,
+            shell_backend_id, created_at, updated_at, deleted_at)
+            SELECT id, name,
+                CASE WHEN project_id IN (SELECT id FROM projects) THEN project_id ELSE NULL END,
+                role, backend_id,
+                backend_type, agent_session_id, cwd, additional_dirs,
+                shell_backend_id,
+                COALESCE(created_at, 0),
+                COALESCE(updated_at, 0),
+                deleted_at
+            FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;
+        PRAGMA foreign_keys = ON;
+        CREATE INDEX IF NOT EXISTS idx_sessions_project
+            ON sessions(project_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_sessions_active
+            ON sessions(id) WHERE deleted_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS repo_bookmarks (
+            repo_path    TEXT PRIMARY KEY,
+            label        TEXT,
+            last_used_at INTEGER NOT NULL,
+            use_count    INTEGER NOT NULL DEFAULT 1
+        );
+
+        INSERT OR IGNORE INTO repo_bookmarks (repo_path, last_used_at, use_count)
+            SELECT DISTINCT repo_path,
+                   COALESCE((SELECT MAX(s.updated_at) FROM sessions s
+                              INNER JOIN projects p ON p.id = s.project_id
+                              INNER JOIN project_repos pr ON pr.project_id = p.id
+                              AND pr.repo_path = project_repos.repo_path), 0),
+                   1
+            FROM project_repos;",
+    )
+}
+
+/// v15 → v16: remove project tables and project_id columns from sessions/vms/containers
+fn migrate_v16_drop_projects(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+
+        -- Recreate sessions without project_id
+        DROP TABLE IF EXISTS sessions_new;
+        CREATE TABLE sessions_new (
+            id                TEXT PRIMARY KEY,
+            name              TEXT NOT NULL,
+            role              TEXT NOT NULL DEFAULT 'developer',
+            backend_id        TEXT NOT NULL DEFAULT '',
+            backend_type      TEXT NOT NULL DEFAULT 'tmux',
+            agent_session_id  TEXT,
+            cwd               TEXT,
+            additional_dirs   TEXT NOT NULL DEFAULT '',
+            shell_backend_id  TEXT,
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL,
+            deleted_at        INTEGER
+        );
+        INSERT INTO sessions_new (id, name, role, backend_id, backend_type,
+            agent_session_id, cwd, additional_dirs, shell_backend_id,
+            created_at, updated_at, deleted_at)
+            SELECT id, name, role, backend_id, backend_type,
+                agent_session_id, cwd, additional_dirs, shell_backend_id,
+                created_at, updated_at, deleted_at
+            FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;
+        CREATE INDEX IF NOT EXISTS idx_sessions_active
+            ON sessions(id) WHERE deleted_at IS NULL;
+
+        -- Recreate vms without project_id
+        DROP TABLE IF EXISTS vms_new;
+        CREATE TABLE vms_new (
+            id          TEXT PRIMARY KEY,
+            session_id  TEXT REFERENCES sessions(id),
+            state       TEXT NOT NULL DEFAULT 'stopped',
+            ssh_port    INTEGER NOT NULL,
+            base_image  TEXT NOT NULL,
+            cpus        INTEGER NOT NULL DEFAULT 2,
+            memory_mb   INTEGER NOT NULL DEFAULT 2048,
+            disk_gb     INTEGER NOT NULL DEFAULT 10,
+            qemu_pid    INTEGER,
+            error_msg   TEXT,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            deleted_at  INTEGER
+        );
+        INSERT INTO vms_new (id, session_id, state, ssh_port, base_image,
+            cpus, memory_mb, disk_gb, qemu_pid, error_msg,
+            created_at, updated_at, deleted_at)
+            SELECT id, session_id, state, ssh_port, base_image,
+                cpus, memory_mb, disk_gb, qemu_pid, error_msg,
+                created_at, updated_at, deleted_at
+            FROM vms;
+        DROP TABLE IF EXISTS vms;
+        ALTER TABLE vms_new RENAME TO vms;
+        CREATE INDEX IF NOT EXISTS idx_vms_session
+            ON vms(session_id) WHERE deleted_at IS NULL;
+
+        -- Recreate containers without project_id
+        DROP TABLE IF EXISTS containers_new;
+        CREATE TABLE containers_new (
+            id                  TEXT PRIMARY KEY,
+            session_id          TEXT REFERENCES sessions(id),
+            state               TEXT NOT NULL DEFAULT 'stopped',
+            docker_container_id TEXT,
+            image               TEXT,
+            cpus                INTEGER NOT NULL DEFAULT 2,
+            memory_mb           INTEGER NOT NULL DEFAULT 2048,
+            firewall_enabled    INTEGER NOT NULL DEFAULT 1,
+            containerfile       TEXT,
+            error_msg           TEXT,
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            deleted_at          INTEGER
+        );
+        INSERT INTO containers_new (id, session_id, state, docker_container_id,
+            image, cpus, memory_mb, firewall_enabled, containerfile,
+            error_msg, created_at, updated_at, deleted_at)
+            SELECT id, session_id, state, docker_container_id,
+                image, cpus, memory_mb, firewall_enabled, containerfile,
+                error_msg, created_at, updated_at, deleted_at
+            FROM containers;
+        DROP TABLE IF EXISTS containers;
+        ALTER TABLE containers_new RENAME TO containers;
+        CREATE INDEX IF NOT EXISTS idx_containers_session
+            ON containers(session_id) WHERE deleted_at IS NULL;
+
+        -- Drop project tables
+        DROP TABLE IF EXISTS project_container_config;
+        DROP TABLE IF EXISTS project_vm_config;
+        DROP TABLE IF EXISTS project_mcp_servers;
+        DROP TABLE IF EXISTS project_roles;
+        DROP TABLE IF EXISTS project_repos;
+        DROP TABLE IF EXISTS projects;
+
+        PRAGMA foreign_keys = ON;",
+    )
+}
+
+/// v16 → v17: add skills table for global skill management
+fn migrate_v17_skills(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS skills (
+            skill_name TEXT PRIMARY KEY,
+            path       TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )
+}
+
+/// v18 → v19: add plugins + plugin_settings tables for the plugin bundle system
+fn migrate_v19_plugins(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS plugins (
+            plugin_name TEXT PRIMARY KEY,
+            path        TEXT NOT NULL,
+            version     TEXT NOT NULL DEFAULT '',
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_settings (
+            plugin_name TEXT NOT NULL,
+            key         TEXT NOT NULL,
+            value_json  TEXT NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (plugin_name, key),
+            FOREIGN KEY (plugin_name) REFERENCES plugins(plugin_name) ON DELETE CASCADE
+        );",
+    )
+}
+
+/// v19 → v20: add profiles table bundling roles + MCP servers + skills
+fn migrate_v20_profiles(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS profiles (
+            profile_name      TEXT PRIMARY KEY,
+            description       TEXT NOT NULL DEFAULT '',
+            role_names        TEXT NOT NULL DEFAULT '',
+            mcp_server_names  TEXT NOT NULL DEFAULT '',
+            skill_names       TEXT NOT NULL DEFAULT '',
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL
+        );",
+    )
+}
+
+/// v20 → v21: drop the sessions.model column. Model selection was
+/// removed from the product — the agent picks its own model now.
+/// Use ignore-on-error in case an older SQLite (<3.35) lacks DROP
+/// COLUMN support; the unused column is harmless.
+fn migrate_v21_drop_model(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE sessions DROP COLUMN model", []);
+    Ok(())
+}
+
+/// v21 → v22: drop tables for removed subsystems. VM, devcontainer,
+/// and process-plugin subsystems were removed to focus thurbox on
+/// the TUI surface; the session_commands queue is unused now that
+/// MCP `restart_session` / `create_session` run synchronously.
+fn migrate_v22_drop_subsystems(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS plugin_settings;
+         DROP TABLE IF EXISTS plugins;
+         DROP TABLE IF EXISTS vms;
+         DROP TABLE IF EXISTS containers;
+         DROP TABLE IF EXISTS project_vm_config;
+         DROP TABLE IF EXISTS project_container_config;
+         DROP TABLE IF EXISTS session_commands;",
+    )
+}
+
+/// v22 → v23: pivot to a generic per-session agent. Add the `agent`
+/// column to sessions (existing rows default to "claude") and drop the
+/// now-unused Claude-config tables. Existing sessions/worktrees are kept.
+fn migrate_v23_generic_agent(conn: &Connection) -> rusqlite::Result<()> {
+    let has_agent_col: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'agent'")?
+        .exists([])?;
+    if !has_agent_col {
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude';",
+        )?;
+    }
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS profiles;
+         DROP TABLE IF EXISTS skills;
+         DROP TABLE IF EXISTS mcp_servers;
+         DROP TABLE IF EXISTS roles;
+         DELETE FROM metadata WHERE key = 'profiles_seeded';",
+    )
+}
+
+/// v23 → v24: replace the one-shot `scheduled_commands` table with the
+/// unified `automations` concept (one-shot OR recurring cron, send OR
+/// spawn actions) plus a `automation_runs` history table. Pending
+/// one-shot scheduled commands are migrated forward as `once`/`send`
+/// automations; executed/cancelled ones are dropped with the table.
+fn migrate_v24_automations(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS automations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT NOT NULL,
+            enabled         INTEGER NOT NULL DEFAULT 1,
+            schedule_kind   TEXT NOT NULL,
+            schedule_spec   TEXT NOT NULL,
+            timezone        TEXT,
+            action_kind     TEXT NOT NULL,
+            target_session  TEXT,
+            repo_path       TEXT,
+            worktree_branch TEXT,
+            base_branch     TEXT,
+            agent           TEXT,
+            prompt          TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            last_run_at     INTEGER,
+            next_run_at     INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_automations_due
+            ON automations(next_run_at)
+            WHERE enabled = 1 AND next_run_at IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS automation_runs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id INTEGER NOT NULL,
+            started_at    INTEGER NOT NULL,
+            status        TEXT NOT NULL,
+            detail        TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
+            ON automation_runs(automation_id, started_at);",
+    )?;
+
+    // Only migrate if the legacy table is present (fresh DBs created at v24
+    // never had it).
+    let has_legacy: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_commands'")?
+        .exists([])?;
+    if has_legacy {
+        conn.execute_batch(
+            "INSERT INTO automations
+                (name, enabled, schedule_kind, schedule_spec, timezone,
+                 action_kind, target_session, prompt,
+                 created_at, updated_at, last_run_at, next_run_at)
+             SELECT
+                'migrated-' || id, 1, 'once', CAST(scheduled_at AS TEXT), NULL,
+                'send', session_id, command_text,
+                created_at, created_at, NULL, scheduled_at
+             FROM scheduled_commands
+             WHERE executed_at IS NULL AND cancelled_at IS NULL;
+             DROP TABLE IF EXISTS scheduled_commands;",
+        )?;
+    }
     Ok(())
 }
 

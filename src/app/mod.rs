@@ -1506,34 +1506,7 @@ impl App {
     pub fn tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
 
-        let active_index = self.active_index;
-        for (idx, session) in self.sessions.iter_mut().enumerate() {
-            // The active session is being watched, so acknowledge any pending
-            // attention signal (keeps it from flagging itself while focused).
-            if idx == active_index {
-                session.acknowledge_attention();
-            }
-            let needs_attention = session.needs_attention();
-
-            session.info.status = if session.has_exited() {
-                SessionStatus::Idle
-            } else if session.millis_since_last_output() <= ACTIVITY_TIMEOUT_MS {
-                // Actively producing output → working, regardless of past signals.
-                SessionStatus::Busy
-            } else if needs_attention {
-                // Quiet after a bell / OSC 9 / OSC 777 → finished or needs input.
-                SessionStatus::Attention
-            } else {
-                SessionStatus::Waiting
-            };
-
-            // Live activity text from the agent-emitted OSC terminal title.
-            session.info.agent_activity = session.agent_title();
-            // Retain the agent's latest pushed notification (OSC 9/777) so the
-            // info panel can show it as a persistent "last signal", not only
-            // while the session is in the attention state.
-            session.info.notification = session.notification();
-        }
+        self.refresh_session_statuses();
 
         // Poll for sync results from background worktree sync threads
         self.poll_sync_results();
@@ -1555,24 +1528,7 @@ impl App {
             }
         }
 
-        // Poll for external state changes from other thurbox instances (DB-based)
-        if let Ok(Some(result)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) {
-            if result.db_changed {
-                // Pick up theme changes made by other thurbox processes (e.g.
-                // an MCP `set_theme` call from another session).
-                if let Ok(Some(name)) = self.db.get_active_theme() {
-                    if let Some(preset) = crate::session::ThemePreset::from_str(&name) {
-                        if preset != self.active_theme {
-                            crate::ui::theme::set_active(preset.palette());
-                            self.active_theme = preset;
-                        }
-                    }
-                }
-            }
-            if !result.delta.is_empty() {
-                self.handle_external_state_change(result.delta);
-            }
-        }
+        self.poll_external_changes();
 
         // Fire due automations. The first tick forces an immediate catch-up
         // pass so automations missed while the TUI was down run right away;
@@ -1601,6 +1557,67 @@ impl App {
         // Kick off usage fetches early and then on a slow cadence.
         if self.tick_count % USAGE_REFRESH_TICKS == 1 {
             self.spawn_usage_fetches();
+        }
+    }
+
+    /// Recompute each session's status/activity/notification for this tick.
+    fn refresh_session_statuses(&mut self) {
+        let active_index = self.active_index;
+        for (idx, session) in self.sessions.iter_mut().enumerate() {
+            // The active session is being watched, so acknowledge any pending
+            // attention signal (keeps it from flagging itself while focused).
+            if idx == active_index {
+                session.acknowledge_attention();
+            }
+            let needs_attention = session.needs_attention();
+
+            session.info.status = if session.has_exited() {
+                SessionStatus::Idle
+            } else if session.millis_since_last_output() <= ACTIVITY_TIMEOUT_MS {
+                // Actively producing output → working, regardless of past signals.
+                SessionStatus::Busy
+            } else if needs_attention {
+                // Quiet after a bell / OSC 9 / OSC 777 → finished or needs input.
+                SessionStatus::Attention
+            } else {
+                SessionStatus::Waiting
+            };
+
+            // Live activity text from the agent-emitted OSC terminal title.
+            session.info.agent_activity = session.agent_title();
+            // Retain the agent's latest pushed notification (OSC 9/777) so the
+            // info panel can show it as a persistent "last signal", not only
+            // while the session is in the attention state.
+            session.info.notification = session.notification();
+        }
+    }
+
+    /// Poll for external state changes from other thurbox instances (DB-based)
+    /// and apply any theme change / session delta they produced.
+    fn poll_external_changes(&mut self) {
+        let Ok(Some(result)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) else {
+            return;
+        };
+        if result.db_changed {
+            self.apply_external_theme_change();
+        }
+        if !result.delta.is_empty() {
+            self.handle_external_state_change(result.delta);
+        }
+    }
+
+    /// Pick up theme changes made by other thurbox processes (e.g. an MCP
+    /// `set_theme` call from another session).
+    fn apply_external_theme_change(&mut self) {
+        let Ok(Some(name)) = self.db.get_active_theme() else {
+            return;
+        };
+        let Some(preset) = crate::session::ThemePreset::from_str(&name) else {
+            return;
+        };
+        if preset != self.active_theme {
+            crate::ui::theme::set_active(preset.palette());
+            self.active_theme = preset;
         }
     }
 
@@ -1862,9 +1879,14 @@ impl App {
     fn handle_external_state_change(&mut self, delta: StateDelta) {
         // Update session counter to avoid conflicts
         self.session_counter = self.session_counter.max(delta.counter_increment);
+        self.apply_removed_sessions(delta.removed_sessions);
+        self.apply_updated_sessions(delta.updated_sessions);
+        self.apply_added_sessions(delta.added_sessions);
+    }
 
-        // Handle removed sessions (deleted by other instances)
-        for session_id in delta.removed_sessions {
+    /// Drop sessions deleted by other instances.
+    fn apply_removed_sessions(&mut self, removed: Vec<SessionId>) {
+        for session_id in removed {
             if let Some(pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
                 self.sessions.remove(pos);
                 if self.active_index >= self.sessions.len() {
@@ -1872,9 +1894,11 @@ impl App {
                 }
             }
         }
+    }
 
-        // Handle updated sessions (metadata changed by other instances)
-        for shared_session in delta.updated_sessions {
+    /// Apply metadata changes made to existing sessions by other instances.
+    fn apply_updated_sessions(&mut self, updated: Vec<sync::SharedSession>) {
+        for shared_session in updated {
             if let Some(session) = self
                 .sessions
                 .iter_mut()
@@ -1883,24 +1907,26 @@ impl App {
                 Self::apply_shared_session_metadata(session, &shared_session);
             }
         }
+    }
 
-        // Handle added sessions from other instances.
-        //
-        // Headless spawns (CLI/MCP) persist the DB row with an empty
-        // `backend_id` because only the TUI knows the real tmux pane id
-        // (`%N`). Before spawning, call `discover()` and look up the
-        // existing window by sanitized name — otherwise we'd create a
-        // duplicate `tb-<name>` window for the one the CLI already
-        // opened, and exact-match `send-keys` would then fail on
-        // "ambiguous window".
-        //
-        // `discover()` is cached per backend_type so a burst of added
-        // sessions only hits tmux once per backend.
+    /// Adopt or spawn sessions added by other instances.
+    ///
+    /// Headless spawns (CLI/MCP) persist the DB row with an empty
+    /// `backend_id` because only the TUI knows the real tmux pane id
+    /// (`%N`). Before spawning, call `discover()` and look up the
+    /// existing window by sanitized name — otherwise we'd create a
+    /// duplicate `tb-<name>` window for the one the CLI already
+    /// opened, and exact-match `send-keys` would then fail on
+    /// "ambiguous window".
+    ///
+    /// `discover()` is cached per backend_type so a burst of added
+    /// sessions only hits tmux once per backend.
+    fn apply_added_sessions(&mut self, added: Vec<sync::SharedSession>) {
         let mut discovered_by_backend: HashMap<
             String,
             Vec<crate::agent::backend::DiscoveredSession>,
         > = HashMap::new();
-        for shared_session in delta.added_sessions {
+        for shared_session in added {
             // Skip if we already have this session
             if self.sessions.iter().any(|s| s.info.id == shared_session.id) {
                 continue;
@@ -1912,59 +1938,21 @@ impl App {
                 .cloned()
                 .unwrap_or_else(|| self.backends.default_backend().clone());
 
-            let discovered = discovered_by_backend
-                .entry(shared_session.backend_type.clone())
-                .or_insert_with(|| backend.discover().unwrap_or_default());
-            let matching_discovered = Self::find_matching_discovered(&shared_session, discovered);
+            let matching_backend_id = {
+                let discovered = discovered_by_backend
+                    .entry(shared_session.backend_type.clone())
+                    .or_insert_with(|| backend.discover().unwrap_or_default());
+                Self::find_matching_discovered(&shared_session, discovered)
+                    .map(|disc| disc.backend_id.clone())
+            };
 
             let (rows, cols) = self.content_area_size();
-            if let Some(disc) = matching_discovered {
-                let provider = {
-                    let cfg = SessionConfig {
-                        agent: shared_session.agent.clone(),
-                        ..SessionConfig::default()
-                    };
-                    self.provider_for(&cfg)
-                };
-                match Session::adopt(
-                    shared_session.name.clone(),
-                    rows,
-                    cols,
-                    &disc.backend_id,
-                    &backend,
-                    &provider,
-                    HashMap::new(),
-                ) {
-                    Ok(mut adopted_session) => {
-                        // Preserve the original session ID from shared
-                        // state (Session::adopt creates a new one, but we
-                        // need the consistent ID).
-                        adopted_session.info.id = shared_session.id;
-                        Self::apply_shared_session_metadata(&mut adopted_session, &shared_session);
-                        self.sessions.push(adopted_session);
-                        // Persist the real pane_id (`%N`) back to the DB
-                        // so future lookups short-circuit on the
-                        // backend_id match instead of always falling back
-                        // to name matching.
-                        self.save_state();
-                        tracing::debug!(
-                            "Adopted session {} from another instance",
-                            shared_session.name
-                        );
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "Failed to adopt session {} by discovered id {}: {}",
-                            shared_session.name,
-                            disc.backend_id,
-                            e
-                        );
-                    }
-                }
-                // Either adoption succeeded or the discovered window
-                // already exists and adoption failed transiently — in
-                // both cases we must NOT fall through to spawn, because
-                // that would create a second window with the same name.
+            if let Some(backend_id) = matching_backend_id {
+                // Either adoption succeeds or the discovered window already
+                // exists and adoption fails transiently — in both cases we
+                // must NOT fall through to spawn, because that would create
+                // a second window with the same name.
+                self.adopt_shared_session(&shared_session, &backend_id, &backend, rows, cols);
                 continue;
             }
 
@@ -1973,44 +1961,111 @@ impl App {
             // `--session-id` so claude creates the conversation (e.g.
             // CLI-created sessions whose claude process never persisted
             // a conversation before we first adopt them).
-            if let Some(ref agent_sid) = shared_session.agent_session_id {
-                let worktree_infos = Self::recreate_worktrees(&shared_session.worktrees);
-                let cwd = worktree_infos
-                    .first()
-                    .map(|wt| wt.worktree_path.clone())
-                    .or(shared_session.cwd.clone());
-
-                let mut config = SessionConfig {
-                    resume_session_id: None,
-                    agent_session_id: Some(agent_sid.clone()),
-                    cwd,
-                    agent: shared_session.agent.clone(),
-                    fork_session_id: None,
-                    ..SessionConfig::default()
-                };
-                config.resume_session_id =
-                    crate::session_ops::resume_id_if_transcript_exists(agent_sid, &config.env);
-                let provider = self.provider_for(&config);
-
-                if let Ok(mut spawned) = Session::spawn(
-                    shared_session.name.clone(),
-                    rows,
-                    cols,
-                    &config,
-                    &backend,
-                    &provider,
-                ) {
-                    spawned.info.id = shared_session.id;
-                    spawned.info.worktrees = worktree_infos;
-                    spawned.info.additional_dirs = shared_session.additional_dirs.clone();
-                    self.sessions.push(spawned);
-                    self.save_state();
-                    tracing::debug!(
-                        "Spawned restored session {} with --resume",
-                        shared_session.name
-                    );
-                }
+            if shared_session.agent_session_id.is_some() {
+                self.spawn_restored_session(&shared_session, &backend, rows, cols);
             }
+        }
+    }
+
+    /// Adopt an already-running discovered window into our session list.
+    fn adopt_shared_session(
+        &mut self,
+        shared_session: &sync::SharedSession,
+        backend_id: &str,
+        backend: &Arc<dyn crate::agent::backend::SessionBackend>,
+        rows: u16,
+        cols: u16,
+    ) {
+        let provider = {
+            let cfg = SessionConfig {
+                agent: shared_session.agent.clone(),
+                ..SessionConfig::default()
+            };
+            self.provider_for(&cfg)
+        };
+        match Session::adopt(
+            shared_session.name.clone(),
+            rows,
+            cols,
+            backend_id,
+            backend,
+            &provider,
+            HashMap::new(),
+        ) {
+            Ok(mut adopted_session) => {
+                // Preserve the original session ID from shared state
+                // (Session::adopt creates a new one, but we need the
+                // consistent ID).
+                adopted_session.info.id = shared_session.id;
+                Self::apply_shared_session_metadata(&mut adopted_session, shared_session);
+                self.sessions.push(adopted_session);
+                // Persist the real pane_id (`%N`) back to the DB so future
+                // lookups short-circuit on the backend_id match instead of
+                // always falling back to name matching.
+                self.save_state();
+                tracing::debug!(
+                    "Adopted session {} from another instance",
+                    shared_session.name
+                );
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "Failed to adopt session {} by discovered id {}: {}",
+                    shared_session.name,
+                    backend_id,
+                    e
+                );
+            }
+        }
+    }
+
+    /// Spawn a fresh window for a restored session that has an
+    /// `agent_session_id` but no matching discovered window.
+    fn spawn_restored_session(
+        &mut self,
+        shared_session: &sync::SharedSession,
+        backend: &Arc<dyn crate::agent::backend::SessionBackend>,
+        rows: u16,
+        cols: u16,
+    ) {
+        let Some(agent_sid) = shared_session.agent_session_id.as_ref() else {
+            return;
+        };
+        let worktree_infos = Self::recreate_worktrees(&shared_session.worktrees);
+        let cwd = worktree_infos
+            .first()
+            .map(|wt| wt.worktree_path.clone())
+            .or(shared_session.cwd.clone());
+
+        let mut config = SessionConfig {
+            resume_session_id: None,
+            agent_session_id: Some(agent_sid.clone()),
+            cwd,
+            agent: shared_session.agent.clone(),
+            fork_session_id: None,
+            ..SessionConfig::default()
+        };
+        config.resume_session_id =
+            crate::session_ops::resume_id_if_transcript_exists(agent_sid, &config.env);
+        let provider = self.provider_for(&config);
+
+        if let Ok(mut spawned) = Session::spawn(
+            shared_session.name.clone(),
+            rows,
+            cols,
+            &config,
+            backend,
+            &provider,
+        ) {
+            spawned.info.id = shared_session.id;
+            spawned.info.worktrees = worktree_infos;
+            spawned.info.additional_dirs = shared_session.additional_dirs.clone();
+            self.sessions.push(spawned);
+            self.save_state();
+            tracing::debug!(
+                "Spawned restored session {} with --resume",
+                shared_session.name
+            );
         }
     }
 
@@ -2169,7 +2224,6 @@ impl App {
         discovered: &[crate::agent::backend::DiscoveredSession],
     ) {
         let name = shared.name.clone();
-        let session_id = shared.id;
 
         let agent = if shared.agent.is_empty() {
             DEFAULT_AGENT_NAME.to_string()
@@ -2180,9 +2234,8 @@ impl App {
         let worktrees: Vec<WorktreeInfo> =
             shared.worktrees.iter().cloned().map(Into::into).collect();
 
-        let agent_session_id = match shared.agent_session_id {
-            Some(ref id) => id.clone(),
-            None => return,
+        let Some(agent_session_id) = shared.agent_session_id.clone() else {
+            return;
         };
 
         let matching_discovered = Self::find_matching_discovered(&shared, discovered);
@@ -2218,54 +2271,90 @@ impl App {
             }
         });
 
-        if let Some(mut session) = adopted {
-            session.info.id = session_id;
-            session.info.agent_session_id = Some(agent_session_id.clone());
-            session.info.cwd = shared.cwd.clone();
-            session.info.additional_dirs = shared.additional_dirs.clone();
-            session.info.agent = agent;
-            session.info.worktrees = worktrees.clone();
-            resolve_repo_display_names(&mut session.info);
-
-            // Re-adopt shell pane if one was persisted
-            if let Some(shell_bid) = &shared.shell_backend_id {
-                if discovered
-                    .iter()
-                    .any(|d| d.backend_id == *shell_bid && d.is_alive)
-                {
-                    let (rows, cols) = self.content_area_size();
-                    if let Err(e) = session.adopt_shell_pane(shell_bid, rows, cols) {
-                        tracing::warn!("Failed to re-adopt shell pane: {e}");
-                    }
-                }
-            }
-
-            self.sessions.push(session);
-            self.active_index = self.sessions.len() - 1;
-            self.focus = InputFocus::Terminal;
+        if let Some(session) = adopted {
+            self.finish_adopted_session(session, &shared, agent, worktrees, discovered);
         } else {
-            // No matching backend session or adopt failed — respawn with
-            // `--resume` when a transcript already exists for this
-            // agent_session_id, otherwise `--session-id` so claude creates
-            // the conversation (e.g. CLI-created sessions whose claude
-            // process never persisted a conversation).
-            if let Err(e) = self.db.soft_delete_session(session_id) {
-                error!("Failed to soft-delete stale session {session_id}: {e}");
-            }
-
-            let mut config = SessionConfig {
-                resume_session_id: None,
-                agent_session_id: Some(agent_session_id.clone()),
-                cwd: shared.cwd,
-                agent,
-                fork_session_id: None,
-                ..SessionConfig::default()
-            };
-            config.resume_session_id =
-                crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &config.env);
-            self.pending_additional_dirs = shared.additional_dirs;
-            self.do_spawn_session(name, &config, worktrees, false);
+            self.respawn_stale_session(name, shared, agent, agent_session_id, worktrees);
         }
+    }
+
+    /// Wire a freshly-adopted backend session into the app: copy persisted
+    /// metadata, re-adopt its shell pane, and make it the active session.
+    fn finish_adopted_session(
+        &mut self,
+        mut session: Session,
+        shared: &sync::SharedSession,
+        agent: String,
+        worktrees: Vec<WorktreeInfo>,
+        discovered: &[crate::agent::backend::DiscoveredSession],
+    ) {
+        session.info.id = shared.id;
+        session.info.agent_session_id = shared.agent_session_id.clone();
+        session.info.cwd = shared.cwd.clone();
+        session.info.additional_dirs = shared.additional_dirs.clone();
+        session.info.agent = agent;
+        session.info.worktrees = worktrees;
+        resolve_repo_display_names(&mut session.info);
+
+        // Re-adopt shell pane if one was persisted
+        if let Some(shell_bid) = &shared.shell_backend_id {
+            let (rows, cols) = self.content_area_size();
+            Self::readopt_shell_pane(&mut session, shell_bid, discovered, rows, cols);
+        }
+
+        self.sessions.push(session);
+        self.active_index = self.sessions.len() - 1;
+        self.focus = InputFocus::Terminal;
+    }
+
+    /// Re-adopt a persisted shell pane onto `session` if its backend window is
+    /// still alive. Failures are non-fatal (logged only).
+    fn readopt_shell_pane(
+        session: &mut Session,
+        shell_bid: &str,
+        discovered: &[crate::agent::backend::DiscoveredSession],
+        rows: u16,
+        cols: u16,
+    ) {
+        if !discovered
+            .iter()
+            .any(|d| d.backend_id == *shell_bid && d.is_alive)
+        {
+            return;
+        }
+        if let Err(e) = session.adopt_shell_pane(shell_bid, rows, cols) {
+            tracing::warn!("Failed to re-adopt shell pane: {e}");
+        }
+    }
+
+    /// No matching backend session or adopt failed — respawn with `--resume`
+    /// when a transcript already exists for this `agent_session_id`, otherwise
+    /// `--session-id` so claude creates the conversation (e.g. CLI-created
+    /// sessions whose claude process never persisted a conversation).
+    fn respawn_stale_session(
+        &mut self,
+        name: String,
+        shared: sync::SharedSession,
+        agent: String,
+        agent_session_id: String,
+        worktrees: Vec<WorktreeInfo>,
+    ) {
+        if let Err(e) = self.db.soft_delete_session(shared.id) {
+            error!("Failed to soft-delete stale session {}: {e}", shared.id);
+        }
+
+        let mut config = SessionConfig {
+            resume_session_id: None,
+            agent_session_id: Some(agent_session_id.clone()),
+            cwd: shared.cwd,
+            agent,
+            fork_session_id: None,
+            ..SessionConfig::default()
+        };
+        config.resume_session_id =
+            crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &config.env);
+        self.pending_additional_dirs = shared.additional_dirs;
+        self.do_spawn_session(name, &config, worktrees, false);
     }
 
     /// Find a discovered backend session matching a shared session.

@@ -235,50 +235,18 @@ impl ControlMode {
 
             match control_mode::parse_notification(&line) {
                 Notification::Output { pane_id, data } => {
-                    if let Ok(senders) = pane_senders.lock() {
-                        if let Some(tx_vec) = senders.get(&pane_id) {
-                            // Broadcast output to all registered instances
-                            for tx in tx_vec {
-                                match tx.try_send(data.clone()) {
-                                    Ok(()) => {}
-                                    Err(std::sync::mpsc::TrySendError::Full(_dropped)) => {
-                                        // Channel full — drop this chunk rather than blocking.
-                                        // The reader thread MUST stay unblocked to handle
-                                        // %pause notifications and avoid deadlock.
-                                        debug!(
-                                            pane_id = %pane_id,
-                                            "Pane output channel full, dropping chunk"
-                                        );
-                                    }
-                                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
-                                }
-                            }
-                        }
-                    }
+                    Self::dispatch_output(&pane_senders, &pane_id, data);
                 }
                 Notification::Begin => {
                     collecting = Some(Vec::new());
                 }
                 end_or_error @ (Notification::End | Notification::Error) => {
                     let lines = collecting.take().unwrap_or_default();
-                    if let Ok(mut queue) = response_queue.lock() {
-                        if let Some(tx) = queue.pop_front() {
-                            let _ = tx.send(CommandResponse {
-                                lines,
-                                is_error: matches!(end_or_error, Notification::Error),
-                            });
-                        }
-                    }
+                    let is_error = matches!(end_or_error, Notification::Error);
+                    Self::deliver_response(&response_queue, lines, is_error);
                 }
                 Notification::Pause { pane_id } => {
-                    let cmd = format!(
-                        "refresh-client -A '{}:continue'\n",
-                        pane_id.replace('\'', "'\\''")
-                    );
-                    if let Ok(mut s) = stdin.lock() {
-                        let _ = s.write_all(cmd.as_bytes());
-                        let _ = s.flush();
-                    }
+                    Self::resume_pane(&stdin, &pane_id);
                 }
                 Notification::Other(text) => {
                     if let Some(ref mut lines) = collecting {
@@ -292,6 +260,60 @@ impl ControlMode {
         debug!("Control reader thread exiting");
         if let Ok(mut senders) = pane_senders.lock() {
             senders.clear();
+        }
+    }
+
+    /// Broadcast a `%output` payload to every reader registered for `pane_id`.
+    ///
+    /// Uses `try_send` so the reader thread never blocks: a full channel drops
+    /// the chunk rather than stalling (which would deadlock `%pause` handling).
+    fn dispatch_output(pane_senders: &PaneSendersMapShared, pane_id: &str, data: Vec<u8>) {
+        let Ok(senders) = pane_senders.lock() else {
+            return;
+        };
+        let Some(tx_vec) = senders.get(pane_id) else {
+            return;
+        };
+        // Broadcast output to all registered instances
+        for tx in tx_vec {
+            match tx.try_send(data.clone()) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(_dropped)) => {
+                    // Channel full — drop this chunk rather than blocking.
+                    // The reader thread MUST stay unblocked to handle
+                    // %pause notifications and avoid deadlock.
+                    debug!(pane_id = %pane_id, "Pane output channel full, dropping chunk");
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+            }
+        }
+    }
+
+    /// Deliver a completed `%begin`/`%end`(`%error`) block to the next waiter.
+    ///
+    /// Responses with no waiter in the queue (e.g. from `send_command_nowait`)
+    /// are simply discarded.
+    fn deliver_response(
+        response_queue: &Arc<Mutex<VecDeque<SyncSender<CommandResponse>>>>,
+        lines: Vec<String>,
+        is_error: bool,
+    ) {
+        if let Ok(mut queue) = response_queue.lock() {
+            if let Some(tx) = queue.pop_front() {
+                let _ = tx.send(CommandResponse { lines, is_error });
+            }
+        }
+    }
+
+    /// Respond to a `%pause` by asking tmux to resume output for the pane.
+    fn resume_pane(stdin: &Arc<Mutex<ChildStdin>>, pane_id: &str) {
+        let cmd = format!(
+            "refresh-client -A '{}:continue'\n",
+            pane_id.replace('\'', "'\\''")
+        );
+        if let Ok(mut s) = stdin.lock() {
+            let _ = s.write_all(cmd.as_bytes());
+            let _ = s.flush();
         }
     }
 

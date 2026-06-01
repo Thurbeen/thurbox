@@ -313,115 +313,174 @@ pub fn render_text_field_with_suggestion(
     let cursor = cursor.min(chars.len());
 
     let display = if focused && width > 0 {
-        let at_end = cursor == chars.len();
-        let suggestion_text = if at_end { suggestion.unwrap_or("") } else { "" };
-
-        let has_left_overflow;
-        let has_right_overflow;
-
-        let viewport_start = if chars.len() < width {
-            has_left_overflow = false;
-            has_right_overflow = false;
-            0
+        let suggestion_text = if cursor == chars.len() {
+            suggestion.unwrap_or("")
         } else {
-            let usable = width.saturating_sub(1);
-            let start = if cursor < usable {
-                0
-            } else {
-                cursor - usable + 1
-            };
-            has_left_overflow = start > 0;
-            has_right_overflow = start + width < chars.len() + 1;
-            start
+            ""
         };
-
-        let content_start = if has_left_overflow {
-            viewport_start + 1
-        } else {
-            viewport_start
-        };
-        let content_width =
-            width - if has_left_overflow { 1 } else { 0 } - if has_right_overflow { 1 } else { 0 };
-
-        let mut spans = Vec::new();
-
-        if has_left_overflow {
-            spans.push(Span::styled("◀", Style::default().fg(Theme::text_muted())));
-        }
-
-        let visible_end = (content_start + content_width).min(chars.len());
-
-        if cursor >= content_start && cursor <= visible_end {
-            let before: String = chars[content_start..cursor].iter().collect();
-            let cursor_char = if cursor < chars.len() {
-                chars[cursor].to_string()
-            } else {
-                " ".to_string()
-            };
-            let after_start = (cursor + 1).min(chars.len());
-            let after_end = visible_end.min(chars.len());
-            let after: String = chars[after_start..after_end].iter().collect();
-            let after_len = after.len();
-
-            if !before.is_empty() {
-                spans.push(Span::styled(
-                    before,
-                    Style::default().fg(Theme::text_primary()),
-                ));
-            }
-            spans.push(Span::styled(cursor_char, Theme::cursor()));
-            if !after.is_empty() {
-                spans.push(Span::styled(
-                    after,
-                    Style::default().fg(Theme::text_primary()),
-                ));
-            }
-
-            if !suggestion_text.is_empty() {
-                let used = if has_left_overflow { 1 } else { 0 }
-                    + (cursor - content_start)
-                    + 1 // cursor block
-                    + after_len;
-                let remaining = content_width.saturating_sub(used);
-                if remaining > 0 {
-                    let sug: String = suggestion_text.chars().take(remaining).collect();
-                    if !sug.is_empty() {
-                        spans.push(Span::styled(sug, Style::default().fg(Theme::text_muted())));
-                    }
-                }
-            }
-        } else {
-            let visible: String = chars[content_start..visible_end].iter().collect();
-            spans.push(Span::styled(
-                visible,
-                Style::default().fg(Theme::text_primary()),
-            ));
-        }
-
-        if has_right_overflow {
-            spans.push(Span::styled("▶", Style::default().fg(Theme::text_muted())));
-        }
-
-        Line::from(spans)
+        render_focused_field_line(&chars, cursor, width, suggestion_text)
     } else if width > 0 {
-        if chars.len() > width {
-            let truncated: String = chars[..width - 1].iter().collect();
-            Line::from(vec![
-                Span::styled(truncated, Style::default().fg(Theme::text_primary())),
-                Span::styled("…", Style::default().fg(Theme::text_muted())),
-            ])
-        } else {
-            Line::from(Span::styled(
-                value,
-                Style::default().fg(Theme::text_primary()),
-            ))
-        }
+        render_unfocused_field_line(value, &chars, width)
     } else {
         Line::from("")
     };
 
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(display), inner);
+}
+
+/// Computed scroll viewport for a focused text field.
+struct Viewport {
+    /// First character index of the scrolled-in viewport (before overflow trim).
+    start: usize,
+    has_left_overflow: bool,
+    has_right_overflow: bool,
+}
+
+/// Compute the scroll viewport (and overflow indicators) for a focused field.
+fn compute_viewport(chars_len: usize, width: usize, cursor: usize) -> Viewport {
+    if chars_len < width {
+        return Viewport {
+            start: 0,
+            has_left_overflow: false,
+            has_right_overflow: false,
+        };
+    }
+    let usable = width.saturating_sub(1);
+    let start = if cursor < usable {
+        0
+    } else {
+        cursor - usable + 1
+    };
+    Viewport {
+        start,
+        has_left_overflow: start > 0,
+        has_right_overflow: start + width < chars_len + 1,
+    }
+}
+
+/// Build the rendered line for a focused text field (with cursor block and
+/// optional inline suggestion / overflow indicators).
+fn render_focused_field_line(
+    chars: &[char],
+    cursor: usize,
+    width: usize,
+    suggestion_text: &str,
+) -> Line<'static> {
+    let vp = compute_viewport(chars.len(), width, cursor);
+
+    let content_start = if vp.has_left_overflow {
+        vp.start + 1
+    } else {
+        vp.start
+    };
+    let content_width = width
+        - if vp.has_left_overflow { 1 } else { 0 }
+        - if vp.has_right_overflow { 1 } else { 0 };
+
+    let mut spans = Vec::new();
+
+    if vp.has_left_overflow {
+        spans.push(Span::styled("◀", Style::default().fg(Theme::text_muted())));
+    }
+
+    let visible_end = (content_start + content_width).min(chars.len());
+
+    if cursor >= content_start && cursor <= visible_end {
+        push_cursor_spans(
+            &mut spans,
+            chars,
+            content_start,
+            cursor,
+            visible_end,
+            content_width,
+            vp.has_left_overflow,
+            suggestion_text,
+        );
+    } else {
+        let visible: String = chars[content_start..visible_end].iter().collect();
+        spans.push(Span::styled(
+            visible,
+            Style::default().fg(Theme::text_primary()),
+        ));
+    }
+
+    if vp.has_right_overflow {
+        spans.push(Span::styled("▶", Style::default().fg(Theme::text_muted())));
+    }
+
+    Line::from(spans)
+}
+
+/// Push the before/cursor/after text spans and an optional trailing suggestion
+/// for the segment of the field that contains the cursor.
+#[allow(clippy::too_many_arguments)]
+fn push_cursor_spans(
+    spans: &mut Vec<Span<'static>>,
+    chars: &[char],
+    content_start: usize,
+    cursor: usize,
+    visible_end: usize,
+    content_width: usize,
+    has_left_overflow: bool,
+    suggestion_text: &str,
+) {
+    let before: String = chars[content_start..cursor].iter().collect();
+    let cursor_char = if cursor < chars.len() {
+        chars[cursor].to_string()
+    } else {
+        " ".to_string()
+    };
+    let after_start = (cursor + 1).min(chars.len());
+    let after_end = visible_end.min(chars.len());
+    let after: String = chars[after_start..after_end].iter().collect();
+    let after_len = after.len();
+
+    if !before.is_empty() {
+        spans.push(Span::styled(
+            before,
+            Style::default().fg(Theme::text_primary()),
+        ));
+    }
+    spans.push(Span::styled(cursor_char, Theme::cursor()));
+    if !after.is_empty() {
+        spans.push(Span::styled(
+            after,
+            Style::default().fg(Theme::text_primary()),
+        ));
+    }
+
+    if suggestion_text.is_empty() {
+        return;
+    }
+    let used = if has_left_overflow { 1 } else { 0 }
+        + (cursor - content_start)
+        + 1 // cursor block
+        + after_len;
+    let remaining = content_width.saturating_sub(used);
+    if remaining == 0 {
+        return;
+    }
+    let sug: String = suggestion_text.chars().take(remaining).collect();
+    if !sug.is_empty() {
+        spans.push(Span::styled(sug, Style::default().fg(Theme::text_muted())));
+    }
+}
+
+/// Build the rendered line for an unfocused text field (plain text, truncated
+/// with an ellipsis when it exceeds the visible width).
+fn render_unfocused_field_line(value: &str, chars: &[char], width: usize) -> Line<'static> {
+    if chars.len() > width {
+        let truncated: String = chars[..width - 1].iter().collect();
+        return Line::from(vec![
+            Span::styled(truncated, Style::default().fg(Theme::text_primary())),
+            Span::styled("…", Style::default().fg(Theme::text_muted())),
+        ]);
+    }
+    Line::from(Span::styled(
+        value.to_string(),
+        Style::default().fg(Theme::text_primary()),
+    ))
 }
 
 #[cfg(test)]
