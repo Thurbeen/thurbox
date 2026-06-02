@@ -90,6 +90,65 @@ impl TextInput {
     }
 }
 
+/// Step to the next/previous field in `fields` relative to `current`, wrapping
+/// at both ends. `delta` is `+1` (next) or `-1` (previous). Shared by the
+/// automation and task editor forms, which navigate different field enums.
+fn cycle_field<F: PartialEq + Copy>(fields: &[F], current: F, delta: isize) -> F {
+    if fields.is_empty() {
+        return current;
+    }
+    let idx = fields.iter().position(|f| *f == current).unwrap_or(0);
+    let len = fields.len() as isize;
+    let next = (idx as isize + delta).rem_euclid(len) as usize;
+    fields[next]
+}
+
+/// Apply a text-editing key (insert/backspace/delete/cursor move) to the
+/// currently focused field, if any. Returns `true` when `code` was a
+/// text-editing key (whether or not a field was focused), so editor key
+/// handlers can share one implementation across the automation and task forms.
+fn apply_text_input_key(field: Option<&mut TextInput>, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Char(c) => {
+            if let Some(f) = field {
+                f.insert(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(f) = field {
+                f.backspace();
+            }
+        }
+        KeyCode::Delete => {
+            if let Some(f) = field {
+                f.delete();
+            }
+        }
+        KeyCode::Left => {
+            if let Some(f) = field {
+                f.move_left();
+            }
+        }
+        KeyCode::Right => {
+            if let Some(f) = field {
+                f.move_right();
+            }
+        }
+        KeyCode::Home => {
+            if let Some(f) = field {
+                f.home();
+            }
+        }
+        KeyCode::End => {
+            if let Some(f) = field {
+                f.end();
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
 // ── Modal State Structs ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -316,16 +375,12 @@ impl AutomationEditorModal {
 
     /// Move focus to the next visible field (wraps).
     pub fn next_field(&mut self) {
-        let fields = self.visible_fields();
-        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
-        self.field = fields[(idx + 1) % fields.len()];
+        self.field = cycle_field(&self.visible_fields(), self.field, 1);
     }
 
     /// Move focus to the previous visible field (wraps).
     pub fn prev_field(&mut self) {
-        let fields = self.visible_fields();
-        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
-        self.field = fields[(idx + fields.len() - 1) % fields.len()];
+        self.field = cycle_field(&self.visible_fields(), self.field, -1);
     }
 
     /// The focused text field, or `None` for selector/stepper fields (which are
@@ -393,42 +448,9 @@ impl AutomationEditorModal {
             KeyCode::BackTab | KeyCode::Up => self.prev_field(),
             KeyCode::Left if adjustable => self.adjust(-1),
             KeyCode::Right | KeyCode::Char(' ') if adjustable => self.adjust(1),
-            KeyCode::Char(c) => {
-                if let Some(field) = self.active_field_mut() {
-                    field.insert(c);
-                }
+            other => {
+                apply_text_input_key(self.active_field_mut(), other);
             }
-            KeyCode::Backspace => {
-                if let Some(field) = self.active_field_mut() {
-                    field.backspace();
-                }
-            }
-            KeyCode::Delete => {
-                if let Some(field) = self.active_field_mut() {
-                    field.delete();
-                }
-            }
-            KeyCode::Left => {
-                if let Some(field) = self.active_field_mut() {
-                    field.move_left();
-                }
-            }
-            KeyCode::Right => {
-                if let Some(field) = self.active_field_mut() {
-                    field.move_right();
-                }
-            }
-            KeyCode::Home => {
-                if let Some(field) = self.active_field_mut() {
-                    field.home();
-                }
-            }
-            KeyCode::End => {
-                if let Some(field) = self.active_field_mut() {
-                    field.end();
-                }
-            }
-            _ => {}
         }
         EditorOutcome::Continue
     }
@@ -851,16 +873,12 @@ impl TaskEditorModal {
 
     /// Move focus to the next visible field (wraps).
     pub fn next_field(&mut self) {
-        let fields = self.visible_fields();
-        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
-        self.field = fields[(idx + 1) % fields.len()];
+        self.field = cycle_field(&self.visible_fields(), self.field, 1);
     }
 
     /// Move focus to the previous visible field (wraps).
     pub fn prev_field(&mut self) {
-        let fields = self.visible_fields();
-        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
-        self.field = fields[(idx + fields.len() - 1) % fields.len()];
+        self.field = cycle_field(&self.visible_fields(), self.field, -1);
     }
 
     /// The focused text field, or `None` for selector fields (adjusted with ←/→).
@@ -962,42 +980,9 @@ impl TaskEditorModal {
             KeyCode::BackTab | KeyCode::Up => self.prev_field(),
             KeyCode::Left if adjustable => self.adjust(-1),
             KeyCode::Right | KeyCode::Char(' ') if adjustable => self.adjust(1),
-            KeyCode::Char(c) => {
-                if let Some(field) = self.active_field_mut() {
-                    field.insert(c);
-                }
+            other => {
+                apply_text_input_key(self.active_field_mut(), other);
             }
-            KeyCode::Backspace => {
-                if let Some(field) = self.active_field_mut() {
-                    field.backspace();
-                }
-            }
-            KeyCode::Delete => {
-                if let Some(field) = self.active_field_mut() {
-                    field.delete();
-                }
-            }
-            KeyCode::Left => {
-                if let Some(field) = self.active_field_mut() {
-                    field.move_left();
-                }
-            }
-            KeyCode::Right => {
-                if let Some(field) = self.active_field_mut() {
-                    field.move_right();
-                }
-            }
-            KeyCode::Home => {
-                if let Some(field) = self.active_field_mut() {
-                    field.home();
-                }
-            }
-            KeyCode::End => {
-                if let Some(field) = self.active_field_mut() {
-                    field.end();
-                }
-            }
-            _ => {}
         }
         EditorOutcome::Continue
     }
@@ -1041,6 +1026,34 @@ mod tests {
         input.insert('c');
         assert_eq!(input.value(), "abc");
         assert_eq!(input.cursor_pos(), 3);
+    }
+
+    #[test]
+    fn cycle_field_wraps_both_directions() {
+        let fields = ['a', 'b', 'c'];
+        assert_eq!(cycle_field(&fields, 'a', 1), 'b');
+        assert_eq!(cycle_field(&fields, 'c', 1), 'a'); // wrap forward
+        assert_eq!(cycle_field(&fields, 'a', -1), 'c'); // wrap backward
+        assert_eq!(cycle_field(&fields, 'b', -1), 'a');
+        // Unknown current value falls back to index 0, then steps.
+        assert_eq!(cycle_field(&fields, 'z', 1), 'b');
+        // Empty slice returns the input unchanged.
+        assert_eq!(cycle_field::<char>(&[], 'x', 1), 'x');
+    }
+
+    #[test]
+    fn apply_text_input_key_edits_and_reports_handled() {
+        let mut input = TextInput::new();
+        input.set("ab");
+        assert!(apply_text_input_key(Some(&mut input), KeyCode::Char('c')));
+        assert_eq!(input.value(), "abc");
+        assert!(apply_text_input_key(Some(&mut input), KeyCode::Backspace));
+        assert_eq!(input.value(), "ab");
+        // Non-text keys are not handled.
+        assert!(!apply_text_input_key(Some(&mut input), KeyCode::Enter));
+        assert!(!apply_text_input_key(Some(&mut input), KeyCode::Tab));
+        // A text key with no focused field is still "handled" (a no-op).
+        assert!(apply_text_input_key(None, KeyCode::Char('x')));
     }
 
     #[test]

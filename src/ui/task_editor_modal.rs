@@ -3,18 +3,10 @@
 //! [`automation_editor_modal`](super::automation_editor_modal) but simpler — a
 //! task has no schedule, just a title, status, and optional agent action.
 
-use ratatui::{
-    layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
-    Frame,
-};
+use ratatui::{layout::Rect, text::Line, widgets::Paragraph, Frame};
 
 use crate::app::{TaskActionKind, TaskField};
 use crate::session::TaskStatus;
-
-use super::theme::Theme;
 
 pub struct TaskEditorState<'a> {
     pub editing: bool,
@@ -34,6 +26,26 @@ pub struct TaskEditorState<'a> {
     pub focused: bool,
 }
 
+impl<'a> TaskEditorState<'a> {
+    /// Borrow view data from a task-editor modal. Keeps the field projection in
+    /// one place (mirrors `AutomationEditorState::from_modal`).
+    pub fn from_modal(m: &'a crate::app::modals::TaskEditorModal, focused: bool) -> Self {
+        Self {
+            editing: m.editing_id.is_some(),
+            field: m.field,
+            status: m.status,
+            action: m.action,
+            title: m.title.value(),
+            repo: m.repo.value(),
+            worktree: m.worktree.value(),
+            base: m.base.value(),
+            agent: m.agent.value(),
+            target_session: m.selected_target().map(|(_, n)| n.as_str()),
+            focused,
+        }
+    }
+}
+
 /// Fields shown for the current action kind, in order. Thin re-export of
 /// [`TaskActionKind::visible_fields`] so the renderer and the app's field
 /// navigation stay in lockstep.
@@ -44,17 +56,7 @@ pub fn visible_fields(action: TaskActionKind) -> Vec<TaskField> {
 /// Render the editor inline into `area`, framed by a border whose style reflects
 /// [`TaskEditorState::focused`] (mirrors `render_automation_editor_into`).
 pub fn render_task_editor_into(frame: &mut Frame, area: Rect, state: &TaskEditorState<'_>) {
-    let border = if state.focused {
-        Theme::border_focused()
-    } else {
-        Theme::border_unfocused()
-    };
-    let block = Block::default()
-        .title(format!(" {} ", editor_title(state)))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = super::render_editor_frame(frame, area, editor_title(state), state.focused);
     frame.render_widget(Paragraph::new(editor_lines(state)), inner);
 }
 
@@ -75,15 +77,11 @@ fn editor_lines<'a>(state: &TaskEditorState<'a>) -> Vec<Line<'a>> {
         .map(|f| field_line(*f, state, state.focused && *f == state.field))
         .collect();
 
-    lines.push(Line::from(vec![
-        Span::styled("Tab/↑↓", Theme::keybind()),
-        Span::styled(" move  ", Theme::keybind_desc()),
-        Span::styled("←→", Theme::keybind()),
-        Span::styled(" adjust  ", Theme::keybind_desc()),
-        Span::styled("Enter", Theme::keybind()),
-        Span::styled(" save  ", Theme::keybind_desc()),
-        Span::styled("Esc", Theme::keybind()),
-        Span::styled(" cancel", Theme::keybind_desc()),
+    lines.push(super::key_hint_line(&[
+        ("Tab/↑↓", " move  "),
+        ("←→", " adjust  "),
+        ("Enter", " save  "),
+        ("Esc", " cancel"),
     ]));
 
     lines
@@ -107,27 +105,7 @@ fn field_line<'a>(
         TaskField::Agent => ("agent", optional_display(state.agent), false),
     };
 
-    let prefix = if is_active_field { "▸ " } else { "  " };
-    let value_style = if is_active_field {
-        Style::default()
-            .fg(Theme::border_focused())
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Theme::text_primary())
-    };
-
-    let display = if selector {
-        format!("‹ {value} ›")
-    } else if is_active_field {
-        format!("{value}_")
-    } else {
-        value
-    };
-
-    Line::from(vec![
-        Span::styled(format!("{prefix}{label:<9}"), Theme::label()),
-        Span::styled(display, value_style),
-    ])
+    super::editor_field_line(label, value, selector, is_active_field)
 }
 
 fn target_display(state: &TaskEditorState<'_>) -> String {

@@ -1,8 +1,8 @@
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
@@ -36,6 +36,38 @@ pub struct AutomationEditorState<'a> {
     /// preview), the active-field cursor/highlight is suppressed and the border
     /// is drawn unfocused.
     pub focused: bool,
+}
+
+impl<'a> AutomationEditorState<'a> {
+    /// Borrow view data from an editor modal. Shared by the centered-overlay and
+    /// in-pane render paths so the 18-field projection lives in one place.
+    pub fn from_modal(
+        m: &'a crate::app::modals::AutomationEditorModal,
+        preview: &'a str,
+        focused: bool,
+    ) -> Self {
+        Self {
+            editing: m.editing_id.is_some(),
+            field: m.field,
+            trigger_kind: m.trigger_kind,
+            action: m.action,
+            enabled: m.enabled,
+            name: m.name.value(),
+            delay: m.delay.value(),
+            weekday: m.weekday,
+            hour: m.hour,
+            minute: m.minute,
+            cron_expr: m.cron_expr.value(),
+            timezone: m.timezone.value(),
+            repo: m.repo.value(),
+            worktree: m.worktree.value(),
+            agent: m.agent.value(),
+            prompt: m.prompt.value(),
+            target_session: m.selected_target().map(|(_, name)| name.as_str()),
+            preview,
+            focused,
+        }
+    }
 }
 
 /// Fields shown for the current trigger kind + action, in order. Mirrors
@@ -80,17 +112,7 @@ pub fn render_automation_editor_into(
     area: Rect,
     state: &AutomationEditorState<'_>,
 ) {
-    let border = if state.focused {
-        Theme::border_focused()
-    } else {
-        Theme::border_unfocused()
-    };
-    let block = Block::default()
-        .title(format!(" {} ", editor_title(state)))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = super::render_editor_frame(frame, area, editor_title(state), state.focused);
     frame.render_widget(Paragraph::new(editor_lines(state)), inner);
 }
 
@@ -128,17 +150,12 @@ fn editor_lines<'a>(state: &AutomationEditorState<'a>) -> Vec<Line<'a>> {
         enabled_label,
     ]));
 
-    lines.push(Line::from(vec![
-        Span::styled("Tab/↑↓", Theme::keybind()),
-        Span::styled(" move  ", Theme::keybind_desc()),
-        Span::styled("←→", Theme::keybind()),
-        Span::styled(" adjust  ", Theme::keybind_desc()),
-        Span::styled("^E", Theme::keybind()),
-        Span::styled(" enable  ", Theme::keybind_desc()),
-        Span::styled("Enter", Theme::keybind()),
-        Span::styled(" save  ", Theme::keybind_desc()),
-        Span::styled("Esc", Theme::keybind()),
-        Span::styled(" cancel", Theme::keybind_desc()),
+    lines.push(super::key_hint_line(&[
+        ("Tab/↑↓", " move  "),
+        ("←→", " adjust  "),
+        ("^E", " enable  "),
+        ("Enter", " save  "),
+        ("Esc", " cancel"),
     ]));
 
     lines
@@ -177,28 +194,7 @@ fn field_line<'a>(
         AutomationField::Prompt => ("prompt", state.prompt.to_string(), false),
     };
 
-    let prefix = if focused { "▸ " } else { "  " };
-    let value_style = if focused {
-        Style::default()
-            .fg(Theme::border_focused())
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Theme::text_primary())
-    };
-
-    let display = if selector {
-        format!("‹ {value} ›")
-    } else if focused {
-        // A trailing cursor block on the focused text field.
-        format!("{value}_")
-    } else {
-        value
-    };
-
-    Line::from(vec![
-        Span::styled(format!("{prefix}{label:<9}"), Theme::label()),
-        Span::styled(display, value_style),
-    ])
+    super::editor_field_line(label, value, selector, focused)
 }
 
 fn delay_display(delay: &str) -> String {

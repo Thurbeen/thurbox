@@ -478,27 +478,7 @@ impl App {
             let preview = editor_preview(m, now);
             automation_editor_modal::render_automation_editor_modal(
                 frame,
-                &automation_editor_modal::AutomationEditorState {
-                    editing: m.editing_id.is_some(),
-                    field: m.field,
-                    trigger_kind: m.trigger_kind,
-                    action: m.action,
-                    enabled: m.enabled,
-                    name: m.name.value(),
-                    delay: m.delay.value(),
-                    weekday: m.weekday,
-                    hour: m.hour,
-                    minute: m.minute,
-                    cron_expr: m.cron_expr.value(),
-                    timezone: m.timezone.value(),
-                    repo: m.repo.value(),
-                    worktree: m.worktree.value(),
-                    agent: m.agent.value(),
-                    prompt: m.prompt.value(),
-                    target_session: m.selected_target().map(|(_, name)| name.as_str()),
-                    preview: &preview,
-                    focused: true,
-                },
+                &automation_editor_modal::AutomationEditorState::from_modal(m, &preview, true),
             );
         }
 
@@ -598,23 +578,12 @@ impl App {
         let editing = self.focus == InputFocus::AutomationEditor;
 
         let Some(m) = self.automation_editor.as_ref() else {
-            // Nothing scoped (e.g. an empty pane): render a create hint.
-            let block = ratatui::widgets::Block::default()
-                .title(" Automation ")
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_style(Style::default().fg(if editing {
-                    Theme::border_focused()
-                } else {
-                    Theme::border_unfocused()
-                }));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "No automations yet — press n to create one.",
-                    Style::default().fg(Theme::text_muted()),
-                ))),
-                inner,
+            render_empty_workspace_hint(
+                frame,
+                area,
+                " Automation ",
+                "No automations yet — press n to create one.",
+                editing,
             );
             return;
         };
@@ -654,27 +623,7 @@ impl App {
         automation_editor_modal::render_automation_editor_into(
             frame,
             editor_area,
-            &automation_editor_modal::AutomationEditorState {
-                editing: m.editing_id.is_some(),
-                field: m.field,
-                trigger_kind: m.trigger_kind,
-                action: m.action,
-                enabled: m.enabled,
-                name: m.name.value(),
-                delay: m.delay.value(),
-                weekday: m.weekday,
-                hour: m.hour,
-                minute: m.minute,
-                cron_expr: m.cron_expr.value(),
-                timezone: m.timezone.value(),
-                repo: m.repo.value(),
-                worktree: m.worktree.value(),
-                agent: m.agent.value(),
-                prompt: m.prompt.value(),
-                target_session: m.selected_target().map(|(_, n)| n.as_str()),
-                preview: &preview,
-                focused: editing,
-            },
+            &automation_editor_modal::AutomationEditorState::from_modal(m, &preview, editing),
         );
 
         if let Some(history_area) = history_area {
@@ -701,23 +650,12 @@ impl App {
         let editing = self.focus == InputFocus::TaskEditor;
 
         let Some(m) = self.task_editor.as_ref() else {
-            // Nothing scoped (an empty panel): render a create hint.
-            let block = ratatui::widgets::Block::default()
-                .title(" Task ")
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_style(Style::default().fg(if editing {
-                    Theme::border_focused()
-                } else {
-                    Theme::border_unfocused()
-                }));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "No tasks yet — press n to create one.",
-                    Style::default().fg(Theme::text_muted()),
-                ))),
-                inner,
+            render_empty_workspace_hint(
+                frame,
+                area,
+                " Task ",
+                "No tasks yet — press n to create one.",
+                editing,
             );
             return;
         };
@@ -742,19 +680,7 @@ impl App {
         task_editor_modal::render_task_editor_into(
             frame,
             editor_area,
-            &task_editor_modal::TaskEditorState {
-                editing: m.editing_id.is_some(),
-                field: m.field,
-                status: m.status,
-                action: m.action,
-                title: m.title.value(),
-                repo: m.repo.value(),
-                worktree: m.worktree.value(),
-                base: m.base.value(),
-                agent: m.agent.value(),
-                target_session: m.selected_target().map(|(_, n)| n.as_str()),
-                focused: editing,
-            },
+            &task_editor_modal::TaskEditorState::from_modal(m, editing),
         );
 
         if let (Some(detail_area), Some(task)) = (detail_area, scoped) {
@@ -773,6 +699,36 @@ impl App {
     }
 }
 
+/// Render a bordered "nothing scoped yet" placeholder in the central pane,
+/// shared by the automation and task workspaces. `title` labels the border and
+/// `hint` is the muted call-to-action; `focused` drives the border colour.
+fn render_empty_workspace_hint(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    hint: &str,
+    focused: bool,
+) {
+    let border = if focused {
+        Theme::border_focused()
+    } else {
+        Theme::border_unfocused()
+    };
+    let block = ratatui::widgets::Block::default()
+        .title(title.to_string())
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint.to_string(),
+            Style::default().fg(Theme::text_muted()),
+        ))),
+        inner,
+    );
+}
+
 /// First 8 chars of a session UUID — enough to identify it in a compact label.
 fn short_session_id(session_id: &crate::session::SessionId) -> String {
     session_id.to_string().chars().take(8).collect()
@@ -787,25 +743,44 @@ fn repo_display_name(repo_path: &std::path::Path) -> String {
         .unwrap_or_else(|| repo_path.to_string_lossy().into_owned())
 }
 
-/// One-line description of a task's agent linkage for the details panel.
-fn task_linkage(task: &crate::session::Task) -> String {
+/// A task's agent action, decomposed into display-ready pieces. `target` is the
+/// short session id (Send) or the `repo[#branch]` (Spawn); `None` is a plain
+/// local todo. Lets the two label styles (details panel vs. panel summary) share
+/// one match over [`AutomationAction`](crate::session::AutomationAction).
+enum TaskActionParts {
+    Local,
+    Send { target: String },
+    Spawn { target: String },
+}
+
+fn task_action_parts(task: &crate::session::Task) -> TaskActionParts {
     use crate::session::AutomationAction;
     match &task.action {
-        None => "local todo".to_string(),
-        Some(AutomationAction::Send { session_id }) => {
-            format!("send → {}", short_session_id(session_id))
-        }
+        None => TaskActionParts::Local,
+        Some(AutomationAction::Send { session_id }) => TaskActionParts::Send {
+            target: short_session_id(session_id),
+        },
         Some(AutomationAction::Spawn {
             repo_path,
             worktree_branch,
             ..
         }) => {
             let repo = repo_display_name(repo_path);
-            match worktree_branch {
-                Some(b) => format!("spawn → {repo}#{b}"),
-                None => format!("spawn → {repo}"),
-            }
+            let target = match worktree_branch {
+                Some(b) => format!("{repo}#{b}"),
+                None => repo,
+            };
+            TaskActionParts::Spawn { target }
         }
+    }
+}
+
+/// One-line description of a task's agent linkage for the details panel.
+fn task_linkage(task: &crate::session::Task) -> String {
+    match task_action_parts(task) {
+        TaskActionParts::Local => "local todo".to_string(),
+        TaskActionParts::Send { target } => format!("send → {target}"),
+        TaskActionParts::Spawn { target } => format!("spawn → {target}"),
     }
 }
 
@@ -1033,23 +1008,10 @@ fn session_fuzzy(query: &str, info: &SessionInfo) -> Option<project_list::Sessio
 
 /// One-line summary of a task's agent linkage, shown dimmed beneath its title.
 fn task_action_summary(task: &crate::session::Task) -> String {
-    use crate::session::AutomationAction;
-    match &task.action {
-        None => "local".to_string(),
-        Some(AutomationAction::Send { session_id }) => {
-            format!("→ send: {}", short_session_id(session_id))
-        }
-        Some(AutomationAction::Spawn {
-            repo_path,
-            worktree_branch,
-            ..
-        }) => {
-            let repo = repo_display_name(repo_path);
-            match worktree_branch {
-                Some(b) => format!("→ spawn: {repo}#{b}"),
-                None => format!("→ spawn: {repo}"),
-            }
-        }
+    match task_action_parts(task) {
+        TaskActionParts::Local => "local".to_string(),
+        TaskActionParts::Send { target } => format!("→ send: {target}"),
+        TaskActionParts::Spawn { target } => format!("→ spawn: {target}"),
     }
 }
 

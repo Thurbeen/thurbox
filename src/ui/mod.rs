@@ -62,6 +62,62 @@ pub fn truncate_ellipsis(s: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
+/// Render a titled, bordered editor frame and return its inner area. The border
+/// is accent when `focused`, gray otherwise. Shared by the automation and task
+/// in-pane editors so their chrome stays identical.
+pub fn render_editor_frame(frame: &mut Frame, area: Rect, title: &str, focused: bool) -> Rect {
+    let border = if focused {
+        Theme::border_focused()
+    } else {
+        Theme::border_unfocused()
+    };
+    let block = Block::default()
+        .title(format!(" {title} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    inner
+}
+
+/// Render one editor field row: a left-aligned `label`, then its `value`. When
+/// `active` the row is prefixed with `▸` and bolded; `selector` values (adjusted
+/// with ←/→) are wrapped in `‹ ›`, while an active text value gets a trailing
+/// `_` cursor. Shared by the automation and task editor field renderers.
+pub fn editor_field_line<'a>(label: &str, value: String, selector: bool, active: bool) -> Line<'a> {
+    let prefix = if active { "▸ " } else { "  " };
+    let value_style = if active {
+        Style::default()
+            .fg(Theme::border_focused())
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        Style::default().fg(Theme::text_primary())
+    };
+    let display = if selector {
+        format!("‹ {value} ›")
+    } else if active {
+        format!("{value}_")
+    } else {
+        value
+    };
+    Line::from(vec![
+        Span::styled(format!("{prefix}{label:<9}"), Theme::label()),
+        Span::styled(display, value_style),
+    ])
+}
+
+/// Build a footer/hint [`Line`] from `(key, description)` pairs, styling keys
+/// with [`Theme::keybind`] and descriptions with [`Theme::keybind_desc`]. Shared
+/// by the editor footers so the keybind chrome reads identically everywhere.
+pub fn key_hint_line<'a>(pairs: &[(&'a str, &'a str)]) -> Line<'a> {
+    let mut spans = Vec::with_capacity(pairs.len() * 2);
+    for (key, desc) in pairs {
+        spans.push(Span::styled(*key, Theme::keybind()));
+        spans.push(Span::styled(*desc, Theme::keybind_desc()));
+    }
+    Line::from(spans)
+}
+
 /// Tri-state focus level for panels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusLevel {
@@ -517,6 +573,36 @@ mod tests {
     fn truncate_ellipsis_keeps_short_strings_intact() {
         assert_eq!(truncate_ellipsis("hello", 10), "hello");
         assert_eq!(truncate_ellipsis("hello", 5), "hello");
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn key_hint_line_alternates_key_and_desc_spans() {
+        let line = key_hint_line(&[("Enter", " save  "), ("Esc", " cancel")]);
+        assert_eq!(line.spans.len(), 4);
+        assert_eq!(line_text(&line), "Enter save  Esc cancel");
+    }
+
+    #[test]
+    fn editor_field_line_marks_active_and_wraps_selectors() {
+        // Inactive plain text: no cursor, no marker.
+        assert_eq!(
+            line_text(&editor_field_line("repo", "x".into(), false, false)),
+            "  repo     x"
+        );
+        // Active text field gets a "▸" prefix and a trailing cursor "_".
+        assert_eq!(
+            line_text(&editor_field_line("repo", "x".into(), false, true)),
+            "▸ repo     x_"
+        );
+        // Selector values are wrapped in guillemets (no cursor even when active).
+        assert_eq!(
+            line_text(&editor_field_line("status", "todo".into(), true, true)),
+            "▸ status   ‹ todo ›"
+        );
     }
 
     #[test]
