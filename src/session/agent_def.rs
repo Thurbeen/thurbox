@@ -41,6 +41,14 @@ pub struct AgentDef {
     /// Emitted on a fresh spawn to pin a session id; `{id}` is substituted.
     #[serde(default)]
     pub new_session_args: Vec<String>,
+    /// When true, this agent resumes its most-recent session in the launch
+    /// directory using id-less `resume_args` (no `{id}` token). thurbox cannot
+    /// pin or read back the agent's real session id for these CLIs, so restart
+    /// relies on the agent's own "last session in this directory" resolution
+    /// (e.g. `codex resume --last`, `opencode --continue`). Agents that pin ids
+    /// (claude) leave this `false` and resume by a thurbox-known id instead.
+    #[serde(default)]
+    pub resume_latest: bool,
 }
 
 impl AgentDef {
@@ -69,6 +77,14 @@ impl AgentDef {
         out.extend(self.args.iter().cloned());
 
         out
+    }
+
+    /// Whether a restart should trigger this agent's resume group via
+    /// "latest session in the launch directory" semantics rather than a
+    /// thurbox-known session id. True only when [`Self::resume_latest`] is set
+    /// and there are `resume_args` to emit.
+    pub fn resumes_latest(&self) -> bool {
+        self.resume_latest && !self.resume_args.is_empty()
     }
 }
 
@@ -128,6 +144,7 @@ mod tests {
             resume_args: vec!["--resume".into(), "{id}".into()],
             fork_args: vec!["--resume".into(), "{id}".into(), "--fork-session".into()],
             new_session_args: vec!["--session-id".into(), "{id}".into()],
+            resume_latest: false,
         }
     }
 
@@ -163,9 +180,55 @@ mod tests {
             resume_args: vec![],
             fork_args: vec![],
             new_session_args: vec![],
+            resume_latest: false,
         };
         let args = d.build_args(None, None, Some("ignored"));
         assert_eq!(args, vec!["--quiet"]);
+    }
+
+    #[test]
+    fn idless_resume_and_fork_pass_tokens_verbatim() {
+        // Mirrors the seeded codex definition: id-less resume/fork groups that
+        // resolve "latest in cwd" inside the agent and ignore any supplied id.
+        let d = AgentDef {
+            name: "codex".into(),
+            command: "codex".into(),
+            args: vec![],
+            resume_args: vec!["resume".into(), "--last".into()],
+            fork_args: vec!["fork".into(), "--last".into()],
+            new_session_args: vec![],
+            resume_latest: true,
+        };
+        // resume id present, but no {id} token -> tokens unchanged.
+        assert_eq!(
+            d.build_args(Some("ignored-uuid"), None, None),
+            vec!["resume", "--last"]
+        );
+        // fork wins over resume, still id-less.
+        assert_eq!(
+            d.build_args(Some("ignored-uuid"), Some("also-ignored"), None),
+            vec!["fork", "--last"]
+        );
+        assert!(d.resumes_latest());
+    }
+
+    #[test]
+    fn resumes_latest_requires_flag_and_resume_args() {
+        let mut d = AgentDef {
+            name: "x".into(),
+            command: "x".into(),
+            args: vec![],
+            resume_args: vec![],
+            fork_args: vec![],
+            new_session_args: vec![],
+            resume_latest: true,
+        };
+        // Flag set but no resume_args -> nothing to emit, so not "resumes latest".
+        assert!(!d.resumes_latest());
+        d.resume_args = vec!["--continue".into()];
+        assert!(d.resumes_latest());
+        d.resume_latest = false;
+        assert!(!d.resumes_latest());
     }
 
     #[test]
@@ -181,6 +244,7 @@ mod tests {
                     resume_args: vec![],
                     fork_args: vec![],
                     new_session_args: vec![],
+                    resume_latest: false,
                 },
             ],
         };

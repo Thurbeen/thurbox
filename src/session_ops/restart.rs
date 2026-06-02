@@ -10,8 +10,9 @@ use crate::storage::Database;
 ///
 /// For the `claude` agent, uses its resume group when a transcript for the
 /// session id exists on disk, otherwise pins the same id for a fresh start.
-/// For other agents the resume decision degrades to "start fresh" (the live
-/// tmux process is what carries state across TUI restarts).
+/// For `resume_latest` agents (codex, opencode, gemini, aider) it resumes the
+/// latest session in the (unchanged) launch directory. Other agents degrade to
+/// "start fresh" (the live tmux process is what carries state across restarts).
 pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<(), String> {
     let session = db
         .get_session_by_id(session_id)
@@ -30,8 +31,8 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
         ..SessionConfig::default()
     };
     super::inject_thurbox_env(&mut config, &agent_session_id);
-    config.resume_session_id =
-        super::resume_id_if_transcript_exists(&agent_session_id, &config.env);
+    let def = super::resolve_agent_def(&config.agent);
+    config.resume_session_id = super::resume_trigger_for(&def, &agent_session_id, &config.env);
 
     let (command, args) = super::build_agent_invocation(&config);
 

@@ -182,14 +182,26 @@ Each definition (`session::AgentDef`) carries:
 - argument-template groups: `args` (always passed — bake in flags
   like a model here if you want) and `resume_args` / `fork_args` /
   `new_session_args` (with `{id}`).
+- `resume_latest` — when true, restart resumes the agent's most
+  recent session in the launch directory via **id-less** flags
+  (see below).
 
 `agent::GenericProvider` builds the launch arguments by appending
 each group **only when its driving value is present**, substituting
 `{id}` token-by-token. Selection precedence is fork > resume >
 new-session id; static `args` follow. A group with no value is
-simply omitted — no unresolved-placeholder heuristics. Agents that
-declare no `resume_args` (e.g. codex) start fresh on restart
-instead of resuming.
+simply omitted — no unresolved-placeholder heuristics.
+
+Only `claude` accepts the thurbox-generated id at creation
+(`--session-id {id}`), so only it resumes/forks by that exact id.
+The other built-ins can't pin or report their session id, so they
+set `resume_latest = true` and resume/fork via id-less, cwd-scoped
+flags (`codex resume --last`, `opencode --continue`, `gemini
+--resume latest`, `aider --restore-chat-history`); the agent
+resolves "the last session in this directory" itself, which works
+because restart reuses the session cwd and a single-repo fork reuses
+the parent cwd. Agents that declare no `resume_args` start fresh on
+restart instead of resuming.
 
 Example:
 
@@ -206,6 +218,9 @@ new_session_args = ["--session-id", "{id}"]
 [[agents]]
 name = "codex"
 command = "codex"
+resume_args = ["resume", "--last"]   # id-less: last session in cwd
+fork_args = ["fork", "--last"]
+resume_latest = true
 ```
 
 ---
@@ -305,7 +320,8 @@ Create (UUID v4) → Running → Idle / Error
 
 Restarts the active session's tmux pane while preserving the
 conversation history. The session is killed and respawned with the
-agent's resume arguments (e.g. `--resume <id>` for Claude),
+agent's resume arguments (e.g. `--resume <id>` for Claude, or
+id-less `resume --last` for a `resume_latest` agent like codex),
 reusing the session's stored agent. Agents that define no
 `resume_args` simply start a fresh conversation.
 

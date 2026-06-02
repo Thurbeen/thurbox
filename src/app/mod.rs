@@ -19,7 +19,7 @@ use tracing::{error, info, warn};
 use crate::agent::{BackendRegistry, GenericProvider, Session, SessionBackend};
 use crate::git;
 use crate::session::{
-    AgentRegistry, Automation, AutomationAction, AutomationRunStatus, AutomationSchedule,
+    AgentDef, AgentRegistry, Automation, AutomationAction, AutomationRunStatus, AutomationSchedule,
     SessionConfig, SessionId, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_AGENT_NAME,
 };
 use crate::storage::Database;
@@ -516,9 +516,15 @@ impl App {
     /// registry default, then to the built-in default, so a stale/unknown agent
     /// name never breaks spawning.
     pub fn provider_for(&self, config: &SessionConfig) -> Arc<dyn crate::agent::AgentProvider> {
-        let def = self
-            .agents
-            .get(&config.agent)
+        Arc::new(GenericProvider::new(self.agent_def_for(&config.agent)))
+    }
+
+    /// Resolve the [`AgentDef`] for an agent name via the same fallback chain as
+    /// [`Self::provider_for`] (named agent → registry default → built-in
+    /// default). Used to decide resume/fork behaviour at restart time.
+    fn agent_def_for(&self, agent: &str) -> AgentDef {
+        self.agents
+            .get(agent)
             .or_else(|| self.agents.default_agent())
             .cloned()
             .unwrap_or_else(|| {
@@ -526,8 +532,7 @@ impl App {
                     .default_agent()
                     .cloned()
                     .expect("built-in registry always has a default agent")
-            });
-        Arc::new(GenericProvider::new(def))
+            })
     }
 
     /// Open the repo picker modal for creating a new session.
@@ -641,8 +646,9 @@ impl App {
             fork_session_id: None,
             ..SessionConfig::default()
         };
+        let def = self.agent_def_for(&config.agent);
         config.resume_session_id =
-            crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &config.env);
+            crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
 
         self.do_restart(config);
     }
@@ -2027,8 +2033,9 @@ impl App {
             fork_session_id: None,
             ..SessionConfig::default()
         };
+        let def = self.agent_def_for(&config.agent);
         config.resume_session_id =
-            crate::session_ops::resume_id_if_transcript_exists(agent_sid, &config.env);
+            crate::session_ops::resume_trigger_for(&def, agent_sid, &config.env);
         let provider = self.provider_for(&config);
 
         if let Ok(mut spawned) = Session::spawn(
@@ -2309,10 +2316,11 @@ impl App {
         }
     }
 
-    /// No matching backend session or adopt failed — respawn with `--resume`
-    /// when a transcript already exists for this `agent_session_id`, otherwise
-    /// `--session-id` so claude creates the conversation (e.g. CLI-created
-    /// sessions whose claude process never persisted a conversation).
+    /// No matching backend session or adopt failed — respawn resuming when the
+    /// agent supports it (a claude transcript exists for this
+    /// `agent_session_id`, or a `resume_latest` agent resumes its last session
+    /// in the cwd), otherwise start fresh (e.g. claude with `--session-id` so it
+    /// creates the conversation, or any agent whose process never persisted one).
     fn respawn_stale_session(
         &mut self,
         name: String,
@@ -2333,8 +2341,9 @@ impl App {
             fork_session_id: None,
             ..SessionConfig::default()
         };
+        let def = self.agent_def_for(&config.agent);
         config.resume_session_id =
-            crate::session_ops::resume_id_if_transcript_exists(&agent_session_id, &config.env);
+            crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
         self.pending_additional_dirs = shared.additional_dirs;
         self.do_spawn_session(name, &config, worktrees, false);
     }

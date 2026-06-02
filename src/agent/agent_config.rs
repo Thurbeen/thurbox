@@ -13,10 +13,14 @@ use crate::session::AgentRegistry;
 /// Built-in agent definitions, also used to seed `agents.toml` on first run.
 ///
 /// Kept deliberately small per agent: just the command, plus resume/fork/
-/// session-id groups for agents that support them (currently only Claude
-/// Code). Agents without resume groups simply start fresh on restart. No
-/// model is passed — each agent uses its own default config. Bake extra flags
-/// (including a model) into `args` if you want them.
+/// session-id groups. `claude` pins a thurbox-generated id (`--session-id`) so
+/// it can resume/fork by that exact id. The other built-ins can't pin or report
+/// their session id, so they use `resume_latest = true` with id-less,
+/// cwd-scoped flags (`codex resume --last`, `opencode --continue`, …): the agent
+/// resolves "the last session in this directory" itself. Agents without any
+/// resume group simply start fresh on restart. No model is passed — each agent
+/// uses its own default config. Bake extra flags (including a model) into
+/// `args` if you want them.
 pub const BUILTIN_AGENTS_TOML: &str = r#"# Thurbox coding-agent definitions.
 #
 # Each [[agents]] entry describes how to launch one coding-agent CLI. The
@@ -33,21 +37,39 @@ resume_args = ["--resume", "{id}"]
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]
 
+# codex can't pin or report its session id, so resume/fork target the most
+# recent session in the launch directory. thurbox keeps that directory stable
+# across restart (same cwd) and single-repo fork (child reuses the parent cwd).
 [[agents]]
 name = "codex"
 command = "codex"
+resume_args = ["resume", "--last"]
+fork_args = ["fork", "--last"]
+resume_latest = true
 
+# gemini resumes the latest session in the launch directory; it has no fork
+# (Ctrl+F falls back to a fresh session).
 [[agents]]
 name = "gemini"
 command = "gemini"
+resume_args = ["--resume", "latest"]
+resume_latest = true
 
+# `--continue` resumes the last session in the cwd; add `--fork` to branch it.
 [[agents]]
 name = "opencode"
 command = "opencode"
+resume_args = ["--continue"]
+fork_args = ["--continue", "--fork"]
+resume_latest = true
 
+# aider restores the chat-history file (.aider.chat.history.md) in the cwd; it
+# has no separate session id and no fork.
 [[agents]]
 name = "aider"
 command = "aider"
+resume_args = ["--restore-chat-history"]
+resume_latest = true
 
 [[agents]]
 name = "vibe"
@@ -126,9 +148,42 @@ mod tests {
         assert!(reg.get("opencode").is_some());
         assert!(reg.get("aider").is_some());
         assert!(reg.get("vibe").is_some());
-        // Claude carries resume/fork groups; codex does not.
-        assert!(!reg.get("claude").unwrap().resume_args.is_empty());
-        assert!(reg.get("codex").unwrap().resume_args.is_empty());
+
+        // Claude pins a thurbox id and resumes/forks by it.
+        let claude = reg.get("claude").unwrap();
+        assert!(!claude.resume_args.is_empty());
+        assert!(!claude.resume_latest);
+        assert!(claude.resume_args.iter().any(|t| t.contains("{id}")));
+
+        // codex/opencode resume + fork via id-less, cwd-scoped flags.
+        let codex = reg.get("codex").unwrap();
+        assert_eq!(codex.resume_args, ["resume", "--last"]);
+        assert_eq!(codex.fork_args, ["fork", "--last"]);
+        assert!(codex.resume_latest);
+        let opencode = reg.get("opencode").unwrap();
+        assert_eq!(opencode.fork_args, ["--continue", "--fork"]);
+        assert!(opencode.resume_latest);
+
+        // gemini/aider resume their latest session but have no fork group.
+        for name in ["gemini", "aider"] {
+            let a = reg.get(name).unwrap();
+            assert!(a.resume_latest, "{name} should resume latest");
+            assert!(!a.resume_args.is_empty(), "{name} needs resume_args");
+            assert!(a.fork_args.is_empty(), "{name} has no fork");
+        }
+
+        // No non-claude resume/fork token may carry a {id} placeholder — these
+        // agents can't be addressed by a thurbox-known id.
+        for name in ["codex", "gemini", "opencode", "aider"] {
+            let a = reg.get(name).unwrap();
+            assert!(
+                !a.resume_args
+                    .iter()
+                    .chain(&a.fork_args)
+                    .any(|t| t.contains("{id}")),
+                "{name} must use id-less resume/fork flags"
+            );
+        }
     }
 
     #[test]

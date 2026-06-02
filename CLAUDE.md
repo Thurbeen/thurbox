@@ -184,6 +184,9 @@ new_session_args = ["--session-id", "{id}"]  # emitted on a fresh spawn
 [[agents]]
 name = "codex"
 command = "codex"
+resume_args = ["resume", "--last"]      # id-less: resumes the last session in cwd
+fork_args = ["fork", "--last"]
+resume_latest = true
 ```
 
 Each `*_args` group is appended only when its driving value is
@@ -193,6 +196,24 @@ model is ever passed — each agent uses its own default config
 Agents that omit `resume_args` simply start fresh on restart (the
 live tmux process is what carries state across TUI restarts). Add
 your own `[[agents]]` entry to support any CLI — no recompile.
+
+**Session id pinning vs. `resume_latest`.** thurbox generates the
+`agent_session_id` (a UUID) and only `claude` accepts it at creation
+(`--session-id {id}`), so only claude can resume/fork by that exact id.
+The other built-ins (`codex`, `opencode`, `gemini`, `aider`) can't pin
+or report their id, so they set `resume_latest = true` with **id-less**
+resume/fork flags (no `{id}` token): the agent resolves "the last
+session in *this* directory" itself (`codex resume --last`, `opencode
+--continue`, `gemini --resume latest`, `aider --restore-chat-history`).
+This works because restart reuses the session's cwd and a single-repo
+fork reuses the parent's cwd. `resume_latest` only changes *when* the
+resume group fires (see `session_ops::resume_trigger_for`): for these
+agents restart always triggers resume; for claude it still defers to an
+on-disk transcript check. Caveats: agents without `fork_args`
+(`gemini`, `aider` — neither CLI forks) start fresh on `Ctrl+F`; and a
+**multi-repo** fork of a cwd-scoped agent lands in a fresh symlink
+workspace, so `--last`/`--continue` finds no parent session (multi-repo
+*restart* still resumes, since it keeps the same workspace dir).
 
 - **Data type**: `session::AgentDef` / `session::AgentRegistry`
   (`session/agent_def.rs`, pure data + substitution logic).
