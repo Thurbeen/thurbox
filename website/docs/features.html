@@ -6,7 +6,7 @@
     <title>Features — Thurbox Docs</title>
     <meta
       name="description"
-      content="Thurbox features: persistent coding-agent sessions, agent definitions, git worktrees, automations, and a responsive UI."
+      content="Thurbox features: persistent coding-agent sessions, agent definitions, git worktrees, automations, a responsive UI, and a headless CLI."
     />
     <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -78,6 +78,7 @@
             <li><a href="#responsive-ui">Responsive UI</a></li>
             <li><a href="#themes">Themes</a></li>
             <li><a href="#session-persistence">Session Persistence</a></li>
+            <li><a href="#headless-cli">Headless CLI</a></li>
           </ul>
         </aside>
 
@@ -657,6 +658,134 @@
               </tr>
             </tbody>
           </table>
+
+          <h2 id="headless-cli">
+            Headless CLI
+            <a href="#headless-cli" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The
+            <code>thurbox-cli</code>
+            binary drives the same sessions, automations, and editor settings without the TUI
+            &mdash; ideal for scripting. It shares the TUI's SQLite database and
+            <code>tmux -L thurbox</code>
+            server, so changes made by either show up live in the other. Every command prints JSON;
+            pass the global
+            <code>--pretty</code>
+            flag for indented output.
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session list
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session create <span class="syn-flag">--name</span> reviewer <span class="syn-flag">--repo-path</span> <span class="syn-string">/path/to/repo</span> <span class="syn-flag">--agent</span> codex
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session send <span class="syn-string">&lt;uuid&gt;</span> <span class="syn-string">"run the test suite"</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session capture <span class="syn-string">&lt;uuid&gt;</span> <span class="syn-flag">--lines</span> 500</code></pre>
+          <ul>
+            <li>
+              <strong>session</strong>
+              &mdash;
+              <code>list</code>
+              ,
+              <code>get</code>
+              ,
+              <code>create</code>
+              (synchronous &mdash; the tmux window is live on return; supports
+              <code>--worktree-branch</code>
+              /
+              <code>--base-branch</code>
+              ),
+              <code>send</code>
+              ,
+              <code>capture</code>
+              ,
+              <code>restart</code>
+              ,
+              <code>delete</code>
+              ,
+              <code>restore</code>
+              .
+            </li>
+            <li>
+              <strong>automation</strong>
+              (alias
+              <code>auto</code>
+              ) &mdash;
+              <code>create</code>
+              /
+              <code>list</code>
+              /
+              <code>show</code>
+              /
+              <code>edit</code>
+              /
+              <code>remove</code>
+              /
+              <code>run</code>
+              /
+              <code>runs</code>
+              , plus
+              <code>tick</code>
+              (the headless entry point that fires all due automations &mdash; what the tmux
+              heartbeat keeper and any systemd/cron timer call).
+            </li>
+            <li>
+              <strong>editor</strong>
+              &mdash;
+              <code>get</code>
+              /
+              <code>set</code>
+              the command
+              <code>Ctrl+O</code>
+              runs (the worktree path is appended as the final argument).
+            </li>
+          </ul>
+
+          <h3>How session delete is handled</h3>
+          <p>
+            <code>session delete &lt;uuid&gt;</code>
+            is a
+            <strong>soft-delete</strong>
+            by default: it only marks the database row deleted. The tmux window, git worktrees, and
+            any pending scheduled commands are left untouched &mdash; the running TUI cleans those
+            up on its next sync, and the session stays recoverable with
+            <code>session restore &lt;uuid&gt;</code>
+            (the TUI's
+            <code>Ctrl+U</code>
+            /
+            <code>Ctrl+Z</code>
+            undo). Restore revives the metadata; the TUI re-spawns a fresh window for it.
+          </p>
+          <p>
+            Pass
+            <code>--force</code>
+            to tear down the session's runtime resources in the same call &mdash; for headless
+            cleanup when no TUI is running to observe the deletion. A forced delete also:
+          </p>
+          <ul>
+            <li>kills the tmux window,</li>
+            <li>removes the session's git worktrees (the underlying repos are left intact),</li>
+            <li>
+              removes the multi-repo symlink workspace, if any (only the symlinks &mdash; never the
+              linked repos), and
+            </li>
+            <li>
+              disables any
+              <strong>send</strong>
+              automations that target the session.
+            </li>
+          </ul>
+          <p>
+            Teardown is
+            <strong>best-effort</strong>
+            : individual tmux/worktree failures are recorded in the JSON report (
+            <code>killed_window</code>
+            ,
+            <code>removed_worktrees</code>
+            ,
+            <code>worktree_errors</code>
+            ,
+            <code>disabled_automations</code>
+            ) but never abort the delete. The DB row is always soft-deleted last, so even a forced
+            delete stays restorable &mdash; it just re-spawns from a clean slate.
+          </p>
         </main>
       </div>
     </div>

@@ -247,6 +247,16 @@ create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `editor`. Pass
 `--pretty` for indented JSON.
 
+`session delete <uuid>` **soft-deletes** by default — only the DB
+row is marked deleted (the TUI tears down the tmux window/worktree
+on its next sync), and `session restore` revives it. Pass `--force`
+(`session_ops::delete_session_headless`) to also kill the tmux
+window, remove worktrees + the symlink workspace, and disable
+`send` automations targeting the session — for headless cleanup
+when no TUI is running. Teardown is best-effort (failures land in
+the JSON report); the row is always soft-deleted last, so even a
+forced delete stays restorable.
+
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on
 `automation create`) loops `automation tick` every 60 s and keeps

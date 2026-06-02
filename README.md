@@ -335,22 +335,106 @@ Session search matches against name, agent, and branch.
 
 The `thurbox-cli` binary drives Thurbox without the TUI — useful
 for scripting and automation. It shares the same SQLite database
-as the TUI, so changes appear live.
+and `tmux -L thurbox` server as the TUI, so changes made by either
+appear live in the other (the TUI polls `PRAGMA data_version`).
+
+Every command prints a JSON result to stdout; pass the global
+`--pretty` flag for indented output. The binary is intentionally
+thin — it parses arguments, calls into the database / tmux helpers,
+and prints the result. There is no TUI and no event loop.
 
 ```bash
 cargo build --bin thurbox-cli
-thurbox-cli session list
+```
+
+### Sessions
+
+```bash
+thurbox-cli session list                 # all active sessions
+thurbox-cli session get <uuid>           # one session by UUID
 thurbox-cli session create \
   --name reviewer \
   --repo-path /path/to/repo \
-  --agent codex
+  --agent codex \
+  --worktree-branch feat/x \
+  --base-branch main
 thurbox-cli session send <uuid> "run the test suite"
-thurbox-cli session capture <uuid>
+thurbox-cli session capture <uuid> --lines 500
+thurbox-cli session restart <uuid>       # kill + re-spawn with --resume
+thurbox-cli session delete <uuid>        # soft-delete (see below)
+thurbox-cli session restore <uuid>       # undo a soft-delete
 ```
 
-`session create` takes `--name`, `--repo-path`, `--agent`,
-`--worktree-branch`, and `--base-branch`; the agent falls back to
-the default in `agents.toml` when omitted.
+- **`create`** runs synchronously — the tmux window is live by the
+  time the command returns. `--agent` falls back to the default in
+  `agents.toml` when omitted; `--worktree-branch` (off
+  `--base-branch`, default `main`) creates a git worktree.
+- **`send`** types text into the session's terminal followed by
+  Enter; **`capture`** dumps the rendered pane as text (`--lines`
+  defaults to 200, max 10000).
+
+#### How session delete is handled
+
+`session delete <uuid>` is a **soft-delete**: by default it only
+marks the database row as deleted. The tmux window, any git
+worktrees, and pending scheduled commands are **left untouched** —
+the running TUI cleans those up on its next sync, and the session
+stays recoverable with `session restore <uuid>` (the TUI's `Ctrl+U`
+/ `Ctrl+Z` undo path). Restore revives the metadata; the TUI
+re-spawns a fresh window for it.
+
+Pass **`--force`** to also tear down the session's runtime resources
+in the same call — useful for headless cleanup when no TUI is
+running to observe the deletion. With `--force` the command:
+
+- kills the tmux window,
+- removes the session's git worktrees (the underlying repos are left
+  intact),
+- removes the multi-repo symlink workspace, if any (only the
+  symlinks — never the linked repos), and
+- disables any `send` automations that target the session.
+
+Teardown is **best-effort**: individual tmux/worktree failures are
+recorded in the JSON report (`killed_window`, `removed_worktrees`,
+`worktree_errors`, `disabled_automations`) but never abort the
+delete. The DB row is always soft-deleted last, so even a forced
+delete remains restorable (it just re-spawns from a clean slate).
+
+### Automations (alias `auto`)
+
+Scheduled agent runs, persisted to the shared DB. See
+[Automations](#automations) for the model.
+
+```bash
+thurbox-cli automation create \
+  --name nightly-triage \
+  --trigger weekdays --time 09:00 \
+  --session <uuid> --prompt "triage new issues"
+thurbox-cli automation list
+thurbox-cli automation show <id>
+thurbox-cli automation edit <id> --prompt "..." --disabled
+thurbox-cli automation remove <id>
+thurbox-cli automation run <id>          # mark due for the next tick
+thurbox-cli automation runs <id> --limit 20   # run history
+thurbox-cli automation tick              # fire all due automations now
+```
+
+`--trigger` accepts `hourly`, `daily`, `weekdays`, `weekly`,
+`cron:"<expr>"`, or `at:<unix_millis>`. A `--session` makes it a
+*send* automation; a `--repo` (with optional `--worktree` / `--base`
+/ `--agent`) makes it a *spawn* automation. `automation tick` is the
+headless entry point the tmux heartbeat keeper and any
+systemd/cron timer call to fire due automations without a TUI.
+
+### Editor
+
+```bash
+thurbox-cli editor get                   # print configured command
+thurbox-cli editor set "code --wait"     # set (empty string clears)
+```
+
+This is the command `Ctrl+O` runs in the TUI; the worktree path is
+appended as the final argument.
 
 ## Architecture
 
