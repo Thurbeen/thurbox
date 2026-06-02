@@ -1,13 +1,16 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, ListState, Paragraph},
     Frame,
 };
 
+use super::highlight::{
+    append_highlighted as append_name_spans, highlighted_spans as build_highlighted_spans,
+};
 use super::theme::Theme;
-use super::{focus_block, status_color, FocusLevel};
+use super::{focus_block, status_color, truncate_ellipsis, FocusLevel};
 use crate::session::SessionInfo;
 
 /// Per-field fuzzy match positions for a session entry.
@@ -265,52 +268,25 @@ pub struct LeftPanelState<'a> {
     pub session_focus: FocusLevel,
     /// Persistent list state for the session section.
     pub session_list_state: &'a mut ListState,
-    /// Active search query (empty = no search).
+    /// The active global-search query (empty = no search). Drives repo-path
+    /// (line 2) highlighting and row dimming; the per-field highlight positions
+    /// come from `session_match_positions`.
     pub search_query: &'a str,
-    /// Whether the search input is actively receiving keystrokes.
-    pub search_active: bool,
-    /// Cursor position within the search query.
-    pub search_cursor: usize,
     /// Per-session fuzzy match positions (parallel to sessions slice).
     pub session_match_positions: &'a [Option<SessionMatch>],
-    /// Whether a session search is active (non-empty session_match_positions).
+    /// Whether a (global) search is active — non-matching rows are dimmed.
     pub session_search_active: bool,
-    /// Number of sessions matching the current search query.
-    pub match_count: usize,
-    /// Total number of sessions (for search count display).
-    pub total_count: usize,
     /// Parallel to `sessions`: `Some(label)` on each repo group's first row,
     /// rendered as a subtle header above that row. `None` elsewhere.
     pub headers: &'a [Option<String>],
 }
 
 pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelState<'_>) {
-    let search_visible = state.search_active || !state.search_query.is_empty();
-
-    let constraints = if search_visible {
-        vec![
-            Constraint::Min(0),    // sessions
-            Constraint::Length(3), // search bar
-        ]
-    } else {
-        vec![Constraint::Min(0)] // sessions only
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
-
-    let session_area = chunks[0];
-    let search_area = if search_visible {
-        Some(chunks[1])
-    } else {
-        None
-    };
-
+    // The session list fills the whole left panel — search lives in the global
+    // `Ctrl+A` strip now, so there's no in-list search bar.
     render_session_section(
         frame,
-        session_area,
+        area,
         state.sessions,
         state.active_session,
         state.show_selection,
@@ -322,18 +298,6 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.search_query,
         state.headers,
     );
-
-    if let Some(area) = search_area {
-        render_search_bar(
-            frame,
-            area,
-            state.search_query,
-            state.search_active,
-            state.search_cursor,
-            state.match_count,
-            state.total_count,
-        );
-    }
 }
 
 /// Overlay scroll indicators ("^" N" / "v N") on the block borders when items
@@ -421,144 +385,6 @@ fn draw_scroll_indicators(
             .saturating_add(block_area.height.saturating_sub(1));
         let area = Rect::new(x, y, text_len, 1);
         frame.render_widget(Paragraph::new(text).style(indicator_style), area);
-    }
-}
-
-/// Render a bordered search bar block.
-fn render_search_bar(
-    frame: &mut Frame,
-    area: Rect,
-    query: &str,
-    is_active: bool,
-    cursor: usize,
-    match_count: usize,
-    total_count: usize,
-) {
-    use ratatui::widgets::{Block, Borders};
-
-    let style = if is_active {
-        Style::default().fg(Theme::search_bar())
-    } else {
-        Style::default().fg(Theme::text_muted())
-    };
-
-    let title = if !query.is_empty() {
-        format!(" Search ({match_count}/{total_count}) ")
-    } else {
-        " Search ".to_string()
-    };
-
-    let block = Block::default()
-        .title(Line::from(Span::styled(title, style)))
-        .borders(Borders::ALL)
-        .border_style(style);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let max_width = inner.width as usize;
-    if max_width == 0 || inner.height == 0 {
-        return;
-    }
-
-    let prefix = "/ ";
-    let display_query = if query.len() + prefix.len() > max_width {
-        &query[query.len().saturating_sub(max_width - prefix.len())..]
-    } else {
-        query
-    };
-
-    let (before, after) = split_query_at_cursor(display_query, cursor);
-
-    let mut spans = vec![Span::styled(prefix, style), Span::styled(before, style)];
-    push_search_after_spans(&mut spans, after, is_active, style);
-
-    frame.render_widget(Paragraph::new(Line::from(spans)), inner);
-}
-
-/// Split a display query into the slices before and after the cursor.
-fn split_query_at_cursor(display_query: &str, cursor: usize) -> (&str, &str) {
-    if cursor > display_query.chars().count() {
-        return (display_query, "");
-    }
-    let byte_pos = display_query
-        .char_indices()
-        .nth(cursor)
-        .map(|(i, _)| i)
-        .unwrap_or(display_query.len());
-    (&display_query[..byte_pos], &display_query[byte_pos..])
-}
-
-/// Append the post-cursor spans, drawing the cursor cell when the bar is active.
-fn push_search_after_spans<'a>(
-    spans: &mut Vec<Span<'a>>,
-    after: &'a str,
-    is_active: bool,
-    style: Style,
-) {
-    if !is_active {
-        spans.push(Span::styled(after, style));
-        return;
-    }
-    let first_char_len = after.chars().next().map_or(0, |c| c.len_utf8());
-    let cursor_char = if first_char_len == 0 {
-        " "
-    } else {
-        &after[..first_char_len]
-    };
-    spans.push(Span::styled(cursor_char, Theme::cursor()));
-    let rest = &after[first_char_len..];
-    if !rest.is_empty() {
-        spans.push(Span::styled(rest, style));
-    }
-}
-
-/// Build spans for a name with fuzzy-matched characters highlighted.
-fn build_highlighted_spans<'a>(
-    name: &'a str,
-    positions: &[usize],
-    base_style: Style,
-) -> Vec<Span<'a>> {
-    let highlight_style = base_style
-        .fg(Theme::accent())
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-
-    let mut spans = Vec::new();
-    let mut last_end = 0;
-    for &byte_pos in positions {
-        if byte_pos > name.len() {
-            break;
-        }
-        if let Some(ch) = name[byte_pos..].chars().next() {
-            let char_len = ch.len_utf8();
-            if byte_pos > last_end {
-                spans.push(Span::styled(&name[last_end..byte_pos], base_style));
-            }
-            spans.push(Span::styled(
-                &name[byte_pos..byte_pos + char_len],
-                highlight_style,
-            ));
-            last_end = byte_pos + char_len;
-        }
-    }
-    if last_end < name.len() {
-        spans.push(Span::styled(&name[last_end..], base_style));
-    }
-    spans
-}
-
-/// Append name spans to `out`, using fuzzy-highlight positions when available.
-fn append_name_spans<'a>(
-    out: &mut Vec<Span<'a>>,
-    name: &'a str,
-    match_positions: Option<&[usize]>,
-    style: Style,
-) {
-    match match_positions {
-        Some(positions) if !positions.is_empty() => {
-            out.extend(build_highlighted_spans(name, positions, style));
-        }
-        _ => out.push(Span::styled(name, style)),
     }
 }
 
@@ -919,20 +745,6 @@ fn format_repo_entries_plain(entries: &[RepoEntry]) -> String {
     out
 }
 
-/// Truncate `s` to at most `max` display columns, appending `…` when cut.
-/// Returns an empty string when `max` is too small to show anything useful.
-fn truncate_ellipsis(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        return s.to_string();
-    }
-    if max <= 1 {
-        return String::new();
-    }
-    let kept: String = s.chars().take(max - 1).collect();
-    format!("{kept}…")
-}
-
 /// Format status text with elapsed time for Waiting/Idle sessions.
 fn format_status_with_elapsed(
     status: crate::session::SessionStatus,
@@ -1001,25 +813,6 @@ mod tests {
     fn elapsed_not_shown_for_busy() {
         let text = format_status_with_elapsed(SessionStatus::Busy, Some(120_000));
         assert_eq!(text, "Busy");
-    }
-
-    // --- truncate_ellipsis ---
-
-    #[test]
-    fn truncate_keeps_short_strings_intact() {
-        assert_eq!(truncate_ellipsis("hello", 10), "hello");
-        assert_eq!(truncate_ellipsis("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_adds_ellipsis_when_cut() {
-        assert_eq!(truncate_ellipsis("hello world", 5), "hell…");
-    }
-
-    #[test]
-    fn truncate_returns_empty_when_too_narrow() {
-        assert_eq!(truncate_ellipsis("hello", 1), "");
-        assert_eq!(truncate_ellipsis("hello", 0), "");
     }
 
     #[test]

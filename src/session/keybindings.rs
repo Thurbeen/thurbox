@@ -34,6 +34,8 @@ pub enum Action {
     ToggleHelp,
     ToggleInfoPanel,
     ToggleFileViewer,
+    FocusTasks,
+    GlobalSearch,
 }
 
 impl Action {
@@ -59,6 +61,8 @@ impl Action {
             Action::ToggleHelp,
             Action::ToggleInfoPanel,
             Action::ToggleFileViewer,
+            Action::FocusTasks,
+            Action::GlobalSearch,
         ]
     }
 
@@ -84,6 +88,8 @@ impl Action {
             Action::ToggleHelp => "Help",
             Action::ToggleInfoPanel => "Toggle info panel",
             Action::ToggleFileViewer => "Toggle file viewer",
+            Action::FocusTasks => "Tasks",
+            Action::GlobalSearch => "Global search",
         }
     }
 
@@ -112,6 +118,8 @@ impl Action {
             | Action::ToggleHelp
             | Action::ToggleInfoPanel
             | Action::ToggleFileViewer
+            | Action::FocusTasks
+            | Action::GlobalSearch
             | Action::OpenThemePicker => Category::Ui,
         }
     }
@@ -140,6 +148,13 @@ impl Action {
             Action::ToggleHelp => vec![KeyChord::ctrl('g'), KeyChord::function(1)],
             Action::ToggleInfoPanel => vec![KeyChord::ctrl('b'), KeyChord::function(2)],
             Action::ToggleFileViewer => vec![KeyChord::ctrl('e'), KeyChord::function(3)],
+            Action::FocusTasks => vec![KeyChord::ctrl('w'), KeyChord::function(5)],
+            // Ctrl+A ("search All") is the reliable default — it encodes
+            // identically on every terminal, unlike Ctrl+/ (which many terminals
+            // deliver as a bare `7`/`_` or drop the modifier). The Ctrl+/
+            // encodings are still caught by a literal intercept in
+            // `handle_priority_key`.
+            Action::GlobalSearch => vec![KeyChord::ctrl('a')],
         }
     }
 }
@@ -517,11 +532,13 @@ mod tests {
                 Action::ToggleHelp => 0,
                 Action::ToggleInfoPanel => 0,
                 Action::ToggleFileViewer => 0,
+                Action::FocusTasks => 0,
+                Action::GlobalSearch => 0,
             }
         }
-        // 19 listed variants must equal Action::all().len(). If you add
+        // 21 listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 19;
+        const EXPECTED: usize = 21;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

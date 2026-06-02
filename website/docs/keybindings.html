@@ -169,6 +169,24 @@
                 </td>
               </tr>
               <tr>
+                <td>
+                  <code>Ctrl+W</code>
+                  /
+                  <code>F5</code>
+                </td>
+                <td>Toggle tasks panel (todo list)</td>
+                <td>Work items</td>
+              </tr>
+              <tr>
+                <td><code>Ctrl+A</code></td>
+                <td>Global search (sessions / tasks / automations / files)</td>
+                <td>
+                  search
+                  <strong>A</strong>
+                  ll
+                </td>
+              </tr>
+              <tr>
                 <td><code>Ctrl+T</code></td>
                 <td>Toggle shell pane</td>
                 <td>
@@ -330,10 +348,6 @@
                 <td>Previous item</td>
               </tr>
               <tr>
-                <td><code>/</code></td>
-                <td>Open fuzzy search</td>
-              </tr>
-              <tr>
                 <td><code>Enter</code></td>
                 <td>Select / focus</td>
               </tr>
@@ -346,25 +360,35 @@
           </h2>
           <p>
             Press
+            <code>Ctrl+A</code>
+            to open the global search strip, which searches
+            <strong>every scope at once</strong>
+            &mdash; sessions (name, agent, branch, and live terminal-buffer content), tasks,
+            automations, and the active session's file tree. It replaces the old per-pane
             <code>/</code>
-            in the session list to open a fuzzy search bar. The search bar appears below the list.
+            filters.
           </p>
           <ul>
+            <li>Type to filter; matches highlight live in the panels themselves.</li>
             <li>
-              <strong>Session search</strong>
-              matches against the session name, agent, and worktree branch.
+              <code>Up</code>
+              /
+              <code>Down</code>
+              (or
+              <code>Ctrl+P</code>
+              /
+              <code>Ctrl+N</code>
+              ) move the selection,
+              <code>Enter</code>
+              jumps to the result and focuses its pane, and
+              <code>Esc</code>
+              restores the prior state.
             </li>
           </ul>
           <p>
-            Matched characters are highlighted inline. Non-matching entries are dimmed. Use
-            <code>j</code>
-            /
-            <code>k</code>
-            to jump between matches,
-            <code>Enter</code>
-            to confirm, or
-            <code>Esc</code>
-            to cancel.
+            The file viewer keeps its own in-file
+            <code>/</code>
+            text search, which is unrelated to global search.
           </p>
 
           <h2 id="terminal-scrollback">

@@ -1,6 +1,7 @@
 pub mod agent_def;
 pub mod automation;
 pub mod keybindings;
+pub mod task;
 pub mod theme_config;
 
 pub use agent_def::{AgentDef, AgentRegistry};
@@ -9,6 +10,7 @@ pub use automation::{
     AutomationSchedule, SchedulePreset,
 };
 pub use keybindings::{Action, Category, KeyBindings, KeyChord};
+pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 pub use theme_config::{ThemePalette, ThemePreset};
 
 use std::collections::HashMap;

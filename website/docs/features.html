@@ -70,10 +70,11 @@
             <li><a href="#session-orchestration">Sessions</a></li>
             <li><a href="#agent-definitions">Agent Definitions</a></li>
             <li><a href="#automations">Automations</a></li>
+            <li><a href="#tasks">Tasks</a></li>
             <li><a href="#git-worktrees">Git Worktrees</a></li>
             <li><a href="#worktree-sync">Worktree Sync</a></li>
             <li><a href="#session-forking">Session Forking</a></li>
-            <li><a href="#fuzzy-search">Fuzzy Search</a></li>
+            <li><a href="#global-search">Global Search</a></li>
             <li><a href="#responsive-ui">Responsive UI</a></li>
             <li><a href="#themes">Themes</a></li>
             <li><a href="#session-persistence">Session Persistence</a></li>
@@ -267,6 +268,79 @@
             </li>
           </ul>
 
+          <h2 id="tasks">
+            Tasks
+            <a href="#tasks" class="heading-anchor">#</a>
+          </h2>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/tasks-demo.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Creating tasks and connecting them to a coding agent in the tasks panel
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              Building a todo list and wiring items to an agent with
+              <code>Ctrl+W</code>
+              .
+            </figcaption>
+          </figure>
+          <p>
+            A built-in todo list whose items can be
+            <strong>connected to a coding agent</strong>
+            with the same Send/Spawn model as automations:
+            <strong>Send</strong>
+            pastes the task title into an existing session,
+            <strong>Spawn</strong>
+            creates a fresh session (optionally on a new worktree) seeded with the title, and an
+            unconnected task is a plain local todo. Triggering a task runs its action and advances
+            it to
+            <em>in progress</em>
+            .
+          </p>
+          <ul>
+            <li>
+              Tasks render in a toggleable right-side column (
+              <code>Ctrl+W</code>
+              /
+              <code>F5</code>
+              ) that behaves like the file viewer and joins the
+              <code>Ctrl+H</code>
+              /
+              <code>Ctrl+L</code>
+              focus cycle. Once focused,
+              <code>n</code>
+              creates,
+              <code>e</code>
+              /
+              <code>Enter</code>
+              opens an in-pane editor (no popup),
+              <code>Space</code>
+              cycles status (&#9744; todo &middot; &#9680; in progress &middot; &#9745; done),
+              <code>r</code>
+              runs the action, and
+              <code>d</code>
+              deletes.
+            </li>
+            <li>
+              Persisted in SQLite and scriptable headlessly via
+              <code>thurbox-cli task</code>
+              (alias
+              <code>todo</code>
+              ):
+              <code>create/list/show/edit/remove/run</code>
+              . External issue-tracker sync (Jira, GitHub Issues) is scaffolded for a later release.
+            </li>
+          </ul>
+
           <h2 id="git-worktrees">
             Git Worktrees
             <a href="#git-worktrees" class="heading-anchor">#</a>
@@ -344,34 +418,70 @@
             original session's context.
           </p>
 
-          <h2 id="fuzzy-search">
-            Fuzzy Search
-            <a href="#fuzzy-search" class="heading-anchor">#</a>
+          <h2 id="global-search">
+            Global Search
+            <a href="#global-search" class="heading-anchor">#</a>
           </h2>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/search-demo.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Searching sessions, tasks, automations and files at once with live in-panel
+                  highlighting
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              One strip,
+              <code>Ctrl+A</code>
+              , searching every scope at once.
+            </figcaption>
+          </figure>
           <p>
             Press
+            <code>Ctrl+A</code>
+            to open a non-modal search strip that searches
+            <strong>every scope at once</strong>
+            &mdash; sessions, tasks, automations, and the active session's file tree. It is the one
+            search: the old per-pane
             <code>/</code>
-            in the session list to open a fuzzy search bar. The bar appears directly below the list.
+            filters were folded into it.
           </p>
           <ul>
             <li>
-              <strong>Session search</strong>
-              filters by session name, agent name, or worktree branch &mdash; the fields visible in
-              each session entry.
+              <strong>Sessions</strong>
+              match on name, agent, and worktree branch
+              <em>and</em>
+              on live terminal-buffer content;
+              <strong>tasks</strong>
+              match on title,
+              <strong>automations</strong>
+              on name, and
+              <strong>files</strong>
+              on path.
             </li>
             <li>
-              Matched characters are highlighted with accent color. Non-matching entries are dimmed
-              but remain visible.
+              Matches highlight
+              <strong>live in the panels themselves</strong>
+              &mdash; matching rows are accented, the rest dimmed &mdash; with per-scope match
+              counts and a grouped result list.
             </li>
             <li>
-              <code>j</code>
+              <code>&uarr;</code>
               /
-              <code>k</code>
-              jump between matches,
+              <code>&darr;</code>
+              move the selection (previewing the owning panel),
               <code>Enter</code>
-              confirms,
+              jumps to the result and focuses its pane, and
               <code>Esc</code>
-              cancels.
+              restores exactly what you had before searching.
             </li>
           </ul>
 

@@ -13,6 +13,7 @@ use crate::storage::Database;
 pub mod automations;
 pub mod editor;
 pub mod sessions;
+pub mod tasks;
 
 /// Thurbox CLI — manage sessions, scheduled commands, and more.
 #[derive(Parser, Debug)]
@@ -44,6 +45,12 @@ pub enum Command {
         #[command(subcommand)]
         action: automations::Action,
     },
+    /// Manage tasks (todo list).
+    #[command(alias = "todo")]
+    Task {
+        #[command(subcommand)]
+        action: tasks::Action,
+    },
 }
 
 /// Run a parsed CLI invocation against `db` and write JSON to stdout.
@@ -52,6 +59,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Editor { action } => editor::run(action, db),
         Command::Session { action } => sessions::run(action, db),
         Command::Automation { action } => automations::run(action, db),
+        Command::Task { action } => tasks::run(action, db),
     }?;
 
     let text = if cli.pretty {
@@ -186,6 +194,54 @@ mod tests {
             cli.command,
             Command::Automation {
                 action: automations::Action::Tick
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_task_create_requires_title() {
+        assert!(
+            Cli::try_parse_from(["thurbox-cli", "task", "create"]).is_err(),
+            "missing --title should fail"
+        );
+        // A plain local todo needs only a title.
+        let cli =
+            Cli::try_parse_from(["thurbox-cli", "task", "create", "--title", "Fix bug"]).unwrap();
+        let Command::Task {
+            action:
+                tasks::Action::Create {
+                    title,
+                    session,
+                    repo,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected Task::Create");
+        };
+        assert_eq!(title, "Fix bug");
+        assert!(session.is_none());
+        assert!(repo.is_none());
+    }
+
+    #[test]
+    fn task_alias_todo_parses() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "todo", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Task {
+                action: tasks::Action::List
+            }
+        ));
+    }
+
+    #[test]
+    fn task_run_parses() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "task", "run", "7"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Task {
+                action: tasks::Action::Run { id: 7 }
             }
         ));
     }

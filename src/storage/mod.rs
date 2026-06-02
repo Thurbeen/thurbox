@@ -19,6 +19,7 @@ mod sessions;
 mod settings;
 pub use sessions::DeletedSessionInfo;
 pub mod sync;
+pub mod tasks;
 mod worktrees;
 
 use std::path::Path;

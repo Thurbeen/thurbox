@@ -38,9 +38,11 @@ worktree), and cwd.
 
 ### Fuzzy search
 
-Pressing `/` while the session list is focused opens an inline
-fuzzy filter that matches against the session's name, agent, branch
-name, and cwd. `Enter` confirms, `Esc` cancels.
+Searching is unified into the **global search** (`Ctrl+A`) — see the
+*Global Search* section below. There is no separate per-list `/`
+filter; instead the global strip highlights matches live across the
+session list, tasks panel, and automations pane at once. Sessions are
+matched on name, agent, branch name, and cwd.
 
 **Why all four fields?** Users remember sessions by whichever
 attribute is most distinctive — sometimes the branch name, often
@@ -239,6 +241,8 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
 | `Ctrl+P` | Global | Automations (scheduled agent runs) | **P**rogram |
+| `Ctrl+W` / `F5` | Global | Toggle tasks panel (todo list) | Work items |
+| `Ctrl+A` | Global | Global search across every scope | search **A**ll |
 | `Ctrl+T` | Global | Toggle shell pane alongside the agent session | **T**erminal |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
@@ -257,9 +261,8 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `F3` | Global | Toggle file viewer | Next to F2 |
 | `j` / `Down` | Lists | Next item | |
 | `k` / `Up` | Lists | Previous item | |
-| `/` | Session list | Open fuzzy search (name, agent, branch, cwd) | Vim search |
-| `Enter` | Search bar | Confirm and close search | |
-| `Esc` | Search bar | Cancel search | |
+| `Enter` | Global search | Jump to selected result | |
+| `Esc` | Global search | Close search | |
 | `Enter` | Session list | Focus terminal | |
 | `j` / `Down` | Repo picker | Next repo | |
 | `k` / `Up` | Repo picker | Previous repo | |
@@ -519,6 +522,161 @@ plus a free-text `detail`) for history.
 the TUI, sharing the same tables. `run` marks an automation due;
 `tick` fires all currently-due automations headlessly (this is what
 the tmux keeper and the optional OS timers invoke).
+
+---
+
+## Tasks (todo list)
+
+A **task list** of todo items that can be **connected to a coding
+agent**. Tasks deliberately reuse the automation **Send/Spawn** action
+model: triggering a task either pastes its title into an existing
+session (`Send`) or spawns a new session — optionally on a fresh
+worktree — seeded with the title (`Spawn`). A task with no action is a
+plain local todo. This keeps tasks and automations on one shared
+dispatch path (`App::spawn_and_prompt`).
+
+### Why mirror automations?
+
+The agent linkage a task needs (*"send this to an agent"* / *"spin up
+an agent for this"*) is exactly what `AutomationAction` already models.
+Rather than a parallel `TaskAction`, a task stores
+`Option<AutomationAction>` — the `Option` adds the only new case
+(unconnected local todo). One enum, one column layout, one fire path.
+
+### Where it lives in the UI
+
+Tasks render in a **toggleable right-side column** that sits between
+the terminal and the file viewer — it behaves exactly like the file
+viewer pane. **F5**/`Ctrl+W` shows and hides it (showing it also
+focuses it); while visible it is a stop in the session focus ring, so
+`Ctrl+L`/`Ctrl+H` cycle `SessionList → Terminal → TaskList →
+FileViewer` (each extra column appears only when shown). The column is
+a 20% slice added by `compute_layout` at width ≥ 120.
+
+The panel is focusable (`InputFocus::TaskList`). Its title and border use
+the shared focus styling (highlighted title + accent border when focused),
+matching the session list and file viewer. Checkbox glyphs show status
+(☐ todo / ◐ in-progress / ☑ done). Searching/filtering is handled by the
+global `Ctrl+A` search, not a per-panel `/`.
+
+**Editing happens in the central pane, like automations — not a modal.**
+Selecting a task previews its editor in the central pane; `Enter`/`e`
+focuses that editor to change fields; `Enter` saves and returns to the
+panel, `Esc` discards and returns. Beneath the editor a read-only
+**Details** panel shows the task's agent linkage, status, source, and
+created/updated times (tasks have no run history, so this takes the place
+of the automations' run-history panel). The action field cycles
+Local → Send → Spawn.
+
+Focused keys: `j`/`k` select (live-preview the editor), `n` new,
+`e`/`Enter` edit in the central pane, `Space` cycle status, `r` run the
+action, `d`/`Ctrl+D` delete, `Esc` leave.
+
+### Persistence
+
+Tasks live in the `tasks` SQLite table (schema **v25**): `title`,
+`status`, the automation action columns (`action_kind` nullable for
+local todos), `source`/`external_id`/`external_url`, timestamps, and a
+`deleted_at` soft-delete marker, with a partial index on `status`.
+Mutations are recorded in `audit_log` under `EntityType::Task`. Tasks
+do **not** join the cross-instance `SharedState` (like automations) and
+have **no** run-history table.
+
+### External sync (deferred)
+
+The `source`/`external_id`/`external_url` columns are scaffolding for a
+future sync with external trackers (Jira, GitHub Issues, …). Local
+tasks use `source = "local"`; imported tasks will slot in with no
+migration. No fetch logic ships yet.
+
+### Headless access (`thurbox-cli`)
+
+`thurbox-cli task` (alias `todo`) provides
+`create`/`list`/`show`/`edit`/`remove`/`run`. `create` with neither
+`--session` nor `--repo` is a plain local todo; `run` triggers the
+task's Send/Spawn action headlessly (spawned sessions are named
+`task-<id>`, adopted by the TUI on next startup).
+
+---
+
+## Global Search
+
+`Ctrl+A` ("search **A**ll") opens a **non-modal bottom strip** that
+searches every scope at once — a single place to find and jump to
+anything. (`Ctrl+/` also opens it where the terminal delivers that chord.)
+
+### Scopes
+
+- **Sessions** — name, agent, and branch (fuzzy), plus the live terminal
+  **buffer content** so you can find *which session* mentioned a string
+  ("deploy failed", an error, a file path) and switch straight to it.
+- **Tasks** — title (fuzzy).
+- **Automations** — name (fuzzy).
+- **Files** — file/dir names under the active session's roots (bounded
+  walk, same node/depth limits as the in-viewer search).
+
+### Live preview & cancel
+
+Moving through results (`↑`/`↓`) **previews** the selection in place: the
+matching panel's cursor follows the highlighted result — the active session
+switches, or the selected task / automation row moves — so you see where
+`Enter` would land without leaving the search box. (Files aren't previewed
+live; they only open the file viewer on `Enter`, since rebuilding the tree
+per keystroke is heavy.)
+
+The state the search touches is **snapshotted on open**, so `Esc` cancels
+back to exactly where you were — selections, focus, and which optional
+panels were visible all restore. `Enter` commits the jump and focuses the
+result's pane: a session result switches the active session and focuses its
+terminal; a task focuses the tasks panel with that row selected; an
+automation focuses the automations pane; a file opens the file viewer and
+reveals the path.
+
+### Live in-place highlighting
+
+As you type, matches highlight **where they live**: the session list, tasks
+panel, and automations pane highlight the matched characters (accent, bold,
+underlined) on matching rows and **dim** the rows that don't match — the
+same treatment the session list's own `/` filter already uses. This is
+driven by a shared highlight helper (`src/ui/highlight.rs`) and
+`App::global_search_query()`, which the view feeds into each panel renderer
+while the strip is open.
+
+The strip itself shows: a query line, a one-line per-scope match summary
+(`3 sessions · 1 task · 2 files [2/6]`), the **grouped result list**
+(scrollable, with the selected row marked `▸` and highlighted; content
+matches show a dim snippet), and a row of key hints. `↑`/`↓` move the
+selection through the list and `Enter` jumps to it.
+
+### Why a bottom strip (not a modal)
+
+thurbox keeps heavy interactions out of centered modals where it can. The
+search is a full-width strip docked above the footer — the content area
+shrinks to make room (the same way the info/tasks/file columns share
+width), so the rest of the UI stays visible, live, and **highlighted**
+behind it.
+
+### Responsiveness
+
+Cheap metadata matches (names/titles, fuzzy) recompute on every keystroke.
+The expensive part — scanning each running session's vt100 buffer — is
+**debounced** (~150 ms of query-idle, measured with `Instant` since the
+tick cadence varies with event load) and capped (≤ 8 results per group,
+last ≤ 500 lines per session) so typing never stalls.
+
+### Keys & bindings
+
+Type to filter; `Up`/`Down` (or `Ctrl+P`/`Ctrl+N`) move the selection so
+plain letters still edit the query; `Enter` jumps; `Esc` closes and
+restores the previous focus. The default chord is `Ctrl+A`
+(`Action::GlobalSearch`), which encodes reliably everywhere — unlike
+`Ctrl+/`, whose C0 control (`0x1F`) terminals surface inconsistently as
+`/`, `_`, or `7` (with Ctrl). A literal intercept opens the strip on all
+three `Ctrl+/` forms too, so it works wherever the modifier survives.
+
+Global search is the **only** list search now: the old per-pane `/`
+filters (session list, tasks panel) were removed in its favour. The file
+viewer's `/` is an unrelated in-file text search and is unchanged.
 
 ---
 

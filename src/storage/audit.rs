@@ -9,6 +9,7 @@ use super::Database;
 pub enum EntityType {
     Session,
     Worktree,
+    Task,
 }
 
 impl EntityType {
@@ -16,6 +17,7 @@ impl EntityType {
         match self {
             Self::Session => "session",
             Self::Worktree => "worktree",
+            Self::Task => "task",
         }
     }
 }
@@ -128,6 +130,13 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_type_strings() {
+        assert_eq!(EntityType::Session.as_str(), "session");
+        assert_eq!(EntityType::Worktree.as_str(), "worktree");
+        assert_eq!(EntityType::Task.as_str(), "task");
+    }
 
     #[test]
     fn log_and_query_audit() {

@@ -243,7 +243,8 @@ thurbox-cli session list | jq
 
 Subcommands: `session` (create/list/get/delete/restore/restart/
 send/capture), `automation` (alias `auto`:
-create/list/show/edit/remove/run/runs/tick), `editor`. Pass
+create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
+create/list/show/edit/remove/run), `editor`. Pass
 `--pretty` for indented JSON.
 
 Automations fire even when the TUI is closed: a tmux heartbeat
@@ -300,6 +301,118 @@ the persistent `App::automation_editor` state (kept in sync by
 `Ctrl+P` list path opens the same editor as a centered overlay
 (`Modal::AutomationEditor`); both share
 `AutomationEditorModal::handle_key` + `App::save_automation`.
+
+## Tasks (todo list)
+
+Thurbox has a **task list**: todo items that can be **connected to a
+coding agent** with the same Send/Spawn model as automations. A task
+reuses `session::AutomationAction` wrapped in `Option` — `Send` pastes
+the task title into an existing session, `Spawn` creates a new session
+(optionally on a fresh worktree) seeded with the title, and `None` is a
+plain local todo. Triggering a task runs its action and advances it to
+`InProgress`.
+
+- **Data** (`session/task.rs`): `Task` (`id`, `title`,
+  `status: TaskStatus` {`Todo`/`InProgress`/`Done`},
+  `action: Option<AutomationAction>`, plus `source`/`external_id`/
+  `external_url` scaffolding for **deferred** external sync — Jira/
+  GitHub Issues slot in later with no migration; local tasks use
+  `source = "local"`).
+- **Storage** (`storage/tasks.rs`, schema v25): `tasks` table mirroring
+  the automation action columns (`action_kind` nullable), soft-delete via
+  `deleted_at`, audited under `EntityType::Task`. CRUD: `create_task`,
+  `get_task`, `list_tasks`, `update_task`, `set_task_status`,
+  `soft_delete_task`.
+- **UI** — tasks render in a **toggleable right-side column** that sits
+  between the terminal and the file viewer, behaving exactly like the file
+  viewer: **F5**/`Ctrl+W` (`Action::FocusTasks`) shows **and** focuses it
+  (and hides it again), and `Ctrl+L`/`Ctrl+H` cycle in/out of it as part of
+  the session ring (`SessionList → Terminal → TaskList → FileViewer`, each a
+  cycle stop only while visible). Layout: `compute_layout`'s
+  `show_tasks_panel` flag adds a 20% column (`PanelAreas::tasks_panel`)
+  between `terminal` and `file_viewer` at width ≥ 120. Rendered by
+  `ui/tasks_panel.rs` (checkbox glyphs ☐/◐/☑) with the shared
+  `ui::focus_block` for the highlighted title + accent border, matching the
+  session list / file viewer. `InputFocus::TaskList` is the panel focus.
+- **In-pane editing (like automations, no modal)** — editing happens in the
+  **central pane**, not an overlay. `InputFocus::TaskEditor` is the editor
+  focus; `App::task_editor: Option<TaskEditorModal>` holds the form (a live
+  preview mirroring the selected task while the panel is focused, editable
+  once the editor is). `view::render_task_workspace` draws the editor
+  (`ui/task_editor_modal::render_task_editor_into`) on top of a read-only
+  **details** panel (`ui/task_detail`: agent linkage, status, source,
+  created/updated). Helpers mirror automations: `sync_task_editor`,
+  `new_task_in_pane`, `enter_task_editor`, `refresh_task_view`,
+  `build_task_editor`. The old `Modal::TaskEditor` overlay was removed.
+- **Keys** (focused panel): `j`/`k` select (live-preview the editor), `n`
+  new, `e`/`Enter` open the central-pane editor, `Space` cycle status, `r`
+  run the action, `d`/`Ctrl+D` delete, `Esc` back to the session list. In the
+  editor: field nav + `Enter` save (→ back to panel), `Esc` discard (→ back
+  to panel); the editor captures its keys before global bindings (so `e`/`d`
+  edit text) via `handle_automation_pane_capture`. Action field cycles
+  Local → Send → Spawn.
+- **Dispatch** lives in `app` (`App::trigger_task`), reusing the shared
+  `App::spawn_and_prompt` helper extracted from `spawn_for_automation`
+  (automations use `auto-<id>`, tasks `task-<id>`).
+- **CLI**: `thurbox-cli task` (alias `todo`) —
+  `create`/`list`/`show`/`edit`/`remove`/`run`. `create` with neither
+  `--session` nor `--repo` is a plain local todo; `run` triggers the
+  Send/Spawn action headlessly. Tasks do **not** participate in sync
+  (`SharedState`) and have no run-history table (audited via `audit_log`).
+
+## Global search (`Ctrl+A`)
+
+A **non-modal bottom strip** (`Ctrl+A`, also `Ctrl+/`) searches **every scope at once**:
+**sessions** (name/agent/branch + live vt100 **buffer content**), **tasks**
+(title), **automations** (name), and **files** (the active session's file
+tree). `Enter` jumps to the selected result and focuses its pane —
+switching to a session's terminal, the tasks panel, the automations pane,
+or the file viewer (revealing the path).
+
+- **Live in-place highlighting**: instead of reprinting results in the
+  strip, matched characters highlight **in the panels themselves** (session
+  list, tasks, automations) — accent+bold+underline on matching rows, dim
+  on the rest — via the shared `src/ui/highlight.rs` helper. The view feeds
+  each panel renderer the global query through `App::global_search_query()`
+  (`Some` only while the strip is open with a non-empty query). The strip
+  shows a query line, per-scope match counts, the grouped scrollable result
+  list (selected row marked `▸`/highlighted, content snippets dimmed), and
+  key hints (rendered by `src/ui/global_search.rs`).
+- **Live preview + cancel-restore**: moving the selection
+  (`App::preview_global_search_result`, called from `move_global_search_selection`
+  and on query change) moves the owning panel's cursor — `active_index` /
+  `task_panel_index` / `automation_panel_index` — so the previewed row is
+  visible while focus stays in the strip (files are *not* previewed; they
+  open only on `Enter`). `global_search_preview_kind()` tells the view which
+  panel owns the preview so it force-shows that row's selection
+  (`TaskPaneState`/`AutomationsPaneState::preview_selected`). `open_global_search`
+  captures a `SearchSnapshot` (focus + the three indices + `show_tasks_panel`/
+  `show_file_viewer`); `Esc`/`close_global_search` restores it, while `Enter`/
+  `activate_global_search_result` drops it (keeps the jump).
+- **State** lives in `src/app/search.rs` (`GlobalSearchState`,
+  `GlobalSearchResult`, `SearchTarget`/`SearchKind`); building results +
+  dispatching a selection live on `App` (`build_global_search_results`,
+  `session_content_match`, `activate_global_search_result`,
+  `open/close_global_search`). `InputFocus::GlobalSearch` captures all
+  input before the global keybinding lookup.
+- **Debounce**: cheap metadata results recompute on every keystroke; the
+  expensive per-session buffer-content scan runs only after the query is
+  idle for ~150 ms (`Instant`-based, driven from `tick()`), capped at
+  `MAX_PER_GROUP` results and `CONTENT_LINE_CAP` lines per session.
+- **Keys**: type to filter; `Up`/`Down` or `Ctrl+P`/`Ctrl+N` move the
+  selection (so plain `j`/`k` still type); `Enter` activates; `Esc` closes
+  and restores the prior focus.
+- **Layout**: `compute_layout`'s `show_global_search` carves a full-width
+  `PanelAreas::global_search` strip above the footer (shrinking the content
+  area like the side panels). Rendered by `src/ui/global_search.rs`.
+- **Binding**: `Action::GlobalSearch` defaults to `Ctrl+A` ("search All"),
+  which encodes reliably on every terminal. A literal intercept in
+  `handle_priority_key` *also* opens it on `Ctrl+/` — whose C0 control
+  (`0x1F`) terminals surface inconsistently as `Char('/')`/`Char('_')`/
+  `Char('7')`+CONTROL — so `Ctrl+/` works where the modifier survives.
+  Global search is the **only** search: the per-pane local `/` filters
+  (session list, tasks panel) were removed in favour of it. The file
+  viewer's `/` (in-file text search) is unrelated and stays.
 
 ## Demo Video
 
@@ -454,6 +567,8 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
+| `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | Work items |
+| `Ctrl+A` | Global search (sessions/tasks/automations/files) | search **A**ll |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
@@ -470,6 +585,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `F1` | Toggle keybindings help | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
 | `F3` | Toggle file viewer | Next to F2 |
+| `F5` | Toggle tasks panel (visible at width >= 120) | Next to F4 |
 
 List contexts use plain `j`/`k`/`Enter` for navigation.
 Terminal forwards all non-Ctrl keys to the PTY.

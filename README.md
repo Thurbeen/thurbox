@@ -72,6 +72,41 @@ Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
 
 ![Automations demo](./docs/media/automations-demo.gif)
 
+### Tasks
+
+- A built-in **todo list** whose items can be **connected to a
+  coding agent** with the same Send/Spawn model as automations:
+  **Send** pastes the task title into an existing session,
+  **Spawn** creates a fresh session (optionally on a new worktree)
+  seeded with the title, and an unconnected task is a plain local
+  todo. Triggering a task (`r`) runs its action and advances it to
+  *in progress*.
+- Tasks live in a **toggleable right-side column** (`Ctrl+W` /
+  `F5`) that behaves like the file viewer. Focus it and press `n`
+  to create, `e`/`Enter` to edit (an in-pane editor, no popup),
+  `Space` to cycle status (☐ todo · ◐ in progress · ☑ done), and
+  `d` to delete.
+- Fully scriptable headless: `thurbox-cli task` (alias `todo`) —
+  `create`/`list`/`show`/`edit`/`remove`/`run`. External
+  issue-tracker sync (Jira, GitHub Issues) is scaffolded for a
+  later release.
+
+![Tasks demo](./docs/media/tasks-demo.gif)
+
+### Global search
+
+- One key (`Ctrl+A`) opens a **non-modal search strip** that
+  searches **every scope at once** — sessions (name/agent/branch
+  **and** live terminal-buffer content), tasks, automations, and
+  the active session's file tree.
+- Matches **highlight live in the panels themselves** (matching
+  rows accented, the rest dimmed), with per-scope match counts and
+  a grouped result list. `Enter` jumps to the selected result and
+  focuses its pane; `Esc` restores exactly what you had before
+  searching.
+
+![Global search demo](./docs/media/search-demo.gif)
+
 ### Agent definitions
 
 - Agents are declared as data in `~/.config/thurbox/agents.toml`,

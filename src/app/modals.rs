@@ -693,6 +693,316 @@ impl RepoPickerModal {
     }
 }
 
+// ── TaskEditorModal ─────────────────────────────────────────────────────
+
+/// How a task connects to an agent. Mirrors [`AutomationActionKind`] but adds a
+/// `Local` arm for an unconnected todo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskActionKind {
+    /// Plain local todo — no agent action.
+    #[default]
+    Local,
+    /// Paste the task title into an existing session.
+    Send,
+    /// Spawn a new session and prompt it with the task title.
+    Spawn,
+}
+
+impl TaskActionKind {
+    const ALL: [TaskActionKind; 3] = [Self::Local, Self::Send, Self::Spawn];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Send => "send",
+            Self::Spawn => "spawn",
+        }
+    }
+
+    fn step(self, delta: i32) -> Self {
+        let idx = Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as i32;
+        let len = Self::ALL.len() as i32;
+        Self::ALL[(idx + delta).rem_euclid(len) as usize]
+    }
+
+    /// The editor fields shown for this action kind, in navigation order. The
+    /// single source for both the app's field navigation and the UI renderer.
+    pub fn visible_fields(self) -> Vec<TaskField> {
+        use TaskField::*;
+        let mut fields = vec![Title, Status, Action];
+        match self {
+            Self::Local => {}
+            Self::Send => fields.push(Target),
+            Self::Spawn => fields.extend([Repo, Worktree, Base, Agent]),
+        }
+        fields
+    }
+}
+
+/// Focusable field in the task editor. The set shown depends on the action kind
+/// (see `TaskEditorModal::visible_fields`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskField {
+    #[default]
+    Title,
+    /// Status selector (cycled with ←/→).
+    Status,
+    /// Action-kind selector (cycled with ←/→).
+    Action,
+    /// Send action: target-session selector.
+    Target,
+    Repo,
+    Worktree,
+    Base,
+    Agent,
+}
+
+/// Editor form for creating or editing a task.
+#[derive(Debug, Clone)]
+pub struct TaskEditorModal {
+    /// `Some` when editing an existing task.
+    pub editing_id: Option<i64>,
+    pub title: TextInput,
+    pub status: crate::session::TaskStatus,
+    pub action: TaskActionKind,
+    /// Spawn action: repository path.
+    pub repo: TextInput,
+    /// Spawn action: optional worktree branch.
+    pub worktree: TextInput,
+    /// Spawn action: optional base branch.
+    pub base: TextInput,
+    /// Spawn action: optional agent name.
+    pub agent: TextInput,
+    pub field: TaskField,
+    /// Send action: the running sessions available as targets (id + display
+    /// name), captured at open and cycled with the `Target` field.
+    pub sessions: Vec<(crate::session::SessionId, String)>,
+    /// Index into `sessions` of the selected Send target.
+    pub target_index: usize,
+}
+
+impl TaskEditorModal {
+    /// A blank editor for a new task, with the available Send targets.
+    pub fn new(sessions: Vec<(crate::session::SessionId, String)>) -> Self {
+        Self {
+            editing_id: None,
+            title: TextInput::default(),
+            status: crate::session::TaskStatus::Todo,
+            action: TaskActionKind::Local,
+            repo: TextInput::default(),
+            worktree: TextInput::default(),
+            base: TextInput::default(),
+            agent: TextInput::default(),
+            field: TaskField::default(),
+            sessions,
+            target_index: 0,
+        }
+    }
+
+    /// Build an editor pre-filled from an existing task.
+    pub fn from_task(
+        task: &crate::session::Task,
+        sessions: Vec<(crate::session::SessionId, String)>,
+    ) -> Self {
+        use crate::session::AutomationAction;
+        let mut m = Self::new(sessions);
+        m.editing_id = Some(task.id);
+        m.title.set(&task.title);
+        m.status = task.status;
+        match &task.action {
+            None => m.action = TaskActionKind::Local,
+            Some(AutomationAction::Send { session_id }) => {
+                m.action = TaskActionKind::Send;
+                m.set_default_target(Some(*session_id));
+            }
+            Some(AutomationAction::Spawn {
+                repo_path,
+                worktree_branch,
+                base_branch,
+                agent,
+            }) => {
+                m.action = TaskActionKind::Spawn;
+                m.repo.set(&repo_path.to_string_lossy());
+                if let Some(w) = worktree_branch {
+                    m.worktree.set(w);
+                }
+                if let Some(b) = base_branch {
+                    m.base.set(b);
+                }
+                if let Some(a) = agent {
+                    m.agent.set(a);
+                }
+            }
+        }
+        m
+    }
+
+    /// Select `selected` in the target list (falling back to the first session).
+    pub fn set_default_target(&mut self, selected: Option<crate::session::SessionId>) {
+        self.target_index = selected
+            .and_then(|id| self.sessions.iter().position(|(sid, _)| *sid == id))
+            .unwrap_or(0);
+    }
+
+    /// The fields shown for the current action kind, in navigation order.
+    pub fn visible_fields(&self) -> Vec<TaskField> {
+        self.action.visible_fields()
+    }
+
+    /// Move focus to the next visible field (wraps).
+    pub fn next_field(&mut self) {
+        let fields = self.visible_fields();
+        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
+        self.field = fields[(idx + 1) % fields.len()];
+    }
+
+    /// Move focus to the previous visible field (wraps).
+    pub fn prev_field(&mut self) {
+        let fields = self.visible_fields();
+        let idx = fields.iter().position(|f| *f == self.field).unwrap_or(0);
+        self.field = fields[(idx + fields.len() - 1) % fields.len()];
+    }
+
+    /// The focused text field, or `None` for selector fields (adjusted with ←/→).
+    pub fn active_field_mut(&mut self) -> Option<&mut TextInput> {
+        use TaskField::*;
+        Some(match self.field {
+            Repo => &mut self.repo,
+            Worktree => &mut self.worktree,
+            Base => &mut self.base,
+            Agent => &mut self.agent,
+            Title => &mut self.title,
+            Status | Action | Target => return None,
+        })
+    }
+
+    /// Whether the focused field is a selector adjusted with ←/→/Space.
+    pub fn is_adjustable(&self) -> bool {
+        matches!(
+            self.field,
+            TaskField::Status | TaskField::Action | TaskField::Target
+        )
+    }
+
+    /// Adjust the focused selector by `delta` (−1 for ←, +1 for →/Space).
+    pub fn adjust(&mut self, delta: i32) {
+        match self.field {
+            TaskField::Status => {
+                // Cycle in either direction (cycle() only goes forward, so step
+                // backward via two forward cycles).
+                self.status = if delta < 0 {
+                    self.status.cycle().cycle()
+                } else {
+                    self.status.cycle()
+                };
+            }
+            TaskField::Action => {
+                self.action = self.action.step(delta);
+                // Snap focus back to a valid field when the field set shrinks.
+                if !self.visible_fields().contains(&self.field) {
+                    self.field = TaskField::Action;
+                }
+            }
+            TaskField::Target => {
+                let len = self.sessions.len();
+                if len > 0 {
+                    self.target_index =
+                        wrap_add(self.target_index as u32, delta, len as u32) as usize;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The currently selected Send target (id + display name), if any.
+    pub fn selected_target(&self) -> Option<&(crate::session::SessionId, String)> {
+        self.sessions.get(self.target_index)
+    }
+
+    /// Build the [`AutomationAction`] (or `None` for a local task) described by
+    /// the current fields. Returns a user-facing error for invalid input.
+    pub fn build_action(&self) -> Result<Option<crate::session::AutomationAction>, String> {
+        use crate::session::AutomationAction;
+        Ok(match self.action {
+            TaskActionKind::Local => None,
+            TaskActionKind::Send => {
+                let Some((session_id, _)) = self.selected_target() else {
+                    return Err("No target session — start a session first".into());
+                };
+                Some(AutomationAction::Send {
+                    session_id: *session_id,
+                })
+            }
+            TaskActionKind::Spawn => {
+                let repo = self.repo.value().trim();
+                if repo.is_empty() {
+                    return Err("Repo path required for spawn action".into());
+                }
+                let worktree = self.worktree.value().trim();
+                let base = self.base.value().trim();
+                let agent = self.agent.value().trim();
+                Some(AutomationAction::Spawn {
+                    repo_path: crate::paths::expand_tilde(repo),
+                    worktree_branch: (!worktree.is_empty()).then(|| worktree.to_string()),
+                    base_branch: (!base.is_empty()).then(|| base.to_string()),
+                    agent: (!agent.is_empty()).then(|| agent.to_string()),
+                })
+            }
+        })
+    }
+
+    /// Feed a key to the editor. Returns whether the caller should save
+    /// (`Enter`), cancel (`Esc`), or keep editing.
+    pub fn handle_key(&mut self, code: KeyCode, _mods: KeyModifiers) -> EditorOutcome {
+        let adjustable = self.is_adjustable();
+        match code {
+            KeyCode::Esc => return EditorOutcome::Cancel,
+            KeyCode::Enter => return EditorOutcome::Save,
+            KeyCode::Tab | KeyCode::Down => self.next_field(),
+            KeyCode::BackTab | KeyCode::Up => self.prev_field(),
+            KeyCode::Left if adjustable => self.adjust(-1),
+            KeyCode::Right | KeyCode::Char(' ') if adjustable => self.adjust(1),
+            KeyCode::Char(c) => {
+                if let Some(field) = self.active_field_mut() {
+                    field.insert(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(field) = self.active_field_mut() {
+                    field.backspace();
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(field) = self.active_field_mut() {
+                    field.delete();
+                }
+            }
+            KeyCode::Left => {
+                if let Some(field) = self.active_field_mut() {
+                    field.move_left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(field) = self.active_field_mut() {
+                    field.move_right();
+                }
+            }
+            KeyCode::Home => {
+                if let Some(field) = self.active_field_mut() {
+                    field.home();
+                }
+            }
+            KeyCode::End => {
+                if let Some(field) = self.active_field_mut() {
+                    field.end();
+                }
+            }
+            _ => {}
+        }
+        EditorOutcome::Continue
+    }
+}
+
 // ── Main Modal Enum ────────────────────────────────────────────────────────
 
 /// Single, discriminated union replacing boolean flags for modal state.
@@ -1066,5 +1376,94 @@ mod tests {
         assert_eq!(format_duration_short(5_400_000), "1h30m");
         assert_eq!(format_duration_short(90_000_000), "1d1h");
         assert_eq!(format_duration_short(0), "0m");
+    }
+
+    #[test]
+    fn task_editor_local_visible_fields_and_action() {
+        let m = TaskEditorModal::new(Vec::new());
+        assert_eq!(
+            m.visible_fields(),
+            vec![TaskField::Title, TaskField::Status, TaskField::Action]
+        );
+        assert_eq!(m.build_action().unwrap(), None);
+    }
+
+    #[test]
+    fn task_action_kind_visible_fields_per_kind() {
+        use TaskField::*;
+        assert_eq!(
+            TaskActionKind::Local.visible_fields(),
+            vec![Title, Status, Action]
+        );
+        assert_eq!(
+            TaskActionKind::Send.visible_fields(),
+            vec![Title, Status, Action, Target]
+        );
+        assert_eq!(
+            TaskActionKind::Spawn.visible_fields(),
+            vec![Title, Status, Action, Repo, Worktree, Base, Agent]
+        );
+        // The modal method must delegate to the canonical action method.
+        let mut m = TaskEditorModal::new(Vec::new());
+        m.action = TaskActionKind::Spawn;
+        assert_eq!(m.visible_fields(), TaskActionKind::Spawn.visible_fields());
+    }
+
+    #[test]
+    fn task_editor_action_cycles_local_send_spawn() {
+        let mut m = TaskEditorModal::new(Vec::new());
+        m.field = TaskField::Action;
+        assert_eq!(m.action, TaskActionKind::Local);
+        m.adjust(1);
+        assert_eq!(m.action, TaskActionKind::Send);
+        m.adjust(1);
+        assert_eq!(m.action, TaskActionKind::Spawn);
+        // Spawn exposes repo/worktree/base/agent.
+        assert!(m.visible_fields().contains(&TaskField::Repo));
+        m.adjust(1);
+        assert_eq!(m.action, TaskActionKind::Local);
+    }
+
+    #[test]
+    fn task_editor_spawn_requires_repo() {
+        let mut m = TaskEditorModal::new(Vec::new());
+        m.action = TaskActionKind::Spawn;
+        assert!(m.build_action().is_err());
+        m.repo.set("/tmp/repo");
+        m.worktree.set("feat/x");
+        match m.build_action().unwrap() {
+            Some(crate::session::AutomationAction::Spawn { repo_path, .. }) => {
+                assert_eq!(repo_path, std::path::PathBuf::from("/tmp/repo"));
+            }
+            other => panic!("expected spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_editor_save_and_cancel_outcomes() {
+        let mut m = TaskEditorModal::new(Vec::new());
+        assert_eq!(
+            m.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+            EditorOutcome::Save
+        );
+        assert_eq!(
+            m.handle_key(KeyCode::Esc, KeyModifiers::NONE),
+            EditorOutcome::Cancel
+        );
+        // Typing edits the title field.
+        m.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        m.handle_key(KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(m.title.value(), "hi");
+    }
+
+    #[test]
+    fn task_editor_status_selector_cycles_both_ways() {
+        let mut m = TaskEditorModal::new(Vec::new());
+        m.field = TaskField::Status;
+        assert_eq!(m.status, crate::session::TaskStatus::Todo);
+        m.adjust(1);
+        assert_eq!(m.status, crate::session::TaskStatus::InProgress);
+        m.adjust(-1);
+        assert_eq!(m.status, crate::session::TaskStatus::Todo);
     }
 }

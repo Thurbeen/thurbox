@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 24;
+pub const SCHEMA_VERSION: u32 = 25;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -101,6 +101,26 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             last_used_at INTEGER NOT NULL,
             use_count    INTEGER NOT NULL DEFAULT 1
         );
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            title           TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'todo',
+            action_kind     TEXT,
+            target_session  TEXT,
+            repo_path       TEXT,
+            worktree_branch TEXT,
+            base_branch     TEXT,
+            agent           TEXT,
+            source          TEXT NOT NULL DEFAULT 'local',
+            external_id     TEXT,
+            external_url    TEXT,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            deleted_at      INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_status
+            ON tasks(status) WHERE deleted_at IS NULL;
         ",
     )?;
 
@@ -156,6 +176,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (22, migrate_v22_drop_subsystems),
         (23, migrate_v23_generic_agent),
         (24, migrate_v24_automations),
+        (25, migrate_v25_tasks),
     ];
 
     for &(target, step) in steps {
@@ -719,6 +740,35 @@ fn migrate_v24_automations(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v24 → v25: add the `tasks` table (todo list with agent-action linkage).
+///
+/// Idempotent CREATE: fresh v25 databases already have the table from
+/// `initialize`; existing v24 databases get it here. No data backfill.
+fn migrate_v25_tasks(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tasks (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            title           TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'todo',
+            action_kind     TEXT,
+            target_session  TEXT,
+            repo_path       TEXT,
+            worktree_branch TEXT,
+            base_branch     TEXT,
+            agent           TEXT,
+            source          TEXT NOT NULL DEFAULT 'local',
+            external_id     TEXT,
+            external_url    TEXT,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            deleted_at      INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_status
+            ON tasks(status) WHERE deleted_at IS NULL;",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,6 +793,7 @@ mod tests {
         assert!(tables.contains(&"automations".to_string()));
         assert!(tables.contains(&"automation_runs".to_string()));
         assert!(tables.contains(&"repo_bookmarks".to_string()));
+        assert!(tables.contains(&"tasks".to_string()));
         // The legacy one-shot table is replaced by `automations`.
         assert!(!tables.contains(&"scheduled_commands".to_string()));
         // Dropped Claude-config tables should NOT exist.
@@ -797,6 +848,42 @@ mod tests {
         assert_eq!(action, "send");
         assert_eq!(prompt, "pending cmd");
         assert_eq!(next, 5000);
+    }
+
+    #[test]
+    fn migrate_from_v24_adds_tasks_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v24 state: metadata pinned to 24, no tasks table.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '24');",
+        )
+        .unwrap();
+
+        let has_tasks_before: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(!has_tasks_before);
+
+        migrate(&conn).unwrap();
+
+        let has_tasks_after: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_tasks_after, "tasks table should be created at v25");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
     }
 
     #[test]

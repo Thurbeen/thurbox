@@ -1,6 +1,7 @@
 mod helpers;
 mod key_handlers;
 pub(crate) mod modals;
+pub(crate) mod search;
 mod state;
 mod view;
 
@@ -25,7 +26,7 @@ use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
-use crate::ui::{info_panel, layout, project_list};
+use crate::ui::{info_panel, layout};
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -114,7 +115,7 @@ fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics 
     }
 }
 
-pub use modals::{AutomationActionKind, AutomationField, TriggerKind};
+pub use modals::{AutomationActionKind, AutomationField, TaskActionKind, TaskField, TriggerKind};
 
 /// Ticks (~10 ms each) to wait after spawning a session before pasting its
 /// automation prompt, giving the agent CLI time to come up (~3 s).
@@ -251,6 +252,14 @@ pub enum InputFocus {
     /// reached with `Ctrl+L` from the editor. `j`/`k` select a run; `r` triggers
     /// a fresh run.
     AutomationRunHistory,
+    /// The tasks panel on the right (selecting/acting on a task).
+    TaskList,
+    /// Editing the scoped task in the central pane (like a session's terminal —
+    /// reached with `Enter`/`e` from the tasks panel; `Esc` returns to it).
+    TaskEditor,
+    /// The global search strip docked along the bottom (`Ctrl+/`). Captures all
+    /// input while active; entered/left only via `Ctrl+/` / `Esc`.
+    GlobalSearch,
     Terminal,
     FileViewer,
 }
@@ -285,6 +294,8 @@ pub struct App {
     pub(crate) terminal_cols: u16,
     session_counter: usize,
     pub(crate) show_info_panel: bool,
+    /// Whether the tasks panel column is shown (toggled like the file viewer).
+    pub(crate) show_tasks_panel: bool,
     pub(crate) show_file_viewer: bool,
     pub(crate) file_viewer: crate::ui::file_viewer::FileViewerState,
     pub(crate) modal: modals::Modal,
@@ -334,13 +345,6 @@ pub struct App {
     pub(crate) session_elapsed_buf: Vec<u64>,
     /// Persistent list state for the session section (preserves scroll offset).
     pub(crate) session_list_state: ratatui::widgets::ListState,
-    /// Whether the search input is active (accepting keystrokes).
-    pub(crate) search_active: bool,
-    /// Search input buffer.
-    pub(crate) search_input: TextInput,
-    /// Per-session fuzzy match positions (parallel to flat session list).
-    /// Empty vec means no search is active.
-    pub(crate) session_match_positions: Vec<Option<project_list::SessionMatch>>,
     /// Cached automations for the UI, refreshed every ~1 second.
     pub(crate) cached_automations: Vec<Automation>,
     /// Selected row in the focusable automations pane.
@@ -361,6 +365,20 @@ pub struct App {
     /// [`InputFocus::AutomationRunHistory`] is focused. Indexes
     /// [`Self::cached_automation_runs`].
     pub(crate) automation_run_index: usize,
+    /// Cached tasks for the right-side panel, refreshed every ~1 second.
+    pub(crate) cached_tasks: Vec<crate::session::Task>,
+    /// Selected row in the tasks panel. Indexes [`Self::filtered_task_indices`].
+    pub(crate) task_panel_index: usize,
+    /// Indices into [`Self::cached_tasks`] shown in the panel (currently always
+    /// all active tasks — filtering is done by the global `Ctrl+A` search).
+    pub(crate) filtered_task_indices: Vec<usize>,
+    /// The editor for the task currently scoped in the central pane. While the
+    /// tasks panel is focused this mirrors the selected task (a live preview);
+    /// while [`InputFocus::TaskEditor`] is focused it holds the in-progress
+    /// edits. `None` when no task is scoped. Mirrors `automation_editor`.
+    pub(crate) task_editor: Option<modals::TaskEditorModal>,
+    /// Global search strip (`Ctrl+/`): cross-scope search docked at the bottom.
+    pub(crate) global_search: search::GlobalSearchState,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
     /// every render. Kept in sync with `db.set_active_theme` writes.
     pub(crate) active_theme: crate::session::ThemePreset,
@@ -437,6 +455,7 @@ impl App {
             terminal_cols: cols,
             session_counter,
             show_info_panel: false,
+            show_tasks_panel: false,
             show_file_viewer: false,
             file_viewer: crate::ui::file_viewer::FileViewerState::new(),
             modal: modals::Modal::None,
@@ -473,15 +492,17 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             session_elapsed_buf: Vec::new(),
             session_list_state: ratatui::widgets::ListState::default(),
-            search_active: false,
-            search_input: TextInput::new(),
-            session_match_positions: Vec::new(),
             cached_automations: Vec::new(),
             automation_panel_index: 0,
             cached_automation_runs: Vec::new(),
             cached_automation_runs_id: None,
             automation_editor: None,
             automation_run_index: 0,
+            cached_tasks: Vec::new(),
+            task_panel_index: 0,
+            filtered_task_indices: Vec::new(),
+            task_editor: None,
+            global_search: search::GlobalSearchState::default(),
             active_theme,
             keybindings,
             usage: HashMap::new(),
@@ -1055,7 +1076,9 @@ impl App {
         let areas = layout::compute_layout(
             area,
             self.show_info_panel,
+            self.show_tasks_panel,
             self.show_file_viewer,
+            self.global_search.active,
             self.cached_automations.len(),
         );
         let border_block = Block::default().borders(Borders::ALL);
@@ -1418,106 +1441,18 @@ impl App {
         self.active_index = order[prev];
     }
 
-    /// Clear all search/filter state.
-    pub(crate) fn clear_search(&mut self) {
-        self.search_active = false;
-        self.search_input.buffer.clear();
-        self.search_input.cursor = 0;
-        self.session_match_positions.clear();
-    }
-
-    /// Recompute fuzzy match positions based on the current search query and
-    /// snap selection to the first match if the current selection is a non-match.
-    pub(crate) fn recompute_search_filter(&mut self) {
-        let query = &self.search_input.buffer;
-        if query.is_empty() {
-            self.session_match_positions.clear();
-            return;
-        }
-        self.session_match_positions = self
-            .sessions
-            .iter()
-            .map(|s| {
-                let info = &s.info;
-                let name = crate::fuzzy::fuzzy_match(query, &info.name).map(|m| m.positions);
-                let agent = crate::fuzzy::fuzzy_match(query, &info.agent).map(|m| m.positions);
-                let branch = info
-                    .worktrees
-                    .first()
-                    .and_then(|wt| crate::fuzzy::fuzzy_match(query, &wt.branch))
-                    .map(|m| m.positions);
-                let cwd = info
-                    .repo_display_names
-                    .iter()
-                    .find_map(|n| crate::fuzzy::fuzzy_match(query, n))
-                    .map(|m| m.positions);
-                let status_str = info.status.to_string();
-                let status = crate::fuzzy::fuzzy_match(query, &status_str).map(|m| m.positions);
-                project_list::SessionMatch::from_matches(name, agent, branch, cwd, status)
-            })
-            .collect();
-        // Snap to first match if current selection is a non-match.
-        let current_matches = self
-            .session_match_positions
-            .get(self.active_index)
-            .map(|m| m.is_some())
-            .unwrap_or(false);
-        if !current_matches {
-            if let Some(first) = self
-                .session_match_positions
-                .iter()
-                .position(|m| m.is_some())
-            {
-                self.active_index = first;
-            }
-        }
-    }
-
-    /// Navigate forward to the next matching item during search.
-    pub(crate) fn search_navigate_forward(&mut self) {
-        if self.session_match_positions.is_empty() {
-            self.switch_session_forward();
-            return;
-        }
-        let start = self.active_index + 1;
-        let len = self.session_match_positions.len();
-        for offset in 0..len {
-            let idx = (start + offset) % len;
-            if self.session_match_positions[idx].is_some() {
-                self.active_index = idx;
-                return;
-            }
-        }
-    }
-
-    /// Navigate backward to the previous matching item during search.
-    pub(crate) fn search_navigate_backward(&mut self) {
-        if self.session_match_positions.is_empty() {
-            self.switch_session_backward();
-            return;
-        }
-        let len = self.session_match_positions.len();
-        let start = if self.active_index == 0 {
-            len - 1
-        } else {
-            self.active_index - 1
-        };
-        for offset in 0..len {
-            let idx = (start + len - offset) % len;
-            if self.session_match_positions[idx].is_some() {
-                self.active_index = idx;
-                return;
-            }
-        }
-    }
-
     fn handle_resize(&mut self, cols: u16, rows: u16) {
         self.terminal_cols = cols;
         self.terminal_rows = rows;
 
-        // Collapse info panel if terminal gets too narrow
+        // Collapse the optional right-side panels if the terminal gets too
+        // narrow (they only render at width >= 120 anyway).
         if cols < 120 {
             self.show_info_panel = false;
+            self.show_tasks_panel = false;
+            if self.focus == InputFocus::TaskList {
+                self.focus = InputFocus::SessionList;
+            }
         }
 
         self.resize_sessions_to_content_area();
@@ -1533,6 +1468,23 @@ impl App {
 
     pub fn tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
+
+        // Run the debounced global-search content scan once the query has been
+        // settled for the debounce window (Instant-based, since tick cadence is
+        // event-load-dependent).
+        if self.global_search.active && self.global_search.content_dirty {
+            let settled = self
+                .global_search
+                .query_changed_at
+                .map(|t| {
+                    t.elapsed() >= std::time::Duration::from_millis(search::CONTENT_DEBOUNCE_MS)
+                })
+                .unwrap_or(false);
+            if settled {
+                self.recompute_global_search_content();
+                self.global_search.content_dirty = false;
+            }
+        }
 
         self.refresh_session_statuses();
 
@@ -1563,9 +1515,11 @@ impl App {
         // afterwards it runs on the regular ~1 s cadence.
         self.process_automations(self.tick_count == 1);
 
-        // Refresh cached automations for the UI (same cadence).
-        if self.tick_count % 100 == 0 {
+        // Refresh cached automations + tasks for the UI (same cadence). The
+        // first tick primes the caches so the panels aren't empty on open.
+        if self.tick_count == 1 || self.tick_count % 100 == 0 {
             self.refresh_automations();
+            self.refresh_tasks();
         }
 
         // Refresh system metrics periodically
@@ -2540,12 +2494,34 @@ impl App {
         base_branch: Option<&str>,
         agent: Option<&str>,
     ) -> Result<SessionId, String> {
-        let name = format!("auto-{}", auto.id);
+        self.spawn_and_prompt(
+            format!("auto-{}", auto.id),
+            repo_path,
+            worktree_branch,
+            base_branch,
+            agent,
+            &auto.prompt,
+        )
+    }
 
+    /// Spawn (or reuse) a named session — optionally on a fresh worktree — and
+    /// queue `prompt` into it. The session is named `name`; a recurring caller
+    /// reuses that session on later invocations (and after a TUI restart, where
+    /// it is restored from the database by name). Shared by automations
+    /// (`auto-<id>`) and tasks (`task-<id>`).
+    fn spawn_and_prompt(
+        &mut self,
+        name: String,
+        repo_path: &std::path::Path,
+        worktree_branch: Option<&str>,
+        base_branch: Option<&str>,
+        agent: Option<&str>,
+        prompt: &str,
+    ) -> Result<SessionId, String> {
         // Reuse an existing session (this run or restored after restart).
         if let Some(existing) = self.sessions.iter().find(|s| s.info.name == name) {
             let id = existing.info.id;
-            self.send_prompt_to_session(id, &auto.prompt, 0);
+            self.send_prompt_to_session(id, prompt, 0);
             return Ok(id);
         }
 
@@ -2556,8 +2532,8 @@ impl App {
 
         let worktrees = if let Some(branch) = worktree_branch {
             let base = base_branch.unwrap_or("main");
-            // Idempotent: a recurring automation reuses the worktree it made on
-            // the first fire instead of failing because the branch exists.
+            // Idempotent: a recurring caller reuses the worktree it made on the
+            // first invocation instead of failing because the branch exists.
             let path = git::create_or_attach_worktree(repo_path, branch, base)
                 .map_err(|e| format!("create worktree {branch} off {base}: {e}"))?;
             vec![WorktreeInfo {
@@ -2588,7 +2564,7 @@ impl App {
             .find(|s| s.info.name == name)
             .ok_or_else(|| "session spawn failed".to_string())?;
         let id = session.info.id;
-        self.send_prompt_to_session(id, &auto.prompt, AGENT_BOOT_DELAY_TICKS);
+        self.send_prompt_to_session(id, prompt, AGENT_BOOT_DELAY_TICKS);
         Ok(id)
     }
 
@@ -2849,6 +2825,539 @@ impl App {
         true
     }
 
+    // ---- Tasks (right-side panel) ----------------------------------------
+
+    /// Refresh the cached tasks from the database, keeping the filtered view and
+    /// panel selection valid.
+    pub(crate) fn refresh_tasks(&mut self) {
+        match self.db.list_tasks() {
+            Ok(tasks) => self.cached_tasks = tasks,
+            Err(e) => error!("Failed to list tasks: {e}"),
+        }
+        self.recompute_task_filter();
+    }
+
+    /// Rebuild [`Self::filtered_task_indices`] (all active tasks) and clamp the
+    /// panel selection into range. The tasks panel shows every task now —
+    /// filtering happens through the global `Ctrl+A` search.
+    pub(crate) fn recompute_task_filter(&mut self) {
+        self.filtered_task_indices = (0..self.cached_tasks.len()).collect();
+        if self.filtered_task_indices.is_empty() {
+            self.task_panel_index = 0;
+        } else {
+            self.task_panel_index = self
+                .task_panel_index
+                .min(self.filtered_task_indices.len() - 1);
+        }
+    }
+
+    /// The task currently selected in the panel (honoring the filter), if any.
+    pub(crate) fn selected_task(&self) -> Option<&crate::session::Task> {
+        let idx = *self.filtered_task_indices.get(self.task_panel_index)?;
+        self.cached_tasks.get(idx)
+    }
+
+    /// Trigger a task's agent action (the Send/Spawn linkage). Unconnected tasks
+    /// are a no-op with a status message. On success the task advances to
+    /// `InProgress`.
+    pub(crate) fn trigger_task(&mut self, task: &crate::session::Task) {
+        let Some(action) = task.action.clone() else {
+            self.set_status(StatusLevel::Info, "Task is not connected to an agent");
+            return;
+        };
+        let outcome = match action {
+            AutomationAction::Send { session_id } => {
+                if self.sessions.iter().any(|s| s.info.id == session_id) {
+                    self.send_prompt_to_session(session_id, &task.title, 0);
+                    Ok(format!("Sent task to {session_id}"))
+                } else {
+                    Err("Target session is not running".to_string())
+                }
+            }
+            AutomationAction::Spawn {
+                repo_path,
+                worktree_branch,
+                base_branch,
+                agent,
+            } => self
+                .spawn_and_prompt(
+                    format!("task-{}", task.id),
+                    &repo_path,
+                    worktree_branch.as_deref(),
+                    base_branch.as_deref(),
+                    agent.as_deref(),
+                    &task.title,
+                )
+                .map(|id| format!("Spawned session {id} for task")),
+        };
+        match outcome {
+            Ok(msg) => {
+                // Mark the task as in progress now that an agent is on it.
+                if task.status == crate::session::TaskStatus::Todo {
+                    if let Err(e) = self
+                        .db
+                        .set_task_status(task.id, crate::session::TaskStatus::InProgress)
+                    {
+                        error!("Failed to advance task {} status: {e}", task.id);
+                    }
+                }
+                self.refresh_tasks();
+                self.set_status(StatusLevel::Success, msg);
+            }
+            Err(e) => self.set_error(e),
+        }
+    }
+
+    /// A blank task editor with its Send-target list populated from the running
+    /// sessions, defaulting to the active one.
+    fn blank_task_editor(&self) -> modals::TaskEditorModal {
+        let active = self.sessions.get(self.active_index).map(|s| s.info.id);
+        let mut m = modals::TaskEditorModal::new(self.session_target_choices());
+        m.set_default_target(active);
+        m
+    }
+
+    /// Build an editor pre-filled from an existing task.
+    fn build_task_editor(&self, task: &crate::session::Task) -> modals::TaskEditorModal {
+        modals::TaskEditorModal::from_task(task, self.session_target_choices())
+    }
+
+    /// Keep the in-pane task editor (`self.task_editor`) in sync with focus +
+    /// selection:
+    /// - [`InputFocus::TaskList`] → mirror the selected task (live preview).
+    /// - [`InputFocus::TaskEditor`] → leave in-progress edits untouched.
+    /// - anything else → drop it (we left the tasks context). Mirrors
+    ///   [`Self::sync_automation_editor`].
+    pub(crate) fn sync_task_editor(&mut self) {
+        match self.focus {
+            InputFocus::TaskList => {
+                self.task_editor = self
+                    .selected_task()
+                    .cloned()
+                    .map(|task| self.build_task_editor(&task));
+            }
+            InputFocus::TaskEditor => {}
+            _ => self.task_editor = None,
+        }
+    }
+
+    /// Re-sync the in-pane task editor preview after the selection or a task
+    /// itself changes.
+    pub(crate) fn refresh_task_view(&mut self) {
+        self.sync_task_editor();
+    }
+
+    /// Start a brand-new task in the central pane and focus the editor.
+    pub(crate) fn new_task_in_pane(&mut self) {
+        self.task_editor = Some(self.blank_task_editor());
+        self.focus = InputFocus::TaskEditor;
+    }
+
+    /// Move focus into the central-pane editor for the selected task (mirrors
+    /// `Enter` on a session focusing its terminal).
+    pub(crate) fn enter_task_editor(&mut self) {
+        self.sync_task_editor();
+        if self.task_editor.is_some() {
+            self.focus = InputFocus::TaskEditor;
+        }
+    }
+
+    /// Validate `m` and persist it. Returns `true` on success; on failure sets an
+    /// error status and returns `false` (leaving the editor open).
+    fn save_task(&mut self, m: &modals::TaskEditorModal) -> bool {
+        let title = m.title.value().trim().to_string();
+        if title.is_empty() {
+            self.set_error("Title cannot be empty");
+            return false;
+        }
+        let action = match m.build_action() {
+            Ok(a) => a,
+            Err(e) => {
+                self.set_error(e);
+                return false;
+            }
+        };
+        let result = match m.editing_id {
+            Some(id) => match self.db.get_task(id) {
+                Ok(Some(mut task)) => {
+                    task.title = title;
+                    task.status = m.status;
+                    task.action = action;
+                    self.db.update_task(&task)
+                }
+                Ok(None) => {
+                    self.set_error("Task no longer exists");
+                    return false;
+                }
+                Err(e) => Err(e),
+            },
+            None => {
+                let new = crate::storage::tasks::NewTask {
+                    title,
+                    status: m.status,
+                    action,
+                    source: crate::session::SOURCE_LOCAL.to_string(),
+                    external_id: None,
+                    external_url: None,
+                };
+                self.db.create_task(&new).map(|_| ())
+            }
+        };
+        if let Err(e) = result {
+            self.set_error(format!("Failed to save task: {e}"));
+            return false;
+        }
+        self.refresh_tasks();
+        self.set_status(StatusLevel::Success, "Task saved");
+        true
+    }
+
+    // ---- Global search (Ctrl+/ bottom strip) -----------------------------
+
+    /// Open the global-search strip: snapshot the current UI state (so cancel
+    /// can restore it), clear the query, focus the strip, and seed the (cheap)
+    /// metadata results.
+    pub(crate) fn open_global_search(&mut self) {
+        self.global_search.snapshot = Some(search::SearchSnapshot {
+            focus: self.focus,
+            active_index: self.active_index,
+            task_panel_index: self.task_panel_index,
+            automation_panel_index: self.automation_panel_index,
+            show_tasks_panel: self.show_tasks_panel,
+            show_file_viewer: self.show_file_viewer,
+        });
+        self.global_search.active = true;
+        self.global_search.query.clear();
+        self.global_search.results.clear();
+        self.global_search.selected = 0;
+        self.global_search.query_changed_at = None;
+        self.global_search.content_dirty = false;
+        self.focus = InputFocus::GlobalSearch;
+        self.recompute_global_search_metadata();
+        self.resize_sessions_to_content_area();
+    }
+
+    /// Cancel the strip: restore the exact UI state captured at open time
+    /// (selections, focus, and panel visibility the live preview may have
+    /// changed). Bound to `Esc`.
+    pub(crate) fn close_global_search(&mut self) {
+        if let Some(snap) = self.global_search.snapshot.take() {
+            self.active_index = snap.active_index.min(self.sessions.len().saturating_sub(1));
+            self.task_panel_index = snap.task_panel_index;
+            self.automation_panel_index = snap.automation_panel_index;
+            self.show_tasks_panel = snap.show_tasks_panel;
+            self.show_file_viewer = snap.show_file_viewer;
+            self.focus = snap.focus;
+        }
+        self.global_search.active = false;
+        self.global_search.results.clear();
+        self.global_search.query.clear();
+        self.resize_sessions_to_content_area();
+    }
+
+    /// Note that the query changed: recompute the cheap metadata results now,
+    /// live-preview the new top result, and flag the expensive content scan to
+    /// run after the debounce settles.
+    pub(crate) fn on_global_search_query_changed(&mut self) {
+        self.recompute_global_search_metadata();
+        self.preview_global_search_result();
+        self.global_search.content_dirty = true;
+        self.global_search.query_changed_at = Some(std::time::Instant::now());
+    }
+
+    /// Rebuild the metadata results (sessions/tasks/automations/files) — fast
+    /// enough to run on every keystroke. Session buffer **content** matches are
+    /// added separately by [`Self::recompute_global_search_content`].
+    pub(crate) fn recompute_global_search_metadata(&mut self) {
+        let query = self.global_search.query.value().to_string();
+        let results = self.build_global_search_results(&query, false);
+        self.global_search.results = results;
+        self.global_search.clamp_selection();
+    }
+
+    /// Rebuild results including the debounced per-session buffer content scan.
+    pub(crate) fn recompute_global_search_content(&mut self) {
+        let query = self.global_search.query.value().to_string();
+        let results = self.build_global_search_results(&query, true);
+        self.global_search.results = results;
+        self.global_search.clamp_selection();
+        // The result set may have grown (content matches) — keep the preview in
+        // sync with whatever is now selected.
+        self.preview_global_search_result();
+    }
+
+    /// Assemble the grouped result list. `with_content` adds session buffer
+    /// matches (the heavy path). Empty query → no results.
+    fn build_global_search_results(
+        &self,
+        query: &str,
+        with_content: bool,
+    ) -> Vec<search::GlobalSearchResult> {
+        use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
+        let query_lc = query.to_lowercase();
+        let mut sessions: Vec<GlobalSearchResult> = Vec::new();
+        let mut tasks: Vec<GlobalSearchResult> = Vec::new();
+        let mut automations: Vec<GlobalSearchResult> = Vec::new();
+        let mut files: Vec<GlobalSearchResult> = Vec::new();
+
+        // Sessions — metadata (name / agent / branch) via fuzzy.
+        for (i, session) in self.sessions.iter().enumerate() {
+            if sessions.len() >= MAX_PER_GROUP {
+                break;
+            }
+            let info = &session.info;
+            let branch = info.worktrees.first().map(|w| w.branch.as_str());
+            let meta_hit = crate::fuzzy::fuzzy_match(query, &info.name).is_some()
+                || crate::fuzzy::fuzzy_match(query, &info.agent).is_some()
+                || branch
+                    .map(|b| crate::fuzzy::fuzzy_match(query, b).is_some())
+                    .unwrap_or(false);
+            if meta_hit {
+                sessions.push(GlobalSearchResult {
+                    kind: SearchKind::Session,
+                    label: info.name.clone(),
+                    snippet: None,
+                    target: SearchTarget::Session { index: i },
+                });
+            }
+        }
+        // Sessions — buffer content (debounced heavy path). Skip sessions that
+        // already matched on metadata to avoid duplicate rows.
+        if with_content {
+            let already: std::collections::HashSet<usize> = sessions
+                .iter()
+                .filter_map(|r| match r.target {
+                    SearchTarget::Session { index } => Some(index),
+                    _ => None,
+                })
+                .collect();
+            for i in 0..self.sessions.len() {
+                if sessions.len() >= MAX_PER_GROUP {
+                    break;
+                }
+                if already.contains(&i) {
+                    continue;
+                }
+                if let Some(snippet) = self.session_content_match(&query_lc, i) {
+                    sessions.push(GlobalSearchResult {
+                        kind: SearchKind::Session,
+                        label: self.sessions[i].info.name.clone(),
+                        snippet: Some(snippet),
+                        target: SearchTarget::Session { index: i },
+                    });
+                }
+            }
+        }
+
+        // Tasks — title via fuzzy.
+        for task in &self.cached_tasks {
+            if tasks.len() >= MAX_PER_GROUP {
+                break;
+            }
+            if crate::fuzzy::fuzzy_match(query, &task.title).is_some() {
+                tasks.push(GlobalSearchResult {
+                    kind: SearchKind::Task,
+                    label: task.title.clone(),
+                    snippet: None,
+                    target: SearchTarget::Task { id: task.id },
+                });
+            }
+        }
+
+        // Automations — name via fuzzy.
+        for auto in &self.cached_automations {
+            if automations.len() >= MAX_PER_GROUP {
+                break;
+            }
+            if crate::fuzzy::fuzzy_match(query, &auto.name).is_some() {
+                automations.push(GlobalSearchResult {
+                    kind: SearchKind::Automation,
+                    label: auto.name.clone(),
+                    snippet: None,
+                    target: SearchTarget::Automation { id: auto.id },
+                });
+            }
+        }
+
+        // Files — names from the active session's tree (substring, case-insensitive).
+        if let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) {
+            for (root, path, name) in crate::ui::file_viewer::enumerate_paths(info) {
+                if files.len() >= MAX_PER_GROUP {
+                    break;
+                }
+                if name.to_lowercase().contains(&query_lc) {
+                    files.push(GlobalSearchResult {
+                        kind: SearchKind::File,
+                        label: name,
+                        snippet: None,
+                        target: SearchTarget::File { root, path },
+                    });
+                }
+            }
+        }
+
+        // Group order: Sessions → Tasks → Automations → Files.
+        let mut out = sessions;
+        out.extend(tasks);
+        out.extend(automations);
+        out.extend(files);
+        out
+    }
+
+    /// Search a session's visible buffer for `query_lc`, returning the first
+    /// matching (trimmed) line as a snippet. Scans only the last
+    /// [`search::CONTENT_LINE_CAP`] lines and tolerates a poisoned lock.
+    fn session_content_match(&self, query_lc: &str, idx: usize) -> Option<String> {
+        if query_lc.trim().is_empty() {
+            return None;
+        }
+        let session = self.sessions.get(idx)?;
+        let parser = session.parser.lock().ok()?;
+        let contents = parser.screen().contents();
+        drop(parser);
+        let lines: Vec<&str> = contents.lines().collect();
+        let start = lines.len().saturating_sub(search::CONTENT_LINE_CAP);
+        for line in &lines[start..] {
+            if line.to_lowercase().contains(query_lc) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.chars().take(120).collect());
+                }
+            }
+        }
+        None
+    }
+
+    /// The active global-search query for live in-panel highlighting: `Some`
+    /// when the strip is open with a non-empty query, else `None` (panels render
+    /// normally). Used by the view to highlight matched rows and dim the rest.
+    pub(crate) fn global_search_query(&self) -> Option<&str> {
+        if !self.global_search.active {
+            return None;
+        }
+        let q = self.global_search.query.value();
+        (!q.trim().is_empty()).then_some(q)
+    }
+
+    /// The scope of the currently selected global-search result, while the strip
+    /// is active. Lets the view force-show the selected (previewed) row in the
+    /// owning panel even though focus stays in the search box.
+    pub(crate) fn global_search_preview_kind(&self) -> Option<search::SearchKind> {
+        if !self.global_search.active {
+            return None;
+        }
+        self.global_search
+            .results
+            .get(self.global_search.selected)
+            .map(|r| r.kind)
+    }
+
+    /// Live-preview the selected result without leaving the search box: move the
+    /// matching panel's cursor (active session / task row / automation row) so
+    /// the user sees where `Enter` would land. Files are *not* previewed (opening
+    /// the file viewer per keystroke is heavy) — they only act on `Enter`.
+    /// Cancelling restores all of this from the snapshot.
+    pub(crate) fn preview_global_search_result(&mut self) {
+        let Some(result) = self
+            .global_search
+            .results
+            .get(self.global_search.selected)
+            .cloned()
+        else {
+            return;
+        };
+        match result.target {
+            search::SearchTarget::Session { index } => {
+                if index < self.sessions.len() {
+                    self.active_index = index;
+                }
+            }
+            search::SearchTarget::Task { id } => {
+                self.show_tasks_panel = true;
+                self.refresh_tasks();
+                if let Some(pos) = self
+                    .filtered_task_indices
+                    .iter()
+                    .position(|&i| self.cached_tasks.get(i).map(|t| t.id) == Some(id))
+                {
+                    self.task_panel_index = pos;
+                }
+            }
+            search::SearchTarget::Automation { id } => {
+                if let Some(pos) = self.cached_automations.iter().position(|a| a.id == id) {
+                    self.automation_panel_index = pos;
+                }
+            }
+            // Files aren't previewed live — they only open on `Enter`.
+            search::SearchTarget::File { .. } => {}
+        }
+    }
+
+    /// Jump to the selected search result's target, then close the strip.
+    pub(crate) fn activate_global_search_result(&mut self) {
+        let Some(result) = self
+            .global_search
+            .results
+            .get(self.global_search.selected)
+            .cloned()
+        else {
+            self.close_global_search();
+            return;
+        };
+        // Commit: discard the snapshot (we keep the jump, don't restore) and
+        // tear the strip down, then apply the jump target. Capture the pre-search
+        // focus first, as the fallback when a stale target can't be opened.
+        let fallback_focus = self
+            .global_search
+            .snapshot
+            .as_ref()
+            .map(|s| s.focus)
+            .unwrap_or(InputFocus::SessionList);
+        self.global_search.active = false;
+        self.global_search.results.clear();
+        self.global_search.query.clear();
+        self.global_search.snapshot = None;
+        match result.target {
+            search::SearchTarget::Session { index } => {
+                if index < self.sessions.len() {
+                    self.active_index = index;
+                    self.focus = InputFocus::Terminal;
+                } else {
+                    self.focus = fallback_focus;
+                }
+            }
+            search::SearchTarget::Task { id } => {
+                self.show_tasks_panel = true;
+                self.refresh_tasks();
+                if let Some(pos) = self
+                    .filtered_task_indices
+                    .iter()
+                    .position(|&i| self.cached_tasks.get(i).map(|t| t.id) == Some(id))
+                {
+                    self.task_panel_index = pos;
+                }
+                self.focus = InputFocus::TaskList;
+            }
+            search::SearchTarget::Automation { id } => {
+                if let Some(pos) = self.cached_automations.iter().position(|a| a.id == id) {
+                    self.automation_panel_index = pos;
+                }
+                self.focus = InputFocus::Automations;
+                self.refresh_automation_view();
+            }
+            search::SearchTarget::File { root: _, path } => {
+                self.show_file_viewer = true;
+                self.rebuild_file_viewer_for_active();
+                self.file_viewer.reveal_path(&path);
+                self.focus = InputFocus::FileViewer;
+            }
+        }
+        self.resize_sessions_to_content_area();
+    }
+
     /// Refresh the cached automations from the database.
     fn refresh_automations(&mut self) {
         match self.db.list_automations() {
@@ -2962,7 +3471,9 @@ impl App {
         let terminal = layout::compute_layout(
             area,
             self.show_info_panel,
+            self.show_tasks_panel,
             self.show_file_viewer,
+            self.global_search.active,
             self.cached_automations.len(),
         )
         .terminal;
@@ -3814,6 +4325,21 @@ mod tests {
         assert!(!app.show_info_panel);
     }
 
+    #[test]
+    fn f5_toggles_tasks_panel() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(160, 40));
+        assert!(!app.show_tasks_panel);
+        // F5 shows + focuses the tasks panel (like F3 for the file viewer).
+        app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
+        assert!(app.show_tasks_panel);
+        assert_eq!(app.focus, InputFocus::TaskList);
+        // F5 again hides it and drops focus back to the session list.
+        app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
+        assert!(!app.show_tasks_panel);
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
     fn session_parser_size(app: &App, index: usize) -> (u16, u16) {
         let parser = app.sessions[index].parser.lock().unwrap();
         parser.screen().size()
@@ -3867,6 +4393,311 @@ mod tests {
         assert_eq!(app.focus, InputFocus::Terminal);
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    #[test]
+    fn ctrl_l_includes_tasks_panel_when_visible() {
+        let mut app = app_with_sessions(1);
+        // With the tasks panel showing, the cycle is
+        // SessionList → Terminal → TaskList → SessionList (no file viewer).
+        app.show_tasks_panel = true;
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Terminal);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::TaskList);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        // Ctrl+H from the tasks panel steps back to the terminal.
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL); // → Terminal
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL); // → TaskList
+        assert_eq!(app.focus, InputFocus::TaskList);
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::Terminal);
+    }
+
+    #[test]
+    fn ctrl_l_skips_tasks_panel_when_hidden() {
+        let mut app = app_with_sessions(1);
+        // Panel off → TaskList is not a cycle stop.
+        app.show_tasks_panel = false;
+        app.focus = InputFocus::Terminal;
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    // --- In-pane task editing workflow ---
+
+    #[test]
+    fn task_n_opens_central_pane_editor() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::TaskList;
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        // n starts a new task in the central-pane editor (not a modal).
+        assert_eq!(app.focus, InputFocus::TaskEditor);
+        assert!(app.task_editor.is_some());
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
+    #[test]
+    fn task_enter_edits_existing_in_pane_and_esc_returns() {
+        let mut app = app_with_sessions(1);
+        app.db
+            .create_task(&crate::storage::tasks::NewTask::local("fix bug"))
+            .unwrap();
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+        // Enter opens the editor in the central pane for the selected task.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::TaskEditor);
+        assert!(app.task_editor.as_ref().unwrap().editing_id.is_some());
+        // Esc discards and returns to the tasks panel.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::TaskList);
+    }
+
+    #[test]
+    fn task_editor_save_persists_and_returns_to_panel() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::TaskList;
+        // New task → type a title → Enter saves.
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        for c in "ship it".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::TaskList);
+        // The task was persisted.
+        let tasks = app.db.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "ship it");
+    }
+
+    #[test]
+    fn task_editor_e_chord_edits_not_global_binding() {
+        // `e` inside the editor must edit the title, not fire the file-viewer
+        // toggle / other global binding (capture-before-global).
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::TaskList;
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        assert_eq!(app.task_editor.as_ref().unwrap().title.value(), "e");
+        assert_eq!(app.focus, InputFocus::TaskEditor);
+    }
+
+    // --- Global search (Ctrl+A, also Ctrl+/) tests ---
+
+    #[test]
+    fn ctrl_a_opens_global_search() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::SessionList;
+        // Ctrl+A is the reliable default binding.
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(app.global_search.active);
+        assert_eq!(app.focus, InputFocus::GlobalSearch);
+        // Esc closes and restores the previous focus.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.global_search.active);
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    #[test]
+    fn ctrl_slash_encodings_open_global_search() {
+        // The literal intercept opens search on every Ctrl+/ encoding terminals
+        // emit (`/`, `_`, `7`), but only with the CONTROL modifier present.
+        for c in ['/', '_', '7'] {
+            let mut app = app_with_sessions(1);
+            app.focus = InputFocus::SessionList;
+            app.handle_key(KeyCode::Char(c), KeyModifiers::CONTROL);
+            assert!(app.global_search.active, "Ctrl+{c} should open search");
+        }
+        // A bare digit still types normally (no modifier → not intercepted).
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Char('7'), KeyModifiers::NONE);
+        assert!(!app.global_search.active, "bare 7 must not open search");
+    }
+
+    #[test]
+    fn global_search_matches_session_name() {
+        let mut app = app_with_sessions(2);
+        app.sessions[0].info.name = "alpha".into();
+        app.sessions[1].info.name = "bravo".into();
+        app.open_global_search();
+        for c in "brav".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        let hit = app
+            .global_search
+            .results
+            .iter()
+            .find(|r| matches!(r.kind, search::SearchKind::Session))
+            .expect("a session result");
+        assert_eq!(hit.label, "bravo");
+        assert_eq!(hit.target, search::SearchTarget::Session { index: 1 });
+    }
+
+    #[test]
+    fn global_search_matches_task_and_automation() {
+        let mut app = app_with_sessions(1);
+        let tid = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("fix the widget"))
+            .unwrap();
+        app.refresh_tasks();
+        let new = crate::storage::automations::NewAutomation {
+            name: "widget-nightly".into(),
+            enabled: true,
+            schedule: crate::session::AutomationSchedule::Once { at: 0 },
+            timezone: None,
+            action: crate::session::AutomationAction::Send {
+                session_id: SessionId::default(),
+            },
+            prompt: "go".into(),
+            next_run_at: None,
+        };
+        let aid = app.db.create_automation(&new).unwrap();
+        app.refresh_automations();
+
+        app.open_global_search();
+        for c in "widget".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(app
+            .global_search
+            .results
+            .iter()
+            .any(|r| r.target == search::SearchTarget::Task { id: tid }));
+        assert!(app
+            .global_search
+            .results
+            .iter()
+            .any(|r| r.target == search::SearchTarget::Automation { id: aid }));
+    }
+
+    #[test]
+    fn global_search_content_match_finds_session() {
+        let mut app = app_with_sessions(2);
+        app.sessions[0].info.name = "one".into();
+        app.sessions[1].info.name = "two".into();
+        // Write a distinctive token into session 1's buffer.
+        {
+            let mut parser = app.sessions[1].parser.lock().unwrap();
+            parser.process(b"deploy failed: exit 1\r\n");
+        }
+        let snippet = app.session_content_match("deploy failed", 1);
+        assert!(snippet.is_some(), "content scan should find the token");
+        // The full content-rebuild path includes it as a Session result.
+        app.open_global_search();
+        for c in "deploy failed".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.recompute_global_search_content();
+        assert!(app.global_search.results.iter().any(|r| {
+            r.target == search::SearchTarget::Session { index: 1 } && r.snippet.is_some()
+        }));
+    }
+
+    #[test]
+    fn global_search_enter_switches_active_index() {
+        let mut app = app_with_sessions(2);
+        app.sessions[0].info.name = "alpha".into();
+        app.sessions[1].info.name = "bravo".into();
+        app.active_index = 0;
+        app.open_global_search();
+        for c in "bravo".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // Select the first (only) session result and activate.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.global_search.active);
+        assert_eq!(app.active_index, 1);
+        assert_eq!(app.focus, InputFocus::Terminal);
+    }
+
+    #[test]
+    fn global_search_empty_query_has_no_results() {
+        let mut app = app_with_sessions(1);
+        app.open_global_search();
+        assert!(app.global_search.results.is_empty());
+    }
+
+    #[test]
+    fn global_search_previews_session_while_typing_and_navigating() {
+        let mut app = app_with_sessions(3);
+        app.sessions[0].info.name = "alpha".into();
+        app.sessions[1].info.name = "bravo".into();
+        app.sessions[2].info.name = "bronco".into();
+        app.active_index = 0;
+        app.open_global_search();
+        // Typing "br" matches bravo + bronco; the preview moves to the first.
+        for c in "br".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.active_index, 1, "preview follows the top result");
+        // Down moves the preview to the next matching session.
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.active_index, 2, "preview follows ↓ selection");
+        // Focus stays in the search box during preview.
+        assert_eq!(app.focus, InputFocus::GlobalSearch);
+    }
+
+    #[test]
+    fn global_search_cancel_restores_previous_state() {
+        let mut app = app_with_sessions(3);
+        app.sessions[0].info.name = "alpha".into();
+        app.sessions[1].info.name = "bravo".into();
+        app.sessions[2].info.name = "bronco".into();
+        app.active_index = 0;
+        app.focus = InputFocus::Terminal;
+        let tasks_before = app.show_tasks_panel;
+
+        app.open_global_search();
+        for c in "bro".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // Preview moved the active session away from 0.
+        assert_ne!(app.active_index, 0);
+
+        // Esc cancels → everything snaps back to the pre-search state.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.global_search.active);
+        assert_eq!(app.active_index, 0, "active session restored");
+        assert_eq!(app.focus, InputFocus::Terminal, "focus restored");
+        assert_eq!(app.show_tasks_panel, tasks_before, "panel toggles restored");
+    }
+
+    #[test]
+    fn global_search_commit_keeps_jump_no_restore() {
+        let mut app = app_with_sessions(2);
+        app.sessions[0].info.name = "alpha".into();
+        app.sessions[1].info.name = "bravo".into();
+        app.active_index = 0;
+        app.open_global_search();
+        for c in "bravo".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        // Committed: snapshot dropped, jump kept (not restored to 0).
+        assert!(app.global_search.snapshot.is_none());
+        assert_eq!(app.active_index, 1);
+    }
+
+    #[test]
+    fn global_search_query_gates_live_highlighting() {
+        let mut app = app_with_sessions(1);
+        // Inactive → no live-highlight query.
+        assert_eq!(app.global_search_query(), None);
+        app.open_global_search();
+        // Active but empty query → still None (panels render normally).
+        assert_eq!(app.global_search_query(), None);
+        for c in "lo".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.global_search_query(), Some("lo"));
+        app.close_global_search();
+        assert_eq!(app.global_search_query(), None);
     }
 
     // --- Context-sensitive Ctrl+J/K tests ---

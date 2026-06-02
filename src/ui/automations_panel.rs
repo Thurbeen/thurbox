@@ -5,14 +5,14 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
 use super::theme::Theme;
-use super::FocusLevel;
+use super::{truncate_ellipsis, FocusLevel};
 
 /// One row in the automations pane.
 pub struct AutomationPaneEntry {
@@ -20,12 +20,19 @@ pub struct AutomationPaneEntry {
     /// e.g. `"daily · spawn · in 3h"`.
     pub summary: String,
     pub enabled: bool,
+    /// Byte offsets in `name` matched by the active global-search query.
+    pub match_positions: Vec<usize>,
+    /// When a global search is active, rows that don't match are dimmed.
+    pub dimmed: bool,
 }
 
 pub struct AutomationsPaneState<'a> {
     pub entries: &'a [AutomationPaneEntry],
     pub selected: usize,
     pub focus: FocusLevel,
+    /// While global search previews an automation here, show the selected row
+    /// highlighted (not dimmed) even though the pane isn't focused.
+    pub preview_selected: bool,
 }
 
 pub fn render_automations_pane(frame: &mut Frame, area: Rect, state: &AutomationsPaneState<'_>) {
@@ -62,36 +69,34 @@ pub fn render_automations_pane(frame: &mut Frame, area: Rect, state: &Automation
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let selected = focused && i == state.selected;
+            let selected = (focused || state.preview_selected) && i == state.selected;
             let marker = if e.enabled { "●" } else { "○" };
-            let text = truncate(&format!(" {marker} {} — {} ", e.name, e.summary), width);
-            if selected {
-                Line::from(Span::styled(text, Theme::selected_item()))
+            let prefix = format!(" {marker} ");
+            let tail = format!(" — {} ", e.summary);
+            // Reserve room for the prefix + tail so the (highlighted) name fits.
+            let name_budget = width
+                .saturating_sub(prefix.chars().count())
+                .saturating_sub(tail.chars().count());
+            let name = truncate_ellipsis(&e.name, name_budget);
+
+            // Matched characters are layered on top of this base (see
+            // `row_base_style`), so a selected/previewed row keeps its
+            // fuzzy-match highlight (mirrors the session list + tasks pane).
+            let normal = Style::default().fg(if e.enabled {
+                Theme::text_secondary()
             } else {
-                let mut style = Style::default().fg(if e.enabled {
-                    Theme::text_secondary()
-                } else {
-                    Theme::text_muted()
-                });
-                if !focused && i == state.selected {
-                    style = style.add_modifier(Modifier::DIM);
-                }
-                Line::from(Span::styled(text, style))
-            }
+                Theme::text_muted()
+            });
+            let base = super::highlight::row_base_style(selected, e.dimmed, normal);
+            let mut spans = vec![Span::styled(prefix, base)];
+            let positions: &[usize] = if e.dimmed { &[] } else { &e.match_positions };
+            spans.extend(super::highlight::highlighted_spans_owned(
+                &name, positions, base,
+            ));
+            spans.push(Span::styled(tail, base));
+            Line::from(spans)
         })
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    if s.chars().count() > max {
-        let t: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{t}…")
-    } else {
-        s.to_string()
-    }
 }

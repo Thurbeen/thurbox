@@ -16,8 +16,9 @@ use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
     agent_picker_modal, automation_editor_modal, automations_list_modal, automations_panel,
-    branch_selector_modal, file_viewer, info_panel, layout, project_list, restore_sessions_modal,
-    session_name_modal, status_bar, terminal_view, theme_picker_modal, worktree_name_modal,
+    branch_selector_modal, file_viewer, global_search, info_panel, layout, project_list,
+    restore_sessions_modal, session_name_modal, status_bar, task_editor_modal, tasks_panel,
+    terminal_view, theme_picker_modal, worktree_name_modal,
 };
 
 use super::{App, InputFocus, TerminalView};
@@ -27,7 +28,9 @@ impl App {
         let areas = layout::compute_layout(
             frame.area(),
             self.show_info_panel,
+            self.show_tasks_panel,
             self.show_file_viewer,
+            self.global_search.active,
             self.cached_automations.len(),
         );
 
@@ -35,8 +38,22 @@ impl App {
         self.render_left_panel(frame, areas.left_panel);
         self.render_automations_pane(frame, areas.automations_panel);
         self.render_info_panel(frame, areas.info_panel);
+        self.render_tasks_panel(frame, areas.tasks_panel);
         self.render_file_viewer(frame, areas.file_viewer);
         self.render_central_pane(frame, areas.terminal);
+        if let Some(search_area) = areas.global_search {
+            let gs = &self.global_search;
+            global_search::render_global_search(
+                frame,
+                search_area,
+                &global_search::GlobalSearchView {
+                    query: gs.query.value(),
+                    cursor: gs.query.cursor_pos(),
+                    results: &gs.results,
+                    selected: gs.selected,
+                },
+            );
+        }
         self.render_footer(frame, areas.footer);
         self.render_modals(frame);
         self.repaint_theme_background(frame);
@@ -74,13 +91,27 @@ impl App {
 
         let session_elapsed_buf = self.session_elapsed_buf.clone();
 
+        // While the global-search strip is open, highlight the session list from
+        // the global query (live). Otherwise there are no match positions (the
+        // session list has no local search of its own anymore). Own the query so
+        // it doesn't conflict with the `&mut session_list_state` borrow below.
+        let global_query: Option<String> = self.global_search_query().map(|q| q.to_string());
+        let global_match_positions: Vec<Option<project_list::SessionMatch>> = match &global_query {
+            Some(q) => self
+                .sessions
+                .iter()
+                .map(|s| session_fuzzy(q, &s.info))
+                .collect(),
+            None => Vec::new(),
+        };
+
         // Pin admin sessions to the top of the list. All parallel arrays
         // (elapsed, match_positions) and active_index are remapped so they
         // stay aligned with the rendered order.
         let ordered = project_list::OrderedSessions::new(
             &all_sessions,
             &session_elapsed_buf,
-            &self.session_match_positions,
+            &global_match_positions,
             self.active_index,
         );
 
@@ -105,12 +136,8 @@ impl App {
         // context is active — the active session is irrelevant there.
         let show_selection = !in_automation_context;
 
-        let match_count = self
-            .session_match_positions
-            .iter()
-            .filter(|m| m.is_some())
-            .count();
-        let total_count = ordered.sessions.len();
+        // A (global) search is active iff there's a query — non-matching rows dim.
+        let session_search_active = global_query.is_some();
 
         project_list::render_left_panel(
             frame,
@@ -122,13 +149,9 @@ impl App {
                 session_elapsed_ms: &ordered.elapsed_ms,
                 session_focus: list_focus,
                 session_list_state: &mut self.session_list_state,
-                search_query: &self.search_input.buffer,
-                search_active: self.search_active,
-                search_cursor: self.search_input.cursor,
+                search_query: global_query.as_deref().unwrap_or(""),
                 session_match_positions: &ordered.match_positions,
-                session_search_active: !self.session_match_positions.is_empty(),
-                match_count,
-                total_count,
+                session_search_active,
                 headers: &ordered.headers,
             },
         );
@@ -140,13 +163,20 @@ impl App {
             return;
         };
         let now = crate::sync::current_time_millis();
+        let search = self.global_search_query();
         let entries: Vec<automations_panel::AutomationPaneEntry> = self
             .cached_automations
             .iter()
-            .map(|a| automations_panel::AutomationPaneEntry {
-                name: a.name.clone(),
-                summary: super::format_automation_summary(a, now),
-                enabled: a.enabled,
+            .map(|a| {
+                let m = search.and_then(|q| crate::fuzzy::fuzzy_match(q, &a.name));
+                automations_panel::AutomationPaneEntry {
+                    name: a.name.clone(),
+                    summary: super::format_automation_summary(a, now),
+                    enabled: a.enabled,
+                    match_positions: m.as_ref().map(|m| m.positions.clone()).unwrap_or_default(),
+                    // When searching, rows that didn't match are dimmed.
+                    dimmed: search.is_some() && m.is_none(),
+                }
             })
             .collect();
         let focus = match self.focus {
@@ -161,6 +191,8 @@ impl App {
         let selected = self
             .automation_panel_index
             .min(entries.len().saturating_sub(1));
+        let preview_selected =
+            self.global_search_preview_kind() == Some(crate::app::search::SearchKind::Automation);
         automations_panel::render_automations_pane(
             frame,
             auto_area,
@@ -168,6 +200,7 @@ impl App {
                 entries: &entries,
                 selected,
                 focus,
+                preview_selected,
             },
         );
     }
@@ -201,6 +234,51 @@ impl App {
             Some(&self.system_metrics),
             &automation_entries,
             agent_usage,
+        );
+    }
+
+    /// Render the tasks panel column (when present).
+    fn render_tasks_panel(&self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else {
+            return;
+        };
+        let search = self.global_search_query();
+        let entries: Vec<tasks_panel::TaskPaneEntry> = self
+            .filtered_task_indices
+            .iter()
+            .filter_map(|&i| self.cached_tasks.get(i))
+            .map(|t| {
+                let title = truncate_str(&t.title, 40);
+                // Match against the displayed (truncated) title so highlight
+                // byte offsets stay valid.
+                let m = search.and_then(|q| crate::fuzzy::fuzzy_match(q, &title));
+                tasks_panel::TaskPaneEntry {
+                    title,
+                    status: t.status,
+                    action_summary: task_action_summary(t),
+                    match_positions: m.as_ref().map(|m| m.positions.clone()).unwrap_or_default(),
+                    dimmed: search.is_some() && m.is_none(),
+                }
+            })
+            .collect();
+        let focus = match self.focus {
+            InputFocus::TaskList => crate::ui::FocusLevel::Focused,
+            // While the central-pane editor is focused, keep the panel "active"
+            // so the row being edited stays marked (like the automations pane).
+            InputFocus::TaskEditor => crate::ui::FocusLevel::Active,
+            _ => crate::ui::FocusLevel::Inactive,
+        };
+        let preview_selected =
+            self.global_search_preview_kind() == Some(crate::app::search::SearchKind::Task);
+        tasks_panel::render_tasks_panel(
+            frame,
+            area,
+            &tasks_panel::TaskPaneState {
+                entries: &entries,
+                selected: self.task_panel_index,
+                focus,
+                preview_selected,
+            },
         );
     }
 
@@ -238,6 +316,13 @@ impl App {
             self.render_automation_workspace(frame, terminal);
             return;
         }
+        // In the tasks context the central pane shows the task editor (a live
+        // preview while the panel is focused, editable once the editor is) with
+        // the task's details beneath it.
+        if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
+            self.render_task_workspace(frame, terminal);
+            return;
+        }
 
         let terminal_focus = match self.focus {
             InputFocus::Terminal => crate::ui::FocusLevel::Focused,
@@ -245,6 +330,9 @@ impl App {
             | InputFocus::Automations
             | InputFocus::AutomationEditor
             | InputFocus::AutomationRunHistory
+            | InputFocus::TaskList
+            | InputFocus::TaskEditor
+            | InputFocus::GlobalSearch
             | InputFocus::FileViewer => crate::ui::FocusLevel::Active,
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
@@ -281,9 +369,12 @@ impl App {
             InputFocus::Automations => "Automations",
             InputFocus::AutomationEditor => "Edit Automation",
             InputFocus::AutomationRunHistory => "Run history",
+            InputFocus::TaskList => "Tasks",
+            InputFocus::TaskEditor => "Edit Task",
             InputFocus::Terminal if is_shell_view => "Shell",
             InputFocus::Terminal => "Terminal",
             InputFocus::FileViewer => "Files",
+            InputFocus::GlobalSearch => "Search",
         };
         status_bar::render_footer(
             frame,
@@ -601,6 +692,121 @@ impl App {
             );
         }
     }
+
+    /// Render the task editor in the central pane (a live preview while the
+    /// tasks panel is focused, editable once the editor is focused) with the
+    /// task's read-only details beneath it. Mirrors
+    /// [`Self::render_automation_workspace`].
+    fn render_task_workspace(&self, frame: &mut Frame, area: Rect) {
+        let editing = self.focus == InputFocus::TaskEditor;
+
+        let Some(m) = self.task_editor.as_ref() else {
+            // Nothing scoped (an empty panel): render a create hint.
+            let block = ratatui::widgets::Block::default()
+                .title(" Task ")
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_style(Style::default().fg(if editing {
+                    Theme::border_focused()
+                } else {
+                    Theme::border_unfocused()
+                }));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "No tasks yet — press n to create one.",
+                    Style::default().fg(Theme::text_muted()),
+                ))),
+                inner,
+            );
+            return;
+        };
+
+        // Show the details panel for an existing (scoped) task only.
+        let scoped = m
+            .editing_id
+            .and_then(|id| self.cached_tasks.iter().find(|t| t.id == id));
+
+        let (editor_area, detail_area) = if scoped.is_some() {
+            let editor_h = (task_editor_modal::visible_fields(m.action).len() as u16 + 4)
+                .min(area.height.saturating_sub(7));
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(editor_h), Constraint::Min(3)])
+                .split(area);
+            (rows[0], Some(rows[1]))
+        } else {
+            (area, None)
+        };
+
+        task_editor_modal::render_task_editor_into(
+            frame,
+            editor_area,
+            &task_editor_modal::TaskEditorState {
+                editing: m.editing_id.is_some(),
+                field: m.field,
+                status: m.status,
+                action: m.action,
+                title: m.title.value(),
+                repo: m.repo.value(),
+                worktree: m.worktree.value(),
+                base: m.base.value(),
+                agent: m.agent.value(),
+                target_session: m.selected_target().map(|(_, n)| n.as_str()),
+                focused: editing,
+            },
+        );
+
+        if let (Some(detail_area), Some(task)) = (detail_area, scoped) {
+            crate::ui::task_detail::render_task_detail(
+                frame,
+                detail_area,
+                &crate::ui::task_detail::TaskDetail {
+                    linkage: task_linkage(task),
+                    status: task.status.label(),
+                    source: &task.source,
+                    created: format_time_ago(task.created_at),
+                    updated: format_time_ago(task.updated_at),
+                },
+            );
+        }
+    }
+}
+
+/// First 8 chars of a session UUID — enough to identify it in a compact label.
+fn short_session_id(session_id: &crate::session::SessionId) -> String {
+    session_id.to_string().chars().take(8).collect()
+}
+
+/// The final path component of a repo (e.g. `myrepo`), falling back to the full
+/// path when it has no file name.
+fn repo_display_name(repo_path: &std::path::Path) -> String {
+    repo_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| repo_path.to_string_lossy().into_owned())
+}
+
+/// One-line description of a task's agent linkage for the details panel.
+fn task_linkage(task: &crate::session::Task) -> String {
+    use crate::session::AutomationAction;
+    match &task.action {
+        None => "local todo".to_string(),
+        Some(AutomationAction::Send { session_id }) => {
+            format!("send → {}", short_session_id(session_id))
+        }
+        Some(AutomationAction::Spawn {
+            repo_path,
+            worktree_branch,
+            ..
+        }) => {
+            let repo = repo_display_name(repo_path);
+            match worktree_branch {
+                Some(b) => format!("spawn → {repo}#{b}"),
+                None => format!("spawn → {repo}"),
+            }
+        }
+    }
 }
 
 /// Live preview of when the editor's current schedule will next fire, or the
@@ -801,6 +1007,49 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         let truncated: String = s.chars().take(max_len.saturating_sub(3)).collect();
         format!("{truncated}...")
+    }
+}
+
+/// Fuzzy-match a query against a session's fields (name/agent/branch/cwd/status),
+/// returning highlight positions per field — drives live session-list
+/// highlighting from the global-search query.
+fn session_fuzzy(query: &str, info: &SessionInfo) -> Option<project_list::SessionMatch> {
+    let name = crate::fuzzy::fuzzy_match(query, &info.name).map(|m| m.positions);
+    let agent = crate::fuzzy::fuzzy_match(query, &info.agent).map(|m| m.positions);
+    let branch = info
+        .worktrees
+        .first()
+        .and_then(|wt| crate::fuzzy::fuzzy_match(query, &wt.branch))
+        .map(|m| m.positions);
+    let cwd = info
+        .repo_display_names
+        .iter()
+        .find_map(|n| crate::fuzzy::fuzzy_match(query, n))
+        .map(|m| m.positions);
+    let status_str = info.status.to_string();
+    let status = crate::fuzzy::fuzzy_match(query, &status_str).map(|m| m.positions);
+    project_list::SessionMatch::from_matches(name, agent, branch, cwd, status)
+}
+
+/// One-line summary of a task's agent linkage, shown dimmed beneath its title.
+fn task_action_summary(task: &crate::session::Task) -> String {
+    use crate::session::AutomationAction;
+    match &task.action {
+        None => "local".to_string(),
+        Some(AutomationAction::Send { session_id }) => {
+            format!("→ send: {}", short_session_id(session_id))
+        }
+        Some(AutomationAction::Spawn {
+            repo_path,
+            worktree_branch,
+            ..
+        }) => {
+            let repo = repo_display_name(repo_path);
+            match worktree_branch {
+                Some(b) => format!("→ spawn: {repo}#{b}"),
+                None => format!("→ spawn: {repo}"),
+            }
+        }
     }
 }
 

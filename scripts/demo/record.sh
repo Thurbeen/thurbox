@@ -9,6 +9,8 @@
 #   * thurbox-theme.{gif,mp4}           (theme.tape)
 #   * thurbox-session-creation.{gif,mp4}(session-creation.tape)
 #   * automations-demo.{gif,mp4}        (automations.tape)
+#   * tasks-demo.{gif,mp4}              (tasks.tape)
+#   * search-demo.{gif,mp4}             (search.tape)
 #
 # Every clip drives the actual `claude`, `opencode`, `codex` and `gemini` CLIs —
 # one per thurbox session — to showcase real multi-agent orchestration. No prompt
@@ -36,8 +38,9 @@ set -eu
 
 # Tapes to record (stems of scripts/demo/<stem>.tape), hero first. `agents` is
 # the combined hero demo (docs/media/thurbox-demo.*); the rest are per-feature
-# clips (`automations` -> automations-demo.*, others -> thurbox-<stem>.*).
-ALL_TAPES="agents file-manager info-panel theme session-creation automations"
+# clips (`automations` -> automations-demo.*, `tasks` -> tasks-demo.*, `search`
+# -> search-demo.*, others -> thurbox-<stem>.*).
+ALL_TAPES="agents file-manager info-panel theme session-creation automations tasks search"
 TAPES="${*:-$ALL_TAPES}"
 
 # thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
@@ -164,6 +167,25 @@ for a in $AGENTS; do
     "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
 done
 
+# --- Pre-seed a few tasks + an automation -----------------------------------
+# These give the `tasks` and `search` clips real content to render (the search
+# strip searches across sessions, tasks AND automations at once). Only needed
+# for those two tapes, but seeding is cheap and harmless for the others.
+if printf '%s ' $TAPES | grep -Eq '(^| )(tasks|search)( |$)'; then
+    echo "==> Seeding demo tasks + an automation"
+    # A plain local todo plus one already in progress, so the checkbox glyphs
+    # (todo/in-progress/done) all show in the list.
+    "$CLI_BIN" task create --title "Write integration tests" >/dev/null 2>&1 || true
+    "$CLI_BIN" task create --title "Triage failing CI" --status in_progress \
+        >/dev/null 2>&1 || true
+    "$CLI_BIN" task create --title "Document the search feature" >/dev/null 2>&1 || true
+    # An automation (spawn action, inferred from --repo) so the search demo has
+    # a matching automation result too.
+    "$CLI_BIN" automation create --name "nightly-triage" --trigger daily \
+        --time "09:00" --repo "$DEMO_REPO" \
+        --prompt "Triage failing CI and summarize blockers" >/dev/null 2>&1 || true
+fi
+
 # Give the real CLIs a moment to boot before VHS starts capturing. Each tape
 # relaunches the TUI against the same seeded sessions, so they only need to be
 # warm once.
@@ -194,6 +216,8 @@ for tape in $TAPES; do
     case "$tape" in
         agents)      echo "    thurbox-demo.{gif,mp4}" ;;
         automations) echo "    automations-demo.{gif,mp4}" ;;
+        tasks)       echo "    tasks-demo.{gif,mp4}" ;;
+        search)      echo "    search-demo.{gif,mp4}" ;;
         *)           echo "    thurbox-$tape.{gif,mp4}" ;;
     esac
 done

@@ -5,6 +5,8 @@ pub mod automations_list_modal;
 pub mod automations_panel;
 pub mod branch_selector_modal;
 pub mod file_viewer;
+pub mod global_search;
+pub mod highlight;
 pub mod info_panel;
 pub mod layout;
 pub mod links;
@@ -14,6 +16,9 @@ pub mod restore_sessions_modal;
 pub mod selection;
 pub mod session_name_modal;
 pub mod status_bar;
+pub mod task_detail;
+pub mod task_editor_modal;
+pub mod tasks_panel;
 pub mod terminal_view;
 pub mod theme;
 pub mod theme_picker_modal;
@@ -38,6 +43,23 @@ pub fn status_color(status: SessionStatus) -> Color {
         SessionStatus::Error => Theme::status_error(),
         SessionStatus::Attention => Theme::accent_bright(),
     }
+}
+
+/// Truncate `s` to at most `max` display columns, appending `…` when cut.
+///
+/// Counts by `char` (not bytes), reserving one column for the ellipsis.
+/// Returns an empty string when `max` is too small to show anything useful
+/// (`max <= 1`), since a lone `…` carries no information.
+pub fn truncate_ellipsis(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return String::new();
+    }
+    let kept: String = s.chars().take(max - 1).collect();
+    format!("{kept}…")
 }
 
 /// Tri-state focus level for panels.
@@ -489,6 +511,29 @@ mod tests {
 
     fn area(width: u16, height: u16) -> Rect {
         Rect::new(0, 0, width, height)
+    }
+
+    #[test]
+    fn truncate_ellipsis_keeps_short_strings_intact() {
+        assert_eq!(truncate_ellipsis("hello", 10), "hello");
+        assert_eq!(truncate_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_ellipsis_cuts_and_appends_ellipsis() {
+        assert_eq!(truncate_ellipsis("hello world", 5), "hell…");
+    }
+
+    #[test]
+    fn truncate_ellipsis_returns_empty_when_too_narrow() {
+        assert_eq!(truncate_ellipsis("hello", 1), "");
+        assert_eq!(truncate_ellipsis("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_ellipsis_counts_by_char_not_byte() {
+        // Multi-byte chars count as one column each.
+        assert_eq!(truncate_ellipsis("héllo wörld", 5), "héll…");
     }
 
     #[test]

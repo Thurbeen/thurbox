@@ -247,6 +247,58 @@ impl FileViewerState {
         Some((node.path.clone(), root.path.clone()))
     }
 
+    /// Expand the ancestors of `target` and move the selection onto it. Used by
+    /// the global search to jump to a file/dir result. Best-effort: silently
+    /// no-ops if `target` isn't under any current root.
+    pub fn reveal_path(&mut self, target: &Path) {
+        // Find the root that contains `target`, then expand each ancestor dir.
+        for root_idx in 0..self.roots.len() {
+            let root_path = self.roots[root_idx].path.clone();
+            let Ok(rel) = target.strip_prefix(&root_path) else {
+                continue;
+            };
+            // Walk the components, expanding each directory level.
+            let mut node = &mut self.roots[root_idx];
+            let mut current = root_path.clone();
+            node.expanded = true;
+            for comp in rel.components() {
+                current.push(comp);
+                if node.children.is_none() {
+                    node.children = Some(read_dir_sorted(&node.path));
+                }
+                let Some(children) = node.children.as_mut() else {
+                    break;
+                };
+                let Some(pos) = children.iter().position(|c| c.path == current) else {
+                    break;
+                };
+                node = &mut children[pos];
+                if node.is_dir {
+                    node.expanded = true;
+                }
+            }
+            // Now locate the target in the flattened view and select it.
+            if let Some(row) = self.flatten().iter().position(|r| {
+                self.path_for_index(&r.index_path)
+                    .map(|p| p == target)
+                    .unwrap_or(false)
+            }) {
+                self.selected = row;
+            }
+            return;
+        }
+    }
+
+    /// Resolve a flat row's `index_path` back to its filesystem path.
+    fn path_for_index(&self, index_path: &[usize]) -> Option<PathBuf> {
+        let root_idx = *index_path.first()?;
+        let mut node = self.roots.get(root_idx)?;
+        for idx in &index_path[1..] {
+            node = node.children.as_ref()?.get(*idx)?;
+        }
+        Some(node.path.clone())
+    }
+
     /// Rebuild roots from the active session's worktrees + additional_dirs.
     /// Selection is reset to 0.
     pub fn rebuild_from_session(&mut self, info: &SessionInfo) {
@@ -446,6 +498,49 @@ fn short_root_label(path: &Path) -> String {
     path.file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Enumerate `(root, path, name)` triples under a session's roots for the global
+/// search Files group: a bounded walk (same node/depth limits as the in-viewer
+/// search) so a huge tree can't stall the search strip. `name` is the file/dir
+/// basename used for matching + display.
+pub fn enumerate_paths(info: &SessionInfo) -> Vec<(PathBuf, PathBuf, String)> {
+    let mut out: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+    let mut budget = SEARCH_NODE_LIMIT;
+    for root in expected_root_paths(info) {
+        walk_paths(&root, &root, 0, &mut budget, &mut out);
+        if budget == 0 {
+            break;
+        }
+    }
+    out
+}
+
+fn walk_paths(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    budget: &mut usize,
+    out: &mut Vec<(PathBuf, PathBuf, String)>,
+) {
+    if depth > SEARCH_DEPTH_LIMIT || *budget == 0 {
+        return;
+    }
+    for node in read_dir_sorted(dir) {
+        if *budget == 0 {
+            return;
+        }
+        *budget -= 1;
+        let name = node
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out.push((root.to_path_buf(), node.path.clone(), name));
+        if node.is_dir {
+            walk_paths(root, &node.path, depth + 1, budget, out);
+        }
+    }
 }
 
 fn read_dir_sorted(path: &Path) -> Vec<FileNode> {

@@ -48,9 +48,10 @@ impl App {
             return;
         }
 
-        // Search input captures all keys when active
-        if self.search_active {
-            self.handle_search_key(code, mods);
+        // The global-search strip captures all input while open (typed chars
+        // edit the query; arrows/Enter/Esc navigate/activate/close).
+        if self.global_search.active {
+            self.handle_global_search_key(code, mods);
             return;
         }
 
@@ -78,6 +79,11 @@ impl App {
             InputFocus::Automations => self.handle_automations_pane_key(code),
             InputFocus::AutomationEditor => self.handle_automation_editor_pane_key(code, mods),
             InputFocus::AutomationRunHistory => self.handle_automation_run_history_key(code),
+            InputFocus::TaskList => self.handle_task_list_key(code),
+            InputFocus::TaskEditor => self.handle_task_editor_pane_key(code, mods),
+            // The global-search strip captures input earlier (before the global
+            // keybinding lookup), so this arm is effectively unreachable.
+            InputFocus::GlobalSearch => self.handle_global_search_key(code, mods),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
             InputFocus::FileViewer => self.handle_file_viewer_key(code, mods),
         }
@@ -114,6 +120,23 @@ impl App {
             return true;
         }
 
+        // Ctrl+/ is a *bonus* opener for global search (the reliable default is
+        // Ctrl+A — see `Action::GlobalSearch`). Terminals encode `Ctrl+/` as the
+        // C0 control 0x1F and surface it inconsistently: `Char('/')`, `Char('_')`,
+        // or `Char('7')`, each with the CONTROL modifier. Intercept all three
+        // here (only when the modifier survives — a bare `7` must still type a
+        // digit). Skipped while the strip is already open.
+        if mods.contains(KeyModifiers::CONTROL)
+            && matches!(
+                code,
+                KeyCode::Char('/') | KeyCode::Char('_') | KeyCode::Char('7')
+            )
+            && !self.global_search.active
+        {
+            self.open_global_search();
+            return true;
+        }
+
         false
     }
 
@@ -136,15 +159,17 @@ impl App {
         true
     }
 
-    /// The in-pane automation editor / run-history capture input like the
-    /// overlay modal — so editor chords (e.g. Ctrl+E to toggle enabled) reach
-    /// the form instead of firing a global binding (Ctrl+E = file viewer).
-    /// Focus navigation (Ctrl+L/H) and quit still pass through to the global
-    /// handler so you can move between panes. Returns `true` if consumed.
+    /// The in-pane automation/task editor + run-history capture input like the
+    /// overlay modal — so editor chords (e.g. `e`, `d`, Ctrl+E) reach the form
+    /// instead of firing a global binding. Focus navigation (Ctrl+L/H) and quit
+    /// still pass through to the global handler so you can move between panes.
+    /// Returns `true` if consumed.
     fn handle_automation_pane_capture(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         if !matches!(
             self.focus,
-            InputFocus::AutomationEditor | InputFocus::AutomationRunHistory
+            InputFocus::AutomationEditor
+                | InputFocus::AutomationRunHistory
+                | InputFocus::TaskEditor
         ) {
             return false;
         }
@@ -162,6 +187,7 @@ impl App {
         match self.focus {
             InputFocus::AutomationEditor => self.handle_automation_editor_pane_key(code, mods),
             InputFocus::AutomationRunHistory => self.handle_automation_run_history_key(code),
+            InputFocus::TaskEditor => self.handle_task_editor_pane_key(code, mods),
             _ => unreachable!(),
         }
         true
@@ -171,7 +197,9 @@ impl App {
     /// cycle *within* this ring; switching between the session and automation
     /// contexts is done with `j`/`k` in the left column (not the focus cycle).
     ///
-    /// - Session context: `SessionList → Terminal` (+ `FileViewer` when shown).
+    /// - Session context: `SessionList → Terminal` (+ `TaskList` then
+    ///   `FileViewer` when those panels are shown — each is a cycle stop while
+    ///   visible, exactly like the file viewer).
     /// - Automation context: `Automations → editor` (+ `run history` for an
     ///   existing automation).
     ///
@@ -189,13 +217,28 @@ impl App {
                 }
                 ring
             }
-            SessionList | Terminal | FileViewer => {
+            // The tasks panel joins the session ring so `Ctrl+L`/`Ctrl+H` move
+            // in and out of it like any other pane (it lives in the right column,
+            // not the left-column circular list). `Esc` still drops straight back
+            // to the session list.
+            SessionList | Terminal | FileViewer | TaskList => {
+                // Order mirrors the on-screen columns: terminal → tasks → files.
                 let mut ring = vec![SessionList, Terminal];
+                if self.show_tasks_panel {
+                    ring.push(TaskList);
+                }
                 if self.show_file_viewer {
                     ring.push(FileViewer);
                 }
                 ring
             }
+            // While editing a task in the central pane, the ring is
+            // `TaskList → editor` (like the automation editor): cycling out of
+            // the editor returns to the tasks panel, never off to a session.
+            TaskEditor => vec![TaskList, TaskEditor],
+            // The global-search strip is entered/left only via `Ctrl+/`/`Esc`,
+            // so `Ctrl+L`/`Ctrl+H` are no-ops while it's open.
+            GlobalSearch => vec![GlobalSearch],
         }
     }
 
@@ -219,6 +262,14 @@ impl App {
     fn on_focus_changed(&mut self) {
         if self.focus == InputFocus::AutomationRunHistory {
             self.automation_run_index = 0;
+        }
+        // Entering the tasks panel via the cycle: refresh the task list and the
+        // in-pane editor preview.
+        if self.focus == InputFocus::TaskList {
+            self.refresh_tasks();
+        }
+        if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
+            self.refresh_task_view();
         }
         self.refresh_automation_view();
     }
@@ -363,6 +414,157 @@ impl App {
         }
     }
 
+    /// Handle keys while editing the scoped task in the central pane. `Enter`
+    /// saves and returns to the tasks panel; `Esc` discards and returns. Field
+    /// navigation is the `TaskEditorModal`'s own. Mirrors
+    /// `handle_automation_editor_pane_key`.
+    fn handle_task_editor_pane_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let Some(editor) = self.task_editor.as_mut() else {
+            match code {
+                KeyCode::Char('n') => self.new_task_in_pane(),
+                KeyCode::Esc => self.focus = InputFocus::TaskList,
+                _ => {}
+            }
+            return;
+        };
+        match editor.handle_key(code, mods) {
+            super::modals::EditorOutcome::Continue => {}
+            super::modals::EditorOutcome::Save => {
+                let Some(editor) = self.task_editor.clone() else {
+                    return;
+                };
+                if self.save_task(&editor) {
+                    // A brand-new task lands at the top of the list.
+                    if editor.editing_id.is_none() {
+                        self.task_panel_index = 0;
+                    }
+                    self.focus = InputFocus::TaskList;
+                    self.refresh_task_view();
+                }
+            }
+            super::modals::EditorOutcome::Cancel => {
+                // Discard edits and restore the preview for the selection.
+                self.focus = InputFocus::TaskList;
+                self.refresh_task_view();
+            }
+        }
+    }
+
+    /// Handle keys while the tasks panel is focused: `j`/`k` select (and preview
+    /// the selected task in the central pane), `n` create, `e`/`Enter` open the
+    /// central-pane editor, `Space` cycles status, `r` triggers the agent action,
+    /// `d` deletes, `Esc` leaves. Searching is handled by the global `Ctrl+A`.
+    pub(crate) fn handle_task_list_key(&mut self, code: KeyCode) {
+        // Creating works regardless of whether the panel has entries.
+        if matches!(code, KeyCode::Char('n')) {
+            self.new_task_in_pane();
+            return;
+        }
+
+        let count = self.filtered_task_indices.len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down
+                if count > 0 && self.task_panel_index + 1 < count =>
+            {
+                self.task_panel_index += 1;
+                self.refresh_task_view();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {}
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.task_panel_index = self.task_panel_index.saturating_sub(1);
+                self.refresh_task_view();
+            }
+            KeyCode::Esc => {
+                self.focus = InputFocus::SessionList;
+                self.task_editor = None;
+            }
+            // Open the central-pane editor for the selected task. On an empty
+            // panel, start a new task instead.
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if count == 0 {
+                    self.new_task_in_pane();
+                } else {
+                    self.enter_task_editor();
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(task) = self.selected_task().cloned() {
+                    if let Err(e) = self.db.set_task_status(task.id, task.status.cycle()) {
+                        error!("Failed to cycle task {} status: {e}", task.id);
+                    }
+                    self.refresh_tasks();
+                    self.sync_task_editor();
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(task) = self.selected_task().cloned() {
+                    self.trigger_task(&task);
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(id) = self.selected_task().map(|t| t.id) {
+                    if let Err(e) = self.db.soft_delete_task(id) {
+                        error!("Failed to delete task {id}: {e}");
+                    }
+                    self.refresh_tasks();
+                    let new_count = self.filtered_task_indices.len();
+                    if new_count > 0 && self.task_panel_index >= new_count {
+                        self.task_panel_index = new_count - 1;
+                    }
+                    self.refresh_task_view();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle keys while the global-search strip is focused. Typed characters
+    /// edit the query (so plain `j`/`k` insert, like the other search inputs);
+    /// `Up`/`Down` and `Ctrl+P`/`Ctrl+N` move the selection; `Enter` activates
+    /// the selected result; `Esc` closes the strip.
+    fn handle_global_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        match code {
+            KeyCode::Esc => self.close_global_search(),
+            KeyCode::Enter => self.activate_global_search_result(),
+            KeyCode::Down => self.move_global_search_selection(1),
+            KeyCode::Up => self.move_global_search_selection(-1),
+            KeyCode::Char('n') if ctrl => self.move_global_search_selection(1),
+            KeyCode::Char('p') if ctrl => self.move_global_search_selection(-1),
+            KeyCode::Backspace => {
+                self.global_search.query.backspace();
+                self.on_global_search_query_changed();
+            }
+            KeyCode::Delete => {
+                self.global_search.query.delete();
+                self.on_global_search_query_changed();
+            }
+            KeyCode::Left => self.global_search.query.move_left(),
+            KeyCode::Right => self.global_search.query.move_right(),
+            KeyCode::Home => self.global_search.query.home(),
+            KeyCode::End => self.global_search.query.end(),
+            // Plain chars edit the query; ignore other Ctrl-chords.
+            KeyCode::Char(c) if !ctrl => {
+                self.global_search.query.insert(c);
+                self.on_global_search_query_changed();
+            }
+            _ => {}
+        }
+    }
+
+    /// Move the global-search selection by `delta`, clamped to the result range,
+    /// and live-preview the newly selected result.
+    fn move_global_search_selection(&mut self, delta: i32) {
+        let len = self.global_search.results.len();
+        if len == 0 {
+            self.global_search.selected = 0;
+            return;
+        }
+        let next = (self.global_search.selected as i32 + delta).clamp(0, len as i32 - 1);
+        self.global_search.selected = next as usize;
+        self.preview_global_search_result();
+    }
+
     fn handle_file_viewer_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         if self.file_viewer.search_active {
             self.handle_file_viewer_search_key(code, mods);
@@ -452,58 +654,6 @@ impl App {
             }
             KeyCode::Enter => {
                 self.focus = InputFocus::Terminal;
-            }
-            KeyCode::Char('/') => {
-                self.search_active = true;
-                self.search_input.buffer.clear();
-                self.search_input.cursor = 0;
-                self.session_match_positions.clear();
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        // Allow Ctrl+Q to quit even during search
-        if code == KeyCode::Char('q') && mods.contains(KeyModifiers::CONTROL) {
-            self.should_quit = true;
-            return;
-        }
-
-        match code {
-            KeyCode::Esc => {
-                // Cancel search and clear filter
-                self.clear_search();
-            }
-            KeyCode::Enter => {
-                // Confirm search: exit input mode but keep filter active
-                self.search_active = false;
-            }
-            KeyCode::Backspace => {
-                self.search_input.backspace();
-                self.recompute_search_filter();
-            }
-            KeyCode::Left => {
-                self.search_input.move_left();
-            }
-            KeyCode::Right => {
-                self.search_input.move_right();
-            }
-            KeyCode::Up => {
-                self.search_navigate_backward();
-            }
-            KeyCode::Down => {
-                self.search_navigate_forward();
-            }
-            KeyCode::Char('j') if mods.contains(KeyModifiers::CONTROL) => {
-                self.search_navigate_forward();
-            }
-            KeyCode::Char('k') if mods.contains(KeyModifiers::CONTROL) => {
-                self.search_navigate_backward();
-            }
-            KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
-                self.search_input.insert(c);
-                self.recompute_search_filter();
             }
             _ => {}
         }
@@ -879,9 +1029,19 @@ impl App {
                     self.handle_automations_pane_key(KeyCode::Char('d'));
                     true
                 }
-                // The editor / run-history capture their own keys earlier, so
-                // this is unreachable for them; yield just in case.
-                InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => false,
+                // On the tasks panel, Ctrl+D deletes the selected task (mirrors
+                // the panel's `d` key).
+                InputFocus::TaskList => {
+                    self.handle_task_list_key(KeyCode::Char('d'));
+                    true
+                }
+                // The editors / run-history / global search capture their own
+                // keys earlier, so this is unreachable for them; yield just in
+                // case.
+                InputFocus::AutomationEditor
+                | InputFocus::AutomationRunHistory
+                | InputFocus::TaskEditor
+                | InputFocus::GlobalSearch => false,
                 InputFocus::Terminal => false, // forward to PTY
             },
             Action::OpenInEditor => match self.focus {
@@ -932,13 +1092,11 @@ impl App {
                 true
             }
             Action::FocusBackward => {
-                self.clear_search();
                 self.focus = self.cycle_focus_backward();
                 self.on_focus_changed();
                 true
             }
             Action::FocusForward => {
-                self.clear_search();
                 self.focus = self.cycle_focus_forward();
                 self.on_focus_changed();
                 true
@@ -960,6 +1118,21 @@ impl App {
                 self.resize_sessions_to_content_area();
                 true
             }
+            Action::FocusTasks => {
+                // Toggle the tasks panel column, mirroring the file viewer
+                // (`ToggleFileViewer`): showing it also focuses it; hiding it
+                // drops focus back to the session list.
+                self.show_tasks_panel = !self.show_tasks_panel;
+                if self.show_tasks_panel {
+                    self.refresh_tasks();
+                    self.task_panel_index = 0;
+                    self.focus = InputFocus::TaskList;
+                } else if self.focus == InputFocus::TaskList {
+                    self.focus = InputFocus::SessionList;
+                }
+                self.resize_sessions_to_content_area();
+                true
+            }
             Action::ToggleFileViewer => {
                 self.show_file_viewer = !self.show_file_viewer;
                 if self.show_file_viewer {
@@ -968,6 +1141,10 @@ impl App {
                     self.focus = InputFocus::SessionList;
                 }
                 self.resize_sessions_to_content_area();
+                true
+            }
+            Action::GlobalSearch => {
+                self.open_global_search();
                 true
             }
         }
