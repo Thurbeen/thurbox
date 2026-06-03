@@ -882,6 +882,19 @@ impl TaskEditorModal {
     }
 
     /// The focused text field, or `None` for selector fields (adjusted with ←/→).
+    pub fn active_field(&self) -> Option<&TextInput> {
+        use TaskField::*;
+        Some(match self.field {
+            Repo => &self.repo,
+            Worktree => &self.worktree,
+            Base => &self.base,
+            Agent => &self.agent,
+            Title => &self.title,
+            Status | Action | Target => return None,
+        })
+    }
+
+    /// The focused text field, or `None` for selector fields (adjusted with ←/→).
     pub fn active_field_mut(&mut self) -> Option<&mut TextInput> {
         use TaskField::*;
         Some(match self.field {
@@ -1492,5 +1505,24 @@ mod tests {
         assert_eq!(m.status, crate::session::TaskStatus::InProgress);
         m.adjust(-1);
         assert_eq!(m.status, crate::session::TaskStatus::Todo);
+    }
+
+    #[test]
+    fn task_editor_active_field_tracks_focus_and_caret() {
+        let mut m = TaskEditorModal::new(Vec::new());
+
+        // Title is the default focus: typing moves its caret, and active_field()
+        // reports that same field so the renderer can draw the cursor in place.
+        m.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        m.handle_key(KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(m.active_field().map(|f| f.value()), Some("hi"));
+        assert_eq!(m.active_field().map(|f| f.cursor_pos()), Some(2));
+        // Moving left mid-text is reflected by the caret (the rendering bug).
+        m.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(m.active_field().map(|f| f.cursor_pos()), Some(1));
+
+        // Selector fields are not text inputs: active_field() is None.
+        m.field = TaskField::Status;
+        assert!(m.active_field().is_none());
     }
 }

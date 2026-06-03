@@ -14,6 +14,10 @@ pub struct TaskEditorState<'a> {
     pub status: TaskStatus,
     pub action: TaskActionKind,
     pub title: &'a str,
+    /// Caret position within the **active** text field, for drawing the in-text
+    /// cursor where editing is happening. Meaningful only when [`Self::field`]
+    /// is a typeable (non-selector) field and the editor is [`Self::focused`].
+    pub active_cursor: usize,
     pub repo: &'a str,
     pub worktree: &'a str,
     pub base: &'a str,
@@ -36,6 +40,7 @@ impl<'a> TaskEditorState<'a> {
             status: m.status,
             action: m.action,
             title: m.title.value(),
+            active_cursor: m.active_field().map(|f| f.cursor_pos()).unwrap_or(0),
             repo: m.repo.value(),
             worktree: m.worktree.value(),
             base: m.base.value(),
@@ -105,7 +110,10 @@ fn field_line<'a>(
         TaskField::Agent => ("agent", optional_display(state.agent), false),
     };
 
-    super::editor_field_line(label, value, selector, is_active_field)
+    // Every non-selector field is a typeable text input, so feed the active
+    // field's caret through to draw the block cursor where editing happens.
+    let cursor = (is_active_field && !selector).then_some(state.active_cursor);
+    super::editor_field_line_with_cursor(label, value, selector, is_active_field, cursor)
 }
 
 fn target_display(state: &TaskEditorState<'_>) -> String {

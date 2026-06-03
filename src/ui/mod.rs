@@ -82,9 +82,23 @@ pub fn render_editor_frame(frame: &mut Frame, area: Rect, title: &str, focused: 
 
 /// Render one editor field row: a left-aligned `label`, then its `value`. When
 /// `active` the row is prefixed with `▸` and bolded; `selector` values (adjusted
-/// with ←/→) are wrapped in `‹ ›`, while an active text value gets a trailing
-/// `_` cursor. Shared by the automation and task editor field renderers.
+/// with ←/→) are wrapped in `‹ ›`, while an active text value gets a block
+/// cursor. Shared by the automation and task editor field renderers.
+///
+/// This convenience form draws the cursor at the end of the value; use
+/// [`editor_field_line_with_cursor`] to place it at a specific caret position.
 pub fn editor_field_line<'a>(label: &str, value: String, selector: bool, active: bool) -> Line<'a> {
+    editor_field_line_with_cursor(label, value, selector, active, None)
+}
+
+/// Cursor-aware variant of [`editor_field_line`]. See its docs for `cursor`.
+pub fn editor_field_line_with_cursor<'a>(
+    label: &str,
+    value: String,
+    selector: bool,
+    active: bool,
+    cursor: Option<usize>,
+) -> Line<'a> {
     let prefix = if active { "▸ " } else { "  " };
     let value_style = if active {
         Style::default()
@@ -93,17 +107,38 @@ pub fn editor_field_line<'a>(label: &str, value: String, selector: bool, active:
     } else {
         Style::default().fg(Theme::text_primary())
     };
-    let display = if selector {
-        format!("‹ {value} ›")
+
+    let mut spans = vec![Span::styled(format!("{prefix}{label:<9}"), Theme::label())];
+
+    if selector {
+        spans.push(Span::styled(format!("‹ {value} ›"), value_style));
     } else if active {
-        format!("{value}_")
+        // Draw a real block cursor at the caret position so horizontal movement
+        // inside the text is visible. Fall back to a trailing block when no
+        // cursor is supplied (preserves the prior end-of-line affordance).
+        let chars: Vec<char> = value.chars().collect();
+        let caret = cursor.unwrap_or(chars.len()).min(chars.len());
+
+        let before: String = chars[..caret].iter().collect();
+        if !before.is_empty() {
+            spans.push(Span::styled(before, value_style));
+        }
+        let cursor_char = chars
+            .get(caret)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| " ".to_string());
+        spans.push(Span::styled(cursor_char, Theme::cursor()));
+        if caret < chars.len() {
+            let after: String = chars[caret + 1..].iter().collect();
+            if !after.is_empty() {
+                spans.push(Span::styled(after, value_style));
+            }
+        }
     } else {
-        value
-    };
-    Line::from(vec![
-        Span::styled(format!("{prefix}{label:<9}"), Theme::label()),
-        Span::styled(display, value_style),
-    ])
+        spans.push(Span::styled(value, value_style));
+    }
+
+    Line::from(spans)
 }
 
 /// Build a footer/hint [`Line`] from `(key, description)` pairs, styling keys
@@ -593,16 +628,37 @@ mod tests {
             line_text(&editor_field_line("repo", "x".into(), false, false)),
             "  repo     x"
         );
-        // Active text field gets a "▸" prefix and a trailing cursor "_".
+        // Active text field gets a "▸" prefix and a block cursor at the caret.
+        // With no cursor supplied the caret sits past the end, drawn as a
+        // trailing space-block.
         assert_eq!(
             line_text(&editor_field_line("repo", "x".into(), false, true)),
-            "▸ repo     x_"
+            "▸ repo     x "
         );
         // Selector values are wrapped in guillemets (no cursor even when active).
         assert_eq!(
             line_text(&editor_field_line("status", "todo".into(), true, true)),
             "▸ status   ‹ todo ›"
         );
+    }
+
+    #[test]
+    fn editor_field_line_with_cursor_draws_block_at_caret() {
+        // Caret in the middle: the character under the cursor is its own span,
+        // so the visible text is unchanged but split before/cursor/after.
+        let line = editor_field_line_with_cursor("title", "hello".into(), false, true, Some(2));
+        assert_eq!(line_text(&line), "▸ title    hello");
+        // Spans: label, "he", cursor "l", "lo".
+        assert_eq!(line.spans.len(), 4);
+        assert_eq!(line.spans[2].content.as_ref(), "l");
+
+        // Caret at end: a trailing space-block is appended after the value.
+        let line = editor_field_line_with_cursor("title", "hi".into(), false, true, Some(2));
+        assert_eq!(line_text(&line), "▸ title    hi ");
+
+        // Caret at start: cursor is the first character.
+        let line = editor_field_line_with_cursor("title", "ab".into(), false, true, Some(0));
+        assert_eq!(line.spans[1].content.as_ref(), "a");
     }
 
     #[test]
