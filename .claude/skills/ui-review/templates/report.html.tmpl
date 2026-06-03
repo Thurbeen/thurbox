@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    --bg: #11131a; --panel: #1a1d27; --border: #2a2f3d; --text: #e6e8ef;
+    --muted: #9aa3b2; --accent: #7aa2f7;
+    --blocker: #f7768e; --warning: #e0af68; --nit: #7dcfff;
+    --visual: #bb9af7; --usability: #9ece6a; --consistency: #e0af68; --accessibility: #7dcfff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 28px 32px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #161922, var(--bg));
+  }
+  header h1 { margin: 0 0 6px; font-size: 24px; }
+  header .meta { color: var(--muted); font-size: 13px; }
+  header .meta span { margin-right: 18px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 32px 64px; }
+  section.summary {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 22px; margin-bottom: 28px;
+  }
+  section.summary h2 { margin: 0 0 14px; font-size: 18px; }
+  .counts { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
+    border-radius: 999px; font-size: 13px; border: 1px solid var(--border);
+    background: #20242f;
+  }
+  .pill .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .recs { margin: 0; padding-left: 20px; }
+  .recs li { margin: 4px 0; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 0; }
+  .filters button {
+    cursor: pointer; border: 1px solid var(--border); background: #20242f;
+    color: var(--text); border-radius: 999px; padding: 4px 12px; font-size: 12px;
+  }
+  .filters button.off { opacity: 0.4; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; margin-bottom: 26px;
+  }
+  .card h3 { margin: 0; padding: 14px 18px; font-size: 16px; border-bottom: 1px solid var(--border); }
+  .card h3 .keys { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 8px; }
+  .shot { background: #000; text-align: center; }
+  .shot img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .findings { padding: 8px 18px 16px; }
+  .finding {
+    display: flex; gap: 12px; align-items: flex-start; padding: 12px 0;
+    border-top: 1px solid var(--border);
+  }
+  .finding:first-child { border-top: none; }
+  .finding .body { flex: 1; }
+  .finding .body .title { font-weight: 600; }
+  .finding .body .desc { color: var(--text); margin: 3px 0; }
+  .finding .body .fix { color: var(--muted); font-size: 13px; }
+  .finding .body .fix b { color: var(--text); }
+  .badge {
+    flex-shrink: 0; font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .04em; padding: 3px 8px; border-radius: 6px; color: #11131a;
+    min-width: 64px; text-align: center;
+  }
+  .badge.blocker { background: var(--blocker); }
+  .badge.warning { background: var(--warning); }
+  .badge.nit     { background: var(--nit); }
+  .lens {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid;
+    align-self: flex-start;
+  }
+  .lens.visual        { color: var(--visual); border-color: var(--visual); }
+  .lens.usability     { color: var(--usability); border-color: var(--usability); }
+  .lens.consistency   { color: var(--consistency); border-color: var(--consistency); }
+  .lens.accessibility { color: var(--accessibility); border-color: var(--accessibility); }
+  .empty { color: var(--muted); padding: 12px 0; font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{TITLE}}</h1>
+  <div class="meta">
+    <span>thurbox {{VERSION}}</span>
+    <span>theme: {{THEME}}</span>
+    <span>generated {{GENERATED_AT}}</span>
+  </div>
+</header>
+<main>
+  {{SUMMARY}}
+  {{CARDS}}
+</main>
+<script>
+  // Lens filter chips: toggle visibility of findings by lens.
+  document.querySelectorAll('.filters button[data-lens]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var lens = btn.getAttribute('data-lens');
+      btn.classList.toggle('off');
+      var hide = btn.classList.contains('off');
+      document.querySelectorAll('.finding').forEach(function (f) {
+        if (f.querySelector('.lens.' + lens)) {
+          f.style.display = hide ? 'none' : '';
+        }
+      });
+    });
+  });
+</script>
+</body>
+</html>
