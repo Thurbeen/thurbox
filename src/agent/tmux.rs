@@ -502,16 +502,27 @@ impl LocalTmuxBackend {
         parts.join(" ")
     }
 
-    /// Get a reference to the active control mode, or bail.
-    fn control(&self) -> Result<std::sync::MutexGuard<'_, Option<ControlMode>>> {
+    /// Run a closure with a reference to the active control mode, or bail if
+    /// it has not been started yet.
+    ///
+    /// Centralizes the "lock + assert started" invariant in one place so
+    /// callers receive a guaranteed-live `&ControlMode` and never touch the
+    /// `Option` directly. This replaces a former pattern where each call site
+    /// re-asserted the invariant with `guard.as_ref().unwrap()` after a
+    /// separate `is_none()` check — fragile, since a refactor of the check
+    /// could silently leave the `unwrap`s reachable.
+    fn with_control<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&ControlMode) -> Result<R>,
+    {
         let guard = self
             .control
             .lock()
             .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
-        if guard.is_none() {
-            bail!("Control mode not started — call ensure_ready() first");
-        }
-        Ok(guard)
+        let ctrl = guard.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Control mode not started — call ensure_ready() first")
+        })?;
+        f(ctrl)
     }
 
     /// Drop the dead control mode connection and start a fresh one.
@@ -529,17 +540,13 @@ impl LocalTmuxBackend {
     /// Send a command via control mode and return the response.
     /// On broken pipe or timeout, reconnects control mode and retries once.
     fn ctrl_command(&self, cmd: &str) -> Result<String> {
-        let result = {
-            let guard = self.control()?;
-            guard.as_ref().unwrap().send_command(cmd)
-        };
+        let result = self.with_control(|ctrl| ctrl.send_command(cmd));
         match result {
             Ok(val) => Ok(val),
             Err(err) if is_broken_pipe(&err) || is_recv_timeout(&err) => {
                 warn!("Control mode error, reconnecting: {err:#}");
                 self.reconnect_control()?;
-                let guard = self.control()?;
-                guard.as_ref().unwrap().send_command(cmd)
+                self.with_control(|ctrl| ctrl.send_command(cmd))
             }
             Err(err) => Err(err),
         }
@@ -548,17 +555,13 @@ impl LocalTmuxBackend {
     /// Send a command via control mode without waiting for a response.
     /// On broken pipe, reconnects control mode and retries once.
     fn ctrl_command_nowait(&self, cmd: &str) -> Result<()> {
-        let result = {
-            let guard = self.control()?;
-            guard.as_ref().unwrap().send_command_nowait(cmd)
-        };
+        let result = self.with_control(|ctrl| ctrl.send_command_nowait(cmd));
         match result {
             Ok(()) => Ok(()),
             Err(err) if is_broken_pipe(&err) => {
                 warn!("Control mode broken pipe (nowait), reconnecting: {err:#}");
                 self.reconnect_control()?;
-                let guard = self.control()?;
-                guard.as_ref().unwrap().send_command_nowait(cmd)
+                self.with_control(|ctrl| ctrl.send_command_nowait(cmd))
             }
             Err(err) => Err(err),
         }
@@ -567,10 +570,8 @@ impl LocalTmuxBackend {
     /// Register a pane sender and return the corresponding reader.
     /// Multiple instances can register the same pane; output will be broadcast to all.
     fn register_pane(&self, pane_id: &str) -> Result<ControlModeReader> {
-        let guard = self.control()?;
-        let ctrl = guard.as_ref().unwrap();
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
-        {
+        self.with_control(|ctrl| {
             let mut senders = ctrl
                 .pane_senders
                 .lock()
@@ -579,7 +580,8 @@ impl LocalTmuxBackend {
                 .entry(pane_id.to_string())
                 .or_insert_with(Vec::new)
                 .push(tx);
-        }
+            Ok(())
+        })?;
         Ok(ControlModeReader::new(rx))
     }
 
@@ -587,24 +589,24 @@ impl LocalTmuxBackend {
     /// Note: Currently removes all senders for this pane. For true instance-specific
     /// unregistration, we would need to track which sender belongs to which instance.
     fn unregister_pane(&self, pane_id: &str) -> Result<()> {
-        let guard = self.control()?;
-        let ctrl = guard.as_ref().unwrap();
-        let mut senders = ctrl
-            .pane_senders
-            .lock()
-            .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?;
-        // Remove all senders for this pane (all instances lose the pane)
-        senders.remove(pane_id);
-        Ok(())
+        self.with_control(|ctrl| {
+            let mut senders = ctrl
+                .pane_senders
+                .lock()
+                .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?;
+            // Remove all senders for this pane (all instances lose the pane)
+            senders.remove(pane_id);
+            Ok(())
+        })
     }
 
     /// Create a writer for a specific pane.
     fn pane_writer(&self, pane_id: &str) -> Result<ControlModeWriter> {
-        let guard = self.control()?;
-        let ctrl = guard.as_ref().unwrap();
-        Ok(ControlModeWriter {
-            stdin: Arc::clone(&ctrl.stdin),
-            pane_id: pane_id.to_string(),
+        self.with_control(|ctrl| {
+            Ok(ControlModeWriter {
+                stdin: Arc::clone(&ctrl.stdin),
+                pane_id: pane_id.to_string(),
+            })
         })
     }
 
