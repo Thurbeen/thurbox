@@ -11,7 +11,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::session::{Action, Category, KeyBindings, KeyChord, SessionInfo};
+use crate::session::{KeyBindings, KeyChord, SessionInfo};
 use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
@@ -394,8 +394,8 @@ impl App {
     /// Render any active modal overlay on top of everything else.
     fn render_modals(&self, frame: &mut Frame) {
         // Help overlay (rendered last, on top of everything)
-        if matches!(self.modal, super::modals::Modal::Help) {
-            render_help_overlay(frame, &self.keybindings);
+        if let super::modals::Modal::Help(ref help) = self.modal {
+            render_help_overlay(frame, &self.keybindings, help);
         }
 
         // Worktree name modal
@@ -796,85 +796,91 @@ fn editor_preview(m: &super::modals::AutomationEditorModal, now: u64) -> String 
     }
 }
 
-fn render_help_overlay(frame: &mut Frame, keybindings: &KeyBindings) {
+fn render_help_overlay(
+    frame: &mut Frame,
+    keybindings: &KeyBindings,
+    help: &super::modals::HelpModal,
+) {
     let area = centered_rect(60, 70, frame.area());
 
     let inner = crate::ui::render_modal_frame(frame, area, "Keybindings");
 
     let mut help_lines: Vec<Line<'static>> = Vec::new();
 
-    // Action-driven sections — every variant of `Action` shows up here
-    // automatically. Adding a new variant is a compile error in
-    // `Action::category()` and `Action::default_chords()`.
-    for category in Category::all() {
-        help_lines.push(help_section(category.title()));
-        for action in Action::all().iter().filter(|a| a.category() == *category) {
-            let key = chords_display(keybindings.chords_for(*action));
-            help_lines.push(help_line(key, action.label()));
+    // Editable sections — driven by `keybindings::help_sections()`, the same
+    // ordering as `Action::rebindable_in_order()`, so `idx` lines up with
+    // `help.selected` from the interactive editor. EVERY row here is rebindable.
+    let mut idx = 0usize;
+    // Line index of the selected action row, so the body can scroll to keep it
+    // visible on short terminals.
+    let mut selected_line = 0usize;
+    for (title, actions) in crate::session::keybindings::help_sections() {
+        help_lines.push(help_section(title));
+        for action in actions {
+            let selected = idx == help.selected;
+            let key = if selected && help.capturing {
+                "Press the new shortcut… (Esc cancels)".to_string()
+            } else {
+                chords_display(keybindings.chords_for(action))
+            };
+            if selected {
+                selected_line = help_lines.len();
+            }
+            help_lines.push(help_row(key, action.label(), selected));
+            idx += 1;
         }
         help_lines.push(Line::from(""));
     }
 
-    // Non-Action keys (modal-internal, terminal forwarding, file viewer).
-    // These are not user-rebindable and don't drift with the `Action` enum.
-    help_lines.push(help_section("List Navigation (when focused)"));
-    help_lines.push(help_line("j / Down".into(), "Select next item"));
-    help_lines.push(help_line("k / Up".into(), "Select previous item"));
-    help_lines.push(help_line("Enter".into(), "Focus next pane"));
-    help_lines.push(Line::from(""));
-
-    help_lines.push(help_section("File Viewer (when focused)"));
-    help_lines.push(help_line("j/k".into(), "Move down/up"));
-    help_lines.push(help_line("h".into(), "Collapse / parent"));
+    // Fixed keys that are NOT rebindable: stateful sub-modes (file-viewer
+    // search, modal selectors) and terminal pass-through. Shown for reference,
+    // never selectable.
+    help_lines.push(help_section("Fixed (not rebindable)"));
     help_lines.push(help_line(
-        "l / Enter".into(),
-        "Expand dir / open file in editor",
-    ));
-    help_lines.push(help_line("/".into(), "Start search"));
-    help_lines.push(help_line(
-        "Enter / \u{2193}".into(),
-        "In search: jump to next match (stays in search)",
-    ));
-    help_lines.push(help_line("\u{2191}".into(), "In search: previous match"));
-    help_lines.push(help_line(
-        "Tab".into(),
-        "In search: commit & exit search mode",
-    ));
-    help_lines.push(help_line("Esc".into(), "In search: cancel and clear query"));
-    help_lines.push(help_line(
-        "n / N".into(),
-        "After search: next / previous match",
-    ));
-    help_lines.push(Line::from(""));
-
-    help_lines.push(help_section("Terminal (when focused)"));
-    help_lines.push(help_line(
-        "Ctrl+C".into(),
-        "Copy selection, or send SIGINT if none",
-    ));
-    help_lines.push(help_line("Ctrl+V".into(), "Paste from clipboard"));
-    help_lines.push(help_line(
-        "Shift+\u{2191}/\u{2193}".into(),
-        "Scroll up/down one line",
+        "/ then type".into(),
+        "File viewer: search; Enter/↑/↓ cycle matches, Tab commits, Esc cancels",
     ));
     help_lines.push(help_line(
-        "Shift+PgUp/PgDn".into(),
-        "Scroll up/down half page",
+        "j/k/Enter/Esc".into(),
+        "Automations & tasks panes, and modal selectors",
     ));
     help_lines.push(help_line(
         "Mouse wheel".into(),
-        "Scroll up/down three lines",
+        "Terminal: scroll three lines",
     ));
     help_lines.push(help_line("Click+drag".into(), "Select text"));
-    help_lines.push(help_line("*".into(), "All other keys forwarded to session"));
-    help_lines.push(Line::from(""));
+    help_lines.push(help_line(
+        "*".into(),
+        "Terminal: all other keys forwarded to session",
+    ));
 
-    help_lines.push(Line::from(Span::styled(
-        "Press F1 or Esc to close",
-        Style::default().fg(Theme::text_muted()),
-    )));
+    // Reserve the bottom row for the controls footer so it stays visible even
+    // when the body overflows the modal height (the body scrolls, the footer
+    // never does).
+    let [body, footer] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .areas(inner);
 
-    frame.render_widget(Paragraph::new(help_lines), inner);
+    // On short terminals the body overflows; scroll it so the selected action
+    // row stays visible (roughly centered), clamped to the real content range.
+    let total = help_lines.len();
+    let body_h = body.height as usize;
+    let scroll = if total <= body_h {
+        0
+    } else {
+        let max_scroll = total - body_h;
+        selected_line.saturating_sub(body_h / 2).min(max_scroll)
+    };
+
+    frame.render_widget(Paragraph::new(help_lines).scroll((scroll as u16, 0)), body);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "j/k move · Enter/r rebind · d reset · shift+D reset all · Esc close",
+            Style::default().fg(Theme::text_muted()),
+        ))),
+        footer,
+    );
 }
 
 /// Format a slice of chords as the F1-help key column, e.g.
@@ -901,6 +907,20 @@ fn help_line(key: String, desc: &'static str) -> Line<'static> {
         Span::styled(format!("  {key:<16}"), Theme::keybind()),
         Span::styled(desc, Style::default().fg(Theme::text_primary())),
     ])
+}
+
+/// A rebindable keybinding row in the interactive help editor. When
+/// `selected`, the row is rendered with the active-item style and a `›`
+/// marker so the user can see which action a captured chord will bind to.
+fn help_row(key: String, desc: &'static str, selected: bool) -> Line<'static> {
+    if selected {
+        Line::from(vec![
+            Span::styled(format!("› {key:<16}"), Theme::selected_item()),
+            Span::styled(desc, Theme::selected_item()),
+        ])
+    } else {
+        help_line(key, desc)
+    }
 }
 
 /// Create a centered rectangle within the given area.

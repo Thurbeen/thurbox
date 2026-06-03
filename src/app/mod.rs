@@ -257,8 +257,9 @@ pub enum InputFocus {
     /// Editing the scoped task in the central pane (like a session's terminal —
     /// reached with `Enter`/`e` from the tasks panel; `Esc` returns to it).
     TaskEditor,
-    /// The global search strip docked along the bottom (`Ctrl+/`). Captures all
-    /// input while active; entered/left only via `Ctrl+/` / `Esc`.
+    /// The global search strip docked along the bottom (`Ctrl+A` by default).
+    /// Captures all input while active; entered/left only via its keybinding /
+    /// `Esc`.
     GlobalSearch,
     Terminal,
     FileViewer,
@@ -377,7 +378,7 @@ pub struct App {
     /// while [`InputFocus::TaskEditor`] is focused it holds the in-progress
     /// edits. `None` when no task is scoped. Mirrors `automation_editor`.
     pub(crate) task_editor: Option<modals::TaskEditorModal>,
-    /// Global search strip (`Ctrl+/`): cross-scope search docked at the bottom.
+    /// Global search strip (`Ctrl+A`): cross-scope search docked at the bottom.
     pub(crate) global_search: search::GlobalSearchState,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
     /// every render. Kept in sync with `db.set_active_theme` writes.
@@ -3012,7 +3013,7 @@ impl App {
         true
     }
 
-    // ---- Global search (Ctrl+/ bottom strip) -----------------------------
+    // ---- Global search (Ctrl+A bottom strip) -----------------------------
 
     /// Open the global-search strip: snapshot the current UI state (so cancel
     /// can restore it), clear the query, focus the strip, and seed the (cheap)
@@ -4155,7 +4156,7 @@ mod tests {
         // Down past the last session drops into the automations pane.
         app.focus = InputFocus::SessionList;
         app.active_index = 1; // last session in render order
-        app.handle_session_list_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::Automations);
         assert_eq!(app.automation_panel_index, 0);
 
@@ -4167,7 +4168,7 @@ mod tests {
         assert_eq!(app.active_index, 0, "looped to first session");
 
         // Up from the first session loops to the LAST automation.
-        app.handle_session_list_key(KeyCode::Char('k'));
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::Automations);
         assert_eq!(app.automation_panel_index, 1, "looped to last automation");
 
@@ -4301,7 +4302,7 @@ mod tests {
             app.focus = focus;
             app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
             assert!(
-                matches!(app.modal, modals::Modal::Help),
+                matches!(app.modal, modals::Modal::Help(_)),
                 "F1 should show help from {focus:?}"
             );
         }
@@ -4312,7 +4313,215 @@ mod tests {
         let mut app = app_with_sessions(0);
         app.modal = modals::Modal::RepoPicker(modals::RepoPickerModal::default());
         app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
-        assert!(!matches!(app.modal, modals::Modal::Help));
+        assert!(!matches!(app.modal, modals::Modal::Help(_)));
+    }
+
+    #[test]
+    fn help_modal_navigation_clamps() {
+        let mut app = app_with_sessions(0);
+        app.modal = modals::Modal::Help(modals::HelpModal::default());
+
+        // `k` at the top stays at index 0.
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        let modals::Modal::Help(ref h) = app.modal else {
+            panic!("help modal closed unexpectedly");
+        };
+        assert_eq!(h.selected, 0);
+
+        // `j` past the end clamps to the last rebindable action.
+        let last = crate::session::Action::rebindable_in_order().len() - 1;
+        for _ in 0..50 {
+            app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        }
+        let modals::Modal::Help(ref h) = app.modal else {
+            panic!("help modal closed unexpectedly");
+        };
+        assert_eq!(h.selected, last);
+    }
+
+    #[test]
+    fn help_capture_then_key_rebinds_and_clears_capturing() {
+        let base = std::env::temp_dir().join("thurbox-help-rebind-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let _g = crate::paths::TestPathGuard::new(&base);
+
+        let mut app = app_with_sessions(0);
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE); // open help (selected = 0)
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE); // begin capture
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::CONTROL); // bind ctrl+x
+
+        let action = crate::session::Action::rebindable_in_order()[0];
+        assert_eq!(
+            app.keybindings
+                .lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Some(action)
+        );
+        let modals::Modal::Help(ref h) = app.modal else {
+            panic!("help modal closed unexpectedly");
+        };
+        assert!(!h.capturing, "capture flag should clear after binding");
+    }
+
+    #[test]
+    fn help_capture_esc_cancels_without_rebinding() {
+        let mut app = app_with_sessions(0);
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE); // begin capture
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE); // cancel capture
+
+        // Still in the help modal, no longer capturing, and nothing was bound.
+        let modals::Modal::Help(ref h) = app.modal else {
+            panic!("Esc during capture should not close the help modal");
+        };
+        assert!(!h.capturing);
+        assert_eq!(
+            app.keybindings
+                .lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            None
+        );
+    }
+
+    #[test]
+    fn help_capturing_ctrl_q_rebinds_not_quits() {
+        let base = std::env::temp_dir().join("thurbox-help-ctrlq-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let _g = crate::paths::TestPathGuard::new(&base);
+
+        let mut app = app_with_sessions(0);
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE); // begin capture
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::CONTROL); // would normally quit
+
+        assert!(!app.should_quit, "capturing ctrl+q must rebind, not quit");
+        let action = crate::session::Action::rebindable_in_order()[0];
+        assert_eq!(
+            app.keybindings
+                .lookup(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            Some(action)
+        );
+    }
+
+    #[test]
+    fn help_reset_d_restores_defaults() {
+        let base = std::env::temp_dir().join("thurbox-help-reset-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let _g = crate::paths::TestPathGuard::new(&base);
+
+        let mut app = app_with_sessions(0);
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+        let action = crate::session::Action::rebindable_in_order()[0];
+
+        // Rebind the selected action to ctrl+x...
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.keybindings
+                .lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Some(action)
+        );
+
+        // ...then `d` restores its compiled-in defaults.
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(
+            app.keybindings.chords_for(action),
+            action.default_chords().as_slice()
+        );
+    }
+
+    #[test]
+    fn help_reset_all_restores_every_default() {
+        let base = std::env::temp_dir().join("thurbox-help-reset-all-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let _g = crate::paths::TestPathGuard::new(&base);
+
+        let mut app = app_with_sessions(0);
+        app.handle_key(KeyCode::F(1), KeyModifiers::NONE);
+
+        // Rebind two distinct actions away from their defaults.
+        let actions = crate::session::Action::rebindable_in_order();
+        app.keybindings
+            .rebind(actions[0], crate::session::KeyChord::ctrl('x'));
+        app.keybindings
+            .rebind(actions[1], crate::session::KeyChord::ctrl('y'));
+
+        // Shift+D resets everything.
+        app.handle_key(KeyCode::Char('D'), KeyModifiers::SHIFT);
+
+        for action in crate::session::Action::all() {
+            assert_eq!(
+                app.keybindings.chords_for(*action),
+                action.default_chords().as_slice(),
+                "{action:?} should be reset to defaults"
+            );
+        }
+        // The override file is gone, so defaults stay authoritative.
+        assert_eq!(
+            crate::storage::keybindings::load_keybindings_json().unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn focus_key_context_maps_focus_to_scope() {
+        use crate::session::KeyContext;
+        let mut app = app_with_sessions(1);
+
+        app.focus = InputFocus::SessionList;
+        assert_eq!(app.focus_key_context(), KeyContext::SessionList);
+        app.focus = InputFocus::Terminal;
+        assert_eq!(app.focus_key_context(), KeyContext::Terminal);
+        app.focus = InputFocus::FileViewer;
+        assert_eq!(app.focus_key_context(), KeyContext::FileViewer);
+
+        // While the file-viewer search field is active, fall back to Global so
+        // typed letters edit the query instead of navigating the tree.
+        app.file_viewer.search_active = true;
+        assert_eq!(app.focus_key_context(), KeyContext::Global);
+        app.file_viewer.search_active = false;
+
+        // Automations / tasks / editors are not a scoped keybinding context.
+        app.focus = InputFocus::Automations;
+        assert_eq!(app.focus_key_context(), KeyContext::Global);
+    }
+
+    #[test]
+    fn file_viewer_scoped_keys_route_through_keybindings() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::FileViewer;
+        assert!(!app.file_viewer.search_active);
+
+        // `/` is the rebindable FileViewerSearch action.
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(app.file_viewer.search_active, "'/' should start the search");
+
+        // Now in search mode the context falls back to Global, so plain letters
+        // edit the query (routed to the literal search handler) rather than
+        // triggering FileViewerDown etc.
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(app.file_viewer.search_query, "ab");
+    }
+
+    #[test]
+    fn file_viewer_search_action_is_rebindable() {
+        let base = std::env::temp_dir().join("thurbox-fv-rebind-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let _g = crate::paths::TestPathGuard::new(&base);
+
+        let mut app = app_with_sessions(1);
+        // Rebind FileViewerSearch from `/` to `s`.
+        app.keybindings.rebind(
+            crate::session::Action::FileViewerSearch,
+            crate::session::KeyChord::plain('s'),
+        );
+        app.focus = InputFocus::FileViewer;
+
+        // `/` no longer opens search...
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(!app.file_viewer.search_active);
+        // ...the new `s` chord does.
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert!(app.file_viewer.search_active);
     }
 
     #[test]
@@ -4486,13 +4695,13 @@ mod tests {
         assert_eq!(app.focus, InputFocus::TaskEditor);
     }
 
-    // --- Global search (Ctrl+A, also Ctrl+/) tests ---
+    // --- Global search (Ctrl+A, fully rebindable) tests ---
 
     #[test]
     fn ctrl_a_opens_global_search() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::SessionList;
-        // Ctrl+A is the reliable default binding.
+        // Ctrl+A is the default binding.
         app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
         assert!(app.global_search.active);
         assert_eq!(app.focus, InputFocus::GlobalSearch);
@@ -4503,20 +4712,42 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_slash_encodings_open_global_search() {
-        // The literal intercept opens search on every Ctrl+/ encoding terminals
-        // emit (`/`, `_`, `7`), but only with the CONTROL modifier present.
+    fn ctrl_slash_no_longer_opens_global_search() {
+        // The hardcoded Ctrl+/ intercept was removed: global search is opened
+        // solely via the (rebindable) `Action::GlobalSearch` chord. The former
+        // Ctrl+/ encodings (`/`, `_`, `7`) must no longer open the strip.
         for c in ['/', '_', '7'] {
             let mut app = app_with_sessions(1);
             app.focus = InputFocus::SessionList;
             app.handle_key(KeyCode::Char(c), KeyModifiers::CONTROL);
-            assert!(app.global_search.active, "Ctrl+{c} should open search");
+            assert!(
+                !app.global_search.active,
+                "Ctrl+{c} must not open search anymore"
+            );
         }
-        // A bare digit still types normally (no modifier → not intercepted).
+    }
+
+    #[test]
+    fn global_search_chord_is_rebindable() {
+        let base = std::env::temp_dir().join("thurbox-gs-rebind-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let _g = crate::paths::TestPathGuard::new(&base);
+
         let mut app = app_with_sessions(1);
+        // Rebind global search from Ctrl+A to Ctrl+X via the F1 editor.
+        app.keybindings.rebind(
+            crate::session::Action::GlobalSearch,
+            crate::session::KeyChord::ctrl('x'),
+        );
+
+        // The old chord no longer opens it...
         app.focus = InputFocus::SessionList;
-        app.handle_key(KeyCode::Char('7'), KeyModifiers::NONE);
-        assert!(!app.global_search.active, "bare 7 must not open search");
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(!app.global_search.active, "old Ctrl+A must not open search");
+
+        // ...and the new chord does.
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert!(app.global_search.active, "new Ctrl+X should open search");
     }
 
     #[test]

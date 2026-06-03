@@ -9,7 +9,7 @@ pub use automation::{
     parse_hhmm, preset_to_cron, Automation, AutomationAction, AutomationRun, AutomationRunStatus,
     AutomationSchedule, SchedulePreset,
 };
-pub use keybindings::{Action, Category, KeyBindings, KeyChord};
+pub use keybindings::{Action, KeyBindings, KeyChord, KeyContext};
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 pub use theme_config::{ThemePalette, ThemePreset};
 

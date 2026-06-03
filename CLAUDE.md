@@ -372,7 +372,7 @@ plain local todo. Triggering a task runs its action and advances it to
 
 ## Global search (`Ctrl+A`)
 
-A **non-modal bottom strip** (`Ctrl+A`, also `Ctrl+/`) searches **every scope at once**:
+A **non-modal bottom strip** (`Ctrl+A`, rebindable) searches **every scope at once**:
 **sessions** (name/agent/branch + live vt100 **buffer content**), **tasks**
 (title), **automations** (name), and **files** (the active session's file
 tree). `Enter` jumps to the selected result and focuses its pane —
@@ -416,10 +416,8 @@ or the file viewer (revealing the path).
   `PanelAreas::global_search` strip above the footer (shrinking the content
   area like the side panels). Rendered by `src/ui/global_search.rs`.
 - **Binding**: `Action::GlobalSearch` defaults to `Ctrl+A` ("search All"),
-  which encodes reliably on every terminal. A literal intercept in
-  `handle_priority_key` *also* opens it on `Ctrl+/` — whose C0 control
-  (`0x1F`) terminals surface inconsistently as `Char('/')`/`Char('_')`/
-  `Char('7')`+CONTROL — so `Ctrl+/` works where the modifier survives.
+  which encodes reliably on every terminal and is fully rebindable from the
+  F1 editor like any other action (there is no separate hardcoded opener).
   Global search is the **only** search: the per-pane local `/` filters
   (session list, tasks panel) were removed in favour of it. The file
   viewer's `/` (in-file text search) is unrelated and stays.
@@ -592,7 +590,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
-| `F1` | Toggle keybindings help | Universal |
+| `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
 | `F3` | Toggle file viewer | Next to F2 |
 | `F5` | Toggle tasks panel (visible at width >= 120) | Next to F4 |
@@ -601,11 +599,49 @@ List contexts use plain `j`/`k`/`Enter` for navigation.
 Terminal forwards all non-Ctrl keys to the PTY.
 `Shift+arrows/PageUp/PageDown` for scrollback.
 
-These defaults can be overridden by writing
-`~/.config/thurbox/keybindings.json`. The file maps an `Action`
-name to one or more chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`.
-Modal-internal keys (j/k/Enter/Esc inside selectors) are not
-customizable.
+These defaults can be overridden two ways, both writing the same
+`~/.config/thurbox/keybindings.json` (an `Action` name → one or more
+chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`):
+
+- **Interactively** from the F1 panel, which is a live editor rather
+  than a read-only overlay. `j`/`k` select an action, `Enter`/`r`
+  starts capture (the **next physical keypress** — including chords
+  like `ctrl+q` — becomes that action's sole binding), `d` resets the
+  selected action to its built-in default, and `Shift+D` resets **all**
+  actions (via `App::reset_all_keybindings`, which deletes the override
+  file so defaults stay authoritative). If the captured chord was already
+  bound elsewhere it is reassigned (stolen from the other action) and a
+  status toast reports the move. Each change is persisted immediately
+  via `KeyBindings::{rebind,reset}` + `storage::keybindings::save_keybindings_json`
+  and takes effect on the next keystroke — no restart. The editor lives
+  in `Modal::Help(HelpModal { selected, capturing })`; capture input is
+  routed through `App::handle_help_key` inside `handle_priority_key`
+  (**before** the global `keybindings.lookup`, so capturing `ctrl+q`
+  rebinds instead of quitting). Selection indices match
+  `Action::rebindable_in_order()` — the flattened
+  `keybindings::help_sections()`, the shared order used by
+  `render_help_overlay`.
+- **By hand-editing** the JSON file (e.g. via `$EDITOR`); read once at
+  startup.
+
+**Context-scoped bindings.** Each `Action` has a `KeyContext` (`Global`,
+`SessionList`, `FileViewer`, `Terminal`). Global actions are active
+everywhere; scoped actions fire only while their pane is focused, so a
+single-letter key like `j` can drive both the file viewer and the session
+list (and the terminal still forwards it to the PTY). `handle_key` resolves
+keys via `KeyBindings::lookup_in(App::focus_key_context(), …)`, dispatched
+through `dispatch_action`. Conflict detection (`KeyBindings::rebind`) only
+steals a chord between actions whose scopes overlap (`contexts_overlap`) —
+global-vs-anything, or same scope. Capital/shift-letter chords are
+canonicalized via `KeyChord::normalized` (e.g. `Shift+N` → `{shift, n}`) so
+capture, lookup, and the JSON round-trip agree regardless of how the
+terminal encodes them. **Copy/Paste** are global rebindable actions handled
+early in `handle_priority_key` (so Paste reaches modal text inputs).
+
+A few stateful keys stay literal (the F1 panel lists them under
+**Fixed (not rebindable)**): modal selectors (j/k/Enter/Esc), the
+automations/tasks panes, the file-viewer **search sub-mode**, and the
+terminal's catch-all PTY forwarding.
 
 ## Themes
 

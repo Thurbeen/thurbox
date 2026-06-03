@@ -64,11 +64,13 @@ impl App {
             return;
         }
 
-        // Global keybindings (always active) — driven by user-customizable
-        // `KeyBindings`. Some actions intentionally yield to the PTY when the
+        // Keybinding lookup, scoped to the focused pane: global actions plus
+        // any scoped to the current context (file viewer, session list,
+        // terminal). Some actions intentionally yield to the PTY when the
         // terminal is focused (e.g. Ctrl+R = bash reverse-search) — those are
         // handled inside `dispatch_action`.
-        if let Some(action) = self.keybindings.lookup(code, mods) {
+        let context = self.focus_key_context();
+        if let Some(action) = self.keybindings.lookup_in(context, code, mods) {
             if self.dispatch_action(action) {
                 return;
             }
@@ -89,55 +91,141 @@ impl App {
         }
     }
 
+    /// The keybinding [`KeyContext`](crate::session::KeyContext) for the
+    /// current focus, used to scope the lookup. Single-letter scoped actions
+    /// (file viewer / session list) only resolve here, so the terminal keeps
+    /// forwarding those keys to the PTY. While the file-viewer search field is
+    /// active we fall back to `Global` so typed letters edit the query instead
+    /// of navigating.
+    pub(crate) fn focus_key_context(&self) -> crate::session::KeyContext {
+        use crate::session::KeyContext;
+        match self.focus {
+            InputFocus::SessionList => KeyContext::SessionList,
+            InputFocus::FileViewer if !self.file_viewer.search_active => KeyContext::FileViewer,
+            InputFocus::Terminal => KeyContext::Terminal,
+            _ => KeyContext::Global,
+        }
+    }
+
     /// Help-overlay dismissal and clipboard chords, routed ahead of modal
     /// handlers. Returns `true` if the key was consumed.
     fn handle_priority_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
-        // Dismiss help overlay with Esc or F1 (toggle)
-        if matches!(self.modal, super::modals::Modal::Help) {
-            if code == KeyCode::Esc || code == KeyCode::F(1) {
-                self.modal.close();
+        // The interactive help/keybinding editor captures all input — routed
+        // ahead of the global keybinding lookup so a chord being captured
+        // (e.g. ctrl+q) rebinds rather than triggering its action (quit).
+        if matches!(self.modal, super::modals::Modal::Help(_)) {
+            return self.handle_help_key(code, mods);
+        }
+
+        // Clipboard chords (Copy/Paste) are user-rebindable global actions but
+        // routed here, ahead of modal handlers, so Paste reaches modal/terminal
+        // text inputs and Copy works from inside any modal. Resolved via the
+        // (global) keybindings so a user's rebind takes effect.
+        match self.keybindings.lookup(code, mods) {
+            // Paste always consumes — `paste_from_clipboard` knows whether a
+            // modal text input is open and routes the text accordingly.
+            Some(crate::session::Action::Paste) => {
+                self.paste_from_clipboard();
+                return true;
+            }
+            // Copy consumes only with an active selection; otherwise it falls
+            // through to the normal handlers (e.g. SIGINT when the terminal is
+            // focused — see `dispatch_action`'s `Copy` arm).
+            Some(crate::session::Action::Copy) if self.text_selection.is_some() => {
+                self.copy_selection_to_clipboard();
+                return true;
+            }
+            _ => {}
+        }
+
+        false
+    }
+
+    /// Interactive F1 help / keybinding editor. Always consumes input while
+    /// the help modal is open (returns `true`).
+    ///
+    /// Navigation mode: `j`/`k` (or arrows) move the selection, `Enter`/`r`
+    /// begins capturing a new chord for the selected action, `d` resets the
+    /// selected action to its default(s), `Shift+D` resets *all* actions, and
+    /// `F1`/`Esc` close the overlay.
+    ///
+    /// Capture mode: the next keypress (any chord, including `ctrl+q` or `f1`)
+    /// becomes the action's sole binding; `Esc` cancels without rebinding.
+    fn handle_help_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        use crate::session::{Action, KeyChord};
+
+        let actions = Action::rebindable_in_order();
+        let super::modals::Modal::Help(ref mut help) = self.modal else {
+            return true;
+        };
+
+        if help.capturing {
+            if code == KeyCode::Esc {
+                help.capturing = false;
+                return true;
+            }
+            let chord = KeyChord { mods, code };
+            let selected = help.selected.min(actions.len().saturating_sub(1));
+            help.capturing = false;
+            let action = actions[selected];
+            let stolen = self.keybindings.rebind(action, chord);
+            self.persist_keybindings();
+            if let Some(other) = stolen {
+                self.set_info(format!(
+                    "{} reassigned from '{}'",
+                    chord.display(),
+                    other.label()
+                ));
             }
             return true;
         }
 
-        // Ctrl+V: paste. Routed before modal handlers so they don't swallow
-        // the literal 'v' — `paste_from_clipboard` knows whether a modal text
-        // input is open and routes the text accordingly.
-        if code == KeyCode::Char('v') && mods.contains(KeyModifiers::CONTROL) {
-            self.paste_from_clipboard();
-            return true;
+        match code {
+            KeyCode::Esc | KeyCode::F(1) => self.modal.close(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                help.selected = (help.selected + 1).min(actions.len().saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                help.selected = help.selected.saturating_sub(1);
+            }
+            KeyCode::Enter | KeyCode::Char('r') => help.capturing = true,
+            KeyCode::Char('d') => {
+                let selected = help.selected.min(actions.len().saturating_sub(1));
+                let action = actions[selected];
+                self.keybindings.reset(action);
+                self.persist_keybindings();
+            }
+            // Shift+D resets every action to its built-in default.
+            KeyCode::Char('D') => self.reset_all_keybindings(),
+            _ => {}
         }
+        true
+    }
 
-        // Ctrl+C: copy active mouse-drag selection. Routed before modal
-        // handlers so users can copy text from inside any modal. Without an
-        // active selection, falls through to the normal handlers (e.g. SIGINT
-        // when the terminal is focused).
-        if code == KeyCode::Char('c')
-            && mods.contains(KeyModifiers::CONTROL)
-            && self.text_selection.is_some()
-        {
-            self.copy_selection_to_clipboard();
-            return true;
+    /// Restore every keybinding to its compiled-in default and remove the
+    /// user override file so defaults remain authoritative. Surfaces failures
+    /// via the status bar; the in-memory map is reset regardless.
+    fn reset_all_keybindings(&mut self) {
+        self.keybindings = crate::session::KeyBindings::default();
+        if let Err(e) = crate::storage::keybindings::delete_keybindings_json() {
+            self.set_error(format!("Failed to reset keybindings: {e}"));
+        } else {
+            self.set_info("All keybindings reset to defaults");
         }
+    }
 
-        // Ctrl+/ is a *bonus* opener for global search (the reliable default is
-        // Ctrl+A — see `Action::GlobalSearch`). Terminals encode `Ctrl+/` as the
-        // C0 control 0x1F and surface it inconsistently: `Char('/')`, `Char('_')`,
-        // or `Char('7')`, each with the CONTROL modifier. Intercept all three
-        // here (only when the modifier survives — a bare `7` must still type a
-        // digit). Skipped while the strip is already open.
-        if mods.contains(KeyModifiers::CONTROL)
-            && matches!(
-                code,
-                KeyCode::Char('/') | KeyCode::Char('_') | KeyCode::Char('7')
-            )
-            && !self.global_search.active
-        {
-            self.open_global_search();
-            return true;
+    /// Serialize the current keybindings and write them to
+    /// `~/.config/thurbox/keybindings.json`. Surfaces failures via the status
+    /// bar rather than aborting — the in-memory map is already updated.
+    fn persist_keybindings(&mut self) {
+        match self.keybindings.to_json() {
+            Ok(json) => {
+                if let Err(e) = crate::storage::keybindings::save_keybindings_json(&json) {
+                    self.set_error(format!("Failed to save keybindings: {e}"));
+                }
+            }
+            Err(e) => self.set_error(format!("Failed to serialize keybindings: {e}")),
         }
-
-        false
     }
 
     /// Route the key to the open modal's handler, if any. Returns `true` if a
@@ -236,8 +324,9 @@ impl App {
             // `TaskList → editor` (like the automation editor): cycling out of
             // the editor returns to the tasks panel, never off to a session.
             TaskEditor => vec![TaskList, TaskEditor],
-            // The global-search strip is entered/left only via `Ctrl+/`/`Esc`,
-            // so `Ctrl+L`/`Ctrl+H` are no-ops while it's open.
+            // The global-search strip is entered/left only via its keybinding
+            // (`Ctrl+A` by default) / `Esc`, so `Ctrl+L`/`Ctrl+H` are no-ops
+            // while it's open.
             GlobalSearch => vec![GlobalSearch],
         }
     }
@@ -591,27 +680,11 @@ impl App {
     }
 
     fn handle_file_viewer_nav_key(&mut self, code: KeyCode) {
-        use crate::ui::file_viewer::Activation;
-        match code {
-            KeyCode::Char('/') => self.file_viewer.start_search(),
-            KeyCode::Char('n') => self.file_viewer.next_match(),
-            KeyCode::Char('N') => self.file_viewer.prev_match(),
-            KeyCode::Esc if !self.file_viewer.search_query.is_empty() => {
-                self.file_viewer.end_search();
-            }
-            KeyCode::Char('j') | KeyCode::Down => self.file_viewer.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.file_viewer.move_selection(-1),
-            KeyCode::Char('h') | KeyCode::Left => self.file_viewer.collapse(),
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-                // Capture root+file before activate() (activate only opens files, not dirs).
-                let file_with_root = self.file_viewer.selected_file_with_root();
-                if matches!(self.file_viewer.activate(), Activation::Open(_)) {
-                    if let Some((file, root)) = file_with_root {
-                        self.open_file_in_editor(root, file);
-                    }
-                }
-            }
-            _ => {}
+        // Navigation/search/expand keys are rebindable `FileViewer`-scoped
+        // actions, resolved by the context lookup in `handle_key` before this
+        // runs. Only the fixed "Esc clears an active query" shortcut remains.
+        if matches!(code, KeyCode::Esc) && !self.file_viewer.search_query.is_empty() {
+            self.file_viewer.end_search();
         }
     }
 
@@ -628,62 +701,15 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_session_list_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                // Past the last session, flow down into the automations pane so
-                // the left column reads as one continuous list.
-                if self.active_is_last_in_order() {
-                    self.focus = InputFocus::Automations;
-                    self.automation_panel_index = 0;
-                    self.refresh_automation_view();
-                } else {
-                    self.switch_session_forward();
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                // Above the first session, loop around to the bottom of the
-                // column: the last automation (its pane is always present).
-                if self.active_is_first_in_order() {
-                    self.focus = InputFocus::Automations;
-                    self.automation_panel_index = self.cached_automations.len().saturating_sub(1);
-                    self.refresh_automation_view();
-                } else {
-                    self.switch_session_backward();
-                }
-            }
-            KeyCode::Enter => {
-                self.focus = InputFocus::Terminal;
-            }
-            _ => {}
-        }
-    }
+    /// Session-list keys are all rebindable `SessionList`-scoped actions
+    /// (`SessionListNext`/`Prev`/`Open`), resolved by the context lookup in
+    /// `handle_key` before this runs — so nothing remains to handle here.
+    pub(crate) fn handle_session_list_key(&mut self, _code: KeyCode) {}
 
     fn handle_terminal_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        // Scroll keybindings (Shift + navigation keys)
-        if mods.contains(KeyModifiers::SHIFT) {
-            match code {
-                KeyCode::Up => {
-                    self.scroll_terminal_up(1);
-                    return;
-                }
-                KeyCode::Down => {
-                    self.scroll_terminal_down(1);
-                    return;
-                }
-                KeyCode::PageUp => {
-                    let amount = self.page_scroll_amount();
-                    self.scroll_terminal_up(amount);
-                    return;
-                }
-                KeyCode::PageDown => {
-                    let amount = self.page_scroll_amount();
-                    self.scroll_terminal_down(amount);
-                    return;
-                }
-                _ => {}
-            }
-        }
+        // Terminal scroll is handled by the rebindable `TerminalScroll*`
+        // actions in `handle_key` before this runs; everything else snaps to
+        // the bottom and is forwarded to the PTY.
 
         // Snap to bottom on any non-scroll key when scrolled up
         self.with_active_parser(|parser| {
@@ -1110,7 +1136,7 @@ impl App {
                 true
             }
             Action::ToggleHelp => {
-                self.modal = super::modals::Modal::Help;
+                self.modal = super::modals::Modal::Help(super::modals::HelpModal::default());
                 true
             }
             Action::ToggleInfoPanel => {
@@ -1146,6 +1172,115 @@ impl App {
             Action::GlobalSearch => {
                 self.open_global_search();
                 true
+            }
+
+            // ── Clipboard (global) ──────────────────────────────────────
+            // Copy only consumes the key when there's a selection; otherwise
+            // it yields (false) so the terminal can send SIGINT. Paste is
+            // normally intercepted earlier (so it reaches modal text inputs);
+            // this arm covers the plain-terminal path.
+            Action::Copy => {
+                if self.text_selection.is_some() {
+                    self.copy_selection_to_clipboard();
+                    true
+                } else {
+                    false
+                }
+            }
+            Action::Paste => {
+                self.paste_from_clipboard();
+                true
+            }
+
+            // ── Session list (scoped) ───────────────────────────────────
+            Action::SessionListNext => {
+                // Past the last session, flow into the automations pane so the
+                // left column reads as one continuous list.
+                if self.active_is_last_in_order() {
+                    self.focus = InputFocus::Automations;
+                    self.automation_panel_index = 0;
+                    self.refresh_automation_view();
+                } else {
+                    self.switch_session_forward();
+                }
+                true
+            }
+            Action::SessionListPrev => {
+                if self.active_is_first_in_order() {
+                    self.focus = InputFocus::Automations;
+                    self.automation_panel_index = self.cached_automations.len().saturating_sub(1);
+                    self.refresh_automation_view();
+                } else {
+                    self.switch_session_backward();
+                }
+                true
+            }
+            Action::SessionListOpen => {
+                self.focus = InputFocus::Terminal;
+                true
+            }
+
+            // ── File viewer (scoped) ────────────────────────────────────
+            Action::FileViewerDown => {
+                self.file_viewer.move_selection(1);
+                true
+            }
+            Action::FileViewerUp => {
+                self.file_viewer.move_selection(-1);
+                true
+            }
+            Action::FileViewerCollapse => {
+                self.file_viewer.collapse();
+                true
+            }
+            Action::FileViewerExpand => {
+                self.file_viewer_expand();
+                true
+            }
+            Action::FileViewerSearch => {
+                self.file_viewer.start_search();
+                true
+            }
+            Action::FileViewerNextMatch => {
+                self.file_viewer.next_match();
+                true
+            }
+            Action::FileViewerPrevMatch => {
+                self.file_viewer.prev_match();
+                true
+            }
+
+            // ── Terminal scroll (scoped) ────────────────────────────────
+            Action::TerminalScrollUp => {
+                self.scroll_terminal_up(1);
+                true
+            }
+            Action::TerminalScrollDown => {
+                self.scroll_terminal_down(1);
+                true
+            }
+            Action::TerminalPageUp => {
+                let amount = self.page_scroll_amount();
+                self.scroll_terminal_up(amount);
+                true
+            }
+            Action::TerminalPageDown => {
+                let amount = self.page_scroll_amount();
+                self.scroll_terminal_down(amount);
+                true
+            }
+        }
+    }
+
+    /// Expand the selected file-viewer node, opening it in the editor when it's
+    /// a file (dirs just toggle). Shared by the `FileViewerExpand` action.
+    fn file_viewer_expand(&mut self) {
+        use crate::ui::file_viewer::Activation;
+        // Capture root+file before activate() (activate only opens files, not dirs).
+        let file_with_root = self.file_viewer.selected_file_with_root();
+        if matches!(self.file_viewer.activate(), Activation::Open(_)) {
+            if let Some((file, root)) = file_with_root {
+                self.open_file_in_editor(root, file);
             }
         }
     }

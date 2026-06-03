@@ -256,9 +256,14 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+Z` | Global | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Global | Restore deleted sessions list | **U**ndelete |
 | `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |
-| `F1` | Global | Toggle keybindings help | Universal help |
+| `F1` / `Ctrl+G` | Global | Keybindings help + interactive editor | Universal help |
 | `F2` | Global | Toggle info panel | Next to F1 |
 | `F3` | Global | Toggle file viewer | Next to F2 |
+| `j` / `k` | F1 editor | Select action to rebind | |
+| `Enter` / `r` | F1 editor | Capture a new chord for the selected action | **R**ebind |
+| `d` | F1 editor | Reset selected action to its default chord(s) | **D**efault |
+| `Shift+D` | F1 editor | Reset all actions to their defaults | Reset all |
+| `Esc` | F1 editor | Close (or cancel an in-progress capture) | |
 | `j` / `Down` | Lists | Next item | |
 | `k` / `Up` | Lists | Previous item | |
 | `Enter` | Global search | Jump to selected result | |
@@ -278,6 +283,30 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Shift+PageDown` | Focused terminal | Scroll down half page | |
 | Mouse wheel | Focused terminal | Scroll up/down 3 lines | |
 | All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) | |
+
+### Customizing shortcuts
+
+Nearly every shortcut can be remapped, including copy/paste, file-viewer
+navigation, session-list navigation, and terminal scroll. The F1 panel doubles
+as a live editor: select an action with `j`/`k`, press `Enter`/`r`, then press
+the chord you want — the next physical keypress (including chords like
+`Ctrl+Q`) becomes that action's sole binding. `d` restores the selected
+action's defaults, and `Shift+D` resets every action at once (removing the
+override file). If the chord conflicts it is reassigned from the other action
+and a status toast reports the move. Changes persist immediately to
+`~/.config/thurbox/keybindings.json` (`Action` name → chord strings, e.g.
+`{ "QuitApp": ["ctrl+x"] }`) and take effect on the next keystroke — no
+restart. The file can also be hand-edited directly.
+
+**Context-scoped keys.** Each action belongs to a scope — `Global`,
+`SessionList`, `FileViewer`, or `Terminal`. Global actions fire anywhere;
+scoped actions fire only while their pane is focused, so the same single-letter
+key (e.g. `j`) can drive both the file viewer and the session list while the
+terminal still forwards it to the shell. Conflicts are only flagged between
+actions whose scopes overlap. A handful of stateful keys stay fixed (shown in
+the F1 panel under *Fixed (not rebindable)*): modal selectors
+(`j`/`k`/`Enter`/`Esc`), the automations/tasks panes, the file-viewer search
+sub-mode, and the terminal's catch-all PTY forwarding.
 
 ---
 
@@ -603,7 +632,8 @@ task's Send/Spawn action headlessly (spawned sessions are named
 
 `Ctrl+A` ("search **A**ll") opens a **non-modal bottom strip** that
 searches every scope at once — a single place to find and jump to
-anything. (`Ctrl+/` also opens it where the terminal delivers that chord.)
+anything. The opener is fully rebindable from the F1 editor
+(`Action::GlobalSearch`).
 
 ### Scopes
 
@@ -669,10 +699,8 @@ last ≤ 500 lines per session) so typing never stalls.
 Type to filter; `Up`/`Down` (or `Ctrl+P`/`Ctrl+N`) move the selection so
 plain letters still edit the query; `Enter` jumps; `Esc` closes and
 restores the previous focus. The default chord is `Ctrl+A`
-(`Action::GlobalSearch`), which encodes reliably everywhere — unlike
-`Ctrl+/`, whose C0 control (`0x1F`) terminals surface inconsistently as
-`/`, `_`, or `7` (with Ctrl). A literal intercept opens the strip on all
-three `Ctrl+/` forms too, so it works wherever the modifier survives.
+(`Action::GlobalSearch`), which encodes reliably on every terminal and is
+fully rebindable from the F1 editor like any other action.
 
 Global search is the **only** list search now: the old per-pane `/`
 filters (session list, tasks panel) were removed in its favour. The file

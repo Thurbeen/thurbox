@@ -1,20 +1,33 @@
-//! User-customizable global keybindings.
+//! User-customizable keybindings.
 //!
-//! Each global action the TUI exposes (quit, new session, switch session,
-//! ...) maps to one or more `KeyChord`s. Defaults reproduce the table in
-//! `CLAUDE.md`. Users can override via `~/.config/thurbox/keybindings.json`.
+//! Each action the TUI exposes maps to one or more `KeyChord`s and carries a
+//! [`KeyContext`]. **Global** actions (quit, new session, copy/paste, …) are
+//! active everywhere; **scoped** actions (file viewer / session list nav,
+//! terminal scroll) fire only while their pane is focused — so single-letter
+//! keys like `j`/`k` can be rebound per-pane without stealing them from the
+//! terminal, which forwards everything to the PTY. Defaults reproduce the
+//! table in `CLAUDE.md`; users override via the F1 editor or by hand-editing
+//! `~/.config/thurbox/keybindings.json`.
 //!
-//! Modal-internal navigation keys (j/k/Enter/Esc inside selectors) are *not*
-//! customizable and remain literal in `key_handlers.rs`.
+//! A few stateful keys remain literal in `key_handlers.rs` and are *not*
+//! rebindable: modal-internal selectors (j/k/Enter/Esc), the automations/tasks
+//! panes, and the file-viewer search sub-mode.
 
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
-/// Every user-rebindable global action.
+/// Every user-rebindable action.
+///
+/// Each action has a [`KeyContext`] (see [`Action::context`]). **Global**
+/// actions are active everywhere; **scoped** actions only fire while their
+/// pane is focused — which is why single-letter keys (`j`/`k`/`h`/`l`) can be
+/// rebound for the file viewer / session list without stealing them from the
+/// terminal (which forwards everything to the PTY).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
+    // ── Global ──────────────────────────────────────────────────────────
     QuitApp,
     NewSession,
     DeleteSession,
@@ -36,6 +49,40 @@ pub enum Action {
     ToggleFileViewer,
     FocusTasks,
     GlobalSearch,
+    /// Copy the active mouse selection (falls through to terminal SIGINT when
+    /// there is no selection).
+    Copy,
+    /// Paste the clipboard into the focused text input / terminal.
+    Paste,
+    // ── Session list (scoped) ───────────────────────────────────────────
+    SessionListNext,
+    SessionListPrev,
+    SessionListOpen,
+    // ── File viewer (scoped) ────────────────────────────────────────────
+    FileViewerDown,
+    FileViewerUp,
+    FileViewerCollapse,
+    FileViewerExpand,
+    FileViewerSearch,
+    FileViewerNextMatch,
+    FileViewerPrevMatch,
+    // ── Terminal (scoped) ───────────────────────────────────────────────
+    TerminalScrollUp,
+    TerminalScrollDown,
+    TerminalPageUp,
+    TerminalPageDown,
+}
+
+/// The focus scope in which an [`Action`] is active. `Global` actions fire in
+/// any context; scoped actions fire only while their pane is focused, so the
+/// same chord can mean different things in different panes (and stays free for
+/// the terminal to forward to the PTY).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyContext {
+    Global,
+    SessionList,
+    FileViewer,
+    Terminal,
 }
 
 impl Action {
@@ -63,6 +110,22 @@ impl Action {
             Action::ToggleFileViewer,
             Action::FocusTasks,
             Action::GlobalSearch,
+            Action::Copy,
+            Action::Paste,
+            Action::SessionListNext,
+            Action::SessionListPrev,
+            Action::SessionListOpen,
+            Action::FileViewerDown,
+            Action::FileViewerUp,
+            Action::FileViewerCollapse,
+            Action::FileViewerExpand,
+            Action::FileViewerSearch,
+            Action::FileViewerNextMatch,
+            Action::FileViewerPrevMatch,
+            Action::TerminalScrollUp,
+            Action::TerminalScrollDown,
+            Action::TerminalPageUp,
+            Action::TerminalPageDown,
         ]
     }
 
@@ -90,37 +153,48 @@ impl Action {
             Action::ToggleFileViewer => "Toggle file viewer",
             Action::FocusTasks => "Tasks",
             Action::GlobalSearch => "Global search",
+            Action::Copy => "Copy selection",
+            Action::Paste => "Paste",
+            Action::SessionListNext => "Next item",
+            Action::SessionListPrev => "Previous item",
+            Action::SessionListOpen => "Focus terminal",
+            Action::FileViewerDown => "Move down",
+            Action::FileViewerUp => "Move up",
+            Action::FileViewerCollapse => "Collapse / parent",
+            Action::FileViewerExpand => "Expand / open file",
+            Action::FileViewerSearch => "Start search",
+            Action::FileViewerNextMatch => "Next match",
+            Action::FileViewerPrevMatch => "Previous match",
+            Action::TerminalScrollUp => "Scroll up one line",
+            Action::TerminalScrollDown => "Scroll down one line",
+            Action::TerminalPageUp => "Scroll up half page",
+            Action::TerminalPageDown => "Scroll down half page",
         }
     }
 
-    /// Section grouping used by the F1 help overlay. Exhaustive match —
-    /// adding a new `Action` variant without classifying it here is a
-    /// compile error, which is the entire point of this method.
-    pub fn category(self) -> Category {
+    /// The focus scope in which this action is active. Exhaustive match —
+    /// adding a new `Action` variant without classifying it here is a compile
+    /// error, which is the entire point of this method. Drives both the
+    /// context-aware [`KeyBindings::lookup_in`] and the conflict rules in
+    /// [`KeyBindings::rebind`].
+    pub fn context(self) -> KeyContext {
         match self {
-            Action::FocusBackward
-            | Action::FocusForward
-            | Action::NextSession
-            | Action::PreviousSession => Category::Navigation,
-
-            Action::NewSession
-            | Action::DeleteSession
-            | Action::RestartSession
-            | Action::ForkSession
-            | Action::OpenAutomations
-            | Action::UndoDelete
-            | Action::OpenRestoreSessions => Category::Sessions,
-
-            Action::OpenInEditor | Action::StartSync => Category::Project,
-
-            Action::QuitApp
-            | Action::ToggleShell
-            | Action::ToggleHelp
-            | Action::ToggleInfoPanel
-            | Action::ToggleFileViewer
-            | Action::FocusTasks
-            | Action::GlobalSearch
-            | Action::OpenThemePicker => Category::Ui,
+            Action::SessionListNext | Action::SessionListPrev | Action::SessionListOpen => {
+                KeyContext::SessionList
+            }
+            Action::FileViewerDown
+            | Action::FileViewerUp
+            | Action::FileViewerCollapse
+            | Action::FileViewerExpand
+            | Action::FileViewerSearch
+            | Action::FileViewerNextMatch
+            | Action::FileViewerPrevMatch => KeyContext::FileViewer,
+            Action::TerminalScrollUp
+            | Action::TerminalScrollDown
+            | Action::TerminalPageUp
+            | Action::TerminalPageDown => KeyContext::Terminal,
+            // Everything else is a global action, active in every context.
+            _ => KeyContext::Global,
         }
     }
 
@@ -149,47 +223,114 @@ impl Action {
             Action::ToggleInfoPanel => vec![KeyChord::ctrl('b'), KeyChord::function(2)],
             Action::ToggleFileViewer => vec![KeyChord::ctrl('e'), KeyChord::function(3)],
             Action::FocusTasks => vec![KeyChord::ctrl('w'), KeyChord::function(5)],
-            // Ctrl+A ("search All") is the reliable default — it encodes
-            // identically on every terminal, unlike Ctrl+/ (which many terminals
-            // deliver as a bare `7`/`_` or drop the modifier). The Ctrl+/
-            // encodings are still caught by a literal intercept in
-            // `handle_priority_key`.
+            // Ctrl+A ("search All") — encodes identically on every terminal,
+            // so it's a reliable, fully-rebindable opener.
             Action::GlobalSearch => vec![KeyChord::ctrl('a')],
+            Action::Copy => vec![KeyChord::ctrl('c')],
+            Action::Paste => vec![KeyChord::ctrl('v')],
+            // Scoped single-letter / arrow nav. These only fire while their
+            // pane is focused, so they don't collide with the terminal.
+            Action::SessionListNext => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
+            Action::SessionListPrev => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
+            Action::SessionListOpen => vec![KeyChord::key(KeyCode::Enter)],
+            Action::FileViewerDown => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
+            Action::FileViewerUp => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
+            Action::FileViewerCollapse => vec![KeyChord::plain('h'), KeyChord::key(KeyCode::Left)],
+            Action::FileViewerExpand => vec![
+                KeyChord::plain('l'),
+                KeyChord::key(KeyCode::Right),
+                KeyChord::key(KeyCode::Enter),
+            ],
+            Action::FileViewerSearch => vec![KeyChord::plain('/')],
+            Action::FileViewerNextMatch => vec![KeyChord::plain('n')],
+            // Shift+N — normalized so it round-trips through display/parse.
+            Action::FileViewerPrevMatch => {
+                vec![KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('N'))]
+            }
+            Action::TerminalScrollUp => vec![KeyChord::shift(KeyCode::Up)],
+            Action::TerminalScrollDown => vec![KeyChord::shift(KeyCode::Down)],
+            Action::TerminalPageUp => vec![KeyChord::shift(KeyCode::PageUp)],
+            Action::TerminalPageDown => vec![KeyChord::shift(KeyCode::PageDown)],
         }
+    }
+
+    /// Rebindable actions in F1 help render order — the flattened
+    /// [`help_sections`]. The interactive help editor indexes its selection
+    /// into this list, so it must match the render order in
+    /// `render_help_overlay`.
+    pub fn rebindable_in_order() -> Vec<Action> {
+        help_sections()
+            .into_iter()
+            .flat_map(|(_, actions)| actions)
+            .collect()
     }
 }
 
-/// Section grouping for the F1 help overlay.
-///
-/// Order of variants in `all()` is the order sections render in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Category {
-    Navigation,
-    Sessions,
-    Project,
-    Ui,
-}
-
-impl Category {
-    /// Section header text shown above the entries.
-    pub fn title(self) -> &'static str {
-        match self {
-            Category::Navigation => "Navigation",
-            Category::Sessions => "Sessions",
-            Category::Project => "Project",
-            Category::Ui => "UI",
-        }
-    }
-
-    /// Every category in render order.
-    pub fn all() -> &'static [Category] {
-        &[
-            Category::Navigation,
-            Category::Sessions,
-            Category::Project,
-            Category::Ui,
-        ]
-    }
+/// The F1 help overlay's editable sections, in render order: a section title
+/// and the actions shown under it. Global actions come first (grouped by
+/// theme), then the scoped panes (`… (when focused)`). This is the single
+/// source of truth for both [`Action::rebindable_in_order`] and the overlay
+/// renderer, so the editor's selection index and the rendered rows never drift.
+pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
+    use Action::*;
+    vec![
+        (
+            "Navigation",
+            vec![FocusBackward, FocusForward, NextSession, PreviousSession],
+        ),
+        (
+            "Sessions",
+            vec![
+                NewSession,
+                DeleteSession,
+                RestartSession,
+                ForkSession,
+                OpenAutomations,
+                FocusTasks,
+                UndoDelete,
+                OpenRestoreSessions,
+            ],
+        ),
+        ("Project", vec![OpenInEditor, StartSync]),
+        (
+            "UI",
+            vec![
+                QuitApp,
+                ToggleShell,
+                ToggleHelp,
+                ToggleInfoPanel,
+                ToggleFileViewer,
+                OpenThemePicker,
+                GlobalSearch,
+            ],
+        ),
+        ("Clipboard", vec![Copy, Paste]),
+        (
+            "Session list (when focused)",
+            vec![SessionListNext, SessionListPrev, SessionListOpen],
+        ),
+        (
+            "File viewer (when focused)",
+            vec![
+                FileViewerDown,
+                FileViewerUp,
+                FileViewerCollapse,
+                FileViewerExpand,
+                FileViewerSearch,
+                FileViewerNextMatch,
+                FileViewerPrevMatch,
+            ],
+        ),
+        (
+            "Terminal (when focused)",
+            vec![
+                TerminalScrollUp,
+                TerminalScrollDown,
+                TerminalPageUp,
+                TerminalPageDown,
+            ],
+        ),
+    ]
 }
 
 /// A key chord: modifiers + key code.
@@ -212,6 +353,38 @@ impl KeyChord {
             mods: KeyModifiers::NONE,
             code: KeyCode::F(n),
         }
+    }
+
+    /// A plain (unmodified) character key, e.g. `j` or `/`.
+    pub fn plain(c: char) -> Self {
+        Self::normalized(KeyModifiers::NONE, KeyCode::Char(c))
+    }
+
+    /// A bare key code with no modifiers (e.g. `Enter`, `Down`).
+    pub fn key(code: KeyCode) -> Self {
+        Self::normalized(KeyModifiers::NONE, code)
+    }
+
+    /// A `Shift`+key chord (e.g. `Shift+Up`).
+    pub fn shift(code: KeyCode) -> Self {
+        Self::normalized(KeyModifiers::SHIFT, code)
+    }
+
+    /// Build a chord, normalizing the Shift+letter encoding ambiguity:
+    /// terminals deliver e.g. Shift+n as `Char('N')` (sometimes with the SHIFT
+    /// modifier, sometimes without), and `KeyChord::parse` lowercases letters.
+    /// We canonicalize every uppercase `Char` to `Shift` + the lowercase letter
+    /// so capture, lookup, and the JSON round-trip all agree.
+    pub fn normalized(mods: KeyModifiers, code: KeyCode) -> Self {
+        if let KeyCode::Char(c) = code {
+            if c.is_ascii_uppercase() {
+                return Self {
+                    mods: mods | KeyModifiers::SHIFT,
+                    code: KeyCode::Char(c.to_ascii_lowercase()),
+                };
+            }
+        }
+        Self { mods, code }
     }
 
     /// Render the chord using the same notation accepted by `parse`.
@@ -293,8 +466,16 @@ impl KeyChord {
             _ => return None,
         };
 
-        Some(KeyChord { mods, code })
+        Some(KeyChord::normalized(mods, code))
     }
+}
+
+/// Two actions' active scopes overlap (and so their chords would collide) when
+/// either is global, or they share the same scope. Distinct scoped contexts
+/// (e.g. session list vs file viewer) never collide — they are never focused
+/// at the same time.
+pub fn contexts_overlap(a: KeyContext, b: KeyContext) -> bool {
+    a == KeyContext::Global || b == KeyContext::Global || a == b
 }
 
 /// A user-editable map from `Action` to one or more chords.
@@ -331,16 +512,70 @@ impl KeyBindings {
         self.map.get(&action).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Reverse lookup: given the keypress, return the bound action.
+    /// Reverse lookup restricted to **global** actions (active in every
+    /// context). Used by the early clipboard routing and the global dispatch.
     pub fn lookup(&self, code: KeyCode, mods: KeyModifiers) -> Option<Action> {
+        self.lookup_in(KeyContext::Global, code, mods)
+    }
+
+    /// Context-aware reverse lookup: match a chord against actions that are
+    /// active in `context` — i.e. global actions plus those scoped to
+    /// `context`. The keypress is normalized first so Shift+letter encodings
+    /// match regardless of how the terminal delivered them.
+    pub fn lookup_in(
+        &self,
+        context: KeyContext,
+        code: KeyCode,
+        mods: KeyModifiers,
+    ) -> Option<Action> {
+        let target = KeyChord::normalized(mods, code);
         for (action, chords) in &self.map {
-            for chord in chords {
-                if chord.code == code && chord.mods == mods {
-                    return Some(*action);
-                }
+            let ctx = action.context();
+            if ctx != KeyContext::Global && ctx != context {
+                continue;
+            }
+            if chords
+                .iter()
+                .any(|c| c.code == target.code && c.mods == target.mods)
+            {
+                return Some(*action);
             }
         }
         None
+    }
+
+    /// Replace all chords for `action` with the single `chord`. If the chord
+    /// was already bound to a *conflicting* action (one whose context overlaps
+    /// — see [`contexts_overlap`]), unbind it there and return that action so
+    /// the caller can report the reassignment. Bindings in non-overlapping
+    /// scopes are left untouched, so e.g. `j` can drive both the session list
+    /// and the file viewer.
+    pub fn rebind(&mut self, action: Action, chord: KeyChord) -> Option<Action> {
+        let chord = KeyChord::normalized(chord.mods, chord.code);
+        let stolen = self.map.iter().find_map(|(a, chords)| {
+            if *a != action
+                && contexts_overlap(a.context(), action.context())
+                && chords
+                    .iter()
+                    .any(|c| c.code == chord.code && c.mods == chord.mods)
+            {
+                Some(*a)
+            } else {
+                None
+            }
+        });
+        if let Some(other) = stolen {
+            if let Some(v) = self.map.get_mut(&other) {
+                v.retain(|c| !(c.code == chord.code && c.mods == chord.mods));
+            }
+        }
+        self.map.insert(action, vec![chord]);
+        stolen
+    }
+
+    /// Restore `action`'s chords to its compiled-in defaults.
+    pub fn reset(&mut self, action: Action) {
+        self.map.insert(action, action.default_chords());
     }
 
     /// Serialize to the JSON shape `~/.config/thurbox/keybindings.json` uses.
@@ -489,16 +724,16 @@ mod tests {
     }
 
     #[test]
-    fn every_action_has_default_chord_and_category() {
+    fn every_action_has_default_chord_and_context() {
         let kb = KeyBindings::default();
         for action in Action::all() {
             assert!(
                 !kb.chords_for(*action).is_empty(),
                 "Action::{action:?} has no default chord binding"
             );
-            // `category()` is exhaustive at compile time, but calling it
-            // here catches any panic-on-call and keeps test coverage honest.
-            let _ = action.category();
+            // `context()` is exhaustive at compile time; calling it here keeps
+            // coverage honest.
+            let _ = action.context();
         }
     }
 
@@ -534,14 +769,194 @@ mod tests {
                 Action::ToggleFileViewer => 0,
                 Action::FocusTasks => 0,
                 Action::GlobalSearch => 0,
+                Action::Copy => 0,
+                Action::Paste => 0,
+                Action::SessionListNext => 0,
+                Action::SessionListPrev => 0,
+                Action::SessionListOpen => 0,
+                Action::FileViewerDown => 0,
+                Action::FileViewerUp => 0,
+                Action::FileViewerCollapse => 0,
+                Action::FileViewerExpand => 0,
+                Action::FileViewerSearch => 0,
+                Action::FileViewerNextMatch => 0,
+                Action::FileViewerPrevMatch => 0,
+                Action::TerminalScrollUp => 0,
+                Action::TerminalScrollDown => 0,
+                Action::TerminalPageUp => 0,
+                Action::TerminalPageDown => 0,
             }
         }
-        // 21 listed variants must equal Action::all().len(). If you add
+        // 37 listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 21;
+        const EXPECTED: usize = 37;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);
+        }
+    }
+
+    #[test]
+    fn rebind_replaces_all_chords() {
+        let mut kb = KeyBindings::default();
+        let chord = KeyChord::ctrl('x');
+        assert_eq!(kb.rebind(Action::ToggleHelp, chord), None);
+        assert_eq!(kb.chords_for(Action::ToggleHelp), &[chord]);
+        assert_eq!(
+            kb.lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Some(Action::ToggleHelp)
+        );
+        // The old dual F-key fallback is gone after a single-chord rebind.
+        assert_eq!(kb.lookup(KeyCode::F(1), KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn rebind_steals_chord_from_other_action() {
+        let mut kb = KeyBindings::default();
+        // ctrl+q is QuitApp's default; reassign it to NewSession.
+        let chord = KeyChord::ctrl('q');
+        assert_eq!(kb.rebind(Action::NewSession, chord), Some(Action::QuitApp));
+        assert_eq!(
+            kb.lookup(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            Some(Action::NewSession)
+        );
+        // QuitApp no longer owns ctrl+q.
+        assert!(!kb.chords_for(Action::QuitApp).contains(&chord));
+    }
+
+    #[test]
+    fn rebind_to_json_roundtrip() {
+        let mut kb = KeyBindings::default();
+        let chord = KeyChord::ctrl('x');
+        kb.rebind(Action::QuitApp, chord);
+        let parsed = KeyBindings::from_json(&kb.to_json().unwrap()).unwrap();
+        assert_eq!(parsed.chords_for(Action::QuitApp), &[chord]);
+    }
+
+    #[test]
+    fn reset_restores_default_chords() {
+        let mut kb = KeyBindings::default();
+        kb.rebind(Action::OpenThemePicker, KeyChord::ctrl('x'));
+        kb.reset(Action::OpenThemePicker);
+        assert_eq!(
+            kb.chords_for(Action::OpenThemePicker),
+            Action::OpenThemePicker.default_chords().as_slice()
+        );
+        // The dual F-key fallback is restored.
+        assert_eq!(
+            kb.lookup(KeyCode::F(4), KeyModifiers::NONE),
+            Some(Action::OpenThemePicker)
+        );
+    }
+
+    #[test]
+    fn rebindable_in_order_is_permutation_of_all() {
+        let ordered = Action::rebindable_in_order();
+        assert_eq!(ordered.len(), Action::all().len());
+        for action in Action::all() {
+            assert!(ordered.contains(action), "{action:?} missing from order");
+        }
+    }
+
+    #[test]
+    fn lookup_in_scopes_to_context() {
+        let kb = KeyBindings::default();
+        // `j` is a scoped action — only resolves in its own pane.
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::FileViewer,
+                KeyCode::Char('j'),
+                KeyModifiers::NONE
+            ),
+            Some(Action::FileViewerDown)
+        );
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::SessionList,
+                KeyCode::Char('j'),
+                KeyModifiers::NONE
+            ),
+            Some(Action::SessionListNext)
+        );
+        // The terminal never resolves `j` — it forwards it to the PTY.
+        assert_eq!(
+            kb.lookup_in(KeyContext::Terminal, KeyCode::Char('j'), KeyModifiers::NONE),
+            None
+        );
+        // Global actions resolve in every context.
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::Terminal,
+                KeyCode::Char('q'),
+                KeyModifiers::CONTROL
+            ),
+            Some(Action::QuitApp)
+        );
+    }
+
+    #[test]
+    fn same_chord_reused_across_distinct_scopes_without_conflict() {
+        let mut kb = KeyBindings::default();
+        // `j` is bound in both file viewer and session list by default — no steal.
+        assert_eq!(
+            kb.rebind(Action::FileViewerDown, KeyChord::plain('j')),
+            None,
+            "distinct scopes must not collide"
+        );
+        // Both still resolve in their own context.
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::SessionList,
+                KeyCode::Char('j'),
+                KeyModifiers::NONE
+            ),
+            Some(Action::SessionListNext)
+        );
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::FileViewer,
+                KeyCode::Char('j'),
+                KeyModifiers::NONE
+            ),
+            Some(Action::FileViewerDown)
+        );
+    }
+
+    #[test]
+    fn rebind_steals_within_same_scope() {
+        let mut kb = KeyBindings::default();
+        // Bind FileViewerUp to `j` — already FileViewerDown's chord (same scope).
+        assert_eq!(
+            kb.rebind(Action::FileViewerUp, KeyChord::plain('j')),
+            Some(Action::FileViewerDown)
+        );
+    }
+
+    #[test]
+    fn global_chord_conflicts_with_every_scope() {
+        let mut kb = KeyBindings::default();
+        // A scoped action grabbing a global chord steals it from the global action.
+        assert_eq!(
+            kb.rebind(Action::FileViewerDown, KeyChord::ctrl('q')),
+            Some(Action::QuitApp)
+        );
+    }
+
+    #[test]
+    fn normalized_shift_letter_round_trips() {
+        // Shift+N normalizes to {SHIFT, 'n'} and survives display/parse.
+        let chord = KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('N'));
+        assert_eq!(chord.mods, KeyModifiers::SHIFT);
+        assert_eq!(chord.code, KeyCode::Char('n'));
+        assert_eq!(KeyChord::parse(&chord.display()), Some(chord));
+        // Lookup matches whether the terminal delivers Char('N') with or
+        // without the SHIFT modifier.
+        let kb = KeyBindings::default();
+        for mods in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+            assert_eq!(
+                kb.lookup_in(KeyContext::FileViewer, KeyCode::Char('N'), mods),
+                Some(Action::FileViewerPrevMatch)
+            );
         }
     }
 }

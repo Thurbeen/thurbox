@@ -988,6 +988,20 @@ impl TaskEditorModal {
     }
 }
 
+// ── Help / Keybinding Editor Modal ──────────────────────────────────────────
+
+/// State for the interactive F1 keybinding editor.
+///
+/// `selected` indexes into [`Action::rebindable_in_order`], which matches the
+/// row order rendered by `render_help_overlay`. When `capturing` is set, the
+/// next keypress is captured as the new chord for the selected action rather
+/// than being interpreted normally.
+#[derive(Debug, Clone, Default)]
+pub struct HelpModal {
+    pub selected: usize,
+    pub capturing: bool,
+}
+
 // ── Main Modal Enum ────────────────────────────────────────────────────────
 
 /// Single, discriminated union replacing boolean flags for modal state.
@@ -996,7 +1010,7 @@ impl TaskEditorModal {
 pub enum Modal {
     #[default]
     None,
-    Help,
+    Help(HelpModal),
     BranchSelector(BranchSelectorModal),
     WorktreeName(WorktreeNameModal),
     AgentPicker(crate::ui::agent_picker_modal::AgentPickerState),
@@ -1095,13 +1109,13 @@ mod tests {
 
     #[test]
     fn test_modal_help_is_open() {
-        let modal = Modal::Help;
+        let modal = Modal::Help(HelpModal::default());
         assert!(!matches!(modal, Modal::None));
     }
 
     #[test]
     fn test_modal_close() {
-        let mut modal = Modal::Help;
+        let mut modal = Modal::Help(HelpModal::default());
         assert!(!matches!(modal, Modal::None));
         modal.close();
         assert!(matches!(modal, Modal::None));
@@ -1131,7 +1145,7 @@ mod tests {
         let mut modal = Modal::None;
         assert!(matches!(modal, Modal::None));
 
-        modal = Modal::Help;
+        modal = Modal::Help(HelpModal::default());
         assert!(!matches!(modal, Modal::None));
 
         modal.close();
