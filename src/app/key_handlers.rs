@@ -242,9 +242,57 @@ impl App {
             Modal::AgentPicker(_) => self.handle_agent_picker_key(code),
             Modal::ThemePicker(_) => self.handle_theme_picker_key(code),
             Modal::RepoPicker(_) => self.handle_repo_picker_key(code),
+            Modal::TaskActionPicker(_) => self.handle_task_action_picker_key(code),
             _ => return false,
         }
         true
+    }
+
+    /// Drive the trigger-time task action picker: `j`/`k` (or arrows) select,
+    /// `Enter` runs the chosen action, `Esc` closes.
+    fn handle_task_action_picker_key(&mut self, code: KeyCode) {
+        use super::modals::TaskActionChoice;
+        let super::modals::Modal::TaskActionPicker(ref mut p) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => self.modal.close(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if p.selected + 1 < p.choices.len() {
+                    p.selected += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                p.selected = p.selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let Some(choice) = p.choices.get(p.selected).cloned() else {
+                    self.modal.close();
+                    return;
+                };
+                let task_id = p.task_id;
+                let title = p.title.clone();
+                let status = self
+                    .cached_tasks
+                    .iter()
+                    .find(|t| t.id == task_id)
+                    .map(|t| t.status)
+                    .unwrap_or_default();
+                self.modal.close();
+                match choice {
+                    TaskActionChoice::Send(session_id, _) => {
+                        self.send_task_to_session(task_id, &title, status, session_id);
+                    }
+                    TaskActionChoice::SpawnNew => {
+                        // Reuse the normal new-session flow; the prompt is
+                        // delivered + the task advanced when the spawn lands.
+                        self.pending_task_prompt = Some((task_id, title));
+                        self.open_repo_picker();
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The in-pane automation/task editor + run-history capture input like the
@@ -540,9 +588,10 @@ impl App {
     }
 
     /// Handle keys while the tasks panel is focused: `j`/`k` select (and preview
-    /// the selected task in the central pane), `n` create, `e`/`Enter` open the
-    /// central-pane editor, `Space` cycles status, `r` triggers the agent action,
-    /// `d` deletes, `Esc` leaves. Searching is handled by the global `Ctrl+A`.
+    /// the selected task in the central pane), `PageUp`/`PageDown` scroll that
+    /// preview, `n` create, `e`/`Enter` open the central-pane editor, `Space`
+    /// cycles status, `r` opens the trigger-time action picker, `d` deletes,
+    /// `Esc` leaves. Searching is handled by the global `Ctrl+A`.
     pub(crate) fn handle_task_list_key(&mut self, code: KeyCode) {
         // Creating works regardless of whether the panel has entries.
         if matches!(code, KeyCode::Char('n')) {
@@ -576,6 +625,9 @@ impl App {
                     self.enter_task_editor();
                 }
             }
+            // Scroll the full-screen preview (the list itself uses j/k).
+            KeyCode::PageDown => self.scroll_task_preview(5),
+            KeyCode::PageUp => self.scroll_task_preview(-5),
             KeyCode::Char(' ') => {
                 if let Some(task) = self.selected_task().cloned() {
                     if let Err(e) = self.db.set_task_status(task.id, task.status.cycle()) {
@@ -585,9 +637,10 @@ impl App {
                     self.sync_task_editor();
                 }
             }
+            // Open the trigger-time action picker (Send → session / Spawn new).
             KeyCode::Char('r') => {
                 if let Some(task) = self.selected_task().cloned() {
-                    self.trigger_task(&task);
+                    self.open_task_action_picker(&task);
                 }
             }
             KeyCode::Char('d') => {
@@ -1040,6 +1093,9 @@ impl App {
                 ) {
                     self.new_automation_in_pane();
                 } else {
+                    // A manual new-session must not inherit a task prompt left
+                    // over from a cancelled task-spawn.
+                    self.pending_task_prompt = None;
                     self.open_repo_picker();
                 }
                 true
@@ -1153,6 +1209,9 @@ impl App {
                     self.refresh_tasks();
                     self.task_panel_index = 0;
                     self.focus = InputFocus::TaskList;
+                    // Populate the central-pane preview for the selected task
+                    // (without this the workspace shows the empty hint).
+                    self.sync_task_editor();
                 } else if self.focus == InputFocus::TaskList {
                     self.focus = InputFocus::SessionList;
                 }

@@ -115,7 +115,7 @@ fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics 
     }
 }
 
-pub use modals::{AutomationActionKind, AutomationField, TaskActionKind, TaskField, TriggerKind};
+pub use modals::{AutomationActionKind, AutomationField, TaskField, TriggerKind};
 
 /// Ticks (~10 ms each) to wait after spawning a session before pasting its
 /// automation prompt, giving the agent CLI time to come up (~3 s).
@@ -378,6 +378,13 @@ pub struct App {
     /// while [`InputFocus::TaskEditor`] is focused it holds the in-progress
     /// edits. `None` when no task is scoped. Mirrors `automation_editor`.
     pub(crate) task_editor: Option<modals::TaskEditorModal>,
+    /// Vertical scroll offset (rows) for the full-screen task preview shown
+    /// while the tasks panel is focused. Reset when the selection changes.
+    pub(crate) task_preview_scroll: u16,
+    /// A task-initiated spawn in flight: `(task_id, title)`. Set when the
+    /// trigger-time action picker chooses "Spawn new session", consumed by the
+    /// spawn flow's success tail to deliver the prompt + advance the task.
+    pub(crate) pending_task_prompt: Option<(i64, String)>,
     /// Global search strip (`Ctrl+A`): cross-scope search docked at the bottom.
     pub(crate) global_search: search::GlobalSearchState,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
@@ -501,6 +508,8 @@ impl App {
             automation_run_index: 0,
             cached_tasks: Vec::new(),
             task_panel_index: 0,
+            task_preview_scroll: 0,
+            pending_task_prompt: None,
             filtered_task_indices: Vec::new(),
             task_editor: None,
             global_search: search::GlobalSearchState::default(),
@@ -1354,6 +1363,22 @@ impl App {
                 }
 
                 self.save_state();
+
+                // A task-initiated spawn (the trigger-time picker's "Spawn new
+                // session") delivers the task title once the agent has booted,
+                // then advances the task to in progress.
+                if let Some((task_id, title)) = self.pending_task_prompt.take() {
+                    let new_id = self.sessions[self.active_index].info.id;
+                    self.send_prompt_to_session(new_id, &title, AGENT_BOOT_DELAY_TICKS);
+                    let status = self
+                        .cached_tasks
+                        .iter()
+                        .find(|t| t.id == task_id)
+                        .map(|t| t.status)
+                        .unwrap_or_default();
+                    self.advance_task_to_in_progress(task_id, status);
+                    self.refresh_tasks();
+                }
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
@@ -2867,69 +2892,87 @@ impl App {
         self.cached_tasks.get(idx)
     }
 
-    /// Trigger a task's agent action (the Send/Spawn linkage). Unconnected tasks
-    /// are a no-op with a status message. On success the task advances to
-    /// `InProgress`.
-    pub(crate) fn trigger_task(&mut self, task: &crate::session::Task) {
-        let Some(action) = task.action.clone() else {
-            self.set_status(StatusLevel::Info, "Task is not connected to an agent");
+    /// Scroll the full-screen task preview by `delta` rows, clamped to the
+    /// rendered description length (a slight over-scroll is harmless).
+    pub(crate) fn scroll_task_preview(&mut self, delta: i32) {
+        let max = self
+            .selected_task()
+            .and_then(|t| t.description.as_deref())
+            .map(|d| crate::ui::markdown::render_markdown(d).len() as i32)
+            .unwrap_or(0)
+            .saturating_sub(1)
+            .max(0);
+        let next = (self.task_preview_scroll as i32 + delta).clamp(0, max);
+        self.task_preview_scroll = next as u16;
+    }
+
+    /// Open the trigger-time action picker for `task`: one **Send** entry per
+    /// running session, plus **Spawn new session…**. The chosen
+    /// action runs immediately (nothing is persisted on the task).
+    pub(crate) fn open_task_action_picker(&mut self, task: &crate::session::Task) {
+        use modals::{Modal, TaskActionChoice, TaskActionPickerModal};
+        let mut choices: Vec<TaskActionChoice> = self
+            .session_target_choices()
+            .into_iter()
+            .map(|(id, name)| TaskActionChoice::Send(id, name))
+            .collect();
+        choices.push(TaskActionChoice::SpawnNew);
+        self.modal = Modal::TaskActionPicker(TaskActionPickerModal {
+            task_id: task.id,
+            title: task.title.clone(),
+            choices,
+            selected: 0,
+        });
+    }
+
+    /// Send a task's title to an existing session and advance it to `InProgress`.
+    pub(crate) fn send_task_to_session(
+        &mut self,
+        task_id: i64,
+        title: &str,
+        status: crate::session::TaskStatus,
+        session_id: SessionId,
+    ) {
+        let Some(name) = self
+            .sessions
+            .iter()
+            .find(|s| s.info.id == session_id)
+            .map(|s| s.info.name.clone())
+        else {
+            self.set_error("Target session is not running");
             return;
         };
-        let outcome = match action {
-            AutomationAction::Send { session_id } => {
-                if self.sessions.iter().any(|s| s.info.id == session_id) {
-                    self.send_prompt_to_session(session_id, &task.title, 0);
-                    Ok(format!("Sent task to {session_id}"))
-                } else {
-                    Err("Target session is not running".to_string())
-                }
+        self.send_prompt_to_session(session_id, title, 0);
+        self.advance_task_to_in_progress(task_id, status);
+        self.refresh_tasks();
+        self.set_status(StatusLevel::Success, format!("Sent task to {name}"));
+    }
+
+    /// Advance a task `Todo → InProgress` (no-op for other states) now that an
+    /// agent is acting on it. Shared by the Send and Spawn trigger paths.
+    pub(crate) fn advance_task_to_in_progress(
+        &mut self,
+        task_id: i64,
+        status: crate::session::TaskStatus,
+    ) {
+        if status == crate::session::TaskStatus::Todo {
+            if let Err(e) = self
+                .db
+                .set_task_status(task_id, crate::session::TaskStatus::InProgress)
+            {
+                error!("Failed to advance task {task_id} status: {e}");
             }
-            AutomationAction::Spawn {
-                repo_path,
-                worktree_branch,
-                base_branch,
-                agent,
-            } => self
-                .spawn_and_prompt(
-                    format!("task-{}", task.id),
-                    &repo_path,
-                    worktree_branch.as_deref(),
-                    base_branch.as_deref(),
-                    agent.as_deref(),
-                    &task.title,
-                )
-                .map(|id| format!("Spawned session {id} for task")),
-        };
-        match outcome {
-            Ok(msg) => {
-                // Mark the task as in progress now that an agent is on it.
-                if task.status == crate::session::TaskStatus::Todo {
-                    if let Err(e) = self
-                        .db
-                        .set_task_status(task.id, crate::session::TaskStatus::InProgress)
-                    {
-                        error!("Failed to advance task {} status: {e}", task.id);
-                    }
-                }
-                self.refresh_tasks();
-                self.set_status(StatusLevel::Success, msg);
-            }
-            Err(e) => self.set_error(e),
         }
     }
 
-    /// A blank task editor with its Send-target list populated from the running
-    /// sessions, defaulting to the active one.
+    /// A blank task editor (title + description + status only).
     fn blank_task_editor(&self) -> modals::TaskEditorModal {
-        let active = self.sessions.get(self.active_index).map(|s| s.info.id);
-        let mut m = modals::TaskEditorModal::new(self.session_target_choices());
-        m.set_default_target(active);
-        m
+        modals::TaskEditorModal::new()
     }
 
     /// Build an editor pre-filled from an existing task.
     fn build_task_editor(&self, task: &crate::session::Task) -> modals::TaskEditorModal {
-        modals::TaskEditorModal::from_task(task, self.session_target_choices())
+        modals::TaskEditorModal::from_task(task)
     }
 
     /// Keep the in-pane task editor (`self.task_editor`) in sync with focus +
@@ -2941,6 +2984,8 @@ impl App {
     pub(crate) fn sync_task_editor(&mut self) {
         match self.focus {
             InputFocus::TaskList => {
+                // A fresh preview starts unscrolled.
+                self.task_preview_scroll = 0;
                 self.task_editor = self
                     .selected_task()
                     .cloned()
@@ -2980,19 +3025,20 @@ impl App {
             self.set_error("Title cannot be empty");
             return false;
         }
-        let action = match m.build_action() {
-            Ok(a) => a,
-            Err(e) => {
-                self.set_error(e);
-                return false;
-            }
+        // Trimmed-empty description persists as `None`.
+        let description = {
+            let d = m.description.value().trim();
+            (!d.is_empty()).then(|| d.to_string())
         };
         let result = match m.editing_id {
             Some(id) => match self.db.get_task(id) {
+                // The editor no longer authors the agent action — preserve any
+                // action set out-of-band (e.g. via the CLI). The trigger-time
+                // picker (`r`) is how the TUI runs an action.
                 Ok(Some(mut task)) => {
                     task.title = title;
+                    task.description = description;
                     task.status = m.status;
-                    task.action = action;
                     self.db.update_task(&task)
                 }
                 Ok(None) => {
@@ -3004,8 +3050,9 @@ impl App {
             None => {
                 let new = crate::storage::tasks::NewTask {
                     title,
+                    description,
                     status: m.status,
-                    action,
+                    action: None,
                     source: crate::session::SOURCE_LOCAL.to_string(),
                     external_id: None,
                     external_url: None,
@@ -3172,6 +3219,28 @@ impl App {
                     kind: SearchKind::Task,
                     label: task.title.clone(),
                     snippet: None,
+                    target: SearchTarget::Task { id: task.id },
+                });
+            } else if task
+                .description
+                .as_deref()
+                // Title missed — match the description with the same fuzzy
+                // matcher used for titles (so gapped queries hit too).
+                .is_some_and(|d| crate::fuzzy::fuzzy_match(query, d).is_some())
+            {
+                let desc = task.description.as_deref().unwrap_or("");
+                // Snippet: prefer a line that contains the query verbatim, else
+                // the first non-empty line, for useful context.
+                let snippet = desc
+                    .lines()
+                    .find(|l| l.to_lowercase().contains(&query_lc))
+                    .or_else(|| desc.lines().find(|l| !l.trim().is_empty()))
+                    .map(|l| l.trim().chars().take(120).collect::<String>())
+                    .unwrap_or_default();
+                tasks.push(GlobalSearchResult {
+                    kind: SearchKind::Task,
+                    label: task.title.clone(),
+                    snippet: Some(snippet),
                     target: SearchTarget::Task { id: task.id },
                 });
             }
@@ -4558,6 +4627,26 @@ mod tests {
         assert_eq!(app.focus, InputFocus::SessionList);
     }
 
+    #[test]
+    fn opening_tasks_panel_populates_central_preview() {
+        // Focusing the tasks panel (F5/Ctrl+W) must build the central-pane
+        // preview for the selected task, not leave the empty hint showing.
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(160, 40));
+        app.db
+            .create_task(&crate::storage::tasks::NewTask::local("only task"))
+            .unwrap();
+        app.refresh_tasks();
+
+        app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::TaskList);
+        let editor = app
+            .task_editor
+            .as_ref()
+            .expect("the central pane must mirror the selected task");
+        assert_eq!(editor.title.value(), "only task");
+    }
+
     fn session_parser_size(app: &App, index: usize) -> (u16, u16) {
         let parser = app.sessions[index].parser.lock().unwrap();
         parser.screen().size()
@@ -4693,6 +4782,153 @@ mod tests {
     }
 
     #[test]
+    fn task_editor_save_creates_with_no_action_and_preserves_on_edit() {
+        let mut app = app_with_sessions(1);
+        // Create via the editor → action is None (the editor no longer authors it).
+        app.focus = InputFocus::TaskList;
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        for c in "do thing".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let id = app.db.list_tasks().unwrap()[0].id;
+        assert!(app.db.get_task(id).unwrap().unwrap().action.is_none());
+
+        // Give it an action out-of-band (as the CLI would), then edit the title
+        // through the editor: the action must survive.
+        let mut t = app.db.get_task(id).unwrap().unwrap();
+        t.action = Some(AutomationAction::Send {
+            session_id: app.sessions[0].info.id,
+        });
+        app.db.update_task(&t).unwrap();
+        app.refresh_tasks();
+
+        app.task_panel_index = 0;
+        app.enter_task_editor();
+        // Append to the title and save.
+        app.handle_key(KeyCode::End, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('!'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        let saved = app.db.get_task(id).unwrap().unwrap();
+        assert_eq!(saved.title, "do thing!");
+        assert!(
+            matches!(saved.action, Some(AutomationAction::Send { .. })),
+            "edit must preserve the out-of-band action"
+        );
+    }
+
+    #[test]
+    fn task_action_picker_lists_send_per_session_plus_spawn() {
+        let mut app = app_with_sessions(2);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+        let task = app.db.get_task(id).unwrap().unwrap();
+        app.open_task_action_picker(&task);
+        let modals::Modal::TaskActionPicker(ref p) = app.modal else {
+            panic!("expected the action picker");
+        };
+        // Two running sessions → two Send entries + a trailing SpawnNew.
+        assert_eq!(p.choices.len(), 3);
+        assert!(matches!(p.choices[2], modals::TaskActionChoice::SpawnNew));
+        assert!(
+            p.choices
+                .iter()
+                .filter(|c| matches!(c, modals::TaskActionChoice::Send(..)))
+                .count()
+                == 2
+        );
+    }
+
+    #[test]
+    fn task_r_key_opens_picker_then_enter_sends_and_closes() {
+        // End-to-end through the key handlers: `r` opens the picker, `Enter`
+        // runs the highlighted Send choice, closing the modal and advancing the
+        // task. (One session → first choice is Send.)
+        let mut app = app_with_sessions(1);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(
+            matches!(app.modal, modals::Modal::TaskActionPicker(_)),
+            "r opens the action picker"
+        );
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None), "Enter closes it");
+        assert_eq!(
+            app.db.get_task(id).unwrap().unwrap().status,
+            crate::session::TaskStatus::InProgress
+        );
+    }
+
+    #[test]
+    fn task_action_picker_esc_closes_without_running() {
+        let mut app = app_with_sessions(1);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+        let task = app.db.get_task(id).unwrap().unwrap();
+        app.open_task_action_picker(&task);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+        // Status is untouched.
+        assert_eq!(
+            app.db.get_task(id).unwrap().unwrap().status,
+            crate::session::TaskStatus::Todo
+        );
+    }
+
+    #[test]
+    fn send_task_to_session_advances_to_in_progress() {
+        let mut app = app_with_sessions(1);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+        let sid = app.sessions[0].info.id;
+        app.send_task_to_session(id, "t", crate::session::TaskStatus::Todo, sid);
+        assert_eq!(
+            app.db.get_task(id).unwrap().unwrap().status,
+            crate::session::TaskStatus::InProgress
+        );
+    }
+
+    #[test]
+    fn scroll_task_preview_clamps_to_content() {
+        let mut app = app_with_sessions(1);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask {
+                description: Some("a\nb\nc".into()),
+                ..crate::storage::tasks::NewTask::local("t")
+            })
+            .unwrap();
+        let _ = id;
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+        // Over-scroll up is clamped to 0.
+        app.scroll_task_preview(-5);
+        assert_eq!(app.task_preview_scroll, 0);
+        // Over-scroll down is clamped to the rendered line count.
+        app.scroll_task_preview(1000);
+        assert!(app.task_preview_scroll <= 3);
+    }
+
+    #[test]
     fn task_editor_e_chord_edits_not_global_binding() {
         // `e` inside the editor must edit the title, not fire the file-viewer
         // toggle / other global binding (capture-before-global).
@@ -4814,6 +5050,92 @@ mod tests {
             .results
             .iter()
             .any(|r| r.target == search::SearchTarget::Automation { id: aid }));
+    }
+
+    #[test]
+    fn global_search_matches_task_description() {
+        let mut app = app_with_sessions(1);
+        let tid = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask {
+                description: Some("investigate the flaky parser".into()),
+                ..crate::storage::tasks::NewTask::local("unrelated title")
+            })
+            .unwrap();
+        app.refresh_tasks();
+
+        app.open_global_search();
+        for c in "flaky".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        let result = app
+            .global_search
+            .results
+            .iter()
+            .find(|r| r.target == search::SearchTarget::Task { id: tid });
+        let result = result.expect("description should match the query");
+        assert!(
+            result.snippet.as_deref().unwrap_or("").contains("flaky"),
+            "a description match carries a snippet"
+        );
+    }
+
+    #[test]
+    fn global_search_previewing_task_selects_it_for_central_pane() {
+        // When the strip previews a task result, the owning panel's cursor moves
+        // to it and the preview kind is Task — the two facts the central pane
+        // uses to render the task's full-screen detail/markdown.
+        let mut app = app_with_sessions(1);
+        let tid = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask {
+                description: Some("rendered in the main pane".into()),
+                ..crate::storage::tasks::NewTask::local("zzz unrelated")
+            })
+            .unwrap();
+        app.refresh_tasks();
+
+        app.open_global_search();
+        for c in "main pane".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(
+            app.global_search_preview_kind(),
+            Some(search::SearchKind::Task),
+            "the matched task result should be the live preview"
+        );
+        assert_eq!(
+            app.selected_task().map(|t| t.id),
+            Some(tid),
+            "the previewed task must be the panel's selection so the central pane shows it"
+        );
+    }
+
+    #[test]
+    fn global_search_fuzzy_matches_task_description() {
+        // A gapped (non-substring) query must still hit the description, the
+        // same way it would the title — they share the fuzzy matcher.
+        let mut app = app_with_sessions(1);
+        let tid = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask {
+                description: Some("investigate the flaky parser".into()),
+                ..crate::storage::tasks::NewTask::local("unrelated title")
+            })
+            .unwrap();
+        app.refresh_tasks();
+
+        app.open_global_search();
+        for c in "invflaky".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(
+            app.global_search
+                .results
+                .iter()
+                .any(|r| r.target == search::SearchTarget::Task { id: tid }),
+            "a gapped query should fuzzy-match the description"
+        );
     }
 
     #[test]

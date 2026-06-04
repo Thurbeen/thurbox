@@ -1,29 +1,34 @@
-//! In-pane editor for creating/editing a task, rendered in the central pane
-//! (like the automation editor). Mirrors
-//! [`automation_editor_modal`](super::automation_editor_modal) but simpler — a
-//! task has no schedule, just a title, status, and optional agent action.
+//! In-pane editor for creating/editing a task, rendered full-screen in the
+//! central pane when the task editor is focused. A task is just a title, a
+//! multi-line markdown description, and a status — the agent action is chosen
+//! at trigger time, not authored here.
 
-use ratatui::{layout::Rect, text::Line, widgets::Paragraph, Frame};
+use ratatui::{
+    layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
+    Frame,
+};
 
-use crate::app::{TaskActionKind, TaskField};
+use super::theme::Theme;
+use crate::app::TaskField;
 use crate::session::TaskStatus;
 
 pub struct TaskEditorState<'a> {
     pub editing: bool,
     pub field: TaskField,
     pub status: TaskStatus,
-    pub action: TaskActionKind,
     pub title: &'a str,
     /// Caret position within the **active** text field, for drawing the in-text
     /// cursor where editing is happening. Meaningful only when [`Self::field`]
     /// is a typeable (non-selector) field and the editor is [`Self::focused`].
     pub active_cursor: usize,
-    pub repo: &'a str,
-    pub worktree: &'a str,
-    pub base: &'a str,
-    pub agent: &'a str,
-    /// Display name of the Send target session, if any.
-    pub target_session: Option<&'a str>,
+    /// Multi-line markdown description text.
+    pub description: &'a str,
+    /// Caret `(line, col)` within the description, for drawing the block cursor
+    /// while the `Description` field is active.
+    pub description_cursor: (usize, usize),
     /// Whether the editor currently has keyboard focus. When `false` (an in-pane
     /// preview while the tasks panel is focused), the active-field cursor/
     /// highlight is suppressed and the border is drawn unfocused.
@@ -38,24 +43,13 @@ impl<'a> TaskEditorState<'a> {
             editing: m.editing_id.is_some(),
             field: m.field,
             status: m.status,
-            action: m.action,
             title: m.title.value(),
             active_cursor: m.active_field().map(|f| f.cursor_pos()).unwrap_or(0),
-            repo: m.repo.value(),
-            worktree: m.worktree.value(),
-            base: m.base.value(),
-            agent: m.agent.value(),
-            target_session: m.selected_target().map(|(_, n)| n.as_str()),
+            description: m.description.value(),
+            description_cursor: m.description.cursor_line_col(),
             focused,
         }
     }
-}
-
-/// Fields shown for the current action kind, in order. Thin re-export of
-/// [`TaskActionKind::visible_fields`] so the renderer and the app's field
-/// navigation stay in lockstep.
-pub fn visible_fields(action: TaskActionKind) -> Vec<TaskField> {
-    action.visible_fields()
 }
 
 /// Render the editor inline into `area`, framed by a border whose style reflects
@@ -74,20 +68,83 @@ fn editor_title(state: &TaskEditorState<'_>) -> &'static str {
 }
 
 fn editor_lines<'a>(state: &TaskEditorState<'a>) -> Vec<Line<'a>> {
-    let fields = visible_fields(state.action);
-    let mut lines: Vec<Line> = fields
-        .iter()
+    let mut lines: Vec<Line> = Vec::new();
+    for f in [TaskField::Title, TaskField::Description, TaskField::Status] {
+        let active = state.focused && f == state.field;
         // Only mark the active field when the editor itself is focused; an
-        // unfocused in-pane preview renders every field plainly.
-        .map(|f| field_line(*f, state, state.focused && *f == state.field))
-        .collect();
+        // unfocused in-pane preview renders every field plainly. The
+        // multi-line description expands into several rows.
+        if f == TaskField::Description {
+            lines.extend(description_lines(state, active));
+        } else {
+            lines.push(field_line(f, state, active));
+        }
+    }
 
     lines.push(super::key_hint_line(&[
         ("Tab/↑↓", " move  "),
         ("←→", " adjust  "),
         ("Enter", " save  "),
+        ("^S", " save  "),
         ("Esc", " cancel"),
     ]));
+
+    lines
+}
+
+/// Render the description as a `▸ description` label row followed by its text
+/// rows (indented), drawing a block cursor at `state.description_cursor` when
+/// the field is active. An empty description shows a dimmed `(none)`.
+fn description_lines<'a>(state: &TaskEditorState<'a>, active: bool) -> Vec<Line<'a>> {
+    let prefix = if active { "▸ " } else { "  " };
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{prefix}{:<9}", "description"),
+        Theme::label(),
+    ))];
+
+    let text_style = if active {
+        Style::default()
+            .fg(Theme::border_focused())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Theme::text_primary())
+    };
+
+    if state.description.is_empty() && !active {
+        lines.push(Line::from(Span::styled(
+            "    (none)",
+            Style::default().fg(Theme::text_secondary()),
+        )));
+        return lines;
+    }
+
+    let (cur_line, cur_col) = state.description_cursor;
+    for (li, text) in state.description.split('\n').enumerate() {
+        let chars: Vec<char> = text.chars().collect();
+        let mut spans = vec![Span::raw("    ")];
+        if active && li == cur_line {
+            let caret = cur_col.min(chars.len());
+            let before: String = chars[..caret].iter().collect();
+            if !before.is_empty() {
+                spans.push(Span::styled(before, text_style));
+            }
+            let cursor_char = chars
+                .get(caret)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            spans.push(Span::styled(cursor_char, Theme::cursor()));
+            let after: String = chars
+                .get(caret + 1..)
+                .map(|s| s.iter().collect())
+                .unwrap_or_default();
+            if !after.is_empty() {
+                spans.push(Span::styled(after, text_style));
+            }
+        } else if !chars.is_empty() {
+            spans.push(Span::styled(text.to_string(), text_style));
+        }
+        lines.push(Line::from(spans));
+    }
 
     lines
 }
@@ -102,31 +159,12 @@ fn field_line<'a>(
     let (label, value, selector): (&str, String, bool) = match field {
         TaskField::Title => ("title", state.title.to_string(), false),
         TaskField::Status => ("status", state.status.label().to_string(), true),
-        TaskField::Action => ("action", state.action.label().to_string(), true),
-        TaskField::Target => ("target", target_display(state), true),
-        TaskField::Repo => ("repo", state.repo.to_string(), false),
-        TaskField::Worktree => ("worktree", optional_display(state.worktree), false),
-        TaskField::Base => ("base", optional_display(state.base), false),
-        TaskField::Agent => ("agent", optional_display(state.agent), false),
+        // Description renders via `description_lines`, never as a one-row field.
+        TaskField::Description => ("description", state.description.to_string(), false),
     };
 
     // Every non-selector field is a typeable text input, so feed the active
     // field's caret through to draw the block cursor where editing happens.
     let cursor = (is_active_field && !selector).then_some(state.active_cursor);
     super::editor_field_line_with_cursor(label, value, selector, is_active_field, cursor)
-}
-
-fn target_display(state: &TaskEditorState<'_>) -> String {
-    state
-        .target_session
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "(no sessions)".to_string())
-}
-
-fn optional_display(value: &str) -> String {
-    if value.is_empty() {
-        "(none)".to_string()
-    } else {
-        value.to_string()
-    }
 }

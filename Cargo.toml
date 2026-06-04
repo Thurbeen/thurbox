@@ -27,6 +27,9 @@ vt100 = "0.16"
 # URL detection
 regex = "1"
 
+# Markdown parsing (task description rendering)
+pulldown-cmark = { version = "0.13", default-features = false }
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "signal", "net"] }
 

@@ -1,11 +1,12 @@
 //! Focusable tasks panel — a toggleable right-side column (between the terminal
 //! and the file viewer), shown/hidden with F5/`Ctrl+W` like the file viewer.
-//! Renders a fuzzy-search box over a checkbox list of tasks, mirroring the
-//! repo-picker search bar.
+//! Renders a checkbox list of task titles (☐/◐/☑), with global-search matches
+//! highlighted; while focused it shows a compact action footer. Filtering is
+//! handled by the global `Ctrl+A` search, not a per-pane box.
 
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -20,8 +21,6 @@ use super::{focus_block, truncate_ellipsis, FocusLevel};
 pub struct TaskPaneEntry {
     pub title: String,
     pub status: TaskStatus,
-    /// e.g. `"→ send: 1a2b3c"`, `"→ spawn: repo#branch"`, or `"local"`.
-    pub action_summary: String,
     /// Byte offsets in `title` matched by the active global-search query. Empty
     /// when there's no global search (or this row didn't match).
     pub match_positions: Vec<usize>,
@@ -42,11 +41,28 @@ pub fn render_tasks_panel(frame: &mut Frame, area: Rect, state: &TaskPaneState<'
     // Shared focus block: highlighted title + accent/rounded border when focused,
     // matching the session list and file viewer panes.
     let block = focus_block(" Tasks ", state.focus);
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     frame.render_widget(block, area);
 
     if inner.height == 0 {
         return;
+    }
+
+    // While focused, reserve the bottom row for a compact action footer that
+    // mirrors the full-screen preview's hints (so `r run` is discoverable here
+    // too, not only in the central pane).
+    if matches!(state.focus, FocusLevel::Focused) && inner.height > 2 {
+        let hint_area = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+        frame.render_widget(
+            // Same relative order as the central preview footer (e · r · n).
+            Paragraph::new(super::key_hint_line(&[
+                ("e", " edit "),
+                ("r", " run "),
+                ("n", " new "),
+            ])),
+            hint_area,
+        );
+        inner.height -= 1;
     }
 
     render_task_list(frame, inner, state);
@@ -104,21 +120,6 @@ fn render_task_list(frame: &mut Frame, area: Rect, state: &TaskPaneState<'_>) {
         .collect();
 
     frame.render_widget(Paragraph::new(lines), area);
-
-    // Action summary of the selected task on the last row, when there's space.
-    if let Some(sel) = state.entries.get(state.selected) {
-        if area.height > state.entries.len() as u16 {
-            let summary_area =
-                Rect::new(area.x, area.y + state.entries.len() as u16, area.width, 1);
-            let summary = Paragraph::new(Line::from(Span::styled(
-                truncate_ellipsis(&format!(" {}", sel.action_summary), width),
-                Style::default()
-                    .fg(Theme::text_muted())
-                    .add_modifier(Modifier::ITALIC),
-            )));
-            frame.render_widget(summary, summary_area);
-        }
-    }
 }
 
 fn status_glyph(status: TaskStatus) -> &'static str {

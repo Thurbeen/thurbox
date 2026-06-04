@@ -335,22 +335,24 @@ the persistent `App::automation_editor` state (kept in sync by
 
 ## Tasks (todo list)
 
-Thurbox has a **task list**: todo items that can be **connected to a
-coding agent** with the same Send/Spawn model as automations. A task
-reuses `session::AutomationAction` wrapped in `Option` — `Send` pastes
-the task title into an existing session, `Spawn` creates a new session
-(optionally on a fresh worktree) seeded with the title, and `None` is a
-plain local todo. Triggering a task runs its action and advances it to
-`InProgress`.
+Thurbox has a **task list**: todo items (title + markdown description +
+status). A task can be **acted on by a coding agent** via a **trigger-time
+picker** (`r`): you choose *Send → a running session* (paste the title) or
+*Spawn new session…* (the normal repo→agent flow, seeded with the title) at
+the moment you act — the action is **not** authored into the task. Triggering
+advances the task to `InProgress`. (`Task.action: Option<AutomationAction>`
+still exists for the CLI / external sync, but the TUI editor never sets it.)
 
 - **Data** (`session/task.rs`): `Task` (`id`, `title`,
+  `description: Option<String>` (free-form markdown notes, `None` when blank),
   `status: TaskStatus` {`Todo`/`InProgress`/`Done`},
   `action: Option<AutomationAction>`, plus `source`/`external_id`/
   `external_url` scaffolding for **deferred** external sync — Jira/
   GitHub Issues slot in later with no migration; local tasks use
   `source = "local"`).
-- **Storage** (`storage/tasks.rs`, schema v25): `tasks` table mirroring
-  the automation action columns (`action_kind` nullable), soft-delete via
+- **Storage** (`storage/tasks.rs`, schema v26): `tasks` table mirroring
+  the automation action columns (`action_kind` nullable) plus a nullable
+  `description` column (added in the v26 migration), soft-delete via
   `deleted_at`, audited under `EntityType::Task`. CRUD: `create_task`,
   `get_task`, `list_tasks`, `update_task`, `set_task_status`,
   `soft_delete_task`.
@@ -365,28 +367,44 @@ plain local todo. Triggering a task runs its action and advances it to
   `ui/tasks_panel.rs` (checkbox glyphs ☐/◐/☑) with the shared
   `ui::focus_block` for the highlighted title + accent border, matching the
   session list / file viewer. `InputFocus::TaskList` is the panel focus.
-- **In-pane editing (like automations, no modal)** — editing happens in the
-  **central pane**, not an overlay. `InputFocus::TaskEditor` is the editor
-  focus; `App::task_editor: Option<TaskEditorModal>` holds the form (a live
-  preview mirroring the selected task while the panel is focused, editable
-  once the editor is). `view::render_task_workspace` draws the editor
-  (`ui/task_editor_modal::render_task_editor_into`) on top of a read-only
-  **details** panel (`ui/task_detail`: agent linkage, status, source,
-  created/updated). Helpers mirror automations: `sync_task_editor`,
-  `new_task_in_pane`, `enter_task_editor`, `refresh_task_view`,
-  `build_task_editor`. The old `Modal::TaskEditor` overlay was removed.
-- **Keys** (focused panel): `j`/`k` select (live-preview the editor), `n`
-  new, `e`/`Enter` open the central-pane editor, `Space` cycle status, `r`
-  run the action, `d`/`Ctrl+D` delete, `Esc` back to the session list. In the
-  editor: field nav + `Enter` save (→ back to panel), `Esc` discard (→ back
-  to panel); the editor captures its keys before global bindings (so `e`/`d`
-  edit text) via `handle_automation_pane_capture`. Action field cycles
-  Local → Send → Spawn.
-- **Dispatch** lives in `app` (`App::trigger_task`), reusing the shared
-  `App::spawn_and_prompt` helper extracted from `spawn_for_automation`
-  (automations use `auto-<id>`, tasks `task-<id>`).
+- **Full-screen preview / edit toggle** — the central pane is a clean toggle
+  (`view::render_task_workspace`): while the tasks panel is focused
+  (`InputFocus::TaskList`) it shows the selected task's **full-screen,
+  scrollable** read-only **details + markdown preview** (`ui/task_detail`:
+  agent linkage, status, source, created/updated, then the markdown-rendered
+  description via `ui/markdown::render_markdown`); `PageUp`/`PageDown` scroll it
+  (`App::task_preview_scroll`, reset on selection change). Entering the central
+  pane (`Enter`/`e` → `InputFocus::TaskEditor`) swaps to the **full-screen
+  editor** (`ui/task_editor_modal::render_task_editor_into`); `Esc` returns to
+  the preview/panel. Helpers: `sync_task_editor`, `new_task_in_pane`,
+  `enter_task_editor`, `refresh_task_view`, `build_task_editor`.
+- **Editor fields** — a task is just **title + description + status**
+  (`TaskField`); the agent action is chosen at trigger time, not here. The
+  `description` is a **multi-line** `modals::TextArea` (newline +
+  vertical-cursor, distinct from single-line `TextInput`): **`Enter` inserts a
+  newline** and `Up`/`Down` move within the text (field nav is `Tab`);
+  **`Ctrl+S` saves from any field**.
+- **Keys** (focused panel): `j`/`k` select (live-preview), `PageUp`/`PageDown`
+  scroll the preview, `n` new, `e`/`Enter` open the central-pane editor,
+  `Space` cycle status, `r` open the **trigger-time action picker**, `d`/`Ctrl+D`
+  delete, `Esc` back to the session list. In the editor: field nav +
+  `Enter`/`Ctrl+S` save (→ back to panel), `Esc` discard; the editor captures
+  its keys before global bindings (so `e`/`d` edit text) via
+  `handle_automation_pane_capture`.
+- **Trigger-time action picker** (`r`) — `Modal::TaskActionPicker`
+  (`App::open_task_action_picker`, rendered by `ui/task_action_picker_modal`,
+  modeled on the theme picker): one **Send → <session>** per running session
+  plus **Spawn new session…**. *Send* runs immediately
+  (`App::send_task_to_session`); *Spawn* stashes `App::pending_task_prompt =
+  (task_id, title)` and reuses the normal `open_repo_picker` →
+  `do_spawn_session` flow, whose success tail delivers the title (after
+  `AGENT_BOOT_DELAY_TICKS`) and advances the task. The pending prompt is
+  cleared on a manual `Ctrl+N` so a cancelled task-spawn can't leak into it.
+  Both paths call `App::advance_task_to_in_progress`.
 - **CLI**: `thurbox-cli task` (alias `todo`) —
-  `create`/`list`/`show`/`edit`/`remove`/`run`. `create` with neither
+  `create`/`list`/`show`/`edit`/`remove`/`run`. `create`/`edit` take an
+  optional `--description` (markdown; `edit --description ""` clears it), and
+  `task_to_json` emits a `description` field. `create` with neither
   `--session` nor `--repo` is a plain local todo; `run` triggers the
   Send/Spawn action headlessly. Tasks do **not** participate in sync
   (`SharedState`) and have no run-history table (audited via `audit_log`).
@@ -395,7 +413,8 @@ plain local todo. Triggering a task runs its action and advances it to
 
 A **non-modal bottom strip** (`Ctrl+A`, rebindable) searches **every scope at once**:
 **sessions** (name/agent/branch + live vt100 **buffer content**), **tasks**
-(title), **automations** (name), and **files** (the active session's file
+(title + description, with a description snippet when only the description
+matched), **automations** (name), and **files** (the active session's file
 tree). `Enter` jumps to the selected result and focuses its pane —
 switching to a session's terminal, the tasks panel, the automations pane,
 or the file viewer (revealing the path).

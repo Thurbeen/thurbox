@@ -90,6 +90,142 @@ impl TextInput {
     }
 }
 
+/// Multi-line text input with a char-indexed cursor over a `\n`-delimited
+/// buffer. Backs the task editor's description field. Mirrors [`TextInput`] but
+/// adds newline insertion and vertical (line) cursor movement.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextArea {
+    buffer: String,
+    /// Cursor as a char index into `buffer` (each `\n` counts as one char).
+    cursor: usize,
+}
+
+impl TextArea {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, c: char) {
+        let byte_pos = self.byte_offset();
+        self.buffer.insert(byte_pos, c);
+        self.cursor += 1;
+    }
+
+    /// Insert a line break at the cursor.
+    pub fn insert_newline(&mut self) {
+        self.insert('\n');
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            let byte_pos = self.byte_offset();
+            self.buffer.remove(byte_pos);
+        }
+    }
+
+    pub fn delete(&mut self) {
+        let byte_pos = self.byte_offset();
+        if byte_pos < self.buffer.len() {
+            self.buffer.remove(byte_pos);
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn move_right(&mut self) {
+        if self.cursor < self.char_count() {
+            self.cursor += 1;
+        }
+    }
+
+    /// Move up one line, keeping the column (clamped to the shorter line).
+    pub fn move_up(&mut self) {
+        let (line, col) = self.cursor_line_col();
+        if line > 0 {
+            self.cursor = self.cursor_at(line - 1, col);
+        }
+    }
+
+    /// Move down one line, keeping the column (clamped to the shorter line).
+    pub fn move_down(&mut self) {
+        let (line, col) = self.cursor_line_col();
+        if line + 1 < self.buffer.split('\n').count() {
+            self.cursor = self.cursor_at(line + 1, col);
+        }
+    }
+
+    /// Move to the start of the current line.
+    pub fn home(&mut self) {
+        let (line, _) = self.cursor_line_col();
+        self.cursor = self.cursor_at(line, 0);
+    }
+
+    /// Move to the end of the current line.
+    pub fn end(&mut self) {
+        let (line, _) = self.cursor_line_col();
+        self.cursor = self.cursor_at(line, usize::MAX);
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+    }
+
+    pub fn set(&mut self, value: &str) {
+        self.buffer = value.to_string();
+        self.cursor = self.char_count();
+    }
+
+    pub fn value(&self) -> &str {
+        &self.buffer
+    }
+
+    /// Cursor as zero-based `(line, col)` in chars, for drawing the block cursor.
+    pub fn cursor_line_col(&self) -> (usize, usize) {
+        let mut line = 0;
+        let mut col = 0;
+        for c in self.buffer.chars().take(self.cursor) {
+            if c == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    fn char_count(&self) -> usize {
+        self.buffer.chars().count()
+    }
+
+    /// Char index of `(line, col)`, clamping `col` to that line's length and
+    /// `line` past the end to the buffer end.
+    fn cursor_at(&self, line: usize, col: usize) -> usize {
+        let mut idx = 0;
+        for (l, text) in self.buffer.split('\n').enumerate() {
+            let len = text.chars().count();
+            if l == line {
+                return idx + col.min(len);
+            }
+            idx += len + 1; // +1 for the consumed '\n'
+        }
+        self.char_count()
+    }
+
+    /// Convert the char-based cursor to a byte offset into `buffer`.
+    fn byte_offset(&self) -> usize {
+        self.buffer
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.buffer.len())
+    }
+}
+
 /// Step to the next/previous field in `fields` relative to `current`, wrapping
 /// at both ends. `delta` is `+1` (next) or `-1` (previous). Shared by the
 /// automation and task editor forms, which navigate different field enums.
@@ -717,67 +853,20 @@ impl RepoPickerModal {
 
 // ── TaskEditorModal ─────────────────────────────────────────────────────
 
-/// How a task connects to an agent. Mirrors [`AutomationActionKind`] but adds a
-/// `Local` arm for an unconnected todo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TaskActionKind {
-    /// Plain local todo — no agent action.
-    #[default]
-    Local,
-    /// Paste the task title into an existing session.
-    Send,
-    /// Spawn a new session and prompt it with the task title.
-    Spawn,
-}
-
-impl TaskActionKind {
-    const ALL: [TaskActionKind; 3] = [Self::Local, Self::Send, Self::Spawn];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Send => "send",
-            Self::Spawn => "spawn",
-        }
-    }
-
-    fn step(self, delta: i32) -> Self {
-        let idx = Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as i32;
-        let len = Self::ALL.len() as i32;
-        Self::ALL[(idx + delta).rem_euclid(len) as usize]
-    }
-
-    /// The editor fields shown for this action kind, in navigation order. The
-    /// single source for both the app's field navigation and the UI renderer.
-    pub fn visible_fields(self) -> Vec<TaskField> {
-        use TaskField::*;
-        let mut fields = vec![Title, Status, Action];
-        match self {
-            Self::Local => {}
-            Self::Send => fields.push(Target),
-            Self::Spawn => fields.extend([Repo, Worktree, Base, Agent]),
-        }
-        fields
-    }
-}
-
-/// Focusable field in the task editor. The set shown depends on the action kind
-/// (see `TaskEditorModal::visible_fields`).
+/// Focusable field in the task editor. A task is just title + description +
+/// status; the agent action is chosen at trigger time (`r`), not authored here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TaskField {
     #[default]
     Title,
+    /// Multi-line markdown description (Enter inserts a newline; Ctrl+S saves).
+    Description,
     /// Status selector (cycled with ←/→).
     Status,
-    /// Action-kind selector (cycled with ←/→).
-    Action,
-    /// Send action: target-session selector.
-    Target,
-    Repo,
-    Worktree,
-    Base,
-    Agent,
 }
+
+/// The editor fields, in navigation order. Constant — no longer action-driven.
+const TASK_FIELDS: [TaskField; 3] = [TaskField::Title, TaskField::Description, TaskField::Status];
 
 /// Editor form for creating or editing a task.
 #[derive(Debug, Clone)]
@@ -785,206 +874,122 @@ pub struct TaskEditorModal {
     /// `Some` when editing an existing task.
     pub editing_id: Option<i64>,
     pub title: TextInput,
+    /// Multi-line markdown description.
+    pub description: TextArea,
     pub status: crate::session::TaskStatus,
-    pub action: TaskActionKind,
-    /// Spawn action: repository path.
-    pub repo: TextInput,
-    /// Spawn action: optional worktree branch.
-    pub worktree: TextInput,
-    /// Spawn action: optional base branch.
-    pub base: TextInput,
-    /// Spawn action: optional agent name.
-    pub agent: TextInput,
     pub field: TaskField,
-    /// Send action: the running sessions available as targets (id + display
-    /// name), captured at open and cycled with the `Target` field.
-    pub sessions: Vec<(crate::session::SessionId, String)>,
-    /// Index into `sessions` of the selected Send target.
-    pub target_index: usize,
 }
 
 impl TaskEditorModal {
-    /// A blank editor for a new task, with the available Send targets.
-    pub fn new(sessions: Vec<(crate::session::SessionId, String)>) -> Self {
+    /// A blank editor for a new task.
+    pub fn new() -> Self {
         Self {
             editing_id: None,
             title: TextInput::default(),
+            description: TextArea::default(),
             status: crate::session::TaskStatus::Todo,
-            action: TaskActionKind::Local,
-            repo: TextInput::default(),
-            worktree: TextInput::default(),
-            base: TextInput::default(),
-            agent: TextInput::default(),
             field: TaskField::default(),
-            sessions,
-            target_index: 0,
         }
     }
 
     /// Build an editor pre-filled from an existing task.
-    pub fn from_task(
-        task: &crate::session::Task,
-        sessions: Vec<(crate::session::SessionId, String)>,
-    ) -> Self {
-        use crate::session::AutomationAction;
-        let mut m = Self::new(sessions);
+    pub fn from_task(task: &crate::session::Task) -> Self {
+        let mut m = Self::new();
         m.editing_id = Some(task.id);
         m.title.set(&task.title);
-        m.status = task.status;
-        match &task.action {
-            None => m.action = TaskActionKind::Local,
-            Some(AutomationAction::Send { session_id }) => {
-                m.action = TaskActionKind::Send;
-                m.set_default_target(Some(*session_id));
-            }
-            Some(AutomationAction::Spawn {
-                repo_path,
-                worktree_branch,
-                base_branch,
-                agent,
-            }) => {
-                m.action = TaskActionKind::Spawn;
-                m.repo.set(&repo_path.to_string_lossy());
-                if let Some(w) = worktree_branch {
-                    m.worktree.set(w);
-                }
-                if let Some(b) = base_branch {
-                    m.base.set(b);
-                }
-                if let Some(a) = agent {
-                    m.agent.set(a);
-                }
-            }
+        if let Some(d) = &task.description {
+            m.description.set(d);
         }
+        m.status = task.status;
         m
     }
 
-    /// Select `selected` in the target list (falling back to the first session).
-    pub fn set_default_target(&mut self, selected: Option<crate::session::SessionId>) {
-        self.target_index = selected
-            .and_then(|id| self.sessions.iter().position(|(sid, _)| *sid == id))
-            .unwrap_or(0);
-    }
-
-    /// The fields shown for the current action kind, in navigation order.
+    /// The fields shown, in navigation order.
     pub fn visible_fields(&self) -> Vec<TaskField> {
-        self.action.visible_fields()
+        TASK_FIELDS.to_vec()
     }
 
     /// Move focus to the next visible field (wraps).
     pub fn next_field(&mut self) {
-        self.field = cycle_field(&self.visible_fields(), self.field, 1);
+        self.field = cycle_field(&TASK_FIELDS, self.field, 1);
     }
 
     /// Move focus to the previous visible field (wraps).
     pub fn prev_field(&mut self) {
-        self.field = cycle_field(&self.visible_fields(), self.field, -1);
+        self.field = cycle_field(&TASK_FIELDS, self.field, -1);
     }
 
-    /// The focused text field, or `None` for selector fields (adjusted with ←/→).
+    /// The focused text field, or `None` for the description / status selector.
     pub fn active_field(&self) -> Option<&TextInput> {
-        use TaskField::*;
-        Some(match self.field {
-            Repo => &self.repo,
-            Worktree => &self.worktree,
-            Base => &self.base,
-            Agent => &self.agent,
-            Title => &self.title,
-            Status | Action | Target => return None,
-        })
+        match self.field {
+            TaskField::Title => Some(&self.title),
+            // Description is a `TextArea` (handled explicitly); Status is a
+            // selector adjusted with ←/→.
+            TaskField::Description | TaskField::Status => None,
+        }
     }
 
-    /// The focused text field, or `None` for selector fields (adjusted with ←/→).
+    /// The focused text field, or `None` for the description / status selector.
     pub fn active_field_mut(&mut self) -> Option<&mut TextInput> {
-        use TaskField::*;
-        Some(match self.field {
-            Repo => &mut self.repo,
-            Worktree => &mut self.worktree,
-            Base => &mut self.base,
-            Agent => &mut self.agent,
-            Title => &mut self.title,
-            Status | Action | Target => return None,
-        })
+        match self.field {
+            TaskField::Title => Some(&mut self.title),
+            TaskField::Description | TaskField::Status => None,
+        }
     }
 
     /// Whether the focused field is a selector adjusted with ←/→/Space.
     pub fn is_adjustable(&self) -> bool {
-        matches!(
-            self.field,
-            TaskField::Status | TaskField::Action | TaskField::Target
-        )
+        matches!(self.field, TaskField::Status)
     }
 
     /// Adjust the focused selector by `delta` (−1 for ←, +1 for →/Space).
     pub fn adjust(&mut self, delta: i32) {
-        match self.field {
-            TaskField::Status => {
-                // Cycle in either direction (cycle() only goes forward, so step
-                // backward via two forward cycles).
-                self.status = if delta < 0 {
-                    self.status.cycle().cycle()
-                } else {
-                    self.status.cycle()
-                };
-            }
-            TaskField::Action => {
-                self.action = self.action.step(delta);
-                // Snap focus back to a valid field when the field set shrinks.
-                if !self.visible_fields().contains(&self.field) {
-                    self.field = TaskField::Action;
-                }
-            }
-            TaskField::Target => {
-                let len = self.sessions.len();
-                if len > 0 {
-                    self.target_index =
-                        wrap_add(self.target_index as u32, delta, len as u32) as usize;
-                }
-            }
-            _ => {}
+        if self.field == TaskField::Status {
+            // Cycle in either direction (cycle() only goes forward, so step
+            // backward via two forward cycles).
+            self.status = if delta < 0 {
+                self.status.cycle().cycle()
+            } else {
+                self.status.cycle()
+            };
         }
     }
 
-    /// The currently selected Send target (id + display name), if any.
-    pub fn selected_target(&self) -> Option<&(crate::session::SessionId, String)> {
-        self.sessions.get(self.target_index)
-    }
+    /// Feed a key to the editor. Returns whether the caller should save, cancel
+    /// (`Esc`), or keep editing.
+    ///
+    /// `Ctrl+S` saves from any field. On most fields `Enter` saves; on the
+    /// multi-line `Description` field `Enter` inserts a newline and `Up`/`Down`
+    /// move within the text (field navigation there is `Tab`/`BackTab` only).
+    pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> EditorOutcome {
+        // Ctrl+S is the universal save (the description field needs a save path
+        // that isn't Enter).
+        if mods.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('s') | KeyCode::Char('S'))
+        {
+            return EditorOutcome::Save;
+        }
 
-    /// Build the [`AutomationAction`] (or `None` for a local task) described by
-    /// the current fields. Returns a user-facing error for invalid input.
-    pub fn build_action(&self) -> Result<Option<crate::session::AutomationAction>, String> {
-        use crate::session::AutomationAction;
-        Ok(match self.action {
-            TaskActionKind::Local => None,
-            TaskActionKind::Send => {
-                let Some((session_id, _)) = self.selected_target() else {
-                    return Err("No target session — start a session first".into());
-                };
-                Some(AutomationAction::Send {
-                    session_id: *session_id,
-                })
+        if self.field == TaskField::Description {
+            match code {
+                KeyCode::Esc => return EditorOutcome::Cancel,
+                KeyCode::Tab => self.next_field(),
+                KeyCode::BackTab => self.prev_field(),
+                KeyCode::Enter => self.description.insert_newline(),
+                KeyCode::Up => self.description.move_up(),
+                KeyCode::Down => self.description.move_down(),
+                KeyCode::Char(c) => self.description.insert(c),
+                KeyCode::Backspace => self.description.backspace(),
+                KeyCode::Delete => self.description.delete(),
+                KeyCode::Left => self.description.move_left(),
+                KeyCode::Right => self.description.move_right(),
+                KeyCode::Home => self.description.home(),
+                KeyCode::End => self.description.end(),
+                _ => {}
             }
-            TaskActionKind::Spawn => {
-                let repo = self.repo.value().trim();
-                if repo.is_empty() {
-                    return Err("Repo path required for spawn action".into());
-                }
-                let worktree = self.worktree.value().trim();
-                let base = self.base.value().trim();
-                let agent = self.agent.value().trim();
-                Some(AutomationAction::Spawn {
-                    repo_path: crate::paths::expand_tilde(repo),
-                    worktree_branch: (!worktree.is_empty()).then(|| worktree.to_string()),
-                    base_branch: (!base.is_empty()).then(|| base.to_string()),
-                    agent: (!agent.is_empty()).then(|| agent.to_string()),
-                })
-            }
-        })
-    }
+            return EditorOutcome::Continue;
+        }
 
-    /// Feed a key to the editor. Returns whether the caller should save
-    /// (`Enter`), cancel (`Esc`), or keep editing.
-    pub fn handle_key(&mut self, code: KeyCode, _mods: KeyModifiers) -> EditorOutcome {
         let adjustable = self.is_adjustable();
         match code {
             KeyCode::Esc => return EditorOutcome::Cancel,
@@ -998,6 +1003,12 @@ impl TaskEditorModal {
             }
         }
         EditorOutcome::Continue
+    }
+}
+
+impl Default for TaskEditorModal {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1033,12 +1044,44 @@ pub enum Modal {
     RepoPicker(RepoPickerModal),
     SessionName(SessionNameModal),
     ThemePicker(ThemePickerModal),
+    TaskActionPicker(TaskActionPickerModal),
 }
 
 impl Modal {
     pub fn close(&mut self) {
         *self = Modal::None;
     }
+}
+
+// ── TaskActionPickerModal ────────────────────────────────────────────────
+
+/// A trigger-time action for a task, chosen from the picker. Nothing is stored
+/// on the task — the choice runs immediately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskActionChoice {
+    /// Send the task title to an already-running session (id + display name).
+    Send(crate::session::SessionId, String),
+    /// Spawn a new session via the normal repo→agent flow, seeded with the title.
+    SpawnNew,
+}
+
+impl TaskActionChoice {
+    /// One-line label for the picker list.
+    pub fn label(&self) -> String {
+        match self {
+            TaskActionChoice::Send(_, name) => format!("Send → {name}"),
+            TaskActionChoice::SpawnNew => "Spawn new session…".to_string(),
+        }
+    }
+}
+
+/// Picker shown when triggering a task (`r`): pick where to run it.
+#[derive(Debug, Clone)]
+pub struct TaskActionPickerModal {
+    pub task_id: i64,
+    pub title: String,
+    pub choices: Vec<TaskActionChoice>,
+    pub selected: usize,
 }
 
 #[cfg(test)]
@@ -1419,69 +1462,17 @@ mod tests {
     }
 
     #[test]
-    fn task_editor_local_visible_fields_and_action() {
-        let m = TaskEditorModal::new(Vec::new());
+    fn task_editor_visible_fields_are_title_description_status() {
+        let m = TaskEditorModal::new();
         assert_eq!(
             m.visible_fields(),
-            vec![TaskField::Title, TaskField::Status, TaskField::Action]
+            vec![TaskField::Title, TaskField::Description, TaskField::Status]
         );
-        assert_eq!(m.build_action().unwrap(), None);
-    }
-
-    #[test]
-    fn task_action_kind_visible_fields_per_kind() {
-        use TaskField::*;
-        assert_eq!(
-            TaskActionKind::Local.visible_fields(),
-            vec![Title, Status, Action]
-        );
-        assert_eq!(
-            TaskActionKind::Send.visible_fields(),
-            vec![Title, Status, Action, Target]
-        );
-        assert_eq!(
-            TaskActionKind::Spawn.visible_fields(),
-            vec![Title, Status, Action, Repo, Worktree, Base, Agent]
-        );
-        // The modal method must delegate to the canonical action method.
-        let mut m = TaskEditorModal::new(Vec::new());
-        m.action = TaskActionKind::Spawn;
-        assert_eq!(m.visible_fields(), TaskActionKind::Spawn.visible_fields());
-    }
-
-    #[test]
-    fn task_editor_action_cycles_local_send_spawn() {
-        let mut m = TaskEditorModal::new(Vec::new());
-        m.field = TaskField::Action;
-        assert_eq!(m.action, TaskActionKind::Local);
-        m.adjust(1);
-        assert_eq!(m.action, TaskActionKind::Send);
-        m.adjust(1);
-        assert_eq!(m.action, TaskActionKind::Spawn);
-        // Spawn exposes repo/worktree/base/agent.
-        assert!(m.visible_fields().contains(&TaskField::Repo));
-        m.adjust(1);
-        assert_eq!(m.action, TaskActionKind::Local);
-    }
-
-    #[test]
-    fn task_editor_spawn_requires_repo() {
-        let mut m = TaskEditorModal::new(Vec::new());
-        m.action = TaskActionKind::Spawn;
-        assert!(m.build_action().is_err());
-        m.repo.set("/tmp/repo");
-        m.worktree.set("feat/x");
-        match m.build_action().unwrap() {
-            Some(crate::session::AutomationAction::Spawn { repo_path, .. }) => {
-                assert_eq!(repo_path, std::path::PathBuf::from("/tmp/repo"));
-            }
-            other => panic!("expected spawn, got {other:?}"),
-        }
     }
 
     #[test]
     fn task_editor_save_and_cancel_outcomes() {
-        let mut m = TaskEditorModal::new(Vec::new());
+        let mut m = TaskEditorModal::new();
         assert_eq!(
             m.handle_key(KeyCode::Enter, KeyModifiers::NONE),
             EditorOutcome::Save
@@ -1498,7 +1489,7 @@ mod tests {
 
     #[test]
     fn task_editor_status_selector_cycles_both_ways() {
-        let mut m = TaskEditorModal::new(Vec::new());
+        let mut m = TaskEditorModal::new();
         m.field = TaskField::Status;
         assert_eq!(m.status, crate::session::TaskStatus::Todo);
         m.adjust(1);
@@ -1509,7 +1500,7 @@ mod tests {
 
     #[test]
     fn task_editor_active_field_tracks_focus_and_caret() {
-        let mut m = TaskEditorModal::new(Vec::new());
+        let mut m = TaskEditorModal::new();
 
         // Title is the default focus: typing moves its caret, and active_field()
         // reports that same field so the renderer can draw the cursor in place.
@@ -1524,5 +1515,80 @@ mod tests {
         // Selector fields are not text inputs: active_field() is None.
         m.field = TaskField::Status;
         assert!(m.active_field().is_none());
+    }
+
+    #[test]
+    fn textarea_inserts_newlines_and_moves_vertically() {
+        let mut ta = TextArea::new();
+        for c in "ab".chars() {
+            ta.insert(c);
+        }
+        ta.insert_newline();
+        for c in "cde".chars() {
+            ta.insert(c);
+        }
+        assert_eq!(ta.value(), "ab\ncde");
+        assert_eq!(ta.cursor_line_col(), (1, 3));
+
+        // Up keeps the column, clamped to the shorter first line ("ab" → col 2).
+        ta.move_up();
+        assert_eq!(ta.cursor_line_col(), (0, 2));
+        // Down returns to the second line at the clamped column.
+        ta.move_down();
+        assert_eq!(ta.cursor_line_col(), (1, 2));
+    }
+
+    #[test]
+    fn textarea_backspace_joins_lines() {
+        let mut ta = TextArea::new();
+        ta.set("ab\ncd");
+        // Cursor is at the end; home to start of line 2, then backspace joins.
+        ta.home();
+        assert_eq!(ta.cursor_line_col(), (1, 0));
+        ta.backspace();
+        assert_eq!(ta.value(), "abcd");
+        assert_eq!(ta.cursor_line_col(), (0, 2));
+    }
+
+    #[test]
+    fn task_editor_description_enter_inserts_newline_no_save() {
+        let mut m = TaskEditorModal::new();
+        m.field = TaskField::Description;
+        m.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            m.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+            EditorOutcome::Continue
+        );
+        m.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(m.description.value(), "a\nb");
+    }
+
+    #[test]
+    fn task_editor_ctrl_s_saves_from_any_field() {
+        let mut m = TaskEditorModal::new();
+        m.field = TaskField::Description;
+        assert_eq!(
+            m.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            EditorOutcome::Save
+        );
+    }
+
+    #[test]
+    fn task_editor_from_task_populates_description() {
+        let task = crate::session::Task {
+            id: 1,
+            title: "t".into(),
+            description: Some("notes".into()),
+            status: crate::session::TaskStatus::Todo,
+            action: None,
+            source: crate::session::SOURCE_LOCAL.into(),
+            external_id: None,
+            external_url: None,
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+        };
+        let m = TaskEditorModal::from_task(&task);
+        assert_eq!(m.description.value(), "notes");
     }
 }

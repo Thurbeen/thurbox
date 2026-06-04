@@ -26,80 +26,59 @@ Enter
 Sleep 2s
 Show
 
-# Sessions are pre-seeded. Open AND focus the tasks panel — a toggleable
-# right-side column between the terminal and the file viewer (Ctrl+W, the F5
-# alternative). It starts empty ("no tasks").
+# Sessions are pre-seeded (incl. a task with a markdown description). Open AND
+# focus the tasks panel — a toggleable right-side column between the terminal
+# and the file viewer (Ctrl+W, the F5 alternative). The central pane shows the
+# selected task full-screen: its title, metadata, and rendered-markdown body.
 Sleep 2500ms
 Ctrl+W
-Sleep 1800ms
+Sleep 2200ms
 
-# Create the first task right from the panel (`n`, like Ctrl+N for a session).
-# The editor opens in the central pane — one screen, no separate popup.
+# j/k move through the list; the central preview follows the selection.
+Type "j"
+Sleep 1200ms
+Type "k"
+Sleep 1600ms
+
+# Create a task right from the panel (`n`, like Ctrl+N for a session). The
+# editor opens full-screen in the central pane — one screen, no popup.
 Type "n"
-Sleep 1500ms
+Sleep 1400ms
 
-# Title it.
+# Title it (the Title field is focused first).
 Type "Add integration tests"
 Sleep 1000ms
 
-# Status is a selector cycled with the arrows: todo -> in progress -> done.
+# Tab to the multi-line Description: Enter inserts newlines, so you can write
+# real markdown. Ctrl+S saves from any field.
 Tab
-Sleep 700ms
-Right
-Sleep 900ms
-
-# Action selector cycles Local -> Send -> Spawn. Leave it Local (a plain todo).
-Tab
-Sleep 1000ms
-
-# Save — back to the panel; the new task shows with its ◐ in-progress checkbox.
-Enter
-Sleep 2000ms
-
-# Add a second task, this time connected to an agent.
-Type "n"
-Sleep 1200ms
-Type "Triage failing CI"
-Sleep 1000ms
-
-# Cycle the Action field to Send, so triggering pastes the title into a session.
-Tab
-Sleep 500ms
-Tab
-Sleep 600ms
-Right
-Sleep 1200ms
-
-# Target selector — cycle through the running sessions to pick the destination.
-Tab
-Sleep 700ms
-Right
 Sleep 800ms
-Right
-Sleep 1000ms
-
-# Save it.
+Type "## Acceptance"
 Enter
-Sleep 1800ms
-
-# Back in the panel, j/k select; the action summary shows beneath the list.
-Down
-Sleep 1000ms
-Up
-Sleep 1200ms
-
-# Space cycles the selected task's status in place (todo/in progress/done).
-Space
-Sleep 1100ms
-Space
+Type "- cover the **parser** edge cases"
+Enter
+Type "- add a CI gate"
 Sleep 1400ms
+Ctrl+S
+Sleep 2200ms
 
-# Trigger the connected task now with `r`: its Send action pastes the title
-# into the target session and the task advances to in-progress.
-Down
-Sleep 800ms
+# Back in the panel, the preview renders that markdown full-screen. The footer
+# advertises the actions: e edit · r run · Space status · n new · d del.
+Sleep 1600ms
+
+# Space cycles the selected task's status in place (todo -> in progress -> done).
+Space
+Sleep 1300ms
+
+# `r` runs the task: a trigger-time picker offers Send -> a running session or
+# Spawn a new one — the action is chosen now, not configured up front.
 Type "r"
-Sleep 2500ms
+Sleep 2200ms
+
+# Pick the first option (Send to a session) and run it; the task advances to
+# in-progress.
+Enter
+Sleep 2200ms
 
 # Esc returns focus to the session list; Ctrl+W hides the panel again.
 Escape

@@ -255,7 +255,6 @@ impl App {
                 tasks_panel::TaskPaneEntry {
                     title,
                     status: t.status,
-                    action_summary: task_action_summary(t),
                     match_positions: m.as_ref().map(|m| m.positions.clone()).unwrap_or_default(),
                     dimmed: search.is_some() && m.is_none(),
                 }
@@ -322,6 +321,15 @@ impl App {
         if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
             self.render_task_workspace(frame, terminal);
             return;
+        }
+        // While the global-search strip previews a task result, mirror that in
+        // the central pane (focus stays in the strip, so the normal task-context
+        // branch above doesn't fire).
+        if self.global_search_preview_kind() == Some(crate::app::search::SearchKind::Task) {
+            if let Some(task) = self.selected_task() {
+                self.render_task_detail_pane(frame, terminal, task);
+                return;
+            }
         }
 
         let terminal_focus = match self.focus {
@@ -396,6 +404,11 @@ impl App {
         // Help overlay (rendered last, on top of everything)
         if let super::modals::Modal::Help(ref help) = self.modal {
             render_help_overlay(frame, &self.keybindings, help);
+        }
+
+        // Task trigger-time action picker
+        if let super::modals::Modal::TaskActionPicker(ref p) = self.modal {
+            crate::ui::task_action_picker_modal::render_task_action_picker_modal(frame, p);
         }
 
         // Worktree name modal
@@ -642,10 +655,10 @@ impl App {
         }
     }
 
-    /// Render the task editor in the central pane (a live preview while the
-    /// tasks panel is focused, editable once the editor is focused) with the
-    /// task's read-only details beneath it. Mirrors
-    /// [`Self::render_automation_workspace`].
+    /// Render the central pane for the tasks context as a **full-screen
+    /// toggle**: while the editor is focused (`TaskEditor`) it shows the
+    /// editor full-screen; while the tasks panel is focused (`TaskList`) it
+    /// shows the selected task's read-only, scrollable markdown preview.
     fn render_task_workspace(&self, frame: &mut Frame, area: Rect) {
         let editing = self.focus == InputFocus::TaskEditor;
 
@@ -660,42 +673,61 @@ impl App {
             return;
         };
 
-        // Show the details panel for an existing (scoped) task only.
+        if editing {
+            // Full-screen editor.
+            task_editor_modal::render_task_editor_into(
+                frame,
+                area,
+                &task_editor_modal::TaskEditorState::from_modal(m, true),
+            );
+            return;
+        }
+
+        // Preview mode: render the selected (scoped) task's details + markdown
+        // full-screen. A brand-new task always lands in `TaskEditor`, so the
+        // preview branch only ever has a scoped task.
         let scoped = m
             .editing_id
             .and_then(|id| self.cached_tasks.iter().find(|t| t.id == id));
-
-        let (editor_area, detail_area) = if scoped.is_some() {
-            let editor_h = (task_editor_modal::visible_fields(m.action).len() as u16 + 4)
-                .min(area.height.saturating_sub(7));
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(editor_h), Constraint::Min(3)])
-                .split(area);
-            (rows[0], Some(rows[1]))
-        } else {
-            (area, None)
+        let Some(task) = scoped else {
+            render_empty_workspace_hint(frame, area, " Task ", "No task selected.", false);
+            return;
         };
 
-        task_editor_modal::render_task_editor_into(
-            frame,
-            editor_area,
-            &task_editor_modal::TaskEditorState::from_modal(m, editing),
-        );
+        self.render_task_detail_pane(frame, area, task);
+    }
 
-        if let (Some(detail_area), Some(task)) = (detail_area, scoped) {
-            crate::ui::task_detail::render_task_detail(
-                frame,
-                detail_area,
-                &crate::ui::task_detail::TaskDetail {
-                    linkage: task_linkage(task),
-                    status: task.status.label(),
-                    source: &task.source,
-                    created: format_time_ago(task.created_at),
-                    updated: format_time_ago(task.updated_at),
-                },
-            );
-        }
+    /// Render a single task's read-only details + scrollable markdown preview
+    /// full-screen. Shared by the tasks-panel preview and the global-search
+    /// task preview (so previewing a task result also fills the central pane).
+    fn render_task_detail_pane(&self, frame: &mut Frame, area: Rect, task: &crate::session::Task) {
+        crate::ui::task_detail::render_task_detail(
+            frame,
+            area,
+            &crate::ui::task_detail::TaskDetail {
+                title: &task.title,
+                linkage: task_linkage(task),
+                status: task.status.label(),
+                source: &task.source,
+                description: task.description.as_deref().unwrap_or(""),
+                created: format_time_ago(task.created_at),
+                updated: format_time_ago(task.updated_at),
+            },
+            self.task_preview_scroll,
+            // Advertise the panel actions (incl. Run) only while the tasks panel
+            // is focused — not during a global-search preview.
+            if self.focus == InputFocus::TaskList {
+                &[
+                    ("e", " edit  "),
+                    ("r", " run  "),
+                    ("Space", " status  "),
+                    ("n", " new  "),
+                    ("d", " del"),
+                ]
+            } else {
+                &[]
+            },
+        );
     }
 }
 
@@ -843,6 +875,23 @@ fn render_help_overlay(
     help_lines.push(help_line(
         "j/k/Enter/Esc".into(),
         "Automations & tasks panes, and modal selectors",
+    ));
+    help_lines.push(help_line(
+        "n / e".into(),
+        "Tasks: new task / edit selected (central-pane editor)",
+    ));
+    help_lines.push(help_line(
+        "r".into(),
+        "Tasks: run — Send to a session or Spawn a new one",
+    ));
+    help_lines.push(help_line(
+        "Space".into(),
+        "Tasks: cycle status (todo → in progress → done)",
+    ));
+    help_lines.push(help_line("d".into(), "Tasks: delete selected"));
+    help_lines.push(help_line(
+        "PgUp/PgDn".into(),
+        "Tasks: scroll the description preview",
     ));
     help_lines.push(help_line(
         "Mouse wheel".into(),
@@ -1024,15 +1073,6 @@ fn session_fuzzy(query: &str, info: &SessionInfo) -> Option<project_list::Sessio
     let status_str = info.status.to_string();
     let status = crate::fuzzy::fuzzy_match(query, &status_str).map(|m| m.positions);
     project_list::SessionMatch::from_matches(name, agent, branch, cwd, status)
-}
-
-/// One-line summary of a task's agent linkage, shown dimmed beneath its title.
-fn task_action_summary(task: &crate::session::Task) -> String {
-    match task_action_parts(task) {
-        TaskActionParts::Local => "local".to_string(),
-        TaskActionParts::Send { target } => format!("→ send: {target}"),
-        TaskActionParts::Spawn { target } => format!("→ spawn: {target}"),
-    }
 }
 
 #[cfg(test)]

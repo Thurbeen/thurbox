@@ -75,6 +75,9 @@ pub struct Task {
     pub id: i64,
     /// The task text; this is what seeds a `Send`/`Spawn` action when triggered.
     pub title: String,
+    /// Optional free-form markdown description (notes, acceptance criteria, …).
+    /// `None` when blank. Rendered as markdown in the read-only details panel.
+    pub description: Option<String>,
     pub status: TaskStatus,
     /// How the task connects to an agent. `None` = an unconnected local todo.
     pub action: Option<AutomationAction>,

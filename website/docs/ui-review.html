@@ -193,11 +193,11 @@
             <span class="current">UI/UX Review</span>
           </div>
 
-          <h1>thurbox TUI — UI/UX Review</h1>
+          <h1>thurbox TUI — UI/UX Review (Tasks)</h1>
           <div class="review-meta">
             <span>thurbox 0.0.0-dev</span>
             <span>theme: Doom</span>
-            <span>generated 2026-06-03 09:30 UTC</span>
+            <span>generated 2026-06-04 08:53 UTC</span>
           </div>
 
           <div class="info-box">
@@ -210,23 +210,19 @@
             </p>
           </div>
 
-          <h2 id="summary">Summary — 21 findings across 10 screens</h2>
+          <h2 id="summary">Summary — 13 findings across 10 screens</h2>
           <div class="sev-counts">
             <span class="sev-pill">
-              <span class="dot" style="background: var(--yellow)"></span>
-              10 warnings
-            </span>
-            <span class="sev-pill">
               <span class="dot" style="background: var(--blue)"></span>
-              11 nits
+              13 nits
             </span>
             <span class="sev-pill">
               <span class="dot" style="background: var(--purple)"></span>
-              8 visual
+              5 visual
             </span>
             <span class="sev-pill">
               <span class="dot" style="background: var(--green)"></span>
-              8 usability
+              5 usability
             </span>
             <span class="sev-pill">
               <span class="dot" style="background: var(--yellow)"></span>
@@ -234,106 +230,76 @@
             </span>
             <span class="sev-pill">
               <span class="dot" style="background: var(--blue)"></span>
-              3 accessibility
+              1 accessibility
             </span>
           </div>
           <h3>Top recommendations</h3>
           <ol>
             <li>
-              Establish one &quot;focused panel&quot; accent color and apply it everywhere (session
-              list, tasks, file viewer) — focus currently reads as red in some panels and green in
-              others.
+              Theme-wide: the Doom palette signals almost everything in shades of red (status,
+              borders, selection, titles, help) — add a secondary hue (or rely more on the existing
+              glyphs/weight) so hierarchy and color-vision safety improve.
             </li>
             <li>
-              Stop using red for non-error states (in-progress tasks): reserve red for errors so
-              status colors don&#x27;t alarm.
+              Status is shown twice in the task preview (panel checkbox glyph + a &#x27;status&#x27;
+              metadata row) — consider dropping the row since the glyph already conveys it.
             </li>
             <li>
-              Raise contrast on secondary text that carries real meaning — the header version,
-              info-panel values, task &quot;local&quot; tag, and the keybindings chord column are
-              all too dim.
-            </li>
-            <li>
-              Back every color-only signal (status dots, swatches) with a glyph or short label for
-              colorblind/low-vision users.
-            </li>
-            <li>
-              Tighten dense overlays (keybindings help, info panel) with section spacing; expand
-              under-filled ones (file viewer) by auto-expanding the first level.
+              Addressed since the prior review: description-less tasks now show a muted
+              call-to-action; the task title is the panel border heading (no duplicate row);
+              metadata labels use a brighter tone; and the &#x27;r run&#x27; affordance now appears
+              in both the preview footer and the right-hand Tasks panel footer.
             </li>
           </ol>
 
           <div class="review-card" id="screen-1">
             <h3>
-              Session list + terminal (default view)
-              <span class="keys">launch</span>
+              Tasks panel + full-screen preview (Ctrl+W)
+              <span class="keys">Ctrl+W</span>
             </h3>
             <div class="review-shot">
               <img
                 loading="lazy"
-                alt="Session list + terminal (default view)"
-                src="../assets/ui-review/01-session-list.png"
+                alt="Tasks panel + full-screen preview (Ctrl+W)"
+                src="../assets/ui-review/05-tasks-panel.png"
               />
             </div>
             <div class="review-findings">
               <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Header version string is near-invisible</span>
+                  <span class="ftitle">Status shown twice</span>
                   <span class="lens" style="color: var(--purple); border-color: var(--purple)">
                     visual
                   </span>
                   <div class="fdesc">
-                    The “v0.0.0-dev” version in the top bar is rendered in a very dim grey that
-                    nearly disappears against the dark header, while the “thurbox” wordmark and
-                    title are bright.
+                    Status appears both as the panel checkbox glyph (☐/◐/☑) and as a &#x27;status
+                    todo&#x27; metadata row, duplicating the same fact side by side.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Lift the version to at least the muted-text contrast tier, or right-align it
-                    next to the agent badge where secondary metadata already lives.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
-                <div class="body">
-                  <span class="ftitle">Hard to tell which pane has focus</span>
-                  <span class="lens" style="color: var(--green); border-color: var(--green)">
-                    usability
-                  </span>
-                  <div class="fdesc">
-                    The focused pane (the agent terminal) and the session list look almost equally
-                    weighted; a newcomer can’t immediately tell which pane has focus or that
-                    Enter/Ctrl+L moves between them.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Strengthen the focused-pane border accent and/or add a one-word focus hint (e.g.
-                    “▸ terminal”) so the active pane reads at a glance.
+                    Either drop the &#x27;status&#x27; metadata row (the glyph already conveys it)
+                    or color the glyph + row consistently so the repetition reads as intentional.
                   </div>
                 </div>
               </div>
               <div class="finding">
                 <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Session row status alignment feels lopsided</span>
-                  <span class="lens" style="color: var(--yellow); border-color: var(--yellow)">
-                    consistency
+                  <span class="ftitle">Preview now resolves the earlier friction (fixed)</span>
+                  <span class="lens" style="color: var(--green); border-color: var(--green)">
+                    usability
                   </span>
                   <div class="fdesc">
-                    “Waiting” is right-aligned on the session row while the repo sub-line (“claude ·
-                    sample-project”) is left-aligned and dimmer, which makes the row feel slightly
-                    unbalanced.
+                    The task title is the panel border heading (no duplicate row), description-less
+                    tasks show a muted &#x27;No description — press e to add notes&#x27; CTA instead
+                    of blank space, metadata labels use a brighter legible tone, and the &#x27;e
+                    edit · r run · …&#x27; footer makes the trigger-time action discoverable.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Keep a consistent two-column rhythm (name left, status right, repo as a
-                    full-width dim sub-row) and tighten the vertical gap.
+                    No change; the right-hand Tasks panel footer now mirrors &#x27;r run · e edit ·
+                    n new&#x27; for parity.
                   </div>
                 </div>
               </div>
@@ -341,34 +307,50 @@
           </div>
           <div class="review-card" id="screen-2">
             <h3>
-              Session list — selection moved (Ctrl+J)
-              <span class="keys">Ctrl+J</span>
+              Global search — task title/description match + central preview
+              <span class="keys">Ctrl+A + query</span>
             </h3>
             <div class="review-shot">
               <img
                 loading="lazy"
-                alt="Session list — selection moved (Ctrl+J)"
-                src="../assets/ui-review/02-second-session.png"
+                alt="Global search — task title/description match + central preview"
+                src="../assets/ui-review/07-global-search.png"
               />
             </div>
             <div class="review-findings">
               <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Ctrl+J produced no visible change with one session</span>
+                  <span class="ftitle">Task preview now fills the central pane (good)</span>
                   <span class="lens" style="color: var(--green); border-color: var(--green)">
                     usability
                   </span>
                   <div class="fdesc">
-                    With only one repo seeded, pressing Ctrl+J leaves the view identical to the
-                    default — there is no feedback that the navigation key did anything.
+                    Previewing a task result shows its full details in the central pane while
+                    non-matching tasks dim in the right column — the cross-pane preview is coherent.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    When navigation can’t move (single session / already at an end), flash the
-                    current row or show a brief toast so the key feels responsive rather than dead.
+                    No change; optionally show a one-line &#x27;matched in description&#x27; note
+                    when only the description matched, since the snippet already implies it.
+                  </div>
+                </div>
+              </div>
+              <div class="finding">
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
+                <div class="body">
+                  <span class="ftitle">Matched-char highlight is subtle</span>
+                  <span class="lens" style="color: var(--purple); border-color: var(--purple)">
+                    visual
+                  </span>
+                  <div class="fdesc">
+                    In the result list the fuzzy-matched characters (accent+bold+underline) are hard
+                    to distinguish from the surrounding red text on this theme.
+                  </div>
+                  <div class="ffix">
+                    <b>Fix:</b>
+                    Increase the matched-char contrast (e.g. brighter accent or reverse video) so
+                    the match is obvious at a glance.
                   </div>
                 </div>
               </div>
@@ -376,55 +358,50 @@
           </div>
           <div class="review-card" id="screen-3">
             <h3>
-              Session info panel (Ctrl+B)
-              <span class="keys">Ctrl+B</span>
+              Keybindings help + editor (F1 / Ctrl+G)
+              <span class="keys">Ctrl+G</span>
             </h3>
             <div class="review-shot">
               <img
                 loading="lazy"
-                alt="Session info panel (Ctrl+B)"
-                src="../assets/ui-review/03-info-panel.png"
+                alt="Keybindings help + editor (F1 / Ctrl+G)"
+                src="../assets/ui-review/10-keybindings.png"
               />
             </div>
             <div class="review-findings">
               <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Info panel is cramped and labels truncate</span>
-                  <span class="lens" style="color: var(--purple); border-color: var(--purple)">
-                    visual
+                  <span class="ftitle">Task action keys live below the fold</span>
+                  <span class="lens" style="color: var(--green); border-color: var(--green)">
+                    usability
                   </span>
                   <div class="fdesc">
-                    Squeezed into the left column, the info panel stacks Status, memory (“200.7
-                    MB”), Usage, System and Automations tightly with little spacing; some values
-                    butt right against their labels.
+                    The newly documented task keys (n/e, r run, Space, d, PgUp/PgDn) sit in the
+                    &#x27;Fixed (not rebindable)&#x27; section, which is off-screen until you
+                    scroll.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Add one space of left padding inside the panel and a blank line between sections
-                    (Usage / System / Automations) to make the groups scannable.
+                    Fine as-is, but a scrollbar or &#x27;· more below ·&#x27; affordance would
+                    signal there is content past the visible rows.
                   </div>
                 </div>
               </div>
               <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Status conveyed mostly by color dots</span>
-                  <span class="lens" style="color: var(--blue); border-color: var(--blue)">
-                    accessibility
+                  <span class="ftitle">Dense single-hue key list</span>
+                  <span class="lens" style="color: var(--purple); border-color: var(--purple)">
+                    visual
                   </span>
                   <div class="fdesc">
-                    Automation/status indicators lean on small colored dots; at this density and
-                    contrast they’re hard to distinguish for low-vision or colorblind users.
+                    The action and key columns are both red on dark, making the overlay read as a
+                    wall of red.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Pair each dot with a short text/glyph label (e.g. “● active”, “○ idle”) so
-                    status isn’t color-only.
+                    Tint the key column differently from the description column to aid scanning.
                   </div>
                 </div>
               </div>
@@ -432,131 +409,38 @@
           </div>
           <div class="review-card" id="screen-4">
             <h3>
-              File viewer — repo tree (Ctrl+E)
-              <span class="keys">Ctrl+E</span>
+              Session list + terminal (launch)
+              <span class="keys">launch</span>
             </h3>
             <div class="review-shot">
               <img
                 loading="lazy"
-                alt="File viewer — repo tree (Ctrl+E)"
-                src="../assets/ui-review/04-file-viewer.png"
+                alt="Session list + terminal (launch)"
+                src="../assets/ui-review/01-session-list.png"
               />
             </div>
             <div class="review-findings">
               <div class="finding">
                 <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">
-                    File viewer shows only the repo root, lots of empty space
-                  </span>
-                  <span class="lens" style="color: var(--purple); border-color: var(--purple)">
-                    visual
+                  <span class="ftitle">Session status conveyed mostly by red shades</span>
+                  <span class="lens" style="color: var(--blue); border-color: var(--blue)">
+                    accessibility
                   </span>
                   <div class="fdesc">
-                    The right-hand file column displays “sample-project” at the top with the rest of
-                    the column empty until expanded; the panel reads as under-filled.
+                    &#x27;Waiting&#x27;/&#x27;Busy&#x27; status labels and the activity dots rely on
+                    color in the red family, which is hard to separate for red-deficient vision.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Auto-expand the first level (or the primary repo) on open so the viewer shows a
-                    useful tree immediately instead of a single collapsed node.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
-                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
-                <div class="body">
-                  <span class="ftitle">Good: footer exposes file-viewer keys</span>
-                  <span class="lens" style="color: var(--green); border-color: var(--green)">
-                    usability
-                  </span>
-                  <div class="fdesc">
-                    The footer correctly switches to file-viewer-scoped hints (Move /
-                    Collapse-Expand / Open / search) when the viewer is focused — a nice
-                    discoverability win.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Keep this context-sensitive footer pattern; consider applying the same density
-                    to the other panels’ footers.
+                    Pair status color with a short text/shape token already in use, and widen the
+                    hue gap between states.
                   </div>
                 </div>
               </div>
             </div>
           </div>
           <div class="review-card" id="screen-5">
-            <h3>
-              Tasks panel — todo list (Ctrl+W)
-              <span class="keys">Ctrl+W</span>
-            </h3>
-            <div class="review-shot">
-              <img
-                loading="lazy"
-                alt="Tasks panel — todo list (Ctrl+W)"
-                src="../assets/ui-review/05-tasks-panel.png"
-              />
-            </div>
-            <div class="review-findings">
-              <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
-                <div class="body">
-                  <span class="ftitle">In-progress task recolors text red</span>
-                  <span class="lens" style="color: var(--blue); border-color: var(--blue)">
-                    accessibility
-                  </span>
-                  <div class="fdesc">
-                    The three statuses (☐ todo, ◐ in-progress, ☑ done) are distinguishable by glyph,
-                    which is good, but the in-progress row also recolors its text red — easy to
-                    misread as an error/blocker.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Reserve red for errors; use a neutral/accent hue for in-progress and keep the
-                    glyph as the primary signal.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
-                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
-                <div class="body">
-                  <span class="ftitle">Tasks panel border accent differs from session list</span>
-                  <span class="lens" style="color: var(--yellow); border-color: var(--yellow)">
-                    consistency
-                  </span>
-                  <div class="fdesc">
-                    The Tasks panel uses a green accent border while the focused session list uses
-                    red; the two focused-panel treatments don’t share a single accent language.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Standardize one “focused” accent color across all panels so focus reads
-                    identically everywhere.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
-                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
-                <div class="body">
-                  <span class="ftitle">“local” source label is very dim</span>
-                  <span class="lens" style="color: var(--purple); border-color: var(--purple)">
-                    visual
-                  </span>
-                  <div class="fdesc">
-                    The “local” source tag under the task list is rendered in a faint italic that’s
-                    easy to miss.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Slightly raise its contrast or move it inline with each task so the source is
-                    legible.
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="review-card" id="screen-6">
             <h3>
               Automations pane (Ctrl+P)
               <span class="keys">Ctrl+P</span>
@@ -570,41 +454,51 @@
             </div>
             <div class="review-findings">
               <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Automation cron string is dense and unexplained</span>
-                  <span class="lens" style="color: var(--purple); border-color: var(--purple)">
-                    visual
+                  <span class="ftitle">Automations footer mirrors tasks footer</span>
+                  <span class="lens" style="color: var(--yellow); border-color: var(--yellow)">
+                    consistency
                   </span>
                   <div class="fdesc">
-                    The pane shows “nightly-triage — 0 9 * * * · spawn · in 21h 30m”; the raw cron
-                    expression next to a humanized “in 21h 30m” is redundant and hard to parse at a
-                    glance.
+                    The automations pane footer (&#x27;n new e edit Spc toggle r run d delete Esc
+                    close&#x27;) matches the new tasks footer pattern — good cross-pane consistency.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Lead with the human schedule (“daily 09:00”) and tuck the raw cron behind the
-                    editor/detail view rather than the list row.
+                    No change; keep the two panes&#x27; footers in lockstep as actions evolve.
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+          <div class="review-card" id="screen-6">
+            <h3>
+              A different session selected (Ctrl+J)
+              <span class="keys">Ctrl+J</span>
+            </h3>
+            <div class="review-shot">
+              <img
+                loading="lazy"
+                alt="A different session selected (Ctrl+J)"
+                src="../assets/ui-review/02-second-session.png"
+              />
+            </div>
+            <div class="review-findings">
               <div class="finding">
                 <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Inline action hints are helpful</span>
-                  <span class="lens" style="color: var(--green); border-color: var(--green)">
-                    usability
+                  <span class="ftitle">Selection highlight consistent with the list</span>
+                  <span class="lens" style="color: var(--yellow); border-color: var(--yellow)">
+                    consistency
                   </span>
                   <div class="fdesc">
-                    The pane surfaces “n new · e edit · Spc toggle · r run · d delete” inline —
-                    strong affordance for the available actions.
+                    Switching the active session keeps the same red selected-row treatment as the
+                    default view; navigation reads consistently.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Keep this; ensure the same inline-hint pattern appears on first focus of the
-                    tasks panel for parity.
+                    No change; selection styling is coherent across the session list.
                   </div>
                 </div>
               </div>
@@ -612,58 +506,71 @@
           </div>
           <div class="review-card" id="screen-7">
             <h3>
-              Global search strip (Ctrl+A + query)
-              <span class="keys">Ctrl+A + query</span>
+              Session info panel (Ctrl+B)
+              <span class="keys">Ctrl+B</span>
             </h3>
             <div class="review-shot">
               <img
                 loading="lazy"
-                alt="Global search strip (Ctrl+A + query)"
-                src="../assets/ui-review/07-global-search.png"
+                alt="Session info panel (Ctrl+B)"
+                src="../assets/ui-review/03-info-panel.png"
               />
             </div>
             <div class="review-findings">
               <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Bottom strip crowds the footer</span>
+                  <span class="ftitle">Dense metrics column</span>
                   <span class="lens" style="color: var(--purple); border-color: var(--purple)">
                     visual
                   </span>
                   <div class="fdesc">
-                    The search strip sits directly above the already-busy footer; with results
-                    expanded the two bands of small text blur together at the bottom of the screen.
+                    The info panel packs status, usage bars, system and automations into a narrow
+                    column; labels and values run close together.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Add a thin separator or one row of padding between the search strip and the
-                    footer to visually separate them.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
-                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
-                <div class="body">
-                  <span class="ftitle">Search results group well by scope</span>
-                  <span class="lens" style="color: var(--green); border-color: var(--green)">
-                    usability
-                  </span>
-                  <div class="fdesc">
-                    Typing “test” shows grouped counts (sessions / tasks / files) and a scrollable
-                    result list in the bottom strip — the cross-scope search reads clearly.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Working as intended; consider showing any active scope-filter keys in the
-                    strip’s hint row.
+                    Add a blank line between logical groups (status / usage / system / automations)
+                    to aid scanning.
                   </div>
                 </div>
               </div>
             </div>
           </div>
           <div class="review-card" id="screen-8">
+            <h3>
+              File viewer (repo tree, Ctrl+E)
+              <span class="keys">Ctrl+E</span>
+            </h3>
+            <div class="review-shot">
+              <img
+                loading="lazy"
+                alt="File viewer (repo tree, Ctrl+E)"
+                src="../assets/ui-review/04-file-viewer.png"
+              />
+            </div>
+            <div class="review-findings">
+              <div class="finding">
+                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
+                <div class="body">
+                  <span class="ftitle">Footer advertises tree controls clearly</span>
+                  <span class="lens" style="color: var(--green); border-color: var(--green)">
+                    usability
+                  </span>
+                  <div class="fdesc">
+                    The file viewer footer spells out j/k move, collapse/expand, open and search —
+                    discoverable and consistent with the other panes&#x27; footers.
+                  </div>
+                  <div class="ffix">
+                    <b>Fix:</b>
+                    No change; this is the affordance pattern the tasks preview footer now follows
+                    too.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="review-card" id="screen-9">
             <h3>
               Theme picker (Ctrl+Y)
               <span class="keys">Ctrl+Y</span>
@@ -679,42 +586,24 @@
               <div class="finding">
                 <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Excellent live palette preview</span>
+                  <span class="ftitle">Live swatch aids selection</span>
                   <span class="lens" style="color: var(--purple); border-color: var(--purple)">
                     visual
                   </span>
                   <div class="fdesc">
-                    The theme modal pairs the theme list with a live preview of Accent / Status /
-                    Border / Modal-bg swatches and the current preset id — this is a model panel.
+                    The picker pairs the preset list with a live accent/status/border swatch, so the
+                    palette is previewable before committing — a good model the action picker could
+                    borrow if it grows.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    No change needed; this is the strongest screen — consider reusing its
-                    label+swatch layout elsewhere.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
-                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
-                <div class="body">
-                  <span class="ftitle">Preview swatch labels could name the colors</span>
-                  <span class="lens" style="color: var(--blue); border-color: var(--blue)">
-                    accessibility
-                  </span>
-                  <div class="fdesc">
-                    The swatches show color blocks but not their roles beyond the row label; a
-                    colorblind user can’t verify, e.g., that accent ≠ status.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Add a tiny hex or name on hover/selection so the preview is verifiable without
-                    relying on color perception.
+                    No change.
                   </div>
                 </div>
               </div>
             </div>
           </div>
-          <div class="review-card" id="screen-9">
+          <div class="review-card" id="screen-10">
             <h3>
               New-session / repo picker (Ctrl+N)
               <span class="keys">Ctrl+N</span>
@@ -728,94 +617,20 @@
             </div>
             <div class="review-findings">
               <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
-                <div class="body">
-                  <span class="ftitle">Empty repo picker offers no obvious next step</span>
-                  <span class="lens" style="color: var(--green); border-color: var(--green)">
-                    usability
-                  </span>
-                  <div class="fdesc">
-                    On a fresh sandbox the picker shows “Repos (0) — No bookmarks — add via path
-                    input below”, but the path input is dim and the flow to actually add a repo
-                    isn’t visually emphasized.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    When the list is empty, focus the path input by default and brighten its prompt
-                    so the user lands directly on the only useful action.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
                 <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
                 <div class="body">
-                  <span class="ftitle">Rich key hints in the modal</span>
+                  <span class="ftitle">Clear empty-bookmarks state</span>
                   <span class="lens" style="color: var(--green); border-color: var(--green)">
                     usability
                   </span>
                   <div class="fdesc">
-                    The picker exposes “j/k nav · Space toggle · w worktree · / search · d delete ·
-                    Tab input · Enter ok” — comprehensive and discoverable.
+                    With no bookmarks the picker explains &#x27;add via path input below&#x27;
+                    rather than showing a blank box — a good empty-state pattern.
                   </div>
                   <div class="ffix">
                     <b>Fix:</b>
-                    Keep; this is the right level of inline guidance for a multi-step modal.
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="review-card" id="screen-10">
-            <h3>
-              Keybindings help + editor (Ctrl+G)
-              <span class="keys">Ctrl+G</span>
-            </h3>
-            <div class="review-shot">
-              <img
-                loading="lazy"
-                alt="Keybindings help + editor (Ctrl+G)"
-                src="../assets/ui-review/10-keybindings.png"
-              />
-            </div>
-            <div class="review-findings">
-              <div class="finding">
-                <span class="sev" style="color: var(--yellow); border-color: var(--yellow)">
-                  warning
-                </span>
-                <div class="body">
-                  <span class="ftitle">Keybindings overlay is dense and low-contrast</span>
-                  <span class="lens" style="color: var(--purple); border-color: var(--purple)">
-                    visual
-                  </span>
-                  <div class="fdesc">
-                    The help overlay packs Navigation / Sessions / Project / UI / Clipboard sections
-                    into a tight grid where the chord column and description column are both dim,
-                    making it tiring to scan.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Increase row spacing, brighten the chord column (it’s the lookup key), and
-                    left-align descriptions to a consistent column.
-                  </div>
-                </div>
-              </div>
-              <div class="finding">
-                <span class="sev" style="color: var(--blue); border-color: var(--blue)">nit</span>
-                <div class="body">
-                  <span class="ftitle">Reset hints present but easy to miss</span>
-                  <span class="lens" style="color: var(--green); border-color: var(--green)">
-                    usability
-                  </span>
-                  <div class="fdesc">
-                    The footer of the editor lists capture/reset actions, but they’re rendered in
-                    the same dim tier as everything else, so the powerful “reset all” action hides.
-                  </div>
-                  <div class="ffix">
-                    <b>Fix:</b>
-                    Give destructive/global actions (reset all) a distinct hint color so they’re not
-                    lost in the grid.
+                    No change; this is the empty-state treatment the tasks preview should adopt for
+                    description-less tasks (see recommendation).
                   </div>
                 </div>
               </div>

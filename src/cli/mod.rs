@@ -225,6 +225,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_task_create_accepts_description() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "task",
+            "create",
+            "--title",
+            "Doc me",
+            "--description",
+            "# Notes\n- item",
+        ])
+        .unwrap();
+        let Command::Task {
+            action: tasks::Action::Create { description, .. },
+        } = cli.command
+        else {
+            panic!("expected Task::Create");
+        };
+        assert_eq!(description.as_deref(), Some("# Notes\n- item"));
+    }
+
+    #[test]
+    fn parse_task_edit_accepts_description() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "task",
+            "edit",
+            "3",
+            "--description",
+            "updated",
+        ])
+        .unwrap();
+        let Command::Task {
+            action: tasks::Action::Edit {
+                id, description, ..
+            },
+        } = cli.command
+        else {
+            panic!("expected Task::Edit");
+        };
+        assert_eq!(id, 3);
+        assert_eq!(description.as_deref(), Some("updated"));
+    }
+
+    #[test]
     fn task_alias_todo_parses() {
         let cli = Cli::try_parse_from(["thurbox-cli", "todo", "list"]).unwrap();
         assert!(matches!(

@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 25;
+pub const SCHEMA_VERSION: u32 = 26;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -117,7 +117,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             external_url    TEXT,
             created_at      INTEGER NOT NULL,
             updated_at      INTEGER NOT NULL,
-            deleted_at      INTEGER
+            deleted_at      INTEGER,
+            description     TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status
             ON tasks(status) WHERE deleted_at IS NULL;
@@ -177,6 +178,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (23, migrate_v23_generic_agent),
         (24, migrate_v24_automations),
         (25, migrate_v25_tasks),
+        (26, migrate_v26_task_description),
     ];
 
     for &(target, step) in steps {
@@ -769,6 +771,16 @@ fn migrate_v25_tasks(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v25 → v26: add a nullable `description` column to `tasks` (markdown notes).
+///
+/// Fresh v26 databases already have the column from `initialize` and skip this
+/// step (the seeded version is current); existing v25 databases get it via the
+/// ALTER. `let _` swallows the "duplicate column" error so a re-run is a no-op.
+fn migrate_v26_task_description(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN description TEXT", []);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,6 +887,42 @@ mod tests {
             .exists([])
             .unwrap();
         assert!(has_tasks_after, "tasks table should be created at v25");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v25_adds_description_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v25 state: a tasks table without the description column.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '25');
+             CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'todo', action_kind TEXT,
+                target_session TEXT, repo_path TEXT, worktree_branch TEXT,
+                base_branch TEXT, agent TEXT, source TEXT NOT NULL DEFAULT 'local',
+                external_id TEXT, external_url TEXT, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL, deleted_at INTEGER);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let has_description: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('tasks') WHERE name='description'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_description, "description column should be added at v26");
 
         let version: String = conn
             .query_row(

@@ -178,7 +178,11 @@ if printf '%s ' $TAPES | grep -Eq '(^| )(tasks|search)( |$)'; then
     "$CLI_BIN" task create --title "Write integration tests" >/dev/null 2>&1 || true
     "$CLI_BIN" task create --title "Triage failing CI" --status in_progress \
         >/dev/null 2>&1 || true
-    "$CLI_BIN" task create --title "Document the search feature" >/dev/null 2>&1 || true
+    # A rich markdown description so the full-screen preview shows headings,
+    # bold and lists rendered (the headline of the tasks feature).
+    "$CLI_BIN" task create --title "Document the search feature" \
+        --description "$(printf '## Goal\n\nExplain the **global search** strip.\n\n- matches sessions, tasks & automations\n- fuzzy across *title* and *description*')" \
+        >/dev/null 2>&1 || true
     # An automation (spawn action, inferred from --repo) so the search demo has
     # a matching automation result too.
     "$CLI_BIN" automation create --name "nightly-triage" --trigger daily \

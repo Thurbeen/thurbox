@@ -23,6 +23,9 @@ pub enum Action {
         /// The task text (also seeds the agent action when triggered).
         #[arg(long)]
         title: String,
+        /// Optional markdown description.
+        #[arg(long)]
+        description: Option<String>,
         /// Initial status: `todo` | `in_progress` | `done` (default `todo`).
         #[arg(long)]
         status: Option<String>,
@@ -55,6 +58,9 @@ pub enum Action {
         id: i64,
         #[arg(long)]
         title: Option<String>,
+        /// New markdown description (`--description ""` clears it).
+        #[arg(long)]
+        description: Option<String>,
         #[arg(long)]
         status: Option<String>,
     },
@@ -74,6 +80,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
     match action {
         Action::Create {
             title,
+            description,
             status,
             session,
             repo,
@@ -88,6 +95,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             let action = resolve_action(session, repo, worktree, base, agent, db)?;
             let new = NewTask {
                 title,
+                description: normalize_description(description),
                 status,
                 action,
                 source: SOURCE_LOCAL.to_string(),
@@ -104,10 +112,19 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             Ok(Value::Array(tasks.iter().map(task_to_json).collect()))
         }
         Action::Show { id } => Ok(task_to_json(&load(db, id)?)),
-        Action::Edit { id, title, status } => {
+        Action::Edit {
+            id,
+            title,
+            description,
+            status,
+        } => {
             let mut task = load(db, id)?;
             if let Some(t) = title {
                 task.title = t;
+            }
+            // Passing --description always sets it (trimmed-empty → cleared).
+            if let Some(d) = description {
+                task.description = normalize_description(Some(d));
             }
             if let Some(s) = status {
                 task.status = parse_status(Some(&s))?;
@@ -183,6 +200,14 @@ fn load(db: &Database, id: i64) -> Result<Task, String> {
         .ok_or_else(|| format!("Task not found: {id}"))
 }
 
+/// Trim a CLI-supplied description, mapping blank input to `None` (cleared).
+fn normalize_description(d: Option<String>) -> Option<String> {
+    d.and_then(|s| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    })
+}
+
 fn parse_status(s: Option<&str>) -> Result<TaskStatus, String> {
     match s {
         None => Ok(TaskStatus::Todo),
@@ -253,6 +278,7 @@ fn task_to_json(t: &Task) -> Value {
     json!({
         "id": t.id,
         "title": t.title,
+        "description": t.description,
         "status": t.status.as_str(),
         "action": action,
         "source": t.source,

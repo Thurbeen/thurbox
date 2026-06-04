@@ -19,6 +19,8 @@ use super::Database;
 /// Fields needed to create a task.
 pub struct NewTask {
     pub title: String,
+    /// Optional markdown description; `None` = blank.
+    pub description: Option<String>,
     pub status: TaskStatus,
     /// Agent linkage; `None` = a plain local todo.
     pub action: Option<AutomationAction>,
@@ -32,6 +34,7 @@ impl NewTask {
     pub fn local(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            description: None,
             status: TaskStatus::Todo,
             action: None,
             source: SOURCE_LOCAL.to_string(),
@@ -51,8 +54,8 @@ impl Database {
             "INSERT INTO tasks
                 (title, status, action_kind, target_session, repo_path,
                  worktree_branch, base_branch, agent, source, external_id,
-                 external_url, created_at, updated_at, deleted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, NULL)",
+                 external_url, created_at, updated_at, deleted_at, description)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, NULL, ?13)",
             params![
                 new.title,
                 new.status.as_str(),
@@ -66,6 +69,7 @@ impl Database {
                 new.external_id,
                 new.external_url,
                 now,
+                new.description,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -109,7 +113,8 @@ impl Database {
             "UPDATE tasks SET
                 title = ?2, status = ?3, action_kind = ?4, target_session = ?5,
                 repo_path = ?6, worktree_branch = ?7, base_branch = ?8, agent = ?9,
-                source = ?10, external_id = ?11, external_url = ?12, updated_at = ?13
+                source = ?10, external_id = ?11, external_url = ?12, updated_at = ?13,
+                description = ?14
              WHERE id = ?1",
             params![
                 task.id,
@@ -125,6 +130,7 @@ impl Database {
                 task.external_id,
                 task.external_url,
                 now,
+                task.description,
             ],
         )?;
         self.log_audit(
@@ -182,7 +188,7 @@ impl Database {
 /// Column list for task SELECTs (keep in sync with [`map_task`]).
 const COLS: &str = "id, title, status, action_kind, target_session, repo_path, \
     worktree_branch, base_branch, agent, source, external_id, external_url, \
-    created_at, updated_at, deleted_at";
+    created_at, updated_at, deleted_at, description";
 
 /// Decompose an optional action into its persisted columns. All `None` when the
 /// task is unconnected (`action_kind` is then NULL).
@@ -257,6 +263,7 @@ fn map_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         created_at: row.get::<_, i64>(12)? as u64,
         updated_at: row.get::<_, i64>(13)? as u64,
         deleted_at: row.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+        description: row.get(15)?,
     })
 }
 
@@ -380,6 +387,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let new = NewTask {
             title: "imported".into(),
+            description: None,
             status: TaskStatus::Todo,
             action: None,
             source: "github".into(),
@@ -394,6 +402,23 @@ mod tests {
             got.external_url.as_deref(),
             Some("https://example.com/issues/42")
         );
+    }
+
+    #[test]
+    fn description_round_trips_and_clears() {
+        let db = Database::open_in_memory().unwrap();
+        let new = NewTask {
+            description: Some("# Notes\n- **bold** item".into()),
+            ..NewTask::local("documented")
+        };
+        let id = db.create_task(&new).unwrap();
+        let mut got = db.get_task(id).unwrap().unwrap();
+        assert_eq!(got.description.as_deref(), Some("# Notes\n- **bold** item"));
+
+        // Clearing the description persists as NULL.
+        got.description = None;
+        db.update_task(&got).unwrap();
+        assert_eq!(db.get_task(id).unwrap().unwrap().description, None);
     }
 
     #[test]

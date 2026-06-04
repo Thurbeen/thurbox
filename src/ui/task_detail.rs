@@ -1,46 +1,81 @@
-//! Details panel for the scoped task.
+//! Read-only details/preview panel for the scoped task.
 //!
-//! Shown beneath the in-pane task editor (the central pane while the tasks
-//! panel / editor is focused): the task's agent linkage, status, source, and
-//! timestamps. Tasks have no run history, so this read-only panel takes its
-//! place. All human-formatted strings are computed by the caller (which owns
-//! the time helpers); this module only lays them out.
+//! Fills the central pane while the tasks panel is focused: the task title
+//! (bold header), its agent linkage, status, source, and timestamps, then the
+//! markdown-rendered description, and an optional key-hint footer. All
+//! human-formatted strings are computed by the caller (which owns the time
+//! helpers); this module only lays them out.
 
 use ratatui::{
-    layout::Rect,
-    style::Style,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
 use super::theme::Theme;
+use super::truncate_ellipsis;
 
 /// Pre-formatted task details for display.
 pub struct TaskDetail<'a> {
+    /// The task title, shown as a bold header above the metadata.
+    pub title: &'a str,
     /// How the task connects to an agent, e.g. `"send → claude(feat/x)"`,
     /// `"spawn → repo#branch"`, or `"local todo"`.
     pub linkage: String,
     pub status: &'a str,
     pub source: &'a str,
+    /// Raw markdown description; rendered beneath the metadata rows. Empty hides
+    /// the section.
+    pub description: &'a str,
     /// Relative created time, e.g. `"2d ago"`.
     pub created: String,
     /// Relative updated time, e.g. `"5m ago"`.
     pub updated: String,
 }
 
-/// Render the task details into `area` (a bordered, read-only panel).
-pub fn render_task_detail(frame: &mut Frame, area: Rect, detail: &TaskDetail<'_>) {
+/// Render the task details into `area` (a bordered, read-only panel). When the
+/// task has a description it is rendered as markdown beneath the metadata rows,
+/// scrolled vertically by `scroll` rows (for the full-screen preview).
+///
+/// `hints` are `(key, label)` pairs shown as a footer inside the border (e.g.
+/// the tasks-panel actions); pass an empty slice to omit the footer.
+pub fn render_task_detail(
+    frame: &mut Frame,
+    area: Rect,
+    detail: &TaskDetail<'_>,
+    scroll: u16,
+    hints: &[(&str, &str)],
+) {
+    // The task title *is* the panel heading (bold accent in the border) — no
+    // separate in-content title row, so there is one clear heading.
+    let title = truncate_ellipsis(detail.title, area.width.saturating_sub(4) as usize);
     let block = Block::default()
-        .title(" Details ")
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(Theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Theme::border_unfocused()));
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
         return;
     }
 
+    // Reserve the bottom row for the key-hint footer when there's room.
+    if !hints.is_empty() && inner.height > 2 {
+        let hint_area = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+        frame.render_widget(Paragraph::new(super::key_hint_line(hints)), hint_area);
+        inner.height -= 1;
+    }
+
+    // Metadata labels use the mid `text_secondary` tone (not the dimmest
+    // `label()`/muted) so the column stays legible.
+    let label_style = Style::default().fg(Theme::text_secondary());
     let rows = [
         ("agent", detail.linkage.clone()),
         ("status", detail.status.to_string()),
@@ -48,14 +83,48 @@ pub fn render_task_detail(frame: &mut Frame, area: Rect, detail: &TaskDetail<'_>
         ("created", detail.created.clone()),
         ("updated", detail.updated.clone()),
     ];
-    let lines: Vec<Line> = rows
+    let mut meta_lines: Vec<Line> = rows
         .iter()
         .map(|(label, value)| {
             Line::from(vec![
-                Span::styled(format!("  {label:<9}"), Theme::label()),
+                Span::styled(format!("  {label:<9}"), label_style),
                 Span::styled(value.clone(), Style::default().fg(Theme::text_primary())),
             ])
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
+
+    if detail.description.trim().is_empty() {
+        // Fill the otherwise-blank pane with a muted call-to-action. Only invite
+        // editing when the panel is actually focused (hints present); a global-
+        // search preview can't edit.
+        meta_lines.push(Line::default());
+        let cta = if hints.is_empty() {
+            "  No description."
+        } else {
+            "  No description — press e to add notes."
+        };
+        meta_lines.push(Line::from(Span::styled(
+            cta,
+            Style::default().fg(Theme::text_muted()),
+        )));
+        frame.render_widget(Paragraph::new(meta_lines), inner);
+        return;
+    }
+
+    // Split: fixed metadata rows on top, the rendered markdown below.
+    let meta_h = (meta_lines.len() as u16 + 1).min(inner.height);
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(meta_h), Constraint::Min(0)])
+        .split(inner);
+    frame.render_widget(Paragraph::new(meta_lines), parts[0]);
+
+    let mut md = vec![Line::from(Span::styled("  description", label_style))];
+    md.extend(super::markdown::render_markdown(detail.description));
+    frame.render_widget(
+        Paragraph::new(md)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        parts[1],
+    );
 }

@@ -10,12 +10,14 @@ pub mod highlight;
 pub mod info_panel;
 pub mod layout;
 pub mod links;
+pub mod markdown;
 pub mod project_list;
 pub mod repo_picker_modal;
 pub mod restore_sessions_modal;
 pub mod selection;
 pub mod session_name_modal;
 pub mod status_bar;
+pub mod task_action_picker_modal;
 pub mod task_detail;
 pub mod task_editor_modal;
 pub mod tasks_panel;
@@ -62,19 +64,19 @@ pub fn truncate_ellipsis(s: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
-/// Render a titled, bordered editor frame and return its inner area. The border
-/// is accent when `focused`, gray otherwise. Shared by the automation and task
-/// in-pane editors so their chrome stays identical.
+/// Render a titled, bordered editor frame and return its inner area. Uses the
+/// shared [`focus_block`] chrome so a focused editor is highlighted exactly like
+/// the session list / tasks panel (bright accent border + highlighted title
+/// badge); unfocused it reads as a muted preview. Shared by the automation and
+/// task in-pane editors so their chrome stays identical.
 pub fn render_editor_frame(frame: &mut Frame, area: Rect, title: &str, focused: bool) -> Rect {
-    let border = if focused {
-        Theme::border_focused()
+    let level = if focused {
+        FocusLevel::Focused
     } else {
-        Theme::border_unfocused()
+        FocusLevel::Inactive
     };
-    let block = Block::default()
-        .title(format!(" {title} "))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border));
+    let title = format!(" {title} ");
+    let block = focus_block(&title, level);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner
