@@ -24,6 +24,10 @@ pub struct TaskDetail<'a> {
     /// How the task connects to an agent, e.g. `"send → claude(feat/x)"`,
     /// `"spawn → repo#branch"`, or `"local todo"`.
     pub linkage: String,
+    /// The task's currently-open related session(s) — names joined with `, `, or
+    /// a muted placeholder when none are open. Shown as its own metadata row so
+    /// the live session behind a task is visible (and `o`-openable) at a glance.
+    pub sessions: String,
     pub status: &'a str,
     pub source: &'a str,
     /// Raw markdown description; rendered beneath the metadata rows. Empty hides
@@ -78,6 +82,7 @@ pub fn render_task_detail(
     let label_style = Style::default().fg(Theme::text_secondary());
     let rows = [
         ("agent", detail.linkage.clone()),
+        ("session", detail.sessions.clone()),
         ("status", detail.status.to_string()),
         ("source", detail.source.to_string()),
         ("created", detail.created.clone()),

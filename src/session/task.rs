@@ -94,6 +94,39 @@ pub struct Task {
     pub deleted_at: Option<u64>,
 }
 
+impl Task {
+    /// Build the prompt seeded into an agent when this task is triggered
+    /// (`Send` into a running session, or `Spawn` of a fresh one).
+    ///
+    /// Beyond the bare title it gives the agent enough context to act on its
+    /// own: that it is solving a Thurbox task, the markdown description, how to
+    /// fetch the full record (`thurbox-cli task show <id>`), and how to mark the
+    /// task done when finished (the trigger already advances it to *in
+    /// progress*). Shared by the TUI (`app`) and headless (`thurbox-cli task
+    /// run`) dispatch paths so the two never drift.
+    pub fn agent_prompt(&self) -> String {
+        let mut prompt = format!(
+            "You are working on Thurbox task #{id}.\n\n# {title}\n",
+            id = self.id,
+            title = self.title,
+        );
+        if let Some(desc) = self.description.as_deref().map(str::trim) {
+            if !desc.is_empty() {
+                prompt.push('\n');
+                prompt.push_str(desc);
+                prompt.push('\n');
+            }
+        }
+        prompt.push_str(&format!(
+            "\n---\nThis is a Thurbox task. Run `thurbox-cli task show {id}` for the full \
+             record. The task is now marked **in progress**; when you finish, run \
+             `thurbox-cli task edit {id} --status done`.\n",
+            id = self.id,
+        ));
+        prompt
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +156,43 @@ mod tests {
         assert_eq!(TaskStatus::Todo.label(), "todo");
         assert_eq!(TaskStatus::InProgress.label(), "in progress");
         assert_eq!(TaskStatus::Done.label(), "done");
+    }
+
+    fn sample_task(description: Option<&str>) -> Task {
+        Task {
+            id: 42,
+            title: "Wire up SSH backend".to_string(),
+            description: description.map(str::to_string),
+            status: TaskStatus::Todo,
+            action: None,
+            source: SOURCE_LOCAL.to_string(),
+            external_id: None,
+            external_url: None,
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn agent_prompt_carries_id_title_and_cli_hints() {
+        let prompt = sample_task(Some("Implement `SshTmuxBackend`.")).agent_prompt();
+        assert!(prompt.contains("Thurbox task #42"));
+        assert!(prompt.contains("# Wire up SSH backend"));
+        assert!(prompt.contains("Implement `SshTmuxBackend`."));
+        // Self-service context: how to read more and how to close it out.
+        assert!(prompt.contains("thurbox-cli task show 42"));
+        assert!(prompt.contains("thurbox-cli task edit 42 --status done"));
+    }
+
+    #[test]
+    fn agent_prompt_omits_empty_description_block() {
+        // No description and a blank-only description both skip the body.
+        for desc in [None, Some("   ")] {
+            let prompt = sample_task(desc).agent_prompt();
+            assert!(prompt.contains("# Wire up SSH backend"));
+            // Title line is immediately followed by the `---` hint separator.
+            assert!(prompt.contains("# Wire up SSH backend\n\n---\n"));
+        }
     }
 }

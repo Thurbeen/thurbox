@@ -337,11 +337,18 @@ the persistent `App::automation_editor` state (kept in sync by
 
 Thurbox has a **task list**: todo items (title + markdown description +
 status). A task can be **acted on by a coding agent** via a **trigger-time
-picker** (`r`): you choose *Send → a running session* (paste the title) or
-*Spawn new session…* (the normal repo→agent flow, seeded with the title) at
-the moment you act — the action is **not** authored into the task. Triggering
-advances the task to `InProgress`. (`Task.action: Option<AutomationAction>`
-still exists for the CLI / external sync, but the TUI editor never sets it.)
+picker** (`r`): you choose *Send → a running session* or *Spawn new session…*
+(the normal repo→agent flow) at the moment you act — the action is **not**
+authored into the task. Either way the agent is seeded with a **full context
+prompt**, not the bare title: `Task::agent_prompt()` builds an `id + # title +
+markdown description` block plus self-service hints (`thurbox-cli task show
+<id>` to read the full record, `thurbox-cli task edit <id> --status done` to
+close it out). The TUI seeds it via `App::task_agent_prompt` (bracketed-paste
+safe, so the multi-line body never submits early); the headless `task run` path
+builds the same string. Triggering advances the task `Todo → InProgress` (TUI:
+`App::advance_task_to_in_progress`; CLI: `mark_in_progress`).
+(`Task.action: Option<AutomationAction>` still exists for the CLI / external
+sync, but the TUI editor never sets it.)
 
 - **Data** (`session/task.rs`): `Task` (`id`, `title`,
   `description: Option<String>` (free-form markdown notes, `None` when blank),
@@ -366,13 +373,16 @@ still exists for the CLI / external sync, but the TUI editor never sets it.)
   between `terminal` and `file_viewer` at width ≥ 120. Rendered by
   `ui/tasks_panel.rs` (checkbox glyphs ☐/◐/☑) with the shared
   `ui::focus_block` for the highlighted title + accent border, matching the
-  session list / file viewer. `InputFocus::TaskList` is the panel focus.
+  session list / file viewer. `InputFocus::TaskList` is the panel focus. Rows
+  whose task has an **open related session** get a trailing accent `⇄` marker
+  (`TaskPaneEntry::linked`).
 - **Full-screen preview / edit toggle** — the central pane is a clean toggle
   (`view::render_task_workspace`): while the tasks panel is focused
   (`InputFocus::TaskList`) it shows the selected task's **full-screen,
   scrollable** read-only **details + markdown preview** (`ui/task_detail`:
-  agent linkage, status, source, created/updated, then the markdown-rendered
-  description via `ui/markdown::render_markdown`); `PageUp`/`PageDown` scroll it
+  agent linkage, **related session(s)**, status, source, created/updated, then
+  the markdown-rendered description via `ui/markdown::render_markdown`);
+  `PageUp`/`PageDown` scroll it
   (`App::task_preview_scroll`, reset on selection change). Entering the central
   pane (`Enter`/`e` → `InputFocus::TaskEditor`) swaps to the **full-screen
   editor** (`ui/task_editor_modal::render_task_editor_into`); `Esc` returns to
@@ -386,7 +396,9 @@ still exists for the CLI / external sync, but the TUI editor never sets it.)
   **`Ctrl+S` saves from any field**.
 - **Keys** (focused panel): `j`/`k` select (live-preview), `PageUp`/`PageDown`
   scroll the preview, `n` new, `e`/`Enter` open the central-pane editor,
-  `Space` cycle status, `r` open the **trigger-time action picker**, `d`/`Ctrl+D`
+  `Space` cycle status, `r` open the **trigger-time action picker**, `o` **open
+  the task's related session** (`App::open_task_related_session` — jumps to the
+  spawned `task-<id>` window or a Send target, else a status hint), `d`/`Ctrl+D`
   delete, `Esc` back to the session list. In the editor: field nav +
   `Enter`/`Ctrl+S` save (→ back to panel), `Esc` discard; the editor captures
   its keys before global bindings (so `e`/`d` edit text) via

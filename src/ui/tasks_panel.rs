@@ -26,7 +26,14 @@ pub struct TaskPaneEntry {
     pub match_positions: Vec<usize>,
     /// When a global search is active, rows that don't match are dimmed.
     pub dimmed: bool,
+    /// The task has at least one currently-open related session (a spawned
+    /// `task-<id>` window or a Send target). Drawn as a trailing `⇄` marker so a
+    /// live task is glanceable in the list; press `o` to jump to it.
+    pub linked: bool,
 }
+
+/// Trailing marker shown on rows whose task has an open related session.
+const LINKED_MARKER: &str = " ⇄";
 
 pub struct TaskPaneState<'a> {
     pub entries: &'a [TaskPaneEntry],
@@ -95,31 +102,53 @@ fn render_task_list(frame: &mut Frame, area: Rect, state: &TaskPaneState<'_>) {
             // global-search preview points here (so the moving cursor is visible
             // even though focus is in the search box).
             let selected = (focused || state.preview_selected) && i == state.selected;
-            let glyph = status_glyph(e.status);
-            // The glyph is its own span; the title follows so highlight byte
-            // offsets (which index `title`) line up.
-            let title = truncate_ellipsis(&e.title, width.saturating_sub(2));
-
-            // Matched characters are layered *on top* of this base (see
-            // `row_base_style`), the same way the session list does it — so a
-            // selected/previewed row still shows its fuzzy-match highlight.
-            let base = super::highlight::row_base_style(
-                selected,
-                e.dimmed,
-                Style::default().fg(status_color(e.status)),
-            );
-            let mut spans = vec![Span::styled(format!("{glyph} "), base)];
-            // Highlight matched chars on every non-dimmed row (including the
-            // selected one); dimmed rows didn't match, so no positions.
-            let positions: &[usize] = if e.dimmed { &[] } else { &e.match_positions };
-            spans.extend(super::highlight::highlighted_spans_owned(
-                &title, positions, base,
-            ));
-            Line::from(spans)
+            task_row_line(e, selected, width)
         })
         .collect();
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Build one task row: `<glyph> <title>` with global-search highlighting, plus a
+/// trailing `⇄` marker when the task has a live related session.
+fn task_row_line(e: &TaskPaneEntry, selected: bool, width: usize) -> Line<'_> {
+    let glyph = status_glyph(e.status);
+    // The glyph is its own span; the title follows so highlight byte offsets
+    // (which index `title`) line up. Reserve room for the trailing link marker
+    // so it never pushes the title off-row.
+    let reserved = if e.linked {
+        2 + LINKED_MARKER.chars().count()
+    } else {
+        2
+    };
+    let title = truncate_ellipsis(&e.title, width.saturating_sub(reserved));
+
+    // Matched characters are layered *on top* of this base (see `row_base_style`),
+    // the same way the session list does it — so a selected/previewed row still
+    // shows its fuzzy-match highlight.
+    let base = super::highlight::row_base_style(
+        selected,
+        e.dimmed,
+        Style::default().fg(status_color(e.status)),
+    );
+    let mut spans = vec![Span::styled(format!("{glyph} "), base)];
+    // Highlight matched chars on every non-dimmed row (including the selected
+    // one); dimmed rows didn't match, so no positions.
+    let positions: &[usize] = if e.dimmed { &[] } else { &e.match_positions };
+    spans.extend(super::highlight::highlighted_spans_owned(
+        &title, positions, base,
+    ));
+    // Trailing accent marker for tasks with a live session. Dimmed rows
+    // (non-matches during a search) keep the dim tone for consistency.
+    if e.linked {
+        let marker_style = if e.dimmed {
+            base
+        } else {
+            Style::default().fg(Theme::accent())
+        };
+        spans.push(Span::styled(LINKED_MARKER, marker_style));
+    }
+    Line::from(spans)
 }
 
 fn status_glyph(status: TaskStatus) -> &'static str {

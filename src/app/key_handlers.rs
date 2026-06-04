@@ -422,29 +422,15 @@ impl App {
             return;
         }
         let count = self.cached_automations.len();
-        // `k`/Up at the top row (or in an empty pane) flows focus back up into
-        // the session list, so the left column behaves as one vertical list.
+        // `k`/Up at the top row (or empty pane) flows focus back up into the
+        // session list; `j`/Down past the last loops to the top of it — so the
+        // left column behaves as one circular vertical list.
         if matches!(code, KeyCode::Char('k') | KeyCode::Up) {
-            if self.automation_panel_index == 0 || count == 0 {
-                self.focus = InputFocus::SessionList;
-                self.select_last_session();
-            } else {
-                self.automation_panel_index -= 1;
-            }
-            self.refresh_automation_view();
+            self.automations_pane_move_up(count);
             return;
         }
-        // `j`/Down past the last automation (or in an empty pane) loops around to
-        // the TOP of the session list, so sessions+automations form one circular
-        // column.
         if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
-            if count == 0 || self.automation_panel_index + 1 >= count {
-                self.focus = InputFocus::SessionList;
-                self.select_first_session();
-            } else {
-                self.automation_panel_index += 1;
-            }
-            self.refresh_automation_view();
+            self.automations_pane_move_down(count);
             return;
         }
         // `Enter`/`e` focuses the central-pane editor (like `Enter` on a session
@@ -465,6 +451,35 @@ impl App {
             self.automation_panel_index = count - 1;
         }
         let id = self.cached_automations[self.automation_panel_index].id;
+        self.handle_automation_pane_action(code, id);
+    }
+
+    /// `k`/Up in the automations pane: step up, or hand focus back to the
+    /// session list (last row) at the top / when empty.
+    fn automations_pane_move_up(&mut self, count: usize) {
+        if self.automation_panel_index == 0 || count == 0 {
+            self.focus = InputFocus::SessionList;
+            self.select_last_session();
+        } else {
+            self.automation_panel_index -= 1;
+        }
+        self.refresh_automation_view();
+    }
+
+    /// `j`/Down in the automations pane: step down, or loop focus to the top of
+    /// the session list past the last row / when empty.
+    fn automations_pane_move_down(&mut self, count: usize) {
+        if count == 0 || self.automation_panel_index + 1 >= count {
+            self.focus = InputFocus::SessionList;
+            self.select_first_session();
+        } else {
+            self.automation_panel_index += 1;
+        }
+        self.refresh_automation_view();
+    }
+
+    /// Toggle / run / delete the selected automation (`Space`/`r`/`d`).
+    fn handle_automation_pane_action(&mut self, code: KeyCode, id: i64) {
         match code {
             KeyCode::Char(' ') => {
                 self.toggle_automation_by_id(id);
@@ -628,36 +643,47 @@ impl App {
             // Scroll the full-screen preview (the list itself uses j/k).
             KeyCode::PageDown => self.scroll_task_preview(5),
             KeyCode::PageUp => self.scroll_task_preview(-5),
-            KeyCode::Char(' ') => {
-                if let Some(task) = self.selected_task().cloned() {
-                    if let Err(e) = self.db.set_task_status(task.id, task.status.cycle()) {
-                        error!("Failed to cycle task {} status: {e}", task.id);
-                    }
-                    self.refresh_tasks();
-                    self.sync_task_editor();
-                }
-            }
+            KeyCode::Char(' ') => self.cycle_selected_task_status(),
             // Open the trigger-time action picker (Send → session / Spawn new).
             KeyCode::Char('r') => {
                 if let Some(task) = self.selected_task().cloned() {
                     self.open_task_action_picker(&task);
                 }
             }
-            KeyCode::Char('d') => {
-                if let Some(id) = self.selected_task().map(|t| t.id) {
-                    if let Err(e) = self.db.soft_delete_task(id) {
-                        error!("Failed to delete task {id}: {e}");
-                    }
-                    self.refresh_tasks();
-                    let new_count = self.filtered_task_indices.len();
-                    if new_count > 0 && self.task_panel_index >= new_count {
-                        self.task_panel_index = new_count - 1;
-                    }
-                    self.refresh_task_view();
-                }
-            }
+            // Jump to the task's related session terminal (the spawned
+            // `task-<id>` window, or a persisted Send target).
+            KeyCode::Char('o') => self.open_task_related_session(),
+            KeyCode::Char('d') => self.delete_selected_task(),
             _ => {}
         }
+    }
+
+    /// Cycle the selected task's status (`Todo → InProgress → Done`) and refresh.
+    fn cycle_selected_task_status(&mut self) {
+        let Some(task) = self.selected_task().cloned() else {
+            return;
+        };
+        if let Err(e) = self.db.set_task_status(task.id, task.status.cycle()) {
+            error!("Failed to cycle task {} status: {e}", task.id);
+        }
+        self.refresh_tasks();
+        self.sync_task_editor();
+    }
+
+    /// Soft-delete the selected task, then clamp the selection and refresh.
+    fn delete_selected_task(&mut self) {
+        let Some(id) = self.selected_task().map(|t| t.id) else {
+            return;
+        };
+        if let Err(e) = self.db.soft_delete_task(id) {
+            error!("Failed to delete task {id}: {e}");
+        }
+        self.refresh_tasks();
+        let new_count = self.filtered_task_indices.len();
+        if new_count > 0 && self.task_panel_index >= new_count {
+            self.task_panel_index = new_count - 1;
+        }
+        self.refresh_task_view();
     }
 
     /// Handle keys while the global-search strip is focused. Typed characters
@@ -1085,54 +1111,13 @@ impl App {
                 true
             }
             Action::NewSession => {
-                // In the automations context, Ctrl+N creates a new automation
-                // (mirrors `n`); elsewhere it starts the new-session wizard.
-                if matches!(
-                    self.focus,
-                    InputFocus::Automations | InputFocus::AutomationEditor
-                ) {
-                    self.new_automation_in_pane();
-                } else {
-                    // A manual new-session must not inherit a task prompt left
-                    // over from a cancelled task-spawn.
-                    self.pending_task_prompt = None;
-                    self.open_repo_picker();
-                }
+                self.act_new_session();
                 true
             }
-            Action::DeleteSession => match self.focus {
-                InputFocus::SessionList | InputFocus::FileViewer => {
-                    self.close_active_session();
-                    true
-                }
-                // On the automations pane, Ctrl+D deletes the selected
-                // automation (mirrors the pane's `d` key).
-                InputFocus::Automations => {
-                    self.handle_automations_pane_key(KeyCode::Char('d'));
-                    true
-                }
-                // On the tasks panel, Ctrl+D deletes the selected task (mirrors
-                // the panel's `d` key).
-                InputFocus::TaskList => {
-                    self.handle_task_list_key(KeyCode::Char('d'));
-                    true
-                }
-                // The editors / run-history / global search capture their own
-                // keys earlier, so this is unreachable for them; yield just in
-                // case.
-                InputFocus::AutomationEditor
-                | InputFocus::AutomationRunHistory
-                | InputFocus::TaskEditor
-                | InputFocus::GlobalSearch => false,
-                InputFocus::Terminal => false, // forward to PTY
-            },
-            Action::OpenInEditor => match self.focus {
-                InputFocus::Terminal => false, // forward to PTY
-                _ => {
-                    self.open_active_in_editor();
-                    true
-                }
-            },
+            Action::DeleteSession => self.act_delete_session(),
+            // Forward to the PTY in the terminal (shell editor / search chords),
+            // else run the action.
+            Action::OpenInEditor => self.act_unless_terminal(Self::open_active_in_editor),
             Action::OpenAutomations => {
                 self.open_automations_list();
                 true
@@ -1145,20 +1130,8 @@ impl App {
                 self.toggle_shell_view();
                 true
             }
-            Action::ForkSession => match self.focus {
-                InputFocus::Terminal => false, // PTY: shell forward-search
-                _ => {
-                    self.fork_active_session();
-                    true
-                }
-            },
-            Action::RestartSession => match self.focus {
-                InputFocus::Terminal => false, // PTY: bash reverse-search
-                _ => {
-                    self.restart_active_session();
-                    true
-                }
-            },
+            Action::ForkSession => self.act_unless_terminal(Self::fork_active_session),
+            Action::RestartSession => self.act_unless_terminal(Self::restart_active_session),
             Action::UndoDelete => {
                 if self.pending_delete.is_some() {
                     self.undo_delete();
@@ -1201,31 +1174,11 @@ impl App {
                 true
             }
             Action::FocusTasks => {
-                // Toggle the tasks panel column, mirroring the file viewer
-                // (`ToggleFileViewer`): showing it also focuses it; hiding it
-                // drops focus back to the session list.
-                self.show_tasks_panel = !self.show_tasks_panel;
-                if self.show_tasks_panel {
-                    self.refresh_tasks();
-                    self.task_panel_index = 0;
-                    self.focus = InputFocus::TaskList;
-                    // Populate the central-pane preview for the selected task
-                    // (without this the workspace shows the empty hint).
-                    self.sync_task_editor();
-                } else if self.focus == InputFocus::TaskList {
-                    self.focus = InputFocus::SessionList;
-                }
-                self.resize_sessions_to_content_area();
+                self.act_toggle_tasks();
                 true
             }
             Action::ToggleFileViewer => {
-                self.show_file_viewer = !self.show_file_viewer;
-                if self.show_file_viewer {
-                    self.rebuild_file_viewer_for_active();
-                } else if self.focus == InputFocus::FileViewer {
-                    self.focus = InputFocus::SessionList;
-                }
-                self.resize_sessions_to_content_area();
+                self.act_toggle_file_viewer();
                 true
             }
             Action::GlobalSearch => {
@@ -1243,7 +1196,7 @@ impl App {
                     self.copy_selection_to_clipboard();
                     true
                 } else {
-                    false
+                    false // no selection → let the terminal send SIGINT
                 }
             }
             Action::Paste => {
@@ -1253,25 +1206,11 @@ impl App {
 
             // ── Session list (scoped) ───────────────────────────────────
             Action::SessionListNext => {
-                // Past the last session, flow into the automations pane so the
-                // left column reads as one continuous list.
-                if self.active_is_last_in_order() {
-                    self.focus = InputFocus::Automations;
-                    self.automation_panel_index = 0;
-                    self.refresh_automation_view();
-                } else {
-                    self.switch_session_forward();
-                }
+                self.act_session_list_next();
                 true
             }
             Action::SessionListPrev => {
-                if self.active_is_first_in_order() {
-                    self.focus = InputFocus::Automations;
-                    self.automation_panel_index = self.cached_automations.len().saturating_sub(1);
-                    self.refresh_automation_view();
-                } else {
-                    self.switch_session_backward();
-                }
+                self.act_session_list_prev();
                 true
             }
             Action::SessionListOpen => {
@@ -1328,6 +1267,110 @@ impl App {
                 self.scroll_terminal_down(amount);
                 true
             }
+        }
+    }
+
+    /// Run `act` unless the terminal is focused (where the chord must forward to
+    /// the PTY — e.g. shell history search). Returns whether the key was
+    /// consumed. Backs the `OpenInEditor`/`ForkSession`/`RestartSession` actions.
+    fn act_unless_terminal(&mut self, act: impl FnOnce(&mut Self)) -> bool {
+        if self.focus == InputFocus::Terminal {
+            return false; // forward to PTY
+        }
+        act(self);
+        true
+    }
+
+    /// `Ctrl+N`: in the automations context create an automation (mirrors `n`),
+    /// else start the new-session wizard (clearing any leftover task prompt).
+    fn act_new_session(&mut self) {
+        if matches!(
+            self.focus,
+            InputFocus::Automations | InputFocus::AutomationEditor
+        ) {
+            self.new_automation_in_pane();
+        } else {
+            // A manual new-session must not inherit a task prompt left over from
+            // a cancelled task-spawn.
+            self.pending_task_prompt = None;
+            self.open_repo_picker();
+        }
+    }
+
+    /// `Ctrl+D`: delete the focused entity (session / automation / task). Editors
+    /// and search capture their own keys earlier, so they yield here.
+    fn act_delete_session(&mut self) -> bool {
+        match self.focus {
+            InputFocus::SessionList | InputFocus::FileViewer => {
+                self.close_active_session();
+                true
+            }
+            InputFocus::Automations => {
+                self.handle_automations_pane_key(KeyCode::Char('d'));
+                true
+            }
+            InputFocus::TaskList => {
+                self.handle_task_list_key(KeyCode::Char('d'));
+                true
+            }
+            InputFocus::AutomationEditor
+            | InputFocus::AutomationRunHistory
+            | InputFocus::TaskEditor
+            | InputFocus::GlobalSearch => false,
+            InputFocus::Terminal => false, // forward to PTY
+        }
+    }
+
+    /// Toggle the tasks panel column (`F5`/`Ctrl+W`), mirroring the file viewer:
+    /// showing it also focuses it; hiding it drops focus back to the list.
+    fn act_toggle_tasks(&mut self) {
+        self.show_tasks_panel = !self.show_tasks_panel;
+        if self.show_tasks_panel {
+            self.refresh_tasks();
+            self.task_panel_index = 0;
+            self.focus = InputFocus::TaskList;
+            // Populate the central-pane preview for the selected task (without
+            // this the workspace shows the empty hint).
+            self.sync_task_editor();
+        } else if self.focus == InputFocus::TaskList {
+            self.focus = InputFocus::SessionList;
+        }
+        self.resize_sessions_to_content_area();
+    }
+
+    /// Toggle the file viewer column; showing it rebuilds it for the active
+    /// session, hiding it returns focus to the session list.
+    fn act_toggle_file_viewer(&mut self) {
+        self.show_file_viewer = !self.show_file_viewer;
+        if self.show_file_viewer {
+            self.rebuild_file_viewer_for_active();
+        } else if self.focus == InputFocus::FileViewer {
+            self.focus = InputFocus::SessionList;
+        }
+        self.resize_sessions_to_content_area();
+    }
+
+    /// Session-list `Ctrl+J`: step to the next session, or flow into the
+    /// automations pane past the last so the left column reads as one list.
+    fn act_session_list_next(&mut self) {
+        if self.active_is_last_in_order() {
+            self.focus = InputFocus::Automations;
+            self.automation_panel_index = 0;
+            self.refresh_automation_view();
+        } else {
+            self.switch_session_forward();
+        }
+    }
+
+    /// Session-list `Ctrl+K`: step to the previous session, or flow into the
+    /// automations pane (last row) above the first.
+    fn act_session_list_prev(&mut self) {
+        if self.active_is_first_in_order() {
+            self.focus = InputFocus::Automations;
+            self.automation_panel_index = self.cached_automations.len().saturating_sub(1);
+            self.refresh_automation_view();
+        } else {
+            self.switch_session_backward();
         }
     }
 

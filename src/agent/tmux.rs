@@ -880,16 +880,35 @@ impl SessionBackend for LocalTmuxBackend {
     }
 }
 
+/// Wrap `text` in the bracketed-paste escape sequences (`ESC[200~ … ESC[201~`)
+/// so a multi-line prompt is delivered as a single paste — the embedded
+/// newlines insert as text instead of submitting the prompt on the first one.
+/// Mirrors the TUI's `App::send_prompt_to_session`; the trailing `Enter` is
+/// still sent separately by the caller. tmux delivers these bytes literally via
+/// `send-keys -l`.
+fn bracketed_paste(text: &str) -> String {
+    format!("\x1b[200~{text}\x1b[201~")
+}
+
 /// Send text immediately to a session pane (no scheduling), followed by Enter.
 ///
 /// Targets the tmux window named `tb-<session_name>` in the thurbox tmux
-/// session and uses a "type text → brief delay → press Enter" sequence so the
-/// target app has time to process the typed input.
+/// session and uses a "paste text → brief delay → press Enter" sequence so the
+/// target app has time to process the pasted input.
 pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
     let target = window_target(session_name);
+    let payload = bracketed_paste(text);
 
     let status = Command::new("tmux")
-        .args(["-L", TMUX_SOCKET, "send-keys", "-t", &target, text])
+        .args([
+            "-L",
+            TMUX_SOCKET,
+            "send-keys",
+            "-t",
+            &target,
+            "-l",
+            &payload,
+        ])
         .status()
         .context("Failed to run tmux send-keys for prompt text")?;
     if !status.success() {
@@ -959,10 +978,12 @@ pub fn window_exists(session_name: &str) -> bool {
 /// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
 pub fn send_prompt_after_delay(session_name: &str, text: &str, delay_secs: u64) -> Result<()> {
     let escaped_target = shell_escape(&window_target(session_name));
-    let escaped_text = shell_escape(text);
+    // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
+    // submit early; `-l` makes tmux deliver the bytes literally.
+    let escaped_text = shell_escape(&bracketed_paste(text));
     // run-shell executes the script via the server's shell; escape accordingly.
     let script = format!(
-        "tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} {escaped_text}; \
+        "tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} -l {escaped_text}; \
          sleep 0.2; \
          tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} Enter"
     );

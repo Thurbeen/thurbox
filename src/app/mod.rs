@@ -385,6 +385,14 @@ pub struct App {
     /// trigger-time action picker chooses "Spawn new session", consumed by the
     /// spawn flow's success tail to deliver the prompt + advance the task.
     pub(crate) pending_task_prompt: Option<(i64, String)>,
+    /// Live `task id → session id` links recorded when a task is triggered from
+    /// the TUI (Spawn-new or Send). TUI spawns get a user-chosen session name
+    /// rather than the `task-<id>` convention, so the name alone can't recover
+    /// the link — this map does. Consulted by `task_related_session_indices`
+    /// alongside the name convention and any persisted `Send` action. In-memory
+    /// only (the `task-<id>` convention is what survives a restart); stale
+    /// entries are harmless since lookups filter to currently-open sessions.
+    pub(crate) task_session_links: std::collections::HashMap<i64, SessionId>,
     /// Global search strip (`Ctrl+A`): cross-scope search docked at the bottom.
     pub(crate) global_search: search::GlobalSearchState,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
@@ -510,6 +518,7 @@ impl App {
             task_panel_index: 0,
             task_preview_scroll: 0,
             pending_task_prompt: None,
+            task_session_links: std::collections::HashMap::new(),
             filtered_task_indices: Vec::new(),
             task_editor: None,
             global_search: search::GlobalSearchState::default(),
@@ -1369,7 +1378,11 @@ impl App {
                 // then advances the task to in progress.
                 if let Some((task_id, title)) = self.pending_task_prompt.take() {
                     let new_id = self.sessions[self.active_index].info.id;
-                    self.send_prompt_to_session(new_id, &title, AGENT_BOOT_DELAY_TICKS);
+                    // Record the link now — the session was named by the user, so
+                    // the `task-<id>` convention can't recover it later.
+                    self.task_session_links.insert(task_id, new_id);
+                    let prompt = self.task_agent_prompt(task_id, &title);
+                    self.send_prompt_to_session(new_id, &prompt, AGENT_BOOT_DELAY_TICKS);
                     let status = self
                         .cached_tasks
                         .iter()
@@ -2892,6 +2905,60 @@ impl App {
         self.cached_tasks.get(idx)
     }
 
+    /// Indices into `self.sessions` of the **currently-open** sessions a task is
+    /// related to, in display order:
+    ///
+    /// - the session named `task-<id>` — the spawn convention used by the
+    ///   headless `task run` (and what survives a restart);
+    /// - the target of a persisted `Send` action (`task.action`), when one is
+    ///   set via the CLI; and
+    /// - the in-memory `task_session_links` entry recorded when the task was
+    ///   triggered from the TUI this run (TUI spawns get a user-chosen name, not
+    ///   `task-<id>`, so this is how that link is recovered).
+    ///
+    /// Deduplicated. Empty when nothing related is open right now. This is the
+    /// single source of truth for both the details panel and the *open* key.
+    pub(crate) fn task_related_session_indices(&self, task: &crate::session::Task) -> Vec<usize> {
+        let spawn_name = format!("task-{}", task.id);
+        // Persisted `Send` action target (CLI-authored), plus the in-memory link
+        // recorded when this task was triggered from the TUI this run.
+        let send_target = match &task.action {
+            Some(crate::session::AutomationAction::Send { session_id }) => Some(*session_id),
+            _ => None,
+        };
+        let linked = self.task_session_links.get(&task.id).copied();
+        let mut out = Vec::new();
+        for (i, s) in self.sessions.iter().enumerate() {
+            let related = s.info.name == spawn_name
+                || send_target.is_some_and(|t| t == s.info.id)
+                || linked.is_some_and(|t| t == s.info.id);
+            if related && !out.contains(&i) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// Jump to the task's related session terminal (the first open one). Bound
+    /// to `o` in the focused tasks panel; mirrors `open_run_related_session`.
+    pub(crate) fn open_task_related_session(&mut self) {
+        let Some(task) = self.selected_task().cloned() else {
+            return;
+        };
+        match self.task_related_session_indices(&task).first() {
+            Some(&idx) => {
+                self.active_index = idx;
+                self.focus = InputFocus::Terminal;
+                // Leaving the tasks context clears the editor/preview cache.
+                self.refresh_task_view();
+            }
+            None => self.set_status(
+                StatusLevel::Info,
+                "Task has no open session — run it with r",
+            ),
+        }
+    }
+
     /// Scroll the full-screen task preview by `delta` rows, clamped to the
     /// rendered description length (a slight over-scroll is harmless).
     pub(crate) fn scroll_task_preview(&mut self, delta: i32) {
@@ -2925,7 +2992,21 @@ impl App {
         });
     }
 
-    /// Send a task's title to an existing session and advance it to `InProgress`.
+    /// The full agent prompt for a task (id + title + description + CLI hints),
+    /// falling back to `title` if the task is no longer cached. Keeps the
+    /// trigger paths from seeding an agent with just the bare title — the agent
+    /// gets explicit context that it is solving a Thurbox task and how to fetch
+    /// more / close it out (see [`crate::session::Task::agent_prompt`]).
+    fn task_agent_prompt(&self, task_id: i64, title: &str) -> String {
+        self.cached_tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .map(|t| t.agent_prompt())
+            .unwrap_or_else(|| title.to_string())
+    }
+
+    /// Send a task's prompt to an existing session and advance it to
+    /// `InProgress`.
     pub(crate) fn send_task_to_session(
         &mut self,
         task_id: i64,
@@ -2942,7 +3023,9 @@ impl App {
             self.set_error("Target session is not running");
             return;
         };
-        self.send_prompt_to_session(session_id, title, 0);
+        let prompt = self.task_agent_prompt(task_id, title);
+        self.send_prompt_to_session(session_id, &prompt, 0);
+        self.task_session_links.insert(task_id, session_id);
         self.advance_task_to_in_progress(task_id, status);
         self.refresh_tasks();
         self.set_status(StatusLevel::Success, format!("Sent task to {name}"));
@@ -3150,17 +3233,28 @@ impl App {
         query: &str,
         with_content: bool,
     ) -> Vec<search::GlobalSearchResult> {
-        use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
         if query.trim().is_empty() {
             return Vec::new();
         }
         let query_lc = query.to_lowercase();
-        let mut sessions: Vec<GlobalSearchResult> = Vec::new();
-        let mut tasks: Vec<GlobalSearchResult> = Vec::new();
-        let mut automations: Vec<GlobalSearchResult> = Vec::new();
-        let mut files: Vec<GlobalSearchResult> = Vec::new();
+        // Group order: Sessions → Tasks → Automations → Files.
+        let mut out = self.search_sessions(query, &query_lc, with_content);
+        out.extend(self.search_tasks(query, &query_lc));
+        out.extend(self.search_automations(query));
+        out.extend(self.search_files(&query_lc));
+        out
+    }
 
-        // Sessions — metadata (name / agent / branch) via fuzzy.
+    /// Session results: fuzzy metadata (name / agent / branch) plus, on the
+    /// debounced heavy path, a buffer-content scan (skipping metadata matches).
+    fn search_sessions(
+        &self,
+        query: &str,
+        query_lc: &str,
+        with_content: bool,
+    ) -> Vec<search::GlobalSearchResult> {
+        use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
+        let mut sessions: Vec<GlobalSearchResult> = Vec::new();
         for (i, session) in self.sessions.iter().enumerate() {
             if sessions.len() >= MAX_PER_GROUP {
                 break;
@@ -3169,9 +3263,7 @@ impl App {
             let branch = info.worktrees.first().map(|w| w.branch.as_str());
             let meta_hit = crate::fuzzy::fuzzy_match(query, &info.name).is_some()
                 || crate::fuzzy::fuzzy_match(query, &info.agent).is_some()
-                || branch
-                    .map(|b| crate::fuzzy::fuzzy_match(query, b).is_some())
-                    .unwrap_or(false);
+                || branch.is_some_and(|b| crate::fuzzy::fuzzy_match(query, b).is_some());
             if meta_hit {
                 sessions.push(GlobalSearchResult {
                     kind: SearchKind::Session,
@@ -3181,72 +3273,80 @@ impl App {
                 });
             }
         }
-        // Sessions — buffer content (debounced heavy path). Skip sessions that
-        // already matched on metadata to avoid duplicate rows.
-        if with_content {
-            let already: std::collections::HashSet<usize> = sessions
-                .iter()
-                .filter_map(|r| match r.target {
-                    SearchTarget::Session { index } => Some(index),
-                    _ => None,
-                })
-                .collect();
-            for i in 0..self.sessions.len() {
-                if sessions.len() >= MAX_PER_GROUP {
-                    break;
-                }
-                if already.contains(&i) {
-                    continue;
-                }
-                if let Some(snippet) = self.session_content_match(&query_lc, i) {
-                    sessions.push(GlobalSearchResult {
-                        kind: SearchKind::Session,
-                        label: self.sessions[i].info.name.clone(),
-                        snippet: Some(snippet),
-                        target: SearchTarget::Session { index: i },
-                    });
-                }
+        if !with_content {
+            return sessions;
+        }
+        // Buffer content — skip sessions that already matched on metadata.
+        let already: std::collections::HashSet<usize> = sessions
+            .iter()
+            .filter_map(|r| match r.target {
+                SearchTarget::Session { index } => Some(index),
+                _ => None,
+            })
+            .collect();
+        for i in 0..self.sessions.len() {
+            if sessions.len() >= MAX_PER_GROUP {
+                break;
+            }
+            if already.contains(&i) {
+                continue;
+            }
+            if let Some(snippet) = self.session_content_match(query_lc, i) {
+                sessions.push(GlobalSearchResult {
+                    kind: SearchKind::Session,
+                    label: self.sessions[i].info.name.clone(),
+                    snippet: Some(snippet),
+                    target: SearchTarget::Session { index: i },
+                });
             }
         }
+        sessions
+    }
 
-        // Tasks — title via fuzzy.
+    /// Task results: fuzzy title, falling back to a fuzzy description match with
+    /// a context snippet.
+    fn search_tasks(&self, query: &str, query_lc: &str) -> Vec<search::GlobalSearchResult> {
+        use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
+        let mut tasks: Vec<GlobalSearchResult> = Vec::new();
         for task in &self.cached_tasks {
             if tasks.len() >= MAX_PER_GROUP {
                 break;
             }
-            if crate::fuzzy::fuzzy_match(query, &task.title).is_some() {
-                tasks.push(GlobalSearchResult {
-                    kind: SearchKind::Task,
-                    label: task.title.clone(),
-                    snippet: None,
-                    target: SearchTarget::Task { id: task.id },
-                });
-            } else if task
-                .description
-                .as_deref()
-                // Title missed — match the description with the same fuzzy
-                // matcher used for titles (so gapped queries hit too).
-                .is_some_and(|d| crate::fuzzy::fuzzy_match(query, d).is_some())
-            {
+            let title_hit = crate::fuzzy::fuzzy_match(query, &task.title).is_some();
+            // Title missed — match the description with the same fuzzy matcher
+            // used for titles (so gapped queries hit too).
+            let desc_hit = !title_hit
+                && task
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| crate::fuzzy::fuzzy_match(query, d).is_some());
+            if !title_hit && !desc_hit {
+                continue;
+            }
+            // Snippet (description hits only): prefer a line containing the query
+            // verbatim, else the first non-empty line, for useful context.
+            let snippet = desc_hit.then(|| {
                 let desc = task.description.as_deref().unwrap_or("");
-                // Snippet: prefer a line that contains the query verbatim, else
-                // the first non-empty line, for useful context.
-                let snippet = desc
-                    .lines()
-                    .find(|l| l.to_lowercase().contains(&query_lc))
+                desc.lines()
+                    .find(|l| l.to_lowercase().contains(query_lc))
                     .or_else(|| desc.lines().find(|l| !l.trim().is_empty()))
                     .map(|l| l.trim().chars().take(120).collect::<String>())
-                    .unwrap_or_default();
-                tasks.push(GlobalSearchResult {
-                    kind: SearchKind::Task,
-                    label: task.title.clone(),
-                    snippet: Some(snippet),
-                    target: SearchTarget::Task { id: task.id },
-                });
-            }
+                    .unwrap_or_default()
+            });
+            tasks.push(GlobalSearchResult {
+                kind: SearchKind::Task,
+                label: task.title.clone(),
+                snippet,
+                target: SearchTarget::Task { id: task.id },
+            });
         }
+        tasks
+    }
 
-        // Automations — name via fuzzy.
+    /// Automation results: fuzzy name.
+    fn search_automations(&self, query: &str) -> Vec<search::GlobalSearchResult> {
+        use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
+        let mut automations: Vec<GlobalSearchResult> = Vec::new();
         for auto in &self.cached_automations {
             if automations.len() >= MAX_PER_GROUP {
                 break;
@@ -3260,30 +3360,30 @@ impl App {
                 });
             }
         }
+        automations
+    }
 
-        // Files — names from the active session's tree (substring, case-insensitive).
-        if let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) {
-            for (root, path, name) in crate::ui::file_viewer::enumerate_paths(info) {
-                if files.len() >= MAX_PER_GROUP {
-                    break;
-                }
-                if name.to_lowercase().contains(&query_lc) {
-                    files.push(GlobalSearchResult {
-                        kind: SearchKind::File,
-                        label: name,
-                        snippet: None,
-                        target: SearchTarget::File { root, path },
-                    });
-                }
+    /// File results: case-insensitive substring over the active session's tree.
+    fn search_files(&self, query_lc: &str) -> Vec<search::GlobalSearchResult> {
+        use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
+        let mut files: Vec<GlobalSearchResult> = Vec::new();
+        let Some(info) = self.sessions.get(self.active_index).map(|s| &s.info) else {
+            return files;
+        };
+        for (root, path, name) in crate::ui::file_viewer::enumerate_paths(info) {
+            if files.len() >= MAX_PER_GROUP {
+                break;
+            }
+            if name.to_lowercase().contains(query_lc) {
+                files.push(GlobalSearchResult {
+                    kind: SearchKind::File,
+                    label: name,
+                    snippet: None,
+                    target: SearchTarget::File { root, path },
+                });
             }
         }
-
-        // Group order: Sessions → Tasks → Automations → Files.
-        let mut out = sessions;
-        out.extend(tasks);
-        out.extend(automations);
-        out.extend(files);
-        out
+        files
     }
 
     /// Search a session's visible buffer for `query_lc`, returning the first
@@ -4904,6 +5004,78 @@ mod tests {
             app.db.get_task(id).unwrap().unwrap().status,
             crate::session::TaskStatus::InProgress
         );
+    }
+
+    #[test]
+    fn task_related_sessions_match_spawn_name_and_send_target() {
+        let mut app = app_with_sessions(2);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+
+        // No related session yet (generic stub names).
+        let task = app.db.get_task(id).unwrap().unwrap();
+        assert!(app.task_related_session_indices(&task).is_empty());
+
+        // Rename session 1 to the spawn convention `task-<id>` → it's related.
+        app.sessions[1].info.name = format!("task-{id}");
+        assert_eq!(app.task_related_session_indices(&task), vec![1]);
+    }
+
+    #[test]
+    fn task_related_sessions_honor_in_memory_link() {
+        // A TUI spawn names the session by the user's choice (not `task-<id>`),
+        // so the relation is recovered via `task_session_links`.
+        let mut app = app_with_sessions(2);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+        let task = app.db.get_task(id).unwrap().unwrap();
+
+        // Session 0 keeps its generic stub name — no name/action match.
+        assert!(app.task_related_session_indices(&task).is_empty());
+
+        // Record the link the spawn tail would set, then it resolves.
+        let sid = app.sessions[0].info.id;
+        app.task_session_links.insert(id, sid);
+        assert_eq!(app.task_related_session_indices(&task), vec![0]);
+    }
+
+    #[test]
+    fn open_task_related_session_focuses_terminal() {
+        let mut app = app_with_sessions(2);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.sessions[1].info.name = format!("task-{id}");
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+
+        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
+        assert_eq!(app.active_index, 1, "jumps to the related session");
+        assert_eq!(app.focus, InputFocus::Terminal);
+    }
+
+    #[test]
+    fn open_task_related_session_no_session_keeps_focus() {
+        let mut app = app_with_sessions(1);
+        let _id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+
+        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
+        // Nothing related is open → stay in the panel.
+        assert_eq!(app.focus, InputFocus::TaskList);
     }
 
     #[test]

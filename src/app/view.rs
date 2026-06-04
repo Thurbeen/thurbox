@@ -257,6 +257,7 @@ impl App {
                     status: t.status,
                     match_positions: m.as_ref().map(|m| m.positions.clone()).unwrap_or_default(),
                     dimmed: search.is_some() && m.is_none(),
+                    linked: !self.task_related_session_indices(t).is_empty(),
                 }
             })
             .collect();
@@ -701,12 +702,49 @@ impl App {
     /// full-screen. Shared by the tasks-panel preview and the global-search
     /// task preview (so previewing a task result also fills the central pane).
     fn render_task_detail_pane(&self, frame: &mut Frame, area: Rect, task: &crate::session::Task) {
+        // Related running sessions (spawned `task-<id>` and/or a Send target).
+        let related = self.task_related_session_indices(task);
+        let sessions = if related.is_empty() {
+            "none open".to_string()
+        } else {
+            related
+                .iter()
+                .filter_map(|&i| self.sessions.get(i))
+                .map(|s| s.info.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        // Advertise the panel actions only while the tasks panel is focused (not
+        // during a global-search preview); offer `o open` only when there is a
+        // session to open.
+        let focused = self.focus == InputFocus::TaskList;
+        let hints: &[(&str, &str)] = if !focused {
+            &[]
+        } else if related.is_empty() {
+            &[
+                ("e", " edit  "),
+                ("r", " run  "),
+                ("Space", " status  "),
+                ("n", " new  "),
+                ("d", " del"),
+            ]
+        } else {
+            &[
+                ("e", " edit  "),
+                ("r", " run  "),
+                ("o", " open  "),
+                ("Space", " status  "),
+                ("n", " new  "),
+                ("d", " del"),
+            ]
+        };
         crate::ui::task_detail::render_task_detail(
             frame,
             area,
             &crate::ui::task_detail::TaskDetail {
                 title: &task.title,
                 linkage: task_linkage(task),
+                sessions,
                 status: task.status.label(),
                 source: &task.source,
                 description: task.description.as_deref().unwrap_or(""),
@@ -714,19 +752,7 @@ impl App {
                 updated: format_time_ago(task.updated_at),
             },
             self.task_preview_scroll,
-            // Advertise the panel actions (incl. Run) only while the tasks panel
-            // is focused — not during a global-search preview.
-            if self.focus == InputFocus::TaskList {
-                &[
-                    ("e", " edit  "),
-                    ("r", " run  "),
-                    ("Space", " status  "),
-                    ("n", " new  "),
-                    ("d", " del"),
-                ]
-            } else {
-                &[]
-            },
+            hints,
         );
     }
 }

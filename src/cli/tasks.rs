@@ -151,6 +151,10 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
 /// crate::agent`) to keep the cli module free of an `agent` import — see
 /// tests/architecture_rules.rs::cli_module_isolation.
 fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
+    // Seed the agent with full task context (id + title + description + how to
+    // read more / mark done), not just the bare title — shared with the TUI
+    // dispatch path via `Task::agent_prompt`.
+    let prompt = task.agent_prompt();
     match &task.action {
         None => Ok(json!({ "skipped": "task is not connected to an agent", "id": task.id })),
         Some(AutomationAction::Send { session_id }) => {
@@ -161,8 +165,9 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             if !crate::agent::tmux::window_exists(&name) {
                 return Err("target session not running".into());
             }
-            crate::agent::tmux::send_prompt_now(&name, &task.title)
+            crate::agent::tmux::send_prompt_now(&name, &prompt)
                 .map_err(|e| format!("send_prompt_now: {e}"))?;
+            mark_in_progress(db, task)?;
             Ok(json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() }))
         }
         Some(AutomationAction::Spawn {
@@ -174,8 +179,9 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             let name = format!("task-{}", task.id);
             // Reuse an existing session window (re-trigger / restored session).
             if crate::agent::tmux::window_exists(&name) {
-                crate::agent::tmux::send_prompt_now(&name, &task.title)
+                crate::agent::tmux::send_prompt_now(&name, &prompt)
                     .map_err(|e| format!("send_prompt_now: {e}"))?;
+                mark_in_progress(db, task)?;
                 return Ok(json!({ "reused": name, "id": task.id }));
             }
             let req = SpawnRequest {
@@ -187,11 +193,23 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 agent_session_id: None,
             };
             crate::session_ops::spawn_session_headless(db, req)?;
-            crate::agent::tmux::send_prompt_after_delay(&name, &task.title, BOOT_DELAY_SECS)
+            crate::agent::tmux::send_prompt_after_delay(&name, &prompt, BOOT_DELAY_SECS)
                 .map_err(|e| format!("spawned {name} but prompt delivery failed: {e}"))?;
+            mark_in_progress(db, task)?;
             Ok(json!({ "spawned": name, "id": task.id }))
         }
     }
+}
+
+/// Advance a freshly-triggered task `Todo → InProgress` (no-op for other
+/// states), mirroring the TUI's `App::advance_task_to_in_progress` so the
+/// headless `task run` path keeps status in sync too.
+fn mark_in_progress(db: &Database, task: &Task) -> Result<(), String> {
+    if task.status == TaskStatus::Todo {
+        db.set_task_status(task.id, TaskStatus::InProgress)
+            .map_err(|e| format!("set_task_status: {e}"))?;
+    }
+    Ok(())
 }
 
 fn load(db: &Database, id: i64) -> Result<Task, String> {
