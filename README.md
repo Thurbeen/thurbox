@@ -49,6 +49,10 @@ adds:
   clipboard, automations (`Ctrl+P`), soft-delete with undo
   (`Ctrl+Z`) and restore (`Ctrl+U`).
 
+> **Note:** The session list display is not yet perfect and will
+> keep improving. What it can show is heavily dependent on the
+> signals each agent CLI exposes.
+
 Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
 
 ![Session creation workflow](./docs/media/thurbox-session-creation.gif)
