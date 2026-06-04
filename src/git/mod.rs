@@ -43,6 +43,36 @@ pub fn repo_display_name(path: &Path) -> Option<String> {
     Some(name)
 }
 
+/// True if `path` is itself a git repo: it contains a `.git` directory OR a
+/// `.git` file (worktree checkouts and submodules use a `.git` file).
+pub fn is_git_repo(path: &Path) -> bool {
+    let git = path.join(".git");
+    git.is_dir() || git.is_file()
+}
+
+/// Immediate child directories of `parent` that are git repos, sorted by file
+/// name. Hidden (`.`-prefixed) entries are skipped. Returns an empty vec when
+/// `parent` can't be read (missing, permission denied, …).
+pub fn scan_child_repos(parent: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut repos: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .filter(|e| {
+            !e.file_name()
+                .to_str()
+                .map(|n| n.starts_with('.'))
+                .unwrap_or(true)
+        })
+        .map(|e| e.path())
+        .filter(|p| is_git_repo(p))
+        .collect();
+    repos.sort();
+    repos
+}
+
 /// Parse repo name from the origin remote URL.
 fn repo_name_from_remote(path: &Path) -> Option<String> {
     let output = Command::new("git")
@@ -639,6 +669,40 @@ mod tests {
     #[test]
     fn parse_numstat_empty_is_zero() {
         assert_eq!(parse_numstat(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn scan_child_repos_finds_git_subdirs_sorted_skipping_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Two git repos (.git dir), one plain dir, one hidden git dir.
+        for name in ["beta", "alpha"] {
+            std::fs::create_dir_all(root.join(name).join(".git")).unwrap();
+        }
+        std::fs::create_dir_all(root.join("plain")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden").join(".git")).unwrap();
+
+        let repos = scan_child_repos(root);
+        assert_eq!(repos, vec![root.join("alpha"), root.join("beta")]);
+    }
+
+    #[test]
+    fn scan_child_repos_detects_git_file_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let wt = root.join("worktree");
+        std::fs::create_dir_all(&wt).unwrap();
+        // Worktree checkouts use a `.git` *file*, not a directory.
+        std::fs::write(wt.join(".git"), "gitdir: /somewhere\n").unwrap();
+
+        assert!(is_git_repo(&wt));
+        assert_eq!(scan_child_repos(root), vec![wt]);
+    }
+
+    #[test]
+    fn scan_child_repos_missing_parent_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(scan_child_repos(&tmp.path().join("nope")).is_empty());
     }
 
     #[test]

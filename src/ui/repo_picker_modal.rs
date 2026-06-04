@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use ratatui::{
@@ -17,6 +18,12 @@ pub struct RepoPickerState<'a> {
     pub bookmarks: &'a [PathBuf],
     pub selected: &'a [bool],
     pub worktree: &'a [bool],
+    /// Whether each row is a parent header (non-selectable group title).
+    pub is_header: &'a [bool],
+    /// Whether each row is a child repo nested under a parent (drives indentation).
+    pub is_child: &'a [bool],
+    /// Parent folders whose child tree is collapsed (drives the ▸/▾ glyph).
+    pub collapsed: &'a HashSet<PathBuf>,
     pub list_index: usize,
     pub path_input: &'a str,
     pub path_cursor: usize,
@@ -171,6 +178,8 @@ fn bookmark_item<'a>(
     let path = &state.bookmarks[real_idx];
     let checked = state.selected[real_idx];
     let is_wt = state.worktree[real_idx];
+    let is_header = state.is_header.get(real_idx).copied().unwrap_or(false);
+    let is_child = state.is_child.get(real_idx).copied().unwrap_or(false);
     let is_cursor = visible_index == state.list_index && list_focused;
 
     let style = if is_cursor {
@@ -179,14 +188,36 @@ fn bookmark_item<'a>(
         Theme::normal_item()
     };
 
-    let check = if checked { "[x] " } else { "[ ] " };
-    let display = path.display().to_string();
+    // Parent header row: no checkbox, a collapse glyph + basename + dim marker.
+    if is_header {
+        let glyph = if state.collapsed.contains(path) {
+            "▸ "
+        } else {
+            "▾ "
+        };
+        return ListItem::new(Line::from(vec![
+            Span::styled(glyph, style),
+            Span::styled(crate::paths::display_path(path), style),
+            Span::styled(" (parent)", Style::default().fg(Theme::text_muted())),
+        ]));
+    }
 
-    let mut spans = if state.search_query.is_empty() {
-        vec![Span::styled(format!("{check}{display}"), style)]
+    // Child rows are indented under their parent header.
+    let indent = if is_child { "  " } else { "" };
+    let check = if checked { "[x] " } else { "[ ] " };
+    let display = crate::paths::display_path(path);
+
+    let mut spans = vec![Span::styled(indent, style)];
+    if state.search_query.is_empty() {
+        spans.push(Span::styled(format!("{check}{display}"), style));
     } else {
-        highlighted_spans(state.search_query, check, &display, style)
-    };
+        spans.extend(highlighted_spans(
+            state.search_query,
+            check,
+            &display,
+            style,
+        ));
+    }
 
     if checked && is_wt {
         spans.push(Span::styled(" [wt]", Style::default().fg(Theme::accent())));
@@ -229,7 +260,7 @@ fn footer_line(state: &RepoPickerState<'_>) -> Line<'static> {
             Span::styled("j/k", Theme::keybind()),
             Span::styled(" nav  ", Theme::keybind_desc()),
             Span::styled("Space", Theme::keybind()),
-            Span::styled(" toggle  ", Theme::keybind_desc()),
+            Span::styled(" toggle/fold  ", Theme::keybind_desc()),
             Span::styled("w", Theme::keybind()),
             Span::styled(" worktree  ", Theme::keybind_desc()),
             Span::styled("/", Theme::keybind()),
@@ -252,6 +283,8 @@ fn footer_line(state: &RepoPickerState<'_>) -> Line<'static> {
                 Span::styled(tab_hint, Theme::keybind_desc()),
                 Span::styled("Enter", Theme::keybind()),
                 Span::styled(" add repo  ", Theme::keybind_desc()),
+                Span::styled("Ctrl+P", Theme::keybind()),
+                Span::styled(" import parent  ", Theme::keybind_desc()),
                 Span::styled("Esc", Theme::keybind()),
                 Span::styled(" cancel", Theme::keybind_desc()),
             ])

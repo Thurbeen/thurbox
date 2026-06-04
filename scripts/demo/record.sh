@@ -161,6 +161,21 @@ git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo add -A
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo \
     commit -q -m "init sample project"
 
+# --- A parent folder of several repos, for the "import as parent" demo --------
+# Lives under $HOME so the session-creation tape can type `~/projects` and have
+# the picker's tilde-expansion resolve it during recording. The picker imports
+# the folder as a parent and lists these git sub-dirs (by basename) beneath it.
+PROJECTS_DIR="$HOME/projects"
+for r in api-server shared-lib web-app; do
+    repo="$PROJECTS_DIR/$r"
+    mkdir -p "$repo"
+    printf '# %s\n' "$r" > "$repo/README.md"
+    git init -q "$repo"
+    git -C "$repo" -c user.email=demo@thurbox -c user.name=demo add -A
+    git -C "$repo" -c user.email=demo@thurbox -c user.name=demo \
+        commit -q -m "init $r"
+done
+
 # --- Pre-seed one session per agent so the TUI opens populated ---------------
 echo "==> Seeding one session per agent:$AGENTS"
 for a in $AGENTS; do

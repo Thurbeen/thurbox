@@ -241,7 +241,7 @@ impl App {
             Modal::AutomationsList(_) => self.handle_automations_list_key(code),
             Modal::AgentPicker(_) => self.handle_agent_picker_key(code),
             Modal::ThemePicker(_) => self.handle_theme_picker_key(code),
-            Modal::RepoPicker(_) => self.handle_repo_picker_key(code),
+            Modal::RepoPicker(_) => self.handle_repo_picker_key(code, mods),
             Modal::TaskActionPicker(_) => self.handle_task_action_picker_key(code),
             _ => return false,
         }
@@ -1505,10 +1505,19 @@ impl App {
 
     // ── Repo Picker Modal ────────────────────────────────────────────────
 
-    fn handle_repo_picker_key(&mut self, code: KeyCode) {
+    fn handle_repo_picker_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
             return;
         };
+        // Ctrl+P: import the typed path as a *parent* folder whose git
+        // sub-directories are re-scanned on each picker open. Works from any
+        // focus (uses the path input value). Not `Ctrl+I` — that is `Tab`.
+        if mods.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('p') | KeyCode::Char('P'))
+        {
+            self.repo_picker_import_parent();
+            return;
+        }
         match rp.focus {
             super::modals::RepoPickerFocus::List => self.handle_repo_picker_list_key(code),
             super::modals::RepoPickerFocus::Input => self.handle_repo_picker_input_key(code),
@@ -1547,7 +1556,8 @@ impl App {
         }
     }
 
-    /// Toggle the selected flag of the repo under the list cursor.
+    /// `Space` on the row under the cursor: toggle the selected flag of a repo,
+    /// or expand/collapse a parent header's child tree.
     fn repo_picker_toggle_selected(&mut self) {
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
@@ -1555,6 +1565,10 @@ impl App {
         let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
             return;
         };
+        if rp.is_header_row(real_idx) {
+            rp.toggle_collapsed(real_idx);
+            return;
+        }
         if let Some(sel) = rp.selected.get_mut(real_idx) {
             *sel = !*sel;
         }
@@ -1569,6 +1583,9 @@ impl App {
         let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
             return;
         };
+        if rp.is_header_row(real_idx) {
+            return;
+        }
         let Some(wt) = rp.worktree.get_mut(real_idx) else {
             return;
         };
@@ -1581,7 +1598,10 @@ impl App {
         }
     }
 
-    /// Delete the bookmark under the cursor from the DB and the modal lists.
+    /// Delete the bookmark under the cursor. A standalone repo is removed in
+    /// place; a parent header drops the parent bookmark and its (ephemeral)
+    /// child rows via a full re-scan; a child row has no persistent identity, so
+    /// deleting it is a no-op (delete its parent header instead).
     fn repo_picker_delete_bookmark(&mut self) {
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
@@ -1590,15 +1610,35 @@ impl App {
             return;
         };
         let path = rp.bookmarks[real_idx].clone();
+        let is_header = rp.is_header_row(real_idx);
+        let is_child = rp.is_child_row(real_idx);
+
+        if is_child {
+            self.set_status(
+                super::StatusLevel::Info,
+                "Child of a parent bookmark — delete the parent header instead",
+            );
+            return;
+        }
+
         if let Err(e) = self.db.delete_repo_bookmark(&path) {
             error!("Failed to delete repo bookmark: {e}");
         }
+
+        if is_header {
+            // Rebuild so the header and all its child rows disappear together.
+            self.refresh_repo_picker_rows();
+            return;
+        }
+
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
         rp.bookmarks.remove(real_idx);
         rp.selected.remove(real_idx);
         rp.worktree.remove(real_idx);
+        rp.is_header.remove(real_idx);
+        rp.is_child.remove(real_idx);
         self.recompute_repo_filter();
     }
 
@@ -1655,18 +1695,26 @@ impl App {
             return;
         }
         let expanded = paths::expand_tilde(&path);
-        // Add to bookmarks list if not already present
-        if !rp.bookmarks.contains(&expanded) {
-            rp.bookmarks.push(expanded.clone());
-            rp.selected.push(true); // auto-select newly added
-            rp.worktree.push(false);
-        } else if let Some(idx) = rp.bookmarks.iter().position(|p| p == &expanded) {
-            // Already in list — just select it
-            rp.selected[idx] = true;
-        }
-        // Persist as bookmark
-        if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
-            error!("Failed to save repo bookmark: {e}");
+        // If the path is already represented, just select it (no duplicate row
+        // and no duplicate DB entry). A path already shown as a parent's child
+        // must NOT also be persisted as a standalone bookmark.
+        let persist = if let Some(idx) = rp.bookmarks.iter().position(|p| p == &expanded) {
+            let is_child = rp.is_child_row(idx);
+            let is_header = rp.is_header_row(idx);
+            if !is_header {
+                rp.selected[idx] = true;
+            }
+            // Only (re)persist standalone repos; children/headers are covered by
+            // their parent bookmark already.
+            !is_child && !is_header
+        } else {
+            rp.push_row(expanded.clone(), true, false, false); // auto-select newly added
+            true
+        };
+        if persist {
+            if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
+                error!("Failed to save repo bookmark: {e}");
+            }
         }
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
@@ -1674,6 +1722,33 @@ impl App {
         rp.path_input.clear();
         rp.path_suggestion = None;
         self.recompute_repo_filter();
+    }
+
+    /// Import the typed path as a *parent* folder: persist it as a parent
+    /// bookmark, then rebuild the list (re-scanning its git sub-directories).
+    /// The parent itself is not added as a selectable repo — its children are.
+    fn repo_picker_import_parent(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let path = rp.path_input.value().trim().to_string();
+        if path.is_empty() {
+            self.set_status(
+                super::StatusLevel::Info,
+                "Type a folder path, then Ctrl+P to import its repos as a parent",
+            );
+            return;
+        }
+        let expanded = paths::expand_tilde(&path);
+        if let Err(e) = self.db.upsert_repo_bookmark_kind(&expanded, true) {
+            error!("Failed to save parent bookmark: {e}");
+        }
+        if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.path_input.clear();
+            rp.path_suggestion = None;
+            rp.focus = super::modals::RepoPickerFocus::List;
+        }
+        self.refresh_repo_picker_rows();
     }
 
     fn update_repo_picker_path_suggestion(&mut self) {
@@ -1722,27 +1797,8 @@ impl App {
     }
 
     fn recompute_repo_filter(&mut self) {
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let query = rp.search_input.value().to_string();
-        if query.is_empty() {
-            rp.filtered_indices = (0..rp.bookmarks.len()).collect();
-        } else {
-            rp.filtered_indices = rp
-                .bookmarks
-                .iter()
-                .enumerate()
-                .filter(|(_, path)| {
-                    crate::fuzzy::fuzzy_match(&query, &path.display().to_string()).is_some()
-                })
-                .map(|(i, _)| i)
-                .collect();
-        }
-        if rp.filtered_indices.is_empty() {
-            rp.list_index = 0;
-        } else {
-            rp.list_index = rp.list_index.min(rp.filtered_indices.len() - 1);
+        if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.recompute_filter();
         }
     }
 

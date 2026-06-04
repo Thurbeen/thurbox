@@ -559,28 +559,94 @@ impl App {
     /// Loads bookmarks from the database, pre-selects repos from the active
     /// project (if any), and shows the repo picker modal.
     pub(crate) fn open_repo_picker(&mut self) {
-        let bookmarks = match self.db.list_repo_bookmarks() {
-            Ok(b) => b.into_iter().map(|bm| bm.repo_path).collect::<Vec<_>>(),
+        let bookmarks = self.load_repo_bookmarks();
+        let mut rp = modals::RepoPickerModal::default();
+        Self::rebuild_repo_picker_rows(&mut rp, bookmarks);
+        self.modal = modals::Modal::RepoPicker(rp);
+    }
+
+    /// Load persisted repo bookmarks, logging (and swallowing) any DB error.
+    fn load_repo_bookmarks(&self) -> Vec<crate::storage::repo_bookmarks::RepoBookmark> {
+        match self.db.list_repo_bookmarks() {
+            Ok(b) => b,
             Err(e) => {
                 tracing::error!("Failed to load repo bookmarks: {e}");
                 Vec::new()
             }
-        };
+        }
+    }
 
-        let selected = vec![false; bookmarks.len()];
-        let worktree = vec![false; bookmarks.len()];
-        let filtered_indices = (0..bookmarks.len()).collect();
-        self.modal = modals::Modal::RepoPicker(modals::RepoPickerModal {
-            bookmarks,
-            selected,
-            worktree,
-            list_index: 0,
-            path_input: modals::TextInput::new(),
-            path_suggestion: None,
-            focus: modals::RepoPickerFocus::default(),
-            search_input: modals::TextInput::new(),
-            filtered_indices,
-        });
+    /// Re-read bookmarks and rebuild the open repo picker's rows in place
+    /// (re-scanning parent folders). Used after importing/deleting a bookmark.
+    pub(crate) fn refresh_repo_picker_rows(&mut self) {
+        let bookmarks = self.load_repo_bookmarks();
+        let modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        Self::rebuild_repo_picker_rows(rp, bookmarks);
+    }
+
+    /// (Re)build the repo picker rows from persisted bookmarks, **re-scanning**
+    /// parent bookmarks for their current git sub-directories. Standalone repos
+    /// become one row; a parent becomes a header row followed by an indented
+    /// child row per discovered repo (children are ephemeral — never persisted).
+    /// Preserves the existing search input by recomputing the filter.
+    fn rebuild_repo_picker_rows(
+        rp: &mut modals::RepoPickerModal,
+        bookmarks: Vec<crate::storage::repo_bookmarks::RepoBookmark>,
+    ) {
+        use std::collections::HashSet;
+
+        rp.bookmarks.clear();
+        rp.selected.clear();
+        rp.worktree.clear();
+        rp.is_header.clear();
+        rp.is_child.clear();
+
+        // Scan each parent once; a path that appears as a child of any parent
+        // takes precedence over a standalone bookmark of the same path, so the
+        // repo is shown only once (grouped under its parent).
+        let scans: HashMap<PathBuf, Vec<PathBuf>> = bookmarks
+            .iter()
+            .filter(|b| b.is_parent)
+            .map(|b| {
+                (
+                    b.repo_path.clone(),
+                    crate::git::scan_child_repos(&b.repo_path),
+                )
+            })
+            .collect();
+        let child_paths: HashSet<&PathBuf> = scans.values().flatten().collect();
+
+        // `emitted` guards against any path being rendered twice (duplicate
+        // bookmarks, a child shared by two parents, a parent nested in another).
+        let mut emitted: HashSet<PathBuf> = HashSet::new();
+        for bm in &bookmarks {
+            if bm.is_parent {
+                if !emitted.insert(bm.repo_path.clone()) {
+                    continue;
+                }
+                rp.push_row(bm.repo_path.clone(), false, true, false);
+                for child in scans.get(&bm.repo_path).into_iter().flatten() {
+                    if !emitted.insert(child.clone()) {
+                        continue;
+                    }
+                    rp.push_row(child.clone(), false, false, true);
+                }
+            } else {
+                // Drop a standalone bookmark that is already covered by a parent.
+                if child_paths.contains(&bm.repo_path) {
+                    continue;
+                }
+                if !emitted.insert(bm.repo_path.clone()) {
+                    continue;
+                }
+                rp.push_row(bm.repo_path.clone(), false, false, false);
+            }
+        }
+
+        rp.list_index = 0;
+        rp.recompute_filter();
     }
 
     #[cfg(test)]
@@ -6159,6 +6225,95 @@ mod tests {
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Info);
         assert_eq!(msg.text, "new info");
+    }
+
+    // --- Repo picker row building ---
+
+    fn repo_bookmark(path: &Path, is_parent: bool) -> crate::storage::repo_bookmarks::RepoBookmark {
+        crate::storage::repo_bookmarks::RepoBookmark {
+            repo_path: path.to_path_buf(),
+            label: None,
+            last_used_at: 0,
+            use_count: 1,
+            is_parent,
+        }
+    }
+
+    #[test]
+    fn rebuild_rows_dedupes_standalone_that_is_also_a_parent_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("alpha").join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("beta").join(".git")).unwrap();
+
+        // A standalone bookmark for `alpha` AND a parent bookmark for `root`
+        // whose scan also finds `alpha`. `alpha` must appear exactly once.
+        let bookmarks = vec![
+            repo_bookmark(&root.join("alpha"), false),
+            repo_bookmark(root, true),
+        ];
+        let mut rp = modals::RepoPickerModal::default();
+        App::rebuild_repo_picker_rows(&mut rp, bookmarks);
+
+        // Rows: parent header, alpha (child), beta (child). The standalone
+        // `alpha` was dropped in favour of the grouped child.
+        assert_eq!(rp.bookmarks.len(), 3);
+        assert_eq!(rp.is_header, vec![true, false, false]);
+        let alpha_rows = rp.bookmarks.iter().filter(|p| p.ends_with("alpha")).count();
+        assert_eq!(alpha_rows, 1, "alpha must not be duplicated");
+        // The single `alpha` row is the grouped child (nested under the parent).
+        let alpha_idx = rp
+            .bookmarks
+            .iter()
+            .position(|p| p.ends_with("alpha"))
+            .unwrap();
+        assert!(rp.is_child[alpha_idx]);
+    }
+
+    #[test]
+    fn rebuild_rows_dedupes_parent_child_that_is_also_a_parent() {
+        // `root/sub` is a git repo found by scanning `root`, and is *also*
+        // bookmarked as its own parent. Whichever order they are processed, the
+        // `sub` path must render exactly once (no duplicate row).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("sub").join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("sub").join("leaf").join(".git")).unwrap();
+
+        let bookmarks = vec![
+            repo_bookmark(root, true),
+            repo_bookmark(&root.join("sub"), true),
+        ];
+        let mut rp = modals::RepoPickerModal::default();
+        App::rebuild_repo_picker_rows(&mut rp, bookmarks);
+
+        let sub_rows = rp
+            .bookmarks
+            .iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "sub"))
+            .count();
+        assert_eq!(sub_rows, 1, "sub must not be duplicated across parents");
+    }
+
+    #[test]
+    fn rebuild_rows_collapse_hides_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("alpha").join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("beta").join(".git")).unwrap();
+
+        let mut rp = modals::RepoPickerModal::default();
+        App::rebuild_repo_picker_rows(&mut rp, vec![repo_bookmark(root, true)]);
+        // Header + two children all visible.
+        assert_eq!(rp.filtered_indices.len(), 3);
+
+        // Collapse the parent header (row 0) → only the header stays visible.
+        rp.toggle_collapsed(0);
+        assert_eq!(rp.filtered_indices, vec![0]);
+
+        // Expanding restores the children.
+        rp.toggle_collapsed(0);
+        assert_eq!(rp.filtered_indices.len(), 3);
     }
 
     // --- Worktree sync tests ---

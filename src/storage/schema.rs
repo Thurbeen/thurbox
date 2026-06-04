@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 26;
+pub const SCHEMA_VERSION: u32 = 27;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -99,7 +99,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             repo_path    TEXT PRIMARY KEY,
             label        TEXT,
             last_used_at INTEGER NOT NULL,
-            use_count    INTEGER NOT NULL DEFAULT 1
+            use_count    INTEGER NOT NULL DEFAULT 1,
+            is_parent    INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -179,6 +180,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (24, migrate_v24_automations),
         (25, migrate_v25_tasks),
         (26, migrate_v26_task_description),
+        (27, migrate_v27_repo_parent_bookmarks),
     ];
 
     for &(target, step) in steps {
@@ -781,6 +783,21 @@ fn migrate_v26_task_description(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v26 → v27: add an `is_parent` flag to `repo_bookmarks`. Parent bookmarks
+/// store a folder whose immediate git sub-directories are re-scanned and listed
+/// each time the repo picker opens.
+///
+/// Fresh v27 databases already have the column from `initialize` and skip this
+/// step; existing v26 databases get it via the ALTER. `let _` swallows the
+/// "duplicate column" error so a re-run is a no-op.
+fn migrate_v27_repo_parent_bookmarks(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE repo_bookmarks ADD COLUMN is_parent INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -923,6 +940,38 @@ mod tests {
             .exists([])
             .unwrap();
         assert!(has_description, "description column should be added at v26");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v26_adds_is_parent_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v26 state: a repo_bookmarks table without the is_parent column.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '26');
+             CREATE TABLE repo_bookmarks (
+                repo_path TEXT PRIMARY KEY, label TEXT,
+                last_used_at INTEGER NOT NULL, use_count INTEGER NOT NULL DEFAULT 1);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let has_is_parent: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('repo_bookmarks') WHERE name='is_parent'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_is_parent, "is_parent column should be added at v27");
 
         let version: String = conn
             .query_row(

@@ -13,13 +13,17 @@ pub struct RepoBookmark {
     pub label: Option<String>,
     pub last_used_at: u64,
     pub use_count: u64,
+    /// When true, `repo_path` is a *parent* folder: the repo picker re-scans its
+    /// immediate git sub-directories on each open instead of using the path
+    /// itself as a repo.
+    pub is_parent: bool,
 }
 
 impl Database {
     /// List all repo bookmarks, sorted by last_used_at descending (most recent first).
     pub fn list_repo_bookmarks(&self) -> rusqlite::Result<Vec<RepoBookmark>> {
         let mut stmt = self.conn.prepare(
-            "SELECT repo_path, label, last_used_at, use_count \
+            "SELECT repo_path, label, last_used_at, use_count, is_parent \
              FROM repo_bookmarks ORDER BY last_used_at DESC",
         )?;
 
@@ -31,6 +35,7 @@ impl Database {
                     label: row.get(1)?,
                     last_used_at: row.get::<_, i64>(2)? as u64,
                     use_count: row.get::<_, i64>(3)? as u64,
+                    is_parent: row.get::<_, i64>(4)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -40,15 +45,27 @@ impl Database {
 
     /// Add or update a repo bookmark. Increments use_count and updates last_used_at.
     pub fn upsert_repo_bookmark(&self, repo_path: &Path) -> rusqlite::Result<()> {
+        self.upsert_repo_bookmark_kind(repo_path, false)
+    }
+
+    /// Add or update a repo bookmark, setting whether it is a parent folder.
+    /// Increments use_count and updates last_used_at; `is_parent` is set on both
+    /// insert and conflict so the kind can be flipped by re-importing a path.
+    pub fn upsert_repo_bookmark_kind(
+        &self,
+        repo_path: &Path,
+        is_parent: bool,
+    ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let path_str = repo_path.to_string_lossy().to_string();
         self.conn.execute(
-            "INSERT INTO repo_bookmarks (repo_path, last_used_at, use_count) \
-             VALUES (?1, ?2, 1) \
+            "INSERT INTO repo_bookmarks (repo_path, last_used_at, use_count, is_parent) \
+             VALUES (?1, ?2, 1, ?3) \
              ON CONFLICT(repo_path) DO UPDATE SET \
                  last_used_at = excluded.last_used_at, \
-                 use_count = use_count + 1",
-            params![path_str, now],
+                 use_count = use_count + 1, \
+                 is_parent = excluded.is_parent",
+            params![path_str, now, is_parent as i64],
         )?;
         Ok(())
     }
@@ -99,6 +116,27 @@ mod tests {
         assert!(paths.contains(&Path::new("/repo/a")));
         assert!(paths.contains(&Path::new("/repo/b")));
         assert_eq!(bookmarks[0].use_count, 1);
+    }
+
+    #[test]
+    fn parent_bookmark_round_trips() {
+        let db = Database::open_in_memory().unwrap();
+
+        db.upsert_repo_bookmark(Path::new("/repo/a")).unwrap();
+        db.upsert_repo_bookmark_kind(Path::new("/parent/x"), true)
+            .unwrap();
+
+        let bookmarks = db.list_repo_bookmarks().unwrap();
+        let parent = bookmarks
+            .iter()
+            .find(|b| b.repo_path == Path::new("/parent/x"))
+            .unwrap();
+        assert!(parent.is_parent);
+        let repo = bookmarks
+            .iter()
+            .find(|b| b.repo_path == Path::new("/repo/a"))
+            .unwrap();
+        assert!(!repo.is_parent);
     }
 
     #[test]

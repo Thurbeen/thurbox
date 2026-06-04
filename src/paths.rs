@@ -336,6 +336,19 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Short display label for a repo/dir path: the final path component,
+/// falling back to the full path when there is no file name (e.g. `/`).
+///
+/// - `/home/user/Repositories/thurbox` → `thurbox`
+/// - `/home/user/Repositories/thurbox/` → `thurbox` (trailing slash ignored)
+/// - `/` → `/`
+pub fn display_path(path: &Path) -> String {
+    match path.file_name() {
+        Some(name) => name.to_string_lossy().into_owned(),
+        None => path.display().to_string(),
+    }
+}
+
 /// Find the longest common prefix among a slice of strings.
 fn longest_common_prefix(strings: &[String]) -> String {
     if strings.is_empty() {
@@ -437,6 +450,27 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_path_uses_basename() {
+        assert_eq!(
+            display_path(Path::new("/home/user/Repositories/thurbox")),
+            "thurbox"
+        );
+    }
+
+    #[test]
+    fn display_path_ignores_trailing_slash() {
+        assert_eq!(
+            display_path(Path::new("/home/user/Repositories/thurbox/")),
+            "thurbox"
+        );
+    }
+
+    #[test]
+    fn display_path_falls_back_to_full_path_without_file_name() {
+        assert_eq!(display_path(Path::new("/")), "/");
+    }
 
     #[test]
     fn transcript_exists_detects_file_under_any_project_slug() {
