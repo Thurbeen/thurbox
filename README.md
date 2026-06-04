@@ -70,6 +70,9 @@ Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
   is fully scriptable headless: `thurbox-cli automation
   create/list/edit/run/tick`.
 
+> **Note:** Automations are stable and good enough for daily use
+> today, but the feature may still evolve.
+
 ![Automations demo](./docs/media/automations-demo.gif)
 
 ### Tasks
@@ -90,6 +93,9 @@ Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
   `create`/`list`/`show`/`edit`/`remove`/`run`. External
   issue-tracker sync (Jira, GitHub Issues) is scaffolded for a
   later release.
+
+> **Note:** Tasks are a new feature — expect the UX and UI to keep
+> evolving in upcoming releases.
 
 ![Tasks demo](./docs/media/tasks-demo.gif)
 
