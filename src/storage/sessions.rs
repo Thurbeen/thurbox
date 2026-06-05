@@ -156,10 +156,17 @@ impl Database {
 
     /// List all active (non-deleted) sessions.
     pub fn list_active_sessions(&self) -> rusqlite::Result<Vec<SharedSession>> {
-        self.query_sessions("s.deleted_at IS NULL")
+        self.query_sessions("s.deleted_at IS NULL", [])
     }
 
-    fn query_sessions(&self, condition: &str) -> rusqlite::Result<Vec<SharedSession>> {
+    /// `condition` must be a trusted, constant SQL fragment; any caller-supplied
+    /// values belong in `params` (bound as `?1`, `?2`, …) — never interpolated
+    /// into `condition`, or the query becomes SQL-injectable.
+    fn query_sessions(
+        &self,
+        condition: &str,
+        params: impl rusqlite::Params,
+    ) -> rusqlite::Result<Vec<SharedSession>> {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
@@ -171,7 +178,7 @@ impl Database {
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], row_to_shared_session)?;
+        let rows = stmt.query_map(params, row_to_shared_session)?;
 
         // Collect rows, merging multiple worktree rows into the same session
         let mut sessions: Vec<SharedSession> = Vec::new();
@@ -226,7 +233,10 @@ impl Database {
 
     /// Get a single active (non-deleted) session by its ID.
     pub fn get_session_by_id(&self, id: SessionId) -> rusqlite::Result<Option<SharedSession>> {
-        let sessions = self.query_sessions(&format!("s.deleted_at IS NULL AND s.id = '{id}'"))?;
+        let sessions = self.query_sessions(
+            "s.deleted_at IS NULL AND s.id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(sessions.into_iter().next())
     }
 
@@ -244,7 +254,7 @@ impl Database {
 
     /// List all soft-deleted sessions, most recently deleted first.
     pub fn list_deleted_sessions(&self) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
-        self.query_deleted_sessions("s.deleted_at IS NOT NULL")
+        self.query_deleted_sessions("s.deleted_at IS NOT NULL", [])
     }
 
     /// Get a single soft-deleted session by its ID.
@@ -252,12 +262,20 @@ impl Database {
         &self,
         id: SessionId,
     ) -> rusqlite::Result<Option<DeletedSessionInfo>> {
-        let sessions =
-            self.query_deleted_sessions(&format!("s.deleted_at IS NOT NULL AND s.id = '{id}'"))?;
+        let sessions = self.query_deleted_sessions(
+            "s.deleted_at IS NOT NULL AND s.id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(sessions.into_iter().next())
     }
 
-    fn query_deleted_sessions(&self, condition: &str) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+    /// `condition` must be a trusted, constant SQL fragment; caller-supplied
+    /// values belong in `params` (bound as `?1`, …), never in `condition`.
+    fn query_deleted_sessions(
+        &self,
+        condition: &str,
+        params: impl rusqlite::Params,
+    ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
              s.cwd, s.deleted_at, \
@@ -269,7 +287,7 @@ impl Database {
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params, |row| {
             let id_str: String = row.get(0)?;
             let cwd: Option<String> = row.get(4)?;
             let deleted_at: i64 = row.get(5)?;
@@ -404,6 +422,23 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "Session 1");
         assert_eq!(sessions[0].agent, "claude");
+    }
+
+    #[test]
+    fn get_session_by_id_binds_id_as_parameter() {
+        // Regression: the id must be bound as a SQL parameter, not interpolated
+        // into the WHERE clause. Round-trip a real session by id, and confirm a
+        // foreign id selects nothing (a string-interpolated `'{id}'` would have
+        // been injectable here).
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Target");
+        db.upsert_session(&session).unwrap();
+
+        let found = db.get_session_by_id(session.id).unwrap();
+        assert_eq!(found.map(|s| s.name), Some("Target".to_string()));
+
+        let other = db.get_session_by_id(SessionId::default()).unwrap();
+        assert!(other.is_none());
     }
 
     #[test]
