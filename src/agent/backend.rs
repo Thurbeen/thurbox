@@ -185,6 +185,29 @@ struct SessionIo {
     output: Box<dyn Read + Send>,
     input: Box<dyn Write + Send>,
     backend_id: String,
+    /// Whether these handles came from a fresh spawn or an adopt.
+    mode: WireMode,
+}
+
+/// Whether we are wiring a freshly-spawned process or reconnecting to an
+/// already-running one. Controls the initial `last_output_at`: a fresh spawn
+/// is legitimately starting up (recent activity → `Busy`), whereas an adopt's
+/// first output is the forced SIGWINCH repaint, which must not be mistaken for
+/// real agent activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WireMode {
+    Spawn,
+    Adopt,
+}
+
+/// Initial `last_output_at` for a session being wired in `mode`. `Spawn` uses
+/// "now" (fresh process is active); `Adopt` uses `0` (stale) so the post-adopt
+/// repaint doesn't read as activity — the first *real* output flips it to busy.
+fn initial_output_at(mode: WireMode) -> u64 {
+    match mode {
+        WireMode::Spawn => now_millis(),
+        WireMode::Adopt => 0,
+    }
 }
 
 /// Wired-up I/O state: parser, channels, and exit tracking.
@@ -300,6 +323,7 @@ impl Session {
                 output: spawned.output,
                 input: spawned.input,
                 backend_id: spawned.backend_id,
+                mode: WireMode::Spawn,
             },
             backend,
             provider,
@@ -338,6 +362,7 @@ impl Session {
                 output: adopted.output,
                 input: adopted.input,
                 backend_id: backend_id.to_string(),
+                mode: WireMode::Adopt,
             },
             backend,
             provider,
@@ -362,7 +387,7 @@ impl Session {
         )));
 
         let exited = Arc::new(AtomicBool::new(false));
-        let last_output_at = Arc::new(AtomicU64::new(now_millis()));
+        let last_output_at = Arc::new(AtomicU64::new(initial_output_at(io.mode)));
 
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         tokio::spawn(Self::writer_loop(io.input, input_rx));
@@ -560,6 +585,7 @@ impl Session {
                 output: spawned.output,
                 input: spawned.input,
                 backend_id: spawned.backend_id,
+                mode: WireMode::Spawn,
             },
         );
 
@@ -635,6 +661,7 @@ impl Session {
                 output: spawned.output,
                 input: spawned.input,
                 backend_id: spawned.backend_id,
+                mode: WireMode::Spawn,
             },
         );
 
@@ -656,6 +683,7 @@ impl Session {
                 output: adopted.output,
                 input: adopted.input,
                 backend_id: backend_id.to_string(),
+                mode: WireMode::Adopt,
             },
         );
 
@@ -716,6 +744,22 @@ mod tests {
         let ms = now_millis();
         // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
+    }
+
+    #[test]
+    fn wire_mode_adopt_starts_stale_spawn_starts_fresh() {
+        // Mirrors `App::refresh_session_statuses`: a session is `Busy` while
+        // `now - last_output_at <= ACTIVITY_TIMEOUT_MS` (1000 ms in app/mod.rs).
+        const ACTIVITY_TIMEOUT_MS: u64 = 1000;
+
+        // Adopt: stale timestamp so the post-adopt SIGWINCH repaint doesn't
+        // read as activity → NOT busy.
+        let adopt = initial_output_at(WireMode::Adopt);
+        assert!(now_millis().saturating_sub(adopt) > ACTIVITY_TIMEOUT_MS);
+
+        // Spawn: "now" so a fresh process counts as active → busy.
+        let spawn = initial_output_at(WireMode::Spawn);
+        assert!(now_millis().saturating_sub(spawn) <= ACTIVITY_TIMEOUT_MS);
     }
 
     #[test]

@@ -257,10 +257,8 @@ impl App {
         };
         match code {
             KeyCode::Esc => self.modal.close(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                if p.selected + 1 < p.choices.len() {
-                    p.selected += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if p.selected + 1 < p.choices.len() => {
+                p.selected += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 p.selected = p.selected.saturating_sub(1);
