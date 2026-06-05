@@ -960,7 +960,7 @@ impl App {
                     if self.pending_fork {
                         // Fork flow — role already set, spawn directly.
                         self.pending_fork = false;
-                        self.do_spawn_session(name, &config, worktrees, false);
+                        self.do_spawn_session(name, &config, worktrees);
                     } else {
                         // Normal flow — proceed to role selection / spawn.
                         self.finish_prepare_spawn(name, config, worktrees);
@@ -1096,7 +1096,7 @@ impl App {
                 ) {
                     config.agent = agent;
                     let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                    self.do_spawn_session(name, &config, worktrees, false);
+                    self.do_spawn_session(name, &config, worktrees);
                 }
             }
             _ => {}

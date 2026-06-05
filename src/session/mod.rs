@@ -180,8 +180,6 @@ pub struct SessionInfo {
     /// Real git state of the session's worktree(s), refreshed periodically by
     /// the app layer. `None` until first computed (or for non-git sessions).
     pub git_stats: Option<GitStats>,
-    /// Whether this is the admin session (internal, never user-visible).
-    pub is_admin: bool,
     /// Cached display names for repos, resolved from git remote or directory name.
     /// Order: worktree repos first, then non-worktree additional dirs.
     /// Populated by the app layer at spawn/restore time.
@@ -205,7 +203,6 @@ impl SessionInfo {
             agent_activity: None,
             notification: None,
             git_stats: None,
-            is_admin: false,
             repo_display_names: Vec::new(),
         }
     }

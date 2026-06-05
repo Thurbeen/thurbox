@@ -6,11 +6,9 @@ use ratatui::{
     Frame,
 };
 
-use super::highlight::{
-    append_highlighted as append_name_spans, highlighted_spans as build_highlighted_spans,
-};
+use super::highlight::append_highlighted as append_name_spans;
 use super::theme::Theme;
-use super::{focus_block, status_color, truncate_ellipsis, FocusLevel};
+use super::{focus_block, status_color, FocusLevel};
 use crate::session::SessionInfo;
 
 /// Per-field fuzzy match positions for a session entry.
@@ -81,7 +79,7 @@ fn status_rank(status: crate::session::SessionStatus) -> u8 {
 /// Fallback label/key for a session that spans no repos.
 const NO_REPO_GROUP: &str = "(no repo)";
 
-/// The canonical grouping **key** for a non-admin session: the *set* of repos it
+/// The canonical grouping **key** for a session: the *set* of repos it
 /// spans (sorted + de-duplicated), so sessions touching the same repos cluster
 /// together regardless of selection order (`{infra, webapp}` == `{webapp,
 /// infra}`). Multi-repo sessions thus form their own group, distinct from the
@@ -122,11 +120,10 @@ fn group_display(info: &SessionInfo) -> String {
 /// the two never drift.
 ///
 /// Ordering (top → bottom):
-///   1. Admin session(s) pinned at the top, headerless.
-///   2. Repo groups, each ordered by its most-urgent member (and then by name),
+///   1. Repo groups, each ordered by its most-urgent member (and then by name),
 ///      so a repo holding an `Attention` session bubbles above a merely-running
 ///      one. Each group's first row carries the repo header label.
-///   3. Within a group: by status rank, then original index for stability.
+///   2. Within a group: by status rank, then original index for stability.
 ///
 /// The order is intentionally a pure function of *status* and *stable insertion
 /// order* — never of live recency. Recency (`millis_since_last_output`) changes
@@ -138,44 +135,28 @@ pub struct SessionOrder {
     /// Input indices in render order.
     pub order: Vec<usize>,
     /// Parallel to `order`: `Some(label)` on each group's first row, else `None`.
-    /// Admin rows are always `None` (no header).
     pub headers: Vec<Option<String>>,
 }
 
 pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
     struct Group {
-        /// Header label, or `None` for the admin bucket (rendered headerless).
         label: Option<String>,
-        is_admin: bool,
         members: Vec<usize>,
     }
 
     let mut groups: Vec<Group> = Vec::new();
-    let mut admin_idx: Option<usize> = None;
     let mut key_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     for (i, info) in sessions.iter().enumerate() {
-        let gi = if info.is_admin {
-            *admin_idx.get_or_insert_with(|| {
-                groups.push(Group {
-                    label: None,
-                    is_admin: true,
-                    members: Vec::new(),
-                });
-                groups.len() - 1
-            })
-        } else {
-            // Group by the canonical repo-set key; the header shows the
-            // natural-order ` + ` join from the first session in the group.
-            *key_to_idx.entry(group_key(info)).or_insert_with(|| {
-                groups.push(Group {
-                    label: Some(group_display(info)),
-                    is_admin: false,
-                    members: Vec::new(),
-                });
-                groups.len() - 1
-            })
-        };
+        // Group by the canonical repo-set key; the header shows the
+        // natural-order ` + ` join from the first session in the group.
+        let gi = *key_to_idx.entry(group_key(info)).or_insert_with(|| {
+            groups.push(Group {
+                label: Some(group_display(info)),
+                members: Vec::new(),
+            });
+            groups.len() - 1
+        });
         groups[gi].members.push(i);
     }
 
@@ -185,8 +166,8 @@ pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
             .sort_by_key(|&i| (status_rank(sessions[i].status), i));
     }
 
-    // Groups: admin first; then by most-urgent member (min status rank), then
-    // label for determinism. No recency term, so active groups don't churn.
+    // Groups: by most-urgent member (min status rank), then label for
+    // determinism. No recency term, so active groups don't churn.
     groups.sort_by(|a, b| {
         let key = |g: &Group| {
             let rank = g
@@ -195,7 +176,7 @@ pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
                 .map(|&i| status_rank(sessions[i].status))
                 .min()
                 .unwrap_or(u8::MAX);
-            (!g.is_admin, rank, g.label.clone().unwrap_or_default())
+            (rank, g.label.clone().unwrap_or_default())
         };
         key(a).cmp(&key(b))
     });
@@ -268,10 +249,6 @@ pub struct LeftPanelState<'a> {
     pub session_focus: FocusLevel,
     /// Persistent list state for the session section.
     pub session_list_state: &'a mut ListState,
-    /// The active global-search query (empty = no search). Drives repo-path
-    /// (line 2) highlighting and row dimming; the per-field highlight positions
-    /// come from `session_match_positions`.
-    pub search_query: &'a str,
     /// Per-session fuzzy match positions (parallel to sessions slice).
     pub session_match_positions: &'a [Option<SessionMatch>],
     /// Whether a (global) search is active — non-matching rows are dimmed.
@@ -295,7 +272,6 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.session_list_state,
         state.session_match_positions,
         state.session_search_active,
-        state.search_query,
         state.headers,
     );
 }
@@ -400,7 +376,6 @@ fn render_session_section(
     list_state: &mut ListState,
     match_positions: &[Option<SessionMatch>],
     search_active: bool,
-    search_query: &str,
     headers: &[Option<String>],
 ) {
     let mut block = focus_block(" Sessions ", level);
@@ -444,22 +419,13 @@ fn render_session_section(
             let is_dimmed = search_active && session_match.is_none();
 
             let mut item_lines = vec![
-                build_session_line1(
-                    info,
-                    i,
-                    session_match,
-                    is_active,
-                    is_dimmed,
-                    elapsed_ms,
-                    inner_width,
-                ),
-                build_session_line2(info, session_match, is_dimmed, search_query),
+                build_session_line1(info, session_match, is_active, is_dimmed),
+                build_session_line2(info, is_dimmed, elapsed_ms.get(i).copied()),
             ];
 
             // Prepend a subtle repo-group header above the first session of
-            // each group. The first non-admin header also separates the pinned
-            // admin block from the rest. The header is highlighted when the
-            // active row lives anywhere in its group.
+            // each group. The header is highlighted when the active row lives
+            // anywhere in its group.
             if let Some(Some(label)) = headers.get(i) {
                 let selected = active_group == Some(i);
                 item_lines.insert(0, group_header_line(label, inner_width, selected));
@@ -503,8 +469,8 @@ fn render_empty_sessions(frame: &mut Frame, area: Rect, block: ratatui::widgets:
 
 /// For each row, the index of the group header row it belongs to. Lets a group's
 /// header highlight whenever *any* member row is the active one, not just the
-/// group's first row. Rows before the first header (e.g. the pinned admin block)
-/// map to row 0, which is harmless since those rows carry no header.
+/// group's first row. Rows before the first header map to row 0, which is
+/// harmless since those rows carry no header.
 fn header_group_of(headers: &[Option<String>]) -> Vec<usize> {
     let mut out = Vec::with_capacity(headers.len());
     let mut current = 0;
@@ -536,7 +502,8 @@ fn group_header_line(label: &str, inner_width: usize, selected: bool) -> Line<'s
     Line::from(Span::styled(text, style))
 }
 
-/// Resolve the right-aligned live status text for a session row. Priority:
+/// Resolve the live status text for a session row (the dedicated status line).
+/// Priority:
 ///   1. Attention → the agent's notification message ("Needs attention").
 ///   2. The agent-reported OSC activity title (richer "insight").
 ///   3. Timing-based Busy/Waiting with elapsed time.
@@ -555,18 +522,16 @@ fn session_status_text(info: &SessionInfo, elapsed: Option<u64>) -> String {
         .unwrap_or_else(|| format_status_with_elapsed(info.status, elapsed))
 }
 
-/// Build line 1 of a session entry: `<status-dot> <name> ........... <status>`.
+/// Build line 1 of a session entry: `<status-dot> [⑂] <name>`.
 ///
 /// The active row is signalled by the list's highlight background, so no extra
-/// pointer glyph is needed; admin sessions keep a gear.
+/// pointer glyph is needed. Sessions running in a git worktree get a `⑂` mark
+/// between the status dot and the name. The live status itself lives on line 2.
 fn build_session_line1<'a>(
     info: &'a SessionInfo,
-    i: usize,
     session_match: Option<&SessionMatch>,
     is_active: bool,
     is_dimmed: bool,
-    elapsed_ms: &[u64],
-    inner_width: usize,
 ) -> Line<'a> {
     let name_style = if is_dimmed {
         Style::default().fg(Theme::text_muted())
@@ -581,18 +546,21 @@ fn build_session_line1<'a>(
         Style::default().fg(super::status_color(info.status))
     };
 
-    let prefix_str = if info.is_admin {
-        format!(" \u{2699} {} ", info.status.icon())
-    } else {
-        format!(" {} ", info.status.icon())
-    };
-    let prefix_style = if info.is_admin && !is_dimmed {
-        Style::default().fg(Theme::admin_badge())
-    } else {
-        status_style
-    };
+    let mut line1_spans = vec![Span::styled(
+        format!(" {} ", info.status.icon()),
+        status_style,
+    )];
 
-    let mut line1_spans = vec![Span::styled(prefix_str.clone(), prefix_style)];
+    // Worktree sessions get a dedicated mark, subordinate to the status dot.
+    if !info.worktrees.is_empty() {
+        let wt_style = if is_dimmed {
+            Style::default().fg(Theme::text_muted())
+        } else {
+            Style::default().fg(Theme::branch_name())
+        };
+        line1_spans.push(Span::styled("\u{2442} ", wt_style));
+    }
+
     append_name_spans(
         &mut line1_spans,
         &info.name,
@@ -600,149 +568,24 @@ fn build_session_line1<'a>(
         name_style,
     );
 
-    let status_text = session_status_text(info, elapsed_ms.get(i).copied());
-    let prefix_w = prefix_str.chars().count();
-    let name_w = info.name.chars().count();
-    let avail = inner_width.saturating_sub(prefix_w + name_w + 1);
-    let status_shown = truncate_ellipsis(&status_text, avail);
-    if !status_shown.is_empty() {
-        let used = prefix_w + name_w + status_shown.chars().count();
-        let gap = inner_width.saturating_sub(used).max(1);
-        line1_spans.push(Span::raw(" ".repeat(gap)));
-        line1_spans.push(Span::styled(status_shown, status_style));
-    }
     Line::from(line1_spans)
 }
 
-/// Append the agent name (role-coloured, fuzzy-searchable) to line 2.
-fn push_agent_spans(
-    line2_spans: &mut Vec<Span<'static>>,
-    info: &SessionInfo,
-    session_match: Option<&SessionMatch>,
-    is_dimmed: bool,
-) {
-    let agent_style = if is_dimmed {
+/// Build line 2 of a session entry: the dedicated status line `   <status-text>`
+/// (e.g. `   Waiting 2m`). No status glyph here — the colored dot on line 1
+/// already conveys the state, so repeating it would be redundant.
+fn build_session_line2(info: &SessionInfo, is_dimmed: bool, elapsed: Option<u64>) -> Line<'static> {
+    let text_style = if is_dimmed {
         Style::default().fg(Theme::text_muted())
     } else {
-        Style::default().fg(Theme::role_name())
-    };
-    match session_match.and_then(|m| m.positions(&m.agent)) {
-        Some(positions) if !positions.is_empty() => {
-            line2_spans.extend(
-                build_highlighted_spans(&info.agent, positions, agent_style)
-                    .into_iter()
-                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
-            );
-        }
-        _ => line2_spans.push(Span::styled(info.agent.clone(), agent_style)),
-    }
-}
-
-/// Append the repo entries (with branches) to line 2, after a " · " separator.
-fn push_repo_spans(
-    line2_spans: &mut Vec<Span<'static>>,
-    entries: &[RepoEntry],
-    is_dimmed: bool,
-    search_query: &str,
-) {
-    let muted = Style::default().fg(Theme::text_muted());
-    line2_spans.push(Span::styled(" · ", muted));
-
-    if is_dimmed {
-        line2_spans.push(Span::styled(format_repo_entries_plain(entries), muted));
-        return;
-    }
-
-    let repo_style = Style::default().fg(Theme::text_primary());
-    let branch_style = Style::default().fg(Theme::branch_name());
-
-    let plain = format_repo_entries_plain(entries);
-    let search_positions = if !search_query.is_empty() {
-        crate::fuzzy::fuzzy_match(search_query, &plain).map(|m| m.positions)
-    } else {
-        None
+        Style::default().fg(Theme::text_primary())
     };
 
-    if let Some(positions) = search_positions.filter(|p| !p.is_empty()) {
-        line2_spans.extend(
-            build_highlighted_spans(&plain, &positions, repo_style)
-                .into_iter()
-                .map(|s| Span::styled(s.content.into_owned(), s.style)),
-        );
-        return;
-    }
-
-    // No (matching) search — render with colored branches.
-    for (j, entry) in entries.iter().enumerate() {
-        if j > 0 {
-            line2_spans.push(Span::styled(", ", muted));
-        }
-        line2_spans.push(Span::styled(entry.name.clone(), repo_style));
-        if let Some(ref br) = entry.branch {
-            line2_spans.push(Span::styled("(", branch_style));
-            line2_spans.push(Span::styled(br.clone(), branch_style));
-            line2_spans.push(Span::styled(")", branch_style));
-        }
-    }
-}
-
-/// Build line 2 of a session entry: `<agent> · <repo>(<branch>), …`.
-fn build_session_line2(
-    info: &SessionInfo,
-    session_match: Option<&SessionMatch>,
-    is_dimmed: bool,
-    search_query: &str,
-) -> Line<'static> {
-    let entries = build_repo_entries(info);
-    let mut line2_spans: Vec<Span<'static>> = vec![Span::raw("   ")];
-
-    push_agent_spans(&mut line2_spans, info, session_match, is_dimmed);
-
-    if !entries.is_empty() {
-        push_repo_spans(&mut line2_spans, &entries, is_dimmed, search_query);
-    }
-
-    Line::from(line2_spans)
-}
-
-/// A single repo entry with an optional branch (for worktree repos).
-struct RepoEntry {
-    name: String,
-    branch: Option<String>,
-}
-
-/// Build a list of repo entries for line 3 of a session entry.
-///
-/// Uses pre-resolved `repo_display_names` (from git remote or dir name).
-/// Worktree repos (indices 0..worktrees.len()) get their branch name.
-fn build_repo_entries(info: &SessionInfo) -> Vec<RepoEntry> {
-    info.repo_display_names
-        .iter()
-        .enumerate()
-        .map(|(i, name)| RepoEntry {
-            name: name.clone(),
-            branch: info.worktrees.get(i).map(|wt| wt.branch.clone()),
-        })
-        .collect()
-}
-
-/// Format repo entries as a plain string for search matching and dimmed display.
-///
-/// Example: `"thurbox(feat-search), shared-lib"`
-fn format_repo_entries_plain(entries: &[RepoEntry]) -> String {
-    let mut out = String::new();
-    for (i, entry) in entries.iter().enumerate() {
-        if i > 0 {
-            out.push_str(", ");
-        }
-        out.push_str(&entry.name);
-        if let Some(ref br) = entry.branch {
-            out.push('(');
-            out.push_str(br);
-            out.push(')');
-        }
-    }
-    out
+    let status_text = session_status_text(info, elapsed);
+    Line::from(vec![
+        Span::raw("   "),
+        Span::styled(status_text, text_style),
+    ])
 }
 
 /// Format status text with elapsed time for Waiting/Idle sessions.
@@ -766,6 +609,7 @@ fn format_status_with_elapsed(
 
 #[cfg(test)]
 mod tests {
+    use super::super::highlight::highlighted_spans as build_highlighted_spans;
     use super::*;
     use crate::session::SessionStatus;
 
@@ -965,171 +809,20 @@ mod tests {
         assert_eq!(m.positions(&m.name), Some(&[0, 4][..]));
     }
 
-    // --- build_repo_entries / format_repo_entries_plain ---
-
-    #[test]
-    fn repo_entries_single_repo() {
-        let mut info = SessionInfo::new("test".to_string());
-        info.repo_display_names = vec!["thurbox".to_string()];
-        let entries = build_repo_entries(&info);
-        assert_eq!(format_repo_entries_plain(&entries), "thurbox");
-    }
-
-    #[test]
-    fn repo_entries_worktree_shows_branch_on_first_repo() {
-        let mut info = SessionInfo::new("test".to_string());
-        info.repo_display_names = vec!["thurbox".to_string()];
-        info.worktrees.push(crate::session::WorktreeInfo {
-            repo_path: std::path::PathBuf::from("/home/user/repos/thurbox"),
-            worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
-            branch: "feat-search".to_string(),
-        });
-        let entries = build_repo_entries(&info);
-        assert_eq!(format_repo_entries_plain(&entries), "thurbox(feat-search)");
-    }
-
-    #[test]
-    fn repo_entries_mixed_worktree_and_normal() {
-        let mut info = SessionInfo::new("test".to_string());
-        info.repo_display_names = vec!["thurbox".to_string(), "shared-lib".to_string()];
-        info.worktrees.push(crate::session::WorktreeInfo {
-            repo_path: std::path::PathBuf::from("/home/user/repos/thurbox"),
-            worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
-            branch: "feat-search".to_string(),
-        });
-        let entries = build_repo_entries(&info);
-        assert_eq!(
-            format_repo_entries_plain(&entries),
-            "thurbox(feat-search), shared-lib"
-        );
-    }
-
-    #[test]
-    fn repo_entries_multiple_normal_repos() {
-        let mut info = SessionInfo::new("test".to_string());
-        info.repo_display_names = vec!["main-app".to_string(), "shared-lib".to_string()];
-        let entries = build_repo_entries(&info);
-        assert_eq!(format_repo_entries_plain(&entries), "main-app, shared-lib");
-    }
-
-    #[test]
-    fn repo_entries_multiple_worktrees() {
-        let mut info = SessionInfo::new("test".to_string());
-        info.repo_display_names = vec!["thurbox".to_string(), "api-server".to_string()];
-        info.worktrees.push(crate::session::WorktreeInfo {
-            repo_path: std::path::PathBuf::from("/repos/thurbox"),
-            worktree_path: std::path::PathBuf::from("/tmp/wt1/feat"),
-            branch: "feat".to_string(),
-        });
-        info.worktrees.push(crate::session::WorktreeInfo {
-            repo_path: std::path::PathBuf::from("/repos/api-server"),
-            worktree_path: std::path::PathBuf::from("/tmp/wt2/feat"),
-            branch: "feat".to_string(),
-        });
-        let entries = build_repo_entries(&info);
-        assert_eq!(
-            format_repo_entries_plain(&entries),
-            "thurbox(feat), api-server(feat)"
-        );
-    }
-
-    #[test]
-    fn repo_entries_multi_worktree_plus_normal() {
-        let mut info = SessionInfo::new("test".to_string());
-        info.repo_display_names = vec![
-            "thurbox".to_string(),
-            "api-server".to_string(),
-            "docs".to_string(),
-        ];
-        info.worktrees.push(crate::session::WorktreeInfo {
-            repo_path: std::path::PathBuf::from("/repos/thurbox"),
-            worktree_path: std::path::PathBuf::from("/tmp/wt1/feat"),
-            branch: "feat".to_string(),
-        });
-        info.worktrees.push(crate::session::WorktreeInfo {
-            repo_path: std::path::PathBuf::from("/repos/api-server"),
-            worktree_path: std::path::PathBuf::from("/tmp/wt2/feat"),
-            branch: "feat".to_string(),
-        });
-        let entries = build_repo_entries(&info);
-        assert_eq!(
-            format_repo_entries_plain(&entries),
-            "thurbox(feat), api-server(feat), docs"
-        );
-    }
-
-    #[test]
-    fn repo_entries_empty_when_no_repos() {
-        let info = SessionInfo::new("test".to_string());
-        let entries = build_repo_entries(&info);
-        assert!(entries.is_empty());
-        assert_eq!(format_repo_entries_plain(&entries), "");
-    }
-
     // --- OrderedSessions ---
 
-    fn info(name: &str, admin: bool) -> SessionInfo {
-        let mut s = SessionInfo::new(name.to_string());
-        s.is_admin = admin;
-        s
+    fn info(name: &str) -> SessionInfo {
+        SessionInfo::new(name.to_string())
     }
 
     #[test]
-    fn ordered_sessions_pins_admins_first_stable() {
-        let a = info("admin-a", true);
-        let n1 = info("normal-1", false);
-        let b = info("admin-b", true);
-        let n2 = info("normal-2", false);
-        let sessions = vec![&n1, &a, &n2, &b];
-        let elapsed = vec![10, 20, 30, 40];
-        let matches = vec![None, None, None, None];
-
-        let ordered = OrderedSessions::new(&sessions, &elapsed, &matches, 0);
-
-        let names: Vec<_> = ordered.sessions.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["admin-a", "admin-b", "normal-1", "normal-2"]);
-        assert_eq!(ordered.elapsed_ms, vec![20, 40, 10, 30]);
-        // Admin rows are headerless; the single non-admin "(no repo)" group
-        // carries its header on its first row.
-        assert_eq!(
-            ordered.headers,
-            vec![None, None, Some("(no repo)".to_string()), None]
-        );
-    }
-
-    #[test]
-    fn ordered_sessions_remaps_active_index() {
-        let a = info("admin", true);
-        let n1 = info("normal-1", false);
-        let n2 = info("normal-2", false);
-        // original order: [n1, n2, a], active = n2 (index 1)
-        let sessions = vec![&n1, &n2, &a];
-        let elapsed = vec![0, 0, 0];
-        let matches = vec![None, None, None];
-
-        let ordered = OrderedSessions::new(&sessions, &elapsed, &matches, 1);
-
-        // new order: [a, n1, n2], n2 lives at index 2
-        assert_eq!(ordered.active_index, 2);
-    }
-
-    #[test]
-    fn ordered_sessions_no_admins_header_on_first_row() {
-        let n1 = info("n1", false);
-        let n2 = info("n2", false);
+    fn ordered_sessions_groups_share_header_on_first_row() {
+        let n1 = info("n1");
+        let n2 = info("n2");
         let sessions = vec![&n1, &n2];
         let ordered = OrderedSessions::new(&sessions, &[0, 0], &[None, None], 0);
         // Single "(no repo)" group: header on row 0, none after.
         assert_eq!(ordered.headers, vec![Some("(no repo)".to_string()), None]);
-    }
-
-    #[test]
-    fn ordered_sessions_all_admins_have_no_headers() {
-        let a1 = info("a1", true);
-        let a2 = info("a2", true);
-        let sessions = vec![&a1, &a2];
-        let ordered = OrderedSessions::new(&sessions, &[0, 0], &[None, None], 0);
-        assert_eq!(ordered.headers, vec![None, None]);
     }
 
     #[test]
@@ -1141,27 +834,49 @@ mod tests {
         assert!(ordered.headers.is_empty());
     }
 
+    // --- line builders ---
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     #[test]
-    fn ordered_sessions_remaps_match_positions() {
-        let a = info("admin", true);
-        let n = info("normal", false);
-        let sessions = vec![&n, &a];
-        let elapsed = vec![0, 0];
-        let m_normal = SessionMatch::from_matches(Some(vec![0, 1]), None, None, None, None);
-        let m_admin = SessionMatch::from_matches(Some(vec![3]), None, None, None, None);
-        let matches = vec![m_normal, m_admin];
+    fn line1_shows_worktree_glyph_when_worktree_present() {
+        let mut s = info("feature");
+        s.worktrees.push(crate::session::WorktreeInfo {
+            repo_path: std::path::PathBuf::from("/repos/thurbox"),
+            worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
+            branch: "feat".to_string(),
+        });
+        let line = build_session_line1(&s, None, false, false);
+        assert!(line_text(&line).contains('\u{2442}'));
+    }
 
-        let ordered = OrderedSessions::new(&sessions, &elapsed, &matches, 0);
+    #[test]
+    fn line1_no_worktree_glyph_for_plain_session() {
+        let s = info("plain");
+        let line = build_session_line1(&s, None, false, false);
+        assert!(!line_text(&line).contains('\u{2442}'));
+    }
 
-        // Admin bubbles to front, so its match moves with it.
-        assert_eq!(
-            ordered.match_positions[0].as_ref().map(|m| m.name.clone()),
-            Some(vec![3])
-        );
-        assert_eq!(
-            ordered.match_positions[1].as_ref().map(|m| m.name.clone()),
-            Some(vec![0, 1])
-        );
+    #[test]
+    fn line2_shows_status_text_without_glyph() {
+        let mut s = info("busy");
+        s.status = SessionStatus::Busy;
+        let line = build_session_line2(&s, false, None);
+        let text = line_text(&line);
+        assert!(text.contains("Busy"));
+        // The status dot lives on line 1 only; line 2 must not repeat it.
+        assert!(!text.contains(SessionStatus::Busy.icon()));
+    }
+
+    #[test]
+    fn line2_attention_shows_notification() {
+        let mut s = info("attn");
+        s.status = SessionStatus::Attention;
+        s.notification = Some("Review this diff".to_string());
+        let line = build_session_line2(&s, false, None);
+        assert!(line_text(&line).contains("Review this diff"));
     }
 
     // --- compute_session_order (grouping + activity) ---
@@ -1228,20 +943,6 @@ mod tests {
     }
 
     #[test]
-    fn admin_pinned_above_all_repo_groups_headerless() {
-        let mut admin = info_repo("admin", "webapp", SessionStatus::Idle);
-        admin.is_admin = true;
-        let attn = info_repo("web-attn", "webapp", SessionStatus::Attention);
-        let sessions = vec![&attn, &admin];
-        let SessionOrder { order, headers } = compute_session_order(&sessions);
-        let names: Vec<_> = order.iter().map(|&i| sessions[i].name.as_str()).collect();
-        // Admin first despite being Idle and despite the attention session.
-        assert_eq!(names, vec!["admin", "web-attn"]);
-        // Admin row headerless; the webapp group header sits on its first row.
-        assert_eq!(headers, vec![None, Some("webapp".to_string())]);
-    }
-
-    #[test]
     fn headers_label_only_first_row_of_each_group() {
         let a = info_repo("a", "webapp", SessionStatus::Busy);
         let b = info_repo("b", "webapp", SessionStatus::Busy);
@@ -1266,8 +967,8 @@ mod tests {
 
     #[test]
     fn no_repo_sessions_share_one_group() {
-        let a = info("a", false);
-        let b = info("b", false);
+        let a = info("a");
+        let b = info("b");
         let sessions = vec![&a, &b];
         let SessionOrder { order, headers } = compute_session_order(&sessions);
         assert_eq!(order, vec![0, 1]);
@@ -1350,8 +1051,8 @@ mod tests {
     }
 
     #[test]
-    fn header_group_of_admin_rows_before_first_header_map_to_zero() {
-        // Admin rows (no header) precede the first group header at row 2.
+    fn header_group_of_rows_before_first_header_map_to_zero() {
+        // Rows with no header preceding the first group header at row 2.
         let headers = vec![None, None, Some("repo".to_string()), None];
         assert_eq!(header_group_of(&headers), vec![0, 0, 2, 2]);
     }

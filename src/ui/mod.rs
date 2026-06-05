@@ -197,38 +197,6 @@ pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
     }
 }
 
-/// Build a [`Block`] with yellow admin styling (tri-state focus).
-///
-/// Focused: thick yellow border + black-on-yellow title badge.
-/// Active: plain yellow border + plain yellow title text.
-/// Inactive: standard unfocused gray border + dimmed title, keeping the
-/// admin chrome unobtrusive when the panel is in the background.
-pub fn admin_block(title_text: &str, level: FocusLevel) -> Block<'_> {
-    match level {
-        FocusLevel::Focused => Block::default()
-            .title(Line::from(Span::styled(
-                title_text,
-                Theme::admin_focused_title(),
-            )))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Theme::admin_border())),
-        FocusLevel::Active => Block::default()
-            .title(Line::from(Span::styled(title_text, Theme::admin_title())))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Theme::admin_border())),
-        FocusLevel::Inactive => Block::default()
-            .title(Line::from(Span::styled(
-                title_text,
-                Theme::unfocused_title(),
-            )))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Theme::border_unfocused())),
-    }
-}
-
 /// Build a [`Block`] with focused or unfocused styling (backward compat).
 ///
 /// Focused: thick borders in accent color with a highlighted title badge.
@@ -737,21 +705,6 @@ mod tests {
     }
 
     #[test]
-    fn admin_block_returns_block_for_all_focus_levels() {
-        let test_area = area(40, 10);
-        for level in [
-            FocusLevel::Focused,
-            FocusLevel::Active,
-            FocusLevel::Inactive,
-        ] {
-            let block = admin_block(" Admin ", level);
-            let inner = block.inner(test_area);
-            assert!(inner.width < test_area.width);
-            assert!(inner.height < test_area.height);
-        }
-    }
-
-    #[test]
     fn modal_block_produces_valid_block_with_borders() {
         let test_area = area(40, 10);
         let block = modal_block("Test Modal");
@@ -778,17 +731,5 @@ mod tests {
     fn modal_title_danger_uses_danger_color() {
         let style = Theme::modal_title_danger();
         assert_eq!(style.bg, Some(Theme::danger()));
-    }
-
-    #[test]
-    fn admin_focused_title_uses_badge_background() {
-        let style = Theme::admin_focused_title();
-        assert_eq!(style.bg, Some(Theme::admin_border()));
-        assert_eq!(style.fg, Some(Theme::inverted_fg()));
-    }
-
-    #[test]
-    fn admin_focused_title_differs_from_admin_title() {
-        assert_ne!(Theme::admin_focused_title(), Theme::admin_title());
     }
 }

@@ -686,7 +686,7 @@ impl App {
                 .first()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_string());
-            self.do_spawn_session(name, &config, worktrees, false);
+            self.do_spawn_session(name, &config, worktrees);
             return;
         }
 
@@ -1381,7 +1381,6 @@ impl App {
         name: String,
         config: &SessionConfig,
         worktrees: Vec<WorktreeInfo>,
-        is_admin: bool,
     ) {
         let (rows, cols) = self.content_area_size();
 
@@ -1432,11 +1431,6 @@ impl App {
                 self.focus = InputFocus::Terminal;
                 self.status_message = None;
 
-                // Mark admin sessions
-                if is_admin {
-                    self.sessions.last_mut().unwrap().info.is_admin = true;
-                }
-
                 self.save_state();
 
                 // A task-initiated spawn (the trigger-time picker's "Spawn new
@@ -1481,8 +1475,7 @@ impl App {
     ///
     /// Delegates to the same `ui::project_list::compute_session_order` the
     /// rendering widget uses, so `Ctrl+J`/`Ctrl+K` step through the list in the
-    /// exact order the user sees (admin pinned, then repo groups ordered by
-    /// activity/status).
+    /// exact order the user sees (repo groups ordered by activity/status).
     fn render_order_indices(&self) -> Vec<usize> {
         let infos: Vec<&crate::session::SessionInfo> =
             self.sessions.iter().map(|s| &s.info).collect();
@@ -2450,7 +2443,7 @@ impl App {
         config.resume_session_id =
             crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
         self.pending_additional_dirs = shared.additional_dirs;
-        self.do_spawn_session(name, &config, worktrees, false);
+        self.do_spawn_session(name, &config, worktrees);
     }
 
     /// Find a discovered backend session matching a shared session.
@@ -2671,7 +2664,7 @@ impl App {
             config.agent = a.to_string();
         }
 
-        self.do_spawn_session(name.clone(), &config, worktrees, false);
+        self.do_spawn_session(name.clone(), &config, worktrees);
         let session = self
             .sessions
             .iter()
@@ -4161,39 +4154,6 @@ mod tests {
         assert_eq!(app.active_index, 0);
         app.switch_session_backward();
         assert_eq!(app.active_index, 0);
-    }
-
-    #[test]
-    fn switch_forward_follows_admin_pinned_render_order() {
-        // Sessions stored in DB order: [normal-0, normal-1, admin-2].
-        // Rendered order (admin pinned): [admin-2, normal-0, normal-1].
-        // Stepping forward from index 0 (normal-0) must visit the *next
-        // rendered row*, normal-1 (index 1), not admin-2. Stepping
-        // forward from normal-1 must wrap to admin-2 (index 2).
-        let mut app = app_with_sessions(3);
-        app.sessions[2].info.is_admin = true;
-
-        app.active_index = 0;
-        app.switch_session_forward();
-        assert_eq!(app.active_index, 1, "normal-0 → normal-1");
-        app.switch_session_forward();
-        assert_eq!(app.active_index, 2, "normal-1 → admin-2 (wrap)");
-        app.switch_session_forward();
-        assert_eq!(app.active_index, 0, "admin-2 → normal-0");
-    }
-
-    #[test]
-    fn switch_backward_follows_admin_pinned_render_order() {
-        let mut app = app_with_sessions(3);
-        app.sessions[2].info.is_admin = true;
-
-        app.active_index = 0; // normal-0, rendered row 1
-        app.switch_session_backward();
-        assert_eq!(app.active_index, 2, "normal-0 → admin-2 (prev row)");
-        app.switch_session_backward();
-        assert_eq!(app.active_index, 1, "admin-2 → normal-1 (wrap)");
-        app.switch_session_backward();
-        assert_eq!(app.active_index, 0, "normal-1 → normal-0");
     }
 
     #[test]

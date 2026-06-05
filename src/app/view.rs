@@ -105,7 +105,7 @@ impl App {
             None => Vec::new(),
         };
 
-        // Pin admin sessions to the top of the list. All parallel arrays
+        // Order the list by repo group + activity. All parallel arrays
         // (elapsed, match_positions) and active_index are remapped so they
         // stay aligned with the rendered order.
         let ordered = project_list::OrderedSessions::new(
@@ -149,7 +149,6 @@ impl App {
                 session_elapsed_ms: &ordered.elapsed_ms,
                 session_focus: list_focus,
                 session_list_state: &mut self.session_list_state,
-                search_query: global_query.as_deref().unwrap_or(""),
                 session_match_positions: &ordered.match_positions,
                 session_search_active,
                 headers: &ordered.headers,
@@ -350,7 +349,6 @@ impl App {
             terminal_view::render_empty_terminal(frame, terminal);
             return;
         };
-        let is_admin_project = session.info.is_admin;
         let parser_arc = if is_shell_view {
             session.shell_pane.as_ref().map(|sp| &sp.parser)
         } else {
@@ -364,7 +362,6 @@ impl App {
                 &mut parser,
                 &session.info,
                 terminal_focus,
-                is_admin_project,
                 is_shell_view,
             );
         }

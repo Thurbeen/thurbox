@@ -34,7 +34,6 @@ pub struct ThemePalette {
     pub border_unfocused: Color,
 
     pub role_name: Color,
-    pub admin_badge: Color,
     pub branch_name: Color,
     pub search_bar: Color,
 
@@ -42,7 +41,6 @@ pub struct ThemePalette {
     pub tool_allowed: Color,
     pub tool_disallowed: Color,
 
-    pub admin_border: Color,
     pub danger: Color,
 
     pub selection_bg: Color,
@@ -200,7 +198,6 @@ fn default_palette() -> ThemePalette {
         border_unfocused: Color::Gray,
 
         role_name: Color::Magenta,
-        admin_badge: Color::Yellow,
         branch_name: Color::Green,
         search_bar: Color::Blue,
 
@@ -208,7 +205,6 @@ fn default_palette() -> ThemePalette {
         tool_allowed: Color::Green,
         tool_disallowed: Color::Red,
 
-        admin_border: Color::Yellow,
         danger: Color::Red,
 
         selection_bg: Color::Indexed(24),
@@ -230,8 +226,8 @@ fn default_palette() -> ThemePalette {
 /// palettes without restating the 27-field `ThemePalette` literal in each one.
 ///
 /// `build()` derives the symmetric fields (status_idle = text_muted,
-/// border_focused = accent, admin_border = admin_badge, inverted_fg = app_bg)
-/// so each preset only specifies the colours that actually vary between themes.
+/// border_focused = accent, inverted_fg = app_bg) so each preset only specifies
+/// the colours that actually vary between themes.
 struct PaletteSlots {
     accent: Color,
     accent_bright: Color,
@@ -245,7 +241,6 @@ struct PaletteSlots {
     role_name: Color,
     branch_name: Color,
     search_bar: Color,
-    admin_badge: Color,
     keybind_hint: Color,
     selection_bg: Color,
     selection_fg: Color,
@@ -270,13 +265,11 @@ impl PaletteSlots {
             border_focused: self.accent,
             border_unfocused: self.border_unfocused,
             role_name: self.role_name,
-            admin_badge: self.admin_badge,
             branch_name: self.branch_name,
             search_bar: self.search_bar,
             keybind_hint: self.keybind_hint,
             tool_allowed: self.green,
             tool_disallowed: self.red,
-            admin_border: self.admin_badge,
             danger: self.red,
             selection_bg: self.selection_bg,
             selection_fg: self.selection_fg,
@@ -317,7 +310,6 @@ fn catppuccin_mocha_palette() -> ThemePalette {
         role_name: pink,
         branch_name: green,
         search_bar: blue,
-        admin_badge: yellow,
         keybind_hint: yellow,
         selection_bg: surface1,
         selection_fg: text,
@@ -335,7 +327,6 @@ fn tokyo_night_palette() -> ThemePalette {
     let purple = Color::Rgb(0xBB, 0x9A, 0xF7);
     let green = Color::Rgb(0x9E, 0xCE, 0x6A);
     let yellow = Color::Rgb(0xE0, 0xAF, 0x68);
-    let orange = Color::Rgb(0xFF, 0x9E, 0x64);
     let red = Color::Rgb(0xF7, 0x76, 0x8E);
     let magenta = Color::Rgb(0xC0, 0xCA, 0xF5);
     let text = Color::Rgb(0xC0, 0xCA, 0xF5);
@@ -357,7 +348,6 @@ fn tokyo_night_palette() -> ThemePalette {
         role_name: purple,
         branch_name: green,
         search_bar: cyan,
-        admin_badge: orange,
         keybind_hint: yellow,
         selection_bg: bg_highlight,
         selection_fg: magenta,
@@ -396,7 +386,6 @@ fn gruvbox_dark_palette() -> ThemePalette {
         role_name: purple,
         branch_name: aqua,
         search_bar: blue,
-        admin_badge: orange,
         keybind_hint: orange,
         selection_bg: bg1,
         selection_fg: fg,
@@ -436,7 +425,6 @@ fn catppuccin_latte_palette() -> ThemePalette {
         role_name: pink,
         branch_name: green,
         search_bar: blue,
-        admin_badge: yellow,
         keybind_hint: yellow,
         selection_bg: surface0,
         selection_fg: text,
@@ -476,7 +464,6 @@ fn tokyo_night_day_palette() -> ThemePalette {
         role_name: purple,
         branch_name: green,
         search_bar: cyan,
-        admin_badge: orange,
         keybind_hint: orange,
         selection_bg: bg_highlight,
         selection_fg: magenta,
@@ -515,7 +502,6 @@ fn gruvbox_light_palette() -> ThemePalette {
         role_name: purple,
         branch_name: aqua,
         search_bar: blue,
-        admin_badge: yellow,
         keybind_hint: yellow,
         selection_bg: bg1,
         selection_fg: fg,
@@ -554,7 +540,6 @@ fn solarized_light_palette() -> ThemePalette {
         role_name: magenta,
         branch_name: green,
         search_bar: violet,
-        admin_badge: orange,
         keybind_hint: orange,
         selection_bg: base2,
         selection_fg: base01,
@@ -590,7 +575,6 @@ fn doom_palette() -> ThemePalette {
         role_name: bright_red,
         branch_name: bright_green,
         search_bar: cyan,
-        admin_badge: red,
         keybind_hint: red,
         selection_bg: highlight,
         selection_fg: bright_green,

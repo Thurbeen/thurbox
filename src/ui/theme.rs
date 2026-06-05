@@ -107,9 +107,6 @@ impl Theme {
     pub fn role_name() -> Color {
         current().role_name
     }
-    pub fn admin_badge() -> Color {
-        current().admin_badge
-    }
     pub fn branch_name() -> Color {
         current().branch_name
     }
@@ -129,11 +126,8 @@ impl Theme {
         current().tool_disallowed
     }
 
-    // ── Admin / danger ──────────────────────────────────────────────────────
+    // ── Danger ──────────────────────────────────────────────────────────────
 
-    pub fn admin_border() -> Color {
-        current().admin_border
-    }
     pub fn danger() -> Color {
         current().danger
     }
@@ -224,21 +218,6 @@ impl Theme {
     /// Style for normal (unselected) list items.
     pub fn normal_item() -> Style {
         Style::default().fg(Self::text_primary())
-    }
-
-    /// Style for admin section title: yellow bold.
-    pub fn admin_title() -> Style {
-        Style::default()
-            .fg(Self::admin_border())
-            .add_modifier(Modifier::BOLD)
-    }
-
-    /// Style for a focused admin panel title: bold black on yellow badge.
-    pub fn admin_focused_title() -> Style {
-        Style::default()
-            .fg(Self::inverted_fg())
-            .bg(Self::admin_border())
-            .add_modifier(Modifier::BOLD)
     }
 
     /// Style for modal titles: bold black on accent background (same as focused panels).

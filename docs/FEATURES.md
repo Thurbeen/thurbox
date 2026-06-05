@@ -52,8 +52,12 @@ the user to remember which field to type into.
 
 ### Live status & "needs attention"
 
-Each row is two lines: `<status-dot> <name>` with a right-aligned
-live status on line 1, and `<agent> · <repo>(<branch>)` on line 2.
+Each row is two lines: `<status-dot> <name>` on line 1 (worktree
+sessions get a `⑂` mark before the name), and a dedicated live-status
+line `<status-text>` on line 2 (e.g. `Waiting 2m` or the agent's
+reported activity). Line 2 carries no status glyph — the colored dot on
+line 1 already conveys the state. The repo/branch and agent live in the
+info panel, not the list row.
 
 The status is richer than raw output-timing. We parse the agent's
 own terminal signals from its PTY (via the `vt100` callbacks already
@@ -89,7 +93,6 @@ repository** under subtle headers (`── webapp ─────`):
   (`webapp + infra`) rather than being filed arbitrarily under one repo;
   sessions touching the same set cluster together. Sessions with no repo share a
   `(no repo)` group.
-- The **admin** session stays pinned at the very top, headerless.
 
 **Why group by repo?** With several parallel agents the dominant question
 is "which project is this?" — clustering same-repo sessions answers it at a
