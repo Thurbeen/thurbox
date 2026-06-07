@@ -256,6 +256,16 @@ impl ShellPane {
     }
 }
 
+/// The bare remote host name for a session's backend (e.g. `devbox` for an
+/// `ssh:devbox` backend), or `None` for local backends. Drives the session
+/// list's remote indicator.
+fn remote_host_from_backend(backend: &Arc<dyn SessionBackend>) -> Option<String> {
+    backend
+        .name()
+        .strip_prefix(crate::session::SSH_BACKEND_PREFIX)
+        .map(str::to_string)
+}
+
 /// A running session connected to a backend.
 pub struct Session {
     pub info: SessionInfo,
@@ -313,6 +323,7 @@ impl Session {
             info.agent = config.agent.clone();
         }
         info.backend_id = Some(spawned.backend_id.clone());
+        info.remote_host = remote_host_from_backend(backend);
         debug!(session_id = %info.id, backend_id = %spawned.backend_id, "Spawned session via backend");
 
         Ok(Self::wire_io(
@@ -352,6 +363,7 @@ impl Session {
 
         let mut info = SessionInfo::new(name);
         info.backend_id = Some(backend_id.to_string());
+        info.remote_host = remote_host_from_backend(backend);
         debug!(session_id = %info.id, backend_id = %backend_id, "Adopted session via backend");
 
         Ok(Self::wire_io(
@@ -744,6 +756,24 @@ mod tests {
         let ms = now_millis();
         // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
+    }
+
+    #[test]
+    fn remote_host_from_backend_strips_ssh_prefix() {
+        let host = crate::session::HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            socket: None,
+            session: None,
+            ssh_opts: vec![],
+            worktrees_dir: None,
+        };
+        let ssh: Arc<dyn SessionBackend> =
+            Arc::new(crate::agent::tmux::TmuxBackend::from_host(&host));
+        assert_eq!(remote_host_from_backend(&ssh).as_deref(), Some("devbox"));
+
+        let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::TmuxBackend::local());
+        assert_eq!(remote_host_from_backend(&local), None);
     }
 
     #[test]

@@ -69,6 +69,16 @@ pub fn render_info_panel(
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+    // Remote host (ssh:<host>); omitted entirely for local sessions.
+    if let Some(host) = info.remote_host.as_deref() {
+        lines.push(Line::from(vec![
+            Span::styled("Host:  ", Theme::label()),
+            Span::styled(
+                format!("\u{2601} {host}"),
+                Style::default().fg(Theme::accent()),
+            ),
+        ]));
+    }
     // Live activity from the agent-emitted OSC terminal title.
     if let Some(activity) = info.agent_activity.as_deref() {
         lines.push(Line::from(vec![

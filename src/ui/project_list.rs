@@ -522,11 +522,12 @@ fn session_status_text(info: &SessionInfo, elapsed: Option<u64>) -> String {
         .unwrap_or_else(|| format_status_with_elapsed(info.status, elapsed))
 }
 
-/// Build line 1 of a session entry: `<status-dot> [⑂] <name>`.
+/// Build line 1 of a session entry: `<status-dot> [☁] [⑂] <name>`.
 ///
 /// The active row is signalled by the list's highlight background, so no extra
-/// pointer glyph is needed. Sessions running in a git worktree get a `⑂` mark
-/// between the status dot and the name. The live status itself lives on line 2.
+/// pointer glyph is needed. Remote (`ssh:<host>`) sessions get a `☁` mark and
+/// sessions running in a git worktree get a `⑂` mark, both between the status
+/// dot and the name. The live status itself lives on line 2.
 fn build_session_line1<'a>(
     info: &'a SessionInfo,
     session_match: Option<&SessionMatch>,
@@ -550,6 +551,17 @@ fn build_session_line1<'a>(
         format!(" {} ", info.status.icon()),
         status_style,
     )];
+
+    // Remote (ssh:<host>) sessions get a cloud mark so it's clear at a glance
+    // the agent runs on another machine. Sits right after the status dot.
+    if info.remote_host.is_some() {
+        let remote_style = if is_dimmed {
+            Style::default().fg(Theme::text_muted())
+        } else {
+            Style::default().fg(Theme::accent())
+        };
+        line1_spans.push(Span::styled("\u{2601} ", remote_style));
+    }
 
     // Worktree sessions get a dedicated mark, subordinate to the status dot.
     if !info.worktrees.is_empty() {
@@ -857,6 +869,21 @@ mod tests {
         let s = info("plain");
         let line = build_session_line1(&s, None, false, false);
         assert!(!line_text(&line).contains('\u{2442}'));
+    }
+
+    #[test]
+    fn line1_shows_remote_glyph_when_remote_host_present() {
+        let mut s = info("remote");
+        s.remote_host = Some("devbox".to_string());
+        let line = build_session_line1(&s, None, false, false);
+        assert!(line_text(&line).contains('\u{2601}'));
+    }
+
+    #[test]
+    fn line1_no_remote_glyph_for_local_session() {
+        let s = info("local");
+        let line = build_session_line1(&s, None, false, false);
+        assert!(!line_text(&line).contains('\u{2601}'));
     }
 
     #[test]
