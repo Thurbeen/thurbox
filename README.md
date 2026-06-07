@@ -133,6 +133,35 @@ Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
   launch the agent inside the worktree. Closing the session removes
   it. `Ctrl+S` syncs all worktree sessions with `origin/main`.
 
+### Remote SSH sessions
+
+- Run an agent on a **remote machine** over SSH while the TUI stays
+  local. Declare hosts in `~/.config/thurbox/hosts.toml` (seeded
+  commented-out, so a fresh install has none); each entry becomes a
+  selectable backend named `ssh:<name>`. The new-session flow shows a
+  **host picker** first, and remote sessions are marked with a `☁`
+  glyph in the list.
+- The agent process, its tmux window, and any git worktrees all live
+  on the remote host. thurbox shells out to your system `ssh`, so
+  authentication, keys, and multiplexing come from `~/.ssh/config` —
+  thurbox never handles credentials. Remote sessions get the same
+  persistence, multi-instance sharing, and restore-on-startup as
+  local ones.
+
+  ```toml
+  # ~/.config/thurbox/hosts.toml
+  [[hosts]]
+  name = "devbox"            # backend "ssh:devbox"; what --host expects
+  destination = "me@devbox"  # ssh target or a ~/.ssh/config alias
+  ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
+  # socket / session  — optional remote tmux -L / session-name overrides
+  # worktrees_dir      — optional absolute remote worktrees dir
+  ```
+
+  Spawn remotely from the CLI with `thurbox-cli session create
+  --host devbox …` (see [Headless CLI](#headless-cli-thurbox-cli)).
+  The remote host needs **tmux >= 3.2** and **git**.
+
 ### Responsive UI
 
 - `< 80` cols: terminal only · `>= 80`: sidebar + terminal ·
@@ -367,7 +396,8 @@ thurbox-cli session create \
   --repo-path /path/to/repo \
   --agent codex \
   --worktree-branch feat/x \
-  --base-branch main
+  --base-branch main \
+  --host devbox          # optional — run on a remote host from hosts.toml
 thurbox-cli session send <uuid> "run the test suite"
 thurbox-cli session capture <uuid> --lines 500
 thurbox-cli session restart <uuid>       # kill + re-spawn with --resume
@@ -378,7 +408,9 @@ thurbox-cli session restore <uuid>       # undo a soft-delete
 - **`create`** runs synchronously — the tmux window is live by the
   time the command returns. `--agent` falls back to the default in
   `agents.toml` when omitted; `--worktree-branch` (off
-  `--base-branch`, default `main`) creates a git worktree.
+  `--base-branch`, default `main`) creates a git worktree; `--host`
+  (a name from `hosts.toml`) creates the worktree and tmux window on
+  that remote host over SSH instead of locally.
 - **`send`** types text into the session's terminal followed by
   Enter; **`capture`** dumps the rendered pane as text (`--lines`
   defaults to 200, max 10000).
