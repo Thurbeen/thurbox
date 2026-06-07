@@ -144,6 +144,22 @@ Each release includes:
 - `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
 - Changelog with categorized commits
 
+### Distribution Packages
+
+After the GitHub Release is published, `cd.yml` also updates the downstream
+package channels (each gated on its secret, skipped on forks):
+
+- **Homebrew** (`publish-homebrew`): bumps `version`/`sha256` in
+  `packaging/homebrew/Formula/thurbox.rb` (via `packaging/homebrew/bump-formula.py`,
+  reading the release `checksums.txt`) and pushes it to the
+  `Thurbeen/homebrew-thurbox` tap. Needs `HOMEBREW_TAP_TOKEN`. Install:
+  `brew install thurbeen/thurbox/thurbox`. Supports macOS arm64
+  (`aarch64-apple-darwin`) + Linux x86_64 (`x86_64-unknown-linux-musl`).
+- **AUR** (`publish-aur`): bumps + pushes `thurbox`/`thurbox-bin` PKGBUILDs.
+  Needs `AUR_SSH_PRIVATE_KEY`.
+
+See `packaging/README.md` for the full packaging overview.
+
 ### Commit Types and Versioning
 
 - **feat**: Minor version bump (0.x.0)

@@ -266,3 +266,58 @@ jobs:
           commit_email: magicletur@protonmail.com
           ssh_private_key: ${{ env.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ needs.check-release.outputs.version }}"
+
+  # Publish the Homebrew formula to the tap (Thurbeen/homebrew-thurbox).
+  # Runs after `publish` so the release tarballs + checksums.txt exist.
+  # Requires the HOMEBREW_TAP_TOKEN secret (a PAT with `contents:write` on the
+  # tap repo); skipped automatically if unset (e.g. on forks).
+  publish-homebrew:
+    name: Publish Homebrew formula
+    needs: [check-release, create-tag, publish]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    # Hoisted so the push step can be skipped when the secret is unset
+    # (the `secrets` context cannot be used directly in an `if` condition).
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+
+      - name: Download release checksums
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          VERSION="${{ needs.check-release.outputs.version }}"
+          curl -fsSL -o checksums.txt \
+            "https://github.com/${{ github.repository }}/releases/download/${VERSION}/thurbox-${VERSION}-checksums.txt"
+          cat checksums.txt
+
+      - name: Bump formula to the release version
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          python3 packaging/homebrew/bump-formula.py \
+            "${{ needs.check-release.outputs.version }}" \
+            packaging/homebrew/Formula/thurbox.rb \
+            checksums.txt
+          cat packaging/homebrew/Formula/thurbox.rb
+
+      - name: Push formula to the tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          VERSION="${{ needs.check-release.outputs.version }}"
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Thurbeen/homebrew-thurbox.git" tap
+          mkdir -p tap/Formula
+          cp packaging/homebrew/Formula/thurbox.rb tap/Formula/thurbox.rb
+          cd tap
+          git config user.name thurbox-release-bot
+          git config user.email magicletur@protonmail.com
+          if git diff --quiet; then
+            echo "Formula already up to date; nothing to push."
+            exit 0
+          fi
+          git add Formula/thurbox.rb
+          git commit -m "Update to ${VERSION}"
+          git push

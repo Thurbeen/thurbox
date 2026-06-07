@@ -1,6 +1,18 @@
 # Packaging
 
-Optional OS-level integration for thurbox.
+Optional OS-level integration and distribution packages for thurbox.
+
+## Distribution packages
+
+| Directory   | Channel                  | Installs                                  |
+| ----------- | ------------------------ | ----------------------------------------- |
+| `homebrew/` | Homebrew tap (macOS/Linux) | prebuilt release binaries — see [`homebrew/README.md`](homebrew/README.md) |
+| `aur/`      | Arch Linux (AUR)         | source + prebuilt binary — see [`aur/README.md`](aur/README.md) |
+
+Both are published automatically on each release by jobs in
+[`.github/workflows/cd.yml`](../.github/workflows/cd.yml). For the
+distro-agnostic one-liner installer, see
+[`scripts/install.sh`](../scripts/install.sh).
 
 ## Reboot-proof automations (`systemd/`, `launchd/`)
 

@@ -212,6 +212,17 @@ INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen
 VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
+**Homebrew (macOS / Linux):**
+
+```bash
+brew install thurbeen/thurbox/thurbox
+```
+
+Installs the prebuilt release binaries (`thurbox` + `thurbox-cli`)
+from the [tap](https://github.com/Thurbeen/homebrew-thurbox), with
+`tmux` and `git` pulled in as dependencies. Supports macOS arm64
+(Apple Silicon) and Linux x86_64.
+
 **Arch Linux (AUR):**
 
 Thurbox is on the AUR as
@@ -244,6 +255,7 @@ Remove the binary, depending on how you installed it:
 
 ```bash
 rm ~/.local/bin/thurbox        # curl one-liner / manual install
+brew uninstall thurbox         # Homebrew
 paru -R thurbox thurbox-bin    # Arch (AUR)
 ```
 
