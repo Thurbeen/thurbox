@@ -59,7 +59,12 @@ GitHub Release is created and:
 3. clones the tap repo and commits the updated `Formula/thurbox.rb`.
 
 The job is a no-op if the formula is already current, and is skipped entirely
-when the token secret is absent (e.g. on forks).
+when the deploy-key secret is absent (e.g. on forks).
+
+The push uses **SSH with a write-enabled deploy key** rather than a PAT: the
+`Thurbeen` org blocks cross-repo personal access tokens, so a repo-scoped
+deploy key is both the working credential and the least-privilege one (it can
+write to the tap repo and nothing else).
 
 ### One-time setup
 
@@ -68,13 +73,21 @@ when the token secret is absent (e.g. on forks).
    thurbeen/thurbox` work). A bare repo with a `Formula/` directory is enough;
    the first release populates `Formula/thurbox.rb`.
 
-2. **Provide a write token.** Generate a personal access token (fine-grained,
-   `contents: read & write` on `Thurbeen/homebrew-thurbox`) and store it as the
-   `HOMEBREW_TAP_TOKEN` repository secret on the **main** thurbox repo:
+2. **Add a write deploy key.** Generate a dedicated key, register the **public**
+   half on the tap repo with write access, and store the **private** half as the
+   `HOMEBREW_TAP_DEPLOY_KEY` secret on the **main** thurbox repo:
 
    ```bash
-   gh secret set HOMEBREW_TAP_TOKEN   # paste the token when prompted
+   ssh-keygen -t ed25519 -C "thurbox-release-ci@homebrew-tap" -f tap_key -N ""
+   gh repo deploy-key add tap_key.pub --repo Thurbeen/homebrew-thurbox \
+     --title thurbox-release-ci --allow-write
+   gh secret set HOMEBREW_TAP_DEPLOY_KEY --repo Thurbeen/thurbox < tap_key
+   rm -f tap_key tap_key.pub   # don't leave the private key on disk
    ```
+
+   > Org-owned repos disable deploy keys by default. If `deploy-key add` reports
+   > *"Deploy keys are disabled for this repository"*, an org owner must enable
+   > them under **Org Settings → Repository → Repository deploy keys** first.
 
 After that, every release updates the tap automatically.
 

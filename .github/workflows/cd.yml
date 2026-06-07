@@ -275,8 +275,10 @@ jobs:
 
   # Publish the Homebrew formula to the tap (Thurbeen/homebrew-thurbox).
   # Runs after `publish` so the release tarballs + checksums.txt exist.
-  # Requires the HOMEBREW_TAP_TOKEN secret (a PAT with `contents:write` on the
-  # tap repo); skipped automatically if unset (e.g. on forks).
+  # Pushes over SSH using HOMEBREW_TAP_DEPLOY_KEY — a write-enabled deploy key
+  # registered on the tap repo (the Thurbeen org blocks cross-repo PATs, so a
+  # repo-scoped deploy key is the credential). Skipped automatically if the
+  # secret is unset (e.g. on forks).
   publish-homebrew:
     name: Publish Homebrew formula
     needs: [check-release, create-tag, publish]
@@ -285,7 +287,7 @@ jobs:
     # Hoisted so the push step can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
     env:
-      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
     steps:
       - name: Checkout code at tag
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -293,7 +295,7 @@ jobs:
           ref: ${{ needs.check-release.outputs.version }}
 
       - name: Download release checksums
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_DEPLOY_KEY != ''
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
           curl -fsSL -o checksums.txt \
@@ -301,7 +303,7 @@ jobs:
           cat checksums.txt
 
       - name: Bump formula to the release version
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_DEPLOY_KEY != ''
         run: |
           python3 packaging/homebrew/bump-formula.py \
             "${{ needs.check-release.outputs.version }}" \
@@ -310,11 +312,15 @@ jobs:
           cat packaging/homebrew/Formula/thurbox.rb
 
       - name: Push formula to the tap
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_DEPLOY_KEY != ''
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          git clone --depth 1 \
-            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Thurbeen/homebrew-thurbox.git" tap
+          mkdir -p ~/.ssh
+          printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone --depth 1 git@github.com:Thurbeen/homebrew-thurbox.git tap
           mkdir -p tap/Formula
           cp packaging/homebrew/Formula/thurbox.rb tap/Formula/thurbox.rb
           cd tap
@@ -326,4 +332,4 @@ jobs:
           fi
           git add Formula/thurbox.rb
           git commit -m "Update to ${VERSION}"
-          git push
+          git push origin HEAD
