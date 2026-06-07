@@ -199,11 +199,29 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Run an idempotent `ALTER TABLE` whose *only* expected failure is that the
+/// change is already in place (column already added/dropped, or an older SQLite
+/// that lacks `DROP COLUMN`). Those benign cases keep the migration idempotent;
+/// any *other* error is surfaced via `tracing::warn!` rather than silently
+/// discarded — important because `SCHEMA_VERSION` advances regardless, so a
+/// genuinely failed `ALTER` would otherwise leave an inconsistent schema with no
+/// trace in the log.
+fn exec_idempotent_alter(conn: &Connection, sql: &str, benign: &[&str]) {
+    if let Err(e) = conn.execute(sql, []) {
+        let msg = e.to_string().to_lowercase();
+        if !benign.iter().any(|needle| msg.contains(needle)) {
+            tracing::warn!("schema migration: unexpected error running `{sql}`: {e}");
+        }
+    }
+}
+
 /// v2 → v3: add additional_dirs column to sessions
 fn migrate_v3_additional_dirs(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute(
+    // Benign: the column already exists (migration re-run on a newer DB).
+    exec_idempotent_alter(
+        conn,
         "ALTER TABLE sessions ADD COLUMN additional_dirs TEXT NOT NULL DEFAULT ''",
-        [],
+        &["duplicate column name"],
     );
     Ok(())
 }
@@ -640,7 +658,14 @@ fn migrate_v20_profiles(conn: &Connection) -> rusqlite::Result<()> {
 /// Use ignore-on-error in case an older SQLite (<3.35) lacks DROP
 /// COLUMN support; the unused column is harmless.
 fn migrate_v21_drop_model(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE sessions DROP COLUMN model", []);
+    // Benign: the column is already gone (re-run), or the SQLite build predates
+    // `DROP COLUMN` (<3.35) and rejects the syntax — the unused column is
+    // harmless either way.
+    exec_idempotent_alter(
+        conn,
+        "ALTER TABLE sessions DROP COLUMN model",
+        &["no such column", "near \"drop\"", "syntax error"],
+    );
     Ok(())
 }
 
@@ -1141,5 +1166,46 @@ mod tests {
             })
             .unwrap();
         assert_eq!(name, "test");
+    }
+
+    #[test]
+    fn exec_idempotent_alter_ignores_benign_duplicate_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (a INTEGER);").unwrap();
+
+        // First add succeeds; the column now exists.
+        exec_idempotent_alter(
+            &conn,
+            "ALTER TABLE t ADD COLUMN b TEXT",
+            &["duplicate column name"],
+        );
+        let has_b: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('t') WHERE name='b'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_b);
+
+        // Re-running is a benign "duplicate column" — swallowed, no panic.
+        exec_idempotent_alter(
+            &conn,
+            "ALTER TABLE t ADD COLUMN b TEXT",
+            &["duplicate column name"],
+        );
+    }
+
+    #[test]
+    fn exec_idempotent_alter_swallows_unexpected_errors() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (a INTEGER);").unwrap();
+
+        // Operating on a missing table is NOT in the benign list, so the helper
+        // logs a warning and continues rather than panicking (migrations must
+        // not abort here — they only need the error to be visible in the log).
+        exec_idempotent_alter(
+            &conn,
+            "ALTER TABLE does_not_exist ADD COLUMN b TEXT",
+            &["duplicate column name"],
+        );
     }
 }

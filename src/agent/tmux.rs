@@ -548,8 +548,13 @@ impl TmuxBackend {
         self.tmux_run(&["has-session", "-t", &self.session]).is_ok()
     }
 
-    /// Apply initial config to the tmux server.
-    fn apply_config(&self) -> Result<()> {
+    /// Apply server + session config to the tmux session.
+    ///
+    /// Idempotent (`set-option` overwrites), so it is safe to call on every
+    /// [`ensure_ready`](Self::ensure_ready) — the session may have been created
+    /// elsewhere (e.g. a headless spawn) without these options, and re-applying
+    /// is the single source of truth for both the TUI and headless paths.
+    fn apply_session_config(&self) -> Result<()> {
         // Use a non-login shell so that macOS path_helper (/etc/zprofile)
         // doesn't clobber PATH additions from ~/.zshenv (e.g. cargo, asdf).
         // For a remote backend the local `$SHELL` path may not exist on the
@@ -567,19 +572,39 @@ impl TmuxBackend {
         }
 
         // Session-level options
-        let session_opts = [
-            ("remain-on-exit", "on"),
-            ("status", "off"),
-            ("history-limit", "5000"),
-            // Allow each window to have its own size, not constrained
-            // by the smallest attached client.
-            ("window-size", "manual"),
-        ];
-        for (key, val) in &session_opts {
+        for (key, val) in SESSION_OPTS {
             self.tmux_run(&["set-option", "-t", &self.session, key, val])?;
         }
 
         Ok(())
+    }
+
+    /// Ensure the thurbox tmux session exists and its options are applied,
+    /// **without** starting control mode.
+    ///
+    /// Shared by [`ensure_ready`](Self::ensure_ready) (which then starts control
+    /// mode) and the headless spawn paths ([`spawn_window`],
+    /// [`ensure_automation_heartbeat`]) that drive tmux via one-shot commands and
+    /// must not open a control-mode connection.
+    fn ensure_session_configured(&self) -> Result<()> {
+        if !self.session_exists() {
+            debug!(
+                "Creating tmux session '{}' on socket '{}'",
+                self.session, self.socket
+            );
+            self.run_tmux(&[
+                "new-session",
+                "-d",
+                "-s",
+                &self.session,
+                "-x",
+                "80",
+                "-y",
+                "24",
+            ])
+            .context("Failed to create tmux session")?;
+        }
+        self.apply_session_config()
     }
 
     /// The shell tmux should use for `default-command`. Local uses the user's
@@ -791,25 +816,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn ensure_ready(&self) -> Result<()> {
-        if !self.session_exists() {
-            debug!(
-                "Creating tmux session '{}' on socket '{}'",
-                self.session, self.socket
-            );
-            self.run_tmux(&[
-                "new-session",
-                "-d",
-                "-s",
-                &self.session,
-                "-x",
-                "80",
-                "-y",
-                "24",
-            ])
-            .context("Failed to create tmux session")?;
-
-            self.apply_config()?;
-        }
+        self.ensure_session_configured()?;
 
         // Start control mode if not already running.
         let mut guard = self
@@ -1100,7 +1107,7 @@ pub fn send_prompt_after_delay(session_name: &str, text: &str, delay_secs: u64) 
 /// automations work with no other sessions. Idempotent — a no-op when the
 /// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
 pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
-    ensure_tmux_session_headless()?;
+    TmuxBackend::local().ensure_session_configured()?;
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
         return Ok(());
     }
@@ -1183,72 +1190,18 @@ pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
 
 /// Session-level tmux options applied to the thurbox tmux session.
 ///
-/// Mirrored by [`LocalTmuxBackend::apply_config`] for the TUI path; the
-/// headless path applies only this subset.
-const HEADLESS_SESSION_OPTS: &[(&str, &str)] = &[
+/// Single source of truth for both the TUI and headless paths — applied
+/// (alongside the server-wide options + `default-command`) by
+/// [`TmuxBackend::apply_session_config`]. In particular `remain-on-exit=on` is
+/// required so a failed agent process leaves its tmux window visible with the
+/// error instead of silently vanishing.
+const SESSION_OPTS: &[(&str, &str)] = &[
     ("remain-on-exit", "on"),
     ("status", "off"),
     ("history-limit", "5000"),
     // Allow each window to size independently of the smallest attached client.
     ("window-size", "manual"),
 ];
-
-/// Run `tmux has-session -t <thurbox session>` and return whether it exists.
-fn tmux_session_exists() -> Result<bool> {
-    let status = Command::new("tmux")
-        .args(["-L", TMUX_SOCKET, "has-session", "-t", TMUX_SESSION])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("Failed to run tmux has-session")?;
-    Ok(status.success())
-}
-
-/// Create the thurbox tmux session (`-d -s <name>`) at a default 80x24 size.
-fn tmux_create_session() -> Result<()> {
-    let output = Command::new("tmux")
-        .args([
-            "-L",
-            TMUX_SOCKET,
-            "new-session",
-            "-d",
-            "-s",
-            TMUX_SESSION,
-            "-x",
-            "80",
-            "-y",
-            "24",
-        ])
-        .output()
-        .context("Failed to create tmux session")?;
-    if !output.status.success() {
-        bail!(
-            "Failed to create tmux session: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
-/// Ensure the thurbox tmux session exists (headless — no control mode).
-///
-/// Used by [`spawn_window`] so callers that don't hold a
-/// [`LocalTmuxBackend`] can still create sessions safely.
-fn ensure_tmux_session_headless() -> Result<()> {
-    if !tmux_session_exists()? {
-        tmux_create_session()?;
-    }
-    // Apply options unconditionally — the TUI may have created the session
-    // without them, and `set-option` is idempotent. In particular,
-    // `remain-on-exit=on` is required so a failed claude process leaves its
-    // tmux window visible with the error instead of silently vanishing.
-    for (k, v) in HEADLESS_SESSION_OPTS {
-        let _ = Command::new("tmux")
-            .args(["-L", TMUX_SOCKET, "set-option", "-t", TMUX_SESSION, k, v])
-            .status();
-    }
-    Ok(())
-}
 
 /// Spawn a new tmux window running `command` with `args` in `cwd`.
 ///
@@ -1262,7 +1215,9 @@ pub fn spawn_window(
     cwd: Option<&Path>,
     env: &HashMap<String, String>,
 ) -> Result<()> {
-    ensure_tmux_session_headless()?;
+    // Ensure the session exists and is configured, without opening a
+    // control-mode connection (headless one-shot path).
+    TmuxBackend::local().ensure_session_configured()?;
 
     let window_name = agent_window_name(session_name);
     let mut tmux = Command::new("tmux");
@@ -1329,6 +1284,17 @@ pub fn spawn_window_remote(
     // resizes the pane to its real dimensions when it adopts the session.
     let spawned = backend.spawn(&window_name, command, args, cwd, env, 24, 80)?;
     Ok(spawned.backend_id)
+}
+
+/// Kill a remote tmux pane on `host` by its pane id (`%N`), best-effort.
+///
+/// Mirror of [`kill_window`] for the SSH transport. Used to tear down a window
+/// that was spawned remotely but could not be tracked (e.g. the DB write failed
+/// after the spawn), so it does not leak as an orphaned remote window.
+pub fn kill_pane_remote(host: &crate::session::HostDef, backend_id: &str) -> Result<()> {
+    let backend = TmuxBackend::from_host(host);
+    backend.ensure_ready()?;
+    backend.kill(backend_id)
 }
 
 /// Kill the tmux window `tb-<session_name>` if it exists.

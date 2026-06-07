@@ -99,7 +99,7 @@ pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<Spawn
         id: session_id,
         name: req.name.clone(),
         agent: agent_name.clone(),
-        backend_id,
+        backend_id: backend_id.clone(),
         backend_type,
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(cwd.clone()),
@@ -109,8 +109,28 @@ pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<Spawn
         tombstone: false,
         tombstone_at: None,
     };
-    _db.upsert_session(&shared)
-        .map_err(|e| format!("Failed to persist session: {e}"))?;
+    // The tmux window is already live. If the DB upsert fails now, no row exists
+    // for the TUI to adopt and the window would be orphaned — untrackable and
+    // unkillable from the UI. Best-effort tear it down before surfacing the
+    // error so we don't leak a window.
+    if let Err(e) = _db.upsert_session(&shared) {
+        tracing::error!(
+            "spawn race: DB upsert failed after the tmux window for '{}' spawned; \
+             tearing down the orphaned window: {e}",
+            req.name
+        );
+        let cleanup = match host.as_ref() {
+            Some(h) => crate::agent::tmux::kill_pane_remote(h, &backend_id),
+            None => crate::agent::tmux::kill_window(&req.name),
+        };
+        if let Err(kill_err) = cleanup {
+            tracing::error!(
+                "failed to tear down orphaned window for '{}': {kill_err}",
+                req.name
+            );
+        }
+        return Err(format!("Failed to persist session: {e}"));
+    }
 
     Ok(SpawnResult {
         session_id,
