@@ -13,6 +13,11 @@ use serde::{Deserialize, Serialize};
 /// (and persisted in `backend_type`) as `ssh:devbox`.
 pub const SSH_BACKEND_PREFIX: &str = "ssh:";
 
+/// Whether a backend name refers to a remote SSH host (`ssh:<name>`).
+pub fn is_ssh_backend(backend_name: &str) -> bool {
+    backend_name.starts_with(SSH_BACKEND_PREFIX)
+}
+
 /// A single remote host reachable over SSH.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostDef {

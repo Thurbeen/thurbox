@@ -10,7 +10,7 @@
 
 use std::process::Command;
 
-use crate::agent::control_mode::shell_escape;
+use crate::shell::{posix_quote, ssh_command};
 
 /// How to launch `tmux` for a backend: directly, or wrapped in `ssh`.
 #[derive(Debug, Clone)]
@@ -44,14 +44,12 @@ impl TmuxTransport {
                 destination,
                 ssh_opts,
             } => {
-                let mut cmd = Command::new("ssh");
-                cmd.args(ssh_opts);
-                cmd.arg(destination);
-                cmd.arg(shell_escape("tmux"));
-                cmd.arg(shell_escape("-L"));
-                cmd.arg(shell_escape(socket));
+                let mut cmd = ssh_command(destination, ssh_opts);
+                cmd.arg(posix_quote("tmux"));
+                cmd.arg(posix_quote("-L"));
+                cmd.arg(posix_quote(socket));
                 for a in args {
-                    cmd.arg(shell_escape(a));
+                    cmd.arg(posix_quote(a));
                 }
                 cmd
             }

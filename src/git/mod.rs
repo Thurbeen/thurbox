@@ -11,19 +11,7 @@ use tracing::warn;
 
 use crate::paths;
 use crate::session::HostDef;
-
-/// POSIX single-quote escaping for a token sent to a remote shell over SSH.
-/// Simple tokens (paths, branch names, flags) pass through unquoted.
-fn sh_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b'=' | b',')
-        })
-    {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
+use crate::shell::{posix_quote, ssh_command};
 
 /// Build a `git` [`Command`] targeting `cwd`, run either locally or over SSH.
 ///
@@ -39,14 +27,12 @@ fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
             cmd
         }
         Some(h) => {
-            let mut cmd = Command::new("ssh");
-            cmd.args(&h.ssh_opts);
-            cmd.arg(&h.destination);
-            cmd.arg(sh_quote("git"));
-            cmd.arg(sh_quote("-C"));
-            cmd.arg(sh_quote(&cwd.to_string_lossy()));
+            let mut cmd = ssh_command(&h.destination, &h.ssh_opts);
+            cmd.arg(posix_quote("git"));
+            cmd.arg(posix_quote("-C"));
+            cmd.arg(posix_quote(&cwd.to_string_lossy()));
             for a in args {
-                cmd.arg(sh_quote(a));
+                cmd.arg(posix_quote(a));
             }
             cmd
         }
@@ -67,9 +53,7 @@ fn remote_home(host: &HostDef) -> Result<String> {
             return Ok(home.clone());
         }
     }
-    let mut cmd = Command::new("ssh");
-    cmd.args(&host.ssh_opts);
-    cmd.arg(&host.destination);
+    let mut cmd = ssh_command(&host.destination, &host.ssh_opts);
     // The remote shell expands $HOME; we pass it literally.
     cmd.arg("echo").arg("$HOME");
     let output = cmd
@@ -103,11 +87,7 @@ fn worktree_path_for(host: Option<&HostDef>, repo_path: &Path, branch: &str) -> 
                 Some(dir) => dir.clone(),
                 None => format!("{}/.local/share/thurbox/worktrees", remote_home(h)?),
             };
-            let mut hasher = DefaultHasher::new();
-            repo_path.display().to_string().hash(&mut hasher);
-            let repo_hash = format!("{:016x}", hasher.finish());
-            let sanitized = branch.replace('/', "-");
-            Ok(PathBuf::from(base).join(repo_hash).join(sanitized))
+            Ok(worktree_subpath(PathBuf::from(base), repo_path, branch))
         }
     }
 }
@@ -439,12 +419,22 @@ pub fn branch_exists_on(host: Option<&HostDef>, repo_path: &Path, branch: &str) 
 ///
 /// Path format: `~/.local/share/thurbox/worktrees/<repo-hash>/<sanitized-branch>`
 fn worktree_path(repo_path: &Path, branch: &str) -> Option<PathBuf> {
-    let base = paths::worktrees_directory()?;
+    Some(worktree_subpath(
+        paths::worktrees_directory()?,
+        repo_path,
+        branch,
+    ))
+}
+
+/// The deterministic `<base>/<repo-hash>/<sanitized-branch>` worktree layout,
+/// shared by local ([`worktree_path`]) and remote ([`worktree_path_for`])
+/// resolution so both produce identical sub-paths under their own base.
+fn worktree_subpath(base: PathBuf, repo_path: &Path, branch: &str) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     repo_path.display().to_string().hash(&mut hasher);
     let repo_hash = format!("{:016x}", hasher.finish());
     let sanitized = branch.replace('/', "-");
-    Some(base.join(repo_hash).join(sanitized))
+    base.join(repo_hash).join(sanitized)
 }
 
 /// Result of attempting to sync a worktree with origin/main.
@@ -1129,19 +1119,6 @@ mod tests {
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect(),
         )
-    }
-
-    #[test]
-    fn sh_quote_passes_simple_tokens() {
-        assert_eq!(sh_quote("feat-x"), "feat-x");
-        assert_eq!(sh_quote("/home/me/repo"), "/home/me/repo");
-    }
-
-    #[test]
-    fn sh_quote_wraps_specials() {
-        assert_eq!(sh_quote("a b"), "'a b'");
-        assert_eq!(sh_quote("it's"), "'it'\\''s'");
-        assert_eq!(sh_quote(""), "''");
     }
 
     #[test]

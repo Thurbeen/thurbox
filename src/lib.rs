@@ -8,6 +8,7 @@ pub mod git;
 pub mod paths;
 pub mod session;
 pub mod session_ops;
+pub mod shell;
 pub mod storage;
 pub mod sync;
 pub mod ui;

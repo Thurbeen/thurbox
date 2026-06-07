@@ -1456,12 +1456,8 @@ impl App {
         &self,
         backend: Option<&str>,
     ) -> Option<&crate::session::HostDef> {
-        let name = backend?;
-        if name.starts_with(crate::session::SSH_BACKEND_PREFIX) {
-            self.hosts.get_by_backend(name)
-        } else {
-            None
-        }
+        // `get_by_backend` already returns `None` for non-`ssh:` names.
+        self.hosts.get_by_backend(backend?)
     }
 
     /// Resolve the backend for a *persisted* session by its `backend_type`, or
@@ -1481,7 +1477,7 @@ impl App {
         if let Some(b) = self.backends.get(backend_type) {
             return Some(b.clone());
         }
-        if backend_type.starts_with(crate::session::SSH_BACKEND_PREFIX) {
+        if crate::session::is_ssh_backend(backend_type) {
             return None;
         }
         Some(self.backends.default_backend().clone())

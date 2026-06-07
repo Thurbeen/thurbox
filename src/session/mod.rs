@@ -10,7 +10,7 @@ pub use automation::{
     parse_hhmm, preset_to_cron, Automation, AutomationAction, AutomationRun, AutomationRunStatus,
     AutomationSchedule, SchedulePreset,
 };
-pub use host_def::{HostDef, HostRegistry, SSH_BACKEND_PREFIX};
+pub use host_def::{is_ssh_backend, HostDef, HostRegistry, SSH_BACKEND_PREFIX};
 pub use keybindings::{Action, KeyBindings, KeyChord, KeyContext};
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 pub use theme_config::{ThemePalette, ThemePreset};
@@ -171,6 +171,10 @@ pub struct SessionInfo {
     pub additional_dirs: Vec<PathBuf>,
     pub backend_id: Option<String>,
     pub shell_backend_id: Option<String>,
+    /// Bare host name (e.g. `devbox`) when the session runs on a remote
+    /// `ssh:<host>` backend; `None` for local sessions. Drives the remote
+    /// indicator in the session list. Set by the agent layer at spawn/adopt.
+    pub remote_host: Option<String>,
     /// Agent metrics from the agent's statusline (Claude only).
     pub agent_metrics: Option<AgentMetrics>,
     /// Latest OSC window title the agent emitted (live activity text),
@@ -201,6 +205,7 @@ impl SessionInfo {
             additional_dirs: Vec::new(),
             backend_id: None,
             shell_backend_id: None,
+            remote_host: None,
             agent_metrics: None,
             agent_activity: None,
             notification: None,

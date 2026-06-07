@@ -211,20 +211,9 @@ pub fn format_send_keys(pane_id: &str, bytes: &[u8]) -> String {
 /// Literal newlines in arguments (e.g. `--append-system-prompt`) would split
 /// the command and corrupt the protocol, so they are replaced with spaces.
 pub fn shell_escape(s: &str) -> String {
-    if s.is_empty() {
-        return "''".to_string();
-    }
-    // Replace newlines with spaces — tmux control mode is line-delimited,
-    // so embedded newlines would break the protocol.
-    let s = s.replace('\n', " ");
-    // If the string contains no special characters, return as-is.
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | ','))
-    {
-        return s;
-    }
-    // Wrap in single quotes, escaping existing single quotes.
-    format!("'{}'", s.replace('\'', "'\\''"))
+    // Strip the protocol-breaking newlines, then apply standard POSIX
+    // single-quote escaping (shared with the SSH/git paths).
+    crate::shell::posix_quote(&s.replace('\n', " "))
 }
 
 #[cfg(test)]
