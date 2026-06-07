@@ -34,15 +34,21 @@ jobs:
       - name: Parse release decision
         id: parse
         run: |
-          VERSION="$(cog bump --auto --disable-bump-commit --dry-run)"
-          echo "Detected version: $VERSION"
+          # cog prints the next tag (e.g. "v0.99.1") when a bump is due, but a
+          # human-readable "No conventional commits…" message when none is. Match
+          # only a real semver so that non-bump message never reaches
+          # $GITHUB_OUTPUT — writing its multi-line text there previously failed
+          # this step (and the whole workflow) on every docs/ci/chore push.
+          RAW="$(cog bump --auto --disable-bump-commit --dry-run 2>/dev/null || true)"
+          echo "cog output: $RAW"
+          VERSION="$(printf '%s\n' "$RAW" | grep -oE '^v?[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*' | head -1 || true)"
           if [ -n "$VERSION" ]; then
-            echo "should_release=true" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "✅ Release needed: $VERSION"
           else
-            echo "should_release=false" >> $GITHUB_OUTPUT
-            echo "version=" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
             echo "ℹ️  No releasable commits detected"
           fi
 
