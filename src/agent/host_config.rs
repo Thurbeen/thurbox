@@ -11,25 +11,65 @@ use std::path::PathBuf;
 
 use crate::session::HostRegistry;
 
-/// Seed contents for `hosts.toml` on first run: documentation + a commented-out
-/// example, but no active hosts.
-pub const SEED_HOSTS_TOML: &str = r#"# Thurbox remote SSH hosts.
+/// Seed contents for `hosts.toml` on first run: full field documentation plus a
+/// commented-out example, but no active hosts.
+pub const SEED_HOSTS_TOML: &str = r#"# Thurbox remote SSH hosts  —  ~/.config/thurbox/hosts.toml
 #
-# Each [[hosts]] entry describes a remote machine thurbox can run agent
-# sessions on, over SSH. Each becomes a backend named "ssh:<name>", selectable
-# when creating a session. Authentication and host details resolve via your
-# ~/.ssh/config — thurbox shells out to the system `ssh` binary.
+# Each [[hosts]] entry describes a remote machine thurbox can run agent sessions
+# on, over SSH. A host named "<name>" registers a session backend called
+# "ssh:<name>", offered in the new-session host picker (TUI) and selectable with
+# `thurbox-cli session create --host <name>`. The agent process, its tmux
+# window, and any git worktrees all live on the remote host; only the TUI runs
+# locally.
 #
-# Uncomment and edit to add a host:
+# thurbox shells out to the system `ssh` binary, so authentication, keys, and
+# connection details all come from your ~/.ssh/config — thurbox never handles
+# credentials itself. The remote host needs `tmux` >= 3.2 and `git`.
+#
+# This file starts empty (every entry below is commented out), so a fresh
+# install registers zero remote hosts and behaves exactly like a local-only
+# setup. Uncomment and edit an entry to add a host.
+#
+# Fields per [[hosts]] entry:
+#
+#   name           (string, required)
+#       Short, unique identifier. Registers the backend as "ssh:<name>" and is
+#       the value `--host` expects. Example: "devbox".
+#
+#   destination    (string, required)
+#       SSH target passed straight to `ssh`. Either "user@host" or a Host alias
+#       defined in your ~/.ssh/config. Example: "me@devbox".
+#
+#   ssh_opts       (array of strings, optional, default: [])
+#       Extra flags inserted before the destination, one token per array
+#       element (e.g. "-p" then "2222"). thurbox does NOT expand `~`, so use
+#       absolute paths for things like `-i <keyfile>`.
+#
+#   socket         (string, optional, default: "thurbox")
+#       Remote `tmux -L` socket name. Override only to avoid colliding with
+#       another thurbox/tmux server on the same remote host.
+#
+#   session        (string, optional, default: "thurbox")
+#       Remote tmux session name that groups thurbox's windows.
+#
+#   worktrees_dir  (string, optional)
+#       Absolute remote directory under which git worktrees are created. When
+#       unset, thurbox uses $HOME/.local/share/thurbox/worktrees on the remote
+#       (the remote $HOME is resolved over ssh on first use).
+#
+# Example (uncomment and edit):
 #
 # [[hosts]]
 # name = "devbox"
 # destination = "me@devbox"
-# # ControlMaster keeps one SSH connection alive so reconnects are instant;
-# # ServerAliveInterval drops half-open links promptly.
+#
+# # ControlMaster reuses one SSH connection so reconnects are instant;
+# # ControlPersist keeps it warm; ServerAliveInterval drops half-open links.
 # ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]
-# # Optional: absolute remote dir for git worktrees (defaults to
-# # $HOME/.local/share/thurbox/worktrees on the remote).
+#
+# # Optional overrides, shown with their defaults:
+# # socket = "thurbox"
+# # session = "thurbox"
 # # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
 "#;
 
@@ -86,6 +126,26 @@ mod tests {
     fn seed_toml_parses_to_empty_registry() {
         let reg: HostRegistry = toml::from_str(SEED_HOSTS_TOML).unwrap();
         assert!(reg.is_empty());
+    }
+
+    /// The seeded `hosts.toml` is the primary documentation users see, so it
+    /// must describe every configurable field. Guards against adding a
+    /// `HostDef` field without documenting it here.
+    #[test]
+    fn seed_toml_documents_every_host_field() {
+        for field in [
+            "name",
+            "destination",
+            "ssh_opts",
+            "socket",
+            "session",
+            "worktrees_dir",
+        ] {
+            assert!(
+                SEED_HOSTS_TOML.contains(field),
+                "hosts.toml seed must document the '{field}' field"
+            );
+        }
     }
 
     #[test]

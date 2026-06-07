@@ -254,16 +254,30 @@ Single-repo sessions are unchanged (`cwd` = the repo directly).
 Sessions can run on a **remote host** over SSH while the TUI runs
 locally. Remote hosts are declared as data in
 `~/.config/thurbox/hosts.toml` (seeded commented-out on first run,
-so a fresh install has zero remote hosts and behaves as before):
+so a fresh install has zero remote hosts and behaves as before). The
+seeded file documents every field inline; the schema:
 
 ```toml
 [[hosts]]
-name = "devbox"               # registered as backend "ssh:devbox"
-destination = "me@devbox"     # resolved via ~/.ssh/config
+name = "devbox"               # required — backend id "ssh:devbox"; what --host expects
+destination = "me@devbox"     # required — ssh target ("user@host" or ~/.ssh/config alias)
 ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]
-# socket / session   = optional remote tmux -L / session-name overrides
-# worktrees_dir       = optional absolute remote worktrees dir
+                              # optional (default []) — extra ssh flags; no ~ expansion, use abs paths
+socket = "thurbox"            # optional (default "thurbox") — remote `tmux -L` socket
+session = "thurbox"           # optional (default "thurbox") — remote tmux session name
+worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
+                              # optional — abs remote worktrees dir
+                              # (default $HOME/.local/share/thurbox/worktrees, resolved over ssh)
 ```
+
+| Field | Req | Default | Purpose |
+|-------|-----|---------|---------|
+| `name` | yes | — | unique id; registers backend `ssh:<name>` |
+| `destination` | yes | — | ssh target, resolved via `~/.ssh/config` |
+| `ssh_opts` | no | `[]` | extra `ssh` flags (one token per element; no `~` expansion) |
+| `socket` | no | `thurbox` | remote `tmux -L` socket name |
+| `session` | no | `thurbox` | remote tmux session name |
+| `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | abs remote worktrees dir |
 
 How it works: `TmuxBackend` is transport-neutral
 (`agent::transport::TmuxTransport`). The local backend launches

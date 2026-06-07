@@ -245,13 +245,28 @@ destination = "me@devbox"  # resolved via ~/.ssh/config
 ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
 ```
 
+Each `[[hosts]]` entry (`session::HostDef`) has two required fields
+and four optional ones — the seeded `hosts.toml` documents each
+inline:
+
+| Field | Required | Default | Meaning |
+|-------|----------|---------|---------|
+| `name` | yes | — | unique id; registers the backend `ssh:<name>` and is what `--host` expects |
+| `destination` | yes | — | ssh target (`user@host` or a `~/.ssh/config` alias) |
+| `ssh_opts` | no | `[]` | extra `ssh` flags, one token per array element; no `~` expansion (use absolute paths) |
+| `socket` | no | `thurbox` | remote `tmux -L` socket name |
+| `session` | no | `thurbox` | remote tmux session name |
+| `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | absolute remote dir for git worktrees |
+
 Each host becomes a session backend named `ssh:<name>`. Thurbox
 shells out to the system `ssh` binary, so authentication, keys, and
 connection multiplexing come from your `~/.ssh/config` — thurbox
 never handles credentials. The same tmux control-mode protocol runs
 over the SSH pipe, so remote sessions get identical persistence,
 multi-instance sharing, and restore-on-startup as local ones; the
-worktree and agent process live on the remote host.
+worktree and agent process live on the remote host. In the session
+list a remote session is marked with a `☁` glyph (and the info panel
+shows its `Host:`), mirroring the worktree `⑂` mark.
 
 **Why a config file rather than ad-hoc destinations?** Named hosts
 give the picker stable, readable entries and let `backend_type`
