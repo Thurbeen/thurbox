@@ -72,6 +72,7 @@
           <h4>On This Page</h4>
           <ul>
             <li><a href="#from-binary">From Binary</a></li>
+            <li><a href="#homebrew">Homebrew</a></li>
             <li><a href="#arch-linux">Arch Linux (AUR)</a></li>
             <li><a href="#from-source">From Source</a></li>
             <li><a href="#prerequisites">Prerequisites</a></li>
@@ -206,6 +207,39 @@
               </tr>
             </tbody>
           </table>
+
+          <h2 id="homebrew">
+            Homebrew
+            <a href="#homebrew" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            On macOS or Linux, install the prebuilt binaries from the
+            <a href="https://github.com/Thurbeen/homebrew-thurbox">thurbox tap</a>:
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">bash</span>
+            </div>
+            <div class="terminal-body">
+              <button class="copy-btn" data-code="brew install thurbeen/thurbox/thurbox">Copy</button>
+              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">brew</span> install thurbeen/thurbox/thurbox</code></pre>
+            </div>
+          </div>
+          <p>
+            This installs
+            <code>thurbox</code>
+            and
+            <code>thurbox-cli</code>, pulling in
+            <code>tmux</code>
+            and
+            <code>git</code>
+            as dependencies. Supported on macOS Apple Silicon and Linux x86_64
+            (Intel macOS and aarch64 Linux have no release binary &mdash; use the
+            one-liner or build from source there).
+          </p>
 
           <h2 id="arch-linux">
             Arch Linux (AUR)
@@ -396,6 +430,7 @@ cargo build --release"
             <div class="terminal-body">
               <button class="copy-btn" data-code="rm ~/.local/bin/thurbox">Copy</button>
               <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">rm</span> ~/.local/bin/thurbox        <span class="syn-comment"># curl one-liner / manual install</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">brew</span> uninstall thurbox         <span class="syn-comment"># Homebrew</span>
 <span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-R</span> thurbox thurbox-bin    <span class="syn-comment"># Arch (AUR)</span></code></pre>
             </div>
           </div>
