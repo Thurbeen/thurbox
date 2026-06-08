@@ -11,7 +11,7 @@ pub(crate) struct MetricsState {
     /// Monotonic tick counter; drives the periodic refresh cadences.
     pub(crate) tick_count: u64,
     /// System info collector for CPU/RAM metrics.
-    pub(crate) sys: sysinfo::System,
+    pub(crate) sys: Option<sysinfo::System>,
     /// Cached system metrics for the info panel.
     pub(crate) system_metrics: info_panel::SystemMetrics,
 }
@@ -20,7 +20,7 @@ impl MetricsState {
     pub(crate) fn new() -> Self {
         Self {
             tick_count: 0,
-            sys: sysinfo::System::new(),
+            sys: Some(sysinfo::System::new()),
             system_metrics: info_panel::SystemMetrics {
                 cpu_percent: 0.0,
                 memory_used: 0,

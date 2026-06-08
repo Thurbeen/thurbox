@@ -70,6 +70,28 @@ prevents stalling the async executor. The writer side is naturally
 async — it awaits messages from an mpsc channel
 and writes when they arrive.
 
+**Generalized off-the-hot-path pattern**: the same
+`spawn_blocking` → `mpsc` → poll-in-`tick()` shape keeps every other
+blocking side effect off the UI thread, so neither rendering nor
+`Ctrl+N` ever freezes. Each operation owns an in-flight guard + result
+receiver on `App`, kicks off the blocking work, and applies the result
+when `tick()` polls `try_recv()`:
+
+- **Worktree sync** (`Ctrl+S`) — `git rebase` per worktree
+  (`worktree_sync_rx`, the original instance of the pattern).
+- **Per-tick metrics** — `refresh_system_metrics` (sysinfo + statusline
+  file reads + the active pane's PID lookup) and `refresh_active_git_stats`
+  (`git` diff/status shell-outs). The `sysinfo::System` is *moved into*
+  the worker and returned with the result so CPU deltas persist across
+  refreshes; a single in-flight guard prevents overlap.
+- **Interactive spawn** — `git worktree add` (`spawn_worktree_session`)
+  and `Session::spawn` (PTY/tmux window creation, 500 ms+) for the
+  new-session wizard run on blocking tasks, with the follow-up
+  (session adoption, task-prompt delivery) carried in a `Pending*`
+  continuation applied on completion. Programmatic spawns
+  (automations/tasks, restore) stay **synchronous** — they read the new
+  session's id straight back, so they cannot defer it to a later tick.
+
 **Rejected**:
 
 - *Single-threaded tokio* — PTY reads would block the entire

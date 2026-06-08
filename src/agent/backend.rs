@@ -568,6 +568,13 @@ impl Session {
         self.backend.pane_pid(&self.backend_id)
     }
 
+    /// Clone the backend handle + id so a background task can query the pane
+    /// PID (a control-mode round-trip, slow for remote SSH backends) off the UI
+    /// thread. The backend is `Send + Sync`, so the clone is cheap to move.
+    pub fn backend_handle(&self) -> (Arc<dyn SessionBackend>, String) {
+        (Arc::clone(&self.backend), self.backend_id.clone())
+    }
+
     /// Restart the session: kill the old pane, spawn a fresh one with new config.
     ///
     /// Uses the agent's resume args (when defined) so it picks up the

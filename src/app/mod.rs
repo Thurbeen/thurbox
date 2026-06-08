@@ -29,8 +29,8 @@ use crate::session::{
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
+use crate::ui::layout;
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
-use crate::ui::{info_panel, layout};
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -61,6 +61,167 @@ const GIT_REFRESH_TICKS: u64 = 500;
 /// tick, 30000 ≈ 5 minutes. Usage windows are coarse and fetching hits the
 /// network, so this is deliberately slow; fires once early then every 5 min.
 const USAGE_REFRESH_TICKS: u64 = 30_000;
+
+/// Prepared inputs for a `Session::spawn`, produced on the UI thread by
+/// [`App::build_spawn_inputs`] and consumed either inline (synchronous spawn)
+/// or moved into a blocking task (interactive spawn).
+struct SpawnInputs {
+    /// Process-launch config (its `cwd` is the symlink workspace for multi-repo
+    /// sessions; the primary repo is carried separately).
+    config: SessionConfig,
+    /// The primary repo path restored onto `SessionInfo.cwd` after spawn.
+    primary_cwd: Option<PathBuf>,
+    backend: Arc<dyn SessionBackend>,
+    provider: Arc<dyn crate::agent::AgentProvider>,
+    rows: u16,
+    cols: u16,
+}
+
+/// Continuation for a backgrounded interactive `Session::spawn`: the metadata
+/// and follow-up actions applied once the session is live (in
+/// [`App::poll_session_spawn`]).
+struct PendingSessionSpawn {
+    primary_cwd: Option<PathBuf>,
+    worktrees: Vec<WorktreeInfo>,
+    additional_dirs: Vec<PathBuf>,
+    /// A task-initiated spawn's `(task_id, title)`, captured at kickoff so the
+    /// prompt is delivered + the task advanced when the session comes up.
+    task_prompt: Option<(i64, String)>,
+}
+
+/// Continuation for a backgrounded worktree-creation: the wizard inputs needed
+/// to resume the spawn flow once the worktrees exist (in
+/// [`App::poll_worktree_create`]).
+struct PendingWorktreeCreate {
+    /// Chosen backend (`ssh:<host>` or `None` for local).
+    backend: Option<String>,
+    /// Plain (non-worktree) repos to attach alongside the worktree repos.
+    normal_repos: Vec<PathBuf>,
+    /// Session name when already known (worktree flow); `None` routes through
+    /// the name modal.
+    session_name: Option<String>,
+}
+
+/// Create one worktree per repo off the UI thread, rolling back any already
+/// created if a later one fails. Returns the worktree infos in `repo_paths`
+/// order, or a formatted error after rollback.
+fn create_worktrees(
+    host: Option<&crate::session::HostDef>,
+    repo_paths: &[PathBuf],
+    new_branch: &str,
+    base_branch: &str,
+) -> Result<Vec<WorktreeInfo>, String> {
+    let mut worktree_infos: Vec<WorktreeInfo> = Vec::new();
+    for repo_path in repo_paths {
+        match git::create_worktree_on(host, repo_path, new_branch, base_branch) {
+            Ok(worktree_path) => worktree_infos.push(WorktreeInfo {
+                repo_path: repo_path.clone(),
+                worktree_path,
+                branch: new_branch.to_string(),
+            }),
+            Err(e) => {
+                // Roll back already-created worktrees before bailing.
+                for info in &worktree_infos {
+                    if let Err(re) =
+                        git::remove_worktree_on(host, &info.repo_path, &info.worktree_path)
+                    {
+                        error!("Failed to roll back worktree: {re}");
+                    }
+                }
+                error!("Failed to create worktree in {}: {e}", repo_path.display());
+                return Err(format!("{e:#}"));
+            }
+        }
+    }
+    Ok(worktree_infos)
+}
+
+/// Result of a background system-metrics refresh, delivered over `metrics_rx`.
+struct MetricsRefresh {
+    /// The sysinfo collector, returned so it retains CPU-delta state across
+    /// refreshes (it is moved into the worker for the duration).
+    sys: sysinfo::System,
+    /// Aggregate machine + active-session metrics for the info panel.
+    metrics: crate::ui::info_panel::SystemMetrics,
+    /// Per-session agent metrics parsed from statusline JSON files.
+    agent_metrics: Vec<(SessionId, crate::session::AgentMetrics)>,
+}
+
+/// Collect machine + active-session + per-agent metrics off the UI thread.
+///
+/// Owns `sys` for the duration (CPU deltas need a persistent collector) and
+/// returns it so the caller can move it back. `active` is the active session's
+/// `(backend, backend_id)` for the PID lookup (a control-mode round-trip);
+/// `metrics_files` pairs each session id with its statusline JSON path.
+fn collect_system_metrics(
+    mut sys: sysinfo::System,
+    active: Option<(Arc<dyn SessionBackend>, String)>,
+    metrics_files: Vec<(SessionId, PathBuf)>,
+) -> MetricsRefresh {
+    sys.refresh_cpu_all();
+    sys.refresh_memory();
+
+    let cpu_percent = sys.global_cpu_usage();
+    let memory_used = sys.used_memory();
+    let memory_total = sys.total_memory();
+
+    // Resolve the active session's root PID and sample its CPU/RAM.
+    let (session_cpu_percent, session_memory_bytes) = active
+        .and_then(|(backend, id)| backend.pane_pid(&id).ok().flatten())
+        .map(|pid| {
+            let pid = sysinfo::Pid::from_u32(pid);
+            let kind = sysinfo::ProcessRefreshKind::nothing()
+                .with_memory()
+                .with_cpu();
+            sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[pid]), false, kind);
+            sys.process(pid)
+                .map(|p| (p.cpu_usage(), p.memory()))
+                .unwrap_or((0.0, 0))
+        })
+        .unwrap_or((0.0, 0));
+
+    let metrics = crate::ui::info_panel::SystemMetrics {
+        cpu_percent,
+        memory_used,
+        memory_total,
+        session_cpu_percent,
+        session_memory_bytes,
+    };
+
+    // Poll agent metrics files written by the statusline script.
+    let mut agent_metrics = Vec::new();
+    for (session_id, path) in metrics_files {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&content) {
+                agent_metrics.push((session_id, parse_agent_metrics(&raw)));
+            }
+        }
+    }
+
+    MetricsRefresh {
+        sys,
+        metrics,
+        agent_metrics,
+    }
+}
+
+/// Aggregate git stats (diff + dirty + ahead/behind) across a session's
+/// worktree paths. Shells out to `git` per path, so it runs off the UI thread.
+fn aggregate_git_stats(paths: &[PathBuf]) -> Option<crate::session::GitStats> {
+    let mut agg: Option<crate::session::GitStats> = None;
+    for path in paths {
+        if let Some(stats) = crate::git::worktree_stats(path) {
+            let acc = agg.get_or_insert_with(Default::default);
+            acc.files_changed += stats.files_changed;
+            acc.insertions += stats.insertions;
+            acc.deletions += stats.deletions;
+            acc.dirty |= stats.dirty;
+            acc.ahead += stats.ahead;
+            acc.behind += stats.behind;
+        }
+    }
+    agg
+}
 
 /// Parse agent metrics from a Claude CLI statusline JSON value.
 fn parse_agent_metrics(raw: &serde_json::Value) -> crate::session::AgentMetrics {
@@ -333,6 +494,34 @@ pub struct App {
     worktree_sync: sync_state::WorktreeSyncState,
     /// System/process metrics + the tick counter pacing periodic refreshes.
     metrics: metrics_state::MetricsState,
+    /// A background system-metrics refresh is in flight (guards `sys` ownership
+    /// so refreshes never overlap).
+    metrics_refresh_in_progress: bool,
+    /// Receives the result of a background system-metrics refresh, polled each
+    /// tick. Mirrors `worktree_sync.rx`.
+    metrics_rx: Option<mpsc::Receiver<MetricsRefresh>>,
+    /// A background active-session git-stats refresh is in flight.
+    git_stats_in_progress: bool,
+    /// Receives the result of a background git-stats refresh, polled each tick.
+    git_stats_rx: Option<mpsc::Receiver<(SessionId, Option<crate::session::GitStats>)>>,
+    /// A background worktree-creation (`git worktree add`) is in flight for the
+    /// new-session wizard; guards against re-entry and clobbering the pending
+    /// continuation.
+    worktree_create_in_progress: bool,
+    /// Receives the result of a background worktree-creation, polled each tick.
+    worktree_create_rx: Option<mpsc::Receiver<Result<Vec<WorktreeInfo>, String>>>,
+    /// Continuation for a completed worktree-creation: the wizard inputs needed
+    /// to resume the spawn flow once the worktrees exist.
+    pending_worktree_create: Option<PendingWorktreeCreate>,
+    /// A background `Session::spawn` (PTY/tmux window creation) is in flight for
+    /// the interactive new-session flow. Programmatic spawns stay synchronous.
+    session_spawn_in_progress: bool,
+    /// Receives the spawned [`Session`] (or an error) from the background
+    /// `Session::spawn`, polled each tick.
+    session_spawn_rx: Option<mpsc::Receiver<Result<Session, String>>>,
+    /// Continuation for a completed background spawn: the metadata + follow-up
+    /// (task prompt) to apply once the session is live.
+    pending_session_spawn: Option<PendingSessionSpawn>,
     /// Deferred inputs: `(session_id, data, tick_at_which_to_send)`.
     /// Used to introduce a small delay between pasting text and pressing Enter.
     deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
@@ -453,6 +642,16 @@ impl App {
             sync_state,
             worktree_sync: sync_state::WorktreeSyncState::default(),
             metrics: metrics_state::MetricsState::new(),
+            metrics_refresh_in_progress: false,
+            metrics_rx: None,
+            git_stats_in_progress: false,
+            git_stats_rx: None,
+            worktree_create_in_progress: false,
+            worktree_create_rx: None,
+            pending_worktree_create: None,
+            session_spawn_in_progress: false,
+            session_spawn_rx: None,
+            pending_session_spawn: None,
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
             pending_delete: None,
@@ -687,7 +886,7 @@ impl App {
                 .first()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_string());
-            self.do_spawn_session(name, &config, worktrees);
+            self.do_spawn_session_async(name, &config, worktrees);
             return;
         }
 
@@ -1331,54 +1530,95 @@ impl App {
         base_branch: &str,
         session_name: Option<String>,
     ) {
+        if self.worktree_create_in_progress {
+            self.set_status(StatusLevel::Info, "Worktree creation already in progress…");
+            return;
+        }
+
         // Resolve the remote host (if any) so worktrees are created on the
         // session's target machine over SSH. Consume the wizard's choice.
         let backend = self.pending_backend.take();
         let host = self.host_for_backend(backend.as_deref()).cloned();
+        let normal_repos = std::mem::take(&mut self.pending_normal_repos);
 
-        let mut worktree_infos = Vec::new();
-        let mut worktree_paths = Vec::new();
+        let repo_paths = repo_paths.to_vec();
+        let new_branch = new_branch.to_string();
+        let base_branch = base_branch.to_string();
 
-        for repo_path in repo_paths {
-            match git::create_worktree_on(host.as_ref(), repo_path, new_branch, base_branch) {
-                Ok(worktree_path) => {
-                    worktree_infos.push(WorktreeInfo {
-                        repo_path: repo_path.clone(),
-                        worktree_path: worktree_path.clone(),
-                        branch: new_branch.to_string(),
-                    });
-                    worktree_paths.push(worktree_path);
-                }
-                Err(e) => {
-                    // Roll back already-created worktrees
-                    for info in &worktree_infos {
-                        if let Err(re) = git::remove_worktree_on(
-                            host.as_ref(),
-                            &info.repo_path,
-                            &info.worktree_path,
-                        ) {
-                            error!("Failed to roll back worktree: {re}");
-                        }
-                    }
-                    error!("Failed to create worktree in {}: {e}", repo_path.display());
-                    self.set_error(format!("Failed to create worktree: {e:#}"));
-                    return;
-                }
+        // Shell out to `git worktree add` off the UI thread (one per repo, with
+        // rollback on failure); the spawn flow resumes in `poll_worktree_create`.
+        let (tx, rx) = mpsc::channel();
+        self.worktree_create_in_progress = true;
+        self.worktree_create_rx = Some(rx);
+        self.pending_worktree_create = Some(PendingWorktreeCreate {
+            backend,
+            normal_repos,
+            session_name,
+        });
+        self.set_status(StatusLevel::Info, "Creating worktree(s)…");
+        tokio::task::spawn_blocking(move || {
+            let result = create_worktrees(host.as_ref(), &repo_paths, &new_branch, &base_branch);
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Apply a completed background worktree-creation, if one has finished, and
+    /// resume the spawn flow.
+    fn poll_worktree_create(&mut self) {
+        let Some(rx) = &self.worktree_create_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.worktree_create_rx = None;
+                self.worktree_create_in_progress = false;
+                self.pending_worktree_create = None;
+                self.set_error("Worktree creation failed (worker died)");
+                return;
             }
+        };
+        self.worktree_create_rx = None;
+        self.worktree_create_in_progress = false;
+        let Some(pending) = self.pending_worktree_create.take() else {
+            return;
+        };
+
+        match result {
+            Ok(worktree_infos) => self.continue_worktree_spawn(worktree_infos, pending),
+            Err(e) => self.set_error(format!("Failed to create worktree: {e}")),
         }
+    }
+
+    /// Build the session config from freshly-created worktrees and continue into
+    /// the name/agent modal (or spawn directly when the name is known).
+    fn continue_worktree_spawn(
+        &mut self,
+        worktree_infos: Vec<WorktreeInfo>,
+        pending: PendingWorktreeCreate,
+    ) {
+        let Some(primary) = worktree_infos.first() else {
+            self.set_error("Worktree creation produced no worktrees");
+            return;
+        };
+        let primary_path = primary.worktree_path.clone();
 
         // Combine remaining worktree paths + normal repos as additional dirs.
-        let normal_repos = std::mem::take(&mut self.pending_normal_repos);
-        let mut additional_dirs: Vec<PathBuf> = worktree_paths[1..].to_vec();
-        additional_dirs.extend(normal_repos);
+        let mut additional_dirs: Vec<PathBuf> = worktree_infos[1..]
+            .iter()
+            .map(|w| w.worktree_path.clone())
+            .collect();
+        additional_dirs.extend(pending.normal_repos);
         self.pending_additional_dirs = additional_dirs;
+
         let config = SessionConfig {
-            cwd: Some(worktree_paths[0].clone()),
-            backend,
+            cwd: Some(primary_path),
+            backend: pending.backend,
             ..SessionConfig::default()
         };
 
-        if let Some(name) = session_name {
+        if let Some(name) = pending.session_name {
             // Session name already known (worktree flow) — skip name modal.
             self.finish_prepare_spawn(name, config, worktree_infos);
         } else {
@@ -1452,12 +1692,17 @@ impl App {
         Ok(backend)
     }
 
-    pub(crate) fn do_spawn_session(
+    /// Common spawn preparation shared by the sync and async paths: fill in
+    /// defaults (agent, `agent_session_id`), inject statusline env vars, resolve
+    /// the process cwd (a symlink workspace for multi-repo sessions), and select
+    /// the backend + provider. Returns `None` after setting a status error when
+    /// the backend is unknown or unreachable.
+    fn build_spawn_inputs(
         &mut self,
-        name: String,
         config: &SessionConfig,
-        worktrees: Vec<WorktreeInfo>,
-    ) {
+        worktrees: &[WorktreeInfo],
+        additional_dirs: &[PathBuf],
+    ) -> Option<SpawnInputs> {
         let (rows, cols) = self.content_area_size();
 
         let mut config = config.clone();
@@ -1467,8 +1712,6 @@ impl App {
         if config.agent_session_id.is_none() {
             config.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
         }
-
-        let additional_dirs = std::mem::take(&mut self.pending_additional_dirs);
 
         // Inject statusline env vars so the metrics script knows which session this is.
         if let Some(ref sid) = config.agent_session_id {
@@ -1488,8 +1731,8 @@ impl App {
         config.cwd = resolve_process_cwd(
             config.agent_session_id.as_deref(),
             primary_cwd.clone(),
-            &worktrees,
-            &additional_dirs,
+            worktrees,
+            additional_dirs,
         );
 
         let backend = match self.backend_for(&config) {
@@ -1497,49 +1740,189 @@ impl App {
             Err(e) => {
                 error!("Failed to select backend: {e}");
                 self.set_error(e);
-                return;
+                return None;
             }
         };
 
         let provider = self.provider_for(&config);
-        match Session::spawn(name, rows, cols, &config, &backend, &provider) {
-            Ok(mut session) => {
-                session.info.cwd = primary_cwd;
-                session.info.worktrees = worktrees;
-                session.info.additional_dirs = additional_dirs;
+        Some(SpawnInputs {
+            config,
+            primary_cwd,
+            backend,
+            provider,
+            rows,
+            cols,
+        })
+    }
 
-                resolve_repo_display_names(&mut session.info);
-                self.sessions.push(session);
-                self.active_index = self.sessions.len() - 1;
-                self.focus = InputFocus::Terminal;
-                self.status_message = None;
+    /// Adopt a freshly spawned [`Session`] into the app: attach its metadata,
+    /// select + focus it, persist, and run any task-initiated follow-up. Shared
+    /// by the synchronous and backgrounded spawn paths.
+    fn finalize_spawned_session(
+        &mut self,
+        mut session: Session,
+        primary_cwd: Option<PathBuf>,
+        worktrees: Vec<WorktreeInfo>,
+        additional_dirs: Vec<PathBuf>,
+        task_prompt: Option<(i64, String)>,
+    ) {
+        session.info.cwd = primary_cwd;
+        session.info.worktrees = worktrees;
+        session.info.additional_dirs = additional_dirs;
 
-                self.save_state();
+        resolve_repo_display_names(&mut session.info);
+        self.sessions.push(session);
+        self.active_index = self.sessions.len() - 1;
+        self.focus = InputFocus::Terminal;
+        self.status_message = None;
 
-                // A task-initiated spawn (the trigger-time picker's "Spawn new
-                // session") delivers the task title once the agent has booted,
-                // then advances the task to in progress.
-                if let Some((task_id, title)) = self.task_ui.pending_task_prompt.take() {
-                    let new_id = self.sessions[self.active_index].info.id;
-                    // Record the link now — the session was named by the user, so
-                    // the `task-<id>` convention can't recover it later.
-                    self.task_ui.task_session_links.insert(task_id, new_id);
-                    let prompt = self.task_agent_prompt(task_id, &title);
-                    self.send_prompt_to_session(new_id, &prompt, AGENT_BOOT_DELAY_TICKS);
-                    let status = self
-                        .task_ui
-                        .cached_tasks
-                        .iter()
-                        .find(|t| t.id == task_id)
-                        .map(|t| t.status)
-                        .unwrap_or_default();
-                    self.advance_task_to_in_progress(task_id, status);
-                    self.refresh_tasks();
-                }
+        self.save_state();
+
+        // A task-initiated spawn (the trigger-time picker's "Spawn new session")
+        // delivers the task title once the agent has booted, then advances the
+        // task to in progress.
+        if let Some((task_id, title)) = task_prompt {
+            let new_id = self.sessions[self.active_index].info.id;
+            // Record the link now — the session was named by the user, so the
+            // `task-<id>` convention can't recover it later.
+            self.task_ui.task_session_links.insert(task_id, new_id);
+            let prompt = self.task_agent_prompt(task_id, &title);
+            self.send_prompt_to_session(new_id, &prompt, AGENT_BOOT_DELAY_TICKS);
+            let status = self
+                .task_ui
+                .cached_tasks
+                .iter()
+                .find(|t| t.id == task_id)
+                .map(|t| t.status)
+                .unwrap_or_default();
+            self.advance_task_to_in_progress(task_id, status);
+            self.refresh_tasks();
+        }
+    }
+
+    /// Spawn a session **synchronously** (blocks the caller on PTY/tmux
+    /// creation). Used by programmatic callers that need the session present
+    /// immediately — automations/tasks read the new id right back, and restore
+    /// runs inside `tick()`. The interactive new-session flow uses
+    /// [`Self::do_spawn_session_async`] instead so `Ctrl+N` doesn't freeze.
+    pub(crate) fn do_spawn_session(
+        &mut self,
+        name: String,
+        config: &SessionConfig,
+        worktrees: Vec<WorktreeInfo>,
+    ) {
+        let additional_dirs = std::mem::take(&mut self.pending_additional_dirs);
+        let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
+            return;
+        };
+
+        match Session::spawn(
+            name,
+            inputs.rows,
+            inputs.cols,
+            &inputs.config,
+            &inputs.backend,
+            &inputs.provider,
+        ) {
+            Ok(session) => {
+                let task_prompt = self.task_ui.pending_task_prompt.take();
+                self.finalize_spawned_session(
+                    session,
+                    inputs.primary_cwd,
+                    worktrees,
+                    additional_dirs,
+                    task_prompt,
+                );
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
                 self.set_error(format!("Failed to start claude: {e:#}"));
+            }
+        }
+    }
+
+    /// Spawn a session for the **interactive** new-session flow without blocking
+    /// the UI: `Session::spawn` (PTY/tmux window creation, 500ms+) runs on a
+    /// blocking task and the session is adopted in [`Self::poll_session_spawn`].
+    /// Falls back to the synchronous path if a spawn is already in flight (so a
+    /// double-trigger is never silently dropped).
+    pub(crate) fn do_spawn_session_async(
+        &mut self,
+        name: String,
+        config: &SessionConfig,
+        worktrees: Vec<WorktreeInfo>,
+    ) {
+        if self.session_spawn_in_progress {
+            self.do_spawn_session(name, config, worktrees);
+            return;
+        }
+
+        let additional_dirs = std::mem::take(&mut self.pending_additional_dirs);
+        let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
+            return;
+        };
+        let task_prompt = self.task_ui.pending_task_prompt.take();
+
+        let SpawnInputs {
+            config,
+            primary_cwd,
+            backend,
+            provider,
+            rows,
+            cols,
+        } = inputs;
+
+        let (tx, rx) = mpsc::channel();
+        self.session_spawn_in_progress = true;
+        self.session_spawn_rx = Some(rx);
+        self.pending_session_spawn = Some(PendingSessionSpawn {
+            primary_cwd,
+            worktrees,
+            additional_dirs,
+            task_prompt,
+        });
+        self.set_status(StatusLevel::Info, format!("Spawning {name}…"));
+
+        tokio::task::spawn_blocking(move || {
+            let result = Session::spawn(name, rows, cols, &config, &backend, &provider)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Adopt a completed background `Session::spawn`, if one has finished.
+    fn poll_session_spawn(&mut self) {
+        let Some(rx) = &self.session_spawn_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.session_spawn_rx = None;
+                self.session_spawn_in_progress = false;
+                self.pending_session_spawn = None;
+                self.set_error("Session spawn failed (worker died)");
+                return;
+            }
+        };
+        self.session_spawn_rx = None;
+        self.session_spawn_in_progress = false;
+        let Some(pending) = self.pending_session_spawn.take() else {
+            return;
+        };
+
+        match result {
+            Ok(session) => self.finalize_spawned_session(
+                session,
+                pending.primary_cwd,
+                pending.worktrees,
+                pending.additional_dirs,
+                pending.task_prompt,
+            ),
+            Err(e) => {
+                error!("Failed to spawn session: {e}");
+                self.set_error(format!("Failed to start claude: {e}"));
             }
         }
     }
@@ -1679,6 +2062,11 @@ impl App {
         // Poll for sync results from background worktree sync threads
         self.poll_sync_results();
 
+        // Poll for backgrounded interactive spawn work (worktree creation +
+        // `Session::spawn`) so `Ctrl+N` never freezes the UI.
+        self.poll_worktree_create();
+        self.poll_session_spawn();
+
         // Send deferred inputs whose delay has elapsed
         self.drain_deferred_inputs();
 
@@ -1710,14 +2098,18 @@ impl App {
             self.refresh_tasks();
         }
 
-        // Refresh system metrics periodically
-        if self.metrics.tick_count % METRICS_REFRESH_TICKS == 0 {
-            self.refresh_system_metrics();
-        }
+        // Apply completed background metric/git-stat refreshes, then kick off
+        // the next one on its cadence. Both run off the UI thread (sysinfo +
+        // statusline file reads / `git` shell-outs) so a slow read never stalls
+        // rendering — mirrors the worktree-sync poll above.
+        self.poll_metrics_refresh();
+        self.poll_git_stats();
 
-        // Refresh git stats for the active session on a slower cadence.
+        if self.metrics.tick_count % METRICS_REFRESH_TICKS == 0 {
+            self.start_metrics_refresh();
+        }
         if self.metrics.tick_count % GIT_REFRESH_TICKS == 0 {
-            self.refresh_active_git_stats();
+            self.start_git_stats_refresh();
         }
 
         // Drain any completed background usage fetches into the cache.
@@ -1810,16 +2202,22 @@ impl App {
         }
     }
 
-    /// Compute aggregated git stats (diff + dirty + ahead/behind) for the
-    /// active session's worktree(s) and store them on its `SessionInfo`.
-    /// Shells out to `git`, so it runs only for the visible session.
-    fn refresh_active_git_stats(&mut self) {
-        let Some(session) = self.sessions.get_mut(self.active_index) else {
+    /// Kick off a background git-stats refresh for the active session.
+    ///
+    /// Gathers the worktree paths on the UI thread (cheap) and shells out to
+    /// `git` on a blocking task; the result is applied in [`Self::poll_git_stats`].
+    /// Only one refresh runs at a time.
+    fn start_git_stats_refresh(&mut self) {
+        if self.git_stats_in_progress {
+            return;
+        }
+        let Some(session) = self.sessions.get(self.active_index) else {
             return;
         };
+        let session_id = session.info.id;
 
         // Aggregate across all worktrees; fall back to the cwd if there are none.
-        let paths: Vec<std::path::PathBuf> = if session.info.worktrees.is_empty() {
+        let paths: Vec<PathBuf> = if session.info.worktrees.is_empty() {
             session.info.cwd.iter().cloned().collect()
         } else {
             session
@@ -1830,81 +2228,107 @@ impl App {
                 .collect()
         };
 
-        let mut agg: Option<crate::session::GitStats> = None;
-        for path in &paths {
-            if let Some(stats) = crate::git::worktree_stats(path) {
-                let acc = agg.get_or_insert_with(Default::default);
-                acc.files_changed += stats.files_changed;
-                acc.insertions += stats.insertions;
-                acc.deletions += stats.deletions;
-                acc.dirty |= stats.dirty;
-                acc.ahead += stats.ahead;
-                acc.behind += stats.behind;
-            }
-        }
-        session.info.git_stats = agg;
+        let (tx, rx) = mpsc::channel();
+        self.git_stats_in_progress = true;
+        self.git_stats_rx = Some(rx);
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send((session_id, aggregate_git_stats(&paths)));
+        });
     }
 
-    /// Collect CPU/RAM metrics from sysinfo and poll agent metrics files.
-    fn refresh_system_metrics(&mut self) {
-        self.metrics.sys.refresh_cpu_all();
-        self.metrics.sys.refresh_memory();
+    /// Apply a completed background git-stats refresh, if one has finished.
+    fn poll_git_stats(&mut self) {
+        let Some(rx) = &self.git_stats_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((session_id, stats)) => {
+                if let Some(session) = self.sessions.iter_mut().find(|s| s.info.id == session_id) {
+                    session.info.git_stats = stats;
+                }
+                self.git_stats_rx = None;
+                self.git_stats_in_progress = false;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            // Worker died without delivering (e.g. panic): clear the guard so the
+            // next cadence can retry.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.git_stats_rx = None;
+                self.git_stats_in_progress = false;
+            }
+        }
+    }
 
-        let cpu_percent = self.metrics.sys.global_cpu_usage();
-        let memory_used = self.metrics.sys.used_memory();
-        let memory_total = self.metrics.sys.total_memory();
-
-        // Refresh only the active session's root process for CPU/RAM.
-        let (session_cpu, session_mem) = self.active_session_metrics();
-
-        self.metrics.system_metrics = info_panel::SystemMetrics {
-            cpu_percent,
-            memory_used,
-            memory_total,
-            session_cpu_percent: session_cpu,
-            session_memory_bytes: session_mem,
+    /// Kick off a background system-metrics refresh.
+    ///
+    /// The sysinfo collector is moved into the worker (and returned via the
+    /// result) so CPU deltas persist across refreshes; statusline file reads and
+    /// the active session's PID lookup (a control-mode round-trip) all run off
+    /// the UI thread. Only one refresh runs at a time; the result is applied in
+    /// [`Self::poll_metrics_refresh`].
+    fn start_metrics_refresh(&mut self) {
+        if self.metrics_refresh_in_progress {
+            return;
+        }
+        let Some(sys) = self.metrics.sys.take() else {
+            return;
         };
 
-        // Poll agent metrics files written by the statusline script.
-        if let Some(metrics_dir) = crate::paths::metrics_directory() {
-            for session in &mut self.sessions {
-                if let Some(ref agent_sid) = session.info.agent_session_id {
-                    let path = metrics_dir.join(format!("{agent_sid}.json"));
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&content) {
-                            session.info.agent_metrics = Some(parse_agent_metrics(&raw));
-                        }
+        let active = self
+            .sessions
+            .get(self.active_index)
+            .map(|s| s.backend_handle());
+
+        let metrics_files: Vec<(SessionId, PathBuf)> = match crate::paths::metrics_directory() {
+            Some(dir) => self
+                .sessions
+                .iter()
+                .filter_map(|s| {
+                    s.info
+                        .agent_session_id
+                        .as_ref()
+                        .map(|sid| (s.info.id, dir.join(format!("{sid}.json"))))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
+        let (tx, rx) = mpsc::channel();
+        self.metrics_refresh_in_progress = true;
+        self.metrics_rx = Some(rx);
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(collect_system_metrics(sys, active, metrics_files));
+        });
+    }
+
+    /// Apply a completed background metrics refresh, if one has finished.
+    fn poll_metrics_refresh(&mut self) {
+        let Some(rx) = &self.metrics_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(refresh) => {
+                self.metrics.sys = Some(refresh.sys);
+                self.metrics.system_metrics = refresh.metrics;
+                for (session_id, metrics) in refresh.agent_metrics {
+                    if let Some(session) =
+                        self.sessions.iter_mut().find(|s| s.info.id == session_id)
+                    {
+                        session.info.agent_metrics = Some(metrics);
                     }
                 }
+                self.metrics_rx = None;
+                self.metrics_refresh_in_progress = false;
             }
-        }
-    }
-
-    /// Compute CPU% and memory (bytes) for the active session's root process.
-    fn active_session_metrics(&mut self) -> (f32, u64) {
-        let active = match self.sessions.get(self.active_index) {
-            Some(s) => s,
-            None => return (0.0, 0),
-        };
-
-        let root_pid = match active.pane_pid() {
-            Ok(Some(pid)) => sysinfo::Pid::from_u32(pid),
-            _ => return (0.0, 0),
-        };
-
-        let refresh_kind = sysinfo::ProcessRefreshKind::nothing()
-            .with_memory()
-            .with_cpu();
-        self.metrics.sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::Some(&[root_pid]),
-            false,
-            refresh_kind,
-        );
-
-        if let Some(proc_info) = self.metrics.sys.process(root_pid) {
-            (proc_info.cpu_usage(), proc_info.memory())
-        } else {
-            (0.0, 0)
+            Err(mpsc::TryRecvError::Empty) => {}
+            // Worker died without returning `sys` (e.g. panic): recreate the
+            // collector so metrics resume next cadence. CPU-delta history is
+            // lost, not correctness.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.metrics.sys.get_or_insert_with(sysinfo::System::new);
+                self.metrics_rx = None;
+                self.metrics_refresh_in_progress = false;
+            }
         }
     }
 
@@ -6781,6 +7205,284 @@ mod tests {
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
         assert!(msg.text.contains("network error"));
+    }
+
+    #[test]
+    fn poll_git_stats_applies_result_to_matching_session() {
+        let mut app = app_with_sessions(1);
+        let sid = app.sessions[0].info.id;
+
+        let (tx, rx) = mpsc::channel();
+        let stats = crate::session::GitStats {
+            files_changed: 3,
+            insertions: 10,
+            deletions: 2,
+            dirty: true,
+            ahead: 1,
+            behind: 0,
+        };
+        tx.send((sid, Some(stats.clone()))).unwrap();
+        app.git_stats_in_progress = true;
+        app.git_stats_rx = Some(rx);
+
+        app.poll_git_stats();
+
+        assert_eq!(app.sessions[0].info.git_stats, Some(stats));
+        assert!(!app.git_stats_in_progress);
+        assert!(app.git_stats_rx.is_none());
+    }
+
+    #[test]
+    fn poll_git_stats_disconnected_clears_guard() {
+        let mut app = app_with_sessions(1);
+        let (tx, rx) = mpsc::channel::<(SessionId, Option<crate::session::GitStats>)>();
+        drop(tx); // worker died without delivering
+        app.git_stats_in_progress = true;
+        app.git_stats_rx = Some(rx);
+
+        app.poll_git_stats();
+
+        assert!(!app.git_stats_in_progress);
+        assert!(app.git_stats_rx.is_none());
+    }
+
+    #[test]
+    fn poll_git_stats_empty_is_noop() {
+        let mut app = app_with_sessions(1);
+        let (_tx, rx) = mpsc::channel::<(SessionId, Option<crate::session::GitStats>)>();
+        app.git_stats_in_progress = true;
+        app.git_stats_rx = Some(rx);
+
+        // No result yet: guard stays set, rx retained for the next poll.
+        app.poll_git_stats();
+
+        assert!(app.git_stats_in_progress);
+        assert!(app.git_stats_rx.is_some());
+    }
+
+    #[test]
+    fn poll_metrics_refresh_restores_sys_and_applies_metrics() {
+        let mut app = app_with_sessions(1);
+        let sid = app.sessions[0].info.id;
+
+        // Simulate the worker having taken `sys`.
+        app.metrics.sys = None;
+        app.metrics_refresh_in_progress = true;
+
+        let (tx, rx) = mpsc::channel();
+        let agent_metrics = crate::session::AgentMetrics {
+            model_display_name: Some("Opus".into()),
+            ..Default::default()
+        };
+        tx.send(MetricsRefresh {
+            sys: sysinfo::System::new(),
+            metrics: crate::ui::info_panel::SystemMetrics {
+                cpu_percent: 42.0,
+                memory_used: 100,
+                memory_total: 200,
+                session_cpu_percent: 5.0,
+                session_memory_bytes: 50,
+            },
+            agent_metrics: vec![(sid, agent_metrics)],
+        })
+        .unwrap();
+        app.metrics_rx = Some(rx);
+
+        app.poll_metrics_refresh();
+
+        assert!(app.metrics.sys.is_some());
+        // `SystemMetrics` has no `PartialEq`; assert via a representative field.
+        assert_eq!(app.metrics.system_metrics.cpu_percent, 42.0);
+        assert_eq!(app.metrics.system_metrics.memory_used, 100);
+        // `AgentMetrics` has no `PartialEq`; assert via a representative field.
+        assert_eq!(
+            app.sessions[0]
+                .info
+                .agent_metrics
+                .as_ref()
+                .and_then(|m| m.model_display_name.as_deref()),
+            Some("Opus"),
+        );
+        assert!(!app.metrics_refresh_in_progress);
+        assert!(app.metrics_rx.is_none());
+    }
+
+    #[test]
+    fn poll_metrics_refresh_disconnected_recreates_sys() {
+        let mut app = app_with_sessions(0);
+        app.metrics.sys = None;
+        app.metrics_refresh_in_progress = true;
+        let (tx, rx) = mpsc::channel::<MetricsRefresh>();
+        drop(tx); // worker died without returning `sys`
+        app.metrics_rx = Some(rx);
+
+        app.poll_metrics_refresh();
+
+        assert!(app.metrics.sys.is_some());
+        assert!(!app.metrics_refresh_in_progress);
+        assert!(app.metrics_rx.is_none());
+    }
+
+    #[test]
+    fn poll_worktree_create_continues_into_name_modal() {
+        let mut app = app_with_sessions(0);
+        let (tx, rx) = mpsc::channel();
+        let wt = WorktreeInfo {
+            repo_path: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.worktrees/feat"),
+            branch: "feat".into(),
+        };
+        tx.send(Ok(vec![wt])).unwrap();
+        app.worktree_create_in_progress = true;
+        app.worktree_create_rx = Some(rx);
+        app.pending_worktree_create = Some(PendingWorktreeCreate {
+            backend: None,
+            normal_repos: vec![PathBuf::from("/other")],
+            session_name: None, // no name yet → routes through the name modal
+        });
+
+        app.poll_worktree_create();
+
+        assert!(!app.worktree_create_in_progress);
+        assert!(app.worktree_create_rx.is_none());
+        assert!(app.pending_worktree_create.is_none());
+        // The non-worktree normal repo is carried into additional dirs.
+        assert_eq!(app.pending_additional_dirs, vec![PathBuf::from("/other")]);
+        assert!(matches!(app.modal, modals::Modal::SessionName(_)));
+        assert!(app.pending_spawn_config.is_some());
+    }
+
+    #[test]
+    fn poll_worktree_create_error_sets_status() {
+        let mut app = app_with_sessions(0);
+        let (tx, rx) = mpsc::channel::<Result<Vec<WorktreeInfo>, String>>();
+        tx.send(Err("branch exists".into())).unwrap();
+        app.worktree_create_in_progress = true;
+        app.worktree_create_rx = Some(rx);
+        app.pending_worktree_create = Some(PendingWorktreeCreate {
+            backend: None,
+            normal_repos: vec![],
+            session_name: None,
+        });
+
+        app.poll_worktree_create();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert!(msg.text.contains("branch exists"));
+        assert!(!app.worktree_create_in_progress);
+        assert!(app.pending_worktree_create.is_none());
+    }
+
+    #[test]
+    fn poll_worktree_create_disconnected_clears_guard() {
+        let mut app = app_with_sessions(0);
+        let (tx, rx) = mpsc::channel::<Result<Vec<WorktreeInfo>, String>>();
+        drop(tx);
+        app.worktree_create_in_progress = true;
+        app.worktree_create_rx = Some(rx);
+        app.pending_worktree_create = Some(PendingWorktreeCreate {
+            backend: None,
+            normal_repos: vec![],
+            session_name: None,
+        });
+
+        app.poll_worktree_create();
+
+        assert!(!app.worktree_create_in_progress);
+        assert!(app.worktree_create_rx.is_none());
+        assert!(app.pending_worktree_create.is_none());
+    }
+
+    #[test]
+    fn poll_session_spawn_error_sets_status_and_adds_no_session() {
+        let mut app = app_with_sessions(0);
+        let (tx, rx) = mpsc::channel::<Result<Session, String>>();
+        tx.send(Err("tmux exploded".into())).unwrap();
+        app.session_spawn_in_progress = true;
+        app.session_spawn_rx = Some(rx);
+        app.pending_session_spawn = Some(PendingSessionSpawn {
+            primary_cwd: None,
+            worktrees: vec![],
+            additional_dirs: vec![],
+            task_prompt: None,
+        });
+
+        app.poll_session_spawn();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert!(msg.text.contains("tmux exploded"));
+        assert!(app.sessions.is_empty());
+        assert!(!app.session_spawn_in_progress);
+        assert!(app.session_spawn_rx.is_none());
+        assert!(app.pending_session_spawn.is_none());
+    }
+
+    #[test]
+    fn poll_session_spawn_disconnected_clears_guard() {
+        let mut app = app_with_sessions(0);
+        let (tx, rx) = mpsc::channel::<Result<Session, String>>();
+        drop(tx);
+        app.session_spawn_in_progress = true;
+        app.session_spawn_rx = Some(rx);
+        app.pending_session_spawn = Some(PendingSessionSpawn {
+            primary_cwd: None,
+            worktrees: vec![],
+            additional_dirs: vec![],
+            task_prompt: None,
+        });
+
+        app.poll_session_spawn();
+
+        assert!(!app.session_spawn_in_progress);
+        assert!(app.session_spawn_rx.is_none());
+        assert!(app.pending_session_spawn.is_none());
+    }
+
+    #[tokio::test]
+    async fn do_spawn_session_async_roundtrips_to_error_for_stub_backend() {
+        // End-to-end: kick off the background spawn, let the blocking task run,
+        // and confirm the failure (the stub backend refuses to spawn) is
+        // surfaced via the poll path with no session added.
+        let mut app = app_with_sessions(0);
+        let config = SessionConfig::default();
+        app.do_spawn_session_async("x".into(), &config, vec![]);
+        assert!(app.session_spawn_in_progress);
+
+        for _ in 0..200 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            app.poll_session_spawn();
+            if !app.session_spawn_in_progress {
+                break;
+            }
+        }
+
+        assert!(!app.session_spawn_in_progress);
+        assert!(app.sessions.is_empty());
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.level),
+            Some(StatusLevel::Error),
+        );
+    }
+
+    #[test]
+    fn do_spawn_session_async_falls_back_to_sync_when_in_flight() {
+        // With a spawn already in flight, a second request must not clobber the
+        // pending continuation — it falls back to the synchronous path (which,
+        // with the stub backend, fails to spawn and reports an error).
+        let mut app = app_with_sessions(0);
+        app.session_spawn_in_progress = true;
+        let config = SessionConfig::default();
+
+        app.do_spawn_session_async("second".into(), &config, vec![]);
+
+        // The in-flight guard/rx are untouched (no new background task kicked off).
+        assert!(app.session_spawn_in_progress);
+        assert!(app.session_spawn_rx.is_none());
+        // The synchronous fallback ran and surfaced the stub spawn failure.
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Error);
     }
 
     #[test]
