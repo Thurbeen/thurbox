@@ -1,8 +1,12 @@
+mod automation_state;
 mod helpers;
 mod key_handlers;
+mod metrics_state;
 pub(crate) mod modals;
 pub(crate) mod search;
 mod state;
+mod sync_state;
+mod task_state;
 mod view;
 
 use std::collections::HashMap;
@@ -326,15 +330,9 @@ pub struct App {
     /// Inter-instance DB sync (polls for changes from other thurbox instances).
     sync_state: SyncState,
     /// Worktree-to-main git sync (Ctrl+S).
-    worktree_sync_in_progress: bool,
-    worktree_sync_rx: Option<mpsc::Receiver<(SessionId, git::SyncResult)>>,
-    worktree_sync_pending: usize,
-    worktree_sync_completed: Vec<(SessionId, git::SyncResult)>,
-    tick_count: u64,
-    /// System info collector for CPU/RAM metrics.
-    sys: sysinfo::System,
-    /// Cached system metrics for the info panel.
-    system_metrics: crate::ui::info_panel::SystemMetrics,
+    worktree_sync: sync_state::WorktreeSyncState,
+    /// System/process metrics + the tick counter pacing periodic refreshes.
+    metrics: metrics_state::MetricsState,
     /// Deferred inputs: `(session_id, data, tick_at_which_to_send)`.
     /// Used to introduce a small delay between pasting text and pressing Enter.
     deferred_inputs: Vec<(SessionId, Vec<u8>, u64)>,
@@ -353,53 +351,10 @@ pub struct App {
     pub(crate) session_elapsed_buf: Vec<u64>,
     /// Persistent list state for the session section (preserves scroll offset).
     pub(crate) session_list_state: ratatui::widgets::ListState,
-    /// Cached automations for the UI, refreshed every ~1 second.
-    pub(crate) cached_automations: Vec<Automation>,
-    /// Selected row in the focusable automations pane.
-    pub(crate) automation_panel_index: usize,
-    /// Run history for the currently scoped automation, shown in the central
-    /// pane. Refreshed when the automations pane is focused / its selection
-    /// changes (see [`App::refresh_selected_automation_runs`]).
-    pub(crate) cached_automation_runs: Vec<crate::session::AutomationRun>,
-    /// Which automation `cached_automation_runs` belongs to, so the cache can be
-    /// invalidated when the selection moves.
-    pub(crate) cached_automation_runs_id: Option<i64>,
-    /// The editor for the automation currently scoped in the central pane. While
-    /// the automations pane is focused this mirrors the selected automation (a
-    /// live preview); while [`InputFocus::AutomationEditor`] is focused it holds
-    /// the in-progress edits. `None` when no automation is scoped.
-    pub(crate) automation_editor: Option<modals::AutomationEditorModal>,
-    /// Selected row in the run-history panel while
-    /// [`InputFocus::AutomationRunHistory`] is focused. Indexes
-    /// [`Self::cached_automation_runs`].
-    pub(crate) automation_run_index: usize,
-    /// Cached tasks for the right-side panel, refreshed every ~1 second.
-    pub(crate) cached_tasks: Vec<crate::session::Task>,
-    /// Selected row in the tasks panel. Indexes [`Self::filtered_task_indices`].
-    pub(crate) task_panel_index: usize,
-    /// Indices into [`Self::cached_tasks`] shown in the panel (currently always
-    /// all active tasks — filtering is done by the global `Ctrl+A` search).
-    pub(crate) filtered_task_indices: Vec<usize>,
-    /// The editor for the task currently scoped in the central pane. While the
-    /// tasks panel is focused this mirrors the selected task (a live preview);
-    /// while [`InputFocus::TaskEditor`] is focused it holds the in-progress
-    /// edits. `None` when no task is scoped. Mirrors `automation_editor`.
-    pub(crate) task_editor: Option<modals::TaskEditorModal>,
-    /// Vertical scroll offset (rows) for the full-screen task preview shown
-    /// while the tasks panel is focused. Reset when the selection changes.
-    pub(crate) task_preview_scroll: u16,
-    /// A task-initiated spawn in flight: `(task_id, title)`. Set when the
-    /// trigger-time action picker chooses "Spawn new session", consumed by the
-    /// spawn flow's success tail to deliver the prompt + advance the task.
-    pub(crate) pending_task_prompt: Option<(i64, String)>,
-    /// Live `task id → session id` links recorded when a task is triggered from
-    /// the TUI (Spawn-new or Send). TUI spawns get a user-chosen session name
-    /// rather than the `task-<id>` convention, so the name alone can't recover
-    /// the link — this map does. Consulted by `task_related_session_indices`
-    /// alongside the name convention and any persisted `Send` action. In-memory
-    /// only (the `task-<id>` convention is what survives a restart); stale
-    /// entries are harmless since lookups filter to currently-open sessions.
-    pub(crate) task_session_links: std::collections::HashMap<i64, SessionId>,
+    /// Automations-pane UI state (cached list, selection, run history, editor).
+    pub(crate) automation_ui: automation_state::AutomationUiState,
+    /// Tasks-panel UI state (cached list, selection, editor, links).
+    pub(crate) task_ui: task_state::TaskUiState,
     /// Global search strip (`Ctrl+A`): cross-scope search docked at the bottom.
     pub(crate) global_search: search::GlobalSearchState,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
@@ -496,19 +451,8 @@ impl App {
             pending_restart: false,
             pending_spawn_name: None,
             sync_state,
-            worktree_sync_in_progress: false,
-            worktree_sync_rx: None,
-            worktree_sync_pending: 0,
-            worktree_sync_completed: Vec::new(),
-            tick_count: 0,
-            sys: sysinfo::System::new(),
-            system_metrics: info_panel::SystemMetrics {
-                cpu_percent: 0.0,
-                memory_used: 0,
-                memory_total: 0,
-                session_cpu_percent: 0.0,
-                session_memory_bytes: 0,
-            },
+            worktree_sync: sync_state::WorktreeSyncState::default(),
+            metrics: metrics_state::MetricsState::new(),
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
             pending_delete: None,
@@ -517,19 +461,8 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             session_elapsed_buf: Vec::new(),
             session_list_state: ratatui::widgets::ListState::default(),
-            cached_automations: Vec::new(),
-            automation_panel_index: 0,
-            cached_automation_runs: Vec::new(),
-            cached_automation_runs_id: None,
-            automation_editor: None,
-            automation_run_index: 0,
-            cached_tasks: Vec::new(),
-            task_panel_index: 0,
-            task_preview_scroll: 0,
-            pending_task_prompt: None,
-            task_session_links: std::collections::HashMap::new(),
-            filtered_task_indices: Vec::new(),
-            task_editor: None,
+            automation_ui: automation_state::AutomationUiState::default(),
+            task_ui: task_state::TaskUiState::default(),
             global_search: search::GlobalSearchState::default(),
             active_theme,
             keybindings,
@@ -1238,7 +1171,7 @@ impl App {
             self.show_tasks_panel,
             self.show_file_viewer,
             self.global_search.active,
-            self.cached_automations.len(),
+            self.automation_ui.cached_automations.len(),
         );
         let border_block = Block::default().borders(Borders::ALL);
 
@@ -1586,14 +1519,15 @@ impl App {
                 // A task-initiated spawn (the trigger-time picker's "Spawn new
                 // session") delivers the task title once the agent has booted,
                 // then advances the task to in progress.
-                if let Some((task_id, title)) = self.pending_task_prompt.take() {
+                if let Some((task_id, title)) = self.task_ui.pending_task_prompt.take() {
                     let new_id = self.sessions[self.active_index].info.id;
                     // Record the link now — the session was named by the user, so
                     // the `task-<id>` convention can't recover it later.
-                    self.task_session_links.insert(task_id, new_id);
+                    self.task_ui.task_session_links.insert(task_id, new_id);
                     let prompt = self.task_agent_prompt(task_id, &title);
                     self.send_prompt_to_session(new_id, &prompt, AGENT_BOOT_DELAY_TICKS);
                     let status = self
+                        .task_ui
                         .cached_tasks
                         .iter()
                         .find(|t| t.id == task_id)
@@ -1721,7 +1655,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        self.tick_count = self.tick_count.wrapping_add(1);
+        self.metrics.tick_count = self.metrics.tick_count.wrapping_add(1);
 
         // Run the debounced global-search content scan once the query has been
         // settled for the debounce window (Instant-based, since tick cadence is
@@ -1767,22 +1701,22 @@ impl App {
         // Fire due automations. The first tick forces an immediate catch-up
         // pass so automations missed while the TUI was down run right away;
         // afterwards it runs on the regular ~1 s cadence.
-        self.process_automations(self.tick_count == 1);
+        self.process_automations(self.metrics.tick_count == 1);
 
         // Refresh cached automations + tasks for the UI (same cadence). The
         // first tick primes the caches so the panels aren't empty on open.
-        if self.tick_count == 1 || self.tick_count % 100 == 0 {
+        if self.metrics.tick_count == 1 || self.metrics.tick_count % 100 == 0 {
             self.refresh_automations();
             self.refresh_tasks();
         }
 
         // Refresh system metrics periodically
-        if self.tick_count % METRICS_REFRESH_TICKS == 0 {
+        if self.metrics.tick_count % METRICS_REFRESH_TICKS == 0 {
             self.refresh_system_metrics();
         }
 
         // Refresh git stats for the active session on a slower cadence.
-        if self.tick_count % GIT_REFRESH_TICKS == 0 {
+        if self.metrics.tick_count % GIT_REFRESH_TICKS == 0 {
             self.refresh_active_git_stats();
         }
 
@@ -1791,7 +1725,7 @@ impl App {
             self.usage.insert(agent, usage);
         }
         // Kick off usage fetches early and then on a slow cadence.
-        if self.tick_count % USAGE_REFRESH_TICKS == 1 {
+        if self.metrics.tick_count % USAGE_REFRESH_TICKS == 1 {
             self.spawn_usage_fetches();
         }
     }
@@ -1913,17 +1847,17 @@ impl App {
 
     /// Collect CPU/RAM metrics from sysinfo and poll agent metrics files.
     fn refresh_system_metrics(&mut self) {
-        self.sys.refresh_cpu_all();
-        self.sys.refresh_memory();
+        self.metrics.sys.refresh_cpu_all();
+        self.metrics.sys.refresh_memory();
 
-        let cpu_percent = self.sys.global_cpu_usage();
-        let memory_used = self.sys.used_memory();
-        let memory_total = self.sys.total_memory();
+        let cpu_percent = self.metrics.sys.global_cpu_usage();
+        let memory_used = self.metrics.sys.used_memory();
+        let memory_total = self.metrics.sys.total_memory();
 
         // Refresh only the active session's root process for CPU/RAM.
         let (session_cpu, session_mem) = self.active_session_metrics();
 
-        self.system_metrics = info_panel::SystemMetrics {
+        self.metrics.system_metrics = info_panel::SystemMetrics {
             cpu_percent,
             memory_used,
             memory_total,
@@ -1961,13 +1895,13 @@ impl App {
         let refresh_kind = sysinfo::ProcessRefreshKind::nothing()
             .with_memory()
             .with_cpu();
-        self.sys.refresh_processes_specifics(
+        self.metrics.sys.refresh_processes_specifics(
             sysinfo::ProcessesToUpdate::Some(&[root_pid]),
             false,
             refresh_kind,
         );
 
-        if let Some(proc_info) = self.sys.process(root_pid) {
+        if let Some(proc_info) = self.metrics.sys.process(root_pid) {
             (proc_info.cpu_usage(), proc_info.memory())
         } else {
             (0.0, 0)
@@ -1976,7 +1910,7 @@ impl App {
 
     /// Send deferred inputs whose scheduled tick has arrived.
     fn drain_deferred_inputs(&mut self) {
-        let tick = self.tick_count;
+        let tick = self.metrics.tick_count;
         // Partition: send the ones that are ready, keep the rest.
         let mut remaining = Vec::new();
         for (session_id, data, send_at) in std::mem::take(&mut self.deferred_inputs) {
@@ -1995,14 +1929,14 @@ impl App {
 
     /// Poll for completed worktree sync results and handle them.
     fn poll_sync_results(&mut self) {
-        if let Some(rx) = &self.worktree_sync_rx {
+        if let Some(rx) = &self.worktree_sync.rx {
             while let Ok((session_id, result)) = rx.try_recv() {
-                self.worktree_sync_completed.push((session_id, result));
+                self.worktree_sync.completed.push((session_id, result));
             }
 
-            if self.worktree_sync_completed.len() >= self.worktree_sync_pending {
-                self.worktree_sync_in_progress = false;
-                self.worktree_sync_rx = None;
+            if self.worktree_sync.completed.len() >= self.worktree_sync.pending {
+                self.worktree_sync.in_progress = false;
+                self.worktree_sync.rx = None;
                 self.finish_sync();
             }
         }
@@ -2010,7 +1944,7 @@ impl App {
 
     /// Finalize sync: compose status message and send conflict prompts.
     fn finish_sync(&mut self) {
-        let results = std::mem::take(&mut self.worktree_sync_completed);
+        let results = std::mem::take(&mut self.worktree_sync.completed);
         let mut synced = 0usize;
         let mut conflicts = 0usize;
         let mut errors = Vec::new();
@@ -2051,7 +1985,7 @@ impl App {
                 self.deferred_inputs.push((
                     session_id,
                     b"\r".to_vec(),
-                    self.tick_count + DEFERRED_INPUT_DELAY_TICKS,
+                    self.metrics.tick_count + DEFERRED_INPUT_DELAY_TICKS,
                 ));
             }
         }
@@ -2062,7 +1996,7 @@ impl App {
     /// Worktrees sharing the same parent repo are synced sequentially (to avoid
     /// concurrent `index.lock` contention), while different repos sync in parallel.
     pub(crate) fn start_sync(&mut self) {
-        if self.worktree_sync_in_progress {
+        if self.worktree_sync.in_progress {
             return;
         }
 
@@ -2104,10 +2038,10 @@ impl App {
             });
         }
 
-        self.worktree_sync_in_progress = true;
-        self.worktree_sync_rx = Some(rx);
-        self.worktree_sync_pending = count;
-        self.worktree_sync_completed.clear();
+        self.worktree_sync.in_progress = true;
+        self.worktree_sync.rx = Some(rx);
+        self.worktree_sync.pending = count;
+        self.worktree_sync.completed.clear();
         self.set_status(StatusLevel::Info, format!("Syncing {count} worktree(s)..."));
     }
 
@@ -2674,7 +2608,7 @@ impl App {
     /// Fire any due automations. Called once per ~second from `tick()`; pass
     /// `force = true` for the one-shot startup catch-up pass (ignores cadence).
     fn process_automations(&mut self, force: bool) {
-        if !force && self.tick_count % 100 != 0 {
+        if !force && self.metrics.tick_count % 100 != 0 {
             return;
         }
         let now = crate::sync::current_time_millis();
@@ -2770,11 +2704,11 @@ impl App {
             self.deferred_inputs.push((
                 session_id,
                 b"\r".to_vec(),
-                self.tick_count + DEFERRED_INPUT_DELAY_TICKS,
+                self.metrics.tick_count + DEFERRED_INPUT_DELAY_TICKS,
             ));
         } else {
             // Defer both paste and Enter so the freshly spawned agent can boot.
-            let paste_at = self.tick_count + boot_delay_ticks;
+            let paste_at = self.metrics.tick_count + boot_delay_ticks;
             self.deferred_inputs.push((session_id, paste, paste_at));
             self.deferred_inputs.push((
                 session_id,
@@ -2875,6 +2809,7 @@ impl App {
         self.refresh_automations();
         let now = crate::sync::current_time_millis();
         let entries: Vec<modals::AutomationListEntry> = self
+            .automation_ui
             .cached_automations
             .iter()
             .map(|a| modals::AutomationListEntry {
@@ -2917,7 +2852,13 @@ impl App {
     /// Open the centered-overlay editor pre-filled for an existing automation
     /// (the Ctrl+P list path).
     fn open_edit_automation(&mut self, id: i64) {
-        let Some(auto) = self.cached_automations.iter().find(|a| a.id == id).cloned() else {
+        let Some(auto) = self
+            .automation_ui
+            .cached_automations
+            .iter()
+            .find(|a| a.id == id)
+            .cloned()
+        else {
             return;
         };
         self.modal = modals::Modal::AutomationEditor(self.build_automation_editor(&auto));
@@ -2935,7 +2876,7 @@ impl App {
         m
     }
 
-    /// Keep the in-pane automation editor (`self.automation_editor`) in sync with
+    /// Keep the in-pane automation editor (`self.automation_ui.automation_editor`) in sync with
     /// the current focus + selection:
     /// - [`InputFocus::Automations`] → mirror the selected automation (preview).
     /// - [`InputFocus::AutomationEditor`] → leave in-progress edits untouched.
@@ -2943,23 +2884,27 @@ impl App {
     pub(crate) fn sync_automation_editor(&mut self) {
         match self.focus {
             InputFocus::Automations => {
-                self.automation_editor = self
+                self.automation_ui.automation_editor = self
+                    .automation_ui
                     .cached_automations
-                    .get(self.automation_panel_index)
+                    .get(self.automation_ui.automation_panel_index)
                     .cloned()
                     .map(|auto| self.build_automation_editor(&auto));
             }
             // Keep the editor + its run history intact while editing or
             // browsing history.
             InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => {}
-            _ => self.automation_editor = None,
+            _ => self.automation_ui.automation_editor = None,
         }
     }
 
     /// The id of the automation currently scoped in the central pane (the one
     /// being edited/previewed), if it's an existing automation.
     pub(crate) fn scoped_automation_id(&self) -> Option<i64> {
-        self.automation_editor.as_ref().and_then(|m| m.editing_id)
+        self.automation_ui
+            .automation_editor
+            .as_ref()
+            .and_then(|m| m.editing_id)
     }
 
     /// Open the session associated with the selected run-history entry: its
@@ -2967,7 +2912,11 @@ impl App {
     /// <uuid>"`). Switches to that session's terminal when it's still open,
     /// otherwise sets a status message.
     pub(crate) fn open_run_related_session(&mut self) {
-        let Some(run) = self.cached_automation_runs.get(self.automation_run_index) else {
+        let Some(run) = self
+            .automation_ui
+            .cached_automation_runs
+            .get(self.automation_ui.automation_run_index)
+        else {
             return;
         };
         // The detail is free text; pick out the first token that parses as a
@@ -2993,7 +2942,7 @@ impl App {
 
     /// Start a brand-new automation in the central pane and focus the editor.
     pub(crate) fn new_automation_in_pane(&mut self) {
-        self.automation_editor = Some(self.blank_automation_editor());
+        self.automation_ui.automation_editor = Some(self.blank_automation_editor());
         self.focus = InputFocus::AutomationEditor;
     }
 
@@ -3010,7 +2959,7 @@ impl App {
         // Build the editor for the current selection (focus is still
         // `Automations`, so `sync` populates it), then focus it.
         self.sync_automation_editor();
-        if self.automation_editor.is_some() {
+        if self.automation_ui.automation_editor.is_some() {
             self.focus = InputFocus::AutomationEditor;
         }
     }
@@ -3133,7 +3082,7 @@ impl App {
     /// panel selection valid.
     pub(crate) fn refresh_tasks(&mut self) {
         match self.db.list_tasks() {
-            Ok(tasks) => self.cached_tasks = tasks,
+            Ok(tasks) => self.task_ui.cached_tasks = tasks,
             Err(e) => error!("Failed to list tasks: {e}"),
         }
         self.recompute_task_filter();
@@ -3143,20 +3092,24 @@ impl App {
     /// panel selection into range. The tasks panel shows every task now —
     /// filtering happens through the global `Ctrl+A` search.
     pub(crate) fn recompute_task_filter(&mut self) {
-        self.filtered_task_indices = (0..self.cached_tasks.len()).collect();
-        if self.filtered_task_indices.is_empty() {
-            self.task_panel_index = 0;
+        self.task_ui.filtered_task_indices = (0..self.task_ui.cached_tasks.len()).collect();
+        if self.task_ui.filtered_task_indices.is_empty() {
+            self.task_ui.task_panel_index = 0;
         } else {
-            self.task_panel_index = self
+            self.task_ui.task_panel_index = self
+                .task_ui
                 .task_panel_index
-                .min(self.filtered_task_indices.len() - 1);
+                .min(self.task_ui.filtered_task_indices.len() - 1);
         }
     }
 
     /// The task currently selected in the panel (honoring the filter), if any.
     pub(crate) fn selected_task(&self) -> Option<&crate::session::Task> {
-        let idx = *self.filtered_task_indices.get(self.task_panel_index)?;
-        self.cached_tasks.get(idx)
+        let idx = *self
+            .task_ui
+            .filtered_task_indices
+            .get(self.task_ui.task_panel_index)?;
+        self.task_ui.cached_tasks.get(idx)
     }
 
     /// Indices into `self.sessions` of the **currently-open** sessions a task is
@@ -3180,7 +3133,7 @@ impl App {
             Some(crate::session::AutomationAction::Send { session_id }) => Some(*session_id),
             _ => None,
         };
-        let linked = self.task_session_links.get(&task.id).copied();
+        let linked = self.task_ui.task_session_links.get(&task.id).copied();
         let mut out = Vec::new();
         for (i, s) in self.sessions.iter().enumerate() {
             let related = s.info.name == spawn_name
@@ -3223,8 +3176,8 @@ impl App {
             .unwrap_or(0)
             .saturating_sub(1)
             .max(0);
-        let next = (self.task_preview_scroll as i32 + delta).clamp(0, max);
-        self.task_preview_scroll = next as u16;
+        let next = (self.task_ui.task_preview_scroll as i32 + delta).clamp(0, max);
+        self.task_ui.task_preview_scroll = next as u16;
     }
 
     /// Open the trigger-time action picker for `task`: one **Send** entry per
@@ -3252,7 +3205,8 @@ impl App {
     /// gets explicit context that it is solving a Thurbox task and how to fetch
     /// more / close it out (see [`crate::session::Task::agent_prompt`]).
     fn task_agent_prompt(&self, task_id: i64, title: &str) -> String {
-        self.cached_tasks
+        self.task_ui
+            .cached_tasks
             .iter()
             .find(|t| t.id == task_id)
             .map(|t| t.agent_prompt())
@@ -3279,7 +3233,7 @@ impl App {
         };
         let prompt = self.task_agent_prompt(task_id, title);
         self.send_prompt_to_session(session_id, &prompt, 0);
-        self.task_session_links.insert(task_id, session_id);
+        self.task_ui.task_session_links.insert(task_id, session_id);
         self.advance_task_to_in_progress(task_id, status);
         self.refresh_tasks();
         self.set_status(StatusLevel::Success, format!("Sent task to {name}"));
@@ -3312,7 +3266,7 @@ impl App {
         modals::TaskEditorModal::from_task(task)
     }
 
-    /// Keep the in-pane task editor (`self.task_editor`) in sync with focus +
+    /// Keep the in-pane task editor (`self.task_ui.task_editor`) in sync with focus +
     /// selection:
     /// - [`InputFocus::TaskList`] → mirror the selected task (live preview).
     /// - [`InputFocus::TaskEditor`] → leave in-progress edits untouched.
@@ -3322,14 +3276,14 @@ impl App {
         match self.focus {
             InputFocus::TaskList => {
                 // A fresh preview starts unscrolled.
-                self.task_preview_scroll = 0;
-                self.task_editor = self
+                self.task_ui.task_preview_scroll = 0;
+                self.task_ui.task_editor = self
                     .selected_task()
                     .cloned()
                     .map(|task| self.build_task_editor(&task));
             }
             InputFocus::TaskEditor => {}
-            _ => self.task_editor = None,
+            _ => self.task_ui.task_editor = None,
         }
     }
 
@@ -3341,7 +3295,7 @@ impl App {
 
     /// Start a brand-new task in the central pane and focus the editor.
     pub(crate) fn new_task_in_pane(&mut self) {
-        self.task_editor = Some(self.blank_task_editor());
+        self.task_ui.task_editor = Some(self.blank_task_editor());
         self.focus = InputFocus::TaskEditor;
     }
 
@@ -3349,7 +3303,7 @@ impl App {
     /// `Enter` on a session focusing its terminal).
     pub(crate) fn enter_task_editor(&mut self) {
         self.sync_task_editor();
-        if self.task_editor.is_some() {
+        if self.task_ui.task_editor.is_some() {
             self.focus = InputFocus::TaskEditor;
         }
     }
@@ -3415,8 +3369,8 @@ impl App {
         self.global_search.snapshot = Some(search::SearchSnapshot {
             focus: self.focus,
             active_index: self.active_index,
-            task_panel_index: self.task_panel_index,
-            automation_panel_index: self.automation_panel_index,
+            task_panel_index: self.task_ui.task_panel_index,
+            automation_panel_index: self.automation_ui.automation_panel_index,
             show_tasks_panel: self.show_tasks_panel,
             show_file_viewer: self.show_file_viewer,
         });
@@ -3437,8 +3391,8 @@ impl App {
     pub(crate) fn close_global_search(&mut self) {
         if let Some(snap) = self.global_search.snapshot.take() {
             self.active_index = snap.active_index.min(self.sessions.len().saturating_sub(1));
-            self.task_panel_index = snap.task_panel_index;
-            self.automation_panel_index = snap.automation_panel_index;
+            self.task_ui.task_panel_index = snap.task_panel_index;
+            self.automation_ui.automation_panel_index = snap.automation_panel_index;
             self.show_tasks_panel = snap.show_tasks_panel;
             self.show_file_viewer = snap.show_file_viewer;
             self.focus = snap.focus;
@@ -3571,7 +3525,7 @@ impl App {
     fn search_tasks(&self, query: &str, query_lc: &str) -> Vec<search::GlobalSearchResult> {
         use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
         let mut tasks: Vec<GlobalSearchResult> = Vec::new();
-        for task in &self.cached_tasks {
+        for task in &self.task_ui.cached_tasks {
             if tasks.len() >= MAX_PER_GROUP {
                 break;
             }
@@ -3610,7 +3564,7 @@ impl App {
     fn search_automations(&self, query: &str) -> Vec<search::GlobalSearchResult> {
         use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
         let mut automations: Vec<GlobalSearchResult> = Vec::new();
-        for auto in &self.cached_automations {
+        for auto in &self.automation_ui.cached_automations {
             if automations.len() >= MAX_PER_GROUP {
                 break;
             }
@@ -3721,16 +3675,22 @@ impl App {
                 self.show_tasks_panel = true;
                 self.refresh_tasks();
                 if let Some(pos) = self
+                    .task_ui
                     .filtered_task_indices
                     .iter()
-                    .position(|&i| self.cached_tasks.get(i).map(|t| t.id) == Some(id))
+                    .position(|&i| self.task_ui.cached_tasks.get(i).map(|t| t.id) == Some(id))
                 {
-                    self.task_panel_index = pos;
+                    self.task_ui.task_panel_index = pos;
                 }
             }
             search::SearchTarget::Automation { id } => {
-                if let Some(pos) = self.cached_automations.iter().position(|a| a.id == id) {
-                    self.automation_panel_index = pos;
+                if let Some(pos) = self
+                    .automation_ui
+                    .cached_automations
+                    .iter()
+                    .position(|a| a.id == id)
+                {
+                    self.automation_ui.automation_panel_index = pos;
                 }
             }
             // Files aren't previewed live — they only open on `Enter`.
@@ -3775,17 +3735,23 @@ impl App {
                 self.show_tasks_panel = true;
                 self.refresh_tasks();
                 if let Some(pos) = self
+                    .task_ui
                     .filtered_task_indices
                     .iter()
-                    .position(|&i| self.cached_tasks.get(i).map(|t| t.id) == Some(id))
+                    .position(|&i| self.task_ui.cached_tasks.get(i).map(|t| t.id) == Some(id))
                 {
-                    self.task_panel_index = pos;
+                    self.task_ui.task_panel_index = pos;
                 }
                 self.focus = InputFocus::TaskList;
             }
             search::SearchTarget::Automation { id } => {
-                if let Some(pos) = self.cached_automations.iter().position(|a| a.id == id) {
-                    self.automation_panel_index = pos;
+                if let Some(pos) = self
+                    .automation_ui
+                    .cached_automations
+                    .iter()
+                    .position(|a| a.id == id)
+                {
+                    self.automation_ui.automation_panel_index = pos;
                 }
                 self.focus = InputFocus::Automations;
                 self.refresh_automation_view();
@@ -3803,16 +3769,19 @@ impl App {
     /// Refresh the cached automations from the database.
     fn refresh_automations(&mut self) {
         match self.db.list_automations() {
-            Ok(autos) => self.cached_automations = autos,
+            Ok(autos) => self.automation_ui.cached_automations = autos,
             Err(e) => error!("Failed to list automations: {e}"),
         }
         // Keep the pane selection in range. The pane stays focusable even when
         // empty (so Ctrl+N can create the first automation), so focus is left
         // where it is.
-        if self.cached_automations.is_empty() {
-            self.automation_panel_index = 0;
-        } else if self.automation_panel_index >= self.cached_automations.len() {
-            self.automation_panel_index = self.cached_automations.len() - 1;
+        if self.automation_ui.cached_automations.is_empty() {
+            self.automation_ui.automation_panel_index = 0;
+        } else if self.automation_ui.automation_panel_index
+            >= self.automation_ui.cached_automations.len()
+        {
+            self.automation_ui.automation_panel_index =
+                self.automation_ui.cached_automations.len() - 1;
         }
         // Keep the central-pane run history fresh while the pane is scoped (e.g.
         // a just-fired automation gains a new run).
@@ -3825,38 +3794,43 @@ impl App {
     pub(crate) fn refresh_selected_automation_runs(&mut self) {
         // While editing / browsing history the runs belong to the scoped
         // automation; in list preview they follow the highlighted row.
-        let editing_id = self.automation_editor.as_ref().and_then(|m| m.editing_id);
+        let editing_id = self
+            .automation_ui
+            .automation_editor
+            .as_ref()
+            .and_then(|m| m.editing_id);
         let selected_id = match self.focus {
             InputFocus::AutomationEditor | InputFocus::AutomationRunHistory => editing_id,
             InputFocus::Automations => self
+                .automation_ui
                 .cached_automations
-                .get(self.automation_panel_index)
+                .get(self.automation_ui.automation_panel_index)
                 .map(|a| a.id),
             _ => None,
         };
         let Some(id) = selected_id else {
-            self.cached_automation_runs.clear();
-            self.cached_automation_runs_id = None;
-            self.automation_run_index = 0;
+            self.automation_ui.cached_automation_runs.clear();
+            self.automation_ui.cached_automation_runs_id = None;
+            self.automation_ui.automation_run_index = 0;
             return;
         };
         match self.db.list_automation_runs(id, 20) {
             Ok(runs) => {
-                self.cached_automation_runs = runs;
-                self.cached_automation_runs_id = Some(id);
+                self.automation_ui.cached_automation_runs = runs;
+                self.automation_ui.cached_automation_runs_id = Some(id);
             }
             Err(e) => {
                 error!("Failed to list automation runs for {id}: {e}");
-                self.cached_automation_runs.clear();
-                self.cached_automation_runs_id = None;
+                self.automation_ui.cached_automation_runs.clear();
+                self.automation_ui.cached_automation_runs_id = None;
             }
         }
         // Keep the run-history selection in range.
-        let len = self.cached_automation_runs.len();
+        let len = self.automation_ui.cached_automation_runs.len();
         if len == 0 {
-            self.automation_run_index = 0;
-        } else if self.automation_run_index >= len {
-            self.automation_run_index = len - 1;
+            self.automation_ui.automation_run_index = 0;
+        } else if self.automation_ui.automation_run_index >= len {
+            self.automation_ui.automation_run_index = len - 1;
         }
     }
 
@@ -3916,7 +3890,7 @@ impl App {
             self.show_tasks_panel,
             self.show_file_viewer,
             self.global_search.active,
-            self.cached_automations.len(),
+            self.automation_ui.cached_automations.len(),
         )
         .terminal;
         let inner = Block::default().borders(Borders::ALL).inner(terminal);
@@ -4639,15 +4613,15 @@ mod tests {
 
         // j/k navigate within the pane; past either end they loop out into the
         // session list (the column is circular).
-        app.cached_automations = vec![make(1, "a"), make(2, "b")];
+        app.automation_ui.cached_automations = vec![make(1, "a"), make(2, "b")];
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.handle_automations_pane_key(KeyCode::Char('j'));
-        assert_eq!(app.automation_panel_index, 1);
+        assert_eq!(app.automation_ui.automation_panel_index, 1);
         app.handle_automations_pane_key(KeyCode::Char('k'));
-        assert_eq!(app.automation_panel_index, 0);
+        assert_eq!(app.automation_ui.automation_panel_index, 0);
         // j past the last automation loops out to the session list.
-        app.automation_panel_index = 1;
+        app.automation_ui.automation_panel_index = 1;
         app.handle_automations_pane_key(KeyCode::Char('j'));
         assert_eq!(app.focus, InputFocus::SessionList);
     }
@@ -4671,18 +4645,18 @@ mod tests {
             next_run_at: None,
         };
         let mut app = app_with_sessions(2);
-        app.cached_automations = vec![make(1, "a"), make(2, "b")];
+        app.automation_ui.cached_automations = vec![make(1, "a"), make(2, "b")];
 
         // Down past the last session drops into the automations pane.
         app.focus = InputFocus::SessionList;
         app.active_index = 1; // last session in render order
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::Automations);
-        assert_eq!(app.automation_panel_index, 0);
+        assert_eq!(app.automation_ui.automation_panel_index, 0);
 
         // Down past the last automation loops to the TOP session.
         app.handle_automations_pane_key(KeyCode::Char('j')); // a → b
-        assert_eq!(app.automation_panel_index, 1);
+        assert_eq!(app.automation_ui.automation_panel_index, 1);
         app.handle_automations_pane_key(KeyCode::Char('j')); // past last → top session
         assert_eq!(app.focus, InputFocus::SessionList);
         assert_eq!(app.active_index, 0, "looped to first session");
@@ -4690,10 +4664,13 @@ mod tests {
         // Up from the first session loops to the LAST automation.
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::Automations);
-        assert_eq!(app.automation_panel_index, 1, "looped to last automation");
+        assert_eq!(
+            app.automation_ui.automation_panel_index, 1,
+            "looped to last automation"
+        );
 
         // And k at the top automation hands back up to the last session.
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.handle_automations_pane_key(KeyCode::Char('k'));
         assert_eq!(app.focus, InputFocus::SessionList);
         assert_eq!(app.active_index, 1, "back to last session");
@@ -5083,6 +5060,7 @@ mod tests {
         app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::TaskList);
         let editor = app
+            .task_ui
             .task_editor
             .as_ref()
             .expect("the central pane must mirror the selected task");
@@ -5184,7 +5162,7 @@ mod tests {
         app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
         // n starts a new task in the central-pane editor (not a modal).
         assert_eq!(app.focus, InputFocus::TaskEditor);
-        assert!(app.task_editor.is_some());
+        assert!(app.task_ui.task_editor.is_some());
         assert!(matches!(app.modal, modals::Modal::None));
     }
 
@@ -5196,11 +5174,17 @@ mod tests {
             .unwrap();
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
         // Enter opens the editor in the central pane for the selected task.
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::TaskEditor);
-        assert!(app.task_editor.as_ref().unwrap().editing_id.is_some());
+        assert!(app
+            .task_ui
+            .task_editor
+            .as_ref()
+            .unwrap()
+            .editing_id
+            .is_some());
         // Esc discards and returns to the tasks panel.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::TaskList);
@@ -5245,7 +5229,7 @@ mod tests {
         app.db.update_task(&t).unwrap();
         app.refresh_tasks();
 
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
         app.enter_task_editor();
         // Append to the title and save.
         app.handle_key(KeyCode::End, KeyModifiers::NONE);
@@ -5297,7 +5281,7 @@ mod tests {
             .unwrap();
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
 
         app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
         assert!(
@@ -5383,7 +5367,7 @@ mod tests {
 
         // Record the link the spawn tail would set, then it resolves.
         let sid = app.sessions[0].info.id;
-        app.task_session_links.insert(id, sid);
+        app.task_ui.task_session_links.insert(id, sid);
         assert_eq!(app.task_related_session_indices(&task), vec![0]);
     }
 
@@ -5397,7 +5381,7 @@ mod tests {
         app.sessions[1].info.name = format!("task-{id}");
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
 
         app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
         assert_eq!(app.active_index, 1, "jumps to the related session");
@@ -5413,7 +5397,7 @@ mod tests {
             .unwrap();
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
 
         app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
         // Nothing related is open → stay in the panel.
@@ -5433,13 +5417,13 @@ mod tests {
         let _ = id;
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
         // Over-scroll up is clamped to 0.
         app.scroll_task_preview(-5);
-        assert_eq!(app.task_preview_scroll, 0);
+        assert_eq!(app.task_ui.task_preview_scroll, 0);
         // Over-scroll down is clamped to the rendered line count.
         app.scroll_task_preview(1000);
-        assert!(app.task_preview_scroll <= 3);
+        assert!(app.task_ui.task_preview_scroll <= 3);
     }
 
     #[test]
@@ -5450,7 +5434,7 @@ mod tests {
         app.focus = InputFocus::TaskList;
         app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        assert_eq!(app.task_editor.as_ref().unwrap().title.value(), "e");
+        assert_eq!(app.task_ui.task_editor.as_ref().unwrap().title.value(), "e");
         assert_eq!(app.focus, InputFocus::TaskEditor);
     }
 
@@ -5845,7 +5829,7 @@ mod tests {
         app.active_index = 2; // last in render order (no admins)
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::Automations);
-        assert_eq!(app.automation_panel_index, 0);
+        assert_eq!(app.automation_ui.automation_panel_index, 0);
     }
 
     #[test]
@@ -5869,7 +5853,7 @@ mod tests {
         // Above the first session the column loops to the bottom: the last
         // automation in the pane.
         assert_eq!(app.focus, InputFocus::Automations);
-        assert_eq!(app.automation_panel_index, 1);
+        assert_eq!(app.automation_ui.automation_panel_index, 1);
     }
 
     #[test]
@@ -5877,7 +5861,7 @@ mod tests {
         let mut app = app_with_sessions(3);
         add_test_automation(&mut app, "nightly");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::SessionList);
         assert_eq!(app.active_index, 2); // last in render order
@@ -5897,7 +5881,7 @@ mod tests {
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
         app.active_index = 1;
-        app.automation_panel_index = 0; // the only (= last) automation
+        app.automation_ui.automation_panel_index = 0; // the only (= last) automation
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         // Past the last automation the column loops back to the top session.
         assert_eq!(app.focus, InputFocus::SessionList);
@@ -5910,9 +5894,9 @@ mod tests {
         add_test_automation(&mut app, "a");
         add_test_automation(&mut app, "b");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.automation_panel_index, 1);
+        assert_eq!(app.automation_ui.automation_panel_index, 1);
     }
 
     #[test]
@@ -5924,7 +5908,11 @@ mod tests {
         // (unsaved) automation.
         assert_eq!(app.focus, InputFocus::AutomationEditor);
         assert!(matches!(app.modal, modals::Modal::None));
-        let editor = app.automation_editor.as_ref().expect("editor present");
+        let editor = app
+            .automation_ui
+            .automation_editor
+            .as_ref()
+            .expect("editor present");
         assert!(editor.editing_id.is_none(), "should be a new automation");
     }
 
@@ -5933,11 +5921,15 @@ mod tests {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::AutomationEditor);
         assert!(matches!(app.modal, modals::Modal::None));
-        let editor = app.automation_editor.as_ref().expect("editor present");
+        let editor = app
+            .automation_ui
+            .automation_editor
+            .as_ref()
+            .expect("editor present");
         assert!(
             editor.editing_id.is_some(),
             "should edit the existing automation"
@@ -5949,7 +5941,7 @@ mod tests {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         // Ctrl+L moves focus into the central-pane editor (like a session).
         app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
@@ -5965,15 +5957,25 @@ mod tests {
         add_test_automation(&mut app, "a");
         add_test_automation(&mut app, "b");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
-        let first = app.automation_editor.as_ref().unwrap().editing_id;
-        assert_eq!(first, Some(app.cached_automations[0].id));
+        let first = app
+            .automation_ui
+            .automation_editor
+            .as_ref()
+            .unwrap()
+            .editing_id;
+        assert_eq!(first, Some(app.automation_ui.cached_automations[0].id));
         // Moving down rebuilds the preview to mirror the next automation.
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.automation_panel_index, 1);
-        let second = app.automation_editor.as_ref().unwrap().editing_id;
-        assert_eq!(second, Some(app.cached_automations[1].id));
+        assert_eq!(app.automation_ui.automation_panel_index, 1);
+        let second = app
+            .automation_ui
+            .automation_editor
+            .as_ref()
+            .unwrap()
+            .editing_id;
+        assert_eq!(second, Some(app.automation_ui.cached_automations[1].id));
         assert_ne!(first, second);
     }
 
@@ -5983,11 +5985,11 @@ mod tests {
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
         app.sync_automation_editor();
-        assert!(app.automation_editor.is_some());
+        assert!(app.automation_ui.automation_editor.is_some());
         // Focusing a session drops the in-pane editor preview.
         app.focus = InputFocus::SessionList;
         app.sync_automation_editor();
-        assert!(app.automation_editor.is_none());
+        assert!(app.automation_ui.automation_editor.is_none());
     }
 
     #[test]
@@ -5995,11 +5997,11 @@ mod tests {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         app.focus = InputFocus::AutomationEditor;
         // Edit the name, then save with Enter.
-        if let Some(ed) = app.automation_editor.as_mut() {
+        if let Some(ed) = app.automation_ui.automation_editor.as_mut() {
             ed.field = AutomationField::Name;
             ed.name.set("renamed");
         }
@@ -6015,10 +6017,10 @@ mod tests {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         app.focus = InputFocus::AutomationEditor;
-        if let Some(ed) = app.automation_editor.as_mut() {
+        if let Some(ed) = app.automation_ui.automation_editor.as_mut() {
             ed.name.set("scratch");
         }
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
@@ -6033,10 +6035,15 @@ mod tests {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         app.focus = InputFocus::AutomationEditor;
-        let before = app.automation_editor.as_ref().unwrap().enabled;
+        let before = app
+            .automation_ui
+            .automation_editor
+            .as_ref()
+            .unwrap()
+            .enabled;
         let fv_before = app.show_file_viewer;
         // Ctrl+E is the global file-viewer toggle, but the pane editor must
         // capture it as "toggle enabled" instead.
@@ -6046,7 +6053,11 @@ mod tests {
             "file viewer must not toggle"
         );
         assert_eq!(
-            app.automation_editor.as_ref().unwrap().enabled,
+            app.automation_ui
+                .automation_editor
+                .as_ref()
+                .unwrap()
+                .enabled,
             !before,
             "Ctrl+E should flip the editor's enabled flag"
         );
@@ -6057,7 +6068,7 @@ mod tests {
         let mut app = app_with_sessions(2);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         // Automations → editor → run history → back to Automations (never lands
         // on a session, mirroring how Esc returns to the selected automation).
@@ -6085,7 +6096,7 @@ mod tests {
     fn enter_on_run_opens_related_session() {
         let mut app = app_with_sessions(2);
         add_test_automation(&mut app, "a");
-        let auto_id = app.cached_automations[0].id;
+        let auto_id = app.automation_ui.cached_automations[0].id;
         // Record a run whose detail references session #1 (as fire_automation
         // would: "session <uuid>").
         let target = app.sessions[1].info.id;
@@ -6097,11 +6108,11 @@ mod tests {
             )
             .unwrap();
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         app.focus = InputFocus::AutomationRunHistory;
         app.refresh_selected_automation_runs();
-        app.automation_run_index = 0;
+        app.automation_ui.automation_run_index = 0;
 
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
 
@@ -6113,7 +6124,7 @@ mod tests {
     fn enter_on_run_without_session_stays_in_history() {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
-        let auto_id = app.cached_automations[0].id;
+        let auto_id = app.automation_ui.cached_automations[0].id;
         // A skipped run has no session id in its detail.
         app.db
             .record_automation_run(
@@ -6123,7 +6134,7 @@ mod tests {
             )
             .unwrap();
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         app.focus = InputFocus::AutomationRunHistory;
         app.refresh_selected_automation_runs();
@@ -6138,7 +6149,7 @@ mod tests {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         app.focus = InputFocus::AutomationEditor;
         // Editor → run history → editor.
@@ -6152,7 +6163,7 @@ mod tests {
     fn run_history_jk_moves_selection_and_r_triggers_run() {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
-        let id = app.cached_automations[0].id;
+        let id = app.automation_ui.cached_automations[0].id;
         // Two recorded runs so j/k has something to move over.
         app.db
             .record_automation_run(id, AutomationRunStatus::Success, "one")
@@ -6161,15 +6172,15 @@ mod tests {
             .record_automation_run(id, AutomationRunStatus::Error, "two")
             .unwrap();
         app.focus = InputFocus::Automations;
-        app.automation_panel_index = 0;
+        app.automation_ui.automation_panel_index = 0;
         app.sync_automation_editor();
         app.focus = InputFocus::AutomationRunHistory;
         app.refresh_selected_automation_runs();
-        assert_eq!(app.automation_run_index, 0);
+        assert_eq!(app.automation_ui.automation_run_index, 0);
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.automation_run_index, 1);
+        assert_eq!(app.automation_ui.automation_run_index, 1);
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(app.automation_run_index, 0);
+        assert_eq!(app.automation_ui.automation_run_index, 0);
         // `r` marks the automation due (next_run_at in the past/now).
         app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
         let auto = app.db.get_automation(id).unwrap().unwrap();
@@ -6184,19 +6195,19 @@ mod tests {
     fn focusing_automations_loads_selected_run_history() {
         let mut app = app_with_sessions(1);
         add_test_automation(&mut app, "a");
-        let id = app.cached_automations[0].id;
+        let id = app.automation_ui.cached_automations[0].id;
         app.db
             .record_automation_run(id, AutomationRunStatus::Success, "spawned x")
             .unwrap();
         // While the pane is unfocused the run cache is empty.
-        assert!(app.cached_automation_runs.is_empty());
+        assert!(app.automation_ui.cached_automation_runs.is_empty());
         // Entering the pane (via j from the last/only session) loads it.
         app.focus = InputFocus::SessionList;
         app.active_index = 0;
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::Automations);
-        assert_eq!(app.cached_automation_runs_id, Some(id));
-        assert_eq!(app.cached_automation_runs.len(), 1);
+        assert_eq!(app.automation_ui.cached_automation_runs_id, Some(id));
+        assert_eq!(app.automation_ui.cached_automation_runs.len(), 1);
     }
 
     #[test]
@@ -6598,7 +6609,7 @@ mod tests {
     fn start_sync_with_no_sessions_shows_info() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         app.start_sync();
-        assert!(!app.worktree_sync_in_progress);
+        assert!(!app.worktree_sync.in_progress);
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Info);
         assert_eq!(msg.text, "No worktrees to sync");
@@ -6607,7 +6618,7 @@ mod tests {
     #[test]
     fn start_sync_ignores_if_already_in_progress() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
-        app.worktree_sync_in_progress = true;
+        app.worktree_sync.in_progress = true;
         app.status_message = None;
         app.start_sync();
         // Should not set any new status message
@@ -6633,8 +6644,8 @@ mod tests {
         }];
 
         app.start_sync();
-        assert!(app.worktree_sync_in_progress);
-        assert_eq!(app.worktree_sync_pending, 1);
+        assert!(app.worktree_sync.in_progress);
+        assert_eq!(app.worktree_sync.pending, 1);
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Info);
         assert!(msg.text.contains("Syncing 1 worktree"));
@@ -6646,7 +6657,7 @@ mod tests {
         // Session has no worktrees
         assert!(app.sessions[0].info.worktrees.is_empty());
         app.start_sync();
-        assert!(!app.worktree_sync_in_progress);
+        assert!(!app.worktree_sync.in_progress);
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Info);
         assert_eq!(msg.text, "No worktrees to sync");
@@ -6668,7 +6679,7 @@ mod tests {
         app.sessions.push(other);
         // active_index is 0 (no worktrees), so sync should find nothing
         app.start_sync();
-        assert!(!app.worktree_sync_in_progress);
+        assert!(!app.worktree_sync.in_progress);
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.text, "No worktrees to sync");
     }
@@ -6694,25 +6705,25 @@ mod tests {
         app.sessions.push(other);
         // Only the active session's 1 worktree should be synced, not 2.
         app.start_sync();
-        assert!(app.worktree_sync_in_progress);
-        assert_eq!(app.worktree_sync_pending, 1);
+        assert!(app.worktree_sync.in_progress);
+        assert_eq!(app.worktree_sync.pending, 1);
     }
 
     #[test]
     fn tick_increments_tick_count() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
-        assert_eq!(app.tick_count, 0);
+        assert_eq!(app.metrics.tick_count, 0);
         app.tick();
-        assert_eq!(app.tick_count, 1);
+        assert_eq!(app.metrics.tick_count, 1);
         app.tick();
-        assert_eq!(app.tick_count, 2);
+        assert_eq!(app.metrics.tick_count, 2);
     }
 
     #[test]
     fn finish_sync_all_synced_shows_success() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
         let id = SessionId::default();
-        app.worktree_sync_completed = vec![
+        app.worktree_sync.completed = vec![
             (id, git::SyncResult::Synced),
             (SessionId::default(), git::SyncResult::Synced),
         ];
@@ -6725,7 +6736,7 @@ mod tests {
     #[test]
     fn finish_sync_with_errors_shows_error() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
-        app.worktree_sync_completed = vec![(
+        app.worktree_sync.completed = vec![(
             SessionId::default(),
             git::SyncResult::Error("fetch failed".into()),
         )];
@@ -6739,7 +6750,7 @@ mod tests {
     #[test]
     fn finish_sync_with_conflicts_shows_info() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
-        app.worktree_sync_completed = vec![
+        app.worktree_sync.completed = vec![
             (SessionId::default(), git::SyncResult::Synced),
             (
                 SessionId::default(),
@@ -6756,7 +6767,7 @@ mod tests {
     #[test]
     fn finish_sync_errors_take_priority_over_conflicts() {
         let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
-        app.worktree_sync_completed = vec![
+        app.worktree_sync.completed = vec![
             (
                 SessionId::default(),
                 git::SyncResult::Conflict("merge conflict".into()),
@@ -6779,12 +6790,12 @@ mod tests {
         app.deferred_inputs.push((id, b"hello".to_vec(), 5));
 
         // Before target tick: nothing drained
-        app.tick_count = 4;
+        app.metrics.tick_count = 4;
         app.drain_deferred_inputs();
         assert_eq!(app.deferred_inputs.len(), 1);
 
         // At target tick: drained (no matching session, but entry is removed)
-        app.tick_count = 5;
+        app.metrics.tick_count = 5;
         app.drain_deferred_inputs();
         assert!(app.deferred_inputs.is_empty());
     }
@@ -6796,7 +6807,7 @@ mod tests {
         app.deferred_inputs.push((id, b"early".to_vec(), 5));
         app.deferred_inputs.push((id, b"late".to_vec(), 20));
 
-        app.tick_count = 5;
+        app.metrics.tick_count = 5;
         app.drain_deferred_inputs();
         assert_eq!(app.deferred_inputs.len(), 1);
         assert_eq!(app.deferred_inputs[0].2, 20);
@@ -6829,14 +6840,14 @@ mod tests {
         tx.send((id, git::SyncResult::Synced)).unwrap();
         drop(tx);
 
-        app.worktree_sync_in_progress = true;
-        app.worktree_sync_rx = Some(rx);
-        app.worktree_sync_pending = 1;
+        app.worktree_sync.in_progress = true;
+        app.worktree_sync.rx = Some(rx);
+        app.worktree_sync.pending = 1;
 
         app.poll_sync_results();
 
-        assert!(!app.worktree_sync_in_progress);
-        assert!(app.worktree_sync_rx.is_none());
+        assert!(!app.worktree_sync.in_progress);
+        assert!(app.worktree_sync.rx.is_none());
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Success);
     }
@@ -6850,16 +6861,16 @@ mod tests {
             .unwrap();
         // Don't drop tx — second result hasn't arrived yet
 
-        app.worktree_sync_in_progress = true;
-        app.worktree_sync_rx = Some(rx);
-        app.worktree_sync_pending = 2;
+        app.worktree_sync.in_progress = true;
+        app.worktree_sync.rx = Some(rx);
+        app.worktree_sync.pending = 2;
 
         app.poll_sync_results();
 
         // Still in progress — only 1 of 2 received
-        assert!(app.worktree_sync_in_progress);
-        assert!(app.worktree_sync_rx.is_some());
-        assert_eq!(app.worktree_sync_completed.len(), 1);
+        assert!(app.worktree_sync.in_progress);
+        assert!(app.worktree_sync.rx.is_some());
+        assert_eq!(app.worktree_sync.completed.len(), 1);
     }
 
     #[test]
@@ -7165,16 +7176,16 @@ mod tests {
         }
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.task_panel_index, 1);
+        assert_eq!(app.task_ui.task_panel_index, 1);
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.task_panel_index, 2);
+        assert_eq!(app.task_ui.task_panel_index, 2);
         // j at the last row stays put (no wrap).
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.task_panel_index, 2);
+        assert_eq!(app.task_ui.task_panel_index, 2);
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(app.task_panel_index, 1);
+        assert_eq!(app.task_ui.task_panel_index, 1);
     }
 
     #[test]
@@ -7186,7 +7197,7 @@ mod tests {
             .unwrap();
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
         assert_eq!(
             app.db.get_task(id).unwrap().unwrap().status,
             crate::session::TaskStatus::Todo
@@ -7206,7 +7217,7 @@ mod tests {
             .unwrap();
         app.refresh_tasks();
         app.focus = InputFocus::TaskList;
-        app.task_panel_index = 0;
+        app.task_ui.task_panel_index = 0;
         app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
         assert!(
             app.db.list_tasks().unwrap().is_empty(),
@@ -7218,11 +7229,11 @@ mod tests {
     fn task_list_esc_returns_to_session_list() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::TaskList;
-        app.task_editor = Some(modals::TaskEditorModal::new());
+        app.task_ui.task_editor = Some(modals::TaskEditorModal::new());
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::SessionList);
         assert!(
-            app.task_editor.is_none(),
+            app.task_ui.task_editor.is_none(),
             "leaving the panel clears the editor"
         );
     }

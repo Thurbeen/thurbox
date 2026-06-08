@@ -272,6 +272,7 @@ impl App {
                 let task_id = p.task_id;
                 let title = p.title.clone();
                 let status = self
+                    .task_ui
                     .cached_tasks
                     .iter()
                     .find(|t| t.id == task_id)
@@ -285,7 +286,7 @@ impl App {
                     TaskActionChoice::SpawnNew => {
                         // Reuse the normal new-session flow; the prompt is
                         // delivered + the task advanced when the spawn lands.
-                        self.pending_task_prompt = Some((task_id, title));
+                        self.task_ui.pending_task_prompt = Some((task_id, title));
                         self.open_repo_picker();
                     }
                 }
@@ -397,7 +398,7 @@ impl App {
     /// selection at the top (newest run) when entering that panel.
     fn on_focus_changed(&mut self) {
         if self.focus == InputFocus::AutomationRunHistory {
-            self.automation_run_index = 0;
+            self.automation_ui.automation_run_index = 0;
         }
         // Entering the tasks panel via the cycle: refresh the task list and the
         // in-pane editor preview.
@@ -420,7 +421,7 @@ impl App {
             self.new_automation_in_pane();
             return;
         }
-        let count = self.cached_automations.len();
+        let count = self.automation_ui.cached_automations.len();
         // `k`/Up at the top row (or empty pane) flows focus back up into the
         // session list; `j`/Down past the last loops to the top of it — so the
         // left column behaves as one circular vertical list.
@@ -446,21 +447,22 @@ impl App {
         if count == 0 {
             return; // empty pane: remaining nav/actions are no-ops
         }
-        if self.automation_panel_index >= count {
-            self.automation_panel_index = count - 1;
+        if self.automation_ui.automation_panel_index >= count {
+            self.automation_ui.automation_panel_index = count - 1;
         }
-        let id = self.cached_automations[self.automation_panel_index].id;
+        let id =
+            self.automation_ui.cached_automations[self.automation_ui.automation_panel_index].id;
         self.handle_automation_pane_action(code, id);
     }
 
     /// `k`/Up in the automations pane: step up, or hand focus back to the
     /// session list (last row) at the top / when empty.
     fn automations_pane_move_up(&mut self, count: usize) {
-        if self.automation_panel_index == 0 || count == 0 {
+        if self.automation_ui.automation_panel_index == 0 || count == 0 {
             self.focus = InputFocus::SessionList;
             self.select_last_session();
         } else {
-            self.automation_panel_index -= 1;
+            self.automation_ui.automation_panel_index -= 1;
         }
         self.refresh_automation_view();
     }
@@ -468,11 +470,11 @@ impl App {
     /// `j`/Down in the automations pane: step down, or loop focus to the top of
     /// the session list past the last row / when empty.
     fn automations_pane_move_down(&mut self, count: usize) {
-        if count == 0 || self.automation_panel_index + 1 >= count {
+        if count == 0 || self.automation_ui.automation_panel_index + 1 >= count {
             self.focus = InputFocus::SessionList;
             self.select_first_session();
         } else {
-            self.automation_panel_index += 1;
+            self.automation_ui.automation_panel_index += 1;
         }
         self.refresh_automation_view();
     }
@@ -487,9 +489,9 @@ impl App {
             KeyCode::Char('r') => self.run_automation_by_id(id),
             KeyCode::Char('d') => {
                 self.delete_automation_by_id(id);
-                let new_count = self.cached_automations.len();
-                if new_count > 0 && self.automation_panel_index >= new_count {
-                    self.automation_panel_index = new_count - 1;
+                let new_count = self.automation_ui.cached_automations.len();
+                if new_count > 0 && self.automation_ui.automation_panel_index >= new_count {
+                    self.automation_ui.automation_panel_index = new_count - 1;
                 }
                 self.refresh_automation_view();
             }
@@ -503,7 +505,7 @@ impl App {
     /// as global focus actions, so they move focus out of / back into the editor.
     fn handle_automation_editor_pane_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         // No editor yet (e.g. focused an empty pane): allow create / leave only.
-        let Some(editor) = self.automation_editor.as_mut() else {
+        let Some(editor) = self.automation_ui.automation_editor.as_mut() else {
             match code {
                 KeyCode::Char('n') => self.new_automation_in_pane(),
                 KeyCode::Esc => self.focus = InputFocus::Automations,
@@ -514,13 +516,13 @@ impl App {
         match editor.handle_key(code, mods) {
             super::modals::EditorOutcome::Continue => {}
             super::modals::EditorOutcome::Save => {
-                let Some(editor) = self.automation_editor.clone() else {
+                let Some(editor) = self.automation_ui.automation_editor.clone() else {
                     return;
                 };
                 if self.save_automation(&editor) {
                     // A brand-new automation lands at the top of the list.
                     if editor.editing_id.is_none() {
-                        self.automation_panel_index = 0;
+                        self.automation_ui.automation_panel_index = 0;
                     }
                     self.focus = InputFocus::Automations;
                     self.refresh_automation_view();
@@ -540,13 +542,14 @@ impl App {
     fn handle_automation_run_history_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                let len = self.cached_automation_runs.len();
-                if len > 0 && self.automation_run_index + 1 < len {
-                    self.automation_run_index += 1;
+                let len = self.automation_ui.cached_automation_runs.len();
+                if len > 0 && self.automation_ui.automation_run_index + 1 < len {
+                    self.automation_ui.automation_run_index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.automation_run_index = self.automation_run_index.saturating_sub(1);
+                self.automation_ui.automation_run_index =
+                    self.automation_ui.automation_run_index.saturating_sub(1);
             }
             // Trigger a fresh run of the scoped automation now. (`run_automation_by_id`
             // refreshes the caches; the new run record lands on a later tick.)
@@ -570,7 +573,7 @@ impl App {
     /// navigation is the `TaskEditorModal`'s own. Mirrors
     /// `handle_automation_editor_pane_key`.
     fn handle_task_editor_pane_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        let Some(editor) = self.task_editor.as_mut() else {
+        let Some(editor) = self.task_ui.task_editor.as_mut() else {
             match code {
                 KeyCode::Char('n') => self.new_task_in_pane(),
                 KeyCode::Esc => self.focus = InputFocus::TaskList,
@@ -581,13 +584,13 @@ impl App {
         match editor.handle_key(code, mods) {
             super::modals::EditorOutcome::Continue => {}
             super::modals::EditorOutcome::Save => {
-                let Some(editor) = self.task_editor.clone() else {
+                let Some(editor) = self.task_ui.task_editor.clone() else {
                     return;
                 };
                 if self.save_task(&editor) {
                     // A brand-new task lands at the top of the list.
                     if editor.editing_id.is_none() {
-                        self.task_panel_index = 0;
+                        self.task_ui.task_panel_index = 0;
                     }
                     self.focus = InputFocus::TaskList;
                     self.refresh_task_view();
@@ -613,22 +616,22 @@ impl App {
             return;
         }
 
-        let count = self.filtered_task_indices.len();
+        let count = self.task_ui.filtered_task_indices.len();
         match code {
             KeyCode::Char('j') | KeyCode::Down
-                if count > 0 && self.task_panel_index + 1 < count =>
+                if count > 0 && self.task_ui.task_panel_index + 1 < count =>
             {
-                self.task_panel_index += 1;
+                self.task_ui.task_panel_index += 1;
                 self.refresh_task_view();
             }
             KeyCode::Char('j') | KeyCode::Down => {}
             KeyCode::Char('k') | KeyCode::Up => {
-                self.task_panel_index = self.task_panel_index.saturating_sub(1);
+                self.task_ui.task_panel_index = self.task_ui.task_panel_index.saturating_sub(1);
                 self.refresh_task_view();
             }
             KeyCode::Esc => {
                 self.focus = InputFocus::SessionList;
-                self.task_editor = None;
+                self.task_ui.task_editor = None;
             }
             // Open the central-pane editor for the selected task. On an empty
             // panel, start a new task instead.
@@ -678,9 +681,9 @@ impl App {
             error!("Failed to delete task {id}: {e}");
         }
         self.refresh_tasks();
-        let new_count = self.filtered_task_indices.len();
-        if new_count > 0 && self.task_panel_index >= new_count {
-            self.task_panel_index = new_count - 1;
+        let new_count = self.task_ui.filtered_task_indices.len();
+        if new_count > 0 && self.task_ui.task_panel_index >= new_count {
+            self.task_ui.task_panel_index = new_count - 1;
         }
         self.refresh_task_view();
     }
@@ -1326,7 +1329,7 @@ impl App {
         } else {
             // A manual new-session must not inherit a task prompt left over from
             // a cancelled task-spawn.
-            self.pending_task_prompt = None;
+            self.task_ui.pending_task_prompt = None;
             self.start_new_session();
         }
     }
@@ -1361,7 +1364,7 @@ impl App {
         self.show_tasks_panel = !self.show_tasks_panel;
         if self.show_tasks_panel {
             self.refresh_tasks();
-            self.task_panel_index = 0;
+            self.task_ui.task_panel_index = 0;
             self.focus = InputFocus::TaskList;
             // Populate the central-pane preview for the selected task (without
             // this the workspace shows the empty hint).
@@ -1389,7 +1392,7 @@ impl App {
     fn act_session_list_next(&mut self) {
         if self.active_is_last_in_order() {
             self.focus = InputFocus::Automations;
-            self.automation_panel_index = 0;
+            self.automation_ui.automation_panel_index = 0;
             self.refresh_automation_view();
         } else {
             self.switch_session_forward();
@@ -1401,7 +1404,11 @@ impl App {
     fn act_session_list_prev(&mut self) {
         if self.active_is_first_in_order() {
             self.focus = InputFocus::Automations;
-            self.automation_panel_index = self.cached_automations.len().saturating_sub(1);
+            self.automation_ui.automation_panel_index = self
+                .automation_ui
+                .cached_automations
+                .len()
+                .saturating_sub(1);
             self.refresh_automation_view();
         } else {
             self.switch_session_backward();

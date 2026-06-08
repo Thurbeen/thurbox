@@ -31,7 +31,7 @@ impl App {
             self.show_tasks_panel,
             self.show_file_viewer,
             self.global_search.active,
-            self.cached_automations.len(),
+            self.automation_ui.cached_automations.len(),
         );
 
         self.render_header(frame, areas.header);
@@ -164,6 +164,7 @@ impl App {
         let now = crate::sync::current_time_millis();
         let search = self.global_search_query();
         let entries: Vec<automations_panel::AutomationPaneEntry> = self
+            .automation_ui
             .cached_automations
             .iter()
             .map(|a| {
@@ -188,6 +189,7 @@ impl App {
             _ => crate::ui::FocusLevel::Inactive,
         };
         let selected = self
+            .automation_ui
             .automation_panel_index
             .min(entries.len().saturating_sub(1));
         let preview_selected =
@@ -215,6 +217,7 @@ impl App {
         let now = crate::sync::current_time_millis();
         let agent_usage = self.usage.get(&info.agent);
         let automation_entries: Vec<info_panel::AutomationEntry> = self
+            .automation_ui
             .cached_automations
             .iter()
             .filter(|a| a.enabled && a.next_run_at.is_some())
@@ -230,7 +233,7 @@ impl App {
             frame,
             info_area,
             info,
-            Some(&self.system_metrics),
+            Some(&self.metrics.system_metrics),
             &automation_entries,
             agent_usage,
         );
@@ -243,9 +246,10 @@ impl App {
         };
         let search = self.global_search_query();
         let entries: Vec<tasks_panel::TaskPaneEntry> = self
+            .task_ui
             .filtered_task_indices
             .iter()
-            .filter_map(|&i| self.cached_tasks.get(i))
+            .filter_map(|&i| self.task_ui.cached_tasks.get(i))
             .map(|t| {
                 let title = truncate_str(&t.title, 40);
                 // Match against the displayed (truncated) title so highlight
@@ -274,7 +278,7 @@ impl App {
             area,
             &tasks_panel::TaskPaneState {
                 entries: &entries,
-                selected: self.task_panel_index,
+                selected: self.task_ui.task_panel_index,
                 focus,
                 preview_selected,
             },
@@ -389,9 +393,14 @@ impl App {
                 session_count: self.sessions.len(),
                 status: self.status_message.as_ref(),
                 focus_label,
-                sync_in_progress: self.worktree_sync_in_progress,
-                tick_count: self.tick_count,
-                automation_count: self.cached_automations.iter().filter(|a| a.enabled).count(),
+                sync_in_progress: self.worktree_sync.in_progress,
+                tick_count: self.metrics.tick_count,
+                automation_count: self
+                    .automation_ui
+                    .cached_automations
+                    .iter()
+                    .filter(|a| a.enabled)
+                    .count(),
                 file_viewer_open: self.show_file_viewer,
             },
         );
@@ -596,7 +605,7 @@ impl App {
     fn render_automation_workspace(&self, frame: &mut Frame, area: Rect) {
         let editing = self.focus == InputFocus::AutomationEditor;
 
-        let Some(m) = self.automation_editor.as_ref() else {
+        let Some(m) = self.automation_ui.automation_editor.as_ref() else {
             render_empty_workspace_hint(
                 frame,
                 area,
@@ -609,9 +618,11 @@ impl App {
 
         // Run history for the automation being edited (existing automations
         // only). Shown only when the cache matches the scoped automation.
-        let show_history = m.editing_id.is_some() && self.cached_automation_runs_id == m.editing_id;
+        let show_history =
+            m.editing_id.is_some() && self.automation_ui.cached_automation_runs_id == m.editing_id;
         let runs: Vec<crate::ui::automation_detail::AutomationRunRow> = if show_history {
-            self.cached_automation_runs
+            self.automation_ui
+                .cached_automation_runs
                 .iter()
                 .map(|r| crate::ui::automation_detail::AutomationRunRow {
                     status: r.status,
@@ -655,7 +666,7 @@ impl App {
                 frame,
                 history_area,
                 &runs,
-                self.automation_run_index,
+                self.automation_ui.automation_run_index,
                 history_focus,
             );
         }
@@ -668,7 +679,7 @@ impl App {
     fn render_task_workspace(&self, frame: &mut Frame, area: Rect) {
         let editing = self.focus == InputFocus::TaskEditor;
 
-        let Some(m) = self.task_editor.as_ref() else {
+        let Some(m) = self.task_ui.task_editor.as_ref() else {
             render_empty_workspace_hint(
                 frame,
                 area,
@@ -694,7 +705,7 @@ impl App {
         // preview branch only ever has a scoped task.
         let scoped = m
             .editing_id
-            .and_then(|id| self.cached_tasks.iter().find(|t| t.id == id));
+            .and_then(|id| self.task_ui.cached_tasks.iter().find(|t| t.id == id));
         let Some(task) = scoped else {
             render_empty_workspace_hint(frame, area, " Task ", "No task selected.", false);
             return;
@@ -756,7 +767,7 @@ impl App {
                 created: format_time_ago(task.created_at),
                 updated: format_time_ago(task.updated_at),
             },
-            self.task_preview_scroll,
+            self.task_ui.task_preview_scroll,
             hints,
         );
     }
