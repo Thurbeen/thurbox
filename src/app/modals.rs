@@ -1714,4 +1714,241 @@ mod tests {
         let m = TaskEditorModal::from_task(&task);
         assert_eq!(m.description.value(), "notes");
     }
+
+    // ── TextInput: remaining cursor/edge cases ───────────────────────────
+
+    #[test]
+    fn text_input_move_right_clamps_at_end_and_insert_mid_string() {
+        let mut input = TextInput::new();
+        input.set("ab");
+        // At the end already: move_right is a no-op (no overrun past len).
+        input.move_right();
+        assert_eq!(input.cursor_pos(), 2);
+        // Insert in the middle keeps later chars intact.
+        input.move_left();
+        input.insert('X');
+        assert_eq!(input.value(), "aXb");
+        assert_eq!(input.cursor_pos(), 2);
+    }
+
+    // ── TextArea: methods not exercised by the existing happy-path test ──
+
+    #[test]
+    fn textarea_delete_removes_char_at_cursor() {
+        let mut ta = TextArea::new();
+        ta.set("abc");
+        ta.home();
+        ta.delete();
+        assert_eq!(ta.value(), "bc");
+        // Delete at end-of-buffer is a no-op.
+        ta.end();
+        ta.delete();
+        assert_eq!(ta.value(), "bc");
+    }
+
+    #[test]
+    fn textarea_horizontal_cursor_clamps_at_both_ends() {
+        let mut ta = TextArea::new();
+        ta.set("ab");
+        ta.end();
+        ta.move_right(); // already at end → no-op
+        assert_eq!(ta.cursor_line_col(), (0, 2));
+        ta.home();
+        ta.move_left(); // already at start → no-op
+        assert_eq!(ta.cursor_line_col(), (0, 0));
+    }
+
+    #[test]
+    fn textarea_vertical_moves_clamp_at_first_and_last_line() {
+        let mut ta = TextArea::new();
+        ta.set("a\nbb");
+        // On the last line: move_down stays put.
+        ta.end();
+        assert_eq!(ta.cursor_line_col(), (1, 2));
+        ta.move_down();
+        assert_eq!(ta.cursor_line_col(), (1, 2));
+        // On the first line: move_up stays put.
+        ta.set("a\nbb");
+        ta.home(); // start of line 2
+        ta.move_up(); // → line 1
+        assert_eq!(ta.cursor_line_col(), (0, 0));
+        ta.move_up(); // already top → no-op
+        assert_eq!(ta.cursor_line_col(), (0, 0));
+    }
+
+    #[test]
+    fn textarea_home_and_end_act_per_line() {
+        let mut ta = TextArea::new();
+        ta.set("abc\nde");
+        // Cursor is at the end of line 2.
+        ta.home();
+        assert_eq!(ta.cursor_line_col(), (1, 0));
+        ta.end();
+        assert_eq!(ta.cursor_line_col(), (1, 2));
+        // home/end stay within the current line, not the whole buffer.
+        ta.move_up();
+        ta.home();
+        assert_eq!(ta.cursor_line_col(), (0, 0));
+        ta.end();
+        assert_eq!(ta.cursor_line_col(), (0, 3));
+    }
+
+    #[test]
+    fn textarea_clear_resets_buffer_and_cursor() {
+        let mut ta = TextArea::new();
+        ta.set("a\nb");
+        ta.clear();
+        assert_eq!(ta.value(), "");
+        assert_eq!(ta.cursor_line_col(), (0, 0));
+    }
+
+    // ── AutomationEditorModal::handle_key (the shared key state machine) ──
+
+    #[test]
+    fn automation_editor_handle_key_save_cancel_and_text() {
+        let mut m = AutomationEditorModal::default();
+        // Default field is Name (a text field): chars edit it, no save/cancel.
+        assert_eq!(
+            m.handle_key(KeyCode::Char('h'), KeyModifiers::NONE),
+            EditorOutcome::Continue
+        );
+        m.handle_key(KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(m.name.value(), "hi");
+        assert_eq!(
+            m.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+            EditorOutcome::Save
+        );
+        assert_eq!(
+            m.handle_key(KeyCode::Esc, KeyModifiers::NONE),
+            EditorOutcome::Cancel
+        );
+    }
+
+    #[test]
+    fn automation_editor_handle_key_tab_navigates_and_ctrl_e_toggles_enabled() {
+        let mut m = AutomationEditorModal::default(); // Daily + Send, field=Name
+        assert!(m.enabled);
+        m.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert!(!m.enabled, "Ctrl+E flips enabled");
+        // Tab / Down advance; BackTab / Up retreat (wrapping).
+        m.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(m.field, AutomationField::Trigger);
+        m.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(m.field, AutomationField::Name);
+        m.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(
+            m.field,
+            AutomationField::Prompt,
+            "Up from first wraps to last"
+        );
+    }
+
+    #[test]
+    fn automation_editor_handle_key_adjusts_selector_fields() {
+        let mut m = AutomationEditorModal {
+            field: AutomationField::Trigger,
+            ..Default::default()
+        }; // Daily
+           // Right / Space step forward, Left steps back.
+        m.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(m.trigger_kind, TriggerKind::Weekdays);
+        m.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(m.trigger_kind, TriggerKind::Weekly);
+        m.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(m.trigger_kind, TriggerKind::Weekdays);
+        // On a text field, Left/Right move the caret rather than adjusting.
+        m.field = AutomationField::Name;
+        m.name.set("ab");
+        m.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(m.name.cursor_pos(), 1);
+    }
+
+    #[test]
+    fn automation_editor_set_target_sessions_selects_and_falls_back() {
+        let a = crate::session::SessionId::default();
+        let b = crate::session::SessionId::default();
+        let mut m = AutomationEditorModal::default();
+        m.set_target_sessions(vec![(a, "A".into()), (b, "B".into())], Some(b));
+        assert_eq!(m.target_index, 1);
+        assert_eq!(m.selected_target().map(|(id, _)| *id), Some(b));
+        // An id that isn't present falls back to the first session.
+        let absent = crate::session::SessionId::default();
+        m.set_target_sessions(vec![(a, "A".into())], Some(absent));
+        assert_eq!(m.target_index, 0);
+        // No sessions → no selected target.
+        m.set_target_sessions(vec![], None);
+        assert!(m.selected_target().is_none());
+    }
+
+    #[test]
+    fn automation_editor_timezone_trims_and_blanks_to_none() {
+        let mut m = AutomationEditorModal::default();
+        assert!(m.timezone().is_none(), "empty timezone is None");
+        m.timezone.set("  UTC  ");
+        assert_eq!(m.timezone().as_deref(), Some("UTC"));
+        m.timezone.set("   ");
+        assert!(m.timezone().is_none(), "whitespace-only timezone is None");
+    }
+
+    // ── TaskEditorModal::handle_key field navigation + description keys ──
+
+    #[test]
+    fn task_editor_tab_navigates_fields() {
+        let mut m = TaskEditorModal::new(); // field=Title
+        m.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(m.field, TaskField::Description);
+        m.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(m.field, TaskField::Status);
+        m.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            m.field,
+            TaskField::Title,
+            "Tab wraps back to the first field"
+        );
+        // BackTab retreats and wraps.
+        m.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(m.field, TaskField::Status);
+    }
+
+    #[test]
+    fn task_editor_description_editing_keys_and_tab_navigation() {
+        let mut m = TaskEditorModal::new();
+        m.field = TaskField::Description;
+        for c in "ac".chars() {
+            m.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // Left then insert 'b' in the middle.
+        m.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        m.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(m.description.value(), "abc");
+        // Home + Delete removes the first char; End repositions to line end.
+        m.handle_key(KeyCode::Home, KeyModifiers::NONE);
+        m.handle_key(KeyCode::Delete, KeyModifiers::NONE);
+        assert_eq!(m.description.value(), "bc");
+        m.handle_key(KeyCode::End, KeyModifiers::NONE);
+        m.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(m.description.value(), "b");
+        // Tab still navigates out of the multi-line field (it is not inserted).
+        assert_eq!(
+            m.handle_key(KeyCode::Tab, KeyModifiers::NONE),
+            EditorOutcome::Continue
+        );
+        assert_eq!(m.field, TaskField::Status);
+    }
+
+    #[test]
+    fn task_editor_description_up_down_move_within_text() {
+        let mut m = TaskEditorModal::new();
+        m.field = TaskField::Description;
+        for c in "ab".chars() {
+            m.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        m.handle_key(KeyCode::Enter, KeyModifiers::NONE); // newline
+        m.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(m.description.cursor_line_col(), (1, 1));
+        m.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(m.description.cursor_line_col(), (0, 1));
+        m.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(m.description.cursor_line_col(), (1, 1));
+    }
 }

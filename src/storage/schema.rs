@@ -984,6 +984,42 @@ mod tests {
     }
 
     #[test]
+    fn migration_failure_does_not_advance_schema_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v23 state whose v24 step is guaranteed to fail: a
+        // `scheduled_commands` table present (so the legacy-migration branch
+        // fires) but missing every column the INSERT…SELECT reads, so the
+        // batch errors out partway through `migrate`.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '23');
+             CREATE TABLE scheduled_commands (id INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+
+        let result = migrate(&conn);
+        assert!(
+            result.is_err(),
+            "a failing migration step must propagate its error"
+        );
+
+        // The stored version must stay un-advanced: the final
+        // `UPDATE metadata SET schema_version` runs only after every step
+        // succeeds, so a mid-migration failure leaves it at the prior value.
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            version, "23",
+            "schema_version must not advance when a migration step fails"
+        );
+    }
+
+    #[test]
     fn schema_seeds_metadata() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();

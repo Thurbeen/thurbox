@@ -673,31 +673,43 @@ impl App {
         // bookmarks, a child shared by two parents, a parent nested in another).
         let mut emitted: HashSet<PathBuf> = HashSet::new();
         for bm in &bookmarks {
-            if bm.is_parent {
-                if !emitted.insert(bm.repo_path.clone()) {
-                    continue;
-                }
-                rp.push_row(bm.repo_path.clone(), false, true, false);
-                for child in scans.get(&bm.repo_path).into_iter().flatten() {
-                    if !emitted.insert(child.clone()) {
-                        continue;
-                    }
-                    rp.push_row(child.clone(), false, false, true);
-                }
-            } else {
-                // Drop a standalone bookmark that is already covered by a parent.
-                if child_paths.contains(&bm.repo_path) {
-                    continue;
-                }
-                if !emitted.insert(bm.repo_path.clone()) {
-                    continue;
-                }
-                rp.push_row(bm.repo_path.clone(), false, false, false);
-            }
+            Self::emit_bookmark_row(rp, bm, &scans, &child_paths, &mut emitted);
         }
 
         rp.list_index = 0;
         rp.recompute_filter();
+    }
+
+    /// Emit the row(s) for a single bookmark into the repo picker: a parent
+    /// header followed by its scanned children, or a standalone repo.
+    /// `emitted` dedupes paths across the whole list; `child_paths` lets a
+    /// standalone bookmark be dropped when a parent already covers it.
+    fn emit_bookmark_row(
+        rp: &mut modals::RepoPickerModal,
+        bm: &crate::storage::repo_bookmarks::RepoBookmark,
+        scans: &HashMap<PathBuf, Vec<PathBuf>>,
+        child_paths: &std::collections::HashSet<&PathBuf>,
+        emitted: &mut std::collections::HashSet<PathBuf>,
+    ) {
+        if !bm.is_parent {
+            // Drop a standalone bookmark that is already covered by a parent.
+            if child_paths.contains(&bm.repo_path) {
+                return;
+            }
+            if emitted.insert(bm.repo_path.clone()) {
+                rp.push_row(bm.repo_path.clone(), false, false, false);
+            }
+            return;
+        }
+        if !emitted.insert(bm.repo_path.clone()) {
+            return;
+        }
+        rp.push_row(bm.repo_path.clone(), false, true, false);
+        for child in scans.get(&bm.repo_path).into_iter().flatten() {
+            if emitted.insert(child.clone()) {
+                rp.push_row(child.clone(), false, false, true);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -3515,11 +3527,21 @@ impl App {
                 });
             }
         }
-        if !with_content {
-            return sessions;
+        if with_content {
+            self.push_session_content_matches(query_lc, &mut sessions);
         }
-        // Buffer content — skip sessions that already matched on metadata.
-        let already: std::collections::HashSet<usize> = sessions
+        sessions
+    }
+
+    /// Append vt100 buffer-content matches to `out`, skipping sessions already
+    /// present (matched on metadata) and respecting the per-group cap.
+    fn push_session_content_matches(
+        &self,
+        query_lc: &str,
+        out: &mut Vec<search::GlobalSearchResult>,
+    ) {
+        use search::{GlobalSearchResult, SearchKind, SearchTarget, MAX_PER_GROUP};
+        let already: std::collections::HashSet<usize> = out
             .iter()
             .filter_map(|r| match r.target {
                 SearchTarget::Session { index } => Some(index),
@@ -3527,14 +3549,14 @@ impl App {
             })
             .collect();
         for i in 0..self.sessions.len() {
-            if sessions.len() >= MAX_PER_GROUP {
+            if out.len() >= MAX_PER_GROUP {
                 break;
             }
             if already.contains(&i) {
                 continue;
             }
             if let Some(snippet) = self.session_content_match(query_lc, i) {
-                sessions.push(GlobalSearchResult {
+                out.push(GlobalSearchResult {
                     kind: SearchKind::Session,
                     label: self.sessions[i].info.name.clone(),
                     snippet: Some(snippet),
@@ -3542,7 +3564,6 @@ impl App {
                 });
             }
         }
-        sessions
     }
 
     /// Task results: fuzzy title, falling back to a fuzzy description match with
@@ -7060,5 +7081,149 @@ mod tests {
         let mut app = app_with_sessions(1);
         // Should return early without error for empty text
         app.send_paste_to_session("");
+    }
+
+    // --- key_handlers: modal open/close + pane chords driven via handle_key ---
+
+    #[test]
+    fn ctrl_y_opens_theme_picker_then_j_and_enter_persists() {
+        let mut app = app_with_sessions(1);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        let presets = crate::session::ThemePreset::all();
+        match app.modal {
+            modals::Modal::ThemePicker(ref tp) => assert_eq!(tp.index, 0),
+            ref other => panic!("expected the theme picker, got {other:?}"),
+        }
+        // `j` previews the next preset; `Enter` commits + persists it.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+        assert_eq!(app.active_theme, presets[1]);
+        assert_eq!(
+            app.db.get_active_theme().unwrap().as_deref(),
+            Some(presets[1].as_str())
+        );
+        // The active palette is process-global; restore the default so this
+        // test doesn't leak into others (matching `set_active_switches_palette`).
+        crate::ui::theme::set_active(crate::session::ThemePalette::default());
+    }
+
+    #[test]
+    fn theme_picker_esc_closes_without_persisting() {
+        let mut app = app_with_sessions(1);
+        app.handle_key(KeyCode::F(4), KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::ThemePicker(_)));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+        // Esc doesn't write a theme choice to the DB.
+        assert!(app.db.get_active_theme().unwrap().is_none());
+    }
+
+    #[test]
+    fn ctrl_u_opens_restore_sessions_modal_and_esc_closes() {
+        let mut app = app_with_sessions(1);
+        // Empty DB → an empty (but open) restore modal.
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        match app.modal {
+            modals::Modal::RestoreSessions(ref rs) => assert!(rs.list.is_empty()),
+            ref other => panic!("expected the restore-sessions modal, got {other:?}"),
+        }
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
+    #[test]
+    fn branch_selector_esc_closes_and_clears_pending_repo_state() {
+        let mut app = app_with_sessions(1);
+        app.pending_repo_path = Some(PathBuf::from("/repo"));
+        app.pending_all_repos = Some(vec![PathBuf::from("/repo")]);
+        app.pending_normal_repos = vec![PathBuf::from("/other")];
+        app.modal = modals::Modal::BranchSelector(modals::BranchSelectorModal {
+            index: 0,
+            branches: vec!["main".into(), "dev".into()],
+        });
+        // j advances the selection; Esc aborts and wipes the pending spawn state.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        match app.modal {
+            modals::Modal::BranchSelector(ref bs) => assert_eq!(bs.index, 1),
+            ref other => panic!("expected the branch selector, got {other:?}"),
+        }
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+        assert!(app.pending_repo_path.is_none());
+        assert!(app.pending_all_repos.is_none());
+        assert!(app.pending_normal_repos.is_empty());
+    }
+
+    #[test]
+    fn task_list_jk_navigates_selection() {
+        let mut app = app_with_sessions(1);
+        for t in ["one", "two", "three"] {
+            app.db
+                .create_task(&crate::storage::tasks::NewTask::local(t))
+                .unwrap();
+        }
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.task_panel_index, 1);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.task_panel_index, 2);
+        // j at the last row stays put (no wrap).
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.task_panel_index, 2);
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.task_panel_index, 1);
+    }
+
+    #[test]
+    fn task_list_space_cycles_selected_status() {
+        let mut app = app_with_sessions(1);
+        let id = app
+            .db
+            .create_task(&crate::storage::tasks::NewTask::local("t"))
+            .unwrap();
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+        assert_eq!(
+            app.db.get_task(id).unwrap().unwrap().status,
+            crate::session::TaskStatus::Todo
+        );
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(
+            app.db.get_task(id).unwrap().unwrap().status,
+            crate::session::TaskStatus::InProgress
+        );
+    }
+
+    #[test]
+    fn task_list_d_soft_deletes_selected() {
+        let mut app = app_with_sessions(1);
+        app.db
+            .create_task(&crate::storage::tasks::NewTask::local("doomed"))
+            .unwrap();
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_panel_index = 0;
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(
+            app.db.list_tasks().unwrap().is_empty(),
+            "d should soft-delete the selected task"
+        );
+    }
+
+    #[test]
+    fn task_list_esc_returns_to_session_list() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::TaskList;
+        app.task_editor = Some(modals::TaskEditorModal::new());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert!(
+            app.task_editor.is_none(),
+            "leaving the panel clears the editor"
+        );
     }
 }
