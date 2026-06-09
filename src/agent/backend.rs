@@ -466,6 +466,12 @@ impl Session {
         }
     }
 
+    /// Blocking read loop feeding the vt100 parser. Runs on a
+    /// `spawn_blocking` thread and exits only on EOF/error from `reader`.
+    /// Lifecycle contract: every path that retires a `Session` must call
+    /// `kill()`/`detach()` so the backend unregisters the pane and this
+    /// thread sees EOF — a silent drop leaks the thread (blocked in a read)
+    /// for the process lifetime.
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
         parser: Arc<Mutex<SessionParser>>,
@@ -495,10 +501,7 @@ impl Session {
         exited.store(true, Ordering::SeqCst);
     }
 
-    async fn writer_loop(
-        mut writer: Box<dyn Write + Send>,
-        mut input_rx: mpsc::Receiver<Vec<u8>>,
-    ) {
+    async fn writer_loop(mut writer: Box<dyn Write + Send>, mut input_rx: mpsc::Receiver<Vec<u8>>) {
         while let Some(data) = input_rx.recv().await {
             if let Err(e) = writer.write_all(&data) {
                 error!("Session writer error: {e}");

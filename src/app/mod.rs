@@ -2707,7 +2707,11 @@ impl App {
     fn apply_removed_sessions(&mut self, removed: Vec<SessionId>) {
         for session_id in removed {
             if let Some(pos) = self.sessions.iter().position(|s| s.info.id == session_id) {
-                self.sessions.remove(pos);
+                // Detach rather than silently drop: detach unregisters the
+                // pane, which EOFs the blocked reader thread. A plain drop
+                // would leak that spawn_blocking thread for the process
+                // lifetime (the deleting instance owns the actual teardown).
+                self.sessions.remove(pos).detach();
                 if self.active_index >= self.sessions.len() {
                     self.sync_active_session_to_project();
                 }
@@ -4933,6 +4937,62 @@ mod tests {
         Arc::new(StubBackend)
     }
 
+    /// Stub backend that counts `detach` calls (for lifecycle tests).
+    struct DetachCountingBackend {
+        detached: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl SessionBackend for DetachCountingBackend {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &std::collections::HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+            anyhow::bail!("stub backend does not spawn")
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+            anyhow::bail!("stub backend does not adopt")
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            Ok(vec![])
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            self.detached
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+    }
+
     fn stub_provider() -> Arc<dyn crate::agent::AgentProvider> {
         Arc::new(crate::agent::GenericProvider::new(
             crate::agent::agent_config::builtin_registry()
@@ -4952,6 +5012,36 @@ mod tests {
 
     fn test_db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn apply_removed_sessions_detaches_pane_io() {
+        let detached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend_arc: Arc<dyn SessionBackend> = Arc::new(DetachCountingBackend {
+            detached: Arc::clone(&detached),
+        });
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(backend_arc.clone()),
+            stub_agents(),
+            test_db(),
+        );
+        app.sessions.push(Session::stub(
+            "removed-elsewhere",
+            &backend_arc,
+            &stub_provider(),
+        ));
+        let session_id = app.sessions[0].info.id;
+
+        app.apply_removed_sessions(vec![session_id]);
+
+        assert!(app.sessions.is_empty());
+        assert_eq!(
+            detached.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "externally removed session must detach so the reader thread EOFs"
+        );
     }
 
     /// Create an App with N stub sessions.

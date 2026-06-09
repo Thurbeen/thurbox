@@ -926,7 +926,10 @@ impl SessionBackend for TmuxBackend {
             }
 
             if !control_mode::is_valid_pane_id(parts[0]) {
-                warn!("Skipping discovered window with invalid pane id: {:?}", parts[0]);
+                warn!(
+                    "Skipping discovered window with invalid pane id: {:?}",
+                    parts[0]
+                );
                 continue;
             }
 
