@@ -1,7 +1,6 @@
 pub mod agent_config;
 pub mod backend;
 pub mod control_mode;
-pub mod demo;
 pub mod generic;
 pub mod host_config;
 pub mod input;

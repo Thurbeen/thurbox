@@ -599,12 +599,9 @@ shared by every dev build, so without a private socket directory
 the cleanup `kill-server` would tear down dev sessions you already
 have running.
 
-The hidden `__demo-agent <scenario>` subcommand (`src/main.rs` →
-`agent::demo::run_demo_agent()` in `src/agent/demo.rs`, streaming
-canned `src/agent/demo_scenarios/*.txt`) still exists in the
-binary but is **no longer used by the recording pipeline** — the
-deterministic recording path was retired in favor of the single
-real-agents script.
+The deterministic recording path (a hidden `__demo-agent`
+subcommand streaming canned scenarios) was retired in favor of the
+single real-agents script and has been removed from the binary.
 
 `.github/workflows/pages.yml` copies the mp4s into
 `website/assets/` at deploy time and `README.md` embeds the gifs,
