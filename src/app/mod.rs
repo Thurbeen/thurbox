@@ -1,4 +1,5 @@
 mod automation_state;
+mod background;
 mod helpers;
 mod key_handlers;
 mod metrics_state;
@@ -138,7 +139,7 @@ fn create_worktrees(
     Ok(worktree_infos)
 }
 
-/// Result of a background system-metrics refresh, delivered over `metrics_rx`.
+/// Result of a background system-metrics refresh, delivered via `App::metrics_refresh`.
 struct MetricsRefresh {
     /// The sysinfo collector, returned so it retains CPU-delta state across
     /// refreshes (it is moved into the worker for the duration).
@@ -438,31 +439,22 @@ pub struct App {
     worktree_sync: sync_state::WorktreeSyncState,
     /// System/process metrics + the tick counter pacing periodic refreshes.
     metrics: metrics_state::MetricsState,
-    /// A background system-metrics refresh is in flight (guards `sys` ownership
-    /// so refreshes never overlap).
-    metrics_refresh_in_progress: bool,
-    /// Receives the result of a background system-metrics refresh, polled each
-    /// tick. Mirrors `worktree_sync.rx`.
-    metrics_rx: Option<mpsc::Receiver<MetricsRefresh>>,
-    /// A background active-session git-stats refresh is in flight.
-    git_stats_in_progress: bool,
-    /// Receives the result of a background git-stats refresh, polled each tick.
-    git_stats_rx: Option<mpsc::Receiver<(SessionId, Option<crate::session::GitStats>)>>,
-    /// A background worktree-creation (`git worktree add`) is in flight for the
-    /// new-session wizard; guards against re-entry and clobbering the pending
-    /// continuation.
-    worktree_create_in_progress: bool,
-    /// Receives the result of a background worktree-creation, polled each tick.
-    worktree_create_rx: Option<mpsc::Receiver<Result<Vec<WorktreeInfo>, String>>>,
+    /// Background system-metrics refresh (also guards `sys` ownership so
+    /// refreshes never overlap), polled each tick.
+    metrics_refresh: background::BackgroundTask<MetricsRefresh>,
+    /// Background active-session git-stats refresh, polled each tick.
+    git_stats: background::BackgroundTask<(SessionId, Option<crate::session::GitStats>)>,
+    /// Background worktree-creation (`git worktree add`) for the new-session
+    /// wizard, polled each tick; in-flight state guards against re-entry and
+    /// clobbering the pending continuation.
+    worktree_create: background::BackgroundTask<Result<Vec<WorktreeInfo>, String>>,
     /// Continuation for a completed worktree-creation: the wizard inputs needed
     /// to resume the spawn flow once the worktrees exist.
     pending_worktree_create: Option<PendingWorktreeCreate>,
-    /// A background `Session::spawn` (PTY/tmux window creation) is in flight for
-    /// the interactive new-session flow. Programmatic spawns stay synchronous.
-    session_spawn_in_progress: bool,
-    /// Receives the spawned [`Session`] (or an error) from the background
-    /// `Session::spawn`, polled each tick.
-    session_spawn_rx: Option<mpsc::Receiver<Result<Session, String>>>,
+    /// Background `Session::spawn` (PTY/tmux window creation) for the
+    /// interactive new-session flow, polled each tick. Programmatic spawns
+    /// stay synchronous.
+    session_spawn: background::BackgroundTask<Result<Session, String>>,
     /// Continuation for a completed background spawn: the metadata + follow-up
     /// (task prompt) to apply once the session is live.
     pending_session_spawn: Option<PendingSessionSpawn>,
@@ -582,15 +574,11 @@ impl App {
             sync_state,
             worktree_sync: sync_state::WorktreeSyncState::default(),
             metrics: metrics_state::MetricsState::new(),
-            metrics_refresh_in_progress: false,
-            metrics_rx: None,
-            git_stats_in_progress: false,
-            git_stats_rx: None,
-            worktree_create_in_progress: false,
-            worktree_create_rx: None,
+            metrics_refresh: background::BackgroundTask::default(),
+            git_stats: background::BackgroundTask::default(),
+            worktree_create: background::BackgroundTask::default(),
             pending_worktree_create: None,
-            session_spawn_in_progress: false,
-            session_spawn_rx: None,
+            session_spawn: background::BackgroundTask::default(),
             pending_session_spawn: None,
             deferred_inputs: Vec::new(),
             session_terminal_views: HashMap::new(),
@@ -1646,7 +1634,7 @@ impl App {
         base_branch: &str,
         session_name: Option<String>,
     ) {
-        if self.worktree_create_in_progress {
+        if self.worktree_create.in_progress() {
             self.set_status(StatusLevel::Info, "Worktree creation already in progress…");
             return;
         }
@@ -1663,9 +1651,7 @@ impl App {
 
         // Shell out to `git worktree add` off the UI thread (one per repo, with
         // rollback on failure); the spawn flow resumes in `poll_worktree_create`.
-        let (tx, rx) = mpsc::channel();
-        self.worktree_create_in_progress = true;
-        self.worktree_create_rx = Some(rx);
+        let tx = self.worktree_create.start();
         self.pending_worktree_create = Some(PendingWorktreeCreate {
             backend,
             normal_repos,
@@ -1681,22 +1667,15 @@ impl App {
     /// Apply a completed background worktree-creation, if one has finished, and
     /// resume the spawn flow.
     fn poll_worktree_create(&mut self) {
-        let Some(rx) = &self.worktree_create_rx else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.worktree_create_rx = None;
-                self.worktree_create_in_progress = false;
+        let result = match self.worktree_create.poll() {
+            background::TaskPoll::Pending => return,
+            background::TaskPoll::Died => {
                 self.pending_worktree_create = None;
                 self.set_error("Worktree creation failed (worker died)");
                 return;
             }
+            background::TaskPoll::Done(result) => result,
         };
-        self.worktree_create_rx = None;
-        self.worktree_create_in_progress = false;
         let Some(pending) = self.pending_worktree_create.take() else {
             return;
         };
@@ -1968,7 +1947,7 @@ impl App {
         config: &SessionConfig,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        if self.session_spawn_in_progress {
+        if self.session_spawn.in_progress() {
             self.do_spawn_session(name, config, worktrees);
             return;
         }
@@ -1988,9 +1967,7 @@ impl App {
             cols,
         } = inputs;
 
-        let (tx, rx) = mpsc::channel();
-        self.session_spawn_in_progress = true;
-        self.session_spawn_rx = Some(rx);
+        let tx = self.session_spawn.start();
         self.pending_session_spawn = Some(PendingSessionSpawn {
             primary_cwd,
             worktrees,
@@ -2008,22 +1985,15 @@ impl App {
 
     /// Adopt a completed background `Session::spawn`, if one has finished.
     fn poll_session_spawn(&mut self) {
-        let Some(rx) = &self.session_spawn_rx else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.session_spawn_rx = None;
-                self.session_spawn_in_progress = false;
+        let result = match self.session_spawn.poll() {
+            background::TaskPoll::Pending => return,
+            background::TaskPoll::Died => {
                 self.pending_session_spawn = None;
                 self.set_error("Session spawn failed (worker died)");
                 return;
             }
+            background::TaskPoll::Done(result) => result,
         };
-        self.session_spawn_rx = None;
-        self.session_spawn_in_progress = false;
         let Some(pending) = self.pending_session_spawn.take() else {
             return;
         };
@@ -2324,7 +2294,7 @@ impl App {
     /// `git` on a blocking task; the result is applied in [`Self::poll_git_stats`].
     /// Only one refresh runs at a time.
     fn start_git_stats_refresh(&mut self) {
-        if self.git_stats_in_progress {
+        if self.git_stats.in_progress() {
             return;
         }
         let Some(session) = self.sessions.get(self.active_index) else {
@@ -2344,9 +2314,7 @@ impl App {
                 .collect()
         };
 
-        let (tx, rx) = mpsc::channel();
-        self.git_stats_in_progress = true;
-        self.git_stats_rx = Some(rx);
+        let tx = self.git_stats.start();
         tokio::task::spawn_blocking(move || {
             let _ = tx.send((session_id, aggregate_git_stats(&paths)));
         });
@@ -2354,23 +2322,11 @@ impl App {
 
     /// Apply a completed background git-stats refresh, if one has finished.
     fn poll_git_stats(&mut self) {
-        let Some(rx) = &self.git_stats_rx else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok((session_id, stats)) => {
-                if let Some(session) = self.sessions.iter_mut().find(|s| s.info.id == session_id) {
-                    session.info.git_stats = stats;
-                }
-                self.git_stats_rx = None;
-                self.git_stats_in_progress = false;
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            // Worker died without delivering (e.g. panic): clear the guard so the
-            // next cadence can retry.
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.git_stats_rx = None;
-                self.git_stats_in_progress = false;
+        // A dead worker (e.g. panic) just clears the guard so the next
+        // cadence can retry.
+        if let background::TaskPoll::Done((session_id, stats)) = self.git_stats.poll() {
+            if let Some(session) = self.sessions.iter_mut().find(|s| s.info.id == session_id) {
+                session.info.git_stats = stats;
             }
         }
     }
@@ -2383,7 +2339,7 @@ impl App {
     /// the UI thread. Only one refresh runs at a time; the result is applied in
     /// [`Self::poll_metrics_refresh`].
     fn start_metrics_refresh(&mut self) {
-        if self.metrics_refresh_in_progress {
+        if self.metrics_refresh.in_progress() {
             return;
         }
         let Some(sys) = self.metrics.sys.take() else {
@@ -2409,9 +2365,7 @@ impl App {
             None => Vec::new(),
         };
 
-        let (tx, rx) = mpsc::channel();
-        self.metrics_refresh_in_progress = true;
-        self.metrics_rx = Some(rx);
+        let tx = self.metrics_refresh.start();
         tokio::task::spawn_blocking(move || {
             let _ = tx.send(collect_system_metrics(sys, active, metrics_files));
         });
@@ -2419,11 +2373,9 @@ impl App {
 
     /// Apply a completed background metrics refresh, if one has finished.
     fn poll_metrics_refresh(&mut self) {
-        let Some(rx) = &self.metrics_rx else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(refresh) => {
+        match self.metrics_refresh.poll() {
+            background::TaskPoll::Pending => {}
+            background::TaskPoll::Done(refresh) => {
                 self.metrics.sys = Some(refresh.sys);
                 self.metrics.system_metrics = refresh.metrics;
                 for (session_id, metrics) in refresh.agent_metrics {
@@ -2433,17 +2385,12 @@ impl App {
                         session.info.agent_metrics = Some(metrics);
                     }
                 }
-                self.metrics_rx = None;
-                self.metrics_refresh_in_progress = false;
             }
-            Err(mpsc::TryRecvError::Empty) => {}
             // Worker died without returning `sys` (e.g. panic): recreate the
             // collector so metrics resume next cadence. CPU-delta history is
             // lost, not correctness.
-            Err(mpsc::TryRecvError::Disconnected) => {
+            background::TaskPoll::Died => {
                 self.metrics.sys.get_or_insert_with(sysinfo::System::new);
-                self.metrics_rx = None;
-                self.metrics_refresh_in_progress = false;
             }
         }
     }
@@ -7374,7 +7321,7 @@ mod tests {
         let mut app = app_with_sessions(1);
         let sid = app.sessions[0].info.id;
 
-        let (tx, rx) = mpsc::channel();
+        let tx = app.git_stats.start();
         let stats = crate::session::GitStats {
             files_changed: 3,
             insertions: 10,
@@ -7384,42 +7331,32 @@ mod tests {
             behind: 0,
         };
         tx.send((sid, Some(stats.clone()))).unwrap();
-        app.git_stats_in_progress = true;
-        app.git_stats_rx = Some(rx);
 
         app.poll_git_stats();
 
         assert_eq!(app.sessions[0].info.git_stats, Some(stats));
-        assert!(!app.git_stats_in_progress);
-        assert!(app.git_stats_rx.is_none());
+        assert!(!app.git_stats.in_progress());
     }
 
     #[test]
     fn poll_git_stats_disconnected_clears_guard() {
         let mut app = app_with_sessions(1);
-        let (tx, rx) = mpsc::channel::<(SessionId, Option<crate::session::GitStats>)>();
-        drop(tx); // worker died without delivering
-        app.git_stats_in_progress = true;
-        app.git_stats_rx = Some(rx);
+        drop(app.git_stats.start()); // worker died without delivering
 
         app.poll_git_stats();
 
-        assert!(!app.git_stats_in_progress);
-        assert!(app.git_stats_rx.is_none());
+        assert!(!app.git_stats.in_progress());
     }
 
     #[test]
     fn poll_git_stats_empty_is_noop() {
         let mut app = app_with_sessions(1);
-        let (_tx, rx) = mpsc::channel::<(SessionId, Option<crate::session::GitStats>)>();
-        app.git_stats_in_progress = true;
-        app.git_stats_rx = Some(rx);
+        let _tx = app.git_stats.start();
 
         // No result yet: guard stays set, rx retained for the next poll.
         app.poll_git_stats();
 
-        assert!(app.git_stats_in_progress);
-        assert!(app.git_stats_rx.is_some());
+        assert!(app.git_stats.in_progress());
     }
 
     #[test]
@@ -7429,9 +7366,8 @@ mod tests {
 
         // Simulate the worker having taken `sys`.
         app.metrics.sys = None;
-        app.metrics_refresh_in_progress = true;
 
-        let (tx, rx) = mpsc::channel();
+        let tx = app.metrics_refresh.start();
         let agent_metrics = crate::session::AgentMetrics {
             model_display_name: Some("Opus".into()),
             ..Default::default()
@@ -7448,7 +7384,6 @@ mod tests {
             agent_metrics: vec![(sid, agent_metrics)],
         })
         .unwrap();
-        app.metrics_rx = Some(rx);
 
         app.poll_metrics_refresh();
 
@@ -7465,38 +7400,31 @@ mod tests {
                 .and_then(|m| m.model_display_name.as_deref()),
             Some("Opus"),
         );
-        assert!(!app.metrics_refresh_in_progress);
-        assert!(app.metrics_rx.is_none());
+        assert!(!app.metrics_refresh.in_progress());
     }
 
     #[test]
     fn poll_metrics_refresh_disconnected_recreates_sys() {
         let mut app = app_with_sessions(0);
         app.metrics.sys = None;
-        app.metrics_refresh_in_progress = true;
-        let (tx, rx) = mpsc::channel::<MetricsRefresh>();
-        drop(tx); // worker died without returning `sys`
-        app.metrics_rx = Some(rx);
+        drop(app.metrics_refresh.start()); // worker died without returning `sys`
 
         app.poll_metrics_refresh();
 
         assert!(app.metrics.sys.is_some());
-        assert!(!app.metrics_refresh_in_progress);
-        assert!(app.metrics_rx.is_none());
+        assert!(!app.metrics_refresh.in_progress());
     }
 
     #[test]
     fn poll_worktree_create_continues_into_name_modal() {
         let mut app = app_with_sessions(0);
-        let (tx, rx) = mpsc::channel();
+        let tx = app.worktree_create.start();
         let wt = WorktreeInfo {
             repo_path: PathBuf::from("/repo"),
             worktree_path: PathBuf::from("/repo/.worktrees/feat"),
             branch: "feat".into(),
         };
         tx.send(Ok(vec![wt])).unwrap();
-        app.worktree_create_in_progress = true;
-        app.worktree_create_rx = Some(rx);
         app.pending_worktree_create = Some(PendingWorktreeCreate {
             backend: None,
             normal_repos: vec![PathBuf::from("/other")],
@@ -7505,8 +7433,7 @@ mod tests {
 
         app.poll_worktree_create();
 
-        assert!(!app.worktree_create_in_progress);
-        assert!(app.worktree_create_rx.is_none());
+        assert!(!app.worktree_create.in_progress());
         assert!(app.pending_worktree_create.is_none());
         // The non-worktree normal repo is carried into additional dirs.
         assert_eq!(
@@ -7520,10 +7447,8 @@ mod tests {
     #[test]
     fn poll_worktree_create_error_sets_status() {
         let mut app = app_with_sessions(0);
-        let (tx, rx) = mpsc::channel::<Result<Vec<WorktreeInfo>, String>>();
+        let tx = app.worktree_create.start();
         tx.send(Err("branch exists".into())).unwrap();
-        app.worktree_create_in_progress = true;
-        app.worktree_create_rx = Some(rx);
         app.pending_worktree_create = Some(PendingWorktreeCreate {
             backend: None,
             normal_repos: vec![],
@@ -7535,17 +7460,14 @@ mod tests {
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
         assert!(msg.text.contains("branch exists"));
-        assert!(!app.worktree_create_in_progress);
+        assert!(!app.worktree_create.in_progress());
         assert!(app.pending_worktree_create.is_none());
     }
 
     #[test]
     fn poll_worktree_create_disconnected_clears_guard() {
         let mut app = app_with_sessions(0);
-        let (tx, rx) = mpsc::channel::<Result<Vec<WorktreeInfo>, String>>();
-        drop(tx);
-        app.worktree_create_in_progress = true;
-        app.worktree_create_rx = Some(rx);
+        drop(app.worktree_create.start());
         app.pending_worktree_create = Some(PendingWorktreeCreate {
             backend: None,
             normal_repos: vec![],
@@ -7554,18 +7476,15 @@ mod tests {
 
         app.poll_worktree_create();
 
-        assert!(!app.worktree_create_in_progress);
-        assert!(app.worktree_create_rx.is_none());
+        assert!(!app.worktree_create.in_progress());
         assert!(app.pending_worktree_create.is_none());
     }
 
     #[test]
     fn poll_session_spawn_error_sets_status_and_adds_no_session() {
         let mut app = app_with_sessions(0);
-        let (tx, rx) = mpsc::channel::<Result<Session, String>>();
+        let tx = app.session_spawn.start();
         tx.send(Err("tmux exploded".into())).unwrap();
-        app.session_spawn_in_progress = true;
-        app.session_spawn_rx = Some(rx);
         app.pending_session_spawn = Some(PendingSessionSpawn {
             primary_cwd: None,
             worktrees: vec![],
@@ -7579,18 +7498,14 @@ mod tests {
         assert_eq!(msg.level, StatusLevel::Error);
         assert!(msg.text.contains("tmux exploded"));
         assert!(app.sessions.is_empty());
-        assert!(!app.session_spawn_in_progress);
-        assert!(app.session_spawn_rx.is_none());
+        assert!(!app.session_spawn.in_progress());
         assert!(app.pending_session_spawn.is_none());
     }
 
     #[test]
     fn poll_session_spawn_disconnected_clears_guard() {
         let mut app = app_with_sessions(0);
-        let (tx, rx) = mpsc::channel::<Result<Session, String>>();
-        drop(tx);
-        app.session_spawn_in_progress = true;
-        app.session_spawn_rx = Some(rx);
+        drop(app.session_spawn.start());
         app.pending_session_spawn = Some(PendingSessionSpawn {
             primary_cwd: None,
             worktrees: vec![],
@@ -7600,8 +7515,7 @@ mod tests {
 
         app.poll_session_spawn();
 
-        assert!(!app.session_spawn_in_progress);
-        assert!(app.session_spawn_rx.is_none());
+        assert!(!app.session_spawn.in_progress());
         assert!(app.pending_session_spawn.is_none());
     }
 
@@ -7613,17 +7527,17 @@ mod tests {
         let mut app = app_with_sessions(0);
         let config = SessionConfig::default();
         app.do_spawn_session_async("x".into(), &config, vec![]);
-        assert!(app.session_spawn_in_progress);
+        assert!(app.session_spawn.in_progress());
 
         for _ in 0..200 {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             app.poll_session_spawn();
-            if !app.session_spawn_in_progress {
+            if !app.session_spawn.in_progress() {
                 break;
             }
         }
 
-        assert!(!app.session_spawn_in_progress);
+        assert!(!app.session_spawn.in_progress());
         assert!(app.sessions.is_empty());
         assert_eq!(
             app.status_message.as_ref().map(|m| m.level),
@@ -7637,14 +7551,13 @@ mod tests {
         // pending continuation — it falls back to the synchronous path (which,
         // with the stub backend, fails to spawn and reports an error).
         let mut app = app_with_sessions(0);
-        app.session_spawn_in_progress = true;
+        let _in_flight_tx = app.session_spawn.start();
         let config = SessionConfig::default();
 
         app.do_spawn_session_async("second".into(), &config, vec![]);
 
-        // The in-flight guard/rx are untouched (no new background task kicked off).
-        assert!(app.session_spawn_in_progress);
-        assert!(app.session_spawn_rx.is_none());
+        // The in-flight task is untouched (no new background task kicked off).
+        assert!(app.session_spawn.in_progress());
         // The synchronous fallback ran and surfaced the stub spawn failure.
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
