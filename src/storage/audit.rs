@@ -42,6 +42,10 @@ impl AuditAction {
     }
 }
 
+/// Audit entries older than this are pruned on `Database::open`. They are
+/// debugging breadcrumbs, not compliance data, so 90 days is plenty.
+pub const AUDIT_RETENTION_DAYS: u64 = 90;
+
 /// A single audit log entry.
 #[derive(Debug, Clone)]
 pub struct AuditEntry {
@@ -82,6 +86,17 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    /// Delete audit entries older than [`AUDIT_RETENTION_DAYS`]. Returns the
+    /// number of rows removed. Cheap thanks to `idx_audit_log_timestamp`.
+    pub fn prune_audit_log(&self) -> rusqlite::Result<usize> {
+        let cutoff =
+            current_time_millis().saturating_sub(AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+        self.conn.execute(
+            "DELETE FROM audit_log WHERE timestamp < ?1",
+            params![cutoff as i64],
+        )
     }
 
     /// Query audit log entries with optional filters.
@@ -257,6 +272,32 @@ mod tests {
 
         let entries = db.get_audit_log(None, None, 3).unwrap();
         assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn prune_removes_only_entries_past_retention() {
+        let db = Database::open_in_memory().unwrap();
+
+        let now = current_time_millis();
+        let day_ms = 24 * 60 * 60 * 1000;
+        let stale = now - (AUDIT_RETENTION_DAYS + 1) * day_ms;
+        let insert = |timestamp: u64, entity_id: &str| {
+            db.conn_ref()
+                .execute(
+                    "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
+                     VALUES (?1, 'session', ?2, 'created')",
+                    params![timestamp as i64, entity_id],
+                )
+                .unwrap();
+        };
+        insert(stale, "old");
+        insert(now, "fresh");
+
+        assert_eq!(db.prune_audit_log().unwrap(), 1);
+
+        let entries = db.get_audit_log(None, None, 10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entity_id, "fresh");
     }
 
     #[test]

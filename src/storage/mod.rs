@@ -47,11 +47,16 @@ impl Database {
 
         let last_data_version = conn.query_row("PRAGMA data_version", [], |row| row.get(0))?;
 
-        Ok(Self {
+        let db = Self {
             conn,
             instance_id: Uuid::new_v4().to_string(),
             last_data_version,
-        })
+        };
+        // Best-effort retention; opening the DB must not fail over old breadcrumbs.
+        if let Err(e) = db.prune_audit_log() {
+            tracing::warn!("Failed to prune audit log: {e}");
+        }
+        Ok(db)
     }
 
     /// Get a reference to the underlying connection (for metadata queries).
