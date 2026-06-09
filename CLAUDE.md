@@ -176,7 +176,7 @@ Enforced by cocogitto via pre-commit hooks.
 
 - **Types**: feat, fix, perf, refactor, docs, style, test,
   chore, ci, build, revert
-- **Scopes**: cli, ui, git, core, docs, deps, config, agent
+- **Scopes**: api, cli, ui, git, core, docs, deps, config, mcp
 - Use `cog commit feat "message"`
   or `cog commit fix "message" scope`
 
@@ -573,12 +573,12 @@ scripts/demo/record.sh theme automations   # re-record a subset
 `record.sh` records every video pair in one pass: the combined
 hero demo (`thurbox-demo.*` via `agents.tape`), one clip per
 feature (`thurbox-{file-manager,info-panel,theme,session-creation}.*`),
-and the automations demo (`automations-demo.*` via
-`automations.tape`) — one VHS tape each
+and the automations/tasks/search demos (`automations-demo.*`,
+`tasks-demo.*`, `search-demo.*`) — one VHS tape each
 (`scripts/demo/<feature>.tape`). With no args it records all of
 them; pass tape stems to re-record a subset (the `agents` stem is
-the hero, `automations` is the automations clip, every other stem
-maps to `thurbox-<stem>.*`).
+the hero, `automations`/`tasks`/`search` map to `<stem>-demo.*`,
+every other stem maps to `thurbox-<stem>.*`).
 
 Every clip uses **real agent CLIs**: the script seeds one session
 per installed CLI (`claude`, `opencode`, `codex`, `gemini`) in a
@@ -723,7 +723,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
-| `Ctrl+O` | Open active session's worktree in editor | **O**pen |
+| `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
@@ -785,9 +785,10 @@ terminal's catch-all PTY forwarding.
 
 ## Themes
 
-The TUI ships with eight palettes — four dark (**Default**, **Catppuccin
-Mocha**, **Tokyo Night**, **Gruvbox Dark**) and four light (**Catppuccin
-Latte**, **Tokyo Night Day**, **Gruvbox Light**, **Solarized Light**).
+The TUI ships with nine palettes — five dark (**Default**, **Catppuccin
+Mocha**, **Tokyo Night**, **Gruvbox Dark**, **Doom**) and four light
+(**Catppuccin Latte**, **Tokyo Night Day**, **Gruvbox Light**,
+**Solarized Light**).
 Pick one with `Ctrl+Y` (or `F4`,
 which avoids terminals that intercept Ctrl+Y as DSUSP); the choice
 is persisted in SQLite under `metadata.active_theme` and survives

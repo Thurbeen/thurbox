@@ -178,7 +178,7 @@ tree with fuzzy search:
 
 ![File manager](./docs/media/thurbox-file-manager.gif)
 
-Eight themes (four dark, four light) switch live with `Ctrl+Y`:
+Nine themes (five dark, four light) switch live with `Ctrl+Y`:
 
 ![Theme switcher](./docs/media/thurbox-theme.gif)
 
@@ -350,7 +350,7 @@ command = "codex"
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
-| `Ctrl+O` | Open active session's repos in editor | **O**pen |
+| `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
 | `Ctrl+S` | Sync worktrees with origin/main | **S**ync |

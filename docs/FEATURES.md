@@ -677,9 +677,11 @@ action, `d`/`Ctrl+D` delete, `Esc` leave.
 
 ### Persistence
 
-Tasks live in the `tasks` SQLite table (schema **v25**): `title`,
-`status`, the automation action columns (`action_kind` nullable for
-local todos), `source`/`external_id`/`external_url`, timestamps, and a
+Tasks live in the `tasks` SQLite table (added in schema **v25**; the
+markdown `description` column followed in **v26**): `title`,
+`description`, `status`, the automation action columns (`action_kind`
+nullable for local todos), `source`/`external_id`/`external_url`,
+timestamps, and a
 `deleted_at` soft-delete marker, with a partial index on `status`.
 Mutations are recorded in `audit_log` under `EntityType::Task`. Tasks
 do **not** join the cross-instance `SharedState` (like automations) and
@@ -1048,8 +1050,8 @@ palette. Widget files reference named colors (accent, text, status,
 border) rather than hard-coded `Color::*` values, so the whole UI
 can be re-skinned by swapping the active palette.
 
-Thurbox ships eight built-in presets — four dark (Default,
-Catppuccin Mocha, Tokyo Night, Gruvbox Dark) and four light
+Thurbox ships nine built-in presets — five dark (Default,
+Catppuccin Mocha, Tokyo Night, Gruvbox Dark, Doom) and four light
 (Catppuccin Latte, Tokyo Night Day, Gruvbox Light, Solarized
 Light). Press `Ctrl+Y` (or `F4`, which avoids terminals that
 intercept `Ctrl+Y` as DSUSP) to pick one. The choice is persisted
