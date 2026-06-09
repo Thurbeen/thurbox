@@ -18,7 +18,7 @@ use ratatui::{
     layout::{Position, Rect},
     widgets::{Block, Borders},
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::agent::{BackendRegistry, GenericProvider, Session, SessionBackend};
 use crate::git;
@@ -2907,6 +2907,11 @@ impl App {
         self.should_quit
     }
 
+    /// Persist state, then detach. The order is forced: `Session::detach`
+    /// consumes the session by value, so `save_state` (which reads
+    /// `session.info`) must run while `self.sessions` is intact. A hung save
+    /// is bounded by the SQLite busy_timeout, after which upsert errors are
+    /// logged and detach still runs.
     pub fn shutdown(mut self) {
         // Finalize any pending delete before shutting down
         self.finalize_pending_delete();
@@ -3278,7 +3283,13 @@ impl App {
                 .claim_due_automation(auto.id, auto.next_run_at.unwrap_or(0), next, now)
             {
                 Ok(true) => {}
-                Ok(false) => continue, // another firer won the claim
+                Ok(false) => {
+                    debug!(
+                        automation_id = auto.id,
+                        "automation claim lost to a concurrent firer (headless tick / other instance)"
+                    );
+                    continue;
+                }
                 Err(e) => {
                     error!("Failed to claim automation {}: {e}", auto.id);
                     continue;

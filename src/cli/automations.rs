@@ -245,13 +245,18 @@ fn tick(db: &Database) -> Result<Value, String> {
         .due_automations(now)
         .map_err(|e| format!("due_automations: {e}"))?;
     let mut fired = Vec::new();
+    let mut skipped = Vec::new();
     for auto in due {
         let next = auto.schedule.next_after(now, auto.timezone.as_deref());
         let claimed = db
             .claim_due_automation(auto.id, auto.next_run_at.unwrap_or(0), next, now)
             .map_err(|e| format!("claim_due_automation: {e}"))?;
         if !claimed {
-            continue; // another firer (TUI / concurrent tick) won the claim
+            // Another firer (TUI / concurrent tick) won the claim. The CLI
+            // logs at WARN by default, so report it in the JSON too.
+            tracing::debug!(automation_id = auto.id, "automation claim lost to a concurrent firer");
+            skipped.push(json!({ "id": auto.id, "reason": "claim-lost" }));
+            continue;
         }
         let (status, detail) = fire_headless(db, &auto);
         let _ = db.record_automation_run(auto.id, status, &detail);
@@ -261,7 +266,7 @@ fn tick(db: &Database) -> Result<Value, String> {
             "detail": detail,
         }));
     }
-    Ok(json!({ "fired": fired }))
+    Ok(json!({ "fired": fired, "skipped": skipped }))
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.
@@ -433,4 +438,17 @@ fn run_to_json(r: &AutomationRun) -> Value {
         "status": r.status.as_str(),
         "detail": r.detail,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_reports_fired_and_skipped_arrays() {
+        let db = Database::open_in_memory().unwrap();
+        let v = tick(&db).unwrap();
+        assert_eq!(v["fired"], json!([]));
+        assert_eq!(v["skipped"], json!([]));
+    }
 }
