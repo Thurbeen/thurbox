@@ -210,10 +210,26 @@ fn initial_output_at(mode: WireMode) -> u64 {
     }
 }
 
+/// Max pending input messages per session before sends fail fast. Each
+/// message is one key/paste payload; a full queue means the tmux stdin
+/// writer has stalled, and dropping with an error beats unbounded growth.
+const INPUT_CHANNEL_CAPACITY: usize = 1024;
+
+/// Queue input without ever blocking — `send_input` is called from the
+/// render/update path, so a stalled writer must surface as an error, not a
+/// hang.
+fn send_to_input_channel(tx: &mpsc::Sender<Vec<u8>>, data: Vec<u8>, what: &str) -> Result<()> {
+    use tokio::sync::mpsc::error::TrySendError;
+    tx.try_send(data).map_err(|e| match e {
+        TrySendError::Full(_) => anyhow::anyhow!("{what} input channel full (writer stalled)"),
+        TrySendError::Closed(_) => anyhow::anyhow!("{what} input channel closed"),
+    })
+}
+
 /// Wired-up I/O state: parser, channels, and exit tracking.
 struct WiredState {
     parser: Arc<Mutex<SessionParser>>,
-    input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    input_tx: mpsc::Sender<Vec<u8>>,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
     last_title: Arc<Mutex<Option<String>>>,
@@ -224,7 +240,7 @@ struct WiredState {
 /// A companion shell pane running alongside an agent session.
 pub struct ShellPane {
     pub parser: Arc<Mutex<SessionParser>>,
-    input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    input_tx: mpsc::Sender<Vec<u8>>,
     backend_id: String,
     /// Kept alive so the reader loop's Arc clone has a peer.
     #[allow(dead_code)]
@@ -238,9 +254,7 @@ pub struct ShellPane {
 
 impl ShellPane {
     pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
-        self.input_tx
-            .send(data)
-            .map_err(|_| anyhow::anyhow!("Shell input channel closed"))
+        send_to_input_channel(&self.input_tx, data, "Shell")
     }
 
     /// Build a ShellPane from wired-up I/O state.
@@ -270,7 +284,7 @@ fn remote_host_from_backend(backend: &Arc<dyn SessionBackend>) -> Option<String>
 pub struct Session {
     pub info: SessionInfo,
     pub parser: Arc<Mutex<SessionParser>>,
-    input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    input_tx: mpsc::Sender<Vec<u8>>,
     backend_id: String,
     backend: Arc<dyn SessionBackend>,
     provider: Arc<dyn AgentProvider>,
@@ -401,7 +415,7 @@ impl Session {
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(initial_output_at(io.mode)));
 
-        let (input_tx, input_rx) = mpsc::unbounded_channel();
+        let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         tokio::spawn(Self::writer_loop(io.input, input_rx));
 
         let parser_clone = Arc::clone(&parser);
@@ -483,7 +497,7 @@ impl Session {
 
     async fn writer_loop(
         mut writer: Box<dyn Write + Send>,
-        mut input_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        mut input_rx: mpsc::Receiver<Vec<u8>>,
     ) {
         while let Some(data) = input_rx.recv().await {
             if let Err(e) = writer.write_all(&data) {
@@ -499,9 +513,7 @@ impl Session {
     }
 
     pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
-        self.input_tx
-            .send(data)
-            .map_err(|_| anyhow::anyhow!("Session input channel closed"))
+        send_to_input_channel(&self.input_tx, data, "Session")
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
@@ -729,7 +741,7 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
         provider: &Arc<dyn AgentProvider>,
     ) -> Self {
-        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let (input_tx, _input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         Self {
             info: SessionInfo::new(name.to_string()),
             parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
@@ -757,6 +769,24 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_channel_overflow_fails_fast_without_blocking() {
+        let (tx, _rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+        for _ in 0..INPUT_CHANNEL_CAPACITY {
+            send_to_input_channel(&tx, vec![b'x'], "Session").unwrap();
+        }
+        let err = send_to_input_channel(&tx, vec![b'x'], "Session").unwrap_err();
+        assert!(err.to_string().contains("full"), "got: {err}");
+    }
+
+    #[test]
+    fn input_channel_closed_reports_closed() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(INPUT_CHANNEL_CAPACITY);
+        drop(rx);
+        let err = send_to_input_channel(&tx, vec![b'x'], "Session").unwrap_err();
+        assert!(err.to_string().contains("closed"), "got: {err}");
+    }
 
     #[test]
     fn now_millis_returns_reasonable_value() {
