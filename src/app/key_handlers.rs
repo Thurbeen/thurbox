@@ -212,6 +212,7 @@ impl App {
         } else {
             self.set_info("All keybindings reset to defaults");
         }
+        self.mark_keybindings_saved();
     }
 
     /// Serialize the current keybindings and write them to
@@ -226,6 +227,7 @@ impl App {
             }
             Err(e) => self.set_error(format!("Failed to serialize keybindings: {e}")),
         }
+        self.mark_keybindings_saved();
     }
 
     /// Route the key to the open modal's handler, if any. Returns `true` if a

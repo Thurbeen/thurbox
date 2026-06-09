@@ -14,13 +14,18 @@ development checkout never touches your real setup.
 
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
-| `~/.config/thurbox/agents.toml` | TOML | you | startup | coding-agent CLI definitions |
+| `~/.config/thurbox/agents.toml` | TOML | you | **live** (mtime poll) | coding-agent CLI definitions |
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts |
 | `~/.config/thurbox/settings.toml` | TOML | you | startup | scalar tuning knobs |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
-| `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | startup | key chord overrides |
+| `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | **live** (mtime poll) | key chord overrides |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings) |
+
+`agents.toml` and `keybindings.json` reload **live**: the TUI polls
+their mtime (~1/s) and applies edits with a confirmation toast — no
+restart. `hosts.toml` (SSH backends register at startup),
+`settings.toml`, and `themes.toml` need a restart.
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 

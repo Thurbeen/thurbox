@@ -1,5 +1,6 @@
 mod automation_state;
 mod background;
+mod config_reload;
 mod helpers;
 mod key_handlers;
 mod metrics_state;
@@ -59,6 +60,10 @@ const METRICS_REFRESH_TICKS: u64 = 100;
 /// shell out to `git`, so they run on a slower cadence than other metrics
 /// (~5 s) and only for the visible session.
 const GIT_REFRESH_TICKS: u64 = 500;
+
+/// Ticks (~10 ms each) between config-file mtime polls (~1 s). Cheap: two
+/// `stat` calls per poll.
+const CONFIG_RELOAD_TICKS: u64 = 100;
 
 /// How often to refresh account usage / rate-limits (in ticks). At ~10ms per
 /// tick, 30000 ≈ 5 minutes. Usage windows are coarse and fetching hits the
@@ -509,6 +514,9 @@ pub struct App {
     /// agents.toml/hosts.toml reported by main), shown joined in one status
     /// toast via [`Self::report_config_warnings`].
     config_warnings: Vec<String>,
+    /// Last-seen mtimes of the live-reloadable config files (see
+    /// [`Self::poll_config_reload`]).
+    config_reload: config_reload::ConfigReloadState,
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
@@ -623,6 +631,10 @@ impl App {
             usage_tx,
             usage_rx,
             config_warnings: Vec::new(),
+            config_reload: config_reload::ConfigReloadState {
+                agents_mtime: config_reload::agents_mtime(),
+                keybindings_mtime: config_reload::keybindings_mtime(),
+            },
         };
         app.report_config_warnings(config_warnings);
         app
@@ -639,6 +651,75 @@ impl App {
         self.config_warnings.extend(warnings);
         let text = format!("Config: {}", self.config_warnings.join(" · "));
         self.set_status(StatusLevel::Error, text);
+    }
+
+    /// Reload `agents.toml` / `keybindings.json` in place when their mtime
+    /// changes — editing either takes effect without a restart. Self-writes
+    /// (the F1 editor persisting a rebind) refresh the stored mtime at save
+    /// time, so they don't re-toast here.
+    fn poll_config_reload(&mut self) {
+        if config_reload::agents_mtime() != self.config_reload.agents_mtime {
+            let (registry, warnings) = crate::agent::agent_config::load_or_seed_with_warnings();
+            self.agents = registry;
+            // Re-stat after the load: a missing file gets re-seeded by it.
+            self.config_reload.agents_mtime = config_reload::agents_mtime();
+            if warnings.is_empty() {
+                self.set_status(StatusLevel::Info, "agents.toml reloaded");
+            } else {
+                self.set_status(
+                    StatusLevel::Error,
+                    format!("Config: {}", warnings.join(" · ")),
+                );
+            }
+            for w in &warnings {
+                warn!("{w}");
+            }
+        }
+
+        let kb_mtime = config_reload::keybindings_mtime();
+        if kb_mtime != self.config_reload.keybindings_mtime {
+            self.config_reload.keybindings_mtime = kb_mtime;
+            let (bindings, warnings) = match crate::storage::keybindings::load_keybindings_json() {
+                Ok(Some(json)) => {
+                    match crate::session::KeyBindings::from_json_with_warnings(&json) {
+                        Ok((bindings, warnings)) => (
+                            bindings,
+                            warnings
+                                .into_iter()
+                                .map(|w| format!("keybindings.json: {w}"))
+                                .collect(),
+                        ),
+                        Err(e) => (
+                            crate::session::KeyBindings::default(),
+                            vec![format!("keybindings.json: {e}; using default keybindings")],
+                        ),
+                    }
+                }
+                Ok(None) => (crate::session::KeyBindings::default(), Vec::new()),
+                Err(e) => (
+                    crate::session::KeyBindings::default(),
+                    vec![format!("keybindings.json: {e}; using default keybindings")],
+                ),
+            };
+            self.keybindings = bindings;
+            if warnings.is_empty() {
+                self.set_status(StatusLevel::Info, "keybindings.json reloaded");
+            } else {
+                self.set_status(
+                    StatusLevel::Error,
+                    format!("Config: {}", warnings.join(" · ")),
+                );
+            }
+            for w in &warnings {
+                warn!("{w}");
+            }
+        }
+    }
+
+    /// Record the current `keybindings.json` mtime so the next reload poll
+    /// doesn't treat our own write as an external edit.
+    pub(crate) fn mark_keybindings_saved(&mut self) {
+        self.config_reload.keybindings_mtime = config_reload::keybindings_mtime();
     }
 
     /// Build an [`AgentProvider`](crate::agent::AgentProvider) for a session
@@ -2236,6 +2317,9 @@ impl App {
         }
         if self.metrics.tick_count % GIT_REFRESH_TICKS == 0 {
             self.start_git_stats_refresh();
+        }
+        if self.metrics.tick_count % CONFIG_RELOAD_TICKS == 0 {
+            self.poll_config_reload();
         }
 
         // Drain any completed background usage fetches into the cache.
@@ -4681,6 +4765,64 @@ mod tests {
 
     fn test_db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn poll_config_reload_picks_up_agents_toml_edit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+        app.status_message = None;
+
+        // No change → no reload, no toast.
+        app.poll_config_reload();
+        assert!(app.status_message.is_none());
+
+        // An external edit appears on the next poll without a restart.
+        let path = crate::agent::agent_config::agents_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "default = \"mine\"\n[[agents]]\nname = \"mine\"\ncommand = \"x\"\n",
+        )
+        .unwrap();
+
+        app.poll_config_reload();
+        assert_eq!(app.agents.default, "mine");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.level),
+            Some(StatusLevel::Info)
+        );
+
+        // Stable afterwards: no repeated toasts.
+        app.status_message = None;
+        app.poll_config_reload();
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn poll_config_reload_picks_up_keybindings_edit_but_not_self_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+        app.status_message = None;
+
+        // External edit → rebind applies live.
+        crate::storage::keybindings::save_keybindings_json(r#"{ "QuitApp": ["ctrl+x"] }"#).unwrap();
+        app.poll_config_reload();
+        assert_eq!(
+            app.keybindings.chord_for(crate::session::Action::QuitApp),
+            Some(&crate::session::KeyChord::ctrl('x'))
+        );
+        assert!(app.status_message.is_some());
+
+        // A self-write (the F1 editor persisting) refreshes the stored mtime,
+        // so the next poll stays quiet.
+        app.status_message = None;
+        crate::storage::keybindings::save_keybindings_json(r#"{ "QuitApp": ["ctrl+z"] }"#).unwrap();
+        app.mark_keybindings_saved();
+        app.poll_config_reload();
+        assert!(app.status_message.is_none());
     }
 
     #[test]
