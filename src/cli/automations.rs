@@ -474,4 +474,24 @@ mod tests {
         assert_eq!(v["fired"], json!([]));
         assert_eq!(v["skipped"], json!([]));
     }
+
+    #[test]
+    fn run_to_json_emits_related_session_id() {
+        let sid = SessionId::default();
+        let run = AutomationRun {
+            id: 1,
+            automation_id: 2,
+            started_at: 3,
+            status: AutomationRunStatus::Success,
+            detail: "sent".into(),
+            related_session_id: Some(sid),
+        };
+        assert_eq!(run_to_json(&run)["related_session_id"], sid.to_string());
+
+        let run = AutomationRun {
+            related_session_id: None,
+            ..run
+        };
+        assert_eq!(run_to_json(&run)["related_session_id"], Value::Null);
+    }
 }

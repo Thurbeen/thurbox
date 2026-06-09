@@ -4612,66 +4612,13 @@ mod tests {
     // --- Session switching tests ---
 
     /// Stub backend that does nothing — for unit tests only.
-    struct StubBackend;
-    impl SessionBackend for StubBackend {
-        fn name(&self) -> &str {
-            "stub"
-        }
-        fn check_available(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn ensure_ready(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn spawn(
-            &self,
-            _: &str,
-            _: &str,
-            _: &[String],
-            _: Option<&Path>,
-            _: &std::collections::HashMap<String, String>,
-            _: u16,
-            _: u16,
-        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
-            anyhow::bail!("stub backend does not spawn")
-        }
-        fn adopt(
-            &self,
-            _: &str,
-            _: u16,
-            _: u16,
-        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
-            anyhow::bail!("stub backend does not adopt")
-        }
-        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
-            Ok(vec![])
-        }
-        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
-            Ok(false)
-        }
-        fn kill(&self, _: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn detach(&self, _: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
-            Ok(None)
-        }
-    }
-
-    fn stub_backend_arc() -> Arc<dyn SessionBackend> {
-        Arc::new(StubBackend)
-    }
-
-    /// Stub backend that counts `detach` calls (for lifecycle tests).
-    struct DetachCountingBackend {
+    /// Inert backend for unit tests. `detached` counts `detach` calls so
+    /// lifecycle tests can assert pane I/O teardown.
+    #[derive(Default)]
+    struct StubBackend {
         detached: Arc<std::sync::atomic::AtomicUsize>,
     }
-    impl SessionBackend for DetachCountingBackend {
+    impl SessionBackend for StubBackend {
         fn name(&self) -> &str {
             "stub"
         }
@@ -4723,6 +4670,10 @@ mod tests {
         }
     }
 
+    fn stub_backend_arc() -> Arc<dyn SessionBackend> {
+        Arc::new(StubBackend::default())
+    }
+
     fn stub_provider() -> Arc<dyn crate::agent::AgentProvider> {
         Arc::new(crate::agent::GenericProvider::new(
             crate::agent::agent_config::builtin_registry()
@@ -4747,7 +4698,7 @@ mod tests {
     #[test]
     fn apply_removed_sessions_detaches_pane_io() {
         let detached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let backend_arc: Arc<dyn SessionBackend> = Arc::new(DetachCountingBackend {
+        let backend_arc: Arc<dyn SessionBackend> = Arc::new(StubBackend {
             detached: Arc::clone(&detached),
         });
         let mut app = App::new(

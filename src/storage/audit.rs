@@ -46,6 +46,8 @@ impl AuditAction {
 /// debugging breadcrumbs, not compliance data, so 90 days is plenty.
 pub const AUDIT_RETENTION_DAYS: u64 = 90;
 
+const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
+
 /// A single audit log entry.
 #[derive(Debug, Clone)]
 pub struct AuditEntry {
@@ -91,8 +93,7 @@ impl Database {
     /// Delete audit entries older than [`AUDIT_RETENTION_DAYS`]. Returns the
     /// number of rows removed. Cheap thanks to `idx_audit_log_timestamp`.
     pub fn prune_audit_log(&self) -> rusqlite::Result<usize> {
-        let cutoff =
-            current_time_millis().saturating_sub(AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+        let cutoff = current_time_millis().saturating_sub(AUDIT_RETENTION_DAYS * MS_PER_DAY);
         self.conn.execute(
             "DELETE FROM audit_log WHERE timestamp < ?1",
             params![cutoff as i64],
@@ -279,8 +280,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         let now = current_time_millis();
-        let day_ms = 24 * 60 * 60 * 1000;
-        let stale = now - (AUDIT_RETENTION_DAYS + 1) * day_ms;
+        let stale = now - (AUDIT_RETENTION_DAYS + 1) * MS_PER_DAY;
         let insert = |timestamp: u64, entity_id: &str| {
             db.conn_ref()
                 .execute(
