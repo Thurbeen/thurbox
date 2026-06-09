@@ -40,7 +40,10 @@ fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
 }
 
 /// Cache of resolved remote `$HOME` directories, keyed by ssh destination, so
-/// we only pay one round-trip per host.
+/// we only pay one round-trip per host. Entries live for the process lifetime:
+/// `hosts.toml` is read once at startup, so repointing a destination at a
+/// different machine requires a restart anyway — the cache can never be
+/// staler than the host config it derives from.
 fn remote_home_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
