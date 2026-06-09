@@ -238,18 +238,27 @@ impl Database {
         Ok(updated)
     }
 
-    /// Append a run-history entry.
+    /// Append a run-history entry. `related_session` is the session the run
+    /// sent to / spawned, when one exists.
     pub fn record_automation_run(
         &self,
         automation_id: i64,
         status: AutomationRunStatus,
         detail: &str,
+        related_session: Option<SessionId>,
     ) -> rusqlite::Result<i64> {
         let now = current_time_millis() as i64;
         self.conn.execute(
-            "INSERT INTO automation_runs (automation_id, started_at, status, detail) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![automation_id, now, status.as_str(), detail],
+            "INSERT INTO automation_runs \
+             (automation_id, started_at, status, detail, related_session_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                automation_id,
+                now,
+                status.as_str(),
+                detail,
+                related_session.map(|id| id.to_string()),
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -261,7 +270,8 @@ impl Database {
         limit: u32,
     ) -> rusqlite::Result<Vec<AutomationRun>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, automation_id, started_at, status, detail FROM automation_runs \
+            "SELECT id, automation_id, started_at, status, detail, related_session_id \
+             FROM automation_runs \
              WHERE automation_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![automation_id, limit], |row| {
@@ -271,6 +281,10 @@ impl Database {
                 started_at: row.get::<_, i64>(2)? as u64,
                 status: AutomationRunStatus::from_db(&row.get::<_, String>(3)?),
                 detail: row.get(4)?,
+                // Tolerate malformed ids — treat them as "no related session".
+                related_session_id: row
+                    .get::<_, Option<String>>(5)?
+                    .and_then(|s| s.parse().ok()),
             })
         })?;
         rows.collect()
@@ -557,9 +571,9 @@ mod tests {
         let id = db
             .create_automation(&send_automation("h", Some(100)))
             .unwrap();
-        db.record_automation_run(id, AutomationRunStatus::Success, "ok")
+        db.record_automation_run(id, AutomationRunStatus::Success, "ok", None)
             .unwrap();
-        db.record_automation_run(id, AutomationRunStatus::Skipped, "no session")
+        db.record_automation_run(id, AutomationRunStatus::Skipped, "no session", None)
             .unwrap();
         let runs = db.list_automation_runs(id, 10).unwrap();
         assert_eq!(runs.len(), 2);
@@ -568,12 +582,28 @@ mod tests {
     }
 
     #[test]
+    fn run_history_roundtrips_related_session() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_automation(&send_automation("h", Some(100)))
+            .unwrap();
+        let sid = SessionId::default();
+        db.record_automation_run(id, AutomationRunStatus::Success, "sent", Some(sid))
+            .unwrap();
+        db.record_automation_run(id, AutomationRunStatus::Skipped, "no session", None)
+            .unwrap();
+        let runs = db.list_automation_runs(id, 10).unwrap();
+        assert_eq!(runs[0].related_session_id, None);
+        assert_eq!(runs[1].related_session_id, Some(sid));
+    }
+
+    #[test]
     fn delete_removes_automation_and_runs() {
         let db = Database::open_in_memory().unwrap();
         let id = db
             .create_automation(&send_automation("d", Some(100)))
             .unwrap();
-        db.record_automation_run(id, AutomationRunStatus::Success, "ok")
+        db.record_automation_run(id, AutomationRunStatus::Success, "ok", None)
             .unwrap();
         assert!(db.delete_automation(id).unwrap());
         assert!(db.get_automation(id).unwrap().is_none());

@@ -3295,15 +3295,22 @@ impl App {
                     continue;
                 }
             }
-            let (status, detail) = self.fire_automation(&auto);
-            if let Err(e) = self.db.record_automation_run(auto.id, status, &detail) {
+            let (status, detail, related) = self.fire_automation(&auto);
+            if let Err(e) = self
+                .db
+                .record_automation_run(auto.id, status, &detail, related)
+            {
                 error!("Failed to record run for automation {}: {e}", auto.id);
             }
         }
     }
 
-    /// Execute a single automation's action, returning its run status + detail.
-    fn fire_automation(&mut self, auto: &Automation) -> (AutomationRunStatus, String) {
+    /// Execute a single automation's action, returning its run status, detail,
+    /// and the session it sent to / spawned (when one exists).
+    fn fire_automation(
+        &mut self,
+        auto: &Automation,
+    ) -> (AutomationRunStatus, String, Option<SessionId>) {
         match &auto.action {
             AutomationAction::Send { session_id } => {
                 if self.sessions.iter().any(|s| s.info.id == *session_id) {
@@ -3312,11 +3319,13 @@ impl App {
                     (
                         AutomationRunStatus::Success,
                         format!("sent to {session_id}"),
+                        Some(*session_id),
                     )
                 } else {
                     (
                         AutomationRunStatus::Skipped,
                         "target session not running".to_string(),
+                        None,
                     )
                 }
             }
@@ -3335,10 +3344,11 @@ impl App {
                 Ok(session_id) => (
                     AutomationRunStatus::Success,
                     format!("session {session_id}"),
+                    Some(session_id),
                 ),
                 Err(e) => {
                     error!("Automation {} spawn failed: {e}", auto.id);
-                    (AutomationRunStatus::Error, e)
+                    (AutomationRunStatus::Error, e, None)
                 }
             },
         }
@@ -3567,10 +3577,9 @@ impl App {
             .and_then(|m| m.editing_id)
     }
 
-    /// Open the session associated with the selected run-history entry: its
-    /// `detail` embeds the send-target / spawned session id (e.g. `"session
-    /// <uuid>"`). Switches to that session's terminal when it's still open,
-    /// otherwise sets a status message.
+    /// Open the session associated with the selected run-history entry.
+    /// Switches to that session's terminal when it's still open, otherwise
+    /// sets a status message.
     pub(crate) fn open_run_related_session(&mut self) {
         let Some(run) = self
             .automation_ui
@@ -3579,12 +3588,14 @@ impl App {
         else {
             return;
         };
-        // The detail is free text; pick out the first token that parses as a
-        // session id (the spawned / target session).
-        let session_id = run
-            .detail
-            .split_whitespace()
-            .find_map(|tok| tok.parse::<SessionId>().ok());
+        // Prefer the typed column (v28+). Pre-v28 rows only embed the id in
+        // their free-text detail (e.g. "session <uuid>"), so fall back to the
+        // first token that parses as a session id.
+        let session_id = run.related_session_id.or_else(|| {
+            run.detail
+                .split_whitespace()
+                .find_map(|tok| tok.parse::<SessionId>().ok())
+        });
         let Some(session_id) = session_id else {
             self.set_status(StatusLevel::Info, "This run has no related session");
             return;
@@ -6895,14 +6906,38 @@ mod tests {
         let mut app = app_with_sessions(2);
         add_test_automation(&mut app, "a");
         let auto_id = app.automation_ui.cached_automations[0].id;
-        // Record a run whose detail references session #1 (as fire_automation
-        // would: "session <uuid>").
+        // Record a run with a typed related session (as fire_automation does).
+        let target = app.sessions[1].info.id;
+        app.db
+            .record_automation_run(auto_id, AutomationRunStatus::Success, "sent", Some(target))
+            .unwrap();
+        app.focus = InputFocus::Automations;
+        app.automation_ui.automation_panel_index = 0;
+        app.sync_automation_editor();
+        app.focus = InputFocus::AutomationRunHistory;
+        app.refresh_selected_automation_runs();
+        app.automation_ui.automation_run_index = 0;
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(app.focus, InputFocus::Terminal);
+        assert_eq!(app.active_index, 1, "should jump to the referenced session");
+    }
+
+    #[test]
+    fn enter_on_legacy_run_parses_session_from_detail() {
+        let mut app = app_with_sessions(2);
+        add_test_automation(&mut app, "a");
+        let auto_id = app.automation_ui.cached_automations[0].id;
+        // Pre-v28 rows have no related_session_id; only the free-text detail
+        // (e.g. "session <uuid>") references the session.
         let target = app.sessions[1].info.id;
         app.db
             .record_automation_run(
                 auto_id,
                 AutomationRunStatus::Success,
                 &format!("session {target}"),
+                None,
             )
             .unwrap();
         app.focus = InputFocus::Automations;
@@ -6929,6 +6964,7 @@ mod tests {
                 auto_id,
                 AutomationRunStatus::Skipped,
                 "target session not running",
+                None,
             )
             .unwrap();
         app.focus = InputFocus::Automations;
@@ -6964,10 +7000,10 @@ mod tests {
         let id = app.automation_ui.cached_automations[0].id;
         // Two recorded runs so j/k has something to move over.
         app.db
-            .record_automation_run(id, AutomationRunStatus::Success, "one")
+            .record_automation_run(id, AutomationRunStatus::Success, "one", None)
             .unwrap();
         app.db
-            .record_automation_run(id, AutomationRunStatus::Error, "two")
+            .record_automation_run(id, AutomationRunStatus::Error, "two", None)
             .unwrap();
         app.focus = InputFocus::Automations;
         app.automation_ui.automation_panel_index = 0;
@@ -6995,7 +7031,7 @@ mod tests {
         add_test_automation(&mut app, "a");
         let id = app.automation_ui.cached_automations[0].id;
         app.db
-            .record_automation_run(id, AutomationRunStatus::Success, "spawned x")
+            .record_automation_run(id, AutomationRunStatus::Success, "spawned x", None)
             .unwrap();
         // While the pane is unfocused the run cache is empty.
         assert!(app.automation_ui.cached_automation_runs.is_empty());

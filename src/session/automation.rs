@@ -162,8 +162,11 @@ pub struct AutomationRun {
     pub automation_id: i64,
     pub started_at: u64,
     pub status: AutomationRunStatus,
-    /// Free-text detail: spawned session id, error message, or skip reason.
+    /// Free-text detail: error message, skip reason, human summary.
     pub detail: String,
+    /// Session this run sent to / spawned, when one exists. `None` on
+    /// pre-v28 rows (the TUI falls back to parsing `detail` for those).
+    pub related_session_id: Option<super::SessionId>,
 }
 
 /// A scheduling preset offered in the CLI/TUI. Each compiles to a cron string.

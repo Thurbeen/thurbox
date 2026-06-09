@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 27;
+pub const SCHEMA_VERSION: u32 = 28;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -93,11 +93,12 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             WHERE enabled = 1 AND next_run_at IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS automation_runs (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            automation_id INTEGER NOT NULL,
-            started_at    INTEGER NOT NULL,
-            status        TEXT NOT NULL,
-            detail        TEXT NOT NULL DEFAULT ''
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id      INTEGER NOT NULL,
+            started_at         INTEGER NOT NULL,
+            status             TEXT NOT NULL,
+            detail             TEXT NOT NULL DEFAULT '',
+            related_session_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
             ON automation_runs(automation_id, started_at);
@@ -188,6 +189,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (25, migrate_v25_tasks),
         (26, migrate_v26_task_description),
         (27, migrate_v27_repo_parent_bookmarks),
+        (28, migrate_v28_run_related_session),
     ];
 
     for &(target, step) in steps {
@@ -830,6 +832,17 @@ fn migrate_v27_repo_parent_bookmarks(conn: &Connection) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// v28: typed related-session column on run history, replacing the
+/// parse-the-detail-string approach (pre-v28 rows keep working via a
+/// detail-parsing fallback in the TUI).
+fn migrate_v28_run_related_session(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE automation_runs ADD COLUMN related_session_id TEXT",
+        [],
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,6 +1028,45 @@ mod tests {
             .exists([])
             .unwrap();
         assert!(has_is_parent, "is_parent column should be added at v27");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v27_adds_related_session_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v27 state: an automation_runs table without related_session_id.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '27');
+             CREATE TABLE automation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, automation_id INTEGER NOT NULL,
+                started_at INTEGER NOT NULL, status TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '');",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let has_column: bool = conn
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('automation_runs') \
+                 WHERE name='related_session_id'",
+            )
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(
+            has_column,
+            "related_session_id column should be added at v28"
+        );
 
         let version: String = conn
             .query_row(

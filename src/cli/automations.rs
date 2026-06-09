@@ -254,12 +254,15 @@ fn tick(db: &Database) -> Result<Value, String> {
         if !claimed {
             // Another firer (TUI / concurrent tick) won the claim. The CLI
             // logs at WARN by default, so report it in the JSON too.
-            tracing::debug!(automation_id = auto.id, "automation claim lost to a concurrent firer");
+            tracing::debug!(
+                automation_id = auto.id,
+                "automation claim lost to a concurrent firer"
+            );
             skipped.push(json!({ "id": auto.id, "reason": "claim-lost" }));
             continue;
         }
-        let (status, detail) = fire_headless(db, &auto);
-        let _ = db.record_automation_run(auto.id, status, &detail);
+        let (status, detail, related) = fire_headless(db, &auto);
+        let _ = db.record_automation_run(auto.id, status, &detail, related);
         fired.push(json!({
             "id": auto.id,
             "status": status.as_str(),
@@ -275,7 +278,10 @@ fn tick(db: &Database) -> Result<Value, String> {
 /// headlessly (the TUI adopts it by name on next startup) and delivers the
 /// prompt via a deferred tmux timer once the agent boots. Local-tmux scoped —
 /// a future remote backend would branch here.
-fn fire_headless(db: &Database, auto: &Automation) -> (AutomationRunStatus, String) {
+fn fire_headless(
+    db: &Database,
+    auto: &Automation,
+) -> (AutomationRunStatus, String, Option<SessionId>) {
     // tmux helpers are reached via fully-qualified paths (no `use crate::agent`)
     // to keep the cli module free of an `agent` import — see
     // tests/architecture_rules.rs::cli_module_isolation.
@@ -287,22 +293,31 @@ fn fire_headless(db: &Database, auto: &Automation) -> (AutomationRunStatus, Stri
                     return (
                         AutomationRunStatus::Skipped,
                         "target session not found".into(),
+                        None,
                     )
                 }
-                Err(e) => return (AutomationRunStatus::Error, format!("get_session_name: {e}")),
+                Err(e) => {
+                    return (
+                        AutomationRunStatus::Error,
+                        format!("get_session_name: {e}"),
+                        None,
+                    )
+                }
             };
             if !crate::agent::tmux::window_exists(&name) {
                 return (
                     AutomationRunStatus::Skipped,
                     "target session not running".into(),
+                    None,
                 );
             }
             match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
                 Ok(()) => (
                     AutomationRunStatus::Success,
                     format!("sent to {session_id}"),
+                    Some(*session_id),
                 ),
-                Err(e) => (AutomationRunStatus::Error, e.to_string()),
+                Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
             }
         }
         AutomationAction::Spawn {
@@ -314,9 +329,10 @@ fn fire_headless(db: &Database, auto: &Automation) -> (AutomationRunStatus, Stri
             let name = format!("auto-{}", auto.id);
             // Reuse an existing session window (later fires / restored sessions).
             if crate::agent::tmux::window_exists(&name) {
+                // The reused window's session id has no cheap lookup here.
                 return match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
-                    Ok(()) => (AutomationRunStatus::Success, format!("reused {name}")),
-                    Err(e) => (AutomationRunStatus::Error, e.to_string()),
+                    Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
+                    Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
                 };
             }
             let req = SpawnRequest {
@@ -329,20 +345,26 @@ fn fire_headless(db: &Database, auto: &Automation) -> (AutomationRunStatus, Stri
                 host: None,
             };
             match crate::session_ops::spawn_session_headless(db, req) {
-                Ok(_) => {
+                Ok(result) => {
+                    let session_id = Some(result.session_id);
                     match crate::agent::tmux::send_prompt_after_delay(
                         &name,
                         &auto.prompt,
                         BOOT_DELAY_SECS,
                     ) {
-                        Ok(()) => (AutomationRunStatus::Success, format!("spawned {name}")),
+                        Ok(()) => (
+                            AutomationRunStatus::Success,
+                            format!("spawned {name}"),
+                            session_id,
+                        ),
                         Err(e) => (
                             AutomationRunStatus::Error,
                             format!("spawned {name} but prompt delivery failed: {e}"),
+                            session_id,
                         ),
                     }
                 }
-                Err(e) => (AutomationRunStatus::Error, e),
+                Err(e) => (AutomationRunStatus::Error, e, None),
             }
         }
     }
@@ -437,6 +459,7 @@ fn run_to_json(r: &AutomationRun) -> Value {
         "started_at": r.started_at,
         "status": r.status.as_str(),
         "detail": r.detail,
+        "related_session_id": r.related_session_id.map(|id| id.to_string()),
     })
 }
 
