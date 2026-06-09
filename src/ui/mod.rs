@@ -15,6 +15,7 @@ pub mod markdown;
 pub mod project_list;
 pub mod repo_picker_modal;
 pub mod restore_sessions_modal;
+pub mod scrollbar;
 pub mod selection;
 pub mod session_name_modal;
 pub mod status_bar;

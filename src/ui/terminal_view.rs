@@ -1,16 +1,19 @@
 use ratatui::{
     layout::{Margin, Rect},
     style::{Color, Style},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 use super::focus_block;
+use super::scrollbar::{self, ScrollbarGeom};
 use super::theme::Theme;
 use super::FocusLevel;
 use crate::session::SessionInfo;
 
+/// Render the terminal pane. Returns the scrollbar geometry when scrollback is
+/// present (so the caller can record it as a drag target), else `None`.
 pub fn render_terminal(
     frame: &mut Frame,
     area: Rect,
@@ -18,7 +21,7 @@ pub fn render_terminal(
     info: &SessionInfo,
     level: FocusLevel,
     is_shell: bool,
-) {
+) -> Option<ScrollbarGeom> {
     let scroll_offset = parser.screen().scrollback();
 
     // Compute total scrollback by temporarily setting to max and reading back
@@ -64,27 +67,25 @@ pub fn render_terminal(
 
     frame.render_widget(pseudo_term, area);
 
-    // Render scrollbar when there's scrollback content
-    if total_scrollback > 0 {
-        // Position scrollbar inside the block border
-        let scrollbar_area = area.inner(Margin {
-            vertical: 1,
-            horizontal: 0,
-        });
-
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .thumb_style(Style::default().fg(Theme::accent()))
-            .track_style(Style::default().fg(Theme::text_muted()));
-
-        // Invert: offset 0 (bottom) → position at max, offset max (top) → position at 0
-        let position = total_scrollback.saturating_sub(scroll_offset);
-        let (rows, _) = parser.screen().size();
-        let mut scrollbar_state = ScrollbarState::new(total_scrollback)
-            .position(position)
-            .viewport_content_length(rows as usize);
-
-        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    // Render scrollbar when there's scrollback content.
+    if total_scrollback == 0 {
+        return None;
     }
+    // Position scrollbar inside the block border.
+    let scrollbar_area = area.inner(Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
+    // Invert: offset 0 (bottom) → position at max, offset max (top) → position at 0.
+    let position = total_scrollback.saturating_sub(scroll_offset);
+    let (rows, _) = parser.screen().size();
+    scrollbar::render_into(
+        frame,
+        scrollbar_area,
+        total_scrollback,
+        rows as usize,
+        position,
+    )
 }
 
 pub fn render_empty_terminal(frame: &mut Frame, area: Rect) {

@@ -21,10 +21,15 @@ use crate::ui::{
     terminal_view, theme_picker_modal, worktree_name_modal,
 };
 
-use super::{App, InputFocus, TerminalView};
+use super::{App, InputFocus, ScrollTarget, ScrollbarHit, TerminalView};
+use crate::ui::scrollbar::ScrollbarGeom;
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
+        // Rebuilt fresh each frame: every scrollbar drawn below records its
+        // geometry + drag target here for the mouse handlers to hit-test.
+        self.scrollbar_hits.clear();
+
         let areas = layout::compute_layout(
             frame.area(),
             self.show_info_panel,
@@ -285,6 +290,13 @@ impl App {
         );
     }
 
+    /// Record a scrollbar drawn this frame as a drag target, if one was drawn.
+    fn record_scrollbar(&mut self, geom: Option<ScrollbarGeom>, target: ScrollTarget) {
+        if let Some(geom) = geom {
+            self.scrollbar_hits.push(ScrollbarHit { geom, target });
+        }
+    }
+
     /// Render the file viewer in the right column (when present).
     fn render_file_viewer(&mut self, frame: &mut Frame, fv_area: Option<Rect>) {
         let Some(fv_area) = fv_area else {
@@ -301,7 +313,8 @@ impl App {
             InputFocus::FileViewer => crate::ui::FocusLevel::Focused,
             _ => crate::ui::FocusLevel::Inactive,
         };
-        file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
+        let geom = file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
+        self.record_scrollbar(geom, ScrollTarget::FileViewer);
     }
 
     /// Render the central pane. In the automations context (the pane or its
@@ -316,24 +329,32 @@ impl App {
                 | InputFocus::AutomationEditor
                 | InputFocus::AutomationRunHistory
         ) {
-            self.render_automation_workspace(frame, terminal);
+            let geom = self.render_automation_workspace(frame, terminal);
+            self.record_scrollbar(geom, ScrollTarget::RunHistory);
             return;
         }
         // In the tasks context the central pane shows the task editor (a live
         // preview while the panel is focused, editable once the editor is) with
         // the task's details beneath it.
         if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
-            self.render_task_workspace(frame, terminal);
+            let geom = self.render_task_workspace(frame, terminal);
+            self.record_scrollbar(geom, ScrollTarget::TaskPreview);
             return;
         }
         // While the global-search strip previews a task result, mirror that in
         // the central pane (focus stays in the strip, so the normal task-context
         // branch above doesn't fire).
-        if self.global_search_preview_kind() == Some(crate::app::search::SearchKind::Task) {
-            if let Some(task) = self.selected_task() {
-                self.render_task_detail_pane(frame, terminal, task);
-                return;
-            }
+        if self.global_search_preview_kind() == Some(crate::app::search::SearchKind::Task)
+            && self.selected_task().is_some()
+        {
+            // Scope the immutable `task` borrow so it ends before the
+            // `&mut self` record_scrollbar call.
+            let geom = {
+                let task = self.selected_task().expect("checked is_some");
+                self.render_task_detail_pane(frame, terminal, task)
+            };
+            self.record_scrollbar(geom, ScrollTarget::TaskPreview);
+            return;
         }
 
         let terminal_focus = match self.focus {
@@ -349,26 +370,33 @@ impl App {
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
 
-        let Some(session) = self.sessions.get(self.active_index) else {
-            terminal_view::render_empty_terminal(frame, terminal);
-            return;
+        // Scope the immutable `session` borrow so it ends before the
+        // `&mut self` record_scrollbar call below.
+        let geom = {
+            let Some(session) = self.sessions.get(self.active_index) else {
+                terminal_view::render_empty_terminal(frame, terminal);
+                return;
+            };
+            let parser_arc = if is_shell_view {
+                session.shell_pane.as_ref().map(|sp| &sp.parser)
+            } else {
+                None
+            }
+            .unwrap_or(&session.parser);
+            if let Ok(mut parser) = parser_arc.lock() {
+                terminal_view::render_terminal(
+                    frame,
+                    terminal,
+                    &mut parser,
+                    &session.info,
+                    terminal_focus,
+                    is_shell_view,
+                )
+            } else {
+                None
+            }
         };
-        let parser_arc = if is_shell_view {
-            session.shell_pane.as_ref().map(|sp| &sp.parser)
-        } else {
-            None
-        }
-        .unwrap_or(&session.parser);
-        if let Ok(mut parser) = parser_arc.lock() {
-            terminal_view::render_terminal(
-                frame,
-                terminal,
-                &mut parser,
-                &session.info,
-                terminal_focus,
-                is_shell_view,
-            );
-        }
+        self.record_scrollbar(geom, ScrollTarget::Terminal);
     }
 
     /// Render the bottom status-bar footer.
@@ -602,7 +630,7 @@ impl App {
     /// scoped automation (a preview while the list is focused, editable once the
     /// editor is focused), with the automation's run history beneath it. Shows a
     /// discoverability hint when there's nothing to edit.
-    fn render_automation_workspace(&self, frame: &mut Frame, area: Rect) {
+    fn render_automation_workspace(&self, frame: &mut Frame, area: Rect) -> Option<ScrollbarGeom> {
         let editing = self.focus == InputFocus::AutomationEditor;
 
         let Some(m) = self.automation_ui.automation_editor.as_ref() else {
@@ -613,7 +641,7 @@ impl App {
                 "No automations yet — press n to create one.",
                 editing,
             );
-            return;
+            return None;
         };
 
         // Run history for the automation being edited (existing automations
@@ -668,7 +696,9 @@ impl App {
                 &runs,
                 self.automation_ui.automation_run_index,
                 history_focus,
-            );
+            )
+        } else {
+            None
         }
     }
 
@@ -676,7 +706,7 @@ impl App {
     /// toggle**: while the editor is focused (`TaskEditor`) it shows the
     /// editor full-screen; while the tasks panel is focused (`TaskList`) it
     /// shows the selected task's read-only, scrollable markdown preview.
-    fn render_task_workspace(&self, frame: &mut Frame, area: Rect) {
+    fn render_task_workspace(&self, frame: &mut Frame, area: Rect) -> Option<ScrollbarGeom> {
         let editing = self.focus == InputFocus::TaskEditor;
 
         let Some(m) = self.task_ui.task_editor.as_ref() else {
@@ -687,7 +717,7 @@ impl App {
                 "No tasks yet — press n to create one.",
                 editing,
             );
-            return;
+            return None;
         };
 
         if editing {
@@ -697,7 +727,7 @@ impl App {
                 area,
                 &task_editor_modal::TaskEditorState::from_modal(m, true),
             );
-            return;
+            return None;
         }
 
         // Preview mode: render the selected (scoped) task's details + markdown
@@ -708,16 +738,21 @@ impl App {
             .and_then(|id| self.task_ui.cached_tasks.iter().find(|t| t.id == id));
         let Some(task) = scoped else {
             render_empty_workspace_hint(frame, area, " Task ", "No task selected.", false);
-            return;
+            return None;
         };
 
-        self.render_task_detail_pane(frame, area, task);
+        self.render_task_detail_pane(frame, area, task)
     }
 
     /// Render a single task's read-only details + scrollable markdown preview
     /// full-screen. Shared by the tasks-panel preview and the global-search
     /// task preview (so previewing a task result also fills the central pane).
-    fn render_task_detail_pane(&self, frame: &mut Frame, area: Rect, task: &crate::session::Task) {
+    fn render_task_detail_pane(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        task: &crate::session::Task,
+    ) -> Option<ScrollbarGeom> {
         // Related running sessions (spawned `task-<id>` and/or a Send target).
         let related = self.task_related_session_indices(task);
         let sessions = if related.is_empty() {
@@ -769,7 +804,7 @@ impl App {
             },
             self.task_ui.task_preview_scroll,
             hints,
-        );
+        )
     }
 }
 

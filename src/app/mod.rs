@@ -30,6 +30,7 @@ use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::layout;
+use crate::ui::scrollbar::ScrollbarGeom;
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
 
 const MOUSE_SCROLL_LINES: usize = 3;
@@ -372,8 +373,16 @@ pub enum AppMessage {
     KeyPress(KeyCode, KeyModifiers),
     /// Text pasted via the terminal's bracketed paste mode.
     Paste(String),
-    MouseScrollUp,
-    MouseScrollDown,
+    /// Mouse wheel up/down, carrying the cursor position so the scroll can be
+    /// routed to whichever pane is under the cursor.
+    MouseScrollUp {
+        x: u16,
+        y: u16,
+    },
+    MouseScrollDown {
+        x: u16,
+        y: u16,
+    },
     MouseClick {
         x: u16,
         y: u16,
@@ -396,6 +405,39 @@ pub enum StatusLevel {
     Info,
     Success,
     Error,
+}
+
+/// Which scroll state a rendered scrollbar drives. Recorded per-frame in
+/// [`App::scrollbar_hits`] so mouse clicks/drags on a track can be routed back
+/// to the right pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrollTarget {
+    Terminal,
+    TaskPreview,
+    FileViewer,
+    RunHistory,
+}
+
+/// One scrollbar rendered this frame: its geometry plus the scroll state it
+/// drives. Built in [`App::view`], hit-tested by the mouse handlers.
+pub(crate) struct ScrollbarHit {
+    pub(crate) geom: ScrollbarGeom,
+    pub(crate) target: ScrollTarget,
+}
+
+/// A scrollable pane identified by hit-testing the cursor against the layout,
+/// used to route a mouse-wheel tick to the pane under the cursor. Broader than
+/// [`ScrollTarget`] because the wheel also scrolls the selection-driven list
+/// panes (which have no draggable scrollbar of their own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrollPane {
+    Terminal,
+    TaskPreview,
+    FileViewer,
+    RunHistory,
+    SessionList,
+    TasksList,
+    Automations,
 }
 
 #[derive(Debug, Clone)]
@@ -532,6 +574,13 @@ pub struct App {
     // (Restore sessions modal state is now in self.modal)
     /// Active text selection (click+drag), uses screen-absolute coordinates.
     pub(crate) text_selection: Option<Selection>,
+    /// Scrollbars rendered this frame, with the scroll state each drives.
+    /// Cleared and rebuilt every [`App::view`]; hit-tested by the mouse handlers
+    /// so a click/drag on a track scrolls the owning pane.
+    pub(crate) scrollbar_hits: Vec<ScrollbarHit>,
+    /// The scrollbar currently being dragged, if any. Set when a click lands on
+    /// a track, cleared on mouse-up, so drags keep driving the same pane.
+    pub(crate) dragging_scrollbar: Option<ScrollTarget>,
     /// Cached text extracted from the frame buffer for the current selection.
     selected_text_cache: Option<String>,
     /// Persistent clipboard handle to avoid "dropped too quickly" warnings on Linux.
@@ -656,6 +705,8 @@ impl App {
             session_terminal_views: HashMap::new(),
             pending_delete: None,
             text_selection: None,
+            scrollbar_hits: Vec::new(),
+            dragging_scrollbar: None,
             selected_text_cache: None,
             clipboard: arboard::Clipboard::new().ok(),
             session_elapsed_buf: Vec::new(),
@@ -1263,8 +1314,8 @@ impl App {
         match msg {
             AppMessage::KeyPress(code, mods) => self.handle_key(code, mods),
             AppMessage::Paste(text) => self.handle_paste(text),
-            AppMessage::MouseScrollUp => self.scroll_terminal_up(MOUSE_SCROLL_LINES),
-            AppMessage::MouseScrollDown => self.scroll_terminal_down(MOUSE_SCROLL_LINES),
+            AppMessage::MouseScrollUp { x, y } => self.handle_mouse_scroll(x, y, true),
+            AppMessage::MouseScrollDown { x, y } => self.handle_mouse_scroll(x, y, false),
             AppMessage::MouseClick { x, y, modifiers } => self.handle_mouse_click(x, y, modifiers),
             AppMessage::MouseDrag { x, y } => self.handle_mouse_drag(x, y),
             AppMessage::MouseUp { x, y } => self.handle_mouse_up(x, y),
@@ -1393,6 +1444,18 @@ impl App {
             return;
         }
 
+        // Grab a scrollbar thumb: a click on any rendered track starts a drag of
+        // that pane's scroll state (and never starts a text selection).
+        if let Some(hit) = self.scrollbar_hits.iter().find(|h| h.geom.contains(x, y)) {
+            let target = hit.target;
+            let pos = hit.geom.position_for_y(y);
+            let content_len = hit.geom.content_len;
+            self.text_selection = None;
+            self.dragging_scrollbar = Some(target);
+            self.apply_scrollbar_position(target, pos, content_len);
+            return;
+        }
+
         // Find which pane was clicked; use inner area (excluding borders).
         let pos = Position::new(x, y);
         let pane_rects = [Some(areas.terminal), areas.left_panel, areas.info_panel];
@@ -1416,6 +1479,17 @@ impl App {
     }
 
     fn handle_mouse_drag(&mut self, x: u16, y: u16) {
+        // A scrollbar drag takes precedence: keep driving the grabbed pane's
+        // scroll state (y can leave the track — `position_for_y` clamps it).
+        if let Some(target) = self.dragging_scrollbar {
+            if let Some(hit) = self.scrollbar_hits.iter().find(|h| h.target == target) {
+                let pos = hit.geom.position_for_y(y);
+                let content_len = hit.geom.content_len;
+                self.apply_scrollbar_position(target, pos, content_len);
+            }
+            return;
+        }
+
         if let Some(ref mut sel) = self.text_selection {
             let (cx, cy) = sel.pane.clamp(x, y);
             sel.cursor = TermPos {
@@ -1426,6 +1500,11 @@ impl App {
     }
 
     fn handle_mouse_up(&mut self, x: u16, y: u16) {
+        // End an in-progress scrollbar drag without touching the text selection.
+        if self.dragging_scrollbar.take().is_some() {
+            return;
+        }
+
         self.handle_mouse_drag(x, y);
 
         if let Some(ref mut sel) = self.text_selection {
@@ -1436,6 +1515,152 @@ impl App {
                 self.text_selection = None;
             }
         }
+    }
+
+    /// Apply a scrollbar position (in `0..content_len`) to the scroll state it
+    /// drives. `content_len` is passed in (read from the hit) so the terminal
+    /// arm can invert without re-borrowing `scrollbar_hits` across
+    /// `with_active_parser`.
+    fn apply_scrollbar_position(&mut self, target: ScrollTarget, pos: usize, content_len: usize) {
+        match target {
+            ScrollTarget::Terminal => {
+                // The scrollbar position is inverted vs. scrollback (0 = bottom):
+                // render uses `position = total - scrollback`, so invert back.
+                let scrollback = content_len.saturating_sub(pos);
+                self.text_selection = None;
+                self.with_active_parser(|parser| {
+                    parser.screen_mut().set_scrollback(scrollback);
+                });
+            }
+            ScrollTarget::TaskPreview => {
+                let max = self.task_preview_max_scroll();
+                self.task_ui.task_preview_scroll = (pos as u16).min(max);
+            }
+            ScrollTarget::FileViewer => {
+                self.file_viewer.select_index(pos);
+            }
+            ScrollTarget::RunHistory => {
+                let max = self
+                    .automation_ui
+                    .cached_automation_runs
+                    .len()
+                    .saturating_sub(1);
+                self.automation_ui.automation_run_index = pos.min(max);
+            }
+        }
+    }
+
+    /// Route a mouse-wheel tick to whichever pane is under the cursor, so the
+    /// wheel scrolls the hovered pane (terminal, task preview, file viewer, run
+    /// history, or a list pane) rather than always the terminal.
+    fn handle_mouse_scroll(&mut self, x: u16, y: u16, up: bool) {
+        let step: i32 = if up { -1 } else { 1 };
+        match self.pane_at(x, y) {
+            Some(ScrollPane::Terminal) | None => {
+                if up {
+                    self.scroll_terminal_up(MOUSE_SCROLL_LINES);
+                } else {
+                    self.scroll_terminal_down(MOUSE_SCROLL_LINES);
+                }
+            }
+            Some(ScrollPane::TaskPreview) => {
+                self.scroll_task_preview(step * MOUSE_SCROLL_LINES as i32)
+            }
+            Some(ScrollPane::FileViewer) => self
+                .file_viewer
+                .move_selection(step * MOUSE_SCROLL_LINES as i32),
+            Some(ScrollPane::RunHistory) => self.move_run_history_selection(step),
+            Some(ScrollPane::SessionList) => {
+                if up {
+                    self.switch_session_backward();
+                } else {
+                    self.switch_session_forward();
+                }
+            }
+            Some(ScrollPane::TasksList) => self.move_task_selection(step),
+            Some(ScrollPane::Automations) => self.move_automation_selection(step),
+        }
+    }
+
+    /// Step the run-history selection by `delta`, clamped to the run count.
+    fn move_run_history_selection(&mut self, delta: i32) {
+        let len = self.automation_ui.cached_automation_runs.len();
+        if len == 0 {
+            self.automation_ui.automation_run_index = 0;
+            return;
+        }
+        let next =
+            (self.automation_ui.automation_run_index as i32 + delta).clamp(0, len as i32 - 1);
+        self.automation_ui.automation_run_index = next as usize;
+    }
+
+    /// Step the tasks-panel selection by `delta`, clamped, refreshing the preview.
+    fn move_task_selection(&mut self, delta: i32) {
+        let len = self.task_ui.filtered_task_indices.len();
+        if len == 0 {
+            return;
+        }
+        let next = (self.task_ui.task_panel_index as i32 + delta).clamp(0, len as i32 - 1);
+        let next = next as usize;
+        if next != self.task_ui.task_panel_index {
+            self.task_ui.task_panel_index = next;
+            self.refresh_task_view();
+        }
+    }
+
+    /// Step the automations-pane selection by `delta`, clamped, refreshing the
+    /// preview.
+    fn move_automation_selection(&mut self, delta: i32) {
+        let len = self.automation_ui.cached_automations.len();
+        if len == 0 {
+            return;
+        }
+        let next =
+            (self.automation_ui.automation_panel_index as i32 + delta).clamp(0, len as i32 - 1);
+        let next = next as usize;
+        if next != self.automation_ui.automation_panel_index {
+            self.automation_ui.automation_panel_index = next;
+            self.refresh_automation_view();
+        }
+    }
+
+    /// Hit-test `(x, y)` against the current layout to find the scrollable pane
+    /// under the cursor (used for pane-aware wheel scrolling).
+    fn pane_at(&self, x: u16, y: u16) -> Option<ScrollPane> {
+        let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
+        let areas = layout::compute_layout(
+            area,
+            self.show_info_panel,
+            self.show_tasks_panel,
+            self.show_file_viewer,
+            self.global_search.active,
+            self.automation_ui.cached_automations.len(),
+        );
+        let pos = Position::new(x, y);
+        let hit = |r: Option<Rect>| r.map(|r| r.contains(pos)).unwrap_or(false);
+
+        if hit(areas.file_viewer) {
+            return Some(ScrollPane::FileViewer);
+        }
+        if hit(areas.tasks_panel) {
+            return Some(ScrollPane::TasksList);
+        }
+        if hit(areas.automations_panel) {
+            return Some(ScrollPane::Automations);
+        }
+        if hit(areas.left_panel) {
+            return Some(ScrollPane::SessionList);
+        }
+        if areas.terminal.contains(pos) {
+            // The central pane hosts the terminal, the task preview, or the
+            // automation run-history depending on focus.
+            return Some(match self.focus {
+                InputFocus::TaskList | InputFocus::TaskEditor => ScrollPane::TaskPreview,
+                InputFocus::AutomationRunHistory => ScrollPane::RunHistory,
+                _ => ScrollPane::Terminal,
+            });
+        }
+        None
     }
 
     fn copy_selection_to_clipboard(&mut self) {
@@ -3593,15 +3818,26 @@ impl App {
     /// Scroll the full-screen task preview by `delta` rows, clamped to the
     /// rendered description length (a slight over-scroll is harmless).
     pub(crate) fn scroll_task_preview(&mut self, delta: i32) {
-        let max = self
-            .selected_task()
-            .and_then(|t| t.description.as_deref())
-            .map(|d| crate::ui::markdown::render_markdown(d).len() as i32)
-            .unwrap_or(0)
-            .saturating_sub(1)
-            .max(0);
+        let max = self.task_preview_max_scroll() as i32;
         let next = (self.task_ui.task_preview_scroll as i32 + delta).clamp(0, max);
         self.task_ui.task_preview_scroll = next as u16;
+    }
+
+    /// Largest valid `task_preview_scroll` for the selected task's description.
+    ///
+    /// Matches the line set that `ui::task_detail::render_task_detail` scrolls:
+    /// the rendered markdown plus the one-row `description` header it prepends.
+    /// Shared by keyboard (`PageUp`/`PageDown`), the wheel, and the scrollbar
+    /// drag so all three agree on the clamp.
+    pub(crate) fn task_preview_max_scroll(&self) -> u16 {
+        let body = self
+            .selected_task()
+            .and_then(|t| t.description.as_deref())
+            .filter(|d| !d.trim().is_empty())
+            .map(|d| crate::ui::markdown::render_markdown(d).len())
+            .unwrap_or(0);
+        // `content_len = body + 1` (the header row); max index is `content_len - 1`.
+        body as u16
     }
 
     /// Open the trigger-time action picker for `task`: one **Send** entry per
@@ -5848,6 +6084,133 @@ mod tests {
         // Over-scroll down is clamped to the rendered line count.
         app.scroll_task_preview(1000);
         assert!(app.task_ui.task_preview_scroll <= 3);
+    }
+
+    #[test]
+    fn apply_scrollbar_position_task_preview_clamps() {
+        let mut app = app_with_sessions(1);
+        app.db
+            .create_task(&crate::storage::tasks::NewTask {
+                description: Some("a\nb\nc".into()),
+                ..crate::storage::tasks::NewTask::local("t")
+            })
+            .unwrap();
+        app.refresh_tasks();
+        app.focus = InputFocus::TaskList;
+        app.task_ui.task_panel_index = 0;
+
+        let max = app.task_preview_max_scroll();
+        // A position past the end clamps to the max.
+        app.apply_scrollbar_position(ScrollTarget::TaskPreview, 1000, 1000);
+        assert_eq!(app.task_ui.task_preview_scroll, max);
+        // Position 0 returns to the top.
+        app.apply_scrollbar_position(ScrollTarget::TaskPreview, 0, 1000);
+        assert_eq!(app.task_ui.task_preview_scroll, 0);
+    }
+
+    #[test]
+    fn apply_scrollbar_position_terminal_inverts() {
+        let mut app = app_with_sessions(1);
+        // The stub parser keeps zero scrollback; swap in one that retains it.
+        app.sessions[0].parser = Arc::new(std::sync::Mutex::new(
+            vt100::Parser::new_with_callbacks(24, 80, 100, crate::agent::TermSignals::default()),
+        ));
+        // Seed the active session's parser with scrollback content.
+        app.with_active_parser(|p| {
+            for i in 0..50 {
+                p.process(format!("line {i}\r\n").as_bytes());
+            }
+        });
+        // Probe the total scrollback (the scrollbar's `content_len`).
+        let mut total = 0usize;
+        app.with_active_parser(|p| {
+            let saved = p.screen().scrollback();
+            p.screen_mut().set_scrollback(usize::MAX);
+            total = p.screen().scrollback();
+            p.screen_mut().set_scrollback(saved);
+        });
+        assert!(total > 0, "expected scrollback content");
+
+        // Thumb at the top (pos 0) → fully scrolled up (scrollback == total).
+        app.apply_scrollbar_position(ScrollTarget::Terminal, 0, total);
+        let mut at_top = 0usize;
+        app.with_active_parser(|p| at_top = p.screen().scrollback());
+        assert_eq!(at_top, total);
+
+        // Thumb at the bottom (pos == total) → back to the live tail (0).
+        app.apply_scrollbar_position(ScrollTarget::Terminal, total, total);
+        let mut at_bottom = 1usize;
+        app.with_active_parser(|p| at_bottom = p.screen().scrollback());
+        assert_eq!(at_bottom, 0);
+    }
+
+    #[test]
+    fn scrollbar_click_starts_drag_not_selection() {
+        let mut app = app_with_sessions(1);
+        // Record a scrollbar track at a known location (as `view()` would).
+        let track = Rect::new(40, 5, 1, 10);
+        app.scrollbar_hits.push(ScrollbarHit {
+            geom: ScrollbarGeom {
+                track,
+                content_len: 100,
+                viewport: 10,
+            },
+            target: ScrollTarget::Terminal,
+        });
+
+        // A click on the track grabs the thumb — no text selection starts.
+        app.handle_mouse_click(40, 7, KeyModifiers::NONE);
+        assert_eq!(app.dragging_scrollbar, Some(ScrollTarget::Terminal));
+        assert!(app.text_selection.is_none());
+
+        // Mouse-up ends the drag.
+        app.handle_mouse_up(40, 7);
+        assert!(app.dragging_scrollbar.is_none());
+    }
+
+    #[test]
+    fn pane_at_central_pane_follows_focus() {
+        let mut app = app_with_sessions(1);
+        // Pick a point guaranteed to be inside the central (terminal) pane.
+        let areas = layout::compute_layout(
+            Rect::new(0, 0, app.terminal_cols, app.terminal_rows),
+            app.show_info_panel,
+            app.show_tasks_panel,
+            app.show_file_viewer,
+            app.global_search.active,
+            app.automation_ui.cached_automations.len(),
+        );
+        let cx = areas.terminal.x + areas.terminal.width / 2;
+        let cy = areas.terminal.y + areas.terminal.height / 2;
+
+        // The same central-pane point routes the wheel by focus.
+        app.focus = InputFocus::Terminal;
+        assert_eq!(app.pane_at(cx, cy), Some(ScrollPane::Terminal));
+
+        app.focus = InputFocus::TaskList;
+        assert_eq!(app.pane_at(cx, cy), Some(ScrollPane::TaskPreview));
+
+        app.focus = InputFocus::AutomationRunHistory;
+        assert_eq!(app.pane_at(cx, cy), Some(ScrollPane::RunHistory));
+    }
+
+    #[test]
+    fn click_outside_scrollbar_starts_selection() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::Terminal;
+        app.scrollbar_hits.push(ScrollbarHit {
+            geom: ScrollbarGeom {
+                track: Rect::new(118, 1, 1, 20),
+                content_len: 100,
+                viewport: 10,
+            },
+            target: ScrollTarget::Terminal,
+        });
+
+        // A click well away from the track falls through to text selection.
+        app.handle_mouse_click(10, 10, KeyModifiers::NONE);
+        assert!(app.dragging_scrollbar.is_none());
+        assert!(app.text_selection.is_some());
     }
 
     #[test]

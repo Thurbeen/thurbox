@@ -15,6 +15,7 @@ use ratatui::{
 
 use crate::session::AutomationRunStatus;
 
+use super::scrollbar::{self, ScrollbarGeom};
 use super::theme::Theme;
 use super::FocusLevel;
 
@@ -38,7 +39,7 @@ pub fn render_run_history(
     runs: &[AutomationRunRow<'_>],
     selected: usize,
     focus: FocusLevel,
-) {
+) -> Option<ScrollbarGeom> {
     let focused = matches!(focus, FocusLevel::Focused);
     let border_color = if focused {
         Theme::border_focused()
@@ -77,51 +78,59 @@ pub fn render_run_history(
             ))),
             list_area,
         );
-    } else {
-        let lines: Vec<Line> = runs
-            .iter()
-            .enumerate()
-            .map(|(i, run)| {
-                let (glyph, word, color) = match run.status {
-                    AutomationRunStatus::Success => ("✓", "ok", Theme::status_idle()),
-                    AutomationRunStatus::Error => ("✗", "error", Theme::status_error()),
-                    AutomationRunStatus::Skipped => ("–", "skipped", Theme::status_waiting()),
-                };
-                let is_selected = focused && i == selected;
-                let pointer = if is_selected { "▸" } else { " " };
-                let mut spans = vec![
-                    // Status — colour + bold so each outcome stands out.
-                    Span::styled(
-                        format!("{pointer}{glyph} {word:<7}"),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    // Absolute clock time, then the relative age.
-                    Span::styled(
-                        format!("{:<11} ", run.at),
-                        Style::default().fg(Theme::text_secondary()),
-                    ),
-                    Span::styled(
-                        format!("{:<9} ", run.when),
-                        Style::default().fg(Theme::text_muted()),
-                    ),
-                ];
-                if !run.detail.is_empty() {
-                    spans.push(Span::styled(
-                        run.detail.to_string(),
-                        Style::default().fg(Theme::text_primary()),
-                    ));
-                }
-                let line = Line::from(spans);
-                if is_selected {
-                    line.style(Style::default().bg(Theme::selection_bg()))
-                } else {
-                    line
-                }
-            })
-            .collect();
-
-        frame.render_widget(Paragraph::new(lines), list_area);
+        return None;
     }
+
+    // Window the runs so the selected row stays visible, reserving the rightmost
+    // column for a scrollbar when the history overflows.
+    let height = list_area.height as usize;
+    let (rows_area, track) = scrollbar::reserve_track(list_area, runs.len(), height);
+    let (start, end) = super::file_viewer::visible_window(runs.len(), selected, height.max(1));
+
+    let lines: Vec<Line> = runs[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, run)| {
+            let i = start + offset;
+            let (glyph, word, color) = match run.status {
+                AutomationRunStatus::Success => ("✓", "ok", Theme::status_idle()),
+                AutomationRunStatus::Error => ("✗", "error", Theme::status_error()),
+                AutomationRunStatus::Skipped => ("–", "skipped", Theme::status_waiting()),
+            };
+            let is_selected = focused && i == selected;
+            let pointer = if is_selected { "▸" } else { " " };
+            let mut spans = vec![
+                // Status — colour + bold so each outcome stands out.
+                Span::styled(
+                    format!("{pointer}{glyph} {word:<7}"),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                // Absolute clock time, then the relative age.
+                Span::styled(
+                    format!("{:<11} ", run.at),
+                    Style::default().fg(Theme::text_secondary()),
+                ),
+                Span::styled(
+                    format!("{:<9} ", run.when),
+                    Style::default().fg(Theme::text_muted()),
+                ),
+            ];
+            if !run.detail.is_empty() {
+                spans.push(Span::styled(
+                    run.detail.to_string(),
+                    Style::default().fg(Theme::text_primary()),
+                ));
+            }
+            let line = Line::from(spans);
+            if is_selected {
+                line.style(Style::default().bg(Theme::selection_bg()))
+            } else {
+                line
+            }
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), rows_area);
 
     if let Some(hint_area) = hint_area {
         let hint = Line::from(vec![
@@ -136,4 +145,6 @@ pub fn render_run_history(
         ]);
         frame.render_widget(Paragraph::new(hint), hint_area);
     }
+
+    track.and_then(|track| scrollbar::render_into(frame, track, runs.len(), height, selected))
 }

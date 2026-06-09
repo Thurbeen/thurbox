@@ -16,6 +16,7 @@ use ratatui::{
     Frame,
 };
 
+use super::scrollbar::{self, ScrollbarGeom};
 use super::{focus_block, theme::Theme, FocusLevel};
 use crate::session::SessionInfo;
 
@@ -345,6 +346,13 @@ impl FileViewerState {
         self.selected = next as usize;
     }
 
+    /// Select the row at `index`, clamped to the current row count. Used by the
+    /// scrollbar drag to jump the selection to a mapped position.
+    pub fn select_index(&mut self, index: usize) {
+        let len = self.flatten().len();
+        self.selected = if len == 0 { 0 } else { index.min(len - 1) };
+    }
+
     /// Activate the current row: toggle directory expansion or return a file to open.
     pub fn activate(&mut self) -> Activation {
         let rows = self.flatten();
@@ -575,12 +583,15 @@ fn read_dir_sorted(path: &Path) -> Vec<FileNode> {
         .collect()
 }
 
+/// Render the file-tree viewer. Returns the scrollbar geometry when the tree
+/// overflows the visible area (so the caller can record it as a drag target),
+/// else `None`.
 pub fn render_file_viewer(
     frame: &mut Frame,
     area: Rect,
     state: &FileViewerState,
     focus: FocusLevel,
-) {
+) -> Option<ScrollbarGeom> {
     use ratatui::layout::{Constraint, Direction, Layout};
 
     let search_visible = state.search_active || !state.search_query.is_empty();
@@ -617,7 +628,7 @@ pub fn render_file_viewer(
     }
 
     if inner.height == 0 || inner.width == 0 {
-        return;
+        return None;
     }
 
     let list_area = inner;
@@ -628,13 +639,13 @@ pub fn render_file_viewer(
             Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(p, list_area);
-        return;
+        return None;
     }
 
     let rows = state.flatten();
     let height = list_area.height as usize;
     if height == 0 {
-        return;
+        return None;
     }
 
     let query_lc = if state.search_active && !state.search_query.is_empty() {
@@ -643,6 +654,9 @@ pub fn render_file_viewer(
         None
     };
 
+    // Reserve the rightmost column for a scrollbar when the tree overflows.
+    let (rows_area, track) = scrollbar::reserve_track(list_area, rows.len(), height);
+
     let (start, end) = visible_window(rows.len(), state.selected, height);
 
     let lines: Vec<Line> = rows[start..end]
@@ -650,7 +664,9 @@ pub fn render_file_viewer(
         .enumerate()
         .map(|(i, row)| build_row_line(row, start + i == state.selected, query_lc.as_deref()))
         .collect();
-    frame.render_widget(Paragraph::new(lines), list_area);
+    frame.render_widget(Paragraph::new(lines), rows_area);
+
+    track.and_then(|track| scrollbar::render_into(frame, track, rows.len(), height, state.selected))
 }
 
 fn row_marker(row: &FlatRow) -> &'static str {
@@ -803,7 +819,10 @@ fn append_cursor_spans<'a>(
     }
 }
 
-fn visible_window(total: usize, selected: usize, height: usize) -> (usize, usize) {
+/// Compute the `start..end` slice of a `total`-row list that keeps `selected`
+/// visible within a `height`-row viewport (with a small margin). Shared by the
+/// file tree and the automation run-history list.
+pub(crate) fn visible_window(total: usize, selected: usize, height: usize) -> (usize, usize) {
     if total <= height {
         return (0, total);
     }

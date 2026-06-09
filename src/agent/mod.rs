@@ -10,7 +10,7 @@ pub mod registry;
 pub mod tmux;
 pub mod transport;
 
-pub use backend::{Session, SessionBackend, SessionParser};
+pub use backend::{Session, SessionBackend, SessionParser, TermSignals};
 pub use generic::GenericProvider;
 pub use provider::AgentProvider;
 pub use registry::BackendRegistry;

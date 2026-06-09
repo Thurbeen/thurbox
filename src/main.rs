@@ -134,8 +134,14 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
                     Some(AppMessage::KeyPress(k.code, k.modifiers))
                 }
                 Event::Mouse(m) => match m.kind {
-                    MouseEventKind::ScrollUp => Some(AppMessage::MouseScrollUp),
-                    MouseEventKind::ScrollDown => Some(AppMessage::MouseScrollDown),
+                    MouseEventKind::ScrollUp => Some(AppMessage::MouseScrollUp {
+                        x: m.column,
+                        y: m.row,
+                    }),
+                    MouseEventKind::ScrollDown => Some(AppMessage::MouseScrollDown {
+                        x: m.column,
+                        y: m.row,
+                    }),
                     MouseEventKind::Down(MouseButton::Left) => Some(AppMessage::MouseClick {
                         x: m.column,
                         y: m.row,

@@ -14,6 +14,7 @@ use ratatui::{
     Frame,
 };
 
+use super::scrollbar::{self, ScrollbarGeom};
 use super::theme::Theme;
 use super::truncate_ellipsis;
 
@@ -51,7 +52,7 @@ pub fn render_task_detail(
     detail: &TaskDetail<'_>,
     scroll: u16,
     hints: &[(&str, &str)],
-) {
+) -> Option<ScrollbarGeom> {
     // The task title *is* the panel heading (bold accent in the border) — no
     // separate in-content title row, so there is one clear heading.
     let title = truncate_ellipsis(detail.title, area.width.saturating_sub(4) as usize);
@@ -67,7 +68,7 @@ pub fn render_task_detail(
     let mut inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
-        return;
+        return None;
     }
 
     // Reserve the bottom row for the key-hint footer when there's room.
@@ -113,7 +114,7 @@ pub fn render_task_detail(
             Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(Paragraph::new(meta_lines), inner);
-        return;
+        return None;
     }
 
     // Split: fixed metadata rows on top, the rendered markdown below.
@@ -126,10 +127,20 @@ pub fn render_task_detail(
 
     let mut md = vec![Line::from(Span::styled("  description", label_style))];
     md.extend(super::markdown::render_markdown(detail.description));
+    let content_len = md.len();
+    let md_area = parts[1];
+    let viewport = md_area.height as usize;
+
+    // Reserve the rightmost column for the scrollbar when the description
+    // overflows, so the wrapped text never renders under the thumb.
+    let (text_area, track) = scrollbar::reserve_track(md_area, content_len, viewport);
     frame.render_widget(
         Paragraph::new(md)
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0)),
-        parts[1],
+        text_area,
     );
+    track.and_then(|track| {
+        scrollbar::render_into(frame, track, content_len, viewport, scroll as usize)
+    })
 }
