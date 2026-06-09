@@ -448,7 +448,7 @@ impl App {
 
         // Worktree name modal
         if let super::modals::Modal::WorktreeName(ref wn) = self.modal {
-            let base = self.pending_base_branch.as_deref().unwrap_or("");
+            let base = self.new_session.base_branch.as_deref().unwrap_or("");
             worktree_name_modal::render_worktree_name_modal(
                 frame,
                 &worktree_name_modal::WorktreeNameState {

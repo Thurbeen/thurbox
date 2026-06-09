@@ -853,9 +853,9 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                self.pending_repo_path = None;
-                self.pending_all_repos = None;
-                self.pending_normal_repos.clear();
+                self.new_session.repo_path = None;
+                self.new_session.all_repos = None;
+                self.new_session.normal_repos.clear();
             }
             KeyCode::Char('j') | KeyCode::Down if bs.index + 1 < bs.branches.len() => {
                 bs.index += 1;
@@ -865,7 +865,7 @@ impl App {
             }
             KeyCode::Enter => {
                 let base_branch = bs.branches[bs.index].clone();
-                self.pending_base_branch = Some(base_branch);
+                self.new_session.base_branch = Some(base_branch);
                 self.modal =
                     super::modals::Modal::SessionName(super::modals::SessionNameModal::default());
             }
@@ -880,11 +880,11 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                self.pending_base_branch = None;
-                self.pending_repo_path = None;
-                self.pending_all_repos = None;
-                self.pending_normal_repos.clear();
-                self.pending_session_name = None;
+                self.new_session.base_branch = None;
+                self.new_session.repo_path = None;
+                self.new_session.all_repos = None;
+                self.new_session.normal_repos.clear();
+                self.new_session.session_name = None;
             }
             KeyCode::Enter => {
                 let new_branch = wn.name.value().trim().to_string();
@@ -893,17 +893,17 @@ impl App {
                     return;
                 }
                 self.modal.close();
-                if let Some(base_branch) = self.pending_base_branch.take() {
+                if let Some(base_branch) = self.new_session.base_branch.take() {
                     // Use all repos for multi-repo projects, single repo otherwise
-                    let repo_paths = if let Some(all_repos) = self.pending_all_repos.take() {
-                        self.pending_repo_path = None;
+                    let repo_paths = if let Some(all_repos) = self.new_session.all_repos.take() {
+                        self.new_session.repo_path = None;
                         all_repos
-                    } else if let Some(repo_path) = self.pending_repo_path.take() {
+                    } else if let Some(repo_path) = self.new_session.repo_path.take() {
                         vec![repo_path]
                     } else {
                         return;
                     };
-                    let session_name = self.pending_session_name.take();
+                    let session_name = self.new_session.session_name.take();
                     self.spawn_worktree_session(
                         &repo_paths,
                         &new_branch,
@@ -930,17 +930,17 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                if self.pending_base_branch.is_some() {
+                if self.new_session.base_branch.is_some() {
                     // Worktree flow — clean up worktree-specific pending state.
-                    self.pending_base_branch = None;
-                    self.pending_repo_path = None;
-                    self.pending_all_repos = None;
-                    self.pending_normal_repos.clear();
+                    self.new_session.base_branch = None;
+                    self.new_session.repo_path = None;
+                    self.new_session.all_repos = None;
+                    self.new_session.normal_repos.clear();
                 } else {
                     // Normal flow — clean up spawn state.
-                    self.pending_spawn_config = None;
-                    self.pending_spawn_worktrees.clear();
-                    self.pending_fork = false;
+                    self.new_session.spawn_config = None;
+                    self.new_session.spawn_worktrees.clear();
+                    self.new_session.fork = false;
                 }
             }
             KeyCode::Enter => {
@@ -950,18 +950,18 @@ impl App {
                     return;
                 }
                 self.modal.close();
-                if self.pending_base_branch.is_some() {
+                if self.new_session.base_branch.is_some() {
                     // Worktree flow — proceed to branch name input.
                     let branch = session_name_to_branch(&name);
-                    self.pending_session_name = Some(name);
+                    self.new_session.session_name = Some(name);
                     let mut modal = super::modals::WorktreeNameModal::default();
                     modal.name.set(&branch);
                     self.modal = super::modals::Modal::WorktreeName(modal);
-                } else if let Some(config) = self.pending_spawn_config.take() {
-                    let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
-                    if self.pending_fork {
+                } else if let Some(config) = self.new_session.spawn_config.take() {
+                    let worktrees = std::mem::take(&mut self.new_session.spawn_worktrees);
+                    if self.new_session.fork {
                         // Fork flow — role already set, spawn directly.
-                        self.pending_fork = false;
+                        self.new_session.fork = false;
                         self.do_spawn_session_async(name, &config, worktrees);
                     } else {
                         // Normal flow — proceed to role selection / spawn.
@@ -1078,7 +1078,7 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                self.pending_backend = None;
+                self.new_session.backend = None;
             }
             KeyCode::Char('j') | KeyCode::Down if hp.selected_index + 1 < choice_count => {
                 hp.selected_index += 1;
@@ -1094,7 +1094,7 @@ impl App {
                     .unwrap_or_default();
                 self.modal.close();
                 // Empty backend == local default.
-                self.pending_backend = if backend.is_empty() {
+                self.new_session.backend = if backend.is_empty() {
                     None
                 } else {
                     Some(backend)
@@ -1113,9 +1113,9 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                self.pending_spawn_config = None;
-                self.pending_spawn_worktrees.clear();
-                self.pending_spawn_name = None;
+                self.new_session.spawn_config = None;
+                self.new_session.spawn_worktrees.clear();
+                self.new_session.spawn_name = None;
             }
             KeyCode::Char('j') | KeyCode::Down if ap.selected_index + 1 < choice_count => {
                 ap.selected_index += 1;
@@ -1127,12 +1127,12 @@ impl App {
                 let chosen = ap.choices.get(ap.selected_index).map(|c| c.name.clone());
                 self.modal.close();
                 if let (Some(mut config), Some(name), Some(agent)) = (
-                    self.pending_spawn_config.take(),
-                    self.pending_spawn_name.take(),
+                    self.new_session.spawn_config.take(),
+                    self.new_session.spawn_name.take(),
                     chosen,
                 ) {
                     config.agent = agent;
-                    let worktrees = std::mem::take(&mut self.pending_spawn_worktrees);
+                    let worktrees = std::mem::take(&mut self.new_session.spawn_worktrees);
                     self.do_spawn_session_async(name, &config, worktrees);
                 }
             }
@@ -1467,21 +1467,21 @@ impl App {
         // Resolve the remote host (if any) so branch listing targets the
         // session's machine. Cloned so we don't hold a borrow on `self`.
         let host = self
-            .host_for_backend(self.pending_backend.as_deref())
+            .host_for_backend(self.new_session.backend.as_deref())
             .cloned();
         let host = host.as_ref();
 
-        let Some(repo_path) = self.pending_repo_path.clone() else {
+        let Some(repo_path) = self.new_session.repo_path.clone() else {
             return;
         };
         let repo_path = repo_path.as_path();
 
-        Self::fetch_pending_repos(host, repo_path, self.pending_all_repos.as_ref());
+        Self::fetch_pending_repos(host, repo_path, self.new_session.all_repos.as_ref());
 
         match crate::git::list_branches_on(host, repo_path) {
             Ok(branches) if branches.is_empty() => {
                 self.set_error("No branches found in repository");
-                self.pending_repo_path = None;
+                self.new_session.repo_path = None;
             }
             Ok(branches) => {
                 let branches = Self::ordered_branch_list(host, repo_path, branches);
@@ -1494,7 +1494,7 @@ impl App {
             Err(e) => {
                 error!("Failed to list branches: {e}");
                 self.set_error(format!("Failed to list branches: {e:#}"));
-                self.pending_repo_path = None;
+                self.new_session.repo_path = None;
             }
         }
     }
@@ -1742,7 +1742,7 @@ impl App {
     fn repo_picker_commit_path_input(&mut self) {
         // For a remote target the path is a remote path: don't expand `~`
         // against the local home, and don't persist it as a local bookmark.
-        let remote = self.pending_backend.is_some();
+        let remote = self.new_session.backend.is_some();
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
@@ -1884,7 +1884,7 @@ impl App {
             // leave cwd unset so the remote session starts in its own default
             // directory (local $HOME is meaningless there).
             let mut config = SessionConfig::default();
-            if self.pending_backend.is_none() {
+            if self.new_session.backend.is_none() {
                 if let Some(home) = std::env::var_os("HOME") {
                     config.cwd = Some(std::path::PathBuf::from(home));
                 }
@@ -1893,18 +1893,18 @@ impl App {
         } else if !worktree_repos.is_empty() {
             // Has worktree repos — go to branch selection.
             // Store normal repos for inclusion after worktree creation.
-            self.pending_repo_path = Some(worktree_repos[0].clone());
-            self.pending_all_repos = if worktree_repos.len() > 1 {
+            self.new_session.repo_path = Some(worktree_repos[0].clone());
+            self.new_session.all_repos = if worktree_repos.len() > 1 {
                 Some(worktree_repos)
             } else {
                 None
             };
-            self.pending_normal_repos = normal_repos;
+            self.new_session.normal_repos = normal_repos;
             self.start_branch_selection();
         } else {
             // All normal repos — spawn directly (local-tmux), going straight
             // to the agent picker chain.
-            self.pending_additional_dirs = normal_repos[1..].to_vec();
+            self.new_session.additional_dirs = normal_repos[1..].to_vec();
             let config = SessionConfig {
                 cwd: Some(normal_repos[0].clone()),
                 ..SessionConfig::default()

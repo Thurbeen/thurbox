@@ -3,6 +3,7 @@ mod helpers;
 mod key_handlers;
 mod metrics_state;
 pub(crate) mod modals;
+mod new_session_state;
 pub(crate) mod search;
 mod state;
 mod sync_state;
@@ -415,10 +416,6 @@ pub struct App {
     /// Configured remote SSH hosts (from `hosts.toml`), used to resolve the
     /// `HostDef` for a session's `ssh:<host>` backend when running git over SSH.
     pub(crate) hosts: crate::session::HostRegistry,
-    /// Backend chosen for the in-progress new-session flow (`ssh:<host>`), or
-    /// `None` for the local default. Set by the host picker, cleared when the
-    /// flow completes or is cancelled.
-    pub(crate) pending_backend: Option<String>,
     pub(crate) db: Database,
     pub(crate) focus: InputFocus,
     pub(crate) should_quit: bool,
@@ -433,21 +430,8 @@ pub struct App {
     pub(crate) file_viewer: crate::ui::file_viewer::FileViewerState,
     pub(crate) modal: modals::Modal,
     // (Delete project, add project, edit project modal state is now in self.modal)
-    pub(crate) pending_repo_path: Option<PathBuf>,
-    pub(crate) pending_all_repos: Option<Vec<PathBuf>>,
-    /// Normal (non-worktree) repos to include alongside worktree repos.
-    pub(crate) pending_normal_repos: Vec<PathBuf>,
-    pub(crate) pending_base_branch: Option<String>,
-    pub(crate) pending_session_name: Option<String>,
-    pub(crate) pending_spawn_config: Option<SessionConfig>,
-    pub(crate) pending_spawn_worktrees: Vec<WorktreeInfo>,
-    /// Extra working directories (non-primary worktrees + normal repos) to
-    /// attach to the spawned session's `SessionInfo`. Consumed by
-    /// `do_spawn_session`.
-    pub(crate) pending_additional_dirs: Vec<PathBuf>,
-    pub(crate) pending_fork: bool,
-    pub(crate) pending_restart: bool,
-    pub(crate) pending_spawn_name: Option<String>,
+    /// In-progress new-session wizard (also drives fork/restart re-spawns).
+    pub(crate) new_session: new_session_state::NewSessionWizardState,
     /// Inter-instance DB sync (polls for changes from other thurbox instances).
     sync_state: SyncState,
     /// Worktree-to-main git sync (Ctrl+S).
@@ -582,7 +566,6 @@ impl App {
             backends,
             agents,
             hosts: crate::session::HostRegistry::default(),
-            pending_backend: None,
             db,
             focus: InputFocus::SessionList,
             should_quit: false,
@@ -595,17 +578,7 @@ impl App {
             show_file_viewer: false,
             file_viewer: crate::ui::file_viewer::FileViewerState::new(),
             modal: modals::Modal::None,
-            pending_repo_path: None,
-            pending_all_repos: None,
-            pending_normal_repos: Vec::new(),
-            pending_base_branch: None,
-            pending_session_name: None,
-            pending_spawn_config: None,
-            pending_spawn_worktrees: Vec::new(),
-            pending_additional_dirs: Vec::new(),
-            pending_fork: false,
-            pending_restart: false,
-            pending_spawn_name: None,
+            new_session: new_session_state::NewSessionWizardState::default(),
             sync_state,
             worktree_sync: sync_state::WorktreeSyncState::default(),
             metrics: metrics_state::MetricsState::new(),
@@ -671,7 +644,7 @@ impl App {
     /// straight to the repo picker (preserving the local-only UX).
     pub(crate) fn start_new_session(&mut self) {
         // Clear any choice left over from a previously cancelled flow.
-        self.pending_backend = None;
+        self.new_session.backend = None;
 
         if self.hosts.is_empty() {
             self.open_repo_picker();
@@ -698,12 +671,12 @@ impl App {
     ///
     /// Loads bookmarks from the database, pre-selects repos from the active
     /// project (if any), and shows the repo picker modal. For a remote target
-    /// (`pending_backend` set) local bookmarks don't apply, so the picker opens
+    /// (`new_session.backend` set) local bookmarks don't apply, so the picker opens
     /// empty with the path input focused for a typed remote path.
     pub(crate) fn open_repo_picker(&mut self) {
         // Local bookmarks point at local paths, so they're meaningless for a
         // remote target: open the picker empty with the path input focused.
-        let remote = self.pending_backend.is_some();
+        let remote = self.new_session.backend.is_some();
         let bookmarks = if remote {
             Vec::new()
         } else {
@@ -823,7 +796,7 @@ impl App {
         let mut config = config.clone();
         // Apply the host chosen in the new-session wizard (None = local).
         if config.backend.is_none() {
-            config.backend = self.pending_backend.take();
+            config.backend = self.new_session.backend.take();
         }
         self.prepare_spawn(config, Vec::new());
     }
@@ -834,8 +807,8 @@ impl App {
     /// agent picker is shown, then spawn.
     pub(crate) fn prepare_spawn(&mut self, config: SessionConfig, worktrees: Vec<WorktreeInfo>) {
         // Show session name modal (empty — user types from scratch).
-        self.pending_spawn_config = Some(config);
-        self.pending_spawn_worktrees = worktrees;
+        self.new_session.spawn_config = Some(config);
+        self.new_session.spawn_worktrees = worktrees;
         self.modal = modals::Modal::SessionName(modals::SessionNameModal::default());
     }
 
@@ -870,9 +843,9 @@ impl App {
                 command: a.command.clone(),
             })
             .collect();
-        self.pending_spawn_name = Some(name);
-        self.pending_spawn_config = Some(config);
-        self.pending_spawn_worktrees = worktrees;
+        self.new_session.spawn_name = Some(name);
+        self.new_session.spawn_config = Some(config);
+        self.new_session.spawn_worktrees = worktrees;
         self.modal = modals::Modal::AgentPicker(crate::ui::agent_picker_modal::AgentPickerState {
             choices,
             selected_index,
@@ -921,7 +894,7 @@ impl App {
                 self.set_error(format!("Failed to restart session: {e:#}"));
             }
         }
-        self.pending_restart = false;
+        self.new_session.restart = false;
     }
 
     /// Open the active session's worktree (or cwd) in the configured editor.
@@ -1020,9 +993,9 @@ impl App {
             ..SessionConfig::default()
         };
 
-        self.pending_spawn_config = Some(config);
-        self.pending_spawn_worktrees = worktrees;
-        self.pending_fork = true;
+        self.new_session.spawn_config = Some(config);
+        self.new_session.spawn_worktrees = worktrees;
+        self.new_session.fork = true;
 
         let mut sn = modals::SessionNameModal::default();
         sn.name.set(&format!("{source_name}-fork"));
@@ -1680,9 +1653,9 @@ impl App {
 
         // Resolve the remote host (if any) so worktrees are created on the
         // session's target machine over SSH. Consume the wizard's choice.
-        let backend = self.pending_backend.take();
+        let backend = self.new_session.backend.take();
         let host = self.host_for_backend(backend.as_deref()).cloned();
-        let normal_repos = std::mem::take(&mut self.pending_normal_repos);
+        let normal_repos = std::mem::take(&mut self.new_session.normal_repos);
 
         let repo_paths = repo_paths.to_vec();
         let new_branch = new_branch.to_string();
@@ -1753,7 +1726,7 @@ impl App {
             .map(|w| w.worktree_path.clone())
             .collect();
         additional_dirs.extend(pending.normal_repos);
-        self.pending_additional_dirs = additional_dirs;
+        self.new_session.additional_dirs = additional_dirs;
 
         let config = SessionConfig {
             cwd: Some(primary_path),
@@ -1954,7 +1927,7 @@ impl App {
         config: &SessionConfig,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        let additional_dirs = std::mem::take(&mut self.pending_additional_dirs);
+        let additional_dirs = std::mem::take(&mut self.new_session.additional_dirs);
         let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
             return;
         };
@@ -2000,7 +1973,7 @@ impl App {
             return;
         }
 
-        let additional_dirs = std::mem::take(&mut self.pending_additional_dirs);
+        let additional_dirs = std::mem::take(&mut self.new_session.additional_dirs);
         let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
             return;
         };
@@ -3147,7 +3120,7 @@ impl App {
         let def = self.agent_def_for(&config.agent);
         config.resume_session_id =
             crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
-        self.pending_additional_dirs = shared.additional_dirs;
+        self.new_session.additional_dirs = shared.additional_dirs;
         self.do_spawn_session(name, &config, worktrees);
     }
 
@@ -4828,7 +4801,7 @@ mod tests {
         app.start_new_session();
         // No hosts configured → straight to the repo picker, no host step.
         assert!(matches!(app.modal, modals::Modal::RepoPicker(_)));
-        assert!(app.pending_backend.is_none());
+        assert!(app.new_session.backend.is_none());
     }
 
     #[test]
@@ -7585,9 +7558,12 @@ mod tests {
         assert!(app.worktree_create_rx.is_none());
         assert!(app.pending_worktree_create.is_none());
         // The non-worktree normal repo is carried into additional dirs.
-        assert_eq!(app.pending_additional_dirs, vec![PathBuf::from("/other")]);
+        assert_eq!(
+            app.new_session.additional_dirs,
+            vec![PathBuf::from("/other")]
+        );
         assert!(matches!(app.modal, modals::Modal::SessionName(_)));
-        assert!(app.pending_spawn_config.is_some());
+        assert!(app.new_session.spawn_config.is_some());
     }
 
     #[test]
@@ -8086,9 +8062,9 @@ mod tests {
     #[test]
     fn branch_selector_esc_closes_and_clears_pending_repo_state() {
         let mut app = app_with_sessions(1);
-        app.pending_repo_path = Some(PathBuf::from("/repo"));
-        app.pending_all_repos = Some(vec![PathBuf::from("/repo")]);
-        app.pending_normal_repos = vec![PathBuf::from("/other")];
+        app.new_session.repo_path = Some(PathBuf::from("/repo"));
+        app.new_session.all_repos = Some(vec![PathBuf::from("/repo")]);
+        app.new_session.normal_repos = vec![PathBuf::from("/other")];
         app.modal = modals::Modal::BranchSelector(modals::BranchSelectorModal {
             index: 0,
             branches: vec!["main".into(), "dev".into()],
@@ -8101,9 +8077,9 @@ mod tests {
         }
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
         assert!(matches!(app.modal, modals::Modal::None));
-        assert!(app.pending_repo_path.is_none());
-        assert!(app.pending_all_repos.is_none());
-        assert!(app.pending_normal_repos.is_empty());
+        assert!(app.new_session.repo_path.is_none());
+        assert!(app.new_session.all_repos.is_none());
+        assert!(app.new_session.normal_repos.is_empty());
     }
 
     #[test]
