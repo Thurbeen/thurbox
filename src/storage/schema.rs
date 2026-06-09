@@ -6,8 +6,15 @@ pub const SCHEMA_VERSION: u32 = 27;
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
 
+/// How long a connection waits on a locked database before erroring.
+/// The DB is shared by the TUI, thurbox-cli, and the automation heartbeat;
+/// writes are short single-row upserts, so 5 s outlasts any WAL checkpoint.
+pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Create all tables and indexes if they don't exist.
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
+    // Must come first: the WAL pragma below itself needs the write lock.
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
@@ -826,6 +833,17 @@ fn migrate_v27_repo_parent_bookmarks(conn: &Connection) -> rusqlite::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initialize_sets_busy_timeout() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+
+        let timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout_ms, BUSY_TIMEOUT.as_millis() as i64);
+    }
 
     #[test]
     fn schema_creates_all_tables() {
