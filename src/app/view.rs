@@ -71,7 +71,7 @@ impl App {
             .sessions
             .get(self.active_index)
             .map(|s| s.info.name.as_str());
-        let theme_label = self.active_theme.display_name();
+        let theme_label = self.active_theme.display_name.as_str();
         status_bar::render_header(
             frame,
             header,
@@ -496,7 +496,7 @@ impl App {
             theme_picker_modal::render_theme_picker_modal(
                 frame,
                 &theme_picker_modal::ThemePickerState {
-                    presets: crate::session::ThemePreset::all(),
+                    entries: &crate::ui::theme::all_theme_entries(),
                     selected_index: tp.index,
                 },
             );

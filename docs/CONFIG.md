@@ -17,6 +17,7 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/agents.toml` | TOML | you | startup | coding-agent CLI definitions |
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts |
 | `~/.config/thurbox/settings.toml` | TOML | you | startup | scalar tuning knobs |
+| `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | startup | key chord overrides |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings) |
@@ -99,6 +100,27 @@ hardcoded.
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit-log history kept (pruned on startup) |
+
+## themes.toml
+
+User-defined themes, offered in the `Ctrl+Y` picker alongside the nine
+built-in presets and persisted by `name` like any preset. Each
+`[[themes]]` entry starts from a built-in `base` and overrides only the
+colours it names:
+
+```toml
+[[themes]]
+name = "my-mocha"            # stable id; must not shadow a built-in
+display_name = "My Mocha"    # picker label (default: name)
+base = "catppuccin-mocha"    # starting palette (default: default)
+accent = "#fab387"
+app_bg = "reset"             # keep the terminal's native background
+```
+
+Colours accept anything ratatui parses: `#rrggbb`, ANSI names (`red`,
+`lightcyan`), indexed (`14`), or `reset`. The seeded file lists every
+overridable key. Bad colours and built-in name collisions degrade to
+startup warnings (the base colour / the built-in stays in effect).
 
 ## keybindings.json
 

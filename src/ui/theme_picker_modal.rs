@@ -1,4 +1,4 @@
-//! Modal that lets the user pick a built-in theme preset.
+//! Modal that lets the user pick a theme (built-in preset or custom).
 //!
 //! Renders the preset list on the left and a small live colour swatch for
 //! the highlighted preset on the right, so users can preview the palette
@@ -16,15 +16,15 @@ use super::{
     centered_fixed_height_rect, render_modal_frame, selector_list_item, selector_nav_footer,
     theme::Theme,
 };
-use crate::session::ThemePreset;
+use crate::session::theme_config::ThemeEntry;
 
 pub struct ThemePickerState<'a> {
-    pub presets: &'a [ThemePreset],
+    pub entries: &'a [ThemeEntry],
     pub selected_index: usize,
 }
 
 pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>) {
-    let height = (state.presets.len() as u16).max(4) + 6;
+    let height = (state.entries.len() as u16).max(4) + 6;
     let area = centered_fixed_height_rect(60, height, frame.area());
 
     let inner = render_modal_frame(frame, area, "Theme");
@@ -44,14 +44,14 @@ pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>
         .split(chunks[0]);
 
     let items: Vec<ListItem<'_>> = state
-        .presets
+        .entries
         .iter()
         .enumerate()
-        .map(|(i, preset)| {
-            let label = if preset.is_light() {
-                format!("{} (light)", preset.display_name())
+        .map(|(i, entry)| {
+            let label = if entry.is_light {
+                format!("{} (light)", entry.display_name)
             } else {
-                preset.display_name().to_string()
+                entry.display_name.clone()
             };
             selector_list_item(&label, i == state.selected_index)
         })
@@ -59,8 +59,8 @@ pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>
 
     frame.render_widget(List::new(items), columns[0]);
 
-    if let Some(preset) = state.presets.get(state.selected_index) {
-        let palette = preset.palette();
+    if let Some(entry) = state.entries.get(state.selected_index) {
+        let palette = &entry.palette;
         let swatch = vec![
             Line::from(vec![
                 Span::styled("  Accent      ", Style::default().fg(Theme::text_muted())),
@@ -95,7 +95,7 @@ pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>
         frame.render_widget(Paragraph::new(swatch), columns[1]);
 
         let id = Line::from(Span::styled(
-            format!("  preset id: {}", preset.as_str()),
+            format!("  theme id: {}", entry.name),
             Style::default().fg(Theme::text_muted()),
         ));
         frame.render_widget(Paragraph::new(id), chunks[1]);

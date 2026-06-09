@@ -67,6 +67,14 @@ async fn main() -> Result<()> {
     // Load (or seed) the coding-agent registry from ~/.config/thurbox/agents.toml.
     let (agents, agent_warnings) = thurbox::agent::agent_config::load_or_seed_with_warnings();
     config_warnings.extend(agent_warnings);
+
+    // Load (or seed) custom themes and publish them so the picker and the
+    // persisted-theme lookup below can resolve them by name.
+    let (custom_themes, theme_warnings) =
+        thurbox::agent::themes_config::load_or_seed_with_warnings();
+    config_warnings.extend(theme_warnings);
+    thurbox::ui::theme::set_custom_themes(custom_themes);
+
     for w in &config_warnings {
         tracing::warn!("{w}");
     }
@@ -83,9 +91,10 @@ async fn main() -> Result<()> {
     });
     let db = Database::open(&db_path).expect("Failed to open database");
 
-    // Activate the persisted theme (falls back to default if unset/unknown).
+    // Activate the persisted theme — built-in or custom — falling back to
+    // default when unset/unknown.
     if let Ok(Some(name)) = db.get_active_theme() {
-        thurbox::ui::theme::apply_preset_by_name(&name);
+        thurbox::ui::theme::apply_theme_by_name(&name);
     } else {
         thurbox::ui::theme::ensure_initialized();
     }

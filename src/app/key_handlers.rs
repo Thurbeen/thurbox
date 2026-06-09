@@ -1429,8 +1429,8 @@ impl App {
     }
 
     fn handle_theme_picker_key(&mut self, code: KeyCode) {
-        let presets = crate::session::ThemePreset::all();
-        let preset_count = presets.len();
+        let entries = crate::ui::theme::all_theme_entries();
+        let entry_count = entries.len();
         let super::modals::Modal::ThemePicker(ref mut tp) = self.modal else {
             return;
         };
@@ -1438,25 +1438,23 @@ impl App {
             KeyCode::Esc => {
                 self.modal.close();
             }
-            KeyCode::Char('j') | KeyCode::Down if tp.index + 1 < preset_count => {
+            KeyCode::Char('j') | KeyCode::Down if tp.index + 1 < entry_count => {
                 tp.index += 1;
-                let preset = presets[tp.index];
-                crate::ui::theme::set_active(preset.palette());
+                crate::ui::theme::set_active(entries[tp.index].palette.clone());
             }
             KeyCode::Char('k') | KeyCode::Up if tp.index > 0 => {
                 tp.index -= 1;
-                let preset = presets[tp.index];
-                crate::ui::theme::set_active(preset.palette());
+                crate::ui::theme::set_active(entries[tp.index].palette.clone());
             }
             KeyCode::Enter => {
                 let idx = tp.index;
                 self.modal.close();
-                if let Some(preset) = presets.get(idx) {
-                    crate::ui::theme::set_active(preset.palette());
-                    self.active_theme = *preset;
-                    if let Err(e) = self.db.set_active_theme(preset.as_str()) {
+                if let Some(entry) = entries.into_iter().nth(idx) {
+                    crate::ui::theme::set_active(entry.palette.clone());
+                    if let Err(e) = self.db.set_active_theme(&entry.name) {
                         tracing::error!("Failed to persist active theme: {e}");
                     }
+                    self.active_theme = entry;
                 }
             }
             _ => {}

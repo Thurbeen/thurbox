@@ -180,6 +180,250 @@ impl ThemePreset {
     }
 }
 
+/// A selectable theme — a built-in preset or a user-defined custom theme —
+/// flattened to what the picker and the apply path need.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThemeEntry {
+    /// Stable identifier persisted in `metadata.active_theme`.
+    pub name: String,
+    /// Human-readable label shown in the picker and status bar.
+    pub display_name: String,
+    pub palette: ThemePalette,
+    pub is_light: bool,
+}
+
+impl ThemeEntry {
+    pub fn from_preset(preset: ThemePreset) -> Self {
+        Self {
+            name: preset.as_str().to_string(),
+            display_name: preset.display_name().to_string(),
+            palette: preset.palette(),
+            is_light: preset.is_light(),
+        }
+    }
+}
+
+/// A user-defined theme from `themes.toml`: a base preset plus per-colour
+/// overrides. Colours accept anything ratatui parses — `#rrggbb`, ANSI names
+/// (`red`, `lightcyan`), indexed (`14`), or `reset`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CustomThemeDef {
+    /// Stable identifier (what `metadata.active_theme` stores). Must not
+    /// collide with a built-in preset name.
+    pub name: String,
+    /// Picker label; defaults to `name`.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Built-in preset the palette starts from; defaults to `default`.
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Whether the theme targets light terminals; defaults to the base's.
+    #[serde(default)]
+    pub light: Option<bool>,
+    /// Nerd-font glyph opt-in; defaults to the base's.
+    #[serde(default)]
+    pub nerd_font: Option<bool>,
+    #[serde(default)]
+    pub accent: Option<String>,
+    #[serde(default)]
+    pub accent_bright: Option<String>,
+    #[serde(default)]
+    pub status_busy: Option<String>,
+    #[serde(default)]
+    pub status_waiting: Option<String>,
+    #[serde(default)]
+    pub status_idle: Option<String>,
+    #[serde(default)]
+    pub status_error: Option<String>,
+    #[serde(default)]
+    pub text_primary: Option<String>,
+    #[serde(default)]
+    pub text_secondary: Option<String>,
+    #[serde(default)]
+    pub text_muted: Option<String>,
+    #[serde(default)]
+    pub border_focused: Option<String>,
+    #[serde(default)]
+    pub border_unfocused: Option<String>,
+    #[serde(default)]
+    pub role_name: Option<String>,
+    #[serde(default)]
+    pub branch_name: Option<String>,
+    #[serde(default)]
+    pub search_bar: Option<String>,
+    #[serde(default)]
+    pub keybind_hint: Option<String>,
+    #[serde(default)]
+    pub tool_allowed: Option<String>,
+    #[serde(default)]
+    pub tool_disallowed: Option<String>,
+    #[serde(default)]
+    pub danger: Option<String>,
+    #[serde(default)]
+    pub selection_bg: Option<String>,
+    #[serde(default)]
+    pub selection_fg: Option<String>,
+    #[serde(default)]
+    pub modal_dim_bg: Option<String>,
+    #[serde(default)]
+    pub modal_bg: Option<String>,
+    #[serde(default)]
+    pub modal_border: Option<String>,
+    #[serde(default)]
+    pub inverted_fg: Option<String>,
+    #[serde(default)]
+    pub app_bg: Option<String>,
+}
+
+/// `themes.toml` document shape.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ThemesFile {
+    /// Config-format version, for future migrations. Currently `1`.
+    #[serde(default)]
+    pub config_version: Option<u32>,
+    #[serde(default)]
+    pub themes: Vec<CustomThemeDef>,
+}
+
+/// Apply one colour override, recording a warning instead of failing when the
+/// value doesn't parse (the base colour stays in effect).
+fn apply_color(
+    warnings: &mut Vec<String>,
+    theme: &str,
+    field: &str,
+    value: &Option<String>,
+    slot: &mut Color,
+) {
+    let Some(raw) = value else { return };
+    match raw.parse::<Color>() {
+        Ok(color) => *slot = color,
+        Err(_) => warnings.push(format!(
+            "theme \"{theme}\": invalid colour \"{raw}\" for {field} (kept base colour)"
+        )),
+    }
+}
+
+impl CustomThemeDef {
+    /// Materialise the theme: base preset palette + overrides. Unparsable
+    /// colours and an unknown base degrade to warnings, never to a hard
+    /// failure — a half-styled theme beats no theme.
+    pub fn resolve(&self) -> (ThemeEntry, Vec<String>) {
+        let mut warnings = Vec::new();
+        let base = match self.base.as_deref() {
+            None => ThemePreset::Default,
+            Some(name) => ThemePreset::from_str(name).unwrap_or_else(|| {
+                warnings.push(format!(
+                    "theme \"{}\": unknown base \"{name}\" (using default)",
+                    self.name
+                ));
+                ThemePreset::Default
+            }),
+        };
+        let mut palette = base.palette();
+        if let Some(nerd) = self.nerd_font {
+            palette.nerd_font_enabled = nerd;
+        }
+
+        let fields: [(&str, &Option<String>, &mut Color); 25] = [
+            ("accent", &self.accent, &mut palette.accent),
+            (
+                "accent_bright",
+                &self.accent_bright,
+                &mut palette.accent_bright,
+            ),
+            ("status_busy", &self.status_busy, &mut palette.status_busy),
+            (
+                "status_waiting",
+                &self.status_waiting,
+                &mut palette.status_waiting,
+            ),
+            ("status_idle", &self.status_idle, &mut palette.status_idle),
+            (
+                "status_error",
+                &self.status_error,
+                &mut palette.status_error,
+            ),
+            (
+                "text_primary",
+                &self.text_primary,
+                &mut palette.text_primary,
+            ),
+            (
+                "text_secondary",
+                &self.text_secondary,
+                &mut palette.text_secondary,
+            ),
+            ("text_muted", &self.text_muted, &mut palette.text_muted),
+            (
+                "border_focused",
+                &self.border_focused,
+                &mut palette.border_focused,
+            ),
+            (
+                "border_unfocused",
+                &self.border_unfocused,
+                &mut palette.border_unfocused,
+            ),
+            ("role_name", &self.role_name, &mut palette.role_name),
+            ("branch_name", &self.branch_name, &mut palette.branch_name),
+            ("search_bar", &self.search_bar, &mut palette.search_bar),
+            (
+                "keybind_hint",
+                &self.keybind_hint,
+                &mut palette.keybind_hint,
+            ),
+            (
+                "tool_allowed",
+                &self.tool_allowed,
+                &mut palette.tool_allowed,
+            ),
+            (
+                "tool_disallowed",
+                &self.tool_disallowed,
+                &mut palette.tool_disallowed,
+            ),
+            ("danger", &self.danger, &mut palette.danger),
+            (
+                "selection_bg",
+                &self.selection_bg,
+                &mut palette.selection_bg,
+            ),
+            (
+                "selection_fg",
+                &self.selection_fg,
+                &mut palette.selection_fg,
+            ),
+            (
+                "modal_dim_bg",
+                &self.modal_dim_bg,
+                &mut palette.modal_dim_bg,
+            ),
+            ("modal_bg", &self.modal_bg, &mut palette.modal_bg),
+            (
+                "modal_border",
+                &self.modal_border,
+                &mut palette.modal_border,
+            ),
+            ("inverted_fg", &self.inverted_fg, &mut palette.inverted_fg),
+            ("app_bg", &self.app_bg, &mut palette.app_bg),
+        ];
+        for (field, value, slot) in fields {
+            apply_color(&mut warnings, &self.name, field, value, slot);
+        }
+
+        let entry = ThemeEntry {
+            name: self.name.clone(),
+            display_name: self
+                .display_name
+                .clone()
+                .unwrap_or_else(|| self.name.clone()),
+            palette,
+            is_light: self.light.unwrap_or_else(|| base.is_light()),
+        };
+        (entry, warnings)
+    }
+}
+
 fn default_palette() -> ThemePalette {
     ThemePalette {
         accent: Color::Cyan,

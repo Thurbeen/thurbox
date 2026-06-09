@@ -491,7 +491,8 @@ pub struct App {
     pub(crate) global_search: search::GlobalSearchState,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
     /// every render. Kept in sync with `db.set_active_theme` writes.
-    pub(crate) active_theme: crate::session::ThemePreset,
+    /// Currently active theme (built-in preset or custom from themes.toml).
+    pub(crate) active_theme: crate::session::theme_config::ThemeEntry,
     /// User-customizable global keybindings. Loaded from
     /// `~/.config/thurbox/keybindings.json` on startup, falling back to defaults
     /// when the file is missing or malformed.
@@ -521,14 +522,19 @@ impl App {
         agents: AgentRegistry,
         db: Database,
     ) -> Self {
-        // Resolve the persisted active theme (defaults to Default if unset/unknown).
+        // Resolve the persisted active theme — built-in or custom — defaulting
+        // to the Default preset when unset/unknown.
         let active_theme = db
             .get_active_theme()
             .ok()
             .flatten()
             .as_deref()
-            .and_then(crate::session::ThemePreset::from_str)
-            .unwrap_or(crate::session::ThemePreset::Default);
+            .and_then(crate::ui::theme::find_theme_entry)
+            .unwrap_or_else(|| {
+                crate::session::theme_config::ThemeEntry::from_preset(
+                    crate::session::ThemePreset::Default,
+                )
+            });
 
         // Load keybindings from JSON config or fall back to defaults. Problems
         // are collected into `config_warnings` so the first frame can surface
@@ -1132,14 +1138,14 @@ impl App {
     }
 
     /// Open the restore deleted sessions modal (Ctrl+U).
-    /// Open the theme picker, pre-selecting the currently active preset.
+    /// Open the theme picker, pre-selecting the currently active theme
+    /// (built-in preset or custom from themes.toml).
     fn open_theme_picker(&mut self) {
         let active = self.db.get_active_theme().ok().flatten();
-        let presets = crate::session::ThemePreset::all();
+        let entries = crate::ui::theme::all_theme_entries();
         let index = active
             .as_deref()
-            .and_then(crate::session::ThemePreset::from_str)
-            .and_then(|p| presets.iter().position(|x| *x == p))
+            .and_then(|name| entries.iter().position(|e| e.name == name))
             .unwrap_or(0);
         self.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index });
     }
@@ -2294,13 +2300,14 @@ impl App {
         let Ok(Some(name)) = self.db.get_active_theme() else {
             return;
         };
-        let Some(preset) = crate::session::ThemePreset::from_str(&name) else {
+        if name == self.active_theme.name {
+            return;
+        }
+        let Some(entry) = crate::ui::theme::find_theme_entry(&name) else {
             return;
         };
-        if preset != self.active_theme {
-            crate::ui::theme::set_active(preset.palette());
-            self.active_theme = preset;
-        }
+        crate::ui::theme::set_active(entry.palette.clone());
+        self.active_theme = entry;
     }
 
     /// Spawn background usage/rate-limit fetches for each distinct supported
@@ -7931,7 +7938,7 @@ mod tests {
         app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(app.modal, modals::Modal::None));
-        assert_eq!(app.active_theme, presets[1]);
+        assert_eq!(app.active_theme.name, presets[1].as_str());
         assert_eq!(
             app.db.get_active_theme().unwrap().as_deref(),
             Some(presets[1].as_str())

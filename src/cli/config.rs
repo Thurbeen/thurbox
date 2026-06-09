@@ -96,12 +96,17 @@ fn validate() -> Result<Value, String> {
         crate::agent::settings_config::settings_config_path(),
         "settings.toml",
     );
+    let (themes, themes_ok) = validate_toml::<crate::session::theme_config::ThemesFile>(
+        crate::agent::themes_config::themes_config_path(),
+        "themes.toml",
+    );
     let (keybindings, kb_ok) = validate_keybindings();
 
     let failed: Vec<&str> = [
         ("agents.toml", agents_ok),
         ("hosts.toml", hosts_ok),
         ("settings.toml", settings_ok),
+        ("themes.toml", themes_ok),
         ("keybindings.json", kb_ok),
     ]
     .iter()
@@ -114,6 +119,7 @@ fn validate() -> Result<Value, String> {
         "agents_toml": agents,
         "hosts_toml": hosts,
         "settings_toml": settings,
+        "themes_toml": themes,
         "keybindings_json": keybindings,
     });
     if failed.is_empty() {
@@ -134,6 +140,7 @@ fn show(db: &Database) -> Result<Value, String> {
     let agents = crate::agent::agent_config::load_or_seed();
     let hosts = crate::agent::host_config::load_or_seed();
     let settings = crate::session::settings::global();
+    let (custom_themes, _) = crate::agent::themes_config::load_or_seed_with_warnings();
 
     // Editor resolution mirrors the TUI's Ctrl+O chain: DB → $VISUAL → $EDITOR.
     let db_editor = db.get_editor_command().ok().flatten();
@@ -170,6 +177,8 @@ fn show(db: &Database) -> Result<Value, String> {
                 .map(|p| p.display().to_string()),
             "settings_toml": crate::agent::settings_config::settings_config_path()
                 .map(|p| p.display().to_string()),
+            "themes_toml": crate::agent::themes_config::themes_config_path()
+                .map(|p| p.display().to_string()),
             "keybindings_json": crate::paths::keybindings_file()
                 .map(|p| p.display().to_string()),
             "database": crate::paths::database_file().map(|p| p.display().to_string()),
@@ -180,6 +189,7 @@ fn show(db: &Database) -> Result<Value, String> {
         "keybindings": { "overridden_actions": overridden_actions },
         "editor": { "command": editor, "source": editor_source },
         "theme": db.get_active_theme().ok().flatten(),
+        "custom_themes": custom_themes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
     }))
 }
 

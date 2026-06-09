@@ -790,7 +790,13 @@ terminal's catch-all PTY forwarding.
 The TUI ships with nine palettes — five dark (**Default**, **Catppuccin
 Mocha**, **Tokyo Night**, **Gruvbox Dark**, **Doom**) and four light
 (**Catppuccin Latte**, **Tokyo Night Day**, **Gruvbox Light**,
-**Solarized Light**).
+**Solarized Light**). Users can add **custom themes** in
+`~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour
+overrides — see `docs/CONFIG.md`); they appear in the picker after the
+built-ins and persist by name exactly like a preset
+(`session::theme_config::CustomThemeDef` → `ThemeEntry`, loaded by
+`agent::themes_config::load_or_seed_with_warnings`, published via
+`ui::theme::set_custom_themes`).
 Pick one with `Ctrl+Y` (or `F4`,
 which avoids terminals that intercept Ctrl+Y as DSUSP); the choice
 is persisted in SQLite under `metadata.active_theme` and survives

@@ -13,9 +13,52 @@ use std::sync::{OnceLock, RwLock};
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::session::theme_config::ThemeEntry;
 use crate::session::{ThemePalette, ThemePreset};
 
 static ACTIVE_THEME: OnceLock<RwLock<ThemePalette>> = OnceLock::new();
+
+/// User-defined themes from `themes.toml`, published once at startup.
+static CUSTOM_THEMES: OnceLock<Vec<ThemeEntry>> = OnceLock::new();
+
+/// Publish the custom themes loaded from `themes.toml`. Call once at startup;
+/// later calls are ignored (first writer wins).
+pub fn set_custom_themes(themes: Vec<ThemeEntry>) {
+    let _ = CUSTOM_THEMES.set(themes);
+}
+
+/// The custom themes, empty when none were configured (or before startup).
+pub fn custom_themes() -> &'static [ThemeEntry] {
+    CUSTOM_THEMES.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// Every selectable theme: the built-in presets followed by the custom ones,
+/// in the order the picker shows them.
+pub fn all_theme_entries() -> Vec<ThemeEntry> {
+    ThemePreset::all()
+        .iter()
+        .map(|p| ThemeEntry::from_preset(*p))
+        .chain(custom_themes().iter().cloned())
+        .collect()
+}
+
+/// Look up a theme (built-in or custom) by its stable name.
+pub fn find_theme_entry(name: &str) -> Option<ThemeEntry> {
+    if let Some(preset) = ThemePreset::from_str(name) {
+        return Some(ThemeEntry::from_preset(preset));
+    }
+    custom_themes().iter().find(|t| t.name == name).cloned()
+}
+
+/// Activate a theme (built-in or custom) by name, falling back to the
+/// `Default` preset for unknown names. Returns the entry that was actually
+/// applied so callers can persist / display it.
+pub fn apply_theme_by_name(name: &str) -> ThemeEntry {
+    let entry =
+        find_theme_entry(name).unwrap_or_else(|| ThemeEntry::from_preset(ThemePreset::Default));
+    set_active(entry.palette.clone());
+    entry
+}
 
 /// Snapshot of the currently active palette.
 ///
@@ -38,15 +81,6 @@ pub fn set_active(palette: ThemePalette) {
 /// during a test from panicking on an uninitialised `OnceLock`.
 pub fn ensure_initialized() {
     ACTIVE_THEME.get_or_init(|| RwLock::new(ThemePalette::default()));
-}
-
-/// Convenience: load a built-in preset by name and activate it. Falls back
-/// to `Default` for unknown names. Returns the preset that was actually
-/// applied so callers can persist it back to storage.
-pub fn apply_preset_by_name(name: &str) -> ThemePreset {
-    let preset = ThemePreset::from_str(name).unwrap_or(ThemePreset::Default);
-    set_active(preset.palette());
-    preset
 }
 
 /// Centralised colour and style accessors for the Thurbox UI.
@@ -267,8 +301,27 @@ mod tests {
     }
 
     #[test]
-    fn apply_preset_falls_back_to_default_for_unknown_name() {
-        let applied = apply_preset_by_name("does-not-exist");
-        assert_eq!(applied, ThemePreset::Default);
+    fn apply_theme_falls_back_to_default_for_unknown_name() {
+        let applied = apply_theme_by_name("does-not-exist");
+        assert_eq!(applied.name, ThemePreset::Default.as_str());
+        // Restore default for any later test that depends on it.
+        set_active(ThemePalette::default());
+    }
+
+    #[test]
+    fn all_theme_entries_starts_with_builtins_in_order() {
+        let entries = all_theme_entries();
+        assert!(entries.len() >= ThemePreset::all().len());
+        for (entry, preset) in entries.iter().zip(ThemePreset::all()) {
+            assert_eq!(entry.name, preset.as_str());
+        }
+    }
+
+    #[test]
+    fn find_theme_entry_resolves_builtin_names() {
+        let entry = find_theme_entry("doom").expect("doom is built in");
+        assert_eq!(entry.display_name, "Doom");
+        assert!(!entry.is_light);
+        assert!(find_theme_entry("no-such-theme-xyz").is_none());
     }
 }
