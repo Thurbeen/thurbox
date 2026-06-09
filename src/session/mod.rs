@@ -2,6 +2,7 @@ pub mod agent_def;
 pub mod automation;
 pub mod host_def;
 pub mod keybindings;
+pub mod settings;
 pub mod task;
 pub mod theme_config;
 

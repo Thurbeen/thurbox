@@ -50,7 +50,15 @@ async fn main() -> Result<()> {
     // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
     // slow host must not block TUI startup, so check_available()/ensure_ready()
     // are deferred to first spawn/restore (see App::backend_for).
-    let (hosts, mut config_warnings) = thurbox::agent::host_config::load_or_seed_with_warnings();
+    // Load (or seed) the scalar settings and publish them process-wide before
+    // anything reads them (Database::open prunes the audit log; layout and
+    // terminal wiring read breakpoints/scrollback).
+    let (settings, mut config_warnings) =
+        thurbox::agent::settings_config::load_or_seed_with_warnings();
+    thurbox::session::settings::init(settings);
+
+    let (hosts, host_warnings) = thurbox::agent::host_config::load_or_seed_with_warnings();
+    config_warnings.extend(host_warnings);
     for host in &hosts.hosts {
         tracing::debug!(host = %host.name, dest = %host.destination, "Registering SSH backend");
         backends.register(Arc::new(TmuxBackend::from_host(host)));

@@ -28,8 +28,8 @@ pub const BUILTIN_AGENTS_TOML: &str = r#"# Thurbox coding-agent definitions.
 # substituted. `args` is always passed — put any extra flags (e.g. a model)
 # there. Add your own [[agents]] entries to support any CLI.
 #
-# Field names are checked strictly: a typo'd key fails the parse (thurbox
-# reports it on startup and falls back to the built-in agents).
+# Unknown keys are reported on startup (and fail `thurbox-cli config
+# validate`) but don't break the load — your agents stay in effect.
 
 config_version = 1
 default = "claude"
@@ -139,25 +139,43 @@ pub fn load_or_seed_with_warnings() -> (AgentRegistry, Vec<String>) {
     }
 
     match std::fs::read_to_string(&path) {
-        Ok(contents) => match toml::from_str::<AgentRegistry>(&contents) {
-            Ok(reg) if !reg.agents.is_empty() => (reg, Vec::new()),
-            Ok(_) => (
-                builtin_registry(),
-                vec!["agents.toml has no agents; using built-in agents".into()],
-            ),
-            Err(e) => (
-                builtin_registry(),
-                vec![format!(
-                    "agents.toml: {}; using built-in agents",
-                    compact_toml_error(&e.to_string())
-                )],
-            ),
-        },
+        Ok(contents) => {
+            match parse_toml_reporting_unknown::<AgentRegistry>(&contents, "agents.toml") {
+                Ok((reg, warnings)) if !reg.agents.is_empty() => (reg, warnings),
+                Ok(_) => (
+                    builtin_registry(),
+                    vec!["agents.toml has no agents; using built-in agents".into()],
+                ),
+                Err(e) => (
+                    builtin_registry(),
+                    vec![format!(
+                        "agents.toml: {}; using built-in agents",
+                        compact_toml_error(&e.to_string())
+                    )],
+                ),
+            }
+        }
         Err(e) => (
             builtin_registry(),
             vec![format!("Failed to read agents.toml: {e}")],
         ),
     }
+}
+
+/// Parse a TOML config document leniently, reporting every unknown field by
+/// path instead of failing on it. Stale keys from older thurbox versions and
+/// typos both surface as warnings without stranding the user on defaults; a
+/// real syntax/type error still fails the parse.
+pub(crate) fn parse_toml_reporting_unknown<T: serde::de::DeserializeOwned>(
+    contents: &str,
+    file_label: &str,
+) -> Result<(T, Vec<String>), toml::de::Error> {
+    let mut warnings = Vec::new();
+    let de = toml::de::Deserializer::parse(contents)?;
+    let value = serde_ignored::deserialize(de, |path| {
+        warnings.push(format!("{file_label}: unknown field `{path}` (ignored)"));
+    })?;
+    Ok((value, warnings))
 }
 
 /// Collapse a (possibly multi-line) toml error to "<position>: <message>" for
@@ -260,13 +278,15 @@ mod tests {
     }
 
     #[test]
-    fn load_or_seed_rejects_unknown_field_with_warning() {
+    fn load_or_seed_reports_unknown_field_but_keeps_agents() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
 
         let path = agents_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // Typo'd field: `resumeargs` instead of `resume_args`.
+        // Typo'd field: `resumeargs` instead of `resume_args`. The user's
+        // agents must stay in effect (stale keys from older thurbox versions
+        // are common); the warning names the bad key.
         std::fs::write(
             &path,
             "default = \"mine\"\n[[agents]]\nname = \"mine\"\ncommand = \"x\"\nresumeargs = []\n",
@@ -274,7 +294,7 @@ mod tests {
         .unwrap();
 
         let (reg, warnings) = load_or_seed_with_warnings();
-        assert_eq!(reg.default, "claude", "must fall back to built-ins");
+        assert_eq!(reg.default, "mine", "user agents must stay in effect");
         assert_eq!(warnings.len(), 1);
         assert!(
             warnings[0].contains("resumeargs"),
@@ -285,12 +305,10 @@ mod tests {
 
     #[test]
     fn compact_toml_error_keeps_position_and_message() {
-        let err = toml::from_str::<AgentRegistry>(
-            "[[agents]]\nname = \"a\"\ncommand = \"c\"\nbogus = 1\n",
-        )
-        .unwrap_err();
+        // A type error (string field given an integer) still fails the parse.
+        let err = toml::from_str::<AgentRegistry>("default = 1\n").unwrap_err();
         let compact = compact_toml_error(&err.to_string());
-        assert!(compact.contains("bogus"), "got: {compact}");
+        assert!(compact.contains("string"), "got: {compact}");
         assert!(!compact.contains('\n'), "must be one line: {compact}");
     }
 

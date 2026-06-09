@@ -404,7 +404,7 @@ impl Session {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
-            1000,
+            crate::session::settings::global().scrollback_lines,
             TermSignals {
                 title: Arc::clone(&last_title),
                 attention_at: Arc::clone(&attention_at),

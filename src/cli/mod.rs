@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use crate::storage::Database;
 
 pub mod automations;
+pub mod config;
 pub mod editor;
 pub mod sessions;
 pub mod tasks;
@@ -51,6 +52,11 @@ pub enum Command {
         #[command(subcommand)]
         action: tasks::Action,
     },
+    /// Validate or inspect the config files.
+    Config {
+        #[command(subcommand)]
+        action: config::Action,
+    },
 }
 
 /// Run a parsed CLI invocation against `db` and write JSON to stdout.
@@ -60,6 +66,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Session { action } => sessions::run(action, db),
         Command::Automation { action } => automations::run(action, db),
         Command::Task { action } => tasks::run(action, db),
+        Command::Config { action } => config::run(action, db),
     }?;
 
     let text = if cli.pretty {

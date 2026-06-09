@@ -99,7 +99,8 @@ pub fn compute_layout(
     let global_search = (search_height > 0).then_some(vertical[2]);
     let footer = vertical[3];
 
-    if area.width < 80 {
+    let settings = crate::session::settings::global();
+    if area.width < settings.two_panel_min_cols {
         return PanelAreas {
             header,
             left_panel: None,
@@ -113,9 +114,12 @@ pub fn compute_layout(
         };
     }
 
-    // At width ≥ 120, support optional info / tasks / file-viewer columns.
+    // At width ≥ three_panel_min_cols (default 120), support optional info /
+    // tasks / file-viewer columns.
     // Column order: list | info? | terminal | tasks? | file_viewer?.
-    if area.width >= 120 && (show_info_panel || show_tasks_panel || show_file_viewer) {
+    if area.width >= settings.three_panel_min_cols
+        && (show_info_panel || show_tasks_panel || show_file_viewer)
+    {
         let mut constraints: Vec<Constraint> = vec![Constraint::Percentage(18)]; // list
         if show_info_panel {
             constraints.push(Constraint::Percentage(15));

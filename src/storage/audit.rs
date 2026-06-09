@@ -42,10 +42,6 @@ impl AuditAction {
     }
 }
 
-/// Audit entries older than this are pruned on `Database::open`. They are
-/// debugging breadcrumbs, not compliance data, so 90 days is plenty.
-pub const AUDIT_RETENTION_DAYS: u64 = 90;
-
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 
 /// A single audit log entry.
@@ -90,10 +86,13 @@ impl Database {
         Ok(())
     }
 
-    /// Delete audit entries older than [`AUDIT_RETENTION_DAYS`]. Returns the
-    /// number of rows removed. Cheap thanks to `idx_audit_log_timestamp`.
+    /// Delete audit entries older than the configured retention (settings.toml
+    /// `audit_retention_days`, default 90 — they are debugging breadcrumbs,
+    /// not compliance data). Returns the number of rows removed. Cheap thanks
+    /// to `idx_audit_log_timestamp`.
     pub fn prune_audit_log(&self) -> rusqlite::Result<usize> {
-        let cutoff = current_time_millis().saturating_sub(AUDIT_RETENTION_DAYS * MS_PER_DAY);
+        let retention_days = crate::session::settings::global().audit_retention_days;
+        let cutoff = current_time_millis().saturating_sub(retention_days * MS_PER_DAY);
         self.conn.execute(
             "DELETE FROM audit_log WHERE timestamp < ?1",
             params![cutoff as i64],
@@ -280,7 +279,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         let now = current_time_millis();
-        let stale = now - (AUDIT_RETENTION_DAYS + 1) * MS_PER_DAY;
+        let retention_days = crate::session::settings::global().audit_retention_days;
+        let stale = now - (retention_days + 1) * MS_PER_DAY;
         let insert = |timestamp: u64, entity_id: &str| {
             db.conn_ref()
                 .execute(

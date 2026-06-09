@@ -20,7 +20,6 @@ pub fn is_ssh_backend(backend_name: &str) -> bool {
 
 /// A single remote host reachable over SSH.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HostDef {
     /// Short, unique name. The backend is registered as `ssh:<name>`.
     pub name: String,
@@ -54,11 +53,9 @@ impl HostDef {
 
 /// All configured remote hosts, in declaration order.
 ///
-/// Parsing is strict (`deny_unknown_fields`): a typo'd field name fails the
-/// parse loudly (surfaced as a startup warning + empty-registry fallback)
-/// instead of being silently ignored.
+/// Unknown fields are tolerated but reported: the loader names every
+/// unrecognized key in a startup warning.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HostRegistry {
     /// Config-format version, for future migrations. Currently `1`.
     #[serde(default)]

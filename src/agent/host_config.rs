@@ -30,8 +30,8 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox remote SSH hosts  —  ~/.config/
 # install registers zero remote hosts and behaves exactly like a local-only
 # setup. Uncomment and edit an entry to add a host.
 #
-# Field names are checked strictly: a typo'd key fails the parse (thurbox
-# reports it on startup and falls back to zero remote hosts).
+# Unknown keys are reported on startup (and fail `thurbox-cli config
+# validate`) but don't break the load.
 #
 # Fields per [[hosts]] entry:
 #
@@ -127,16 +127,21 @@ pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
     }
 
     match std::fs::read_to_string(&path) {
-        Ok(contents) => match toml::from_str::<HostRegistry>(&contents) {
-            Ok(reg) => (reg, Vec::new()),
-            Err(e) => (
-                HostRegistry::default(),
-                vec![format!(
-                    "hosts.toml: {}; no remote hosts",
-                    super::agent_config::compact_toml_error(&e.to_string())
-                )],
-            ),
-        },
+        Ok(contents) => {
+            match super::agent_config::parse_toml_reporting_unknown::<HostRegistry>(
+                &contents,
+                "hosts.toml",
+            ) {
+                Ok((reg, warnings)) => (reg, warnings),
+                Err(e) => (
+                    HostRegistry::default(),
+                    vec![format!(
+                        "hosts.toml: {}; no remote hosts",
+                        super::agent_config::compact_toml_error(&e.to_string())
+                    )],
+                ),
+            }
+        }
         Err(e) => (
             HostRegistry::default(),
             vec![format!("Failed to read hosts.toml: {e}")],

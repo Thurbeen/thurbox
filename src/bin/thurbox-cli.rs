@@ -14,6 +14,12 @@ fn main() {
 
     let cli = thurbox::cli::Cli::parse();
 
+    // Publish settings before Database::open (audit pruning reads retention).
+    // Warnings go to the WARN-level stderr logger; `config validate` is the
+    // loud path.
+    let (settings, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    thurbox::session::settings::init(settings);
+
     let db_path = match thurbox::paths::database_file() {
         Some(p) => p,
         None => {

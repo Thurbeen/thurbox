@@ -348,7 +348,9 @@ thurbox-cli session list | jq
 Subcommands: `session` (create/list/get/delete/restore/restart/
 send/capture), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
-create/list/show/edit/remove/run), `editor`. Pass
+create/list/show/edit/remove/run), `editor`, `config`
+(validate/show — strict-parses every config file / prints the
+effective resolved config; see `docs/CONFIG.md`). Pass
 `--pretty` for indented JSON.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB

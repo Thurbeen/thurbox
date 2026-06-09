@@ -70,6 +70,7 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
 cron = "0.16"
+serde_ignored = "0.1.14"
 
 [[bin]]
 name = "thurbox-cli"

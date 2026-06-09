@@ -16,6 +16,7 @@ development checkout never touches your real setup.
 |------|--------|-----------|------|---------|
 | `~/.config/thurbox/agents.toml` | TOML | you | startup | coding-agent CLI definitions |
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts |
+| `~/.config/thurbox/settings.toml` | TOML | you | startup | scalar tuning knobs |
 | `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | startup | key chord overrides |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings) |
@@ -24,9 +25,20 @@ All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 
 Config problems are **not silent**: parse errors, unknown fields,
 invalid chords, and chord conflicts surface as a status-bar toast on
-startup (and in the log file). Parsing of the TOML files is strict — a
-typo'd field name fails the parse and falls back to built-ins (agents)
-or zero hosts, with the error naming the bad field.
+startup (and in the log file). Unknown TOML keys are tolerated —
+stale keys from older versions or typos are *reported by name* but
+your file still loads — while syntax/type errors fall back to
+built-ins (agents), zero hosts, or defaults (settings).
+
+Check everything from the command line:
+
+```bash
+thurbox-cli config validate   # strict parse of every file; exit 1 on problems
+thurbox-cli config show       # effective config + where each value came from
+```
+
+`validate` fails on unknown keys (they are typos or leftovers either
+way), making it usable as a dotfiles CI gate.
 
 ## agents.toml
 
@@ -74,6 +86,19 @@ Auth comes entirely from your `~/.ssh/config`; thurbox never handles
 credentials. Host changes require a restart (the registry is read once
 and the remote `$HOME` is cached per destination for the process
 lifetime).
+
+## settings.toml
+
+Scalar tuning knobs, seeded fully commented-out (defaults apply when
+absent). Only knobs a user plausibly wants are exposed; internals stay
+hardcoded.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `scrollback_lines` | `1000` | terminal scrollback kept per session |
+| `two_panel_min_cols` | `80` | width below which only the terminal renders |
+| `three_panel_min_cols` | `120` | width unlocking the optional third column |
+| `audit_retention_days` | `90` | audit-log history kept (pruned on startup) |
 
 ## keybindings.json
 
