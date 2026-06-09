@@ -458,7 +458,14 @@ impl KeyChord {
             "backspace" => KeyCode::Backspace,
             "delete" | "del" => KeyCode::Delete,
             "insert" | "ins" => KeyCode::Insert,
-            other if other.starts_with('f') && other.len() <= 3 => {
+            // "f1".."f12" — but NOT a bare "f", which is the letter key (the
+            // `[1..].parse()` on "" used to fail and reject "ctrl+f" entirely).
+            other
+                if other.len() >= 2
+                    && other.len() <= 3
+                    && other.starts_with('f')
+                    && other[1..].bytes().all(|b| b.is_ascii_digit()) =>
+            {
                 let n: u8 = other[1..].parse().ok()?;
                 KeyCode::F(n)
             }
@@ -671,6 +678,26 @@ mod tests {
             let chord = KeyChord::parse(c).expect(c);
             assert_eq!(chord.display(), c);
         }
+    }
+
+    #[test]
+    fn chord_parse_bare_f_is_the_letter_not_a_function_key() {
+        // Regression: "f" used to enter the F-key branch and fail the parse,
+        // silently dropping bindings like "ctrl+f" from keybindings.json.
+        assert_eq!(
+            KeyChord::parse("ctrl+f"),
+            Some(KeyChord::ctrl('f')),
+            "ctrl+f must parse as the letter key"
+        );
+        assert_eq!(
+            KeyChord::parse("f"),
+            Some(KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('f')))
+        );
+        assert_eq!(
+            KeyChord::parse("f12"),
+            Some(KeyChord::normalized(KeyModifiers::NONE, KeyCode::F(12)))
+        );
+        assert_eq!(KeyChord::parse("fx"), None, "non-digit suffix is invalid");
     }
 
     #[test]
