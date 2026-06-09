@@ -84,10 +84,18 @@ pub fn reserve_track(area: Rect, content_len: usize, viewport: usize) -> (Rect, 
 /// Render a vertical scrollbar into `track` and return its geometry. Callers
 /// decide *whether* there's overflow (via [`reserve_track`]) before calling;
 /// this just draws the bar and hands back the geometry to record as a drag
-/// target. Returns `None` only for a zero-height track.
+/// target. Returns `None` only for a zero-height or zero-width track.
+///
+/// `track` may be wider than one column (the terminal passes its whole inner
+/// area and lets the widget overlay the right edge); the returned geometry is
+/// always narrowed to the **rightmost column**, where [`VerticalRight`] actually
+/// draws — recording the full rect would swallow every click in the pane and
+/// break text selection.
 ///
 /// `position` is the current scroll position in the same `0..content_len` space
 /// that [`ScrollbarGeom::position_for_y`] maps back to.
+///
+/// [`VerticalRight`]: ScrollbarOrientation::VerticalRight
 pub fn render_into(
     frame: &mut Frame,
     track: Rect,
@@ -95,7 +103,7 @@ pub fn render_into(
     viewport: usize,
     position: usize,
 ) -> Option<ScrollbarGeom> {
-    if track.height == 0 {
+    if track.height == 0 || track.width == 0 {
         return None;
     }
 
@@ -108,8 +116,14 @@ pub fn render_into(
         .viewport_content_length(viewport);
     frame.render_stateful_widget(scrollbar, track, &mut state);
 
+    // Hit-test only the column the bar occupies, not the full input rect.
+    let bar_column = Rect {
+        x: track.x + track.width - 1,
+        width: 1,
+        ..track
+    };
     Some(ScrollbarGeom {
-        track,
+        track: bar_column,
         content_len,
         viewport,
     })
@@ -192,5 +206,30 @@ mod tests {
         let area = Rect::new(4, 2, 1, 10);
         // A one-column area can't spare a column for the bar.
         assert_eq!(reserve_track(area, 100, 10), (area, None));
+    }
+
+    #[test]
+    fn render_into_narrows_hit_rect_to_bar_column() {
+        // The terminal passes its full inner area; the recorded geometry must
+        // cover only the rightmost column (where VerticalRight draws) so clicks
+        // elsewhere in the pane still start a text selection.
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let wide = Rect::new(1, 1, 78, 22);
+                let geom = render_into(frame, wide, 100, 22, 0).unwrap();
+                assert_eq!(geom.track, Rect::new(78, 1, 1, 22));
+                // A click in the middle of the pane is NOT a scrollbar hit.
+                assert!(!geom.contains(40, 10));
+                // A click on the bar column is.
+                assert!(geom.contains(78, 10));
+
+                // A one-column track (the other panes) is unchanged.
+                let narrow = Rect::new(78, 1, 1, 22);
+                let geom = render_into(frame, narrow, 100, 22, 0).unwrap();
+                assert_eq!(geom.track, narrow);
+            })
+            .unwrap();
     }
 }
