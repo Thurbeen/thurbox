@@ -504,6 +504,10 @@ pub struct App {
     usage_tx: mpsc::Sender<(String, crate::session::AgentUsage)>,
     /// Receives background usage-fetch results, drained each tick.
     usage_rx: mpsc::Receiver<(String, crate::session::AgentUsage)>,
+    /// Config-load problems collected at startup (keybindings.json here,
+    /// agents.toml/hosts.toml reported by main), shown joined in one status
+    /// toast via [`Self::report_config_warnings`].
+    config_warnings: Vec<String>,
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
@@ -526,18 +530,32 @@ impl App {
             .and_then(crate::session::ThemePreset::from_str)
             .unwrap_or(crate::session::ThemePreset::Default);
 
-        // Load keybindings from JSON config or fall back to defaults.
+        // Load keybindings from JSON config or fall back to defaults. Problems
+        // are collected into `config_warnings` so the first frame can surface
+        // them in the status bar (a log-only warning is invisible in a TUI).
+        let mut config_warnings: Vec<String> = Vec::new();
         let keybindings = match crate::storage::keybindings::load_keybindings_json() {
-            Ok(Some(json)) => crate::session::KeyBindings::from_json(&json).unwrap_or_else(|e| {
-                tracing::warn!("Failed to parse keybindings.json: {e}; using defaults");
-                crate::session::KeyBindings::default()
-            }),
+            Ok(Some(json)) => match crate::session::KeyBindings::from_json_with_warnings(&json) {
+                Ok((bindings, warnings)) => {
+                    config_warnings
+                        .extend(warnings.iter().map(|w| format!("keybindings.json: {w}")));
+                    bindings
+                }
+                Err(e) => {
+                    config_warnings
+                        .push(format!("keybindings.json: {e}; using default keybindings"));
+                    crate::session::KeyBindings::default()
+                }
+            },
             Ok(None) => crate::session::KeyBindings::default(),
             Err(e) => {
-                tracing::warn!("Failed to read keybindings.json: {e}; using defaults");
+                config_warnings.push(format!("keybindings.json: {e}; using default keybindings"));
                 crate::session::KeyBindings::default()
             }
         };
+        for w in &config_warnings {
+            tracing::warn!("{w}");
+        }
 
         // Load session counter from DB
         let session_counter = db.get_session_counter().unwrap_or(0);
@@ -552,7 +570,7 @@ impl App {
 
         let (usage_tx, usage_rx) = mpsc::channel();
 
-        Self {
+        let mut app = Self {
             sessions: Vec::new(),
             active_index: 0,
             backends,
@@ -598,7 +616,23 @@ impl App {
             usage: HashMap::new(),
             usage_tx,
             usage_rx,
+            config_warnings: Vec::new(),
+        };
+        app.report_config_warnings(config_warnings);
+        app
+    }
+
+    /// Surface config-load warnings in the status bar (they are otherwise only
+    /// visible in the log file, which nobody watches while the TUI owns the
+    /// screen). Accumulates across calls — main reports agents.toml/hosts.toml
+    /// problems after construction — and shows them joined in one toast.
+    pub fn report_config_warnings(&mut self, warnings: Vec<String>) {
+        if warnings.is_empty() {
+            return;
         }
+        self.config_warnings.extend(warnings);
+        let text = format!("Config: {}", self.config_warnings.join(" · "));
+        self.set_status(StatusLevel::Error, text);
     }
 
     /// Build an [`AgentProvider`](crate::agent::AgentProvider) for a session
@@ -4706,6 +4740,7 @@ mod tests {
     fn start_new_session_shows_host_picker_with_hosts() {
         let mut app = app_with_sessions(0);
         app.set_hosts(crate::session::HostRegistry {
+            config_version: None,
             hosts: vec![crate::session::HostDef {
                 name: "devbox".into(),
                 destination: "me@devbox".into(),
@@ -4731,6 +4766,7 @@ mod tests {
     fn host_for_backend_resolves_ssh_only() {
         let mut app = app_with_sessions(0);
         app.set_hosts(crate::session::HostRegistry {
+            config_version: None,
             hosts: vec![crate::session::HostDef {
                 name: "devbox".into(),
                 destination: "me@devbox".into(),
@@ -5166,6 +5202,9 @@ mod tests {
     #[test]
     fn ctrl_r_no_crash_without_sessions() {
         let mut app = app_with_sessions(0);
+        // App::new may toast warnings from the developer's real keybindings
+        // file; this test only cares that Ctrl+R itself stays silent.
+        app.status_message = None;
         app.focus = InputFocus::Terminal;
         // Should not crash when there are no sessions
         app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
@@ -6908,6 +6947,9 @@ mod tests {
     #[test]
     fn ctrl_r_no_op_without_agent_session_id() {
         let mut app = app_with_sessions(1);
+        // App::new may toast warnings from the developer's real keybindings
+        // file; this test only cares that Ctrl+R itself stays silent.
+        app.status_message = None;
         // Session exists but has no agent_session_id
         app.sessions[0].info.agent_session_id = None;
         app.focus = InputFocus::Terminal;

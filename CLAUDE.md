@@ -802,6 +802,7 @@ For rationale behind decisions, see `docs/`:
 - `docs/CONSTITUTION.md` — Core principles and non-negotiable rules
 - `docs/ARCHITECTURE.md` — Architectural decisions with rationale
 - `docs/FEATURES.md` — Feature-level design choices
+- `docs/CONFIG.md` — Every config file/env var/DB setting in one place
 
 **Rule**: If a code change invalidates or extends a documented
 decision, update the relevant doc in the same PR.

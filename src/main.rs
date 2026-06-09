@@ -50,14 +50,18 @@ async fn main() -> Result<()> {
     // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
     // slow host must not block TUI startup, so check_available()/ensure_ready()
     // are deferred to first spawn/restore (see App::backend_for).
-    let hosts = thurbox::agent::host_config::load_or_seed();
+    let (hosts, mut config_warnings) = thurbox::agent::host_config::load_or_seed_with_warnings();
     for host in &hosts.hosts {
         tracing::debug!(host = %host.name, dest = %host.destination, "Registering SSH backend");
         backends.register(Arc::new(TmuxBackend::from_host(host)));
     }
 
     // Load (or seed) the coding-agent registry from ~/.config/thurbox/agents.toml.
-    let agents = thurbox::agent::agent_config::load_or_seed();
+    let (agents, agent_warnings) = thurbox::agent::agent_config::load_or_seed_with_warnings();
+    config_warnings.extend(agent_warnings);
+    for w in &config_warnings {
+        tracing::warn!("{w}");
+    }
 
     // Open SQLite database for persistent state
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
@@ -84,6 +88,9 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(size.height, size.width, backends, agents, db);
     app.set_hosts(hosts);
+    // Surface agents.toml/hosts.toml load problems in the status bar — the
+    // tracing::warn above only reaches the log file the TUI hides.
+    app.report_config_warnings(config_warnings);
 
     // Load session state from DB and restore
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {

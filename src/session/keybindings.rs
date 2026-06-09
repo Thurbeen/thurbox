@@ -596,23 +596,67 @@ impl KeyBindings {
     /// Parse from the JSON shape. Unknown actions are ignored; unknown chords
     /// are silently dropped. Missing actions fall back to defaults.
     pub fn from_json(json: &str) -> Result<Self, String> {
+        Self::from_json_with_warnings(json).map(|(bindings, _)| bindings)
+    }
+
+    /// Parse from the JSON shape, reporting everything that would otherwise be
+    /// silently skipped: unknown action names, unparsable chord strings, and
+    /// chords bound to more than one action in overlapping contexts (lookup
+    /// order over a HashMap is arbitrary, so a conflict means one of the two
+    /// actions nondeterministically wins). Missing actions fall back to
+    /// defaults; the parse itself only fails on malformed JSON.
+    pub fn from_json_with_warnings(json: &str) -> Result<(Self, Vec<String>), String> {
         let parsed: HashMap<String, Vec<String>> =
             serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut warnings = Vec::new();
         let mut bindings = KeyBindings::default();
         for (key, chord_strs) in parsed {
             let action: Action = match serde_json::from_str::<Action>(&format!("\"{key}\"")) {
                 Ok(a) => a,
-                Err(_) => continue,
+                Err(_) => {
+                    warnings.push(format!("unknown action \"{key}\""));
+                    continue;
+                }
             };
-            let chords: Vec<KeyChord> = chord_strs
-                .iter()
-                .filter_map(|s| KeyChord::parse(s))
-                .collect();
+            let mut chords: Vec<KeyChord> = Vec::new();
+            for s in &chord_strs {
+                match KeyChord::parse(s) {
+                    Some(chord) => chords.push(chord),
+                    None => warnings.push(format!("invalid chord \"{s}\" for {key}")),
+                }
+            }
             if !chords.is_empty() {
                 bindings.map.insert(action, chords);
             }
         }
-        Ok(bindings)
+        warnings.extend(bindings.conflict_warnings());
+        Ok((bindings, warnings))
+    }
+
+    /// Chords bound to more than one action whose contexts overlap. The F1
+    /// editor prevents these by stealing chords; a hand-edited file can still
+    /// introduce them.
+    fn conflict_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let mut entries: Vec<(&Action, &KeyChord)> = self
+            .map
+            .iter()
+            .flat_map(|(action, chords)| chords.iter().map(move |c| (action, c)))
+            .collect();
+        entries.sort_by_key(|(a, _)| a.label());
+        for (i, (action_a, chord)) in entries.iter().enumerate() {
+            for (action_b, other) in &entries[i + 1..] {
+                if chord == other && contexts_overlap(action_a.context(), action_b.context()) {
+                    warnings.push(format!(
+                        "chord \"{}\" is bound to both {} and {} (one will be ignored)",
+                        chord.display(),
+                        action_a.label(),
+                        action_b.label(),
+                    ));
+                }
+            }
+        }
+        warnings
     }
 }
 
@@ -720,6 +764,41 @@ mod tests {
     fn from_json_ignores_unknown_actions_and_invalid_chords() {
         let json = r#"{ "QuitApp": ["nonsense", "ctrl+x"], "BogusAction": ["ctrl+y"] }"#;
         let kb = KeyBindings::from_json(json).unwrap();
+        assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('x')));
+    }
+
+    #[test]
+    fn from_json_with_warnings_reports_skipped_entries() {
+        let json = r#"{ "QuitApp": ["nonsense", "ctrl+x"], "BogusAction": ["ctrl+y"] }"#;
+        let (_, warnings) = KeyBindings::from_json_with_warnings(json).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.contains("BogusAction")),
+            "unknown action must be reported: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("nonsense")),
+            "invalid chord must be reported: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn from_json_with_warnings_reports_chord_conflicts() {
+        // Two global actions on the same chord: one nondeterministically wins.
+        let json = r#"{ "QuitApp": ["ctrl+x"], "NewSession": ["ctrl+x"] }"#;
+        let (_, warnings) = KeyBindings::from_json_with_warnings(json).unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("ctrl+x") && w.contains("bound to both")),
+            "conflict must be reported: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn from_json_with_warnings_is_quiet_for_valid_input() {
+        let json = r#"{ "QuitApp": ["ctrl+x"] }"#;
+        let (kb, warnings) = KeyBindings::from_json_with_warnings(json).unwrap();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
         assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('x')));
     }
 

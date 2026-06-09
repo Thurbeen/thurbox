@@ -27,7 +27,11 @@ pub const BUILTIN_AGENTS_TOML: &str = r#"# Thurbox coding-agent definitions.
 # `*_args` groups are appended only when their value is present, with {id}
 # substituted. `args` is always passed — put any extra flags (e.g. a model)
 # there. Add your own [[agents]] entries to support any CLI.
+#
+# Field names are checked strictly: a typo'd key fails the parse (thurbox
+# reports it on startup and falls back to the built-in agents).
 
+config_version = 1
 default = "claude"
 
 [[agents]]
@@ -86,6 +90,7 @@ pub fn agents_config_path() -> Option<PathBuf> {
 /// valid document); falls back to an empty registry if that ever changes.
 pub fn builtin_registry() -> AgentRegistry {
     toml::from_str(BUILTIN_AGENTS_TOML).unwrap_or(AgentRegistry {
+        config_version: None,
         default: String::new(),
         agents: Vec::new(),
     })
@@ -93,44 +98,82 @@ pub fn builtin_registry() -> AgentRegistry {
 
 /// Load the agent registry, seeding the config file with built-ins when it is
 /// absent. Any read/parse error degrades gracefully to the built-in registry
-/// so the TUI always starts with at least the bundled agents.
+/// so the TUI always starts with at least the bundled agents; the warnings are
+/// logged here (headless callers) — the TUI uses
+/// [`load_or_seed_with_warnings`] to surface them in the status bar too.
 pub fn load_or_seed() -> AgentRegistry {
+    let (registry, warnings) = load_or_seed_with_warnings();
+    for w in &warnings {
+        tracing::warn!("{w}");
+    }
+    registry
+}
+
+/// [`load_or_seed`], also returning user-facing warnings for anything that
+/// silently degraded (parse error → built-ins, seed failure, …).
+pub fn load_or_seed_with_warnings() -> (AgentRegistry, Vec<String>) {
     let Some(path) = agents_config_path() else {
-        tracing::warn!("Could not resolve agents.toml path; using built-in agents");
-        return builtin_registry();
+        return (
+            builtin_registry(),
+            vec!["Could not resolve agents.toml path; using built-in agents".into()],
+        );
     };
 
     if !path.exists() {
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::warn!(error = %e, "Failed to create config dir for agents.toml");
-                return builtin_registry();
+                return (
+                    builtin_registry(),
+                    vec![format!("Failed to create config dir for agents.toml: {e}")],
+                );
             }
         }
         if let Err(e) = std::fs::write(&path, BUILTIN_AGENTS_TOML) {
-            tracing::warn!(error = %e, "Failed to seed agents.toml; using built-in agents");
-            return builtin_registry();
+            return (
+                builtin_registry(),
+                vec![format!("Failed to seed agents.toml: {e}")],
+            );
         }
         tracing::info!(path = %path.display(), "Seeded agents.toml with built-in agents");
-        return builtin_registry();
+        return (builtin_registry(), Vec::new());
     }
 
     match std::fs::read_to_string(&path) {
         Ok(contents) => match toml::from_str::<AgentRegistry>(&contents) {
-            Ok(reg) if !reg.agents.is_empty() => reg,
-            Ok(_) => {
-                tracing::warn!("agents.toml has no agents; using built-in agents");
-                builtin_registry()
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to parse agents.toml; using built-in agents");
-                builtin_registry()
-            }
+            Ok(reg) if !reg.agents.is_empty() => (reg, Vec::new()),
+            Ok(_) => (
+                builtin_registry(),
+                vec!["agents.toml has no agents; using built-in agents".into()],
+            ),
+            Err(e) => (
+                builtin_registry(),
+                vec![format!(
+                    "agents.toml: {}; using built-in agents",
+                    compact_toml_error(&e.to_string())
+                )],
+            ),
         },
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to read agents.toml; using built-in agents");
-            builtin_registry()
-        }
+        Err(e) => (
+            builtin_registry(),
+            vec![format!("Failed to read agents.toml: {e}")],
+        ),
+    }
+}
+
+/// Collapse a (possibly multi-line) toml error to "<position>: <message>" for
+/// compact status-bar display. toml errors render as a header line with the
+/// position, a source snippet, then the message — keep the first and last
+/// meaningful lines and drop the snippet in between.
+pub(crate) fn compact_toml_error(s: &str) -> String {
+    let lines: Vec<&str> = s
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('|') && !l.starts_with(char::is_numeric))
+        .collect();
+    match (lines.first(), lines.last()) {
+        (Some(first), Some(last)) if first != last => format!("{first}: {last}"),
+        (Some(first), _) => (*first).to_string(),
+        _ => s.to_string(),
     }
 }
 
@@ -214,6 +257,41 @@ mod tests {
 
         let reg = load_or_seed();
         assert_eq!(reg.default, "claude");
+    }
+
+    #[test]
+    fn load_or_seed_rejects_unknown_field_with_warning() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        let path = agents_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Typo'd field: `resumeargs` instead of `resume_args`.
+        std::fs::write(
+            &path,
+            "default = \"mine\"\n[[agents]]\nname = \"mine\"\ncommand = \"x\"\nresumeargs = []\n",
+        )
+        .unwrap();
+
+        let (reg, warnings) = load_or_seed_with_warnings();
+        assert_eq!(reg.default, "claude", "must fall back to built-ins");
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("resumeargs"),
+            "warning must name the unknown field: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn compact_toml_error_keeps_position_and_message() {
+        let err = toml::from_str::<AgentRegistry>(
+            "[[agents]]\nname = \"a\"\ncommand = \"c\"\nbogus = 1\n",
+        )
+        .unwrap_err();
+        let compact = compact_toml_error(&err.to_string());
+        assert!(compact.contains("bogus"), "got: {compact}");
+        assert!(!compact.contains('\n'), "must be one line: {compact}");
     }
 
     #[test]

@@ -23,6 +23,7 @@ const ID_PLACEHOLDER: &str = "{id}";
 /// etc.), with `{model}` / `{id}` substituted token-by-token. This avoids any
 /// "unresolved placeholder" heuristics: a group with no value is simply omitted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentDef {
     /// Display + lookup name (e.g. `"claude"`). Unique within a registry.
     pub name: String,
@@ -97,8 +98,16 @@ fn subst(tokens: &[String], placeholder: &str, value: &str) -> Vec<String> {
 }
 
 /// A set of agent definitions plus the name of the default agent.
+///
+/// Parsing is strict (`deny_unknown_fields`): a typo'd field name fails the
+/// parse loudly (surfaced as a startup warning + built-in fallback) instead of
+/// being silently ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentRegistry {
+    /// Config-format version, for future migrations. Currently `1`.
+    #[serde(default)]
+    pub config_version: Option<u32>,
     /// Name of the agent selected by default in the picker / headless spawns.
     #[serde(default)]
     pub default: String,
@@ -234,6 +243,7 @@ mod tests {
     #[test]
     fn registry_lookup_and_default() {
         let reg = AgentRegistry {
+            config_version: None,
             default: "codex".into(),
             agents: vec![
                 claude(),
@@ -256,6 +266,7 @@ mod tests {
     #[test]
     fn registry_default_falls_back_to_first() {
         let reg = AgentRegistry {
+            config_version: None,
             default: "missing".into(),
             agents: vec![claude()],
         };

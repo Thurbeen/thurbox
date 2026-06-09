@@ -30,6 +30,9 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox remote SSH hosts  —  ~/.config/
 # install registers zero remote hosts and behaves exactly like a local-only
 # setup. Uncomment and edit an entry to add a host.
 #
+# Field names are checked strictly: a typo'd key fails the parse (thurbox
+# reports it on startup and falls back to zero remote hosts).
+#
 # Fields per [[hosts]] entry:
 #
 #   name           (string, required)
@@ -57,6 +60,8 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox remote SSH hosts  —  ~/.config/
 #       unset, thurbox uses $HOME/.local/share/thurbox/worktrees on the remote
 #       (the remote $HOME is resolved over ssh on first use).
 #
+config_version = 1
+
 # Example (uncomment and edit):
 #
 # [[hosts]]
@@ -81,40 +86,61 @@ pub fn hosts_config_path() -> Option<PathBuf> {
 
 /// Load the remote-host registry, seeding the config file with a commented-out
 /// example when it is absent. Any read/parse error degrades gracefully to an
-/// empty registry so the TUI always starts (with local-only sessions).
+/// empty registry so the TUI always starts (with local-only sessions); the
+/// warnings are logged here (headless callers) — the TUI uses
+/// [`load_or_seed_with_warnings`] to surface them in the status bar too.
 pub fn load_or_seed() -> HostRegistry {
+    let (registry, warnings) = load_or_seed_with_warnings();
+    for w in &warnings {
+        tracing::warn!("{w}");
+    }
+    registry
+}
+
+/// [`load_or_seed`], also returning user-facing warnings for anything that
+/// silently degraded (parse error → no remote hosts, seed failure, …).
+pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
     let Some(path) = hosts_config_path() else {
-        tracing::warn!("Could not resolve hosts.toml path; no remote hosts");
-        return HostRegistry::default();
+        return (
+            HostRegistry::default(),
+            vec!["Could not resolve hosts.toml path; no remote hosts".into()],
+        );
     };
 
     if !path.exists() {
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::warn!(error = %e, "Failed to create config dir for hosts.toml");
-                return HostRegistry::default();
+                return (
+                    HostRegistry::default(),
+                    vec![format!("Failed to create config dir for hosts.toml: {e}")],
+                );
             }
         }
         if let Err(e) = std::fs::write(&path, SEED_HOSTS_TOML) {
-            tracing::warn!(error = %e, "Failed to seed hosts.toml");
-            return HostRegistry::default();
+            return (
+                HostRegistry::default(),
+                vec![format!("Failed to seed hosts.toml: {e}")],
+            );
         }
         tracing::info!(path = %path.display(), "Seeded hosts.toml (no active hosts)");
-        return HostRegistry::default();
+        return (HostRegistry::default(), Vec::new());
     }
 
     match std::fs::read_to_string(&path) {
         Ok(contents) => match toml::from_str::<HostRegistry>(&contents) {
-            Ok(reg) => reg,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to parse hosts.toml; no remote hosts");
-                HostRegistry::default()
-            }
+            Ok(reg) => (reg, Vec::new()),
+            Err(e) => (
+                HostRegistry::default(),
+                vec![format!(
+                    "hosts.toml: {}; no remote hosts",
+                    super::agent_config::compact_toml_error(&e.to_string())
+                )],
+            ),
         },
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to read hosts.toml; no remote hosts");
-            HostRegistry::default()
-        }
+        Err(e) => (
+            HostRegistry::default(),
+            vec![format!("Failed to read hosts.toml: {e}")],
+        ),
     }
 }
 
