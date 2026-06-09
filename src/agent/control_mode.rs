@@ -190,6 +190,14 @@ pub fn parse_notification(line: &str) -> Notification {
     Notification::Other(line.to_string())
 }
 
+/// A tmux pane id is `%<digits>`. Pane ids are interpolated unquoted into
+/// control-mode commands (`send-keys -t`, `kill-pane -t`, …), so anything
+/// else must be rejected where ids enter the system (spawn/adopt/discover).
+pub fn is_valid_pane_id(s: &str) -> bool {
+    s.strip_prefix('%')
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Format a `send-keys -H` command for a pane.
 ///
 /// Each byte is encoded as two hex digits.
@@ -221,6 +229,27 @@ mod tests {
     use std::sync::mpsc::sync_channel;
 
     use super::*;
+
+    // --- is_valid_pane_id tests ---
+
+    #[test]
+    fn pane_id_accepts_percent_digits() {
+        assert!(is_valid_pane_id("%0"));
+        assert!(is_valid_pane_id("%42"));
+        assert!(is_valid_pane_id("%123456"));
+    }
+
+    #[test]
+    fn pane_id_rejects_everything_else() {
+        assert!(!is_valid_pane_id(""));
+        assert!(!is_valid_pane_id("%"));
+        assert!(!is_valid_pane_id("42"));
+        assert!(!is_valid_pane_id("%4a"));
+        assert!(!is_valid_pane_id("% 42"));
+        assert!(!is_valid_pane_id("%-1"));
+        assert!(!is_valid_pane_id("%42; kill-server"));
+        assert!(!is_valid_pane_id("%42\nkill-server"));
+    }
 
     // --- shell_escape tests ---
 

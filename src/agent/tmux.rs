@@ -862,6 +862,9 @@ impl SessionBackend for TmuxBackend {
         );
         let result = self.ctrl_command(&cmd)?;
         let pane_id = result.trim().to_string();
+        if !control_mode::is_valid_pane_id(&pane_id) {
+            bail!("tmux new-window returned an invalid pane id: {pane_id:?}");
+        }
 
         debug!(pane_id = %pane_id, "tmux window created via control mode");
 
@@ -875,6 +878,10 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn adopt(&self, backend_id: &str, rows: u16, cols: u16) -> Result<AdoptedSession> {
+        // backend_id comes from the shared DB — never interpolate it unvalidated.
+        if !control_mode::is_valid_pane_id(backend_id) {
+            bail!("refusing to adopt invalid pane id: {backend_id:?}");
+        }
         self.connect_pane(backend_id, rows, cols)
     }
 
@@ -915,6 +922,11 @@ impl SessionBackend for TmuxBackend {
             let window_name = parts[1];
             // Only discover windows with our prefix (tb- for Claude, tbs- for shells).
             if !window_name.starts_with("tb-") {
+                continue;
+            }
+
+            if !control_mode::is_valid_pane_id(parts[0]) {
+                warn!("Skipping discovered window with invalid pane id: {:?}", parts[0]);
                 continue;
             }
 
