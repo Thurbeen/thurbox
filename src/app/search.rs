@@ -10,7 +10,8 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use super::{InputFocus, TextInput};
+use super::modals::TextInput;
+use super::InputFocus;
 
 /// Max results kept per group (sessions/tasks/automations/files), so a broad
 /// query can't flood the strip.

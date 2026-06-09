@@ -1718,6 +1718,39 @@ mod tests {
     // ── TextInput: remaining cursor/edge cases ───────────────────────────
 
     #[test]
+    fn text_input_edits_are_noops_at_buffer_edges() {
+        let mut input = TextInput::new();
+        input.set("ab");
+        input.home();
+        input.backspace(); // at start → no-op
+        assert_eq!(input.value(), "ab");
+        input.end();
+        input.delete(); // at end → no-op
+        assert_eq!(input.value(), "ab");
+    }
+
+    #[test]
+    fn text_input_clear_resets_buffer_and_cursor() {
+        let mut input = TextInput::new();
+        input.set("hello");
+        input.clear();
+        assert_eq!(input.value(), "");
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn text_input_backspace_and_delete_multibyte() {
+        let mut input = TextInput::new();
+        input.set("añé");
+        input.backspace();
+        assert_eq!(input.value(), "añ");
+        input.home();
+        input.move_right();
+        input.delete(); // removes the multi-byte 'ñ' at the cursor
+        assert_eq!(input.value(), "a");
+    }
+
+    #[test]
     fn text_input_move_right_clamps_at_end_and_insert_mid_string() {
         let mut input = TextInput::new();
         input.set("ab");
