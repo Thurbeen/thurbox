@@ -658,6 +658,25 @@ mod tests {
     }
 
     #[test]
+    fn deleted_session_preserves_parent_session_id() {
+        let db = Database::open_in_memory().unwrap();
+        let parent = make_session("Lead");
+        let mut child = make_session("Worker");
+        child.parent_session_id = Some(parent.id);
+        db.upsert_session(&parent).unwrap();
+        db.upsert_session(&child).unwrap();
+
+        db.soft_delete_session(child.id).unwrap();
+        let deleted = db.get_deleted_session_by_id(child.id).unwrap().unwrap();
+        assert_eq!(deleted.parent_session_id, Some(parent.id));
+
+        // Restore keeps the linkage in the active row.
+        db.restore_session(child.id).unwrap();
+        let restored = db.get_session_by_id(child.id).unwrap().unwrap();
+        assert_eq!(restored.parent_session_id, Some(parent.id));
+    }
+
+    #[test]
     fn list_deleted_sessions() {
         let db = Database::open_in_memory().unwrap();
         let s1 = make_session("S1");

@@ -53,9 +53,9 @@ pub struct SpawnResult {
 
 /// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
 /// shared SQLite database.
-pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
+pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
     validate_session_name(&req.name)?;
-    validate_parent_session(_db, req.parent_session_id)?;
+    validate_parent_session(db, req.parent_session_id)?;
 
     let agent_name = resolve_agent_name(req.agent.as_deref());
 
@@ -119,7 +119,7 @@ pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<Spawn
     // for the TUI to adopt and the window would be orphaned — untrackable and
     // unkillable from the UI. Best-effort tear it down before surfacing the
     // error so we don't leak a window.
-    if let Err(e) = _db.upsert_session(&shared) {
+    if let Err(e) = db.upsert_session(&shared) {
         tracing::error!(
             "spawn race: DB upsert failed after the tmux window for '{}' spawned; \
              tearing down the orphaned window: {e}",

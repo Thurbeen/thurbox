@@ -2874,6 +2874,7 @@ impl App {
             spawned.info.id = shared_session.id;
             spawned.info.worktrees = worktree_infos;
             spawned.info.additional_dirs = shared_session.additional_dirs.clone();
+            spawned.info.parent_session_id = shared_session.parent_session_id;
             self.sessions.push(spawned);
             self.save_state();
             tracing::debug!(
@@ -7107,6 +7108,35 @@ mod tests {
         let wt = &shared.worktrees[0];
         assert_eq!(wt.branch, "feat");
         assert_eq!(wt.repo_path, PathBuf::from("/repo"));
+    }
+
+    #[test]
+    fn session_to_shared_maps_parent_session_id() {
+        // Regression guard: `save_state` upserts every session via
+        // `session_to_shared`, so dropping the parent here would wipe a
+        // CLI-set lead/worker link from the DB on the TUI's next save.
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(backend_arc.clone()),
+            stub_agents(),
+            test_db(),
+        );
+
+        let parent_id = SessionId::default();
+        let mut session = Session::stub("worker", &backend_arc, &provider);
+        session.info.parent_session_id = Some(parent_id);
+        app.sessions.push(session);
+
+        let shared = app.session_to_shared(&app.sessions[0]);
+        assert_eq!(shared.parent_session_id, Some(parent_id));
+
+        // And the metadata copy applies it back on adoption/update.
+        let mut adopted = Session::stub("worker", &backend_arc, &provider);
+        App::apply_shared_session_metadata(&mut adopted, &shared);
+        assert_eq!(adopted.info.parent_session_id, Some(parent_id));
     }
 
     #[test]
