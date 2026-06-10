@@ -272,7 +272,6 @@ fn nest_group_members(sessions: &[&SessionInfo], members: &[usize]) -> Vec<(usiz
 /// aligned to the rendered order produced by [`compute_session_order`].
 pub struct OrderedSessions<'a> {
     pub sessions: Vec<&'a SessionInfo>,
-    pub elapsed_ms: Vec<u64>,
     pub match_positions: Vec<Option<SessionMatch>>,
     pub active_index: usize,
     /// Parallel to `sessions`: `Some(label)` on each repo group's first row,
@@ -288,12 +287,9 @@ impl<'a> OrderedSessions<'a> {
     /// and `match_positions` to follow it.
     pub fn new(
         sessions: &[&'a SessionInfo],
-        elapsed_ms: &[u64],
         match_positions: &[Option<SessionMatch>],
         active_index: usize,
     ) -> Self {
-        // Ordering depends only on status + stable index, never on `elapsed_ms`
-        // (which is still used below for the per-row elapsed display).
         let SessionOrder {
             order,
             headers,
@@ -301,7 +297,6 @@ impl<'a> OrderedSessions<'a> {
         } = compute_session_order(sessions);
 
         let ordered_sessions = order.iter().map(|&i| sessions[i]).collect();
-        let ordered_elapsed = order.iter().map(|&i| elapsed_ms[i]).collect();
         let ordered_matches = order
             .iter()
             .map(|&i| match_positions.get(i).cloned().flatten())
@@ -310,7 +305,6 @@ impl<'a> OrderedSessions<'a> {
 
         Self {
             sessions: ordered_sessions,
-            elapsed_ms: ordered_elapsed,
             match_positions: ordered_matches,
             active_index: new_active,
             headers,
@@ -326,8 +320,6 @@ pub struct LeftPanelState<'a> {
     /// entirely (e.g. while the automations pane is focused, where the active
     /// session is irrelevant).
     pub show_selection: bool,
-    /// Elapsed millis since last output, parallel to `sessions`.
-    pub session_elapsed_ms: &'a [u64],
     /// Focus level for the session list.
     pub session_focus: FocusLevel,
     /// Persistent list state for the session section.
@@ -353,7 +345,6 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.sessions,
         state.active_session,
         state.show_selection,
-        state.session_elapsed_ms,
         state.session_focus,
         state.session_list_state,
         state.session_match_positions,
@@ -458,7 +449,6 @@ fn render_session_section(
     sessions: &[&SessionInfo],
     active_index: usize,
     show_selection: bool,
-    elapsed_ms: &[u64],
     level: FocusLevel,
     list_state: &mut ListState,
     match_positions: &[Option<SessionMatch>],
@@ -516,17 +506,15 @@ fn render_session_section(
                     .parent_session_id
                     .is_some_and(|p| p != info.id && visible_ids.contains(&p));
 
-            let mut item_lines = vec![
-                build_session_line1(
-                    info,
-                    session_match,
-                    is_active,
-                    is_dimmed,
-                    depth,
-                    cross_group_child,
-                ),
-                build_session_line2(info, is_dimmed, elapsed_ms.get(i).copied(), depth),
-            ];
+            let mut item_lines = vec![build_session_line(
+                info,
+                session_match,
+                is_active,
+                is_dimmed,
+                depth,
+                cross_group_child,
+                inner_width,
+            )];
 
             // Prepend a subtle repo-group header above the first session of
             // each group. The header is highlighted when the active row lives
@@ -607,41 +595,54 @@ fn group_header_line(label: &str, inner_width: usize, selected: bool) -> Line<'s
     Line::from(Span::styled(text, style))
 }
 
-/// Resolve the live status text for a session row (the dedicated status line).
+/// Resolve the agent-reported status text for a session row, if any.
 /// Priority:
 ///   1. Attention → the agent's notification message ("Needs attention").
 ///   2. The agent-reported OSC activity title (richer "insight").
-///   3. Timing-based Busy/Waiting with elapsed time.
-fn session_status_text(info: &SessionInfo, elapsed: Option<u64>) -> String {
+///
+/// Timing-based Waiting/Busy text is deliberately *not* a fallback — the
+/// colored status dot already conveys that state, so a row with no
+/// agent-reported status carries no status text at all.
+fn agent_status_text(info: &SessionInfo) -> Option<String> {
     if info.status == crate::session::SessionStatus::Attention {
-        return info
-            .notification
-            .clone()
-            .unwrap_or_else(|| info.status.to_string());
+        return Some(
+            info.notification
+                .clone()
+                .unwrap_or_else(|| info.status.to_string()),
+        );
     }
     info.agent_activity
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format_status_with_elapsed(info.status, elapsed))
 }
 
-/// Build line 1 of a session entry: `<status-dot> [└] [↳] [☁] [⑂] <name>`.
+/// Separator between the session name and the inline agent status.
+const AGENT_STATUS_SEPARATOR: &str = "  ";
+/// Minimum columns the inline agent status needs to be worth showing.
+const AGENT_STATUS_MIN_WIDTH: usize = 4;
+
+/// Build the single line of a session entry:
+/// `<status-dot> [└] [↳] [☁] [⑂] <name> [<agent-status>]`.
 ///
 /// The active row is signalled by the list's highlight background, so no extra
 /// pointer glyph is needed. A child session nested under its parent (`depth >
 /// 0`) gets a muted `└` tree prefix; a child whose parent renders in another
 /// repo group gets a `↳` mark instead. Remote (`ssh:<host>`) sessions get a
 /// `☁` mark and sessions running in a git worktree get a `⑂` mark, all between
-/// the status dot and the name. The live status itself lives on line 2.
-fn build_session_line1<'a>(
+/// the status dot and the name. The agent-reported status (see
+/// [`agent_status_text`]) is appended after the name, truncated with `…` to
+/// fit `inner_width`.
+#[allow(clippy::too_many_arguments)]
+fn build_session_line<'a>(
     info: &'a SessionInfo,
     session_match: Option<&SessionMatch>,
     is_active: bool,
     is_dimmed: bool,
     depth: u8,
     cross_group_child: bool,
+    inner_width: usize,
 ) -> Line<'a> {
     let name_style = if is_dimmed {
         Style::default().fg(Theme::text_muted())
@@ -656,7 +657,7 @@ fn build_session_line1<'a>(
         Style::default().fg(super::status_color(info.status))
     };
 
-    let mut line1_spans = vec![Span::styled(
+    let mut spans = vec![Span::styled(
         format!(" {} ", info.status.icon()),
         status_style,
     )];
@@ -666,9 +667,9 @@ fn build_session_line1<'a>(
     let tree_style = Style::default().fg(Theme::text_muted());
     if depth > 0 {
         let indent = "  ".repeat(depth as usize - 1);
-        line1_spans.push(Span::styled(format!("{indent}\u{2514} "), tree_style));
+        spans.push(Span::styled(format!("{indent}\u{2514} "), tree_style));
     } else if cross_group_child {
-        line1_spans.push(Span::styled("\u{21b3} ", tree_style));
+        spans.push(Span::styled("\u{21b3} ", tree_style));
     }
 
     // Remote (ssh:<host>) sessions get a cloud mark so it's clear at a glance
@@ -679,7 +680,7 @@ fn build_session_line1<'a>(
         } else {
             Style::default().fg(Theme::accent())
         };
-        line1_spans.push(Span::styled("\u{2601} ", remote_style));
+        spans.push(Span::styled("\u{2601} ", remote_style));
     }
 
     // Worktree sessions get a dedicated mark, subordinate to the status dot.
@@ -689,60 +690,42 @@ fn build_session_line1<'a>(
         } else {
             Style::default().fg(Theme::branch_name())
         };
-        line1_spans.push(Span::styled("\u{2442} ", wt_style));
+        spans.push(Span::styled("\u{2442} ", wt_style));
     }
 
     append_name_spans(
-        &mut line1_spans,
+        &mut spans,
         &info.name,
         session_match.and_then(|m| m.positions(&m.name)),
         name_style,
     );
 
-    Line::from(line1_spans)
-}
-
-/// Build line 2 of a session entry: the dedicated status line `   <status-text>`
-/// (e.g. `   Waiting 2m`). No status glyph here — the colored dot on line 1
-/// already conveys the state, so repeating it would be redundant. The indent
-/// grows with `depth` so the status stays aligned under a nested child's name.
-fn build_session_line2(
-    info: &SessionInfo,
-    is_dimmed: bool,
-    elapsed: Option<u64>,
-    depth: u8,
-) -> Line<'static> {
-    let text_style = if is_dimmed {
-        Style::default().fg(Theme::text_muted())
-    } else {
-        Style::default().fg(Theme::text_primary())
-    };
-
-    let status_text = session_status_text(info, elapsed);
-    let indent = "  ".repeat(depth as usize);
-    Line::from(vec![
-        Span::raw(format!("   {indent}")),
-        Span::styled(status_text, text_style),
-    ])
-}
-
-/// Format status text with elapsed time for Waiting/Idle sessions.
-fn format_status_with_elapsed(
-    status: crate::session::SessionStatus,
-    elapsed_ms: Option<u64>,
-) -> String {
-    use crate::session::SessionStatus;
-    match (status, elapsed_ms) {
-        (SessionStatus::Waiting | SessionStatus::Idle, Some(ms)) if ms >= 60_000 => {
-            let mins = ms / 60_000;
-            format!("{status} {mins}m")
+    // Append the agent-reported status after the name, truncated to fit. An
+    // attention notification keeps the status color (same accent as the dot)
+    // so it stands out; plain activity text is muted so the name stays the
+    // visual anchor.
+    if let Some(status_text) = agent_status_text(info) {
+        let agent_status_style = if info.status == crate::session::SessionStatus::Attention {
+            status_style
+        } else {
+            Style::default().fg(Theme::text_muted())
+        };
+        let used: usize = spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum::<usize>()
+            + AGENT_STATUS_SEPARATOR.chars().count();
+        let avail = inner_width.saturating_sub(used);
+        if avail >= AGENT_STATUS_MIN_WIDTH {
+            spans.push(Span::raw(AGENT_STATUS_SEPARATOR));
+            spans.push(Span::styled(
+                super::truncate_ellipsis(&status_text, avail),
+                agent_status_style,
+            ));
         }
-        (SessionStatus::Waiting | SessionStatus::Idle, Some(ms)) if ms >= 10_000 => {
-            let secs = ms / 1_000;
-            format!("{status} {secs}s")
-        }
-        _ => format!("{status}"),
     }
+
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -761,46 +744,70 @@ mod tests {
         attn.status = SessionStatus::Attention;
 
         let sessions = vec![&busy, &attn];
-        let elapsed = vec![0u64, 0u64];
         let matches: Vec<Option<SessionMatch>> = vec![None, None];
         // active_index points at the busy session; the attention one still
         // floats to the top and active_index is remapped to follow it.
-        let ordered = OrderedSessions::new(&sessions, &elapsed, &matches, 0);
+        let ordered = OrderedSessions::new(&sessions, &matches, 0);
         assert_eq!(ordered.sessions[0].name, "attn");
         assert_eq!(ordered.sessions[1].name, "busy");
         assert_eq!(ordered.active_index, 1);
     }
 
-    // --- format_status_with_elapsed ---
+    // --- agent_status_text ---
 
     #[test]
-    fn elapsed_minutes_shown_above_60s() {
-        let text = format_status_with_elapsed(SessionStatus::Waiting, Some(120_000));
-        assert_eq!(text, "Waiting 2m");
+    fn agent_status_none_without_agent_report() {
+        // Waiting/Busy/Idle carry no status text — the colored dot is enough.
+        for status in [
+            SessionStatus::Waiting,
+            SessionStatus::Busy,
+            SessionStatus::Idle,
+            SessionStatus::Error,
+        ] {
+            let mut s = info("plain");
+            s.status = status;
+            assert_eq!(agent_status_text(&s), None);
+        }
     }
 
     #[test]
-    fn elapsed_seconds_shown_between_10s_and_60s() {
-        let text = format_status_with_elapsed(SessionStatus::Idle, Some(30_000));
-        assert_eq!(text, "Idle 30s");
+    fn agent_status_uses_activity_title() {
+        let mut s = info("active");
+        s.status = SessionStatus::Busy;
+        s.agent_activity = Some("  Compacting conversation  ".to_string());
+        assert_eq!(
+            agent_status_text(&s),
+            Some("Compacting conversation".to_string())
+        );
     }
 
     #[test]
-    fn elapsed_not_shown_below_10s() {
-        let text = format_status_with_elapsed(SessionStatus::Waiting, Some(5_000));
-        assert_eq!(text, "Waiting");
+    fn agent_status_blank_activity_is_none() {
+        let mut s = info("blank");
+        s.agent_activity = Some("   ".to_string());
+        assert_eq!(agent_status_text(&s), None);
     }
 
     #[test]
-    fn elapsed_not_shown_for_busy() {
-        let text = format_status_with_elapsed(SessionStatus::Busy, Some(120_000));
-        assert_eq!(text, "Busy");
+    fn agent_status_attention_prefers_notification() {
+        let mut s = info("attn");
+        s.status = SessionStatus::Attention;
+        s.agent_activity = Some("working".to_string());
+        s.notification = Some("Needs your approval".to_string());
+        assert_eq!(
+            agent_status_text(&s),
+            Some("Needs your approval".to_string())
+        );
     }
 
     #[test]
-    fn elapsed_none_shows_plain_status() {
-        let text = format_status_with_elapsed(SessionStatus::Error, None);
-        assert_eq!(text, "Error");
+    fn agent_status_attention_without_notification_shows_status() {
+        let mut s = info("attn");
+        s.status = SessionStatus::Attention;
+        assert_eq!(
+            agent_status_text(&s),
+            Some(SessionStatus::Attention.to_string())
+        );
     }
 
     // --- build_highlighted_spans ---
@@ -958,7 +965,7 @@ mod tests {
         let n1 = info("n1");
         let n2 = info("n2");
         let sessions = vec![&n1, &n2];
-        let ordered = OrderedSessions::new(&sessions, &[0, 0], &[None, None], 0);
+        let ordered = OrderedSessions::new(&sessions, &[None, None], 0);
         // Single "(no repo)" group: header on row 0, none after.
         assert_eq!(ordered.headers, vec![Some("(no repo)".to_string()), None]);
     }
@@ -966,96 +973,136 @@ mod tests {
     #[test]
     fn ordered_sessions_empty_input() {
         let sessions: Vec<&SessionInfo> = vec![];
-        let ordered = OrderedSessions::new(&sessions, &[], &[], 0);
+        let ordered = OrderedSessions::new(&sessions, &[], 0);
         assert!(ordered.sessions.is_empty());
         assert_eq!(ordered.active_index, 0);
         assert!(ordered.headers.is_empty());
     }
 
-    // --- line builders ---
+    // --- line builder ---
+
+    /// Inner width wide enough that nothing truncates in these tests.
+    const WIDE: usize = 80;
 
     fn line_text(line: &Line) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]
-    fn line1_shows_worktree_glyph_when_worktree_present() {
+    fn line_shows_worktree_glyph_when_worktree_present() {
         let mut s = info("feature");
         s.worktrees.push(crate::session::WorktreeInfo {
             repo_path: std::path::PathBuf::from("/repos/thurbox"),
             worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
             branch: "feat".to_string(),
         });
-        let line = build_session_line1(&s, None, false, false, 0, false);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
         assert!(line_text(&line).contains('\u{2442}'));
     }
 
     #[test]
-    fn line1_no_worktree_glyph_for_plain_session() {
+    fn line_no_worktree_glyph_for_plain_session() {
         let s = info("plain");
-        let line = build_session_line1(&s, None, false, false, 0, false);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
         assert!(!line_text(&line).contains('\u{2442}'));
     }
 
     #[test]
-    fn line1_shows_remote_glyph_when_remote_host_present() {
+    fn line_shows_remote_glyph_when_remote_host_present() {
         let mut s = info("remote");
         s.remote_host = Some("devbox".to_string());
-        let line = build_session_line1(&s, None, false, false, 0, false);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
         assert!(line_text(&line).contains('\u{2601}'));
     }
 
     #[test]
-    fn line1_no_remote_glyph_for_local_session() {
+    fn line_no_remote_glyph_for_local_session() {
         let s = info("local");
-        let line = build_session_line1(&s, None, false, false, 0, false);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
         assert!(!line_text(&line).contains('\u{2601}'));
     }
 
     #[test]
-    fn line1_shows_tree_prefix_for_nested_child() {
+    fn line_shows_tree_prefix_for_nested_child() {
         let s = info("worker");
-        let line = build_session_line1(&s, None, false, false, 1, false);
+        let line = build_session_line(&s, None, false, false, 1, false, WIDE);
         assert!(line_text(&line).contains('\u{2514}')); // └
     }
 
     #[test]
-    fn line1_shows_arrow_for_cross_group_child() {
+    fn line_shows_arrow_for_cross_group_child() {
         let s = info("worker");
-        let line = build_session_line1(&s, None, false, false, 0, true);
+        let line = build_session_line(&s, None, false, false, 0, true, WIDE);
         let text = line_text(&line);
         assert!(text.contains('\u{21b3}')); // ↳
         assert!(!text.contains('\u{2514}'));
     }
 
     #[test]
-    fn line2_indent_grows_with_depth() {
-        let mut s = info("worker");
-        s.status = SessionStatus::Busy;
-        let root = line_text(&build_session_line2(&s, false, None, 0));
-        let child = line_text(&build_session_line2(&s, false, None, 1));
-        assert_eq!(child.len(), root.len() + 2);
-        assert!(child.starts_with("     ")); // 3 base + 2 per depth level
+    fn line_carries_no_status_text_without_agent_report() {
+        let mut s = info("quiet");
+        s.status = SessionStatus::Waiting;
+        let text = line_text(&build_session_line(&s, None, false, false, 0, false, WIDE));
+        assert!(!text.contains("Waiting"));
+        assert!(text.trim_end().ends_with("quiet"));
     }
 
     #[test]
-    fn line2_shows_status_text_without_glyph() {
+    fn line_appends_agent_activity_after_name() {
         let mut s = info("busy");
         s.status = SessionStatus::Busy;
-        let line = build_session_line2(&s, false, None, 0);
-        let text = line_text(&line);
-        assert!(text.contains("Busy"));
-        // The status dot lives on line 1 only; line 2 must not repeat it.
-        assert!(!text.contains(SessionStatus::Busy.icon()));
+        s.agent_activity = Some("Compacting conversation".to_string());
+        let text = line_text(&build_session_line(&s, None, false, false, 0, false, WIDE));
+        assert!(text.contains("busy  Compacting conversation"));
     }
 
     #[test]
-    fn line2_attention_shows_notification() {
+    fn line_attention_appends_notification() {
         let mut s = info("attn");
         s.status = SessionStatus::Attention;
         s.notification = Some("Review this diff".to_string());
-        let line = build_session_line2(&s, false, None, 0);
-        assert!(line_text(&line).contains("Review this diff"));
+        let text = line_text(&build_session_line(&s, None, false, false, 0, false, WIDE));
+        assert!(text.contains("attn  Review this diff"));
+    }
+
+    #[test]
+    fn line_truncates_agent_status_with_ellipsis() {
+        let mut s = info("busy");
+        s.agent_activity = Some("a very long activity title that cannot fit".to_string());
+        let line = build_session_line(&s, None, false, false, 0, false, 20);
+        let text = line_text(&line);
+        assert!(text.chars().count() <= 20);
+        assert!(text.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn line_exact_fit_agent_status_is_not_truncated() {
+        let mut s = info("busy");
+        s.agent_activity = Some("Ready".to_string());
+        // used = " ● " (3) + "busy" (4) + separator (2) = 9; "Ready" fits exactly.
+        let text = line_text(&build_session_line(&s, None, false, false, 0, false, 14));
+        assert!(text.ends_with("busy  Ready"));
+        assert!(!text.contains('\u{2026}'));
+    }
+
+    #[test]
+    fn line_agent_status_min_width_boundary() {
+        let mut s = info("busy");
+        s.agent_activity = Some("Ready".to_string());
+        // avail = AGENT_STATUS_MIN_WIDTH → shown truncated; one column less → skipped.
+        let shown = line_text(&build_session_line(&s, None, false, false, 0, false, 13));
+        assert!(shown.ends_with("Rea\u{2026}"));
+        let skipped = line_text(&build_session_line(&s, None, false, false, 0, false, 12));
+        assert!(skipped.trim_end().ends_with("busy"));
+    }
+
+    #[test]
+    fn line_skips_agent_status_when_no_room() {
+        let mut s = info("a-rather-long-session-name");
+        s.agent_activity = Some("activity".to_string());
+        let text = line_text(&build_session_line(&s, None, false, false, 0, false, 30));
+        assert!(!text.contains("activity"));
+        assert!(text.trim_end().ends_with("a-rather-long-session-name"));
     }
 
     // --- compute_session_order (grouping + activity) ---

@@ -89,12 +89,6 @@ impl App {
         };
         // Build flat session list: all sessions, with tag names from projects
         let all_sessions: Vec<&SessionInfo> = self.sessions.iter().map(|s| &s.info).collect();
-        self.session_elapsed_buf.clear();
-        for s in &self.sessions {
-            self.session_elapsed_buf.push(s.millis_since_last_output());
-        }
-
-        let session_elapsed_buf = self.session_elapsed_buf.clone();
 
         // While the global-search strip is open, highlight the session list from
         // the global query (live). Otherwise there are no match positions (the
@@ -110,12 +104,11 @@ impl App {
             None => Vec::new(),
         };
 
-        // Order the list by repo group + activity. All parallel arrays
-        // (elapsed, match_positions) and active_index are remapped so they
-        // stay aligned with the rendered order.
+        // Order the list by repo group + activity. The parallel arrays
+        // (match_positions) and active_index are remapped so they stay
+        // aligned with the rendered order.
         let ordered = project_list::OrderedSessions::new(
             &all_sessions,
-            &session_elapsed_buf,
             &global_match_positions,
             self.active_index,
         );
@@ -151,7 +144,6 @@ impl App {
                 sessions: &ordered.sessions,
                 active_session: ordered.active_index,
                 show_selection,
-                session_elapsed_ms: &ordered.elapsed_ms,
                 session_focus: list_focus,
                 session_list_state: &mut self.session_list_state,
                 session_match_positions: &ordered.match_positions,

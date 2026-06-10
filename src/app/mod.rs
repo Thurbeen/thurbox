@@ -487,8 +487,6 @@ pub struct App {
     selected_text_cache: Option<String>,
     /// Persistent clipboard handle to avoid "dropped too quickly" warnings on Linux.
     clipboard: Option<arboard::Clipboard>,
-    /// Reusable buffer for session elapsed-ms in the view (avoids per-frame allocation).
-    pub(crate) session_elapsed_buf: Vec<u64>,
     /// Persistent list state for the session section (preserves scroll offset).
     pub(crate) session_list_state: ratatui::widgets::ListState,
     /// Automations-pane UI state (cached list, selection, run history, editor).
@@ -623,7 +621,6 @@ impl App {
             dragging_scrollbar: None,
             selected_text_cache: None,
             clipboard: arboard::Clipboard::new().ok(),
-            session_elapsed_buf: Vec::new(),
             session_list_state: ratatui::widgets::ListState::default(),
             automation_ui: automation_state::AutomationUiState::default(),
             task_ui: task_state::TaskUiState::default(),

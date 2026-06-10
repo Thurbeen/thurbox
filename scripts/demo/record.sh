@@ -8,6 +8,7 @@
 #   * thurbox-info-panel.{gif,mp4}      (info-panel.tape)
 #   * thurbox-theme.{gif,mp4}           (theme.tape)
 #   * thurbox-session-creation.{gif,mp4}(session-creation.tape)
+#   * thurbox-fork.{gif,mp4}            (fork.tape)
 #   * automations-demo.{gif,mp4}        (automations.tape)
 #   * tasks-demo.{gif,mp4}              (tasks.tape)
 #   * search-demo.{gif,mp4}             (search.tape)
@@ -40,7 +41,7 @@ set -eu
 # the combined hero demo (docs/media/thurbox-demo.*); the rest are per-feature
 # clips (`automations` -> automations-demo.*, `tasks` -> tasks-demo.*, `search`
 # -> search-demo.*, others -> thurbox-<stem>.*).
-ALL_TAPES="agents file-manager info-panel theme session-creation automations tasks search"
+ALL_TAPES="agents file-manager info-panel theme session-creation fork automations tasks search"
 TAPES="${*:-$ALL_TAPES}"
 
 # thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,

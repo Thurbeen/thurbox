@@ -154,7 +154,10 @@
               <code>--resume</code>
               ).
             </li>
-            <li>Each session displays elapsed time ("Waiting 45s", "Idle 2m")</li>
+            <li>
+              Each session row shows the agent's live activity when the CLI reports one (via its
+              terminal title), next to a colored status dot
+            </li>
             <li>
               Open URLs in terminal output with
               <code>Ctrl+Click</code>
@@ -491,12 +494,39 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             Session Forking
             <a href="#session-forking" class="heading-anchor">#</a>
           </h2>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/thurbox-fork.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Forking a session twice with Ctrl+F: the copies nest under their parent in the
+                  session list
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              Forking with
+              <code>Ctrl+F</code>
+              : children nest under their parent session.
+            </figcaption>
+          </figure>
           <p>
             Press
             <code>Ctrl+F</code>
             to fork the active session. This creates a new session that resumes from the same
             conversation history, allowing you to explore alternative approaches without losing the
-            original session's context.
+            original session's context. The fork records the source session as its
+            <strong>parent</strong>
+            : the session list nests children under their parent with a tree prefix, and the info
+            panel shows a
+            <code>Parent:</code>
+            row.
           </p>
 
           <h2 id="global-search">

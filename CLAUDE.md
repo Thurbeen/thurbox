@@ -599,7 +599,8 @@ scripts/demo/record.sh theme automations   # re-record a subset
 
 `record.sh` records every video pair in one pass: the combined
 hero demo (`thurbox-demo.*` via `agents.tape`), one clip per
-feature (`thurbox-{file-manager,info-panel,theme,session-creation}.*`),
+feature
+(`thurbox-{file-manager,info-panel,theme,session-creation,fork}.*`),
 and the automations/tasks/search demos (`automations-demo.*`,
 `tasks-demo.*`, `search-demo.*`) — one VHS tape each
 (`scripts/demo/<feature>.tape`). With no args it records all of

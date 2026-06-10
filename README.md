@@ -57,6 +57,12 @@ Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
 
 ![Session creation workflow](./docs/media/thurbox-session-creation.gif)
 
+Fork one with `Ctrl+F` — the copy records the source as its
+**parent**, and children nest under their parent in the session
+list:
+
+![Session forking](./docs/media/thurbox-fork.gif)
+
 ### Automations
 
 - Named, scheduled agent runs — one-shot or recurring (cron, with

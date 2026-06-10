@@ -29,9 +29,9 @@ worktree), and cwd.
 **Why a sidebar at all instead of a popup?**
 
 - Sessions are persistent context, not transient selections. An
-  always-visible list shows status (Running, Idle, Error), elapsed
-  time, and branch at a glance — useful for monitoring multiple
-  parallel agent sessions.
+  always-visible list shows each session's status and live agent
+  activity at a glance — useful for monitoring multiple parallel
+  agent sessions.
 - The sidebar fits cleanly into the existing 3-tier responsive
   layout (`<80`, `>=80`, `>=120`); a popup would require its own
   open/close keybinding and dismissal logic.
@@ -52,12 +52,14 @@ the user to remember which field to type into.
 
 ### Live status & "needs attention"
 
-Each row is two lines: `<status-dot> <name>` on line 1 (worktree
-sessions get a `⑂` mark before the name), and a dedicated live-status
-line `<status-text>` on line 2 (e.g. `Waiting 2m` or the agent's
-reported activity). Line 2 carries no status glyph — the colored dot on
-line 1 already conveys the state. The repo/branch and agent live in the
-info panel, not the list row.
+Each row is a single line: `<status-dot> <name> [<agent-status>]`
+(worktree sessions get a `⑂` mark before the name). The agent-reported
+status — the OSC activity title or an attention notification — is
+appended after the name when present, muted and truncated with `…` to
+fit the panel. There is no timing-based `Waiting`/`Busy` text: the
+colored status dot already conveys that state, so a session with no
+agent-reported status is just the dot and the name. The repo/branch
+and agent live in the info panel, not the list row.
 
 The status is richer than raw output-timing. We parse the agent's
 own terminal signals from its PTY (via the `vt100` callbacks already
