@@ -342,7 +342,11 @@ thurbox-cli session create --name demo --repo-path /path \
 # Spawn on a remote host from hosts.toml (worktree + tmux live remotely):
 thurbox-cli session create --name demo --repo-path /srv/repo \
     --host devbox --worktree-branch feat/x
+# Spawn a worker under a lead session (parent must exist):
+thurbox-cli session create --name worker --repo-path /path \
+    --parent <lead-uuid>
 thurbox-cli session list | jq
+thurbox-cli session list --parent <lead-uuid> | jq  # direct children only
 ```
 
 Subcommands: `session` (create/list/get/delete/restore/restart/
@@ -362,6 +366,27 @@ window, remove worktrees + the symlink workspace, and disable
 when no TUI is running. Teardown is best-effort (failures land in
 the JSON report); the row is always soft-deleted last, so even a
 forced delete stays restorable.
+
+### Parent sessions (lead/worker)
+
+Sessions carry an optional **`parent_session_id`** so orchestration
+scripts can model lead → worker relationships. `session create
+--parent <uuid>` sets it (the parent must be an existing active
+session — validated before any side effects); `session list`/`get`
+emit it in the JSON (`null` for top-level sessions) and `session
+list --parent <uuid>` filters to direct children. The link is
+**purely informational**: deleting a parent never cascades to
+children (orphans simply render as top-level), and the parent is
+only validated at creation. In the TUI, **`Ctrl+F` fork** records
+the source session as the fork's parent; the session list nests
+children under their parent **within the same repo group** (muted
+`└` tree prefix; a child whose parent renders in another group
+keeps its own position with a `↳` mark instead), and the info panel
+(F2) shows a `Parent:` row. The nesting lives in
+`ui::project_list::compute_session_order` (`SessionOrder::depths`),
+so `Ctrl+J`/`Ctrl+K` navigation follows the tree automatically.
+Storage: nullable `sessions.parent_session_id` column (schema v30;
+v28/v29 are reserved by an in-flight branch).
 
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on

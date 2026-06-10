@@ -1002,6 +1002,44 @@ there is no primary/secondary distinction.
 
 ---
 
+## Parent Sessions (Lead/Worker)
+
+Sessions carry an optional `parent_session_id` (nullable column on
+`sessions`, schema v30) so orchestration scripts can model a lead
+session that spawns workers: `thurbox-cli session create --parent
+<uuid>` sets it, `session list`/`get` expose it, and `session list
+--parent <uuid>` lists direct children. In the TUI, `Ctrl+F` fork
+records the source session as the fork's parent.
+
+### Why informational-only (no cascade)
+
+The link is metadata, not a lifecycle contract. Deleting a parent
+does **not** delete or orphan-block its children — workers routinely
+outlive the lead that spawned them (the lead finishes orchestrating
+while workers keep coding). A dangling parent id is harmless: the
+child simply renders as a top-level session again. The parent is
+validated once, at creation (it must be an existing active session),
+and never re-validated.
+
+### Why nesting stays inside repo groups
+
+The session list's primary grouping is the repo set
+(`compute_session_order`), and that stays authoritative: children
+nest under their parent **within** a repo group (muted `└` prefix,
+depth tracked in `SessionOrder::depths`), because a lead and its
+workers usually share a repo. A child whose parent renders in a
+different group keeps its natural position and gets a `↳` mark
+instead — reordering across repo groups would break the "one header
+per repo" invariant and make rows jump between groups. Group
+bubbling is unchanged: an `Attention` child still pulls its whole
+repo group to the top. Navigation (`Ctrl+J`/`Ctrl+K`) shares the
+same ordering function, so it walks the tree exactly as rendered.
+Parent cycles can't be produced by current writers (the parent must
+exist before the child, and the link is immutable), but the ordering
+is still defensive: cycle members render flat rather than vanish.
+
+---
+
 ## Terminal Scrollback
 
 ### Scrollback buffer
