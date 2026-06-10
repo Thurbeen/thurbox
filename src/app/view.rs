@@ -157,6 +157,7 @@ impl App {
                 session_match_positions: &ordered.match_positions,
                 session_search_active,
                 headers: &ordered.headers,
+                depths: &ordered.depths,
             },
         );
     }
@@ -234,6 +235,18 @@ impl App {
                 }
             })
             .collect();
+        // Resolve the parent session's name for child sessions; fall back to
+        // the short uuid when the parent is no longer in the list.
+        let parent_name = info.parent_session_id.map(|pid| {
+            self.sessions
+                .iter()
+                .find(|s| s.info.id == pid)
+                .map(|s| s.info.name.clone())
+                .unwrap_or_else(|| {
+                    let id = pid.to_string();
+                    id.chars().take(8).collect()
+                })
+        });
         info_panel::render_info_panel(
             frame,
             info_area,
@@ -241,6 +254,7 @@ impl App {
             Some(&self.metrics.system_metrics),
             &automation_entries,
             agent_usage,
+            parent_name.as_deref(),
         );
     }
 

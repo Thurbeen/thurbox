@@ -136,6 +136,11 @@ pub struct SessionOrder {
     pub order: Vec<usize>,
     /// Parallel to `order`: `Some(label)` on each group's first row, else `None`.
     pub headers: Vec<Option<String>>,
+    /// Parallel to `order`: tree depth within the repo group (0 = root, 1+ =
+    /// child nested under its parent via `parent_session_id`). Children nest
+    /// only when their parent is in the same group; a child whose parent lives
+    /// in another group (or is gone) stays at depth 0 in its own group.
+    pub depths: Vec<u8>,
 }
 
 pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
@@ -183,14 +188,84 @@ pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
 
     let mut order = Vec::with_capacity(sessions.len());
     let mut headers = Vec::with_capacity(sessions.len());
+    let mut depths = Vec::with_capacity(sessions.len());
     for g in &groups {
-        for (j, &i) in g.members.iter().enumerate() {
+        // Nest children directly under their parent (parent-first, preserving
+        // the status-then-index order among siblings and among roots).
+        for (j, (i, depth)) in nest_group_members(sessions, &g.members)
+            .into_iter()
+            .enumerate()
+        {
             order.push(i);
             headers.push(if j == 0 { g.label.clone() } else { None });
+            depths.push(depth);
         }
     }
 
-    SessionOrder { order, headers }
+    SessionOrder {
+        order,
+        headers,
+        depths,
+    }
+}
+
+/// Reorder a group's (already status-sorted) members into parent-first DFS
+/// order: every member whose `parent_session_id` is also a member of this group
+/// nests directly under that parent; everyone else (no parent, parent in
+/// another group, or parent gone) is a root. Returns `(session index, depth)`
+/// pairs covering every member exactly once — a visited set plus a flat-emit
+/// fallback guard against parent cycles, which current writers can't produce
+/// but must not make sessions vanish from the list.
+fn nest_group_members(sessions: &[&SessionInfo], members: &[usize]) -> Vec<(usize, u8)> {
+    use std::collections::{HashMap, HashSet};
+
+    let id_to_member: HashMap<crate::session::SessionId, usize> =
+        members.iter().map(|&i| (sessions[i].id, i)).collect();
+
+    let mut roots: Vec<usize> = Vec::new();
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &i in members {
+        let parent = sessions[i]
+            .parent_session_id
+            .and_then(|p| id_to_member.get(&p))
+            .copied()
+            .filter(|&p| p != i);
+        match parent {
+            Some(p) => children.entry(p).or_default().push(i),
+            None => roots.push(i),
+        }
+    }
+
+    fn emit(
+        i: usize,
+        depth: u8,
+        children: &HashMap<usize, Vec<usize>>,
+        visited: &mut HashSet<usize>,
+        out: &mut Vec<(usize, u8)>,
+    ) {
+        if !visited.insert(i) {
+            return;
+        }
+        out.push((i, depth));
+        if let Some(kids) = children.get(&i) {
+            for &k in kids {
+                emit(k, depth.saturating_add(1), children, visited, out);
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(members.len());
+    let mut visited = HashSet::new();
+    for &r in &roots {
+        emit(r, 0, &children, &mut visited, &mut out);
+    }
+    // Members unreachable from any root (a parent cycle): emit flat.
+    for &i in members {
+        if visited.insert(i) {
+            out.push((i, 0));
+        }
+    }
+    out
 }
 
 /// Display-ordered view of the session list. All fields are parallel arrays
@@ -203,6 +278,9 @@ pub struct OrderedSessions<'a> {
     /// Parallel to `sessions`: `Some(label)` on each repo group's first row,
     /// used to render a subtle header above it. `None` elsewhere.
     pub headers: Vec<Option<String>>,
+    /// Parallel to `sessions`: tree depth within the repo group
+    /// (see [`SessionOrder::depths`]).
+    pub depths: Vec<u8>,
 }
 
 impl<'a> OrderedSessions<'a> {
@@ -216,7 +294,11 @@ impl<'a> OrderedSessions<'a> {
     ) -> Self {
         // Ordering depends only on status + stable index, never on `elapsed_ms`
         // (which is still used below for the per-row elapsed display).
-        let SessionOrder { order, headers } = compute_session_order(sessions);
+        let SessionOrder {
+            order,
+            headers,
+            depths,
+        } = compute_session_order(sessions);
 
         let ordered_sessions = order.iter().map(|&i| sessions[i]).collect();
         let ordered_elapsed = order.iter().map(|&i| elapsed_ms[i]).collect();
@@ -232,6 +314,7 @@ impl<'a> OrderedSessions<'a> {
             match_positions: ordered_matches,
             active_index: new_active,
             headers,
+            depths,
         }
     }
 }
@@ -256,6 +339,9 @@ pub struct LeftPanelState<'a> {
     /// Parallel to `sessions`: `Some(label)` on each repo group's first row,
     /// rendered as a subtle header above that row. `None` elsewhere.
     pub headers: &'a [Option<String>],
+    /// Parallel to `sessions`: tree depth within the repo group
+    /// (see [`SessionOrder::depths`]). Children render indented.
+    pub depths: &'a [u8],
 }
 
 pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelState<'_>) {
@@ -273,6 +359,7 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.session_match_positions,
         state.session_search_active,
         state.headers,
+        state.depths,
     );
 }
 
@@ -377,6 +464,7 @@ fn render_session_section(
     match_positions: &[Option<SessionMatch>],
     search_active: bool,
     headers: &[Option<String>],
+    depths: &[u8],
 ) {
     let mut block = focus_block(" Sessions ", level);
 
@@ -410,6 +498,11 @@ fn render_session_section(
 
     let mut item_heights: Vec<u16> = Vec::with_capacity(sessions.len());
 
+    // Session ids on screen, for the cross-group child mark (a child whose
+    // parent lives in another repo group gets `↳` instead of indentation).
+    let visible_ids: std::collections::HashSet<crate::session::SessionId> =
+        sessions.iter().map(|s| s.id).collect();
+
     let items: Vec<ListItem> = sessions
         .iter()
         .enumerate()
@@ -417,10 +510,22 @@ fn render_session_section(
             let is_active = i == active_index && show_selection;
             let session_match = match_positions.get(i).and_then(|m| m.as_ref());
             let is_dimmed = search_active && session_match.is_none();
+            let depth = depths.get(i).copied().unwrap_or(0);
+            let cross_group_child = depth == 0
+                && info
+                    .parent_session_id
+                    .is_some_and(|p| p != info.id && visible_ids.contains(&p));
 
             let mut item_lines = vec![
-                build_session_line1(info, session_match, is_active, is_dimmed),
-                build_session_line2(info, is_dimmed, elapsed_ms.get(i).copied()),
+                build_session_line1(
+                    info,
+                    session_match,
+                    is_active,
+                    is_dimmed,
+                    depth,
+                    cross_group_child,
+                ),
+                build_session_line2(info, is_dimmed, elapsed_ms.get(i).copied(), depth),
             ];
 
             // Prepend a subtle repo-group header above the first session of
@@ -522,17 +627,21 @@ fn session_status_text(info: &SessionInfo, elapsed: Option<u64>) -> String {
         .unwrap_or_else(|| format_status_with_elapsed(info.status, elapsed))
 }
 
-/// Build line 1 of a session entry: `<status-dot> [☁] [⑂] <name>`.
+/// Build line 1 of a session entry: `<status-dot> [└] [↳] [☁] [⑂] <name>`.
 ///
 /// The active row is signalled by the list's highlight background, so no extra
-/// pointer glyph is needed. Remote (`ssh:<host>`) sessions get a `☁` mark and
-/// sessions running in a git worktree get a `⑂` mark, both between the status
-/// dot and the name. The live status itself lives on line 2.
+/// pointer glyph is needed. A child session nested under its parent (`depth >
+/// 0`) gets a muted `└` tree prefix; a child whose parent renders in another
+/// repo group gets a `↳` mark instead. Remote (`ssh:<host>`) sessions get a
+/// `☁` mark and sessions running in a git worktree get a `⑂` mark, all between
+/// the status dot and the name. The live status itself lives on line 2.
 fn build_session_line1<'a>(
     info: &'a SessionInfo,
     session_match: Option<&SessionMatch>,
     is_active: bool,
     is_dimmed: bool,
+    depth: u8,
+    cross_group_child: bool,
 ) -> Line<'a> {
     let name_style = if is_dimmed {
         Style::default().fg(Theme::text_muted())
@@ -551,6 +660,16 @@ fn build_session_line1<'a>(
         format!(" {} ", info.status.icon()),
         status_style,
     )];
+
+    // Tree prefix for children nested under their parent in the same repo
+    // group; `↳` for children whose parent renders elsewhere in the list.
+    let tree_style = Style::default().fg(Theme::text_muted());
+    if depth > 0 {
+        let indent = "  ".repeat(depth as usize - 1);
+        line1_spans.push(Span::styled(format!("{indent}\u{2514} "), tree_style));
+    } else if cross_group_child {
+        line1_spans.push(Span::styled("\u{21b3} ", tree_style));
+    }
 
     // Remote (ssh:<host>) sessions get a cloud mark so it's clear at a glance
     // the agent runs on another machine. Sits right after the status dot.
@@ -585,8 +704,14 @@ fn build_session_line1<'a>(
 
 /// Build line 2 of a session entry: the dedicated status line `   <status-text>`
 /// (e.g. `   Waiting 2m`). No status glyph here — the colored dot on line 1
-/// already conveys the state, so repeating it would be redundant.
-fn build_session_line2(info: &SessionInfo, is_dimmed: bool, elapsed: Option<u64>) -> Line<'static> {
+/// already conveys the state, so repeating it would be redundant. The indent
+/// grows with `depth` so the status stays aligned under a nested child's name.
+fn build_session_line2(
+    info: &SessionInfo,
+    is_dimmed: bool,
+    elapsed: Option<u64>,
+    depth: u8,
+) -> Line<'static> {
     let text_style = if is_dimmed {
         Style::default().fg(Theme::text_muted())
     } else {
@@ -594,8 +719,9 @@ fn build_session_line2(info: &SessionInfo, is_dimmed: bool, elapsed: Option<u64>
     };
 
     let status_text = session_status_text(info, elapsed);
+    let indent = "  ".repeat(depth as usize);
     Line::from(vec![
-        Span::raw("   "),
+        Span::raw(format!("   {indent}")),
         Span::styled(status_text, text_style),
     ])
 }
@@ -860,14 +986,14 @@ mod tests {
             worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
             branch: "feat".to_string(),
         });
-        let line = build_session_line1(&s, None, false, false);
+        let line = build_session_line1(&s, None, false, false, 0, false);
         assert!(line_text(&line).contains('\u{2442}'));
     }
 
     #[test]
     fn line1_no_worktree_glyph_for_plain_session() {
         let s = info("plain");
-        let line = build_session_line1(&s, None, false, false);
+        let line = build_session_line1(&s, None, false, false, 0, false);
         assert!(!line_text(&line).contains('\u{2442}'));
     }
 
@@ -875,22 +1001,48 @@ mod tests {
     fn line1_shows_remote_glyph_when_remote_host_present() {
         let mut s = info("remote");
         s.remote_host = Some("devbox".to_string());
-        let line = build_session_line1(&s, None, false, false);
+        let line = build_session_line1(&s, None, false, false, 0, false);
         assert!(line_text(&line).contains('\u{2601}'));
     }
 
     #[test]
     fn line1_no_remote_glyph_for_local_session() {
         let s = info("local");
-        let line = build_session_line1(&s, None, false, false);
+        let line = build_session_line1(&s, None, false, false, 0, false);
         assert!(!line_text(&line).contains('\u{2601}'));
+    }
+
+    #[test]
+    fn line1_shows_tree_prefix_for_nested_child() {
+        let s = info("worker");
+        let line = build_session_line1(&s, None, false, false, 1, false);
+        assert!(line_text(&line).contains('\u{2514}')); // └
+    }
+
+    #[test]
+    fn line1_shows_arrow_for_cross_group_child() {
+        let s = info("worker");
+        let line = build_session_line1(&s, None, false, false, 0, true);
+        let text = line_text(&line);
+        assert!(text.contains('\u{21b3}')); // ↳
+        assert!(!text.contains('\u{2514}'));
+    }
+
+    #[test]
+    fn line2_indent_grows_with_depth() {
+        let mut s = info("worker");
+        s.status = SessionStatus::Busy;
+        let root = line_text(&build_session_line2(&s, false, None, 0));
+        let child = line_text(&build_session_line2(&s, false, None, 1));
+        assert_eq!(child.len(), root.len() + 2);
+        assert!(child.starts_with("     ")); // 3 base + 2 per depth level
     }
 
     #[test]
     fn line2_shows_status_text_without_glyph() {
         let mut s = info("busy");
         s.status = SessionStatus::Busy;
-        let line = build_session_line2(&s, false, None);
+        let line = build_session_line2(&s, false, None, 0);
         let text = line_text(&line);
         assert!(text.contains("Busy"));
         // The status dot lives on line 1 only; line 2 must not repeat it.
@@ -902,7 +1054,7 @@ mod tests {
         let mut s = info("attn");
         s.status = SessionStatus::Attention;
         s.notification = Some("Review this diff".to_string());
-        let line = build_session_line2(&s, false, None);
+        let line = build_session_line2(&s, false, None, 0);
         assert!(line_text(&line).contains("Review this diff"));
     }
 
@@ -924,6 +1076,28 @@ mod tests {
             .order
             .into_iter()
             .map(|i| sessions[i].name.as_str())
+            .collect()
+    }
+
+    /// A child of `parent` in the given repo (same helper shape as `info_repo`).
+    fn info_child(
+        name: &str,
+        repo: &str,
+        status: SessionStatus,
+        parent: &SessionInfo,
+    ) -> SessionInfo {
+        let mut s = info_repo(name, repo, status);
+        s.parent_session_id = Some(parent.id);
+        s
+    }
+
+    /// `(name, depth)` pairs in render order.
+    fn order_names_depths<'a>(sessions: &[&'a SessionInfo]) -> Vec<(&'a str, u8)> {
+        let SessionOrder { order, depths, .. } = compute_session_order(sessions);
+        order
+            .into_iter()
+            .zip(depths)
+            .map(|(i, d)| (sessions[i].name.as_str(), d))
             .collect()
     }
 
@@ -975,7 +1149,7 @@ mod tests {
         let b = info_repo("b", "webapp", SessionStatus::Busy);
         let c = info_repo("c", "infra", SessionStatus::Attention);
         let sessions = vec![&a, &b, &c];
-        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
         let labelled: Vec<(&str, Option<String>)> = order
             .iter()
             .zip(headers.iter())
@@ -997,7 +1171,7 @@ mod tests {
         let a = info("a");
         let b = info("b");
         let sessions = vec![&a, &b];
-        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
         assert_eq!(order, vec![0, 1]);
         assert_eq!(headers, vec![Some("(no repo)".to_string()), None]);
     }
@@ -1011,7 +1185,7 @@ mod tests {
         let c = info_repo("c", "infra", SessionStatus::Waiting);
         let sessions = vec![&a, &b, &c];
 
-        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
         let labelled: Vec<(&str, Option<String>)> = order
             .iter()
             .zip(headers.iter())
@@ -1028,6 +1202,98 @@ mod tests {
         );
     }
 
+    // --- compute_session_order (parent/child nesting) ---
+
+    #[test]
+    fn children_nest_directly_under_their_parent() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let other = info_repo("other", "webapp", SessionStatus::Idle);
+        let w1 = info_child("w1", "webapp", SessionStatus::Idle, &lead);
+        let w2 = info_child("w2", "webapp", SessionStatus::Idle, &lead);
+        // Input interleaves the children with an unrelated session; they still
+        // nest directly under their parent, in stable order.
+        let sessions = vec![&lead, &other, &w1, &w2];
+        assert_eq!(
+            order_names_depths(&sessions),
+            vec![("lead", 0), ("w1", 1), ("w2", 1), ("other", 0)]
+        );
+    }
+
+    #[test]
+    fn grandchildren_nest_one_level_deeper() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let worker = info_child("worker", "webapp", SessionStatus::Idle, &lead);
+        let sub = info_child("sub", "webapp", SessionStatus::Idle, &worker);
+        let sessions = vec![&sub, &worker, &lead];
+        assert_eq!(
+            order_names_depths(&sessions),
+            vec![("lead", 0), ("worker", 1), ("sub", 2)]
+        );
+    }
+
+    #[test]
+    fn attention_child_still_bubbles_its_group_up() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let worker = info_child("worker", "webapp", SessionStatus::Attention, &lead);
+        let busy = info_repo("busy", "infra", SessionStatus::Busy);
+        let sessions = vec![&busy, &lead, &worker];
+        // The webapp group holds the Attention session (min rank 0), so it
+        // sorts above the merely-running infra group even though the parent
+        // itself is Idle; within the group the child stays nested.
+        assert_eq!(
+            order_names_depths(&sessions),
+            vec![("lead", 0), ("worker", 1), ("busy", 0)]
+        );
+    }
+
+    #[test]
+    fn cross_group_child_stays_in_its_own_group_at_depth_zero() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let worker = info_child("worker", "infra", SessionStatus::Idle, &lead);
+        let sessions = vec![&lead, &worker];
+        // Parent lives in another repo group: no reordering, no indentation.
+        assert_eq!(
+            order_names_depths(&sessions),
+            vec![("worker", 0), ("lead", 0)] // "infra" < "webapp"
+        );
+    }
+
+    #[test]
+    fn dangling_parent_renders_child_as_root() {
+        let gone = info_repo("gone", "webapp", SessionStatus::Idle);
+        let orphan = info_child("orphan", "webapp", SessionStatus::Idle, &gone);
+        let sessions = vec![&orphan]; // parent not in the list
+        assert_eq!(order_names_depths(&sessions), vec![("orphan", 0)]);
+    }
+
+    #[test]
+    fn parent_cycle_emits_all_members_flat() {
+        // Cycles can't be produced by current writers; corrupted data must
+        // still render every session.
+        let mut a = info_repo("a", "webapp", SessionStatus::Idle);
+        let mut b = info_repo("b", "webapp", SessionStatus::Idle);
+        a.parent_session_id = Some(b.id);
+        b.parent_session_id = Some(a.id);
+        let sessions = vec![&a, &b];
+        assert_eq!(order_names_depths(&sessions), vec![("a", 0), ("b", 0)]);
+    }
+
+    #[test]
+    fn depths_are_parallel_to_order_and_headers() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let worker = info_child("worker", "webapp", SessionStatus::Idle, &lead);
+        let other = info_repo("other", "infra", SessionStatus::Idle);
+        let sessions = vec![&lead, &worker, &other];
+        let SessionOrder {
+            order,
+            headers,
+            depths,
+        } = compute_session_order(&sessions);
+        assert_eq!(order.len(), 3);
+        assert_eq!(headers.len(), 3);
+        assert_eq!(depths.len(), 3);
+    }
+
     #[test]
     fn duplicate_repos_collapse_to_one_group() {
         // A repo set with the same repo twice (e.g. two worktrees of one repo)
@@ -1036,7 +1302,7 @@ mod tests {
         let single = info_repo("single", "webapp", SessionStatus::Waiting);
         let sessions = vec![&multi, &single];
 
-        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
         // Same canonical key → one group; header is the de-duplicated display.
         assert_eq!(order, vec![0, 1]);
         assert_eq!(headers, vec![Some("webapp".to_string()), None]);
@@ -1050,7 +1316,7 @@ mod tests {
         let d = info_repos("d", &["infra", "webapp"], SessionStatus::Waiting);
         let sessions = vec![&b, &d];
 
-        let SessionOrder { order, headers } = compute_session_order(&sessions);
+        let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
         assert_eq!(
             order
                 .iter()

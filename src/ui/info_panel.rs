@@ -36,6 +36,7 @@ pub fn render_info_panel(
     metrics: Option<&SystemMetrics>,
     automations: &[AutomationEntry],
     usage: Option<&crate::session::AgentUsage>,
+    parent_name: Option<&str>,
 ) {
     let block = Block::default()
         .title(" Info ")
@@ -69,6 +70,16 @@ pub fn render_info_panel(
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
+    // Parent session (lead/worker linkage); omitted for top-level sessions.
+    if let Some(parent) = parent_name {
+        lines.push(Line::from(vec![
+            Span::styled("Parent: ", Theme::label()),
+            Span::styled(
+                parent.to_string(),
+                Style::default().fg(Theme::text_secondary()),
+            ),
+        ]));
+    }
     // Remote host (ssh:<host>); omitted entirely for local sessions.
     if let Some(host) = info.remote_host.as_deref() {
         lines.push(Line::from(vec![
