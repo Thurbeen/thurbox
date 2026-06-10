@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::{SessionConfig, WorktreeInfo};
+use crate::session::{SessionConfig, SessionId, WorktreeInfo};
 
 /// State accumulated across the multi-step new-session flow. Also reused by
 /// the fork (`Ctrl+F`) and restart (`Ctrl+R`) flows, which pre-seed parts of
@@ -31,6 +31,10 @@ pub(crate) struct NewSessionWizardState {
     /// attach to the spawned session's `SessionInfo`. Consumed by
     /// `do_spawn_session`.
     pub(crate) additional_dirs: Vec<PathBuf>,
+    /// Parent session for the spawned session (lead/worker linkage). Set by
+    /// fork (`Ctrl+F`, the forked-from session) and stale-session respawn;
+    /// consumed by `do_spawn_session`/`do_spawn_session_async`.
+    pub(crate) parent_session_id: Option<SessionId>,
     pub(crate) fork: bool,
     pub(crate) restart: bool,
     pub(crate) spawn_name: Option<String>,

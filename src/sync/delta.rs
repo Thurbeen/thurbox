@@ -95,6 +95,7 @@ fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
         || old.cwd != new.cwd
         || old.additional_dirs != new.additional_dirs
         || old.worktrees != new.worktrees
+        || old.parent_session_id != new.parent_session_id
 }
 
 #[cfg(test)]
@@ -114,6 +115,7 @@ mod tests {
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
             shell_backend_id: None,
+            parent_session_id: None,
             tombstone: false,
             tombstone_at: None,
         }

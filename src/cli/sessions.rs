@@ -12,7 +12,11 @@ use crate::sync::SharedSession;
 #[derive(Subcommand, Debug)]
 pub enum Action {
     /// List all active sessions.
-    List,
+    List {
+        /// Only list children of this parent session UUID.
+        #[arg(long)]
+        parent: Option<String>,
+    },
     /// Get a session by UUID.
     Get {
         /// Session UUID.
@@ -40,6 +44,10 @@ pub enum Action {
         /// worktree and tmux window are created on that host over SSH.
         #[arg(long)]
         host: Option<String>,
+        /// Parent session UUID (lead/worker relationship for orchestration).
+        /// Must reference an existing active session.
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// Soft-delete a session.
     ///
@@ -85,12 +93,17 @@ pub enum Action {
 
 pub fn run(action: Action, db: &Database) -> Result<Value, String> {
     match action {
-        Action::List => {
+        Action::List { parent } => {
+            let parent_id = parent.as_deref().map(parse_session_id).transpose()?;
             let sessions = db
                 .list_active_sessions()
                 .map_err(|e| format!("list_active_sessions: {e}"))?;
             Ok(Value::Array(
-                sessions.iter().map(shared_session_to_json).collect(),
+                sessions
+                    .iter()
+                    .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
+                    .map(shared_session_to_json)
+                    .collect(),
             ))
         }
         Action::Get { uuid } => {
@@ -104,7 +117,9 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             worktree_branch,
             base_branch,
             host,
+            parent,
         } => {
+            let parent_session_id = parent.as_deref().map(parse_session_id).transpose()?;
             let req = crate::session_ops::SpawnRequest {
                 name,
                 repo_path,
@@ -113,6 +128,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 agent,
                 agent_session_id: None,
                 host,
+                parent_session_id,
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             Ok(json!({
@@ -121,6 +137,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 "agent": res.agent,
                 "agent_session_id": res.agent_session_id,
                 "cwd": res.cwd.display().to_string(),
+                "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
             }))
         }
         Action::Delete { uuid, force } => {
@@ -189,10 +206,13 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
     }
 }
 
+fn parse_session_id(uuid: &str) -> Result<SessionId, String> {
+    uuid.parse()
+        .map_err(|_| format!("Invalid session UUID: {uuid}"))
+}
+
 fn resolve(db: &Database, uuid: &str) -> Result<SharedSession, String> {
-    let id: SessionId = uuid
-        .parse()
-        .map_err(|_| format!("Invalid session UUID: {uuid}"))?;
+    let id = parse_session_id(uuid)?;
     db.get_session_by_id(id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Session not found: {uuid}"))
@@ -206,6 +226,7 @@ fn shared_session_to_json(s: &SharedSession) -> Value {
         "backend_type": s.backend_type,
         "agent_session_id": s.agent_session_id,
         "cwd": s.cwd.as_ref().map(|p| p.display().to_string()),
+        "parent_session_id": s.parent_session_id.map(|id| id.to_string()),
         "worktrees": s.worktrees.iter().map(|w| json!({
             "repo_path": w.repo_path.display().to_string(),
             "worktree_path": w.worktree_path.display().to_string(),
@@ -225,7 +246,7 @@ mod tests {
     #[test]
     fn list_empty_returns_array() {
         let db = db();
-        let v = run(Action::List, &db).unwrap();
+        let v = run(Action::List { parent: None }, &db).unwrap();
         assert!(v.is_array(), "got {v}");
         assert_eq!(v.as_array().unwrap().len(), 0);
     }
@@ -245,12 +266,13 @@ mod tests {
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
             shell_backend_id: None,
+            parent_session_id: None,
             tombstone: false,
             tombstone_at: None,
         };
         db.upsert_session(&shared).unwrap();
 
-        let v = run(Action::List, &db).unwrap();
+        let v = run(Action::List { parent: None }, &db).unwrap();
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         let s = &arr[0];
@@ -260,7 +282,67 @@ mod tests {
         assert_eq!(s["backend_type"].as_str(), Some("local-tmux"));
         assert_eq!(s["agent_session_id"].as_str(), Some("agent-1"));
         assert_eq!(s["cwd"].as_str(), Some("/tmp/repo"));
+        assert!(s["parent_session_id"].is_null());
         assert!(s["worktrees"].is_array());
+    }
+
+    #[test]
+    fn list_emits_parent_session_id_and_filters_by_parent() {
+        let db = db();
+        let parent_id = SessionId::default();
+        let parent = SharedSession {
+            id: parent_id,
+            name: "lead".into(),
+            agent: "dev".into(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&parent).unwrap();
+        let mut child = parent.clone();
+        child.id = SessionId::default();
+        child.name = "worker".into();
+        child.parent_session_id = Some(parent_id);
+        db.upsert_session(&child).unwrap();
+
+        // Unfiltered list carries the field on both rows.
+        let v = run(Action::List { parent: None }, &db).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let worker = arr.iter().find(|s| s["name"] == "worker").unwrap();
+        assert_eq!(
+            worker["parent_session_id"].as_str(),
+            Some(parent_id.to_string().as_str())
+        );
+
+        // --parent filters to direct children only.
+        let v = run(
+            Action::List {
+                parent: Some(parent_id.to_string()),
+            },
+            &db,
+        )
+        .unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"].as_str(), Some("worker"));
+
+        // Malformed --parent uuid errors.
+        let err = run(
+            Action::List {
+                parent: Some("not-a-uuid".into()),
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("Invalid session UUID"), "got {err}");
     }
 
     #[test]
@@ -291,6 +373,7 @@ mod tests {
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
             shell_backend_id: None,
+            parent_session_id: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -324,6 +407,7 @@ mod tests {
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
             shell_backend_id: None,
+            parent_session_id: None,
             tombstone: false,
             tombstone_at: None,
         };

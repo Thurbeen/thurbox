@@ -1,7 +1,11 @@
 use rusqlite::Connection;
 
 /// Current schema version. Incremented when schema changes.
-pub const SCHEMA_VERSION: u32 = 28;
+///
+/// v29 is reserved by the in-flight `improve-agent-thurbox-cli` branch
+/// (`session_labels` + `session_spawn_config`); this branch takes v30.
+/// Gaps in the step table are fine (there is no v18 step either).
+pub const SCHEMA_VERSION: u32 = 30;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -35,6 +39,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             cwd               TEXT,
             additional_dirs   TEXT NOT NULL DEFAULT '',
             shell_backend_id  TEXT,
+            parent_session_id TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -190,6 +195,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (26, migrate_v26_task_description),
         (27, migrate_v27_repo_parent_bookmarks),
         (28, migrate_v28_run_related_session),
+        (30, migrate_v30_parent_session_id),
     ];
 
     for &(target, step) in steps {
@@ -843,6 +849,17 @@ fn migrate_v28_run_related_session(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v29 → v30: add a nullable `parent_session_id` column to `sessions`
+/// (lead/worker linkage for orchestration; v29 belongs to another branch).
+///
+/// Fresh v30 databases already have the column from `initialize` and skip this
+/// step; existing databases get it via the ALTER. `let _` swallows the
+/// "duplicate column" error so a re-run is a no-op.
+fn migrate_v30_parent_session_id(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", []);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1067,6 +1084,59 @@ mod tests {
             has_column,
             "related_session_id column should be added at v28"
         );
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v27_adds_parent_session_id_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v27 state: a sessions table without the parent_session_id column.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '27');
+             CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                agent TEXT NOT NULL DEFAULT 'claude',
+                backend_id TEXT NOT NULL DEFAULT '',
+                backend_type TEXT NOT NULL DEFAULT 'tmux',
+                agent_session_id TEXT, cwd TEXT,
+                additional_dirs TEXT NOT NULL DEFAULT '',
+                shell_backend_id TEXT, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL, deleted_at INTEGER);
+             INSERT INTO sessions (id, name, created_at, updated_at)
+                VALUES ('s1', 'demo', 0, 0);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let has_parent: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='parent_session_id'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(
+            has_parent,
+            "parent_session_id column should be added at v30"
+        );
+
+        // Existing rows survive with a NULL parent.
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_session_id FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(parent.is_none());
 
         let version: String = conn
             .query_row(

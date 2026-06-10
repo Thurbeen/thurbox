@@ -21,6 +21,7 @@ fn make_session(id: SessionId, name: &str) -> SharedSession {
         additional_dirs: Vec::new(),
         worktrees: Vec::new(),
         shell_backend_id: None,
+        parent_session_id: None,
         tombstone: false,
         tombstone_at: None,
     }
@@ -366,6 +367,7 @@ fn db_session_metadata_preserved_across_instances() {
         additional_dirs: Vec::new(),
         worktrees: Vec::new(),
         shell_backend_id: None,
+        parent_session_id: None,
         tombstone: false,
         tombstone_at: None,
     };

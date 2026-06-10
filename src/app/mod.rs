@@ -92,6 +92,9 @@ struct PendingSessionSpawn {
     primary_cwd: Option<PathBuf>,
     worktrees: Vec<WorktreeInfo>,
     additional_dirs: Vec<PathBuf>,
+    /// Parent session (lead/worker linkage), captured at kickoff like the
+    /// other wizard state so an overlapping flow can't steal it.
+    parent_session_id: Option<SessionId>,
     /// A task-initiated spawn's `(task_id, title)`, captured at kickoff so the
     /// prompt is delivered + the task advanced when the session comes up.
     task_prompt: Option<(i64, String)>,
@@ -1105,6 +1108,7 @@ impl App {
         self.new_session.spawn_config = Some(config);
         self.new_session.spawn_worktrees = worktrees;
         self.new_session.fork = true;
+        self.new_session.parent_session_id = Some(session.info.id);
 
         let mut sn = modals::SessionNameModal::default();
         sn.name.set(&format!("{source_name}-fork"));
@@ -1282,6 +1286,7 @@ impl App {
             Ok(mut session) => {
                 session.info.id = deleted.id;
                 session.info.worktrees = worktree_infos;
+                session.info.parent_session_id = deleted.parent_session_id;
                 resolve_repo_display_names(&mut session.info);
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
@@ -1307,6 +1312,7 @@ impl App {
         session.info.additional_dirs = shared.additional_dirs.clone();
         session.info.agent_session_id = shared.agent_session_id.clone();
         session.info.worktrees = shared.worktrees.iter().cloned().map(Into::into).collect();
+        session.info.parent_session_id = shared.parent_session_id;
         resolve_repo_display_names(&mut session.info);
     }
 
@@ -1980,11 +1986,13 @@ impl App {
         primary_cwd: Option<PathBuf>,
         worktrees: Vec<WorktreeInfo>,
         additional_dirs: Vec<PathBuf>,
+        parent_session_id: Option<SessionId>,
         task_prompt: Option<(i64, String)>,
     ) {
         session.info.cwd = primary_cwd;
         session.info.worktrees = worktrees;
         session.info.additional_dirs = additional_dirs;
+        session.info.parent_session_id = parent_session_id;
 
         resolve_repo_display_names(&mut session.info);
         self.sessions.push(session);
@@ -2028,6 +2036,7 @@ impl App {
         worktrees: Vec<WorktreeInfo>,
     ) {
         let additional_dirs = std::mem::take(&mut self.new_session.additional_dirs);
+        let parent_session_id = self.new_session.parent_session_id.take();
         let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
             return;
         };
@@ -2047,6 +2056,7 @@ impl App {
                     inputs.primary_cwd,
                     worktrees,
                     additional_dirs,
+                    parent_session_id,
                     task_prompt,
                 );
             }
@@ -2074,6 +2084,7 @@ impl App {
         }
 
         let additional_dirs = std::mem::take(&mut self.new_session.additional_dirs);
+        let parent_session_id = self.new_session.parent_session_id.take();
         let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
             return;
         };
@@ -2093,6 +2104,7 @@ impl App {
             primary_cwd,
             worktrees,
             additional_dirs,
+            parent_session_id,
             task_prompt,
         });
         self.set_status(StatusLevel::Info, format!("Spawning {name}…"));
@@ -2125,6 +2137,7 @@ impl App {
                 pending.primary_cwd,
                 pending.worktrees,
                 pending.additional_dirs,
+                pending.parent_session_id,
                 pending.task_prompt,
             ),
             Err(e) => {
@@ -2957,6 +2970,7 @@ impl App {
                 .map(Into::into)
                 .collect(),
             shell_backend_id: session.info.shell_backend_id.clone(),
+            parent_session_id: session.info.parent_session_id,
             tombstone: false,
             tombstone_at: None,
         }
@@ -3131,6 +3145,7 @@ impl App {
         session.info.additional_dirs = shared.additional_dirs.clone();
         session.info.agent = agent;
         session.info.worktrees = worktrees;
+        session.info.parent_session_id = shared.parent_session_id;
         resolve_repo_display_names(&mut session.info);
 
         // Re-adopt shell pane if one was persisted
@@ -3193,6 +3208,7 @@ impl App {
         config.resume_session_id =
             crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
         self.new_session.additional_dirs = shared.additional_dirs;
+        self.new_session.parent_session_id = shared.parent_session_id;
         self.do_spawn_session(name, &config, worktrees);
     }
 
@@ -7680,6 +7696,7 @@ mod tests {
             primary_cwd: None,
             worktrees: vec![],
             additional_dirs: vec![],
+            parent_session_id: None,
             task_prompt: None,
         });
 
@@ -7701,6 +7718,7 @@ mod tests {
             primary_cwd: None,
             worktrees: vec![],
             additional_dirs: vec![],
+            parent_session_id: None,
             task_prompt: None,
         });
 
@@ -7957,6 +7975,7 @@ mod tests {
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
             shell_backend_id: None,
+            parent_session_id: None,
             tombstone: false,
             tombstone_at: None,
         }

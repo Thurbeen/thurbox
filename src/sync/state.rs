@@ -80,6 +80,11 @@ pub struct SharedSession {
     /// Backend ID of the companion shell pane (if spawned).
     pub shell_backend_id: Option<String>,
 
+    /// Parent session (lead/worker relationship for orchestration).
+    /// `None` for top-level sessions. Purely informational: deleting the
+    /// parent does not cascade to children.
+    pub parent_session_id: Option<SessionId>,
+
     /// Tombstone flag: true if this session was soft-deleted.
     /// Soft-deleted sessions are excluded from active listings.
     pub tombstone: bool,

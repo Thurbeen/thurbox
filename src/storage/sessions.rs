@@ -16,6 +16,7 @@ pub struct DeletedSessionInfo {
     pub agent: String,
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub parent_session_id: Option<SessionId>,
     pub deleted_at: u64,
     pub worktrees: Vec<SharedWorktree>,
 }
@@ -47,8 +48,8 @@ impl Database {
                 "UPDATE sessions SET name = ?1, agent = ?2, \
                  backend_id = ?3, backend_type = ?4, agent_session_id = ?5, \
                  cwd = ?6, additional_dirs = ?7, shell_backend_id = ?8, \
-                 updated_at = ?9, deleted_at = NULL \
-                 WHERE id = ?10",
+                 parent_session_id = ?9, updated_at = ?10, deleted_at = NULL \
+                 WHERE id = ?11",
                 params![
                     session.name,
                     session.agent,
@@ -58,6 +59,7 @@ impl Database {
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
                     session.shell_backend_id,
+                    session.parent_session_id.map(|id| id.to_string()),
                     now,
                     id_str,
                 ],
@@ -75,8 +77,8 @@ impl Database {
             self.conn.execute(
                 "INSERT INTO sessions (id, name, agent, backend_id, backend_type, \
                  agent_session_id, cwd, additional_dirs, shell_backend_id, \
-                 created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 parent_session_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id_str,
                     session.name,
@@ -87,6 +89,7 @@ impl Database {
                     session.cwd.as_ref().map(|p| p.display().to_string()),
                     additional_dirs_str,
                     session.shell_backend_id,
+                    session.parent_session_id.map(|id| id.to_string()),
                     now,
                     now,
                 ],
@@ -170,6 +173,7 @@ impl Database {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
+             s.parent_session_id, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
@@ -278,7 +282,7 @@ impl Database {
     ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
-             s.cwd, s.deleted_at, \
+             s.cwd, s.parent_session_id, s.deleted_at, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
@@ -290,10 +294,11 @@ impl Database {
         let rows = stmt.query_map(params, |row| {
             let id_str: String = row.get(0)?;
             let cwd: Option<String> = row.get(4)?;
-            let deleted_at: i64 = row.get(5)?;
-            let wt_repo: Option<String> = row.get(6)?;
-            let wt_path: Option<String> = row.get(7)?;
-            let wt_branch: Option<String> = row.get(8)?;
+            let parent_str: Option<String> = row.get(5)?;
+            let deleted_at: i64 = row.get(6)?;
+            let wt_repo: Option<String> = row.get(7)?;
+            let wt_path: Option<String> = row.get(8)?;
+            let wt_branch: Option<String> = row.get(9)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
 
@@ -304,6 +309,7 @@ impl Database {
                     agent: row.get(2)?,
                     agent_session_id: row.get(3)?,
                     cwd: cwd.map(PathBuf::from),
+                    parent_session_id: parent_str.and_then(|s| s.parse().ok()),
                     deleted_at: deleted_at as u64,
                     worktrees: Vec::new(),
                 },
@@ -359,9 +365,10 @@ fn row_to_shared_session(
     let cwd: Option<String> = row.get(6)?;
     let dirs_str: String = row.get(7)?;
     let shell_backend_id: Option<String> = row.get(8)?;
-    let wt_repo: Option<String> = row.get(9)?;
-    let wt_path: Option<String> = row.get(10)?;
-    let wt_branch: Option<String> = row.get(11)?;
+    let parent_str: Option<String> = row.get(9)?;
+    let wt_repo: Option<String> = row.get(10)?;
+    let wt_path: Option<String> = row.get(11)?;
+    let wt_branch: Option<String> = row.get(12)?;
 
     let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
         Vec::new()
@@ -383,6 +390,7 @@ fn row_to_shared_session(
             additional_dirs,
             worktrees: Vec::new(),
             shell_backend_id,
+            parent_session_id: parent_str.and_then(|s| s.parse().ok()),
             tombstone: false,
             tombstone_at: None,
         },
@@ -406,6 +414,7 @@ mod tests {
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
             shell_backend_id: None,
+            parent_session_id: None,
             tombstone: false,
             tombstone_at: None,
         }
@@ -622,6 +631,30 @@ mod tests {
             sessions[0].agent_session_id,
             Some("claude-abc-123".to_string())
         );
+    }
+
+    #[test]
+    fn session_parent_session_id_roundtrips() {
+        let db = Database::open_in_memory().unwrap();
+        let parent = make_session("Lead");
+        let mut child = make_session("Worker");
+        child.parent_session_id = Some(parent.id);
+
+        db.upsert_session(&parent).unwrap();
+        db.upsert_session(&child).unwrap();
+
+        let found = db.get_session_by_id(child.id).unwrap().unwrap();
+        assert_eq!(found.parent_session_id, Some(parent.id));
+        let lead = db.get_session_by_id(parent.id).unwrap().unwrap();
+        assert_eq!(lead.parent_session_id, None);
+
+        // An update keeps the parent linkage.
+        let mut renamed = child.clone();
+        renamed.name = "Worker 2".into();
+        db.upsert_session(&renamed).unwrap();
+        let found = db.get_session_by_id(child.id).unwrap().unwrap();
+        assert_eq!(found.name, "Worker 2");
+        assert_eq!(found.parent_session_id, Some(parent.id));
     }
 
     #[test]

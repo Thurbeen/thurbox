@@ -90,7 +90,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Session {
-                action: sessions::Action::List
+                action: sessions::Action::List { parent: None }
             }
         ));
     }
@@ -132,6 +132,54 @@ mod tests {
         assert_eq!(repo_path.to_string_lossy(), "/tmp/repo");
         assert_eq!(worktree_branch.as_deref(), Some("feat/x"));
         assert_eq!(agent.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn parse_session_create_accepts_parent() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "session",
+            "create",
+            "--name",
+            "worker",
+            "--repo-path",
+            "/tmp/repo",
+            "--parent",
+            "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+        ])
+        .unwrap();
+        let Command::Session {
+            action: sessions::Action::Create { parent, .. },
+        } = cli.command
+        else {
+            panic!("expected Session::Create");
+        };
+        assert_eq!(
+            parent.as_deref(),
+            Some("0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a")
+        );
+    }
+
+    #[test]
+    fn parse_session_list_accepts_parent_filter() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "session",
+            "list",
+            "--parent",
+            "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+        ])
+        .unwrap();
+        let Command::Session {
+            action: sessions::Action::List { parent },
+        } = cli.command
+        else {
+            panic!("expected Session::List");
+        };
+        assert_eq!(
+            parent.as_deref(),
+            Some("0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a")
+        );
     }
 
     #[test]

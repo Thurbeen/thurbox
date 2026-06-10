@@ -943,6 +943,7 @@ impl App {
                     self.new_session.spawn_config = None;
                     self.new_session.spawn_worktrees.clear();
                     self.new_session.fork = false;
+                    self.new_session.parent_session_id = None;
                 }
             }
             KeyCode::Enter => {
@@ -1329,9 +1330,10 @@ impl App {
         ) {
             self.new_automation_in_pane();
         } else {
-            // A manual new-session must not inherit a task prompt left over from
-            // a cancelled task-spawn.
+            // A manual new-session must not inherit a task prompt or fork
+            // parenthood left over from a cancelled task-spawn / fork.
             self.task_ui.pending_task_prompt = None;
+            self.new_session.parent_session_id = None;
             self.start_new_session();
         }
     }

@@ -343,6 +343,7 @@ fn fire_headless(
                 agent: agent.clone(),
                 agent_session_id: None,
                 host: None,
+                parent_session_id: None,
             };
             match crate::session_ops::spawn_session_headless(db, req) {
                 Ok(result) => {

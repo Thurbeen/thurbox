@@ -191,6 +191,9 @@ pub struct SessionInfo {
     /// Order: worktree repos first, then non-worktree additional dirs.
     /// Populated by the app layer at spawn/restore time.
     pub repo_display_names: Vec<String>,
+    /// Parent session (lead/worker relationship for orchestration).
+    /// `None` for top-level sessions. Purely informational.
+    pub parent_session_id: Option<SessionId>,
 }
 
 impl SessionInfo {
@@ -212,6 +215,7 @@ impl SessionInfo {
             notification: None,
             git_stats: None,
             repo_display_names: Vec::new(),
+            parent_session_id: None,
         }
     }
 }

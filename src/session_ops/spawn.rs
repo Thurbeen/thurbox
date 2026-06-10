@@ -34,6 +34,9 @@ pub struct SpawnRequest {
     /// Optional remote host name (from `hosts.toml`). When set, the session is
     /// created on that host over SSH (worktree + tmux window live remotely).
     pub host: Option<String>,
+    /// Optional parent session (lead/worker relationship for orchestration).
+    /// Must reference an existing active session.
+    pub parent_session_id: Option<SessionId>,
 }
 
 /// Result returned on successful headless spawn.
@@ -45,12 +48,14 @@ pub struct SpawnResult {
     pub agent_session_id: String,
     pub cwd: PathBuf,
     pub worktrees: Vec<SharedWorktree>,
+    pub parent_session_id: Option<SessionId>,
 }
 
 /// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
 /// shared SQLite database.
 pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
     validate_session_name(&req.name)?;
+    validate_parent_session(_db, req.parent_session_id)?;
 
     let agent_name = resolve_agent_name(req.agent.as_deref());
 
@@ -106,6 +111,7 @@ pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<Spawn
         additional_dirs: Vec::new(),
         worktrees: worktrees.clone(),
         shell_backend_id: None,
+        parent_session_id: req.parent_session_id,
         tombstone: false,
         tombstone_at: None,
     };
@@ -139,12 +145,26 @@ pub fn spawn_session_headless(_db: &Database, req: SpawnRequest) -> Result<Spawn
         agent_session_id,
         cwd,
         worktrees,
+        parent_session_id: req.parent_session_id,
     })
 }
 
 /// Validate a session name. Delegates to the shared `paths::validate_safe_name`.
 fn validate_session_name(name: &str) -> Result<(), String> {
     crate::paths::validate_safe_name(name)
+}
+
+/// Validate that the requested parent session, if any, exists and is active.
+/// Runs before any side effects (worktree creation, tmux spawn).
+fn validate_parent_session(db: &Database, parent: Option<SessionId>) -> Result<(), String> {
+    let Some(parent) = parent else {
+        return Ok(());
+    };
+    match db.get_session_by_id(parent) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(format!("Parent session not found: {parent}")),
+        Err(e) => Err(format!("get_session_by_id: {e}")),
+    }
 }
 
 /// Resolve the agent name: explicit request wins, otherwise the registry's
@@ -223,6 +243,7 @@ mod tests {
             agent: None,
             agent_session_id: None,
             host: None,
+            parent_session_id: None,
         }
     }
 
@@ -242,6 +263,39 @@ mod tests {
                 "should reject {bad}"
             );
         }
+    }
+
+    #[test]
+    fn unknown_parent_session_is_rejected_before_spawn() {
+        let db = empty_db();
+        let mut r = req("worker");
+        r.parent_session_id = Some(SessionId::default());
+        let err = spawn_session_headless(&db, r).unwrap_err();
+        assert!(err.contains("Parent session not found"), "got {err}");
+    }
+
+    #[test]
+    fn validate_parent_session_accepts_existing_and_none() {
+        let db = empty_db();
+        assert!(validate_parent_session(&db, None).is_ok());
+
+        let parent = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "lead".into(),
+            agent: "dev".into(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&parent).unwrap();
+        assert!(validate_parent_session(&db, Some(parent.id)).is_ok());
     }
 
     #[test]
