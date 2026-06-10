@@ -1,10 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:recommended",
+    "security:openssf-scorecard",
+    "mergeConfidence:all-badges"
+  ],
   "labels": ["dependencies"],
   "automerge": true,
   "semanticCommitType": "fix",
   "semanticCommitScope": "deps",
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "osvVulnerabilityAlerts": true,
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
@@ -13,6 +20,10 @@
     {
       "matchPackageNames": ["*"],
       "semanticCommitType": "fix"
+    },
+    {
+      "matchManagers": ["npm"],
+      "minimumReleaseAge": "14 days"
     }
   ]
 }
