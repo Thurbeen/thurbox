@@ -386,7 +386,7 @@ keeps its own position with a `↳` mark instead), and the info panel
 `ui::project_list::compute_session_order` (`SessionOrder::depths`),
 so `Ctrl+J`/`Ctrl+K` navigation follows the tree automatically.
 Storage: nullable `sessions.parent_session_id` column (schema v30;
-v28/v29 are reserved by an in-flight branch).
+v29 is reserved by an in-flight branch).
 
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on
