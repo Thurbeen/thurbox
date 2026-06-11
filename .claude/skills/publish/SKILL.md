@@ -1,229 +1,194 @@
 ---
 name: publish
-description: Refactor recent changes, ship as a PR with auto-merge, then monitor CI and auto-fix failures until merged.
+description: Refactor the changes made in this session, ship them as a PR with auto-merge, then monitor CI and auto-fix failures until merged. Scopes itself to the repos this session actually worked in.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep, Agent, WebFetch
 ---
 
 ## Publish
 
-Sync, refactor recent changes, sync again, then ship the
-current branch as a PR with auto-merge enabled. After
-shipping, monitor CI checks and proactively fix any failures
-until the PR merges. Be thorough on refactoring but efficient
+Refactor the changes made in this session, ship them as a PR
+with auto-merge, then watch CI until the PR merges (or a
+hard-stop is reached). Be thorough on refactoring, efficient
 on shipping.
 
-**Input:** `$ARGUMENTS` optionally describes what was done
-(used for the commit message and PR description).
+**Input:** "$ARGUMENTS"
+
+The input (everything between the quotes above — it may be
+empty) optionally describes what was done, used for the commit
+message and PR description, and/or names the repo(s) to
+publish.
+
+Everything here is plain `git` / `gh` run through Bash. There
+are no helper scripts: when a command's output is ambiguous or
+a step fails, read the actual error and adapt — do not retry a
+canned pipeline.
 
 ---
 
-### Phase 0 — Pre-flight sync
+### Phase 0 — Scope (which repos)
 
-Sync the branch with the remote default branch before
-refactoring to avoid working on stale code.
+Publishing too much is the worst failure mode of this skill.
+Scope comes from **session context only** — never from scanning
+the filesystem.
 
-Run in parallel:
+Build the candidate list in priority order:
 
-- `git fetch origin`
-- `git remote show origin | grep 'HEAD branch' | awk '{print $NF}'`
-- `git branch --show-current`
+1. Repos explicitly named in the input.
+2. Repos containing files this session created or edited
+   (look back at the conversation, not at the disk).
+3. The repo containing the current working directory.
+4. Only if cwd is not itself a repo but a multi-repo workspace
+   (a directory of symlinks that each resolve to a git repo —
+   e.g. a thurbox symlink workspace): the member repos.
 
-Determine DEFAULT_BRANCH and CURRENT_BRANCH. If on default
-branch, STOP: "Create a feature branch first."
+Hard rules:
 
-Then rebase:
+- **Never** enumerate repos beyond the list above. No scanning
+  `~`, no "all accessible directories", no sibling worktrees,
+  no `find`/Glob sweeps for `.git`.
+- A candidate **qualifies** only if it is on a feature branch
+  (not the default branch) and has uncommitted changes or
+  commits ahead of `origin/<default>`.
+- A qualifying repo whose changes this session did **not**
+  make (pre-existing dirt, someone else's branch) is **not**
+  published. List it under "skipped" in the final output so
+  the user can decide.
+  Exception: the cwd repo when the user invoked `/publish`
+  with no other context — they are standing in it, publish it.
+- Zero qualifying repos → STOP: "Nothing to publish."
 
-```bash
-git rebase origin/<DEFAULT_BRANCH>
-```
-
-If conflicts, STOP and show files.
+State the final scope in one line ("Publishing: <repos>;
+skipped: <repos + reason>") before doing any work, then run
+Phases 1–4 for each scoped repo sequentially.
 
 ---
 
-### Phase 1 — Refactor (2 passes)
+### Phase 1 — Sync
 
-#### Pre-work
+Per repo, before touching code:
 
-Identify recent changes: use `git diff` and `git log` to
-find newly implemented or modified code. Establish the list
-of files to review.
+1. `git fetch origin`.
+2. Determine the default branch (e.g.
+   `git symbolic-ref --short refs/remotes/origin/HEAD`; if
+   unset, ask `gh repo view` — pick whichever works, don't
+   parse `git remote show` output).
+3. If on the default branch, STOP for this repo: "Create a
+   feature branch first."
+4. Rebase onto `origin/<default>`. On conflict: abort the
+   rebase, record the conflicting files, skip this repo's
+   remaining phases, continue with the next repo.
+
+---
+
+### Phase 2 — Refactor (2 passes)
+
+Review only the changes being shipped: the diff against
+`origin/<default>` plus uncommitted changes. Establish the
+file list from that diff.
 
 #### Pass 1 — Structure & Clean Code
 
-Re-read all identified files from disk, then:
+Re-read the identified files from disk, then:
 
-1. **Clean Code principles**: intention-revealing names,
-   small single-responsibility functions, DRY, remove dead
-   code/unused imports, replace magic values with constants.
-2. **KISS**: straightforward logic, reduce nesting with early
-   returns, avoid premature abstractions.
-3. **Readability**: consistent formatting with the project,
-   top-down structure, self-documenting code (comments only
-   for non-obvious "why").
+1. **Clean Code**: intention-revealing names, small
+   single-responsibility functions, DRY, remove dead code and
+   unused imports, replace magic values with constants.
+2. **KISS**: straightforward logic, early returns over
+   nesting, no premature abstractions.
+3. **Readability**: match project formatting, comments only
+   for non-obvious "why".
 
-Apply fixes, then summarize Pass 1 changes.
+Apply fixes, then summarize.
 
 #### Pass 2 — Coherence & Consistency
 
-Re-read ALL the same files again from disk (fresh read), then:
+Re-read the same files fresh, then:
 
-1. **Cross-file coherence**: naming conventions, patterns,
-   and abstractions consistent across files and project.
-2. **API & contract consistency**: function signatures, return
-   types, error handling coherent between callers/callees.
-3. **Logic review**: contradictory logic, redundant conditions,
+1. **Cross-file coherence**: naming, patterns, abstractions
+   consistent with each other and the project.
+2. **API consistency**: signatures, return types, error
+   handling coherent between callers and callees.
+3. **Logic review**: contradictions, redundant conditions,
    unreachable branches, mismatched assumptions.
-4. **Import & dependency hygiene**: no circular deps, unused
-   imports, or misplaced responsibilities.
 
-Apply fixes, then summarize Pass 2 changes.
-
----
-
-### Phase 2 — Ship
-
-Execute the shipping process efficiently. Batch commands and
-do NOT deliberate.
-
-#### Step 1 — Gather state
-
-Run `git status --porcelain` and
-`git diff --stat && git diff --cached --stat` in parallel
-to check for uncommitted changes.
-
-#### Step 2 — Commit (skip if clean)
-
-If there are changes:
-
-1. Stage all relevant files (skip `.env`, credentials, large
-   binaries). In parallel, check merge-base:
-   `git merge-base --is-ancestor HEAD origin/<DEFAULT_BRANCH>`
-2. Based on result:
-   - Exit 0 (on default) → new conventional commit.
-   - Exit 1 (local-only) → amend with `git commit --amend`.
-3. Use conventional commit format. If `$ARGUMENTS` was
-   provided, use it to inform the commit message. Infer type
-   and scope from the diff.
-
-#### Step 3 — Post-refactor sync & push
-
-Sync again to pick up any changes that landed during
-refactoring:
-
-```bash
-git fetch origin && git rebase origin/<DEFAULT_BRANCH>
-```
-
-If conflicts, STOP and show files. Otherwise, in parallel:
-
-- `git push --force-with-lease origin HEAD`
-- `gh pr view --json url,title,state 2>/dev/null`
-
-#### Step 4 — PR + auto-merge
-
-- **PR exists**: `gh pr merge --auto --rebase`, print URL.
-- **No PR**: `gh pr create` with concise title (<70 chars),
-  body with `## Summary` (bullets) and `## Test plan`. If
-  `$ARGUMENTS` provided, use it for the summary. Then run
-  `gh pr merge --auto --rebase`.
+Apply fixes, then summarize. These summaries are intermediate
+— continue straight into Phase 3.
 
 ---
 
-### Phase 3 — Monitor & Validate
+### Phase 3 — Ship
 
-After shipping, monitor the PR until it merges or a hard-stop
-condition is reached. Be proactive: if CI fails, diagnose and
-fix the issue, then push again.
+Execute efficiently; do not deliberate.
 
-This phase adapts to the project: not all repos have CI
-checks, deployments, or auto-merge. Detect what applies and
-skip what doesn't.
+1. **Stage deliberately.** Review `git status` and stage the
+   files that belong to this work — never `git add -A`
+   blindly. Leave out secrets and junk (`.env`, credentials,
+   keys, large binaries, scratch files).
+2. **Commit.** If `HEAD` is already on the remote (or shared
+   with the default branch), create a new conventional commit;
+   if the tip commit is local-only, amend it. Use the input
+   to inform the message; infer type and scope from the diff.
+   Skip if nothing to commit.
+3. **Re-sync.** `git fetch origin` and rebase again to pick up
+   anything that landed meanwhile (same conflict handling as
+   Phase 1).
+4. **Push.** `git push --force-with-lease origin HEAD`.
+5. **PR.** If `gh pr view` finds an open PR, reuse it.
+   Otherwise `gh pr create` — title under 70 chars, body with
+   `## Summary` bullets and a `## Test plan`.
+6. **Auto-merge.** `gh pr merge --auto --rebase`. If the repo
+   doesn't allow it, note that and move on — do not merge
+   without auto-merge unless the user asked.
 
-#### Step 0 — Detect project capabilities
+Record the PR URL for Phase 4.
 
-```text
-Run in parallel:
-- gh pr checks --json name,state  → HAS_CHECKS (non-empty list)
-- gh pr view --json autoMergeRequest → HAS_AUTO_MERGE (non-null)
+---
 
-If no checks and no auto-merge:
-    Skip monitoring entirely → go to Final Output
-If no checks but auto-merge is set:
-    Wait for merge only (skip Fix step entirely)
-```
+### Phase 4 — Monitor & validate
 
-#### Monitor loop
+Watch the PR until it merges or hits a hard stop. Adapt to the
+repo: first check whether it has CI checks
+(`gh pr checks`) and whether auto-merge actually got enabled
+(`gh pr view --json autoMergeRequest`). No checks and no
+auto-merge → nothing to monitor, go to Final Output.
 
-```text
-fix_count = 0
-wait = 30  # seconds
-round = 0
+**Monitor loop** — up to ~10 rounds, sleeping 30s at first and
+backing off toward 2 minutes between polls. Each round, check
+PR state and checks via `gh pr view` / `gh pr checks`:
 
-while round < 10:
-    round += 1
-    sleep <wait> seconds
-    wait = min(wait * 1.5, 120)
+- Merged → validate (below), then next repo.
+- Closed without merging → record and stop this repo.
+- Merge conflict → record "rebase manually" and stop this repo.
+- A check failed → fix (below).
+- Otherwise → keep waiting.
 
-    Run in parallel:
-    - gh pr view --json state,mergeStateStatus,mergeable
-    - gh pr checks --json name,state,conclusion,detailsUrl
+**Fixing a failed check** — at most 3 fix attempts per repo,
+then record "manual intervention required" and stop this repo.
+Pull the failing job's log (`gh run view <id> --log-failed`),
+diagnose the root cause from the actual error — don't guess
+from the check name. Apply the fix, commit
+(`fix: resolve CI failure in <check>`), rebase, push, and
+resume monitoring from a fresh 30s wait.
 
-    Evaluate:
-
-    A) PR state == MERGED → go to Validate step
-    B) All checks passing, merge pending → continue loop
-    C) One or more checks failed → go to Fix step
-    D) PR closed (not merged) → STOP: "PR was closed"
-    E) Merge conflicts → STOP: "Merge conflicts — rebase manually"
-```
-
-#### Fix step
-
-```text
-if fix_count >= 3:
-    STOP: "CI still failing after 3 fix attempts.
-    Failing checks: <list>. Manual intervention required."
-
-fix_count += 1
-
-1. Identify failed check(s) from gh pr checks output
-2. For each failed check:
-   a. Extract run-id from the details URL
-   b. Get log: gh run view <run-id> --log-failed
-   c. Read error output and diagnose root cause
-3. Apply fixes to the codebase
-4. Stage and commit:
-   fix: resolve CI failure in <check-name>
-5. Fetch + rebase:
-   git fetch origin && git rebase origin/<DEFAULT_BRANCH>
-6. Push: git push --force-with-lease origin HEAD
-7. Reset wait = 30
-8. Continue monitor loop
-```
-
-#### Validate step
-
-After the PR merges:
-
-1. Confirm merge: `gh pr view --json state` → assert MERGED
-2. Check for deployment workflows:
-   `gh run list --branch <DEFAULT_BRANCH> --limit 5 --json name,status,conclusion`
-3. If a deployment run is found and in progress, poll every
-   30s (max 5 times) until it completes
-4. If no deployment runs exist, skip — not all projects deploy
+**Validate after merge** — look for a deployment workflow on
+the default branch (`gh run list --branch <default>`). If one
+is running, poll briefly (a few rounds) until it concludes;
+if none exists, skip — not every repo deploys.
 
 ---
 
 ### Final Output
 
-Print a summary (max 8 lines):
+One block per repo (and only now — nothing earlier is a
+terminal summary):
 
 - Refactor: Pass 1 + Pass 2 changes (counts)
 - Commit: new or amended, with message
 - PR: URL
-- Auto-merge: enabled / not configured
-- CI: passed (or fixed N times) / no checks
-- Merge: confirmed / pending
+- CI: passed / fixed N times / no checks / failed
+- Merge: confirmed / pending / conflict
 - Deploy: status / no deployment detected
+
+If any repos were skipped in Phase 0, list them with the
+reason.
