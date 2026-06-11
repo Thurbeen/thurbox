@@ -15,17 +15,23 @@ if something truly unexpected happens.
 
 ### 2. Module isolation
 
-Dependency flow is strictly one-directional:
+Domain dependency flow is one-directional:
 
 ```text
 session  (no project-local imports)
 agent    → session
-ui       → session
+ui       → session, app (read-only model/view state)
 app      → session, agent, ui
 ```
 
 `agent` and `ui` never import each other. This keeps the side-effect
 layer (PTY management) completely decoupled from the rendering layer.
+`ui → app` is the TEA `view(model)` coupling: the view renders state
+types owned by `app` but never triggers side effects (and never
+touches `agent` or `git`). The full per-module allowlist — including
+utility modules — lives in `tests/architecture_rules.rs`; a new
+`src/` module fails the test until its dependencies are declared
+there.
 
 ### 3. Zero-warning policy
 

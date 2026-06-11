@@ -643,11 +643,24 @@ The app follows **The Elm Architecture**:
 ### Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
-session  ← pure data types, no local imports
-agent    ← imports session only (NEVER ui or git)
-ui       ← imports session only (NEVER agent or git)
+session  ← pure data types, no crate-internal references
+agent    ← session (+ paths/shell utils; NEVER ui, git, app)
+ui       ← session + app model/view state (+ fuzzy/paths;
+           NEVER agent or git)
 app      ← coordinator, imports all modules
 ```
+
+Enforcement is an **allowlist**: every module under `src/` must
+have a `ModuleRules` entry in `tests/architecture_rules.rs`
+naming the crate modules it may reference — in *any* form (`use`,
+`pub use`, brace groups, and fully-qualified `crate::…` paths) —
+and a new module fails the test until its place in the
+architecture is declared. `ui → app` is the TEA `view(model)`
+coupling: ui renders state types owned by `app` (modal structs,
+status messages) but never triggers side effects. `session_ops`
+and `cli` may reach `crate::agent::…` (the narrow tmux helpers)
+via fully-qualified paths only — never `use` — so the headless →
+backend dependency stays visible at each call site.
 
 ### Module Responsibilities
 

@@ -1,171 +1,571 @@
+//! Architecture rules enforced as tests (allowlist model).
+//!
+//! Every module under `src/` must appear in [`MODULE_RULES`] (or in
+//! [`EXEMPT`]) and may only reference the crate-internal modules its entry
+//! allows — `every_module_is_governed` fails when a new module is added
+//! without a rule, so the architecture is an explicit decision per module.
+//!
+//! References are extracted from comment- and string-stripped source, so all
+//! import shapes are covered: `use` / `pub use`, brace groups
+//! (`use crate::{a, b}`), bare imports (`use crate::a;`), multi-line
+//! statements, and fully-qualified paths in code (`crate::a::item(…)`).
+//!
+//! The layering mirrors CLAUDE.md ("Module Dependency Rules") and
+//! docs/CONSTITUTION.md §2. If a rule change is intentional, update those
+//! docs in the same PR.
+
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// A single architecture violation: a forbidden import found in a source file.
+/// Per-module dependency allowlist.
+struct ModuleRules {
+    /// Module name: a directory `src/<name>/` or a file `src/<name>.rs`.
+    name: &'static str,
+    /// Crate modules this module may reference in any form.
+    allowed: &'static [&'static str],
+    /// Crate modules additionally reachable via fully-qualified paths
+    /// (`crate::module::item(…)`) but **not** importable with `use` —
+    /// keeps the dependency visible at every call site.
+    allowed_path_only: &'static [&'static str],
+}
+
+/// Which crate-internal modules each module may touch.
+const MODULE_RULES: &[ModuleRules] = &[
+    // Pure data: the dependency sink. No crate-internal references at all.
+    ModuleRules {
+        name: "session",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    // Side-effect layer (PTY/tmux). Never ui, git, or app.
+    ModuleRules {
+        name: "agent",
+        allowed: &["session", "paths", "shell"],
+        allowed_path_only: &[],
+    },
+    // Rendering. `app` is allowed read-only model/view state (TEA
+    // `view(model)`); never agent or git (no side effects from the view).
+    ModuleRules {
+        name: "ui",
+        allowed: &["session", "app", "fuzzy", "paths"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "git",
+        allowed: &["session", "paths", "shell"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "storage",
+        allowed: &["session", "sync", "paths"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "sync",
+        allowed: &["session", "storage", "workspace"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "usage",
+        allowed: &["session"],
+        allowed_path_only: &[],
+    },
+    // Headless session ops: no TUI state or PTY-attached backend. Talks to
+    // tmux through the narrow helpers in `agent::tmux` via fully-qualified
+    // paths only (never `use`), same pattern as the cli module.
+    ModuleRules {
+        name: "session_ops",
+        allowed: &["session", "storage", "git", "sync", "paths", "workspace"],
+        allowed_path_only: &["agent"],
+    },
+    // Thin headless dispatch — must not depend on TUI or the live backend.
+    ModuleRules {
+        name: "cli",
+        allowed: &["session", "storage", "session_ops", "sync", "paths"],
+        allowed_path_only: &["agent"],
+    },
+    // Leaf utilities.
+    ModuleRules {
+        name: "fuzzy",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "paths",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "shell",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "workspace",
+        allowed: &["paths"],
+        allowed_path_only: &[],
+    },
+];
+
+/// Modules exempt from the allowlist: `app` is the coordinator (imports
+/// everything by design); `bin`, `lib`, and `main` are crate roots, not
+/// architecture modules.
+const EXEMPT: &[&str] = &["app", "bin", "lib", "main"];
+
+/// A single architecture violation: a forbidden crate-module reference.
 struct Violation {
     file: PathBuf,
     line_number: usize,
     line: String,
+    segment: String,
+    in_use: bool,
 }
 
-/// Recursively collect all `.rs` files under `dir`.
+/// A `crate::<segment>` reference found in stripped source.
+struct RefSite {
+    /// Byte offset of the `crate::` token (for line lookup).
+    offset: usize,
+    segment: String,
+    /// Whether the reference sits inside a `use …;` statement.
+    in_use: bool,
+}
+
+fn src_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+/// Recursively collect all `.rs` files under `dir`, panicking on I/O errors
+/// so a renamed or unreadable module can never pass vacuously.
 fn collect_rs_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_rs_files(&path));
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                files.push(path);
-            }
+    let entries =
+        fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry.expect("readable directory entry").path();
+        if path.is_dir() {
+            files.extend(collect_rs_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(path);
         }
     }
+    files.sort();
     files
 }
 
-/// Scan all `.rs` files in `module_dir` for `use crate::{denied}::` imports.
-/// Returns a list of violations with file path, line number, and line content.
-fn check_no_imports(module_dir: &Path, denied_modules: &[&str]) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    let files = collect_rs_files(module_dir);
+/// The `.rs` files making up module `name` (`src/<name>/` or `src/<name>.rs`).
+fn module_files(name: &str) -> Vec<PathBuf> {
+    let root = src_root();
+    let dir = root.join(name);
+    if dir.is_dir() {
+        let files = collect_rs_files(&dir);
+        assert!(!files.is_empty(), "src/{name}/ contains no .rs files");
+        return files;
+    }
+    let file = root.join(format!("{name}.rs"));
+    assert!(
+        file.is_file(),
+        "module `{name}` not found as src/{name}/ or src/{name}.rs — \
+         update MODULE_RULES in tests/architecture_rules.rs if it was renamed"
+    );
+    vec![file]
+}
 
-    for file in files {
-        let content = fs::read_to_string(&file).unwrap_or_default();
-        for (i, line) in content.lines().enumerate() {
-            let trimmed = line.trim();
-            for denied in denied_modules {
-                let pattern = format!("use crate::{denied}::");
-                if trimmed.starts_with(&pattern) {
-                    violations.push(Violation {
-                        file: file.clone(),
-                        line_number: i + 1,
-                        line: line.to_string(),
-                    });
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Strip comments and string/char-literal contents from Rust source,
+/// preserving newlines so byte offsets still map to line numbers.
+fn strip_comments_and_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
                 }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let mut depth = 1usize;
+                i += 2;
+                while i < bytes.len() && depth > 0 {
+                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        if bytes[i] == b'\n' {
+                            out.push(b'\n');
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\n' => {
+                            out.push(b'\n');
+                            i += 1;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            // Raw strings: r"…", r#"…"#, br#"…"# (the `b` is consumed as a
+            // normal byte before we land on the `r`).
+            b'r' if !(i > 0 && is_ident_char(bytes[i - 1]) && bytes[i - 1] != b'b') => {
+                let mut j = i + 1;
+                while bytes.get(j) == Some(&b'#') {
+                    j += 1;
+                }
+                if bytes.get(j) == Some(&b'"') {
+                    let hashes = j - (i + 1);
+                    let mut close = vec![b'"'];
+                    close.extend(std::iter::repeat(b'#').take(hashes));
+                    i = j + 1;
+                    while i < bytes.len() && bytes[i..].len() >= close.len() {
+                        if bytes[i..i + close.len()] == close[..] {
+                            i += close.len();
+                            break;
+                        }
+                        if bytes[i] == b'\n' {
+                            out.push(b'\n');
+                        }
+                        i += 1;
+                    }
+                } else {
+                    out.push(b'r');
+                    i += 1;
+                }
+            }
+            // Char literal vs lifetime: 'x' / '\n' are literals; 'a is a
+            // lifetime (kept — it contains no `crate::`).
+            b'\'' => {
+                if bytes.get(i + 1) == Some(&b'\\') {
+                    i += 3;
+                    while i < bytes.len() && bytes[i] != b'\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if bytes.get(i + 2) == Some(&b'\'') && bytes.get(i + 1) != Some(&b'\'') {
+                    i += 3;
+                } else {
+                    out.push(b'\'');
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(b);
+                i += 1;
             }
         }
     }
+    String::from_utf8(out).expect("stripped source remains valid UTF-8")
+}
 
+/// Byte spans of `use …;` statements in stripped source.
+fn use_spans(stripped: &str) -> Vec<(usize, usize)> {
+    let bytes = stripped.as_bytes();
+    let mut spans = Vec::new();
+    let mut search = 0;
+    while let Some(found) = stripped[search..].find("use") {
+        let start = search + found;
+        search = start + 3;
+        let before_ok = start == 0 || !is_ident_char(bytes[start - 1]);
+        let after_ok = bytes
+            .get(start + 3)
+            .is_some_and(|b| b.is_ascii_whitespace());
+        if before_ok && after_ok {
+            let end = stripped[start..]
+                .find(';')
+                .map_or(stripped.len(), |e| start + e + 1);
+            spans.push((start, end));
+            search = end;
+        }
+    }
+    spans
+}
+
+fn read_ident(bytes: &[u8], i: &mut usize) -> String {
+    let start = *i;
+    while *i < bytes.len() && is_ident_char(bytes[*i]) {
+        *i += 1;
+    }
+    String::from_utf8_lossy(&bytes[start..*i]).into_owned()
+}
+
+/// First path segments of a `crate::{…}` brace group (top level only):
+/// `crate::{agent::x, ui::y}` yields `agent` and `ui`.
+fn brace_group_segments(bytes: &[u8], open: usize) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut depth = 0usize;
+    let mut expect_segment = false;
+    let mut i = open;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'{' {
+            depth += 1;
+            expect_segment = depth == 1;
+            i += 1;
+        } else if b == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                break;
+            }
+            i += 1;
+        } else if b == b',' {
+            if depth == 1 {
+                expect_segment = true;
+            }
+            i += 1;
+        } else if b.is_ascii_whitespace() {
+            i += 1;
+        } else if depth == 1 && expect_segment {
+            if is_ident_char(b) {
+                segments.push(read_ident(bytes, &mut i));
+            } else {
+                i += 1;
+            }
+            expect_segment = false;
+        } else {
+            i += 1;
+        }
+    }
+    segments
+}
+
+/// All `crate::<segment>` references in stripped source.
+fn crate_refs(stripped: &str) -> Vec<RefSite> {
+    const TOKEN: &str = "crate::";
+    let bytes = stripped.as_bytes();
+    let spans = use_spans(stripped);
+    let mut refs = Vec::new();
+    let mut search = 0;
+    while let Some(found) = stripped[search..].find(TOKEN) {
+        let pos = search + found;
+        search = pos + TOKEN.len();
+        if pos > 0 {
+            let prev = bytes[pos - 1];
+            // Skip `$crate::` (macros) and path tails like `my_crate::`.
+            if is_ident_char(prev) || prev == b':' || prev == b'$' {
+                continue;
+            }
+        }
+        let mut i = pos + TOKEN.len();
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let segments = if bytes.get(i) == Some(&b'{') {
+            brace_group_segments(bytes, i)
+        } else if i < bytes.len() && is_ident_char(bytes[i]) {
+            vec![read_ident(bytes, &mut i)]
+        } else {
+            Vec::new()
+        };
+        let in_use = spans.iter().any(|&(s, e)| pos >= s && pos < e);
+        for segment in segments {
+            refs.push(RefSite {
+                offset: pos,
+                segment,
+                in_use,
+            });
+        }
+    }
+    refs
+}
+
+/// Check one module against its allowlist.
+fn check_module(rules: &ModuleRules) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    for file in module_files(rules.name) {
+        let content = fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+        let stripped = strip_comments_and_strings(&content);
+        for site in crate_refs(&stripped) {
+            // `self` (`use crate::{self, …}`) names the crate root, which
+            // declares only modules — harmless. Own-module refs are fine.
+            if site.segment == "self" || site.segment == rules.name {
+                continue;
+            }
+            if rules.allowed.contains(&site.segment.as_str()) {
+                continue;
+            }
+            if !site.in_use && rules.allowed_path_only.contains(&site.segment.as_str()) {
+                continue;
+            }
+            let line_number = stripped[..site.offset].matches('\n').count() + 1;
+            let line = content
+                .lines()
+                .nth(line_number - 1)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            violations.push(Violation {
+                file: file.clone(),
+                line_number,
+                line,
+                segment: site.segment,
+                in_use: site.in_use,
+            });
+        }
+    }
     violations
 }
 
-fn format_violations(module_name: &str, violations: &[Violation]) -> String {
+fn format_violations(rules: &ModuleRules, violations: &[Violation]) -> String {
     let mut msg = format!(
-        "\n{} architecture violation(s) in `{module_name}/`:\n",
-        violations.len()
+        "\n{} architecture violation(s) in `{}` (allowed: {:?}; path-only: {:?}):\n",
+        violations.len(),
+        rules.name,
+        rules.allowed,
+        rules.allowed_path_only,
     );
     for v in violations {
+        let note = if v.in_use && rules.allowed_path_only.contains(&v.segment.as_str()) {
+            " (allowed via fully-qualified path only, not `use`)"
+        } else {
+            ""
+        };
         writeln!(
             msg,
-            "  {}:{}: {}",
+            "  {}:{}: references `crate::{}`{note}: {}",
             v.file.display(),
             v.line_number,
-            v.line.trim()
+            v.segment,
+            v.line,
         )
         .unwrap();
     }
+    msg.push_str(
+        "Fix the import, or — if the architecture is changing on purpose — update \
+         MODULE_RULES in tests/architecture_rules.rs plus CLAUDE.md and docs/CONSTITUTION.md.\n",
+    );
     msg
 }
 
-#[test]
-fn ui_layer_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
-    let violations = check_no_imports(&module_dir, &["agent", "git"]);
+fn assert_module_clean(name: &str) {
+    let rules = MODULE_RULES
+        .iter()
+        .find(|r| r.name == name)
+        .unwrap_or_else(|| panic!("no MODULE_RULES entry for `{name}`"));
+    let violations = check_module(rules);
     assert!(
         violations.is_empty(),
         "{}",
-        format_violations("ui", &violations)
+        format_violations(rules, &violations)
     );
 }
 
 #[test]
-fn git_module_independence() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git");
-    let violations = check_no_imports(&module_dir, &["ui"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("git", &violations)
-    );
+fn session_module_purity() {
+    assert_module_clean("session");
 }
 
 #[test]
 fn agent_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent");
-    let violations = check_no_imports(&module_dir, &["ui", "git"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("agent", &violations)
-    );
+    assert_module_clean("agent");
 }
 
 #[test]
-fn sync_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sync");
-    let violations = check_no_imports(&module_dir, &["agent", "ui", "git", "app"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("sync", &violations)
-    );
+fn ui_layer_isolation() {
+    assert_module_clean("ui");
+}
+
+#[test]
+fn git_module_independence() {
+    assert_module_clean("git");
 }
 
 #[test]
 fn storage_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/storage");
-    let violations = check_no_imports(&module_dir, &["agent", "ui", "git", "app"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("storage", &violations)
-    );
+    assert_module_clean("storage");
+}
+
+#[test]
+fn sync_module_isolation() {
+    assert_module_clean("sync");
+}
+
+#[test]
+fn usage_module_isolation() {
+    assert_module_clean("usage");
 }
 
 #[test]
 fn session_ops_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session_ops");
-    // session_ops must not pull in TUI state or the PTY-attached backend.
-    // It talks to tmux through the narrow helpers in `agent::tmux` via
-    // fully-qualified paths (not `use`), same pattern as the cli module.
-    let violations = check_no_imports(&module_dir, &["app", "ui", "agent"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("session_ops", &violations)
-    );
+    assert_module_clean("session_ops");
 }
 
 #[test]
 fn cli_module_isolation() {
-    let module_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-    // cli is a thin argument parser — must not depend on TUI or the live
-    // session backend. Tmux helpers are reached via fully-qualified paths.
-    let violations = check_no_imports(&module_dir, &["app", "ui", "agent"]);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations("cli", &violations)
-    );
+    assert_module_clean("cli");
 }
 
 #[test]
-fn app_module_structure() {
-    // Verify that app/ module can be split into multiple files
-    // Each file should maintain proper module organization
-    let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+fn util_modules_are_leaves() {
+    for name in ["fuzzy", "paths", "shell", "workspace"] {
+        assert_module_clean(name);
+    }
+}
 
-    // All app submodules should exist as .rs files or be re-exported from mod.rs
-    let expected_files = vec!["mod.rs"];
-
-    for file in expected_files {
-        let path = app_dir.join(file);
+/// Every module under `src/` must be governed: either a MODULE_RULES entry
+/// or an explicit EXEMPT listing. Adding a module without deciding its place
+/// in the architecture fails here. Also catches stale rule entries.
+#[test]
+fn every_module_is_governed() {
+    let root = src_root();
+    let entries =
+        fs::read_dir(&root).unwrap_or_else(|e| panic!("cannot read {}: {e}", root.display()));
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry.expect("readable directory entry").path();
+        let name = if path.is_dir() {
+            path.file_name()
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            path.file_stem()
+        } else {
+            continue;
+        };
+        let name = name
+            .and_then(|n| n.to_str())
+            .unwrap_or_else(|| panic!("non-UTF-8 path under src/: {}", path.display()))
+            .to_string();
+        let governed =
+            MODULE_RULES.iter().any(|r| r.name == name) || EXEMPT.contains(&name.as_str());
         assert!(
-            path.exists(),
-            "Expected app module file not found: {}",
-            file
+            governed,
+            "src/{name} has no architecture rules — add a MODULE_RULES entry \
+             (or EXEMPT it) in tests/architecture_rules.rs"
         );
+        found.push(name);
+    }
+
+    // Stale-entry checks: every rule and allowlist target must still exist.
+    for rules in MODULE_RULES {
+        assert!(
+            found.iter().any(|n| n == rules.name),
+            "MODULE_RULES entry `{}` matches nothing under src/ — remove or rename it",
+            rules.name
+        );
+        for target in rules.allowed.iter().chain(rules.allowed_path_only) {
+            assert!(
+                found.iter().any(|n| n == target),
+                "MODULE_RULES entry `{}` allows nonexistent module `{target}`",
+                rules.name
+            );
+        }
     }
 }
