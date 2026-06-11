@@ -30,7 +30,11 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/fl
 ```
 
 or from a checkout: `extensions/flow/install.sh`. The installer is
-idempotent; it
+idempotent **and self-updating** — re-run it any time to pull the latest
+`FLOW.md` spec, helper scripts, context-file symlinks, and claude
+permission settings (the files it owns), while leaving your own data
+(`repos.md`, `agents.toml` entries, the flow session, the `flow-tick`
+automation) untouched. It
 
 1. sets up the flow home (`~/flow`): `FLOW.md` spec, helper scripts,
    context-file symlinks, and a `repos.md` routing table (edit it!);
@@ -61,7 +65,7 @@ idempotent; it
 | `scripts/create-task.sh` | Atomic task create + dispatch |
 | `scripts/flow-snapshot.sh` | One-call backlog + sessions view |
 | `scripts/parse-result.sh` | Extract the worker `===RESULT===` sentinel |
-| `install.sh` | Idempotent installer/bootstrapper |
+| `install.sh` | Idempotent, self-updating installer/bootstrapper |
 
 ## Uninstall
 
