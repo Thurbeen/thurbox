@@ -644,3 +644,37 @@ database.
   across agents; a session now configures only its agent.
 - *Agent definitions in SQLite* — overkill for read-mostly,
   user-authored config; TOML keeps them inspectable and diffable.
+
+## ADR-20: Agent-agnostic extensions in `extensions/`
+
+**Choice**: Opt-in workflows that *compose* thurbox (rather than
+extend the binary) live in `extensions/<name>/` as data + shell:
+a plain-markdown behavior spec, portable scripts built on
+`thurbox-cli` + `jq`, and a curl-able, idempotent `install.sh` —
+the same distribution model as `scripts/install.sh` and
+`packaging/`. The first extension is **flow** (an experimental
+focus-protecting triage agent; see FEATURES.md). Extensions reach
+agents only through `agents.toml` **aliases** (e.g. `flow-worker`)
+that the user maps to any CLI, and surface their spec through
+context-file symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → the
+spec), so no vendor is named anywhere.
+
+**Why**: ADR-19's pivot made thurbox agent-neutral; an opinionated
+LLM workflow (prompts, triage rubrics, tick cadences) would undo
+that if baked into core, and it iterates on a much faster cadence
+than the binary (editing a markdown spec vs. cutting a release).
+Keeping extensions as data over the public surface (`thurbox-cli`
+plus `agents.toml`) also makes that surface's stability a tested,
+load-bearing contract.
+
+**Rejected**:
+
+- *Vendor plugin formats* (e.g. a Claude Code plugin) — couples
+  the workflow to one agent's ecosystem; the same agent brain must
+  be runnable by codex, gemini, opencode, vibe, ….
+- *A `thurbox-cli flow init` subcommand with embedded assets* —
+  puts one opinionated workflow inside the agent-neutral core and
+  ties spec iteration to the release cycle.
+- *A separate repository* — the extension scripts against
+  `thurbox-cli`'s JSON surface and should version and CI alongside
+  it.

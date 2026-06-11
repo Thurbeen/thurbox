@@ -2013,7 +2013,7 @@ impl App {
         if let Some((task_id, title)) = task_prompt {
             let new_id = self.sessions[self.active_index].info.id;
             // Record the link now — the session was named by the user, so the
-            // `task-<id>` convention can't recover it later.
+            // `task-<id>-<slug>` convention can't recover it later.
             self.task_ui.task_session_links.insert(task_id, new_id);
             let prompt = self.task_agent_prompt(task_id, &title);
             self.send_prompt_to_session(new_id, &prompt, AGENT_BOOT_DELAY_TICKS);
@@ -3410,7 +3410,7 @@ impl App {
     /// queue `prompt` into it. The session is named `name`; a recurring caller
     /// reuses that session on later invocations (and after a TUI restart, where
     /// it is restored from the database by name). Shared by automations
-    /// (`auto-<id>`) and tasks (`task-<id>`).
+    /// (`auto-<id>`) and tasks (`task-<id>-<title-slug>`).
     fn spawn_and_prompt(
         &mut self,
         name: String,
@@ -3782,18 +3782,18 @@ impl App {
     /// Indices into `self.sessions` of the **currently-open** sessions a task is
     /// related to, in display order:
     ///
-    /// - the session named `task-<id>` — the spawn convention used by the
-    ///   headless `task run` (and what survives a restart);
+    /// - the session named by the spawn convention (`task-<id>-<title-slug>`,
+    ///   or the legacy bare `task-<id>`) — used by the headless `task run`
+    ///   (and what survives a restart; see [`Task::matches_spawn_session`]);
     /// - the target of a persisted `Send` action (`task.action`), when one is
     ///   set via the CLI; and
     /// - the in-memory `task_session_links` entry recorded when the task was
-    ///   triggered from the TUI this run (TUI spawns get a user-chosen name, not
-    ///   `task-<id>`, so this is how that link is recovered).
+    ///   triggered from the TUI this run (TUI spawns get a user-chosen name,
+    ///   not the spawn convention, so this is how that link is recovered).
     ///
     /// Deduplicated. Empty when nothing related is open right now. This is the
     /// single source of truth for both the details panel and the *open* key.
     pub(crate) fn task_related_session_indices(&self, task: &crate::session::Task) -> Vec<usize> {
-        let spawn_name = format!("task-{}", task.id);
         // Persisted `Send` action target (CLI-authored), plus the in-memory link
         // recorded when this task was triggered from the TUI this run.
         let send_target = match &task.action {
@@ -3803,7 +3803,7 @@ impl App {
         let linked = self.task_ui.task_session_links.get(&task.id).copied();
         let mut out = Vec::new();
         for (i, s) in self.sessions.iter().enumerate() {
-            let related = s.info.name == spawn_name
+            let related = task.matches_spawn_session(&s.info.name)
                 || send_target.is_some_and(|t| t == s.info.id)
                 || linked.is_some_and(|t| t == s.info.id);
             if related && !out.contains(&i) {
@@ -6008,7 +6008,10 @@ mod tests {
         let task = app.db.get_task(id).unwrap().unwrap();
         assert!(app.task_related_session_indices(&task).is_empty());
 
-        // Rename session 1 to the spawn convention `task-<id>` → it's related.
+        // Rename session 1 to the spawn convention → it's related. Both the
+        // current slugged form and the legacy bare `task-<id>` must match.
+        app.sessions[1].info.name = task.spawn_session_name();
+        assert_eq!(app.task_related_session_indices(&task), vec![1]);
         app.sessions[1].info.name = format!("task-{id}");
         assert_eq!(app.task_related_session_indices(&task), vec![1]);
     }

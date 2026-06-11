@@ -109,6 +109,33 @@ list:
 
 ![Tasks demo](./docs/media/tasks-demo.gif)
 
+### Flow extension
+
+- An opt-in, **agent-agnostic** add-on (`extensions/flow/`) that
+  turns the task list into a focus-protecting workflow: brain-dump
+  at a dedicated cheap **flow session** and it captures everything
+  into tasks, dispatches the dispatchable ones to worker sessions
+  (each on its own `flow/<slug>` worktree branch), monitors them
+  via a tick automation, and ends every reply with the single next
+  thing to focus on.
+- The triager and the workers are plain `agents.toml` aliases
+  (`flow`, `flow-worker`, `flow-worker-heavy`) — map them to
+  claude, codex, gemini, opencode, vibe, or anything else. The
+  behavior is a plain context file (`FLOW.md`) surfaced to
+  whichever CLI you pick via `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`
+  symlinks.
+- One-line install (idempotent):
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/flow/install.sh | sh
+  ```
+
+> **Note:** The flow extension is a brand-new, **experimental**
+> feature under active testing — expect its behavior, spec, and
+> installer to change between releases.
+
+See [`extensions/flow/README.md`](./extensions/flow/README.md).
+
 ### Global search
 
 - One key (`Ctrl+A`) opens a **non-modal search strip** that

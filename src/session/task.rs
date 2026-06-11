@@ -125,7 +125,52 @@ impl Task {
         ));
         prompt
     }
+
+    /// Session name used when this task is dispatched via a `Spawn` action:
+    /// `task-<id>-<title-slug>` (e.g. `task-42-wire-up-ssh-backend`), capped at
+    /// [`SPAWN_SESSION_NAME_MAX`] chars. Falls back to plain `task-<id>` when
+    /// the title yields no slug. Shared by the headless `task run` path; use
+    /// [`matches_spawn_session`](Self::matches_spawn_session) to recognize the
+    /// session later (it also accepts the legacy bare `task-<id>` form).
+    pub fn spawn_session_name(&self) -> String {
+        let prefix = format!("task-{}", self.id);
+        let budget = SPAWN_SESSION_NAME_MAX.saturating_sub(prefix.len() + 1);
+        let mut slug = String::new();
+        for c in self.title.chars() {
+            if c.is_ascii_alphanumeric() {
+                slug.push(c.to_ascii_lowercase());
+            } else if !slug.is_empty() && !slug.ends_with('-') {
+                slug.push('-');
+            }
+            if slug.len() >= budget {
+                break;
+            }
+        }
+        slug.truncate(budget);
+        let slug = slug.trim_end_matches('-');
+        if slug.is_empty() {
+            prefix
+        } else {
+            format!("{prefix}-{slug}")
+        }
+    }
+
+    /// Whether `name` is this task's spawned session: the current
+    /// `task-<id>-<slug>` convention or the legacy bare `task-<id>` (which
+    /// pre-slug sessions still carry; the title may also have been edited
+    /// since the spawn, so only the `task-<id>` part is significant).
+    pub fn matches_spawn_session(&self, name: &str) -> bool {
+        let prefix = format!("task-{}", self.id);
+        name == prefix
+            || name
+                .strip_prefix(&prefix)
+                .is_some_and(|r| r.starts_with('-'))
+    }
 }
+
+/// Cap for [`Task::spawn_session_name`], matching the session-name limit used
+/// elsewhere (tmux window names stay readable in the TUI session list).
+pub const SPAWN_SESSION_NAME_MAX: usize = 64;
 
 #[cfg(test)]
 mod tests {
@@ -183,6 +228,48 @@ mod tests {
         // Self-service context: how to read more and how to close it out.
         assert!(prompt.contains("thurbox-cli task show 42"));
         assert!(prompt.contains("thurbox-cli task edit 42 --status done"));
+    }
+
+    #[test]
+    fn spawn_session_name_slugs_the_title() {
+        assert_eq!(
+            sample_task(None).spawn_session_name(),
+            "task-42-wire-up-ssh-backend"
+        );
+    }
+
+    #[test]
+    fn spawn_session_name_collapses_symbols_and_caps_length() {
+        let mut task = sample_task(None);
+        task.title = "Fix: TUI crash!! (on concurrent CLI commands)".to_string();
+        assert_eq!(
+            task.spawn_session_name(),
+            "task-42-fix-tui-crash-on-concurrent-cli-commands"
+        );
+        task.title = "x".repeat(200);
+        let name = task.spawn_session_name();
+        assert!(name.len() <= SPAWN_SESSION_NAME_MAX);
+        assert!(name.starts_with("task-42-x"));
+        // Truncation never leaves a dangling hyphen.
+        assert!(!name.ends_with('-'));
+    }
+
+    #[test]
+    fn spawn_session_name_falls_back_to_bare_id() {
+        let mut task = sample_task(None);
+        task.title = "??? !!!".to_string();
+        assert_eq!(task.spawn_session_name(), "task-42");
+    }
+
+    #[test]
+    fn matches_spawn_session_accepts_current_and_legacy_names() {
+        let task = sample_task(None);
+        assert!(task.matches_spawn_session("task-42-wire-up-ssh-backend"));
+        assert!(task.matches_spawn_session("task-42-some-older-title")); // title edited
+        assert!(task.matches_spawn_session("task-42")); // legacy convention
+        assert!(!task.matches_spawn_session("task-421")); // different task id
+        assert!(!task.matches_spawn_session("task-4"));
+        assert!(!task.matches_spawn_session("my-task-42"));
     }
 
     #[test]

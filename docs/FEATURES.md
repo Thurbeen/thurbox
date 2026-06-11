@@ -702,7 +702,60 @@ migration. No fetch logic ships yet.
 `create`/`list`/`show`/`edit`/`remove`/`run`. `create` with neither
 `--session` nor `--repo` is a plain local todo; `run` triggers the
 task's Send/Spawn action headlessly (spawned sessions are named
-`task-<id>`, adopted by the TUI on next startup).
+`task-<id>-<title-slug>` via `Task::spawn_session_name`, adopted by the
+TUI on next startup; `Task::matches_spawn_session` also recognizes the
+legacy bare `task-<id>` form and spawns from a since-edited title).
+
+---
+
+## Flow Extension (experimental)
+
+> **Status:** brand-new and under active testing — the spec, scripts,
+> and installer are all expected to change between releases.
+
+An opt-in add-on (`extensions/flow/`) that composes the task list,
+sessions, worktrees, and automations into a **focus-protecting triage
+workflow**: a dedicated cheap *flow session* captures brain-dumps into
+tasks, dispatches the dispatchable ones to worker sessions, monitors
+them, grooms the backlog, and ends every reply with the single next
+thing to focus on (`🎯 Next: …`).
+
+### Agent-agnostic by construction
+
+Nothing in the extension names a vendor:
+
+- The behavior is a plain context file, `FLOW.md`, installed into the
+  flow home (`~/flow`) and surfaced to whichever CLI runs the session
+  via symlinks to each CLI's context convention
+  (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`).
+- The triager and workers are **agents.toml aliases** — `flow`,
+  `flow-worker` (default), `flow-worker-heavy` (long/hard work) — that
+  the installer seeds with defaults and the user remaps freely.
+- All orchestration goes through `thurbox-cli` (`task create/run`,
+  `session capture/send`, `automation create`) plus `jq`; the core
+  binary has no flow-specific code.
+
+### Dispatch model
+
+Dispatch is **eager**: capture creates the task *and* spawns its
+worker in one atomic helper call (`create-task.sh`); workers send a
+`tick` back to the flow session when they finish so a freed capacity
+slot dispatches the next task immediately; a `flow-tick` cron
+automation (default every 5 min) is only the safety net that catches
+crashed workers and stale state. Workers always get a
+`flow/<task-slug>` worktree branch on git repos, so they never dirty
+the main checkout and parallelize per repo. Completion is detected by
+task status (workers self-mark done) with an orchestrate-style
+`===RESULT===` JSON sentinel as the fallback, parsed from
+`session capture` output.
+
+### Install
+
+`extensions/flow/install.sh` (curl-able, idempotent, POSIX sh) sets up
+the flow home, appends missing agents.toml aliases (overridable via
+`FLOW_CMD`/`WORKER_CMD`/`WORKER_HEAVY_CMD` + `*_ARGS` env vars),
+creates the dedicated `flow` session and the `flow-tick` automation.
+See `extensions/flow/README.md`.
 
 ---
 

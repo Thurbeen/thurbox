@@ -27,8 +27,8 @@ pub struct TaskPaneEntry {
     /// When a global search is active, rows that don't match are dimmed.
     pub dimmed: bool,
     /// The task has at least one currently-open related session (a spawned
-    /// `task-<id>` window or a Send target). Drawn as a trailing `⇄` marker so a
-    /// live task is glanceable in the list; press `o` to jump to it.
+    /// `task-<id>-<slug>` window or a Send target). Drawn as a trailing `⇄`
+    /// marker so a live task is glanceable in the list; press `o` to jump to it.
     pub linked: bool,
 }
 

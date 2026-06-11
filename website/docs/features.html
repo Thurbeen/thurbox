@@ -75,6 +75,7 @@
             <li><a href="#agent-definitions">Agent Definitions</a></li>
             <li><a href="#automations">Automations</a></li>
             <li><a href="#tasks">Tasks</a></li>
+            <li><a href="#flow-extension">Flow Extension</a></li>
             <li><a href="#git-worktrees">Git Worktrees</a></li>
             <li><a href="#remote-ssh-sessions">Remote SSH Sessions</a></li>
             <li><a href="#worktree-sync">Worktree Sync</a></li>
@@ -368,6 +369,70 @@
               ):
               <code>create/list/show/edit/remove/run</code>
               . External issue-tracker sync (Jira, GitHub Issues) is scaffolded for a later release.
+            </li>
+          </ul>
+
+          <h2 id="flow-extension">
+            Flow Extension
+            <a href="#flow-extension" class="heading-anchor">#</a>
+          </h2>
+          <div class="info-box warning">
+            <p>
+              <strong>Heads up:</strong>
+              The flow extension is a brand-new,
+              <strong>experimental</strong>
+              feature under active testing &mdash; expect its behavior, spec, and installer to
+              change between releases.
+            </p>
+          </div>
+          <p>
+            An opt-in,
+            <strong>agent-agnostic</strong>
+            add-on that composes tasks, sessions, worktrees, and automations into a focus-protecting
+            triage workflow: brain-dump at a dedicated cheap
+            <em>flow session</em>
+            and it captures everything into tasks, dispatches the dispatchable ones to worker
+            sessions, monitors them quietly, grooms the backlog, and ends every reply with the
+            single next thing to focus on.
+          </p>
+          <ul>
+            <li>
+              The triager and workers are plain
+              <code>agents.toml</code>
+              aliases (
+              <code>flow</code>
+              ,
+              <code>flow-worker</code>
+              ,
+              <code>flow-worker-heavy</code>
+              ) &mdash; map them to claude, codex, gemini, opencode, vibe, or anything else. The
+              behavior is one markdown spec (
+              <code>FLOW.md</code>
+              ) surfaced to whichever CLI you pick via
+              <code>CLAUDE.md</code>
+              /
+              <code>AGENTS.md</code>
+              /
+              <code>GEMINI.md</code>
+              symlinks.
+            </li>
+            <li>
+              Dispatch is eager: capture creates the task and spawns its worker in one atomic call,
+              each worker on its own
+              <code>flow/&lt;slug&gt;</code>
+              worktree branch; workers report back so the next task dispatches immediately, with a
+              cron tick as the safety net.
+            </li>
+            <li>
+              One-line install (idempotent):
+              <code>
+                curl -fsSL
+                https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/flow/install.sh |
+                sh
+              </code>
+              &mdash; see
+              <code>extensions/flow/README.md</code>
+              .
             </li>
           </ul>
 

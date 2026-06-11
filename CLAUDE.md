@@ -508,7 +508,7 @@ sync, but the TUI editor never sets it.)
   scroll the preview, `n` new, `e`/`Enter` open the central-pane editor,
   `Space` cycle status, `r` open the **trigger-time action picker**, `o` **open
   the task's related session** (`App::open_task_related_session` — jumps to the
-  spawned `task-<id>` window or a Send target, else a status hint), `d`/`Ctrl+D`
+  spawned `task-<id>-<slug>` window or a Send target, else a status hint), `d`/`Ctrl+D`
   delete, `Esc` back to the session list. In the editor: field nav +
   `Enter`/`Ctrl+S` save (→ back to panel), `Esc` discard; the editor captures
   its keys before global bindings (so `e`/`d` edit text) via
@@ -530,6 +530,23 @@ sync, but the TUI editor never sets it.)
   `--session` nor `--repo` is a plain local todo; `run` triggers the
   Send/Spawn action headlessly. Tasks do **not** participate in sync
   (`SharedState`) and have no run-history table (audited via `audit_log`).
+
+## Extensions
+
+`extensions/` holds opt-in, **agent-agnostic** add-ons that build on
+`thurbox-cli` without touching the core binary. Each ships its own
+curl-able `install.sh`.
+
+- **`extensions/flow/`** *(experimental — new and under active
+  testing)* — a focus-protecting triage agent: brain-dumps
+  become thurbox tasks, dispatchable ones spawn worker sessions (on
+  `flow/<slug>` worktree branches, agents `flow-worker` /
+  `flow-worker-heavy` mapped in `agents.toml` to any CLI), a dedicated
+  `flow` session monitors them via a `flow-tick` automation, and every
+  reply ends with the single next thing to focus on. The behavior spec
+  is `FLOW.md`, surfaced to whichever CLI runs it via context-file
+  symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). See
+  `extensions/flow/README.md`.
 
 ## Global search (`Ctrl+A`)
 

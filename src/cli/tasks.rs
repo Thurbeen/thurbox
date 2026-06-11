@@ -2,7 +2,8 @@
 //!
 //! Tasks are persisted to the shared database; the TUI's right-side panel reads
 //! them. `run` triggers a task's agent action headlessly (Send into a live tmux
-//! window, or Spawn a fresh session named `task-<id>` seeded with the title).
+//! window, or Spawn a fresh session named `task-<id>-<title-slug>` seeded with
+//! the title).
 
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -176,9 +177,17 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             base_branch,
             agent,
         }) => {
-            let name = format!("task-{}", task.id);
+            let name = task.spawn_session_name();
             // Reuse an existing session window (re-trigger / restored session).
-            if crate::agent::tmux::window_exists(&name) {
+            // Match by convention rather than exact name so legacy `task-<id>`
+            // sessions and spawns from a since-edited title are found too.
+            let existing = db
+                .list_active_sessions()
+                .map_err(|e| format!("list_active_sessions: {e}"))?
+                .into_iter()
+                .map(|s| s.name)
+                .find(|n| task.matches_spawn_session(n) && crate::agent::tmux::window_exists(n));
+            if let Some(name) = existing {
                 crate::agent::tmux::send_prompt_now(&name, &prompt)
                     .map_err(|e| format!("send_prompt_now: {e}"))?;
                 mark_in_progress(db, task)?;
