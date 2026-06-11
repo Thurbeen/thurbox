@@ -58,7 +58,7 @@ the table, add a row when you learn its path.
    ```bash
    ./scripts/create-task.sh --title "<title>" --description "<desc>" \
      --repo <abs-path> --agent <flow-worker|flow-worker-heavy> \
-     --worktree flow/<task-slug>
+     --worktree flow/<task-slug> --base origin/<base-from-repos.md>
    ```
 
    Pass `--repo`/`--agent` whenever the repo is confident — NEVER create a
@@ -66,10 +66,13 @@ the table, add a row when you learn its path.
    flow/<task-slug>` when the repo is a git repository** (derive the slug
    from the title): workers get an isolated worktree, never dirty the main
    checkout, and several can work the same repo in parallel. Omit it only
-   for non-git directories. If the repo is not confident → omit
-   `--repo`/`--agent` (plain todo); triage later or ask ONE question. Over
-   capacity → add `--no-dispatch`. Description template (first lines, then
-   the user's words):
+   for non-git directories. **The worktree base is always the REMOTE
+   default branch** — `origin/<base>` with the base column from
+   `./repos.md` (e.g. `origin/main`), never a local branch; the helper
+   fetches origin first so the base is current. If the repo is not
+   confident → omit `--repo`/`--agent` (plain todo); triage later or ask
+   ONE question. Over capacity → add `--no-dispatch`. Description template
+   (first lines, then the user's words):
 
    ```text
    priority: <high|normal|low>
