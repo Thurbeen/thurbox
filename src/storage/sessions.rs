@@ -48,8 +48,9 @@ impl Database {
                 "UPDATE sessions SET name = ?1, agent = ?2, \
                  backend_id = ?3, backend_type = ?4, agent_session_id = ?5, \
                  cwd = ?6, additional_dirs = ?7, shell_backend_id = ?8, \
-                 parent_session_id = ?9, updated_at = ?10, deleted_at = NULL \
-                 WHERE id = ?11",
+                 parent_session_id = ?9, display_order = ?10, updated_at = ?11, \
+                 deleted_at = NULL \
+                 WHERE id = ?12",
                 params![
                     session.name,
                     session.agent,
@@ -60,6 +61,7 @@ impl Database {
                     additional_dirs_str,
                     session.shell_backend_id,
                     session.parent_session_id.map(|id| id.to_string()),
+                    session.display_order,
                     now,
                     id_str,
                 ],
@@ -77,8 +79,8 @@ impl Database {
             self.conn.execute(
                 "INSERT INTO sessions (id, name, agent, backend_id, backend_type, \
                  agent_session_id, cwd, additional_dirs, shell_backend_id, \
-                 parent_session_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 parent_session_id, display_order, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     id_str,
                     session.name,
@@ -90,6 +92,7 @@ impl Database {
                     additional_dirs_str,
                     session.shell_backend_id,
                     session.parent_session_id.map(|id| id.to_string()),
+                    session.display_order,
                     now,
                     now,
                 ],
@@ -173,12 +176,12 @@ impl Database {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
-             s.parent_session_id, \
+             s.parent_session_id, s.display_order, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
              WHERE {condition} \
-             ORDER BY s.created_at, w.created_at"
+             ORDER BY s.display_order IS NULL, s.display_order, s.created_at, w.created_at"
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
@@ -366,9 +369,10 @@ fn row_to_shared_session(
     let dirs_str: String = row.get(7)?;
     let shell_backend_id: Option<String> = row.get(8)?;
     let parent_str: Option<String> = row.get(9)?;
-    let wt_repo: Option<String> = row.get(10)?;
-    let wt_path: Option<String> = row.get(11)?;
-    let wt_branch: Option<String> = row.get(12)?;
+    let display_order: Option<i64> = row.get(10)?;
+    let wt_repo: Option<String> = row.get(11)?;
+    let wt_path: Option<String> = row.get(12)?;
+    let wt_branch: Option<String> = row.get(13)?;
 
     let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
         Vec::new()
@@ -391,6 +395,7 @@ fn row_to_shared_session(
             worktrees: Vec::new(),
             shell_backend_id,
             parent_session_id: parent_str.and_then(|s| s.parse().ok()),
+            display_order,
             tombstone: false,
             tombstone_at: None,
         },
@@ -415,6 +420,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         }
@@ -431,6 +437,45 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "Session 1");
         assert_eq!(sessions[0].agent, "claude");
+    }
+
+    #[test]
+    fn display_order_roundtrips() {
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
+        session.display_order = Some(3);
+
+        db.upsert_session(&session).unwrap();
+        let sessions = db.list_active_sessions().unwrap();
+        assert_eq!(sessions[0].display_order, Some(3));
+
+        session.display_order = Some(1);
+        db.upsert_session(&session).unwrap();
+        let sessions = db.list_active_sessions().unwrap();
+        assert_eq!(sessions[0].display_order, Some(1));
+    }
+
+    #[test]
+    fn list_orders_by_display_order_with_none_last() {
+        let db = Database::open_in_memory().unwrap();
+        let mut ordered_late = make_session("ordered-late");
+        ordered_late.display_order = Some(5);
+        let unordered = make_session("unordered");
+        let mut ordered_early = make_session("ordered-early");
+        ordered_early.display_order = Some(2);
+
+        // Insert in an order that disagrees with display_order on purpose.
+        db.upsert_session(&ordered_late).unwrap();
+        db.upsert_session(&unordered).unwrap();
+        db.upsert_session(&ordered_early).unwrap();
+
+        let names: Vec<String> = db
+            .list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["ordered-early", "ordered-late", "unordered"]);
     }
 
     #[test]

@@ -58,6 +58,10 @@ pub enum Action {
     SessionListNext,
     SessionListPrev,
     SessionListOpen,
+    /// Move the selected session one row down (manual reordering).
+    SessionListMoveDown,
+    /// Move the selected session one row up (manual reordering).
+    SessionListMoveUp,
     // ── File viewer (scoped) ────────────────────────────────────────────
     FileViewerDown,
     FileViewerUp,
@@ -115,6 +119,8 @@ impl Action {
             Action::SessionListNext,
             Action::SessionListPrev,
             Action::SessionListOpen,
+            Action::SessionListMoveDown,
+            Action::SessionListMoveUp,
             Action::FileViewerDown,
             Action::FileViewerUp,
             Action::FileViewerCollapse,
@@ -158,6 +164,8 @@ impl Action {
             Action::SessionListNext => "Next item",
             Action::SessionListPrev => "Previous item",
             Action::SessionListOpen => "Focus terminal",
+            Action::SessionListMoveDown => "Move session down",
+            Action::SessionListMoveUp => "Move session up",
             Action::FileViewerDown => "Move down",
             Action::FileViewerUp => "Move up",
             Action::FileViewerCollapse => "Collapse / parent",
@@ -179,9 +187,11 @@ impl Action {
     /// [`KeyBindings::rebind`].
     pub fn context(self) -> KeyContext {
         match self {
-            Action::SessionListNext | Action::SessionListPrev | Action::SessionListOpen => {
-                KeyContext::SessionList
-            }
+            Action::SessionListNext
+            | Action::SessionListPrev
+            | Action::SessionListOpen
+            | Action::SessionListMoveDown
+            | Action::SessionListMoveUp => KeyContext::SessionList,
             Action::FileViewerDown
             | Action::FileViewerUp
             | Action::FileViewerCollapse
@@ -233,6 +243,13 @@ impl Action {
             Action::SessionListNext => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
             Action::SessionListPrev => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
             Action::SessionListOpen => vec![KeyChord::key(KeyCode::Enter)],
+            // Shift+J / Shift+K — normalized like FileViewerPrevMatch's Shift+N.
+            Action::SessionListMoveDown => {
+                vec![KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('J'))]
+            }
+            Action::SessionListMoveUp => {
+                vec![KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('K'))]
+            }
             Action::FileViewerDown => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
             Action::FileViewerUp => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
             Action::FileViewerCollapse => vec![KeyChord::plain('h'), KeyChord::key(KeyCode::Left)],
@@ -307,7 +324,13 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
         ("Clipboard", vec![Copy, Paste]),
         (
             "Session list (when focused)",
-            vec![SessionListNext, SessionListPrev, SessionListOpen],
+            vec![
+                SessionListNext,
+                SessionListPrev,
+                SessionListOpen,
+                SessionListMoveDown,
+                SessionListMoveUp,
+            ],
         ),
         (
             "File viewer (when focused)",
@@ -880,6 +903,8 @@ mod tests {
                 Action::SessionListNext => 0,
                 Action::SessionListPrev => 0,
                 Action::SessionListOpen => 0,
+                Action::SessionListMoveDown => 0,
+                Action::SessionListMoveUp => 0,
                 Action::FileViewerDown => 0,
                 Action::FileViewerUp => 0,
                 Action::FileViewerCollapse => 0,
@@ -893,9 +918,9 @@ mod tests {
                 Action::TerminalPageDown => 0,
             }
         }
-        // 37 listed variants must equal Action::all().len(). If you add
+        // 39 listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 37;
+        const EXPECTED: usize = 39;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

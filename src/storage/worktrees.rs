@@ -133,6 +133,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         };

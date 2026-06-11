@@ -85,6 +85,10 @@ pub struct SharedSession {
     /// parent does not cascade to children.
     pub parent_session_id: Option<SessionId>,
 
+    /// Manual position in the session list. `None` = never moved: renders
+    /// after all ordered sessions, in creation order.
+    pub display_order: Option<i64>,
+
     /// Tombstone flag: true if this session was soft-deleted.
     /// Soft-deleted sessions are excluded from active listings.
     pub tombstone: bool,

@@ -58,24 +58,6 @@ impl SessionMatch {
     }
 }
 
-/// Rank a session status for ordering. Lower ranks sort closer to the top:
-/// sessions that need you first, then running, then exited, then errored.
-///
-/// `Busy` and `Waiting` share one **running** rank on purpose. A live agent
-/// flickers across the ~1s "recent output" boundary every tick (`Busy` while
-/// emitting, `Waiting` in the gaps), so ranking them apart would make active
-/// sessions churn up and down the list endlessly. The status *dot* still shows
-/// the distinction; only the ordering ignores it.
-fn status_rank(status: crate::session::SessionStatus) -> u8 {
-    use crate::session::SessionStatus::{Attention, Busy, Error, Idle, Waiting};
-    match status {
-        Attention => 0,
-        Busy | Waiting => 1,
-        Idle => 2,
-        Error => 3,
-    }
-}
-
 /// Fallback label/key for a session that spans no repos.
 const NO_REPO_GROUP: &str = "(no repo)";
 
@@ -120,17 +102,16 @@ fn group_display(info: &SessionInfo) -> String {
 /// the two never drift.
 ///
 /// Ordering (top → bottom):
-///   1. Repo groups, each ordered by its most-urgent member (and then by name),
-///      so a repo holding an `Attention` session bubbles above a merely-running
-///      one. Each group's first row carries the repo header label.
-///   2. Within a group: by status rank, then original index for stability.
+///   1. Repo groups, each ordered by its lowest member `display_order` (and
+///      then by name). Each group's first row carries the repo header label.
+///   2. Within a group: by `display_order`, then original index for stability.
+///      Sessions never manually moved (`display_order == None`) sort after all
+///      ordered ones, in insertion (= creation) order.
 ///
-/// The order is intentionally a pure function of *status* and *stable insertion
-/// order* — never of live recency. Recency (`millis_since_last_output`) changes
-/// every tick for active sessions, so using it as a sort key made `Busy`
-/// sessions reorder endlessly. Status changes are discrete and meaningful
-/// (→`Attention`, →`Idle`), so the list only re-sorts when something real
-/// happens. See `status_rank` for why `Busy`/`Waiting` are not split.
+/// The order is intentionally a pure function of *manual order*
+/// (`display_order`, set by the user via move up/down) and *stable insertion
+/// order* — never of status or live recency. A status change (→`Attention`,
+/// →`Idle`) only recolors the dot; rows stay exactly where the user put them.
 pub struct SessionOrder {
     /// Input indices in render order.
     pub order: Vec<usize>,
@@ -165,23 +146,25 @@ pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
         groups[gi].members.push(i);
     }
 
-    // Within each group: status rank, then original index (stable — no recency).
+    // Within each group: manual order, then original index (stable — never
+    // moved sessions sort after ordered ones, in insertion order).
+    let sort_key = |i: usize| (sessions[i].display_order.unwrap_or(i64::MAX), i);
     for g in &mut groups {
-        g.members
-            .sort_by_key(|&i| (status_rank(sessions[i].status), i));
+        g.members.sort_by_key(|&i| sort_key(i));
     }
 
-    // Groups: by most-urgent member (min status rank), then label for
-    // determinism. No recency term, so active groups don't churn.
+    // Groups: by lowest member manual order, then label for determinism.
+    // Moves renumber all sessions densely in render order, so a group's
+    // minimum reproduces the group order the user last saw.
     groups.sort_by(|a, b| {
         let key = |g: &Group| {
-            let rank = g
+            let order = g
                 .members
                 .iter()
-                .map(|&i| status_rank(sessions[i].status))
+                .map(|&i| sort_key(i).0)
                 .min()
-                .unwrap_or(u8::MAX);
-            (rank, g.label.clone().unwrap_or_default())
+                .unwrap_or(i64::MAX);
+            (order, g.label.clone().unwrap_or_default())
         };
         key(a).cmp(&key(b))
     });
@@ -191,7 +174,7 @@ pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
     let mut depths = Vec::with_capacity(sessions.len());
     for g in &groups {
         // Nest children directly under their parent (parent-first, preserving
-        // the status-then-index order among siblings and among roots).
+        // the manual-order-then-index order among siblings and among roots).
         for (j, (i, depth)) in nest_group_members(sessions, &g.members)
             .into_iter()
             .enumerate()
@@ -209,7 +192,7 @@ pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
     }
 }
 
-/// Reorder a group's (already status-sorted) members into parent-first DFS
+/// Reorder a group's (already manually-sorted) members into parent-first DFS
 /// order: every member whose `parent_session_id` is also a member of this group
 /// nests directly under that parent; everyone else (no parent, parent in
 /// another group, or parent gone) is a root. Returns `(session index, depth)`
@@ -266,6 +249,106 @@ fn nest_group_members(sessions: &[&SessionInfo], members: &[usize]) -> Vec<(usiz
         }
     }
     out
+}
+
+/// Move the session `active_input_idx` one step up or down in the rendered
+/// order, returning the new flat order of **input indices** — or `None` when
+/// the move is a no-op (active session missing, or already at an edge it
+/// can't cross).
+///
+/// Every move swaps two adjacent **blocks** (a row plus its rendered subtree,
+/// so a parent always drags its nested children):
+///   - a root block (depth 0) swaps with the adjacent root block in its repo
+///     group; at the group edge the *whole group* swaps with the adjacent
+///     group; at the very top/bottom of the list it stays put;
+///   - a nested child swaps with its adjacent same-depth sibling and never
+///     leaves its parent.
+///
+/// The caller is expected to renumber `display_order` densely (`0..n`) along
+/// the returned order; [`compute_session_order`] then reproduces it exactly
+/// (groups stay contiguous runs, DFS nesting preserves block order).
+pub fn move_in_order(
+    ord: &SessionOrder,
+    active_input_idx: usize,
+    down: bool,
+) -> Option<Vec<usize>> {
+    let n = ord.order.len();
+    let pos = ord.order.iter().position(|&i| i == active_input_idx)?;
+    let depth = ord.depths[pos];
+
+    // End of the block rooted at `start`: first following row at <= its depth.
+    let block_end = |start: usize| {
+        let mut end = start + 1;
+        while end < n && ord.depths[end] > ord.depths[start] {
+            end += 1;
+        }
+        end
+    };
+    // Start of the group containing `p` / end of the group starting at `start`
+    // (group starts are the rows carrying a header label).
+    let group_start = |p: usize| (0..=p).rev().find(|&q| ord.headers[q].is_some());
+    let group_end = |start: usize| {
+        (start + 1..n)
+            .find(|&q| ord.headers[q].is_some())
+            .unwrap_or(n)
+    };
+
+    let end = block_end(pos);
+    let gs = group_start(pos)?;
+    let ge = group_end(gs);
+
+    // The two adjacent ranges to swap: `a` directly precedes `b`.
+    let (a, b) = if depth == 0 {
+        if down {
+            if end < ge {
+                // Swap with the next root block in the group.
+                (pos..end, end..block_end(end))
+            } else if ge < n {
+                // Last root block: the whole group swaps with the next group.
+                (gs..ge, ge..group_end(ge))
+            } else {
+                return None; // bottom of the list
+            }
+        } else if pos > gs {
+            // Swap with the previous root block in the group.
+            let prev = (gs..pos).rev().find(|&q| ord.depths[q] == 0)?;
+            (prev..pos, pos..end)
+        } else if gs > 0 {
+            // First root block: the whole group swaps with the previous group.
+            let pgs = group_start(gs - 1)?;
+            (pgs..gs, gs..ge)
+        } else {
+            return None; // top of the list
+        }
+    } else if down {
+        // Next sibling starts right after our block, at the same depth; a
+        // shallower row there means the parent's subtree (or group) ended.
+        if end < n && ord.depths[end] == depth {
+            (pos..end, end..block_end(end))
+        } else {
+            return None; // last sibling
+        }
+    } else {
+        // Scan back over deeper rows (the previous sibling's subtree); a
+        // same-depth row is that sibling, a shallower one is our parent.
+        let mut p = pos - 1;
+        while ord.depths[p] > depth {
+            p -= 1;
+        }
+        if ord.depths[p] == depth {
+            (p..pos, pos..end)
+        } else {
+            return None; // first sibling
+        }
+    };
+
+    debug_assert_eq!(a.end, b.start);
+    let mut new_order = Vec::with_capacity(n);
+    new_order.extend_from_slice(&ord.order[..a.start]);
+    new_order.extend_from_slice(&ord.order[b.start..b.end]);
+    new_order.extend_from_slice(&ord.order[a.start..a.end]);
+    new_order.extend_from_slice(&ord.order[b.end..]);
+    Some(new_order)
 }
 
 /// Display-ordered view of the session list. All fields are parallel arrays
@@ -735,21 +818,20 @@ mod tests {
     use crate::session::SessionStatus;
 
     #[test]
-    fn attention_sessions_sort_above_normal_ones() {
+    fn manually_ordered_sessions_sort_first_and_active_index_follows() {
         use crate::session::SessionInfo;
 
-        let mut busy = SessionInfo::new("busy".into());
-        busy.status = SessionStatus::Busy;
-        let mut attn = SessionInfo::new("attn".into());
-        attn.status = SessionStatus::Attention;
+        let first = SessionInfo::new("first".into());
+        let mut moved = SessionInfo::new("moved".into());
+        moved.display_order = Some(0);
 
-        let sessions = vec![&busy, &attn];
+        let sessions = vec![&first, &moved];
         let matches: Vec<Option<SessionMatch>> = vec![None, None];
-        // active_index points at the busy session; the attention one still
-        // floats to the top and active_index is remapped to follow it.
+        // active_index points at the first input session; the manually ordered
+        // one renders above it and active_index is remapped to follow it.
         let ordered = OrderedSessions::new(&sessions, &matches, 0);
-        assert_eq!(ordered.sessions[0].name, "attn");
-        assert_eq!(ordered.sessions[1].name, "busy");
+        assert_eq!(ordered.sessions[0].name, "moved");
+        assert_eq!(ordered.sessions[1].name, "first");
         assert_eq!(ordered.active_index, 1);
     }
 
@@ -1105,7 +1187,7 @@ mod tests {
         assert!(text.trim_end().ends_with("a-rather-long-session-name"));
     }
 
-    // --- compute_session_order (grouping + activity) ---
+    // --- compute_session_order (grouping + manual order) ---
 
     fn info_repo(name: &str, repo: &str, status: SessionStatus) -> SessionInfo {
         info_repos(name, &[repo], status)
@@ -1161,31 +1243,42 @@ mod tests {
     }
 
     #[test]
-    fn group_with_more_urgent_member_bubbles_up() {
-        // "infra" only has a Waiting session; "webapp" has an Attention one, so
-        // the webapp group sorts above infra even though infra sorts first by name.
+    fn status_never_reorders_groups() {
+        // Manual order wins: an Attention session recolors its dot but never
+        // bubbles its group. Groups stay in label order ("infra" < "webapp").
         let waiting = info_repo("infra-1", "infra", SessionStatus::Waiting);
         let attn = info_repo("web-attn", "webapp", SessionStatus::Attention);
         let busy = info_repo("web-busy", "webapp", SessionStatus::Busy);
         let sessions = vec![&waiting, &attn, &busy];
-        let names = order_names(&sessions);
-        // webapp group first (has Attention), ordered Attention then running within.
-        assert_eq!(names, vec!["web-attn", "web-busy", "infra-1"]);
+        assert_eq!(
+            order_names(&sessions),
+            vec!["infra-1", "web-attn", "web-busy"]
+        );
+
+        // Flip every status: the order is identical.
+        let waiting2 = info_repo("infra-1", "infra", SessionStatus::Attention);
+        let attn2 = info_repo("web-attn", "webapp", SessionStatus::Idle);
+        let busy2 = info_repo("web-busy", "webapp", SessionStatus::Error);
+        let flipped = vec![&waiting2, &attn2, &busy2];
+        assert_eq!(
+            order_names(&flipped),
+            vec!["infra-1", "web-attn", "web-busy"]
+        );
     }
 
     #[test]
-    fn busy_and_waiting_share_a_rank_and_keep_stable_order() {
-        // A live agent flickers Busy↔Waiting every tick; that must not reorder
-        // the list. Both rank as "running", so order stays the insertion order.
+    fn status_changes_never_reorder_within_a_group() {
+        // A live agent flickers Busy↔Waiting every tick, and sessions go
+        // Idle/Attention; none of it may move a row.
         let a = info_repo("a", "webapp", SessionStatus::Busy);
         let b = info_repo("b", "webapp", SessionStatus::Waiting);
         let c = info_repo("c", "webapp", SessionStatus::Busy);
         let sessions = vec![&a, &b, &c];
         assert_eq!(order_names(&sessions), vec!["a", "b", "c"]);
 
-        // Flip a's status Busy→Waiting and b's Waiting→Busy: order is unchanged.
-        let a2 = info_repo("a", "webapp", SessionStatus::Waiting);
-        let b2 = info_repo("b", "webapp", SessionStatus::Busy);
+        // Flip a→Attention and b→Idle: order is unchanged.
+        let a2 = info_repo("a", "webapp", SessionStatus::Attention);
+        let b2 = info_repo("b", "webapp", SessionStatus::Idle);
         let flipped = vec![&a2, &b2, &c];
         assert_eq!(order_names(&flipped), vec!["a", "b", "c"]);
     }
@@ -1202,7 +1295,7 @@ mod tests {
             .zip(headers.iter())
             .map(|(&i, h)| (sessions[i].name.as_str(), h.clone()))
             .collect();
-        // infra (Attention) group first with its header, then webapp group.
+        // Groups in label order ("infra" < "webapp"), header on first row only.
         assert_eq!(
             labelled,
             vec![
@@ -1249,6 +1342,155 @@ mod tests {
         );
     }
 
+    #[test]
+    fn display_order_overrides_insertion_within_group() {
+        let mut a = info_repo("a", "webapp", SessionStatus::Idle);
+        let mut b = info_repo("b", "webapp", SessionStatus::Idle);
+        a.display_order = Some(1);
+        b.display_order = Some(0);
+        let sessions = vec![&a, &b];
+        assert_eq!(order_names(&sessions), vec!["b", "a"]);
+    }
+
+    #[test]
+    fn group_order_follows_min_member_display_order() {
+        // "webapp" sorts after "infra" by label, but holds the lowest
+        // display_order, so the webapp group renders first.
+        let mut w1 = info_repo("w1", "webapp", SessionStatus::Idle);
+        let mut w2 = info_repo("w2", "webapp", SessionStatus::Idle);
+        let mut i1 = info_repo("i1", "infra", SessionStatus::Idle);
+        w1.display_order = Some(0);
+        w2.display_order = Some(1);
+        i1.display_order = Some(2);
+        let sessions = vec![&i1, &w1, &w2];
+        assert_eq!(order_names(&sessions), vec!["w1", "w2", "i1"]);
+    }
+
+    #[test]
+    fn unordered_sessions_append_after_ordered_in_insertion_order() {
+        let mut moved = info_repo("moved", "webapp", SessionStatus::Idle);
+        moved.display_order = Some(0);
+        let new1 = info_repo("new1", "webapp", SessionStatus::Idle);
+        let new2 = info_repo("new2", "webapp", SessionStatus::Idle);
+        // Unordered sessions (`None`) land after the ordered one, keeping
+        // their insertion order.
+        let sessions = vec![&new1, &moved, &new2];
+        assert_eq!(order_names(&sessions), vec!["moved", "new1", "new2"]);
+    }
+
+    // --- move_in_order ---
+
+    /// Apply `move_in_order` and return the resulting names, or `None` on no-op.
+    fn move_names<'a>(
+        sessions: &[&'a SessionInfo],
+        active: &str,
+        down: bool,
+    ) -> Option<Vec<&'a str>> {
+        let ord = compute_session_order(sessions);
+        let active_idx = sessions.iter().position(|s| s.name == active).unwrap();
+        move_in_order(&ord, active_idx, down).map(|order| {
+            order
+                .into_iter()
+                .map(|i| sessions[i].name.as_str())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn move_swaps_adjacent_root_blocks_within_group() {
+        let a = info_repo("a", "webapp", SessionStatus::Idle);
+        let b = info_repo("b", "webapp", SessionStatus::Idle);
+        let c = info_repo("c", "webapp", SessionStatus::Idle);
+        let sessions = vec![&a, &b, &c];
+        assert_eq!(move_names(&sessions, "a", true), Some(vec!["b", "a", "c"]));
+        assert_eq!(move_names(&sessions, "c", false), Some(vec!["a", "c", "b"]));
+    }
+
+    #[test]
+    fn move_past_group_edge_moves_whole_group() {
+        let i1 = info_repo("i1", "infra", SessionStatus::Idle);
+        let i2 = info_repo("i2", "infra", SessionStatus::Idle);
+        let w1 = info_repo("w1", "webapp", SessionStatus::Idle);
+        let w2 = info_repo("w2", "webapp", SessionStatus::Idle);
+        let sessions = vec![&i1, &i2, &w1, &w2];
+        // Render order: [i1, i2, w1, w2] ("infra" < "webapp").
+        // i2 is the last root block of infra: down moves the whole infra
+        // group below webapp.
+        assert_eq!(
+            move_names(&sessions, "i2", true),
+            Some(vec!["w1", "w2", "i1", "i2"])
+        );
+        // w1 is the first root block of webapp: up moves the whole webapp
+        // group above infra.
+        assert_eq!(
+            move_names(&sessions, "w1", false),
+            Some(vec!["w1", "w2", "i1", "i2"])
+        );
+    }
+
+    #[test]
+    fn move_at_list_edges_is_noop() {
+        let i1 = info_repo("i1", "infra", SessionStatus::Idle);
+        let w1 = info_repo("w1", "webapp", SessionStatus::Idle);
+        let sessions = vec![&i1, &w1];
+        // i1's group is at the top, w1's at the bottom.
+        assert_eq!(move_names(&sessions, "i1", false), None);
+        assert_eq!(move_names(&sessions, "w1", true), None);
+    }
+
+    #[test]
+    fn moving_parent_drags_nested_children() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let w1 = info_child("w1", "webapp", SessionStatus::Idle, &lead);
+        let other = info_repo("other", "webapp", SessionStatus::Idle);
+        let sessions = vec![&lead, &w1, &other];
+        // Render order: [lead, w1, other]; moving lead down carries w1 along.
+        assert_eq!(
+            move_names(&sessions, "lead", true),
+            Some(vec!["other", "lead", "w1"])
+        );
+    }
+
+    #[test]
+    fn child_moves_among_siblings_only() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let w1 = info_child("w1", "webapp", SessionStatus::Idle, &lead);
+        let w2 = info_child("w2", "webapp", SessionStatus::Idle, &lead);
+        let other = info_repo("other", "webapp", SessionStatus::Idle);
+        let sessions = vec![&lead, &w1, &w2, &other];
+        // Render order: [lead, w1, w2, other].
+        assert_eq!(
+            move_names(&sessions, "w1", true),
+            Some(vec!["lead", "w2", "w1", "other"])
+        );
+        // First/last sibling can't leave the parent.
+        assert_eq!(move_names(&sessions, "w1", false), None);
+        assert_eq!(move_names(&sessions, "w2", true), None);
+    }
+
+    #[test]
+    fn renumbering_along_moved_order_reproduces_it() {
+        // The app renumbers display_order densely along the returned order;
+        // compute_session_order must then reproduce that order exactly.
+        let i1 = info_repo("i1", "infra", SessionStatus::Idle);
+        let i2 = info_repo("i2", "infra", SessionStatus::Idle);
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        let w1 = info_child("w1", "webapp", SessionStatus::Idle, &lead);
+        let mut sessions_owned = [i1, i2, lead, w1];
+
+        let sessions: Vec<&SessionInfo> = sessions_owned.iter().collect();
+        let ord = compute_session_order(&sessions);
+        // Move i2 (last root of the top group) down: whole infra group drops.
+        let active = sessions.iter().position(|s| s.name == "i2").unwrap();
+        let new_order = move_in_order(&ord, active, true).unwrap();
+
+        for (pos, &idx) in new_order.iter().enumerate() {
+            sessions_owned[idx].display_order = Some(pos as i64);
+        }
+        let sessions: Vec<&SessionInfo> = sessions_owned.iter().collect();
+        assert_eq!(order_names(&sessions), vec!["lead", "w1", "i1", "i2"]);
+    }
+
     // --- compute_session_order (parent/child nesting) ---
 
     #[test]
@@ -1279,17 +1521,16 @@ mod tests {
     }
 
     #[test]
-    fn attention_child_still_bubbles_its_group_up() {
+    fn attention_child_does_not_move_its_group() {
         let lead = info_repo("lead", "webapp", SessionStatus::Idle);
         let worker = info_child("worker", "webapp", SessionStatus::Attention, &lead);
         let busy = info_repo("busy", "infra", SessionStatus::Busy);
         let sessions = vec![&busy, &lead, &worker];
-        // The webapp group holds the Attention session (min rank 0), so it
-        // sorts above the merely-running infra group even though the parent
-        // itself is Idle; within the group the child stays nested.
+        // The child's Attention status doesn't bubble its group: groups stay
+        // in label order ("infra" < "webapp"); the child stays nested.
         assert_eq!(
             order_names_depths(&sessions),
-            vec![("lead", 0), ("worker", 1), ("busy", 0)]
+            vec![("busy", 0), ("lead", 0), ("worker", 1)]
         );
     }
 

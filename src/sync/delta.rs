@@ -96,6 +96,7 @@ fn session_changed(old: &SharedSession, new: &SharedSession) -> bool {
         || old.additional_dirs != new.additional_dirs
         || old.worktrees != new.worktrees
         || old.parent_session_id != new.parent_session_id
+        || old.display_order != new.display_order
 }
 
 #[cfg(test)]
@@ -116,6 +117,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         }
@@ -253,6 +255,26 @@ mod tests {
         let delta = StateDelta::compute(&old_state, &new_state);
 
         assert_eq!(delta.updated_sessions.len(), 1);
+    }
+
+    #[test]
+    fn session_changed_detects_display_order_change() {
+        let session_id = SessionId::default();
+
+        let mut old_state = SharedState::new();
+        let mut s1 = make_session(session_id, "Session");
+        s1.display_order = Some(0);
+        old_state.sessions.push(s1);
+
+        let mut new_state = SharedState::new();
+        let mut s2 = make_session(session_id, "Session");
+        s2.display_order = Some(2);
+        new_state.sessions.push(s2);
+
+        let delta = StateDelta::compute(&old_state, &new_state);
+
+        assert_eq!(delta.updated_sessions.len(), 1);
+        assert_eq!(delta.updated_sessions[0].display_order, Some(2));
     }
 
     #[test]

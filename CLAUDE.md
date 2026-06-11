@@ -388,6 +388,24 @@ so `Ctrl+J`/`Ctrl+K` navigation follows the tree automatically.
 Storage: nullable `sessions.parent_session_id` column (schema v30;
 v29 is reserved by an in-flight branch).
 
+### Manual session ordering
+
+The session list is **manually orderable**: `Shift+J`/`Shift+K`
+(while the session list is focused; rebindable
+`SessionListMoveDown`/`SessionListMoveUp` actions) move the selected
+session one row down/up. Manual order **wins** — status changes only
+recolor the dot, never move a row. A move swaps two adjacent
+*blocks* (a row plus its nested children, so a parent drags its
+subtree): root rows swap within their repo group, the **whole
+group** swaps past a group edge, and nested children move among
+their siblings only (`ui::project_list::move_in_order`, pure;
+`App::move_active_session` applies it). On every move all sessions
+are densely renumbered `0..n` and persisted, so the order survives
+restarts and syncs across instances via the existing
+`data_version` polling. Storage: nullable `sessions.display_order`
+column (schema v31); `None` = never moved, renders after ordered
+sessions in creation order (new sessions append to their group).
+
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on
 `automation create`) loops `automation tick` every 60 s and keeps
@@ -707,9 +725,11 @@ backend dependency stays visible at each call site.
   panel areas (responsive: <80 = terminal only, >=80 = 2-panel,
   >=120 = optional 3-panel). Widgets: `project_list` (session
   list with repo/branch display; `compute_session_order` is the
-  single comparator that orders sessions by activity/status and
-  groups them by repo under headers — shared with `App`'s
-  `Ctrl+J/K` navigation so the two never drift),
+  single comparator that orders sessions by manual order
+  (`display_order`, never by status) and groups them by repo
+  under headers — shared with `App`'s `Ctrl+J/K` navigation so
+  the two never drift; `move_in_order` is the pure reorder step
+  behind `Shift+J`/`Shift+K`),
   `terminal_view`, `info_panel`,
   `status_bar`, `repo_picker_modal` (repo selection with
   worktree toggle). `selection.rs` handles mouse-drag text
@@ -794,7 +814,9 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `F5` | Toggle tasks panel (visible at width >= 120) | Next to F4 |
 
 List contexts use plain `j`/`k`/`Enter` for navigation.
-Terminal forwards all non-Ctrl keys to the PTY.
+In the focused session list, `Shift+J`/`Shift+K` move the selected
+session down/up (manual reordering; whole groups move past a group
+edge). Terminal forwards all non-Ctrl keys to the PTY.
 `Shift+arrows/PageUp/PageDown` for scrollback.
 
 These defaults can be overridden two ways, both writing the same

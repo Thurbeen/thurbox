@@ -194,6 +194,9 @@ pub struct SessionInfo {
     /// Parent session (lead/worker relationship for orchestration).
     /// `None` for top-level sessions. Purely informational.
     pub parent_session_id: Option<SessionId>,
+    /// Manual position in the session list. `None` = never moved: renders
+    /// after all ordered sessions, in creation order.
+    pub display_order: Option<i64>,
 }
 
 impl SessionInfo {
@@ -216,6 +219,7 @@ impl SessionInfo {
             git_stats: None,
             repo_display_names: Vec::new(),
             parent_session_id: None,
+            display_order: None,
         }
     }
 }

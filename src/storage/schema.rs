@@ -3,9 +3,10 @@ use rusqlite::Connection;
 /// Current schema version. Incremented when schema changes.
 ///
 /// v29 is reserved by the in-flight `improve-agent-thurbox-cli` branch
-/// (`session_labels` + `session_spawn_config`); this branch takes v30.
+/// (`session_labels` + `session_spawn_config`); v30 added
+/// `parent_session_id`, v31 adds `display_order`.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 30;
+pub const SCHEMA_VERSION: u32 = 31;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -40,6 +41,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             additional_dirs   TEXT NOT NULL DEFAULT '',
             shell_backend_id  TEXT,
             parent_session_id TEXT,
+            display_order     INTEGER,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -196,6 +198,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (27, migrate_v27_repo_parent_bookmarks),
         (28, migrate_v28_run_related_session),
         (30, migrate_v30_parent_session_id),
+        (31, migrate_v31_display_order),
     ];
 
     for &(target, step) in steps {
@@ -857,6 +860,18 @@ fn migrate_v28_run_related_session(conn: &Connection) -> rusqlite::Result<()> {
 /// "duplicate column" error so a re-run is a no-op.
 fn migrate_v30_parent_session_id(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", []);
+    Ok(())
+}
+
+/// v30 → v31: add a nullable `display_order` column to `sessions` (manual
+/// position in the session list; `NULL` = never moved, renders after ordered
+/// sessions in creation order). No backfill on purpose.
+///
+/// Fresh v31 databases already have the column from `initialize` and skip this
+/// step; existing databases get it via the ALTER. `let _` swallows the
+/// "duplicate column" error so a re-run is a no-op.
+fn migrate_v31_display_order(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN display_order INTEGER", []);
     Ok(())
 }
 

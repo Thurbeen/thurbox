@@ -112,6 +112,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         worktrees: worktrees.clone(),
         shell_backend_id: None,
         parent_session_id: req.parent_session_id,
+        display_order: None,
         tombstone: false,
         tombstone_at: None,
     };
@@ -291,6 +292,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         };

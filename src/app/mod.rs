@@ -1289,6 +1289,8 @@ impl App {
                 session.info.id = deleted.id;
                 session.info.worktrees = worktree_infos;
                 session.info.parent_session_id = deleted.parent_session_id;
+                // `DeletedSessionInfo` doesn't carry display_order: a restored
+                // session simply re-appends at the end of its repo group.
                 resolve_repo_display_names(&mut session.info);
                 self.sessions.push(session);
                 self.active_index = self.sessions.len() - 1;
@@ -1315,6 +1317,7 @@ impl App {
         session.info.agent_session_id = shared.agent_session_id.clone();
         session.info.worktrees = shared.worktrees.iter().cloned().map(Into::into).collect();
         session.info.parent_session_id = shared.parent_session_id;
+        session.info.display_order = shared.display_order;
         resolve_repo_display_names(&mut session.info);
     }
 
@@ -2163,15 +2166,43 @@ impl App {
         }
     }
 
-    /// Indices into `self.sessions` in the order they are rendered.
-    ///
-    /// Delegates to the same `ui::project_list::compute_session_order` the
-    /// rendering widget uses, so `Ctrl+J`/`Ctrl+K` step through the list in the
-    /// exact order the user sees (repo groups ordered by activity/status).
-    fn render_order_indices(&self) -> Vec<usize> {
+    /// The rendered order of `self.sessions`, from the same
+    /// `ui::project_list::compute_session_order` the rendering widget uses, so
+    /// navigation and reordering operate on the exact order the user sees.
+    fn session_order(&self) -> crate::ui::project_list::SessionOrder {
         let infos: Vec<&crate::session::SessionInfo> =
             self.sessions.iter().map(|s| &s.info).collect();
-        crate::ui::project_list::compute_session_order(&infos).order
+        crate::ui::project_list::compute_session_order(&infos)
+    }
+
+    /// Indices into `self.sessions` in the order they are rendered — the order
+    /// `Ctrl+J`/`Ctrl+K` step through (repo groups in manual order).
+    fn render_order_indices(&self) -> Vec<usize> {
+        self.session_order().order
+    }
+
+    /// Move the active session one step up or down in the rendered order
+    /// (`Shift+J`/`Shift+K` in the session list): root blocks swap within their
+    /// repo group, whole groups swap past the group edge, nested children move
+    /// among their siblings (see `ui::project_list::move_in_order`).
+    ///
+    /// On success every session is renumbered densely along the new order and
+    /// persisted, so the order survives restarts and reaches other instances
+    /// via the DB poll. The selection follows the moved row automatically
+    /// (`active_index` is an input index, which the move never changes).
+    pub(crate) fn move_active_session(&mut self, down: bool) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let ord = self.session_order();
+        let Some(new_order) = crate::ui::project_list::move_in_order(&ord, self.active_index, down)
+        else {
+            return;
+        };
+        for (pos, &idx) in new_order.iter().enumerate() {
+            self.sessions[idx].info.display_order = Some(pos as i64);
+        }
+        self.save_state();
     }
 
     /// Whether the active session is the first row in render order (top of the
@@ -2887,6 +2918,7 @@ impl App {
             spawned.info.worktrees = worktree_infos;
             spawned.info.additional_dirs = shared_session.additional_dirs.clone();
             spawned.info.parent_session_id = shared_session.parent_session_id;
+            spawned.info.display_order = shared_session.display_order;
             self.sessions.push(spawned);
             self.save_state();
             tracing::debug!(
@@ -2984,6 +3016,7 @@ impl App {
                 .collect(),
             shell_backend_id: session.info.shell_backend_id.clone(),
             parent_session_id: session.info.parent_session_id,
+            display_order: session.info.display_order,
             tombstone: false,
             tombstone_at: None,
         }
@@ -3159,6 +3192,7 @@ impl App {
         session.info.agent = agent;
         session.info.worktrees = worktrees;
         session.info.parent_session_id = shared.parent_session_id;
+        session.info.display_order = shared.display_order;
         resolve_repo_display_names(&mut session.info);
 
         // Re-adopt shell pane if one was persisted
@@ -3222,7 +3256,19 @@ impl App {
             crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
         self.new_session.additional_dirs = shared.additional_dirs;
         self.new_session.parent_session_id = shared.parent_session_id;
+        // After a reboot every session takes this path (the tmux server died),
+        // so the manual list position must survive the respawn or one restart
+        // would scramble the whole order. `do_spawn_session` pushes + persists
+        // the fresh session; stamp the inherited order on it afterwards.
+        let display_order = shared.display_order;
+        let before = self.sessions.len();
         self.do_spawn_session(name, &config, worktrees);
+        if self.sessions.len() > before && display_order.is_some() {
+            if let Some(session) = self.sessions.last_mut() {
+                session.info.display_order = display_order;
+            }
+            self.save_state();
+        }
     }
 
     /// Find a discovered backend session matching a shared session.
@@ -7220,6 +7266,76 @@ mod tests {
     }
 
     #[test]
+    fn session_to_shared_maps_display_order() {
+        // Regression guard: `save_state` upserts every session via
+        // `session_to_shared`, so dropping the field here would wipe the
+        // manual list order from the DB on the TUI's next save.
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(backend_arc.clone()),
+            stub_agents(),
+            test_db(),
+        );
+
+        let mut session = Session::stub("ordered", &backend_arc, &provider);
+        session.info.display_order = Some(7);
+        app.sessions.push(session);
+
+        let shared = app.session_to_shared(&app.sessions[0]);
+        assert_eq!(shared.display_order, Some(7));
+
+        // And the metadata copy applies it back on adoption/update.
+        let mut adopted = Session::stub("ordered", &backend_arc, &provider);
+        App::apply_shared_session_metadata(&mut adopted, &shared);
+        assert_eq!(adopted.info.display_order, Some(7));
+    }
+
+    #[test]
+    fn move_active_session_renumbers_and_persists() {
+        let mut app = app_with_sessions(3);
+        for (i, s) in app.sessions.iter_mut().enumerate() {
+            s.info.name = format!("s{i}");
+        }
+        app.active_index = 0;
+
+        app.move_active_session(true);
+
+        // Render order is now [s1, s0, s2], densely renumbered 0..n.
+        assert_eq!(app.render_order_indices(), vec![1, 0, 2]);
+        assert_eq!(app.sessions[1].info.display_order, Some(0));
+        assert_eq!(app.sessions[0].info.display_order, Some(1));
+        assert_eq!(app.sessions[2].info.display_order, Some(2));
+        // The selection follows the moved row (input index unchanged).
+        assert_eq!(app.active_index, 0);
+
+        // Persisted: the DB lists sessions in the new order.
+        let names: Vec<String> = app
+            .db
+            .list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["s1", "s0", "s2"]);
+
+        // A status change never moves a row.
+        app.sessions[2].info.status = SessionStatus::Attention;
+        assert_eq!(app.render_order_indices(), vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn move_active_session_at_edge_is_noop() {
+        let mut app = app_with_sessions(2);
+        app.active_index = 0;
+        app.move_active_session(false); // already at the top
+        assert_eq!(app.render_order_indices(), vec![0, 1]);
+        assert!(app.sessions.iter().all(|s| s.info.display_order.is_none()));
+    }
+
+    #[test]
     fn ctrl_r_no_op_without_agent_session_id() {
         let mut app = app_with_sessions(1);
         // App::new may toast warnings from the developer's real keybindings
@@ -8086,6 +8202,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         }

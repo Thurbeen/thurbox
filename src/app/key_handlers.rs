@@ -1257,6 +1257,14 @@ impl App {
                 self.focus = InputFocus::Terminal;
                 true
             }
+            Action::SessionListMoveDown => {
+                self.move_active_session(true);
+                true
+            }
+            Action::SessionListMoveUp => {
+                self.move_active_session(false);
+                true
+            }
 
             // ── File viewer (scoped) ────────────────────────────────────
             Action::FileViewerDown => {

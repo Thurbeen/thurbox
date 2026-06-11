@@ -227,6 +227,7 @@ fn shared_session_to_json(s: &SharedSession) -> Value {
         "agent_session_id": s.agent_session_id,
         "cwd": s.cwd.as_ref().map(|p| p.display().to_string()),
         "parent_session_id": s.parent_session_id.map(|id| id.to_string()),
+        "display_order": s.display_order,
         "worktrees": s.worktrees.iter().map(|w| json!({
             "repo_path": w.repo_path.display().to_string(),
             "worktree_path": w.worktree_path.display().to_string(),
@@ -267,6 +268,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -283,6 +285,7 @@ mod tests {
         assert_eq!(s["agent_session_id"].as_str(), Some("agent-1"));
         assert_eq!(s["cwd"].as_str(), Some("/tmp/repo"));
         assert!(s["parent_session_id"].is_null());
+        assert!(s["display_order"].is_null());
         assert!(s["worktrees"].is_array());
     }
 
@@ -302,6 +305,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -374,6 +378,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         };
@@ -408,6 +413,7 @@ mod tests {
             worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
+            display_order: None,
             tombstone: false,
             tombstone_at: None,
         };
