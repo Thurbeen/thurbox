@@ -992,7 +992,12 @@ impl App {
     /// Execute the actual restart with the finalized config.
     fn do_restart(&mut self, config: SessionConfig) {
         let (rows, cols) = self.content_area_size();
-        let session = &mut self.sessions[self.active_index];
+        let Some(session) = self.active_session_mut() else {
+            // The active session vanished (e.g. deleted by a concurrent CLI
+            // command) before the restart fired — degrade to a no-op.
+            self.new_session.restart = false;
+            return;
+        };
         match session.restart(&config, rows, cols) {
             Ok(()) => {
                 self.save_state();
@@ -1372,8 +1377,11 @@ impl App {
                 // there is one), so switching to the terminal lands you there.
                 if needs_shell {
                     let (rows, cols) = self.content_area_size();
-                    let shell_cwd = session_process_cwd(&self.sessions[self.active_index].info);
-                    let session = &mut self.sessions[self.active_index];
+                    let Some(session) = self.active_session_mut() else {
+                        // Active session removed concurrently — nothing to toggle.
+                        return;
+                    };
+                    let shell_cwd = session_process_cwd(&session.info);
                     if let Err(e) = session.ensure_shell_pane(rows, cols, shell_cwd.as_deref()) {
                         error!("Failed to create shell pane: {e}");
                         self.set_error(format!("Failed to create shell: {e:#}"));
@@ -2685,9 +2693,16 @@ impl App {
                 // would leak that spawn_blocking thread for the process
                 // lifetime (the deleting instance owns the actual teardown).
                 self.sessions.remove(pos).detach();
-                if self.active_index >= self.sessions.len() {
-                    self.sync_active_session_to_project();
+                // Keep `active_index` anchored to the *same* session. When a
+                // session before the active one is removed every later session
+                // shifts down by one, so the active index must follow; removing
+                // the active session itself falls through to the clamp below.
+                if pos < self.active_index {
+                    self.active_index -= 1;
                 }
+                // Clamp into bounds (handles removing the active/last session
+                // and an emptied list) so later raw-index access can't panic.
+                self.sync_active_session_to_project();
             }
         }
     }
@@ -5043,6 +5058,71 @@ mod tests {
         assert_eq!(app.active_index, 0);
         app.switch_session_backward();
         assert_eq!(app.active_index, 0);
+    }
+
+    #[test]
+    fn apply_removed_keeps_active_anchored_when_earlier_session_removed() {
+        // Regression: a CLI `session delete` of a session *before* the active
+        // one must shift `active_index` down so it keeps pointing at the SAME
+        // session, not silently jump to a different one. [A, B(active), C];
+        // delete A → [B, C], active must stay on B (now index 0).
+        let mut app = app_with_sessions(3);
+        app.active_index = 1;
+        let active_id = app.sessions[1].info.id;
+        let removed_id = app.sessions[0].info.id;
+
+        app.apply_removed_sessions(vec![removed_id]);
+
+        assert_eq!(app.sessions.len(), 2);
+        assert_eq!(
+            app.active_index, 0,
+            "active_index should follow its session down after an earlier removal"
+        );
+        assert_eq!(
+            app.sessions[app.active_index].info.id, active_id,
+            "active session identity must be preserved across external removal"
+        );
+    }
+
+    #[test]
+    fn apply_removed_active_session_clamps_in_bounds() {
+        // Deleting the active session (the last one) must leave `active_index`
+        // in bounds so subsequent raw-index access (restart, shell toggle)
+        // can't panic. [A, B, C(active)]; delete C → [A, B], active in bounds.
+        let mut app = app_with_sessions(3);
+        app.active_index = 2;
+        let removed_id = app.sessions[2].info.id;
+
+        app.apply_removed_sessions(vec![removed_id]);
+
+        assert_eq!(app.sessions.len(), 2);
+        assert!(
+            app.active_index < app.sessions.len(),
+            "active_index must stay in bounds after the active session is removed"
+        );
+    }
+
+    #[test]
+    fn apply_removed_all_sessions_resets_index() {
+        // A CLI clearing every session must not leave a dangling index.
+        let mut app = app_with_sessions(2);
+        app.active_index = 1;
+        let ids: Vec<_> = app.sessions.iter().map(|s| s.info.id).collect();
+
+        app.apply_removed_sessions(ids);
+
+        assert!(app.sessions.is_empty());
+        assert_eq!(app.active_index, 0);
+    }
+
+    #[test]
+    fn restart_with_stale_active_index_does_not_panic() {
+        // If external state shrank the list and left `active_index` out of
+        // bounds, hitting restart must degrade gracefully, never panic.
+        let mut app = app_with_sessions(1);
+        app.active_index = 5; // stale, out of bounds
+                              // Should be a no-op, not an index-out-of-bounds panic.
+        app.restart_active_session();
     }
 
     #[test]
