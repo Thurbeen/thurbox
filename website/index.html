@@ -531,32 +531,142 @@
       <div class="container">
         <div class="section-title">
           <h2>Installation</h2>
-          <p>Get up and running in seconds</p>
+          <p>
+            Pick the method that fits your platform &mdash; every channel ships the same release
+          </p>
         </div>
-        <div class="install-main">
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button
-                class="copy-btn"
-                data-code="curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
-              >
-                Copy
-              </button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
+
+        <div class="install-methods">
+          <div class="install-method">
+            <h3>
+              Install Script
+              <span class="badge badge-green">Recommended</span>
+            </h3>
+            <p>
+              Linux &amp; macOS. Auto-detects your platform, verifies checksums, and installs the
+              latest release to
+              <code>~/.local/bin</code>
+              .
+            </p>
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">bash</span>
+              </div>
+              <div class="terminal-body">
+                <button
+                  class="copy-btn"
+                  data-code="curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
+                >
+                  Copy
+                </button>
+                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
+              </div>
             </div>
           </div>
-          <p style="margin-top: var(--space-md)">
-            Installs the latest release to
-            <code>~/.local/bin</code>
-            . Auto-detects platform, verifies checksums.
-          </p>
 
+          <div class="install-method">
+            <h3>Homebrew</h3>
+            <p>
+              macOS (Apple Silicon) &amp; Linux x86_64. Prebuilt binaries from the
+              <a href="https://github.com/Thurbeen/homebrew-thurbox" target="_blank" rel="noopener">
+                thurbox tap
+              </a>
+              ; pulls in
+              <code>tmux</code>
+              and
+              <code>git</code>
+              automatically.
+            </p>
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">bash</span>
+              </div>
+              <div class="terminal-body">
+                <button class="copy-btn" data-code="brew install thurbeen/thurbox/thurbox">
+                  Copy
+                </button>
+                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">brew</span> install thurbeen/thurbox/thurbox</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="install-method">
+            <h3>Arch Linux (AUR)</h3>
+            <p>
+              <a
+                href="https://aur.archlinux.org/packages/thurbox-bin"
+                target="_blank"
+                rel="noopener"
+              >
+                <code>thurbox-bin</code>
+              </a>
+              (prebuilt binary) or
+              <a href="https://aur.archlinux.org/packages/thurbox" target="_blank" rel="noopener">
+                <code>thurbox</code>
+              </a>
+              (builds from source) &mdash; use
+              <code>paru</code>
+              ,
+              <code>yay</code>
+              , or your preferred AUR helper.
+            </p>
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">bash</span>
+              </div>
+              <div class="terminal-body">
+                <button class="copy-btn" data-code="paru -S thurbox-bin">Copy</button>
+                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox-bin   <span class="syn-comment"># prebuilt (fastest)</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox       <span class="syn-comment"># build from source</span></code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="install-method">
+            <h3>From Source</h3>
+            <p>
+              Any platform with Rust 1.75+. Builds both the
+              <code>thurbox</code>
+              TUI and the
+              <code>thurbox-cli</code>
+              headless binary into
+              <code>target/release/</code>
+              .
+            </p>
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">bash</span>
+              </div>
+              <div class="terminal-body">
+                <button
+                  class="copy-btn"
+                  data-code="git clone https://github.com/Thurbeen/thurbox.git
+cd thurbox
+cargo build --release"
+                >
+                  Copy
+                </button>
+                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">git</span> clone <span class="syn-url">https://github.com/Thurbeen/thurbox.git</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">cd</span> thurbox
+<span class="syn-prompt">$</span> <span class="syn-cmd">cargo</span> build <span class="syn-flag">--release</span></code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="install-main">
           <div class="install-alt">
             <div class="install-alt-item">
               <h4>Custom Directory</h4>
@@ -567,8 +677,8 @@
               <p><code>VERSION=v0.1.0 curl ...</code></p>
             </div>
             <div class="install-alt-item">
-              <h4>From Source</h4>
-              <p><code>cargo build --release</code></p>
+              <h4>Full Guide</h4>
+              <p><a href="docs/installation.html">docs/installation</a></p>
             </div>
           </div>
 

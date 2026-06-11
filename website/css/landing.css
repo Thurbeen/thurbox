@@ -192,6 +192,42 @@
   text-align: left;
 }
 
+.install-methods {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-xl);
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+@media (min-width: 900px) {
+  .install-methods {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.install-method {
+  display: flex;
+  flex-direction: column;
+}
+
+.install-method h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.install-method > p {
+  font-size: 0.9rem;
+  margin-bottom: var(--space-md);
+}
+
+.install-method .terminal-frame {
+  margin-top: auto;
+  box-shadow: none;
+}
+
 .install-alt {
   display: flex;
   gap: var(--space-xl);
