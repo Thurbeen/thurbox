@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -765,6 +765,33 @@ impl TmuxBackend {
         })
     }
 
+    /// Capture a pane's scrollback history + visible screen as terminal bytes
+    /// suitable for seeding a fresh vt100 parser.
+    ///
+    /// The control-mode `%output` stream only carries bytes emitted after the
+    /// pane is connected, so an adopted session would otherwise start with an
+    /// empty scrollback — the forced repaint restores the visible screen but
+    /// not the history above it. `-e` keeps colors, `-J` rejoins wrapped lines
+    /// so they re-wrap at the adopting panel's width, `-S -<n>` extends the
+    /// capture into history (tmux clamps to what exists).
+    fn capture_history_seed(&self, pane_id: &str) -> Result<Vec<u8>> {
+        let lines = crate::session::settings::global()
+            .scrollback_lines
+            .min(MAX_CAPTURE_LINES as usize);
+        let start = format!("-{lines}");
+        let output = self.run_tmux(&[
+            "capture-pane",
+            "-e",
+            "-p",
+            "-J",
+            "-S",
+            &start,
+            "-t",
+            pane_id,
+        ])?;
+        Ok(history_seed_bytes(output.stdout))
+    }
+
     /// Resize a pane, forcing a SIGWINCH even if dimensions haven't changed.
     fn force_resize(&self, pane_id: &str, rows: u16, cols: u16) -> Result<()> {
         // Briefly resize to different dimensions to guarantee a SIGWINCH,
@@ -882,7 +909,22 @@ impl SessionBackend for TmuxBackend {
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to adopt invalid pane id: {backend_id:?}");
         }
-        self.connect_pane(backend_id, rows, cols)
+        // Capture before connecting so seeded history can't duplicate live
+        // output. Best-effort: adoption must survive a failed capture.
+        let seed = self.capture_history_seed(backend_id).unwrap_or_else(|e| {
+            warn!("Failed to capture history for pane {backend_id}: {e}");
+            Vec::new()
+        });
+        let connected = self.connect_pane(backend_id, rows, cols)?;
+        if seed.is_empty() {
+            return Ok(connected);
+        }
+        // Prepend the captured history to the live stream — the reader loop
+        // feeds it into the parser first, populating the UI scrollback.
+        Ok(AdoptedSession {
+            output: Box::new(Cursor::new(seed).chain(connected.output)),
+            input: connected.input,
+        })
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
@@ -1201,6 +1243,23 @@ pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Convert raw `capture-pane -p` output into vt100 parser input: drop the
+/// unused blank bottom of the visible pane and turn bare `\n` line endings
+/// into `\r\n` so each seeded line starts at column 0.
+fn history_seed_bytes(mut raw: Vec<u8>) -> Vec<u8> {
+    while raw.last() == Some(&b'\n') {
+        raw.pop();
+    }
+    let mut seed = Vec::with_capacity(raw.len() + raw.len() / 8);
+    for b in raw {
+        if b == b'\n' {
+            seed.push(b'\r');
+        }
+        seed.push(b);
+    }
+    seed
 }
 
 /// Session-level tmux options applied to the thurbox tmux session.
@@ -1852,5 +1911,46 @@ mod tests {
         // `tb-foo-bar` exist. The `=` prefix forces exact-match lookup.
         let t = window_target("foo");
         assert!(t.ends_with(":=tb-foo"), "got {t}");
+    }
+
+    // --- history_seed_bytes tests (adopt-time scrollback seeding) ---
+
+    #[test]
+    fn history_seed_converts_newlines_and_trims_trailing_blanks() {
+        let raw = b"line1\nline2\n\n\n".to_vec();
+        assert_eq!(history_seed_bytes(raw), b"line1\r\nline2".to_vec());
+    }
+
+    #[test]
+    fn history_seed_empty_capture_yields_empty_seed() {
+        assert_eq!(history_seed_bytes(Vec::new()), Vec::<u8>::new());
+        assert_eq!(history_seed_bytes(b"\n\n\n".to_vec()), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn history_seed_preserves_escape_sequences_and_inner_blanks() {
+        let raw = b"\x1b[31mred\x1b[0m\n\nplain\n".to_vec();
+        assert_eq!(
+            history_seed_bytes(raw),
+            b"\x1b[31mred\x1b[0m\r\n\r\nplain".to_vec()
+        );
+    }
+
+    #[test]
+    fn seeded_parser_exposes_history_as_scrollback() {
+        // Feed more lines than the screen height: the overflow must land in
+        // the parser's scrollback, scrollable from the UI.
+        let mut parser = vt100::Parser::new(5, 80, 100);
+        let raw: Vec<u8> = (1..=10)
+            .map(|i| format!("line{i}\n"))
+            .collect::<String>()
+            .into_bytes();
+        parser.process(&history_seed_bytes(raw));
+
+        parser.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(parser.screen().scrollback(), 5);
+        assert!(parser.screen().contents().contains("line1"));
+        parser.screen_mut().set_scrollback(0);
+        assert!(parser.screen().contents().contains("line10"));
     }
 }

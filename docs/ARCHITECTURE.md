@@ -374,12 +374,18 @@ waiter. `send_command_nowait` is only safe when nothing follows
 (e.g., `detach`) or when issued from the reader thread itself
 (e.g., pause resume).
 
-**Session restore**: On reconnect, `capture-pane -p -e -S -`
-provides a quick initial approximation of the screen content
-(text + colors, but not full escape sequences). A forced resize
-then triggers SIGWINCH, causing the TUI application to repaint
-its full screen through the normal `%output` stream — this
-delivers pixel-perfect rendering with all original formatting.
+**Session restore**: On reconnect (`TmuxBackend::adopt`),
+`capture-pane -e -p -J -S -<scrollback_lines>` seeds the fresh
+vt100 parser with the pane's scrollback history **and** visible
+screen (text + colors; `-J` rejoins wrapped lines so they re-wrap
+at the new width). Without this seed the parser starts empty and
+a session's pre-restart history cannot be scrolled in the UI —
+the `%output` stream only carries bytes emitted after connect. A
+forced resize then triggers SIGWINCH, causing the TUI application
+to repaint its visible screen through the normal `%output` stream
+— this delivers pixel-perfect rendering of the live region on top
+of the seeded history. Seeding is best-effort: a failed capture
+logs a warning and adoption proceeds with an empty seed.
 
 **Rejected**:
 
