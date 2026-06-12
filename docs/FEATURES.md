@@ -868,6 +868,31 @@ viewer's `/` is an unrelated in-file text search and is unchanged.
 
 ---
 
+## Feature Flags (`[features]` in settings.toml)
+
+Whole features can be switched off declaratively: `tasks`,
+`automations`, `file_viewer`, `global_search`, `info_panel`,
+`shell_pane` — all default `true` (see `docs/CONFIG.md`).
+
+**Decision: flags are UI-level gates, not data switches.** A disabled
+feature hides its pane, consumes its keybinding with an explanatory
+status toast (the chord never reaches the PTY), and contributes no
+global-search results — but its data and the `thurbox-cli` surface
+stay fully functional, so flipping a flag back on is lossless. The one
+deliberate exception is `automations = false`, which also stops the
+TUI firing due schedules and arming the tmux heartbeat at startup —
+"disable automations" should actually stop scheduled work, not just
+hide a list. Explicit CLI automation commands (and an already-armed
+keeper window) keep working, because typing a command is unambiguous
+intent.
+
+The F1 help panel intentionally keeps disabled actions listed: hiding
+rows would break the selection-index contract with
+`Action::rebindable_in_order()`, and the toast already explains why a
+chord did nothing.
+
+---
+
 ## Error Handling UX
 
 ### Rule: never crash, never modal

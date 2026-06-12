@@ -432,6 +432,10 @@ pub struct App {
     terminal_rows: u16,
     pub(crate) terminal_cols: u16,
     session_counter: usize,
+    /// Whole-feature switches (`[features]` in settings.toml), copied out of
+    /// the process-wide settings at construction so tests can flip flags
+    /// without touching the first-writer-wins global.
+    pub(crate) features: crate::session::settings::FeatureFlags,
     pub(crate) show_info_panel: bool,
     /// Whether the tasks panel column is shown (toggled like the file viewer).
     pub(crate) show_tasks_panel: bool,
@@ -598,6 +602,7 @@ impl App {
             terminal_rows: rows,
             terminal_cols: cols,
             session_counter,
+            features: crate::session::settings::global().features,
             show_info_panel: false,
             show_tasks_panel: false,
             show_file_viewer: false,
@@ -1428,15 +1433,7 @@ impl App {
     fn handle_mouse_click(&mut self, x: u16, y: u16, modifiers: KeyModifiers) {
         use crate::ui::links;
 
-        let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let areas = layout::compute_layout(
-            area,
-            self.show_info_panel,
-            self.show_tasks_panel,
-            self.show_file_viewer,
-            self.global_search.active,
-            self.automation_ui.cached_automations.len(),
-        );
+        let areas = self.screen_layout();
         let border_block = Block::default().borders(Borders::ALL);
 
         // Ctrl+Click: URL opening (terminal-relative, existing behavior)
@@ -1641,15 +1638,7 @@ impl App {
     /// Hit-test `(x, y)` against the current layout to find the scrollable pane
     /// under the cursor (used for pane-aware wheel scrolling).
     fn pane_at(&self, x: u16, y: u16) -> Option<ScrollPane> {
-        let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let areas = layout::compute_layout(
-            area,
-            self.show_info_panel,
-            self.show_tasks_panel,
-            self.show_file_viewer,
-            self.global_search.active,
-            self.automation_ui.cached_automations.len(),
-        );
+        let areas = self.screen_layout();
         let pos = Position::new(x, y);
         let hit = |r: Option<Rect>| r.map(|r| r.contains(pos)).unwrap_or(false);
 
@@ -3304,6 +3293,11 @@ impl App {
     /// Fire any due automations. Called once per ~second from `tick()`; pass
     /// `force = true` for the one-shot startup catch-up pass (ignores cadence).
     fn process_automations(&mut self, force: bool) {
+        // Automations fully off: the TUI neither fires schedules nor catches
+        // up at startup (explicit `thurbox-cli automation` use still works).
+        if !self.features.automations {
+            return;
+        }
         if !force && self.metrics.tick_count % 100 != 0 {
             return;
         }
@@ -4169,11 +4163,19 @@ impl App {
             return Vec::new();
         }
         let query_lc = query.to_lowercase();
-        // Group order: Sessions → Tasks → Automations → Files.
+        // Group order: Sessions → Tasks → Automations → Files. Disabled
+        // features contribute no results, so a selection can never preview or
+        // jump into a pane the feature flags hide.
         let mut out = self.search_sessions(query, &query_lc, with_content);
-        out.extend(self.search_tasks(query, &query_lc));
-        out.extend(self.search_automations(query));
-        out.extend(self.search_files(&query_lc));
+        if self.features.tasks {
+            out.extend(self.search_tasks(query, &query_lc));
+        }
+        if self.features.automations {
+            out.extend(self.search_automations(query));
+        }
+        if self.features.file_viewer {
+            out.extend(self.search_files(&query_lc));
+        }
         out
     }
 
@@ -4606,17 +4608,28 @@ impl App {
         }
     }
 
-    pub(crate) fn content_area_size(&self) -> (u16, u16) {
-        let area = Rect::new(0, 0, self.terminal_cols, self.terminal_rows);
-        let terminal = layout::compute_layout(
+    /// Compute the panel layout for `area` from the current panel visibility
+    /// and feature flags — the single funnel into `layout::compute_layout`,
+    /// so the view, mouse routing, and content sizing can never disagree.
+    pub(crate) fn layout_for(&self, area: Rect) -> layout::PanelAreas {
+        layout::compute_layout(
             area,
             self.show_info_panel,
             self.show_tasks_panel,
             self.show_file_viewer,
             self.global_search.active,
+            self.features.automations,
             self.automation_ui.cached_automations.len(),
         )
-        .terminal;
+    }
+
+    /// The layout for the whole terminal screen (mouse hit-testing, sizing).
+    pub(crate) fn screen_layout(&self) -> layout::PanelAreas {
+        self.layout_for(Rect::new(0, 0, self.terminal_cols, self.terminal_rows))
+    }
+
+    pub(crate) fn content_area_size(&self) -> (u16, u16) {
+        let terminal = self.screen_layout().terminal;
         let inner = Block::default().borders(Borders::ALL).inner(terminal);
         (inner.height, inner.width)
     }
@@ -5794,6 +5807,86 @@ mod tests {
         assert_eq!(app.focus, InputFocus::SessionList);
     }
 
+    /// Every `[features]` flag blocks its keybinding with a toast: state stays
+    /// untouched and the chord is consumed (never forwarded to the PTY).
+    #[test]
+    fn disabled_features_block_actions_with_a_toast() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(160, 40));
+        app.features = crate::session::settings::FeatureFlags {
+            tasks: false,
+            automations: false,
+            file_viewer: false,
+            global_search: false,
+            info_panel: false,
+            shell_pane: false,
+        };
+
+        app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
+        assert!(!app.show_tasks_panel);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert!(app.status_message.take().unwrap().text.contains("disabled"));
+
+        app.handle_key(KeyCode::F(3), KeyModifiers::NONE);
+        assert!(!app.show_file_viewer);
+        assert!(app.status_message.take().unwrap().text.contains("disabled"));
+
+        app.handle_key(KeyCode::F(2), KeyModifiers::NONE);
+        assert!(!app.show_info_panel);
+        assert!(app.status_message.take().unwrap().text.contains("disabled"));
+
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(!app.global_search.active);
+        assert!(app.status_message.take().unwrap().text.contains("disabled"));
+
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(matches!(app.modal, modals::Modal::None));
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert!(app.status_message.take().unwrap().text.contains("disabled"));
+
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(app.active_terminal_view(), TerminalView::Claude);
+        assert!(app.status_message.take().unwrap().text.contains("disabled"));
+    }
+
+    /// The automations flag flows through `screen_layout` (the shared layout
+    /// funnel): disabling it removes the pane and gives the session list the
+    /// whole left column.
+    #[test]
+    fn screen_layout_drops_automations_pane_when_disabled() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(100, 30));
+        let with = app.screen_layout();
+        assert!(with.automations_panel.is_some());
+
+        app.features.automations = false;
+        let without = app.screen_layout();
+        assert!(without.automations_panel.is_none());
+        assert_eq!(
+            without.left_panel.unwrap().height,
+            with.left_panel.unwrap().height + with.automations_panel.unwrap().height,
+            "session list absorbs the pane's rows"
+        );
+    }
+
+    /// With automations disabled there is no pane beneath the session list, so
+    /// `j`/`k` wrap within the list instead of flowing into the pane.
+    #[test]
+    fn session_list_wraps_when_automations_disabled() {
+        let mut app = app_with_sessions(2);
+        app.features.automations = false;
+        app.focus = InputFocus::SessionList;
+        app.active_index = 1; // last session in render order
+
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList, "no pane to flow into");
+        assert_eq!(app.active_index, 0, "j past the last wraps to the first");
+
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        assert_eq!(app.active_index, 1, "k above the first wraps to the last");
+    }
+
     #[test]
     fn opening_tasks_panel_populates_central_preview() {
         // Focusing the tasks panel (F5/Ctrl+W) must build the central-pane
@@ -6263,14 +6356,7 @@ mod tests {
     fn pane_at_central_pane_follows_focus() {
         let mut app = app_with_sessions(1);
         // Pick a point guaranteed to be inside the central (terminal) pane.
-        let areas = layout::compute_layout(
-            Rect::new(0, 0, app.terminal_cols, app.terminal_rows),
-            app.show_info_panel,
-            app.show_tasks_panel,
-            app.show_file_viewer,
-            app.global_search.active,
-            app.automation_ui.cached_automations.len(),
-        );
+        let areas = app.screen_layout();
         let cx = areas.terminal.x + areas.terminal.width / 2;
         let cy = areas.terminal.y + areas.terminal.height / 2;
 
@@ -6426,6 +6512,70 @@ mod tests {
             .results
             .iter()
             .any(|r| r.target == search::SearchTarget::Automation { id: aid }));
+    }
+
+    /// Disabled features contribute no search results, so a selection can
+    /// never preview or jump into a pane the feature flags hide.
+    #[test]
+    fn global_search_omits_disabled_scopes() {
+        let mut app = app_with_sessions(1);
+        app.features.tasks = false;
+        app.features.automations = false;
+        app.db
+            .create_task(&crate::storage::tasks::NewTask::local("fix the widget"))
+            .unwrap();
+        app.refresh_tasks();
+        let new = crate::storage::automations::NewAutomation {
+            name: "widget-nightly".into(),
+            enabled: true,
+            schedule: crate::session::AutomationSchedule::Once { at: 0 },
+            timezone: None,
+            action: crate::session::AutomationAction::Send {
+                session_id: SessionId::default(),
+            },
+            prompt: "go".into(),
+            next_run_at: None,
+        };
+        app.db.create_automation(&new).unwrap();
+        app.refresh_automations();
+
+        app.open_global_search();
+        for c in "widget".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(app.global_search.results.iter().all(|r| !matches!(
+            r.kind,
+            search::SearchKind::Task | search::SearchKind::Automation
+        )));
+    }
+
+    /// Automations fully off: the TUI must not claim/fire due automations on
+    /// tick or at startup catch-up (the CLI surface stays in charge).
+    #[test]
+    fn process_automations_noops_when_feature_disabled() {
+        let mut app = app_with_sessions(1);
+        app.features.automations = false;
+        let new = crate::storage::automations::NewAutomation {
+            name: "nightly".into(),
+            enabled: true,
+            schedule: crate::session::AutomationSchedule::Once { at: 1 },
+            timezone: None,
+            action: crate::session::AutomationAction::Send {
+                session_id: SessionId::default(),
+            },
+            prompt: "go".into(),
+            next_run_at: Some(1),
+        };
+        app.db.create_automation(&new).unwrap();
+        let now = crate::sync::current_time_millis();
+        assert_eq!(app.db.due_automations(now).unwrap().len(), 1);
+
+        app.process_automations(true);
+        assert_eq!(
+            app.db.due_automations(now).unwrap().len(),
+            1,
+            "a due automation must stay unclaimed while the feature is off"
+        );
     }
 
     #[test]

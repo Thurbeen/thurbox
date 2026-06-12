@@ -1,4 +1,5 @@
-//! User-tunable scalar settings (`~/.config/thurbox/settings.toml`).
+//! User-tunable settings (`~/.config/thurbox/settings.toml`): scalar knobs
+//! plus the `[features]` whole-feature switches.
 //!
 //! Pure data + parsing, per the `session/` architecture rule; the file IO and
 //! seeding live in `crate::agent::settings_config`. Only knobs a user
@@ -11,7 +12,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-/// Scalar settings loaded from `settings.toml`. Every field has a default, so
+/// Settings loaded from `settings.toml`. Every field has a default, so
 /// an absent file (the common case) behaves exactly like before the file
 /// existed. Unknown keys are tolerated but reported: the loader names every
 /// unrecognized key in a startup warning.
@@ -33,6 +34,54 @@ pub struct Settings {
     /// Days of audit-log history kept (pruned on startup).
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u64,
+    /// Per-feature on/off switches (`[features]` table). Absent table = all
+    /// enabled.
+    #[serde(default)]
+    pub features: FeatureFlags,
+}
+
+/// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
+/// feature's UI and blocks its keybinding; disabling `automations` also stops
+/// the TUI firing schedules and arming the tmux heartbeat. Data and
+/// `thurbox-cli` surfaces stay fully functional regardless, so re-enabling a
+/// flag is lossless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureFlags {
+    /// Tasks panel (F5/Ctrl+W) and task search results.
+    #[serde(default = "default_true")]
+    pub tasks: bool,
+    /// Automations pane, Ctrl+P editor, TUI schedule firing, heartbeat arming.
+    #[serde(default = "default_true")]
+    pub automations: bool,
+    /// File viewer column (F3) and file search results.
+    #[serde(default = "default_true")]
+    pub file_viewer: bool,
+    /// Global search strip (Ctrl+A).
+    #[serde(default = "default_true")]
+    pub global_search: bool,
+    /// Info panel column (F2).
+    #[serde(default = "default_true")]
+    pub info_panel: bool,
+    /// Per-session shell pane toggle (Ctrl+T).
+    #[serde(default = "default_true")]
+    pub shell_pane: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for FeatureFlags {
+    fn default() -> Self {
+        Self {
+            tasks: true,
+            automations: true,
+            file_viewer: true,
+            global_search: true,
+            info_panel: true,
+            shell_pane: true,
+        }
+    }
 }
 
 fn default_scrollback_lines() -> usize {
@@ -56,6 +105,7 @@ impl Default for Settings {
             two_panel_min_cols: default_two_panel_min_cols(),
             three_panel_min_cols: default_three_panel_min_cols(),
             audit_retention_days: default_audit_retention_days(),
+            features: FeatureFlags::default(),
         }
     }
 }
@@ -99,6 +149,36 @@ mod tests {
     fn type_mismatch_is_rejected() {
         let err = toml::from_str::<Settings>("scrollback_lines = \"many\"").unwrap_err();
         assert!(err.to_string().contains("scrollback_lines"));
+    }
+
+    #[test]
+    fn absent_features_table_enables_everything() {
+        let s: Settings = toml::from_str("").unwrap();
+        assert_eq!(s.features, FeatureFlags::default());
+        assert!(s.features.tasks && s.features.automations);
+    }
+
+    #[test]
+    fn empty_features_table_enables_everything() {
+        let s: Settings = toml::from_str("[features]").unwrap();
+        assert_eq!(s.features, FeatureFlags::default());
+    }
+
+    #[test]
+    fn partial_features_override_keeps_other_flags_enabled() {
+        let s: Settings = toml::from_str("[features]\ntasks = false").unwrap();
+        assert!(!s.features.tasks);
+        assert!(s.features.automations);
+        assert!(s.features.file_viewer);
+        assert!(s.features.global_search);
+        assert!(s.features.info_panel);
+        assert!(s.features.shell_pane);
+    }
+
+    #[test]
+    fn feature_flag_type_mismatch_is_rejected() {
+        let err = toml::from_str::<Settings>("[features]\ntasks = \"no\"").unwrap_err();
+        assert!(err.to_string().contains("tasks"));
     }
 
     #[test]

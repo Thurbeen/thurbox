@@ -231,6 +231,20 @@ mod tests {
         assert!(err.contains("keybindings.json"), "got: {err}");
     }
 
+    /// `serde_ignored` reports nested unknown keys, so a typo inside
+    /// `[features]` must fail strict validation just like a top-level one.
+    #[test]
+    fn validate_fails_on_unknown_feature_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = TestPathGuard::new(tmp.path());
+        let path = crate::agent::settings_config::settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[features]\nbogus = true\n").unwrap();
+
+        let err = validate().unwrap_err();
+        assert!(err.contains("settings.toml"), "got: {err}");
+    }
+
     #[test]
     fn show_reports_effective_settings_and_editor_source() {
         let tmp = tempfile::tempdir().unwrap();
@@ -242,6 +256,7 @@ mod tests {
         assert_eq!(v["editor"]["command"], json!("code --wait"));
         assert_eq!(v["editor"]["source"], json!("database (editor_command)"));
         assert!(v["settings"]["scrollback_lines"].is_number());
+        assert_eq!(v["settings"]["features"]["tasks"], json!(true));
         assert_eq!(v["agents"]["default"], json!("claude"));
     }
 }

@@ -16,7 +16,7 @@ development checkout never touches your real setup.
 |------|--------|-----------|------|---------|
 | `~/.config/thurbox/agents.toml` | TOML | you | **live** (mtime poll) | coding-agent CLI definitions |
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts |
-| `~/.config/thurbox/settings.toml` | TOML | you | startup | scalar tuning knobs |
+| `~/.config/thurbox/settings.toml` | TOML | you | startup | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | **live** (mtime poll) | key chord overrides |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
@@ -95,9 +95,9 @@ lifetime).
 
 ## settings.toml
 
-Scalar tuning knobs, seeded fully commented-out (defaults apply when
-absent). Only knobs a user plausibly wants are exposed; internals stay
-hardcoded.
+Scalar tuning knobs plus the `[features]` switches, seeded fully
+commented-out (defaults apply when absent). Only knobs a user plausibly
+wants are exposed; internals stay hardcoded.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
@@ -105,6 +105,33 @@ hardcoded.
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit-log history kept (pruned on startup) |
+
+### `[features]` — whole-feature switches
+
+Turn major TUI features off entirely. All default to `true`; like the
+rest of settings.toml, changes need a restart. A disabled feature's
+pane never renders, its keybinding shows a status toast instead of
+acting, and its global-search scope returns no results. Data is never
+touched, so re-enabling a flag is lossless.
+
+| Key | Disables |
+|-----|----------|
+| `tasks` | tasks panel (`F5`/`Ctrl+W`) and task search results |
+| `automations` | automations pane, `Ctrl+P`, TUI schedule firing, heartbeat arming |
+| `file_viewer` | file viewer column (`F3`) and file search results |
+| `global_search` | global search strip (`Ctrl+A`) |
+| `info_panel` | info panel column (`F2`) |
+| `shell_pane` | per-session shell toggle (`Ctrl+T`) |
+
+`automations = false` is a full stop on the TUI side: the pane
+disappears (the session list takes the whole left column and `j`/`k`
+wrap within it), and the TUI neither fires due schedules nor arms the
+tmux heartbeat keeper on startup. Explicit `thurbox-cli automation`
+commands still work — and `automation create` still arms the
+heartbeat, so an already-armed keeper window (or an OS timer from
+`packaging/`) keeps firing schedules externally. Disabling
+`shell_pane` hides existing shell panes but never kills their
+processes.
 
 ## themes.toml
 

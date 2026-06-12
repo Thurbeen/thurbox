@@ -16,7 +16,7 @@ use crate::ui::selection;
 use crate::ui::theme::Theme;
 use crate::ui::{
     agent_picker_modal, automation_editor_modal, automations_list_modal, automations_panel,
-    branch_selector_modal, file_viewer, global_search, info_panel, layout, project_list,
+    branch_selector_modal, file_viewer, global_search, info_panel, project_list,
     restore_sessions_modal, session_name_modal, status_bar, task_editor_modal, tasks_panel,
     terminal_view, theme_picker_modal, worktree_name_modal,
 };
@@ -30,14 +30,7 @@ impl App {
         // geometry + drag target here for the mouse handlers to hit-test.
         self.scrollbar_hits.clear();
 
-        let areas = layout::compute_layout(
-            frame.area(),
-            self.show_info_panel,
-            self.show_tasks_panel,
-            self.show_file_viewer,
-            self.global_search.active,
-            self.automation_ui.cached_automations.len(),
-        );
+        let areas = self.layout_for(frame.area());
 
         self.render_header(frame, areas.header);
         self.render_left_panel(frame, areas.left_panel);
@@ -429,12 +422,17 @@ impl App {
                 focus_label,
                 sync_in_progress: self.worktree_sync.in_progress,
                 tick_count: self.metrics.tick_count,
-                automation_count: self
-                    .automation_ui
-                    .cached_automations
-                    .iter()
-                    .filter(|a| a.enabled)
-                    .count(),
+                // With automations disabled the badge would advertise a
+                // feature the TUI won't fire — report 0 so it stays hidden.
+                automation_count: if self.features.automations {
+                    self.automation_ui
+                        .cached_automations
+                        .iter()
+                        .filter(|a| a.enabled)
+                        .count()
+                } else {
+                    0
+                },
                 file_viewer_open: self.show_file_viewer,
             },
         );

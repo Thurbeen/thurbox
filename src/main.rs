@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
     // slow host must not block TUI startup, so check_available()/ensure_ready()
     // are deferred to first spawn/restore (see App::backend_for).
-    // Load (or seed) the scalar settings and publish them process-wide before
+    // Load (or seed) the settings and publish them process-wide before
     // anything reads them (Database::open prunes the audit log; layout and
     // terminal wiring read breakpoints/scrollback).
     let (settings, mut config_warnings) =
@@ -154,7 +154,9 @@ async fn main() -> Result<()> {
 
     // Arm the tmux heartbeat keeper so automations keep firing after the TUI is
     // closed (best-effort: a missing/old tmux just means TUI-only firing).
-    {
+    // Skipped when the `automations` feature flag is off — `thurbox-cli
+    // automation create` still arms it, since that's explicit user intent.
+    if thurbox::session::settings::global().features.automations {
         let cli = thurbox::agent::tmux::resolve_cli_binary();
         if let Err(e) = thurbox::agent::tmux::ensure_automation_heartbeat(&cli) {
             tracing::warn!("Failed to arm automation heartbeat: {e}");

@@ -1165,6 +1165,16 @@ impl App {
         }
     }
 
+    /// Gate a feature-flagged action: returns whether the feature is enabled,
+    /// surfacing a toast naming the switch when it isn't. Callers still
+    /// consume the key either way (a disabled chord must not reach the PTY).
+    fn feature_gate(&mut self, enabled: bool, what: &str) -> bool {
+        if !enabled {
+            self.set_info(format!("{what} is disabled ([features] in settings.toml)"));
+        }
+        enabled
+    }
+
     fn dispatch_action(&mut self, action: crate::session::Action) -> bool {
         use crate::session::Action;
         match action {
@@ -1181,7 +1191,9 @@ impl App {
             // else run the action.
             Action::OpenInEditor => self.act_unless_terminal(Self::open_active_in_editor),
             Action::OpenAutomations => {
-                self.open_automations_list();
+                if self.feature_gate(self.features.automations, "Automations") {
+                    self.open_automations_list();
+                }
                 true
             }
             Action::StartSync => {
@@ -1189,7 +1201,9 @@ impl App {
                 true
             }
             Action::ToggleShell => {
-                self.toggle_shell_view();
+                if self.feature_gate(self.features.shell_pane, "Shell pane") {
+                    self.toggle_shell_view();
+                }
                 true
             }
             Action::ForkSession => self.act_unless_terminal(Self::fork_active_session),
@@ -1231,20 +1245,28 @@ impl App {
                 true
             }
             Action::ToggleInfoPanel => {
-                self.show_info_panel = !self.show_info_panel;
-                self.resize_sessions_to_content_area();
+                if self.feature_gate(self.features.info_panel, "Info panel") {
+                    self.show_info_panel = !self.show_info_panel;
+                    self.resize_sessions_to_content_area();
+                }
                 true
             }
             Action::FocusTasks => {
-                self.act_toggle_tasks();
+                if self.feature_gate(self.features.tasks, "Tasks panel") {
+                    self.act_toggle_tasks();
+                }
                 true
             }
             Action::ToggleFileViewer => {
-                self.act_toggle_file_viewer();
+                if self.feature_gate(self.features.file_viewer, "File viewer") {
+                    self.act_toggle_file_viewer();
+                }
                 true
             }
             Action::GlobalSearch => {
-                self.open_global_search();
+                if self.feature_gate(self.features.global_search, "Global search") {
+                    self.open_global_search();
+                }
                 true
             }
 
@@ -1423,8 +1445,10 @@ impl App {
 
     /// Session-list `Ctrl+J`: step to the next session, or flow into the
     /// automations pane past the last so the left column reads as one list.
+    /// With automations disabled there is no pane to flow into, so the list
+    /// wraps onto itself.
     fn act_session_list_next(&mut self) {
-        if self.active_is_last_in_order() {
+        if self.features.automations && self.active_is_last_in_order() {
             self.focus = InputFocus::Automations;
             self.automation_ui.automation_panel_index = 0;
             self.refresh_automation_view();
@@ -1436,7 +1460,7 @@ impl App {
     /// Session-list `Ctrl+K`: step to the previous session, or flow into the
     /// automations pane (last row) above the first.
     fn act_session_list_prev(&mut self) {
-        if self.active_is_first_in_order() {
+        if self.features.automations && self.active_is_first_in_order() {
             self.focus = InputFocus::Automations;
             self.automation_ui.automation_panel_index = self
                 .automation_ui

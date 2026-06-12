@@ -1,7 +1,7 @@
-//! Loading and seeding of the scalar-settings config file.
+//! Loading and seeding of the settings config file.
 //!
-//! `~/.config/thurbox/settings.toml` holds the few user-tunable scalars (see
-//! [`crate::session::settings::Settings`]). On first run the file is seeded
+//! `~/.config/thurbox/settings.toml` holds the user-tunable scalars and
+//! feature flags (see [`crate::session::settings::Settings`]). On first run the file is seeded
 //! fully commented-out, so a fresh install runs on the built-in defaults. A
 //! malformed file degrades to the defaults with a startup warning.
 
@@ -33,6 +33,19 @@ config_version = 1
 
 # Days of audit-log history kept (pruned on startup).
 # audit_retention_days = 90
+
+# Feature flags: turn whole TUI features off. All default to true.
+# Disabling `automations` also stops the TUI firing schedules and arming
+# the tmux heartbeat on startup; explicit `thurbox-cli automation`
+# commands (and an already-armed heartbeat window) keep working. Data is
+# never touched, so re-enabling a flag is lossless.
+# [features]
+# tasks = true            # F5/Ctrl+W tasks panel
+# automations = true      # automations pane, Ctrl+P, schedule firing
+# file_viewer = true      # F3 file viewer column
+# global_search = true    # Ctrl+A search strip
+# info_panel = true       # F2 info panel
+# shell_pane = true       # Ctrl+T per-session shell
 "#;
 
 /// Path to the settings file: `~/.config/thurbox/settings.toml`.
@@ -122,6 +135,13 @@ mod tests {
             "two_panel_min_cols",
             "three_panel_min_cols",
             "audit_retention_days",
+            "[features]",
+            "tasks",
+            "automations",
+            "file_viewer",
+            "global_search",
+            "info_panel",
+            "shell_pane",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
@@ -173,5 +193,20 @@ mod tests {
         assert_eq!(s.scrollback_lines, 4000);
         assert_eq!(s.audit_retention_days, 7);
         assert_eq!(s.two_panel_min_cols, 80);
+    }
+
+    #[test]
+    fn load_or_seed_reads_feature_overrides() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[features]\nautomations = false\n").unwrap();
+
+        let (s, warnings) = load_or_seed_with_warnings();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+        assert!(!s.features.automations);
+        assert!(s.features.tasks, "untouched flags stay enabled");
     }
 }

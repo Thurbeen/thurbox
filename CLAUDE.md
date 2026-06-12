@@ -416,8 +416,12 @@ keeper, and an OS timer never double-fire.
 
 In the TUI, automations also get a dedicated **Automations pane**
 beneath the session list (left column). It is always present
-(showing `none` when empty) and is treated as **part of the session
-pane**: it forms one continuous, **circular** vertical list with the
+(showing `none` when empty) — unless disabled via `[features]
+automations = false` in settings.toml, which hides the pane (the
+session list takes the whole column and `j`/`k` wrap within it),
+blocks `Ctrl+P`, stops the TUI firing schedules, and skips arming the
+heartbeat (the CLI surface stays fully functional) — and is treated
+as **part of the session pane**: it forms one continuous, **circular** vertical list with the
 session list. `j` past the last session drops focus into the pane and
 `k` at the top automation hands focus back to the last session; the
 ends wrap too — `j` past the last automation loops to the **top** of
@@ -464,7 +468,9 @@ the persistent `App::automation_editor` state (kept in sync by
 ## Tasks (todo list)
 
 Thurbox has a **task list**: todo items (title + markdown description +
-status). A task can be **acted on by a coding agent** via a **trigger-time
+status). The whole TUI surface is gated by `[features] tasks` in
+settings.toml (disabled: F5/Ctrl+W toasts, no task search results; the
+CLI stays functional). A task can be **acted on by a coding agent** via a **trigger-time
 picker** (`r`): you choose *Send → a running session* or *Spawn new session…*
 (the normal repo→agent flow) at the moment you act — the action is **not**
 authored into the task. Either way the agent is seeded with a **full context
@@ -574,7 +580,9 @@ A **non-modal bottom strip** (`Ctrl+A`, rebindable) searches **every scope at on
 matched), **automations** (name), and **files** (the active session's file
 tree). `Enter` jumps to the selected result and focuses its pane —
 switching to a session's terminal, the tasks panel, the automations pane,
-or the file viewer (revealing the path).
+or the file viewer (revealing the path). Gated by `[features]
+global_search` in settings.toml; scopes whose feature is disabled
+(tasks/automations/file viewer) contribute no results.
 
 - **Live in-place highlighting**: instead of reprinting results in the
   strip, matched characters highlight **in the panels themselves** (session
