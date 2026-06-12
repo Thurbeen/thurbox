@@ -45,9 +45,9 @@ adds:
 - `Ctrl+R` restart preserves the conversation when the agent
   supports resume; `Ctrl+F` forks a session; `Ctrl+T` toggles a
   shell pane.
-- Fuzzy session search (`/`), clickable URLs, mouse selection +
-  clipboard, automations (`Ctrl+P`), soft-delete with undo
-  (`Ctrl+Z`) and restore (`Ctrl+U`).
+- Global search (`Ctrl+A`), full mouse navigation, clickable URLs,
+  automations (`Ctrl+P`), soft-delete with undo (`Ctrl+Z`) and
+  restore (`Ctrl+U`).
 
 > **Note:** The session list display is not yet perfect and will
 > keep improving. What it can show is heavily dependent on the
@@ -215,6 +215,54 @@ Nine themes (five dark, four light) switch live with `Ctrl+Y`:
 
 ![Theme switcher](./docs/media/thurbox-theme.gif)
 
+### Mouse navigation
+
+The whole TUI is clickable (enabled by default; see
+[Feature flags](#feature-flags) to turn it off):
+
+- **Click a row** in the session list, tasks panel, automations
+  pane, or file viewer to select it and focus that pane. A file row
+  also opens the file / toggles the directory; a session-list group
+  header selects that group's first session.
+- **Click a picker row** (theme, agent, host, branch, …) to select
+  **and confirm** it in one click. Modals swallow stray clicks, so a
+  misclick can never discard typed input.
+- **Hover** underlines the row under the pointer; the **mouse
+  wheel** scrolls the focused terminal (and steps the selection
+  while a modal is open, with a draggable scrollbar on long lists).
+- **Drag** selects text in the terminal; `Ctrl+C` copies it.
+  `Ctrl+Click` opens a URL.
+
+Set `mouse = false` in `settings.toml` to skip mouse capture
+entirely and keep your terminal's native selection / URL handling.
+
+### Feature flags
+
+Whole TUI features can be switched off in
+`~/.config/thurbox/settings.toml` under `[features]` (seeded
+commented-out; everything defaults to `true`). A disabled feature
+hides its pane and turns its keybinding into an explanatory toast,
+but its data and the `thurbox-cli` surface keep working — so
+flipping a flag back on is lossless.
+
+```toml
+[features]
+tasks = true          # F5/Ctrl+W tasks panel
+automations = true    # automations pane, Ctrl+P, schedule firing
+file_viewer = true    # F3/Ctrl+E file viewer
+global_search = true  # Ctrl+A search strip
+info_panel = true     # F2/Ctrl+B info panel
+shell_pane = true     # Ctrl+T per-session shell
+mouse = true          # mouse capture: clicks, wheel, drag-select, hover
+```
+
+`automations = false` is the one flag with teeth beyond the UI: it
+also stops the TUI from firing due schedules and arming the tmux
+heartbeat at startup (explicit `thurbox-cli automation` commands
+still work). The same `settings.toml` holds scalar knobs
+(scrollback, layout breakpoints, audit retention) — see
+[docs/CONFIG.md](docs/CONFIG.md) for every config file in one place.
+
 ## Prerequisites
 
 - **tmux >= 3.2**
@@ -377,11 +425,14 @@ command = "codex"
 | `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
+| `Ctrl+A` | Global search (sessions/tasks/automations/files) | search **A**ll |
+| `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | **W**ork items |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
+| `Shift+J` / `Shift+K` | Move selected session down/up (manual order) | reorder |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
 | `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
@@ -390,9 +441,13 @@ command = "codex"
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
-| `F1` | Help overlay | Universal |
-| `F2` | Toggle info panel | Next to F1 |
-| `F3` | Toggle file viewer | Next to F2 |
+| `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
+| `Ctrl+B` / `F2` | Toggle info panel | **B**rief |
+| `Ctrl+E` / `F3` | Toggle file viewer | **E**xplorer |
+
+Every chord above is rebindable from the `F1` editor (or by editing
+`~/.config/thurbox/keybindings.json`). `Shift+J`/`Shift+K` reorder the
+session list only while it is focused.
 
 **macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
 Ghostty) the Command key works as a modifier — `Cmd+J`/`Cmd+Shift+J`
@@ -406,10 +461,12 @@ Terminal.app delivers no Cmd chords; everything else works there.
 |-----|--------|
 | `j` / `Down` | Next item |
 | `k` / `Up` | Previous item |
-| `/` | Fuzzy search (projects or sessions) |
 | `Enter` | Select / focus |
 
-Session search matches against name, agent, and branch.
+Searching is unified into the global search strip (`Ctrl+A`); there
+is no separate per-list `/` filter. It matches sessions on name,
+agent, branch, and live terminal-buffer content. (The file viewer's
+own in-file `/` text search is unrelated and still there.)
 
 ### Terminal Scrollback and Selection
 
@@ -561,6 +618,8 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   decisions with rationale
 - [docs/FEATURES.md](docs/FEATURES.md) — Feature-level design
   choices (including agent definitions)
+- [docs/CONFIG.md](docs/CONFIG.md) — Every config file, env var,
+  and DB setting in one place (settings.toml, feature flags, …)
 
 ## Development
 

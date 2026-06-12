@@ -83,6 +83,8 @@
             <li><a href="#global-search">Global Search</a></li>
             <li><a href="#responsive-ui">Responsive UI</a></li>
             <li><a href="#themes">Themes</a></li>
+            <li><a href="#mouse-navigation">Mouse Navigation</a></li>
+            <li><a href="#feature-flags">Feature Flags</a></li>
             <li><a href="#session-persistence">Session Persistence</a></li>
             <li><a href="#headless-cli">Headless CLI</a></li>
           </ul>
@@ -750,7 +752,7 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <a href="#themes" class="heading-anchor">#</a>
           </h2>
           <p>
-            Eight built-in palettes (four dark, four light) switch live with
+            Nine built-in palettes (five dark, four light) switch live with
             <code>Ctrl+Y</code>
             and persist across restarts.
           </p>
@@ -775,6 +777,77 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
               ).
             </figcaption>
           </figure>
+
+          <h2 id="mouse-navigation">
+            Mouse Navigation
+            <a href="#mouse-navigation" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The whole TUI is clickable (on by default; disable with the
+            <code>mouse</code>
+            feature flag below):
+          </p>
+          <ul>
+            <li>
+              <strong>Click a row</strong>
+              in the session list, tasks panel, automations pane, or file viewer to select it and
+              focus that pane. File rows also open the file or toggle the directory.
+            </li>
+            <li>
+              <strong>Click a picker row</strong>
+              (theme, agent, host, branch, &hellip;) to select
+              <em>and</em>
+              confirm in one click. Open modals swallow stray clicks, so a misclick never discards
+              typed input.
+            </li>
+            <li>
+              <strong>Hover</strong>
+              underlines the row under the pointer; the
+              <strong>mouse wheel</strong>
+              scrolls the focused terminal and steps the selection while a modal is open (with a
+              draggable scrollbar on long lists).
+            </li>
+            <li>
+              <strong>Drag</strong>
+              selects terminal text (
+              <code>Ctrl+C</code>
+              copies);
+              <code>Ctrl+Click</code>
+              opens a URL.
+            </li>
+          </ul>
+
+          <h2 id="feature-flags">
+            Feature Flags
+            <a href="#feature-flags" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Whole TUI features can be switched off in
+            <code>~/.config/thurbox/settings.toml</code>
+            under
+            <code>[features]</code>
+            (seeded commented-out; everything defaults to
+            <code>true</code>
+            ). A disabled feature hides its pane and turns its keybinding into an explanatory toast,
+            but its data and the
+            <code>thurbox-cli</code>
+            surface keep working &mdash; so flipping a flag back on is lossless.
+          </p>
+          <pre><code>[features]
+tasks = true          # F5/Ctrl+W tasks panel
+automations = true    # automations pane, Ctrl+P, schedule firing
+file_viewer = true    # F3/Ctrl+E file viewer
+global_search = true  # Ctrl+A search strip
+info_panel = true     # F2/Ctrl+B info panel
+shell_pane = true     # Ctrl+T per-session shell
+mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code></pre>
+          <p>
+            <code>automations = false</code>
+            is the one flag with teeth beyond the UI: it also stops the TUI from firing due
+            schedules and arming the tmux heartbeat at startup (explicit
+            <code>thurbox-cli automation</code>
+            commands still work).
+          </p>
 
           <h2 id="session-persistence">
             Session Persistence
