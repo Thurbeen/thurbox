@@ -1,21 +1,24 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
 use super::centered_fixed_height_rect;
-use super::project_list::render_scroll_indicators;
 use super::render_modal_frame;
 use super::theme::Theme;
+use super::{render_selector_rows, selector_line};
 
 pub struct BranchSelectorState<'a> {
     pub branches: &'a [String],
     pub selected_index: usize,
 }
 
-pub fn render_branch_selector_modal(frame: &mut Frame, state: &BranchSelectorState<'_>) {
+pub fn render_branch_selector_modal(
+    frame: &mut Frame,
+    state: &BranchSelectorState<'_>,
+) -> super::SelectorHits {
     let height = (state.branches.len().min(15) + 4) as u16;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
@@ -29,34 +32,14 @@ pub fn render_branch_selector_modal(frame: &mut Frame, state: &BranchSelectorSta
         ])
         .split(inner);
 
-    let items: Vec<ListItem<'_>> = state
+    // Windowed around the selection with a scrollbar when more branches than
+    // fit (the modal caps at 15 visible).
+    let lines: Vec<Line<'_>> = state
         .branches
         .iter()
-        .map(|branch| {
-            ListItem::new(Line::from(Span::styled(
-                branch.as_str(),
-                Theme::normal_item(),
-            )))
-        })
+        .enumerate()
+        .map(|(i, branch)| selector_line(branch, i == state.selected_index))
         .collect();
-
-    let list = List::new(items)
-        .highlight_symbol("▸ ")
-        .highlight_style(Theme::selected_item());
-
-    let mut list_state = ListState::default();
-    list_state.select(Some(state.selected_index));
-    frame.render_stateful_widget(list, chunks[0], &mut list_state);
-
-    // Compute a block-like rect around the list area for scroll indicators.
-    // Expand by 1 on each side to cover the outer block's border lines.
-    let indicator_area = Rect::new(
-        chunks[0].x.saturating_sub(1),
-        chunks[0].y.saturating_sub(1),
-        chunks[0].width + 2,
-        chunks[0].height + 2,
-    );
-    render_scroll_indicators(frame, indicator_area, state.branches.len(), &list_state, 1);
 
     let footer = Line::from(vec![
         Span::styled("j/k", Theme::keybind()),
@@ -67,6 +50,7 @@ pub fn render_branch_selector_modal(frame: &mut Frame, state: &BranchSelectorSta
         Span::styled(" cancel", Theme::keybind_desc()),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[1]);
+    render_selector_rows(frame, chunks[0], lines, state.selected_index)
 }
 
 #[cfg(test)]

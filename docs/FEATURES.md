@@ -358,6 +358,10 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Shift+PageUp` / `Alt+PageUp` | Focused terminal | Scroll up half page | |
 | `Shift+PageDown` / `Alt+PageDown` | Focused terminal | Scroll down half page | |
 | Mouse wheel | Focused terminal | Scroll up/down 3 lines | |
+| Click | Session/task/automation/file row | Select the row and focus its pane | |
+| Click | Any pane | Focus the pane under the cursor | |
+| Click | Picker modal row | Select and confirm (Enter; repo picker: Space toggle) | |
+| Hover | Clickable rows | Underline the row a click would hit | |
 | All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) | |
 
 ### Customizing shortcuts
@@ -872,7 +876,7 @@ viewer's `/` is an unrelated in-file text search and is unchanged.
 
 Whole features can be switched off declaratively: `tasks`,
 `automations`, `file_viewer`, `global_search`, `info_panel`,
-`shell_pane` — all default `true` (see `docs/CONFIG.md`).
+`shell_pane`, `mouse` — all default `true` (see `docs/CONFIG.md`).
 
 **Decision: flags are UI-level gates, not data switches.** A disabled
 feature hides its pane, consumes its keybinding with an explanatory
@@ -884,7 +888,10 @@ TUI firing due schedules and arming the tmux heartbeat at startup —
 "disable automations" should actually stop scheduled work, not just
 hide a list. Explicit CLI automation commands (and an already-armed
 keeper window) keep working, because typing a command is unambiguous
-intent.
+intent. `mouse = false` is similarly a hard gate at the boundary:
+terminal mouse capture is never enabled (so the terminal keeps its
+native selection/URL handling) and any stray mouse event is dropped
+before dispatch.
 
 The F1 help panel intentionally keeps disabled actions listed: hiding
 rows would break the selection-index contract with
@@ -1304,6 +1311,53 @@ confined to the active pane bounds.
 Selection is highlighted in the terminal render buffer using
 inverted colors. The clipboard handle is kept alive for the app
 lifetime to avoid Linux-specific "dropped too quickly" issues.
+
+---
+
+## Mouse Navigation
+
+The whole TUI is clickable. Every list renderer reports the screen
+rect of each row it draws; `App::view` records them per frame in a
+click registry (`App::click_targets`, mirroring `scrollbar_hits`)
+that the mouse handler hit-tests — first match wins, with rows
+recorded before their pane's whole-rect focus fallback.
+
+- **Click a row** (session list, tasks panel, automations pane,
+  file viewer): selects it and focuses that pane. A session-list
+  group header selects that group's first session. File rows also
+  activate (toggle a directory, open a file in the editor).
+  Clicking into another pane while an in-pane editor has unsaved
+  edits discards them, exactly like `Esc`/`Ctrl+H`.
+- **Click a pane**: focuses it; terminal and session-list clicks
+  still arm drag-selection on the same press.
+- **Click a picker row** (theme, agent, host, branch, task-action,
+  automations list, restore, F1 editor): selects and confirms it in
+  one click (Enter-equivalent — F1 starts chord capture). The repo
+  picker is the exception: a row click toggles/folds (Space), since
+  Enter there confirms the whole modal.
+- **Clicks are swallowed by modals**: anywhere else on (or outside)
+  an open modal does nothing — a stray click can never discard
+  typed input or fall through to the panes beneath. Clicks are also
+  ignored while the F1 editor is capturing a chord and while the
+  global-search strip is open.
+- **Hover**: the clickable row under the pointer is underlined
+  (driven by mouse-move events; applied post-render from the same
+  click registry).
+- **Modal scrolling**: while a modal is open the wheel steps its
+  selection (one row per tick, like `j`/`k`); overflowing picker
+  lists window around the selection and draw a draggable scrollbar
+  (`ScrollTarget::Modal`) in their rightmost column. Drag replays
+  Up/Down through the modal's own key handler, so clamping and side
+  effects (e.g. theme live preview) match keyboard navigation. Pane
+  scrollbars beneath an overlay are never grabbable.
+
+Dispatch order on click: modal (scrollbar grab → row act → swallow)
+→ `Ctrl+Click` URL → pane scrollbar grab → global-search swallow →
+click targets → text selection arming.
+
+The whole subsystem is gated by `[features] mouse` in settings.toml
+(default `true`): when disabled, mouse capture is never enabled, so
+the terminal keeps its native mouse behavior.
 
 ---
 

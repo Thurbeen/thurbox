@@ -8,17 +8,20 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{List, ListItem, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
 use super::{
-    centered_fixed_height_rect, render_modal_frame, selector_list_item, selector_nav_footer,
-    theme::Theme, truncate_ellipsis,
+    centered_fixed_height_rect, render_modal_frame, render_selector_rows, selector_line,
+    selector_nav_footer, theme::Theme, truncate_ellipsis,
 };
 use crate::app::modals::TaskActionPickerModal;
 
-pub fn render_task_action_picker_modal(frame: &mut Frame, state: &TaskActionPickerModal) {
+pub fn render_task_action_picker_modal(
+    frame: &mut Frame,
+    state: &TaskActionPickerModal,
+) -> super::SelectorHits {
     let height = (state.choices.len() as u16).max(2) + 6;
     let area = centered_fixed_height_rect(60, height, frame.area());
     let inner = render_modal_frame(frame, area, "Run task");
@@ -44,13 +47,13 @@ pub fn render_task_action_picker_modal(frame: &mut Frame, state: &TaskActionPick
         chunks[0],
     );
 
-    let items: Vec<ListItem<'_>> = state
+    let lines: Vec<Line<'_>> = state
         .choices
         .iter()
         .enumerate()
-        .map(|(i, choice)| selector_list_item(&choice.label(), i == state.selected))
+        .map(|(i, choice)| selector_line(&choice.label(), i == state.selected))
         .collect();
-    frame.render_widget(List::new(items), chunks[1]);
 
     frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[2]);
+    render_selector_rows(frame, chunks[1], lines, state.selected)
 }

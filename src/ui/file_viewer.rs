@@ -591,7 +591,7 @@ pub fn render_file_viewer(
     area: Rect,
     state: &FileViewerState,
     focus: FocusLevel,
-) -> Option<ScrollbarGeom> {
+) -> (Option<ScrollbarGeom>, Vec<super::RowHitbox>) {
     use ratatui::layout::{Constraint, Direction, Layout};
 
     let search_visible = state.search_active || !state.search_query.is_empty();
@@ -628,7 +628,7 @@ pub fn render_file_viewer(
     }
 
     if inner.height == 0 || inner.width == 0 {
-        return None;
+        return (None, Vec::new());
     }
 
     let list_area = inner;
@@ -639,13 +639,13 @@ pub fn render_file_viewer(
             Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(p, list_area);
-        return None;
+        return (None, Vec::new());
     }
 
     let rows = state.flatten();
     let height = list_area.height as usize;
     if height == 0 {
-        return None;
+        return (None, Vec::new());
     }
 
     let query_lc = if state.search_active && !state.search_query.is_empty() {
@@ -666,7 +666,19 @@ pub fn render_file_viewer(
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
 
-    track.and_then(|track| scrollbar::render_into(frame, track, rows.len(), height, state.selected))
+    // One hitbox per visible tree row; `rows_area` already excludes the
+    // reserved scrollbar column, so row clicks never overlap the track.
+    let hitboxes = (start..end)
+        .enumerate()
+        .map(|(line, i)| super::RowHitbox {
+            rect: Rect::new(rows_area.x, rows_area.y + line as u16, rows_area.width, 1),
+            index: i,
+        })
+        .collect();
+
+    let geom = track
+        .and_then(|track| scrollbar::render_into(frame, track, rows.len(), height, state.selected));
+    (geom, hitboxes)
 }
 
 fn row_marker(row: &FlatRow) -> &'static str {

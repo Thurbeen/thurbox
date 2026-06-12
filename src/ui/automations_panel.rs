@@ -35,7 +35,11 @@ pub struct AutomationsPaneState<'a> {
     pub preview_selected: bool,
 }
 
-pub fn render_automations_pane(frame: &mut Frame, area: Rect, state: &AutomationsPaneState<'_>) {
+pub fn render_automations_pane(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AutomationsPaneState<'_>,
+) -> Vec<super::RowHitbox> {
     let border_color = match state.focus {
         FocusLevel::Focused => Theme::border_focused(),
         _ => Theme::border_unfocused(),
@@ -58,7 +62,7 @@ pub fn render_automations_pane(frame: &mut Frame, area: Rect, state: &Automation
             Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(hint, inner);
-        return;
+        return Vec::new();
     }
 
     let width = inner.width as usize;
@@ -99,4 +103,5 @@ pub fn render_automations_pane(frame: &mut Frame, area: Rect, state: &Automation
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
+    super::single_line_row_hitboxes(inner, state.entries.len())
 }

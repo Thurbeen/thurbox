@@ -1,11 +1,13 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    widgets::{List, ListItem, Paragraph},
+    text::Line,
+    widgets::Paragraph,
     Frame,
 };
 
 use super::{
-    centered_fixed_height_rect, render_modal_frame, selector_list_item, selector_nav_footer,
+    centered_fixed_height_rect, render_modal_frame, render_selector_rows, selector_line,
+    selector_nav_footer,
 };
 
 /// One selectable host row: display label + the backend name it maps to
@@ -24,7 +26,7 @@ pub struct HostPickerState {
     pub selected_index: usize,
 }
 
-pub fn render_host_picker_modal(frame: &mut Frame, state: &HostPickerState) {
+pub fn render_host_picker_modal(frame: &mut Frame, state: &HostPickerState) -> super::SelectorHits {
     let height = (state.choices.len() as u16) + 3;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
@@ -35,13 +37,13 @@ pub fn render_host_picker_modal(frame: &mut Frame, state: &HostPickerState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    let items: Vec<ListItem<'_>> = state
+    let lines: Vec<Line<'_>> = state
         .choices
         .iter()
         .enumerate()
-        .map(|(i, c)| selector_list_item(&c.label, i == state.selected_index))
+        .map(|(i, c)| selector_line(&c.label, i == state.selected_index))
         .collect();
 
-    frame.render_widget(List::new(items), chunks[0]);
     frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[1]);
+    render_selector_rows(frame, chunks[0], lines, state.selected_index)
 }

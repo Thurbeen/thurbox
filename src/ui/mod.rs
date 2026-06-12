@@ -39,6 +39,65 @@ use ratatui::{
 use crate::session::SessionStatus;
 use theme::Theme;
 
+/// One clickable row rendered this frame: its rect (full row width) plus the
+/// row's index in whatever list the renderer drew. Pure geometry — the app
+/// layer decides what the index means (mirrors how `ScrollbarGeom` is wrapped
+/// into `ScrollTarget` hits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowHitbox {
+    pub rect: Rect,
+    pub index: usize,
+}
+
+/// Build one `RowHitbox` per single-line entry of a vertically packed list
+/// starting at `area`'s top row — the common shape for the tasks/automations
+/// panes and every selector modal. Rows that would fall below `area` are
+/// clipped.
+pub fn single_line_row_hitboxes(area: Rect, count: usize) -> Vec<RowHitbox> {
+    (0..count.min(area.height as usize))
+        .map(|i| RowHitbox {
+            rect: Rect::new(area.x, area.y + i as u16, area.width, 1),
+            index: i,
+        })
+        .collect()
+}
+
+/// Row hitboxes + optional scrollbar geometry returned by the selector-modal
+/// renderers (and the F1 help overlay).
+pub type SelectorHits = (Vec<RowHitbox>, Option<scrollbar::ScrollbarGeom>);
+
+/// Render a single-line-per-row selector list into `area`. When the entries
+/// overflow, the list windows around `selected` (like the file viewer) and a
+/// scrollbar is drawn in the reserved rightmost column. Returns the visible
+/// rows' hitboxes (indexed in entry space) plus the scrollbar geometry
+/// (`None` when everything fits).
+pub fn render_selector_rows(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'_>>,
+    selected: usize,
+) -> SelectorHits {
+    let total = lines.len();
+    let height = area.height as usize;
+    if total == 0 || height == 0 || area.width == 0 {
+        return (Vec::new(), None);
+    }
+    let selected = selected.min(total - 1);
+    let (rows_area, track) = scrollbar::reserve_track(area, total, height);
+    let (start, end) = file_viewer::visible_window(total, selected, height);
+    let visible: Vec<Line<'_>> = lines.into_iter().skip(start).take(end - start).collect();
+    frame.render_widget(Paragraph::new(visible), rows_area);
+    let hitboxes = (start..end)
+        .enumerate()
+        .map(|(line, i)| RowHitbox {
+            rect: Rect::new(rows_area.x, rows_area.y + line as u16, rows_area.width, 1),
+            index: i,
+        })
+        .collect();
+    let geom = track.and_then(|t| scrollbar::render_into(frame, t, total, height, selected));
+    (hitboxes, geom)
+}
+
 pub fn status_color(status: SessionStatus) -> Color {
     match status {
         SessionStatus::Busy => Theme::status_busy(),
@@ -336,16 +395,22 @@ pub fn selector_nav_footer() -> Line<'static> {
     ])
 }
 
-/// Build a selector list item with the standard "▸ " selected prefix and
+/// Build a selector row line with the standard "▸ " selected prefix and
 /// selected/normal theme styles.
-pub fn selector_list_item<'a>(label: &str, selected: bool) -> ratatui::widgets::ListItem<'a> {
+pub fn selector_line<'a>(label: &str, selected: bool) -> Line<'a> {
     let style = if selected {
         Theme::selected_item()
     } else {
         Theme::normal_item()
     };
     let prefix = if selected { "▸ " } else { "  " };
-    ratatui::widgets::ListItem::new(Line::from(Span::styled(format!("{prefix}{label}"), style)))
+    Line::from(Span::styled(format!("{prefix}{label}"), style))
+}
+
+/// Build a selector list item with the standard "▸ " selected prefix and
+/// selected/normal theme styles.
+pub fn selector_list_item<'a>(label: &str, selected: bool) -> ratatui::widgets::ListItem<'a> {
+    ratatui::widgets::ListItem::new(selector_line(label, selected))
 }
 
 /// Render a labeled text input field with cursor visualization and horizontal
@@ -574,6 +639,51 @@ mod tests {
 
     fn area(width: u16, height: u16) -> Rect {
         Rect::new(0, 0, width, height)
+    }
+
+    #[test]
+    fn single_line_row_hitboxes_clip_to_area() {
+        let rows = single_line_row_hitboxes(Rect::new(2, 5, 10, 3), 5);
+        assert_eq!(rows.len(), 3, "rows below the area are clipped");
+        assert_eq!(rows[0].rect, Rect::new(2, 5, 10, 1));
+        assert_eq!(rows[2].rect, Rect::new(2, 7, 10, 1));
+        assert_eq!(rows[2].index, 2);
+        assert!(single_line_row_hitboxes(Rect::new(0, 0, 10, 5), 0).is_empty());
+    }
+
+    #[test]
+    fn render_selector_rows_windows_overflow_with_scrollbar() {
+        let backend = ratatui::backend::TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(5, 2, 20, 4);
+
+                // Fits: all rows hit, full width, no scrollbar.
+                let lines: Vec<Line> = (0..3)
+                    .map(|i| selector_line(&format!("r{i}"), false))
+                    .collect();
+                let (rows, geom) = render_selector_rows(f, area, lines, 0);
+                assert_eq!(rows.len(), 3);
+                assert_eq!(rows[0].rect, Rect::new(5, 2, 20, 1));
+                assert!(geom.is_none());
+
+                // Overflows: windowed around the selection, scrollbar in the
+                // reserved rightmost column, indices in entry space.
+                let lines: Vec<Line> = (0..10)
+                    .map(|i| selector_line(&format!("r{i}"), i == 8))
+                    .collect();
+                let (rows, geom) = render_selector_rows(f, area, lines, 8);
+                assert_eq!(rows.len(), 4, "only the visible window is clickable");
+                assert!(rows.iter().any(|r| r.index == 8), "selection stays visible");
+                let geom = geom.expect("overflowing list draws a scrollbar");
+                assert_eq!(geom.track, Rect::new(24, 2, 1, 4));
+                assert!(
+                    rows.iter().all(|r| r.rect.width == 19),
+                    "rows exclude the track column"
+                );
+            })
+            .unwrap();
     }
 
     #[test]

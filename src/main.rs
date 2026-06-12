@@ -137,7 +137,13 @@ async fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    // Mouse capture is opt-out (`[features] mouse = false` in settings.toml):
+    // without it the terminal keeps its native mouse behavior and no mouse
+    // events ever reach the app.
+    if thurbox::session::settings::global().features.mouse {
+        execute!(std::io::stdout(), EnableMouseCapture)?;
+    }
+    execute!(std::io::stdout(), EnableBracketedPaste)?;
     push_keyboard_enhancement();
     let size = terminal.size()?;
 
@@ -205,6 +211,10 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
                         y: m.row,
                     }),
                     MouseEventKind::Up(MouseButton::Left) => Some(AppMessage::MouseUp {
+                        x: m.column,
+                        y: m.row,
+                    }),
+                    MouseEventKind::Moved => Some(AppMessage::MouseMove {
                         x: m.column,
                         y: m.row,
                     }),

@@ -65,6 +65,12 @@ pub struct FeatureFlags {
     /// Per-session shell pane toggle (Ctrl+T).
     #[serde(default = "default_true")]
     pub shell_pane: bool,
+    /// Mouse support: terminal mouse capture plus all click/scroll/hover
+    /// handling (click-to-select, drag selection, Ctrl+Click URLs,
+    /// scrollbars). Disable to keep the terminal's native mouse behavior
+    /// (e.g. its own text selection).
+    #[serde(default = "default_true")]
+    pub mouse: bool,
 }
 
 fn default_true() -> bool {
@@ -80,6 +86,7 @@ impl Default for FeatureFlags {
             global_search: true,
             info_panel: true,
             shell_pane: true,
+            mouse: true,
         }
     }
 }
@@ -173,6 +180,14 @@ mod tests {
         assert!(s.features.global_search);
         assert!(s.features.info_panel);
         assert!(s.features.shell_pane);
+        assert!(s.features.mouse);
+    }
+
+    #[test]
+    fn mouse_feature_flag_parses() {
+        let s: Settings = toml::from_str("[features]\nmouse = false").unwrap();
+        assert!(!s.features.mouse);
+        assert!(s.features.tasks, "untouched flags stay enabled");
     }
 
     #[test]

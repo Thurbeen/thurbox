@@ -20,7 +20,10 @@ pub struct AutomationsListState<'a> {
     pub selected_index: usize,
 }
 
-pub fn render_automations_list_modal(frame: &mut Frame, state: &AutomationsListState<'_>) {
+pub fn render_automations_list_modal(
+    frame: &mut Frame,
+    state: &AutomationsListState<'_>,
+) -> super::SelectorHits {
     let empty_footer = Line::from(vec![
         Span::styled("n", Theme::keybind()),
         Span::styled(" new  ", Theme::keybind_desc()),
@@ -36,7 +39,7 @@ pub fn render_automations_list_modal(frame: &mut Frame, state: &AutomationsListS
         Some("No automations — press n to create one"),
         Some(empty_footer),
     ) else {
-        return;
+        return (Vec::new(), None);
     };
 
     let inner_width = list_area.width as usize;
@@ -65,7 +68,7 @@ pub fn render_automations_list_modal(frame: &mut Frame, state: &AutomationsListS
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), list_area);
+    let hits = super::render_selector_rows(frame, list_area, lines, state.selected_index);
 
     let help = Line::from(vec![
         Span::styled("n", Theme::keybind()),
@@ -82,6 +85,7 @@ pub fn render_automations_list_modal(frame: &mut Frame, state: &AutomationsListS
         Span::styled(" close", Theme::keybind_desc()),
     ]);
     frame.render_widget(Paragraph::new(help), footer_area);
+    hits
 }
 
 fn truncate(s: &str, max: usize) -> String {

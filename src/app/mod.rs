@@ -324,6 +324,11 @@ pub enum AppMessage {
         x: u16,
         y: u16,
     },
+    /// Pointer moved with no button held — tracked for hover highlighting.
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
     Resize(u16, u16),
     ExternalStateChange(StateDelta),
 }
@@ -344,6 +349,8 @@ pub(crate) enum ScrollTarget {
     TaskPreview,
     FileViewer,
     RunHistory,
+    /// The active modal's list scrollbar — position is the selection index.
+    Modal,
 }
 
 /// One scrollbar rendered this frame: its geometry plus the scroll state it
@@ -351,6 +358,35 @@ pub(crate) enum ScrollTarget {
 pub(crate) struct ScrollbarHit {
     pub(crate) geom: ScrollbarGeom,
     pub(crate) target: ScrollTarget,
+}
+
+/// What a left click on a recorded screen region does. Recorded per-frame in
+/// [`App::click_targets`] (mirroring [`App::scrollbar_hits`]) so the mouse
+/// handler can route clicks to rows and panes without re-deriving the layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClickAction {
+    /// Select the session at this display-order index (resolved through
+    /// `render_order_indices()` at click time, like `Ctrl+J`/`Ctrl+K`).
+    SelectSession(usize),
+    /// Select the task at this index in the filtered tasks panel.
+    SelectTask(usize),
+    /// Select the automation at this index in the automations pane.
+    SelectAutomation(usize),
+    /// Select + activate the file-viewer row at this flattened tree index
+    /// (expand/collapse a directory, open a file).
+    SelectFileRow(usize),
+    /// Focus the pane — the whole-rect fallback recorded after row targets.
+    FocusPane(InputFocus),
+    /// Select + activate the row in the active modal's list.
+    ModalRow(usize),
+}
+
+/// One clickable region rendered this frame: its rect plus what a click on it
+/// does. First recorded match wins, so rows are pushed before their pane's
+/// whole-rect `FocusPane` fallback.
+pub(crate) struct ClickTarget {
+    pub(crate) rect: Rect,
+    pub(crate) action: ClickAction,
 }
 
 /// A scrollable pane identified by hit-testing the cursor against the layout,
@@ -487,6 +523,13 @@ pub struct App {
     /// The scrollbar currently being dragged, if any. Set when a click lands on
     /// a track, cleared on mouse-up, so drags keep driving the same pane.
     pub(crate) dragging_scrollbar: Option<ScrollTarget>,
+    /// Clickable regions rendered this frame (list rows, pane focus areas,
+    /// modal rows). Cleared and rebuilt every [`App::view`]; hit-tested by
+    /// [`App::handle_mouse_click`]. First match wins.
+    pub(crate) click_targets: Vec<ClickTarget>,
+    /// Last pointer position from a motion event, used to highlight the
+    /// hovered row in list panes and selector modals.
+    pub(crate) mouse_hover: Option<(u16, u16)>,
     /// Cached text extracted from the frame buffer for the current selection.
     selected_text_cache: Option<String>,
     /// Persistent clipboard handle to avoid "dropped too quickly" warnings on Linux.
@@ -624,6 +667,8 @@ impl App {
             text_selection: None,
             scrollbar_hits: Vec::new(),
             dragging_scrollbar: None,
+            click_targets: Vec::new(),
+            mouse_hover: None,
             selected_text_cache: None,
             clipboard: arboard::Clipboard::new().ok(),
             session_list_state: ratatui::widgets::ListState::default(),
@@ -1327,6 +1372,22 @@ impl App {
     }
 
     pub fn update(&mut self, msg: AppMessage) {
+        // `[features] mouse = false`: capture is never enabled, so mouse
+        // events shouldn't arrive — drop any that do (defense in depth, and
+        // it makes the flag authoritative in tests).
+        if !self.features.mouse
+            && matches!(
+                msg,
+                AppMessage::MouseScrollUp { .. }
+                    | AppMessage::MouseScrollDown { .. }
+                    | AppMessage::MouseClick { .. }
+                    | AppMessage::MouseDrag { .. }
+                    | AppMessage::MouseUp { .. }
+                    | AppMessage::MouseMove { .. }
+            )
+        {
+            return;
+        }
         match msg {
             AppMessage::KeyPress(code, mods) => self.handle_key(code, mods),
             AppMessage::Paste(text) => self.handle_paste(text),
@@ -1335,6 +1396,7 @@ impl App {
             AppMessage::MouseClick { x, y, modifiers } => self.handle_mouse_click(x, y, modifiers),
             AppMessage::MouseDrag { x, y } => self.handle_mouse_drag(x, y),
             AppMessage::MouseUp { x, y } => self.handle_mouse_up(x, y),
+            AppMessage::MouseMove { x, y } => self.mouse_hover = Some((x, y)),
             AppMessage::Resize(cols, rows) => self.handle_resize(cols, rows),
             AppMessage::ExternalStateChange(delta) => self.handle_external_state_change(delta),
         }
@@ -1433,6 +1495,14 @@ impl App {
     fn handle_mouse_click(&mut self, x: u16, y: u16, modifiers: KeyModifiers) {
         use crate::ui::links;
 
+        // A modal captures every click: a hit on one of its rows acts on it,
+        // anything else is swallowed — clicks never reach the scrollbars,
+        // panes, or selection beneath an overlay.
+        if !matches!(self.modal, modals::Modal::None) {
+            self.handle_modal_click(x, y);
+            return;
+        }
+
         let areas = self.screen_layout();
         let border_block = Block::default().borders(Borders::ALL);
 
@@ -1457,18 +1527,34 @@ impl App {
 
         // Grab a scrollbar thumb: a click on any rendered track starts a drag of
         // that pane's scroll state (and never starts a text selection).
-        if let Some(hit) = self.scrollbar_hits.iter().find(|h| h.geom.contains(x, y)) {
-            let target = hit.target;
-            let pos = hit.geom.position_for_y(y);
-            let content_len = hit.geom.content_len;
-            self.text_selection = None;
-            self.dragging_scrollbar = Some(target);
-            self.apply_scrollbar_position(target, pos, content_len);
+        if self.try_grab_scrollbar(x, y, None) {
             return;
         }
 
-        // Find which pane was clicked; use inner area (excluding borders).
+        // While the global-search strip is open it owns all input (it is
+        // entered/left only via its keybinding / Esc / Enter), so plain
+        // clicks are swallowed rather than stealing focus from it.
+        if self.global_search.active {
+            return;
+        }
+
+        // Row / pane targets recorded by the last view() (first match wins:
+        // rows are recorded before their pane's whole-rect fallback). A
+        // consumed click stops here; session-list and terminal clicks fall
+        // through so the same press still arms text selection.
         let pos = Position::new(x, y);
+        if let Some(action) = self
+            .click_targets
+            .iter()
+            .find(|t| t.rect.contains(pos))
+            .map(|t| t.action)
+        {
+            if self.activate_click_target(action) {
+                return;
+            }
+        }
+
+        // Find which pane was clicked; use inner area (excluding borders).
         let pane_rects = [Some(areas.terminal), areas.left_panel, areas.info_panel];
         let pane_inner = pane_rects
             .into_iter()
@@ -1487,6 +1573,178 @@ impl App {
             col: x as usize,
         };
         self.text_selection = Some(Selection::new(anchor, pane));
+    }
+
+    /// Route a click while a modal is open: a hit on a recorded row selects
+    /// it and immediately activates it with the row's primary key (replayed
+    /// through the modal's own key handler so side effects match the keyboard
+    /// path). Every other click — inside or outside the overlay — is
+    /// swallowed, so a stray click can never discard typed input or fall
+    /// through to the panes beneath.
+    fn handle_modal_click(&mut self, x: u16, y: u16) {
+        // The F1 editor consumes the next *keypress* while capturing; clicks
+        // are ignored so they can't be mistaken for a chord.
+        if self.help_is_capturing() {
+            return;
+        }
+        // The modal's own scrollbar is grabbable (recorded under
+        // `ScrollTarget::Modal`); the pane scrollbars beneath the overlay are
+        // not.
+        if self.try_grab_scrollbar(x, y, Some(ScrollTarget::Modal)) {
+            return;
+        }
+
+        // Only `ModalRow` targets count here: the registry also holds the
+        // pane targets recorded beneath the overlay (panes render first), and
+        // a plain first-match lookup would hit those instead and swallow the
+        // click.
+        let pos = Position::new(x, y);
+        let Some(row) = self.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::ModalRow(row) if t.rect.contains(pos) => Some(row),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(confirm) = self.select_modal_row(row) else {
+            return;
+        };
+        if matches!(self.modal, modals::Modal::Help(_)) {
+            self.handle_help_key(confirm, KeyModifiers::NONE);
+        } else {
+            self.handle_modal_key_if_open(confirm, KeyModifiers::NONE);
+        }
+    }
+
+    /// Move the open modal's selection to `row` (a row index recorded by this
+    /// frame's renderer, so it is always in bounds) and return the key that
+    /// activates a row there: `Enter` for the selectors and the F1 editor,
+    /// `Space` for the repo picker — where a row's action is toggle/fold and
+    /// `Enter` would confirm the whole modal on a misclick.
+    fn select_modal_row(&mut self, row: usize) -> Option<KeyCode> {
+        match &mut self.modal {
+            modals::Modal::Help(h) => {
+                h.selected = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::ThemePicker(tp) => {
+                tp.index = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::AgentPicker(ap) => {
+                ap.selected_index = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::HostPicker(hp) => {
+                hp.selected_index = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::BranchSelector(bs) => {
+                bs.index = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::TaskActionPicker(p) => {
+                p.selected = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::AutomationsList(al) => {
+                al.index = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::RestoreSessions(rs) => {
+                rs.index = row;
+                Some(KeyCode::Enter)
+            }
+            modals::Modal::RepoPicker(rp) => {
+                rp.focus = modals::RepoPickerFocus::List;
+                rp.list_index = row;
+                Some(KeyCode::Char(' '))
+            }
+            _ => None,
+        }
+    }
+
+    /// Act on a clicked target. Returns `true` when the click is fully
+    /// consumed; `false` lets the caller continue to text-selection arming
+    /// (terminal / session-list / info panes keep their drag-select).
+    fn activate_click_target(&mut self, action: ClickAction) -> bool {
+        match action {
+            ClickAction::SelectSession(display_idx) => {
+                if let Some(&idx) = self.render_order_indices().get(display_idx) {
+                    self.active_index = idx;
+                }
+                self.focus = InputFocus::SessionList;
+                self.on_focus_changed();
+                false
+            }
+            ClickAction::SelectTask(i) => {
+                self.focus = InputFocus::TaskList;
+                let len = self.task_ui.filtered_task_indices.len();
+                if len > 0 {
+                    self.task_ui.task_panel_index = i.min(len - 1);
+                }
+                // Same bookkeeping as entering the panel via the focus cycle
+                // (refresh list + in-pane preview). Leaving an in-pane editor
+                // this way discards unsaved edits, exactly like Esc/Ctrl+H.
+                self.on_focus_changed();
+                true
+            }
+            ClickAction::SelectAutomation(i) => {
+                self.focus = InputFocus::Automations;
+                let len = self.automation_ui.cached_automations.len();
+                if len > 0 {
+                    self.automation_ui.automation_panel_index = i.min(len - 1);
+                }
+                self.refresh_automation_view();
+                true
+            }
+            ClickAction::SelectFileRow(i) => {
+                self.focus = InputFocus::FileViewer;
+                self.file_viewer.select_index(i);
+                // Single click activates, like Enter: toggle a directory,
+                // open a file in the editor.
+                self.file_viewer_expand();
+                true
+            }
+            ClickAction::FocusPane(focus) => {
+                let changed = self.focus != focus;
+                self.focus = focus;
+                if changed {
+                    self.on_focus_changed();
+                }
+                // Terminal and session-list clicks keep arming drag-select.
+                !matches!(focus, InputFocus::Terminal | InputFocus::SessionList)
+            }
+            // Modal rows are dispatched by `handle_modal_click` before pane
+            // targets are even considered.
+            ClickAction::ModalRow(_) => true,
+        }
+    }
+
+    /// Whether the F1 editor is mid chord-capture — any key (including a
+    /// synthesized one) would become the new binding, so mouse handlers must
+    /// stay silent.
+    fn help_is_capturing(&self) -> bool {
+        matches!(self.modal, modals::Modal::Help(ref h) if h.capturing)
+    }
+
+    /// Grab the scrollbar track under the cursor and start dragging it.
+    /// `only` restricts which target may be grabbed: modals grab only their
+    /// own bar, panes grab any. Returns whether a track was hit.
+    fn try_grab_scrollbar(&mut self, x: u16, y: u16, only: Option<ScrollTarget>) -> bool {
+        let Some(hit) = self
+            .scrollbar_hits
+            .iter()
+            .find(|h| only.map_or(true, |t| h.target == t) && h.geom.contains(x, y))
+        else {
+            return false;
+        };
+        let target = hit.target;
+        let pos = hit.geom.position_for_y(y);
+        let content_len = hit.geom.content_len;
+        self.text_selection = None;
+        self.dragging_scrollbar = Some(target);
+        self.apply_scrollbar_position(target, pos, content_len);
+        true
     }
 
     fn handle_mouse_drag(&mut self, x: u16, y: u16) {
@@ -1558,6 +1816,66 @@ impl App {
                     .saturating_sub(1);
                 self.automation_ui.automation_run_index = pos.min(max);
             }
+            ScrollTarget::Modal => self.step_modal_selection_to(pos),
+        }
+    }
+
+    /// Move the open modal's selection to `target` by replaying Up/Down
+    /// through its own key handler — keeps each modal's clamping and side
+    /// effects (e.g. the theme picker's live preview) identical to keyboard
+    /// navigation. Stops as soon as a step no longer makes progress.
+    fn step_modal_selection_to(&mut self, target: usize) {
+        // While the F1 editor is capturing, any key would be taken as the new
+        // chord — never synthesize navigation there.
+        if self.help_is_capturing() {
+            return;
+        }
+        // The repo picker routes keys by its internal focus; a scrollbar drag
+        // always means the list.
+        if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.focus = modals::RepoPickerFocus::List;
+        }
+        loop {
+            let Some(current) = self.modal_selected_index() else {
+                return;
+            };
+            if current == target {
+                return;
+            }
+            let key = if target > current {
+                KeyCode::Down
+            } else {
+                KeyCode::Up
+            };
+            self.synthesize_modal_nav(key);
+            if self.modal_selected_index() == Some(current) {
+                return; // clamped — can't get closer
+            }
+        }
+    }
+
+    /// Replay a navigation key through the open modal's key handler.
+    fn synthesize_modal_nav(&mut self, code: KeyCode) {
+        if matches!(self.modal, modals::Modal::Help(_)) {
+            self.handle_help_key(code, KeyModifiers::NONE);
+        } else {
+            self.handle_modal_key_if_open(code, KeyModifiers::NONE);
+        }
+    }
+
+    /// The open modal's current selection index, when it has a selectable list.
+    fn modal_selected_index(&self) -> Option<usize> {
+        match &self.modal {
+            modals::Modal::Help(h) => Some(h.selected),
+            modals::Modal::ThemePicker(tp) => Some(tp.index),
+            modals::Modal::AgentPicker(ap) => Some(ap.selected_index),
+            modals::Modal::HostPicker(hp) => Some(hp.selected_index),
+            modals::Modal::BranchSelector(bs) => Some(bs.index),
+            modals::Modal::TaskActionPicker(p) => Some(p.selected),
+            modals::Modal::AutomationsList(al) => Some(al.index),
+            modals::Modal::RestoreSessions(rs) => Some(rs.index),
+            modals::Modal::RepoPicker(rp) => Some(rp.list_index),
+            _ => None,
         }
     }
 
@@ -1565,6 +1883,16 @@ impl App {
     /// wheel scrolls the hovered pane (terminal, task preview, file viewer, run
     /// history, or a list pane) rather than always the terminal.
     fn handle_mouse_scroll(&mut self, x: u16, y: u16, up: bool) {
+        // An open modal owns the wheel: one selection step per tick (like
+        // j/k), never the panes beneath. Capture mode would treat the
+        // synthesized key as the new chord, so it stays untouched.
+        if !matches!(self.modal, modals::Modal::None) {
+            if !self.help_is_capturing() {
+                self.synthesize_modal_nav(if up { KeyCode::Up } else { KeyCode::Down });
+            }
+            return;
+        }
+
         let step: i32 = if up { -1 } else { 1 };
         match self.pane_at(x, y) {
             Some(ScrollPane::Terminal) | None => {
@@ -5820,6 +6148,7 @@ mod tests {
             global_search: false,
             info_panel: false,
             shell_pane: false,
+            mouse: true,
         };
 
         app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
@@ -6388,6 +6717,385 @@ mod tests {
         app.handle_mouse_click(10, 10, KeyModifiers::NONE);
         assert!(app.dragging_scrollbar.is_none());
         assert!(app.text_selection.is_some());
+    }
+
+    // --- Mouse click targets (click-to-select/focus + modal rows) ---
+
+    #[test]
+    fn click_session_row_selects_and_focuses_list() {
+        let mut app = app_with_sessions(3);
+        app.focus = InputFocus::Terminal;
+        // As recorded by view(): a row hitbox inside the left panel.
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(1, 3, 20, 1),
+            action: ClickAction::SelectSession(2),
+        });
+
+        app.handle_mouse_click(5, 3, KeyModifiers::NONE);
+
+        let order = app.render_order_indices();
+        assert_eq!(app.active_index, order[2]);
+        assert_eq!(app.focus, InputFocus::SessionList);
+        // The same press still arms drag-select inside the left panel.
+        assert!(app.text_selection.is_some());
+    }
+
+    #[test]
+    fn click_terminal_pane_focuses_terminal_and_arms_selection() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::SessionList;
+        let areas = app.screen_layout();
+        app.click_targets.push(ClickTarget {
+            rect: areas.terminal,
+            action: ClickAction::FocusPane(InputFocus::Terminal),
+        });
+        let cx = areas.terminal.x + areas.terminal.width / 2;
+        let cy = areas.terminal.y + areas.terminal.height / 2;
+
+        app.handle_mouse_click(cx, cy, KeyModifiers::NONE);
+
+        assert_eq!(app.focus, InputFocus::Terminal);
+        assert!(app.text_selection.is_some());
+    }
+
+    #[test]
+    fn click_with_modal_open_is_swallowed() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index: 0 });
+        // A scrollbar track and a pane target beneath the overlay must both
+        // be unreachable while the modal is open.
+        app.scrollbar_hits.push(ScrollbarHit {
+            geom: ScrollbarGeom {
+                track: Rect::new(40, 5, 1, 10),
+                content_len: 100,
+                viewport: 10,
+            },
+            target: ScrollTarget::Terminal,
+        });
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(0, 0, 120, 24),
+            action: ClickAction::FocusPane(InputFocus::Terminal),
+        });
+
+        app.handle_mouse_click(40, 7, KeyModifiers::NONE);
+
+        assert!(app.dragging_scrollbar.is_none());
+        assert!(app.text_selection.is_none());
+        assert!(matches!(app.modal, modals::Modal::ThemePicker(_)));
+    }
+
+    #[test]
+    fn click_theme_picker_row_confirms_theme() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index: 2 });
+        // As in a real frame: the pane targets beneath the overlay are
+        // recorded first and overlap the modal — the modal row must still
+        // win while a modal is open.
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(0, 0, 120, 24),
+            action: ClickAction::FocusPane(InputFocus::Terminal),
+        });
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(30, 8, 20, 1),
+            action: ClickAction::ModalRow(0),
+        });
+
+        // Single click selects the row and confirms it (Enter-equivalent).
+        app.handle_mouse_click(35, 8, KeyModifiers::NONE);
+
+        assert!(matches!(app.modal, modals::Modal::None));
+        assert_eq!(
+            app.active_theme.name,
+            crate::ui::theme::all_theme_entries()[0].name
+        );
+    }
+
+    #[test]
+    fn click_repo_picker_row_toggles_not_confirms() {
+        let mut app = app_with_sessions(0);
+        app.start_new_session(); // no hosts → opens the repo picker
+        let modals::Modal::RepoPicker(ref mut rp) = app.modal else {
+            panic!("expected repo picker");
+        };
+        // Seed two plain bookmarks (no headers/children).
+        rp.bookmarks = vec!["/tmp/a".into(), "/tmp/b".into()];
+        rp.selected = vec![false, false];
+        rp.worktree = vec![false, false];
+        rp.is_header = vec![false, false];
+        rp.is_child = vec![false, false];
+        rp.filtered_indices = vec![0, 1];
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(30, 9, 40, 1),
+            action: ClickAction::ModalRow(1),
+        });
+
+        app.handle_mouse_click(35, 9, KeyModifiers::NONE);
+
+        // The click toggled the row's checkbox (Space), not Enter: the
+        // modal stays open and nothing was spawned.
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("repo picker must stay open after a row click");
+        };
+        assert_eq!(rp.list_index, 1);
+        assert!(rp.selected[1]);
+    }
+
+    #[test]
+    fn help_capture_ignores_clicks() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::Help(modals::HelpModal {
+            selected: 0,
+            capturing: true,
+        });
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(30, 8, 20, 1),
+            action: ClickAction::ModalRow(3),
+        });
+
+        app.handle_mouse_click(35, 8, KeyModifiers::NONE);
+
+        // Still capturing, selection untouched.
+        let modals::Modal::Help(ref h) = app.modal else {
+            panic!("help must stay open");
+        };
+        assert!(h.capturing);
+        assert_eq!(h.selected, 0);
+    }
+
+    #[test]
+    fn click_while_global_search_open_is_swallowed() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(app.global_search.active);
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(1, 3, 20, 1),
+            action: ClickAction::SelectSession(0),
+        });
+
+        app.handle_mouse_click(5, 3, KeyModifiers::NONE);
+
+        // The strip keeps focus; no selection armed, no target activated.
+        assert!(app.global_search.active);
+        assert_eq!(app.focus, InputFocus::GlobalSearch);
+        assert!(app.text_selection.is_none());
+    }
+
+    #[test]
+    fn view_records_session_row_click_targets() {
+        let mut app = app_with_sessions(2);
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+
+        let rows: Vec<Rect> = app
+            .click_targets
+            .iter()
+            .filter_map(|t| match t.action {
+                ClickAction::SelectSession(_) => Some(t.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 2, "one hitbox per rendered session row");
+
+        // Click the second rendered row end-to-end through the registry.
+        let target = app
+            .click_targets
+            .iter()
+            .find(|t| t.action == ClickAction::SelectSession(1))
+            .map(|t| t.rect)
+            .unwrap();
+        app.handle_mouse_click(target.x, target.y, KeyModifiers::NONE);
+        let order = app.render_order_indices();
+        assert_eq!(app.active_index, order[1]);
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    #[test]
+    fn view_drawn_modal_row_click_confirms() {
+        // End-to-end through a real frame: the registry holds the pane
+        // targets *and* the theme-picker rows; clicking a rendered row must
+        // reach the modal, not the pane beneath it.
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index: 1 });
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+
+        let row = app
+            .click_targets
+            .iter()
+            .find(|t| t.action == ClickAction::ModalRow(0))
+            .map(|t| t.rect)
+            .expect("theme picker rows must be recorded");
+        app.handle_mouse_click(row.x + 1, row.y, KeyModifiers::NONE);
+
+        assert!(matches!(app.modal, modals::Modal::None));
+        assert_eq!(
+            app.active_theme.name,
+            crate::ui::theme::all_theme_entries()[0].name
+        );
+    }
+
+    #[test]
+    fn mouse_move_updates_hover() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::MouseMove { x: 7, y: 9 });
+        assert_eq!(app.mouse_hover, Some((7, 9)));
+    }
+
+    /// `[features] mouse = false` drops every mouse message before dispatch.
+    #[test]
+    fn mouse_feature_flag_disables_all_mouse_handling() {
+        let mut app = app_with_sessions(2);
+        app.features.mouse = false;
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(1, 3, 20, 1),
+            action: ClickAction::SelectSession(1),
+        });
+
+        app.update(AppMessage::MouseMove { x: 5, y: 3 });
+        app.update(AppMessage::MouseClick {
+            x: 5,
+            y: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.update(AppMessage::MouseScrollUp { x: 5, y: 3 });
+
+        assert_eq!(app.mouse_hover, None);
+        assert_eq!(app.active_index, 0);
+        assert!(app.text_selection.is_none());
+        assert_eq!(app.focus, InputFocus::SessionList);
+    }
+
+    fn automations_list_modal(count: usize) -> modals::Modal {
+        modals::Modal::AutomationsList(modals::AutomationsListModal {
+            index: 0,
+            entries: (0..count)
+                .map(|i| modals::AutomationListEntry {
+                    id: i as i64,
+                    name: format!("auto-{i}"),
+                    summary: "daily".into(),
+                    enabled: true,
+                })
+                .collect(),
+        })
+    }
+
+    /// The wheel steps an open modal's selection (one row per tick, like j/k)
+    /// instead of scrolling the panes beneath.
+    #[test]
+    fn wheel_in_modal_steps_selection() {
+        let mut app = app_with_sessions(1);
+        app.modal = automations_list_modal(5);
+
+        app.handle_mouse_scroll(0, 0, false);
+        app.handle_mouse_scroll(0, 0, false);
+        let modals::Modal::AutomationsList(ref al) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(al.index, 2);
+
+        app.handle_mouse_scroll(0, 0, true);
+        let modals::Modal::AutomationsList(ref al) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(al.index, 1);
+    }
+
+    /// Clicking + dragging the modal's own scrollbar moves its selection;
+    /// the clamp guard stops at the list end.
+    #[test]
+    fn modal_scrollbar_drag_moves_selection() {
+        let mut app = app_with_sessions(1);
+        app.modal = automations_list_modal(20);
+        let track = Rect::new(70, 5, 1, 10);
+        app.scrollbar_hits.push(ScrollbarHit {
+            geom: ScrollbarGeom {
+                track,
+                content_len: 20,
+                viewport: 10,
+            },
+            target: ScrollTarget::Modal,
+        });
+
+        // Grab the bottom of the track → selection jumps to the last row.
+        app.handle_mouse_click(70, 14, KeyModifiers::NONE);
+        assert_eq!(app.dragging_scrollbar, Some(ScrollTarget::Modal));
+        let modals::Modal::AutomationsList(ref al) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(al.index, 19);
+
+        // Drag back to the top.
+        app.handle_mouse_drag(70, 5);
+        let modals::Modal::AutomationsList(ref al) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(al.index, 0);
+
+        app.handle_mouse_up(70, 5);
+        assert!(app.dragging_scrollbar.is_none());
+    }
+
+    /// While a modal is open, the wheel never reaches the panes beneath it.
+    #[test]
+    fn wheel_in_modal_does_not_scroll_panes() {
+        let mut app = app_with_sessions(2);
+        app.modal = automations_list_modal(2);
+        let before = app.active_index;
+        // Coordinates over the session list, which would normally switch
+        // sessions on wheel.
+        app.handle_mouse_scroll(2, 3, false);
+        assert_eq!(app.active_index, before);
+    }
+
+    /// While the F1 editor captures a chord, the wheel must not synthesize a
+    /// key (it would become the new binding).
+    #[test]
+    fn wheel_during_help_capture_is_ignored() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::Help(modals::HelpModal {
+            selected: 3,
+            capturing: true,
+        });
+        app.handle_mouse_scroll(0, 0, false);
+        let modals::Modal::Help(ref h) = app.modal else {
+            panic!("help must stay open");
+        };
+        assert!(h.capturing, "capture must survive a wheel tick");
+        assert_eq!(h.selected, 3);
+    }
+
+    /// The hovered clickable row is underlined in the rendered frame.
+    #[test]
+    fn hovered_session_row_is_underlined() {
+        let mut app = app_with_sessions(2);
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        // First draw records the row hitboxes; hover over the first row and
+        // draw again so the highlight applies.
+        terminal.draw(|f| app.view(f)).unwrap();
+        let row = app
+            .click_targets
+            .iter()
+            .find(|t| matches!(t.action, ClickAction::SelectSession(0)))
+            .map(|t| t.rect)
+            .unwrap();
+        app.update(AppMessage::MouseMove { x: row.x, y: row.y });
+        terminal.draw(|f| app.view(f)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer[(row.x, row.y)]
+                .modifier
+                .contains(ratatui::style::Modifier::UNDERLINED),
+            "hovered row cell must be underlined"
+        );
+        // A cell outside any clickable row stays plain.
+        assert!(!buffer[(0, 0)]
+            .modifier
+            .contains(ratatui::style::Modifier::UNDERLINED));
     }
 
     #[test]

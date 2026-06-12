@@ -35,7 +35,10 @@ pub struct RepoPickerState<'a> {
     pub filtered_indices: &'a [usize],
 }
 
-pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) {
+pub fn render_repo_picker_modal(
+    frame: &mut Frame,
+    state: &RepoPickerState<'_>,
+) -> super::SelectorHits {
     let visible_count = if state.filtered_indices.is_empty() {
         1
     } else {
@@ -78,7 +81,7 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
     }
 
     // Bookmark list with checkboxes
-    render_bookmark_list(frame, list_area, state);
+    let hitboxes = render_bookmark_list(frame, list_area, state);
 
     // Path input
     render_text_field_with_suggestion(
@@ -93,6 +96,7 @@ pub fn render_repo_picker_modal(frame: &mut Frame, state: &RepoPickerState<'_>) 
 
     // Footer
     frame.render_widget(Paragraph::new(footer_line(state)), footer_area);
+    hitboxes
 }
 
 /// Render the search bar at the top of the modal (only shown when search is active).
@@ -117,7 +121,7 @@ fn render_bookmark_list(
     frame: &mut Frame,
     list_area: ratatui::layout::Rect,
     state: &RepoPickerState<'_>,
-) {
+) -> super::SelectorHits {
     let list_focused = state.focus == RepoPickerFocus::List;
     let border_color = if list_focused {
         Theme::border_focused()
@@ -146,15 +150,19 @@ fn render_bookmark_list(
             Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(placeholder, list_inner_area);
-        return;
+        return (Vec::new(), None);
     }
 
+    let total = state.filtered_indices.len();
     let visible_count = list_inner_area.height as usize;
     let scroll_offset = if state.list_index >= visible_count {
         state.list_index - visible_count + 1
     } else {
         0
     };
+
+    // Reserve the rightmost column for a scrollbar when the list overflows.
+    let (rows_area, track) = super::scrollbar::reserve_track(list_inner_area, total, visible_count);
 
     let items: Vec<ListItem<'_>> = state
         .filtered_indices
@@ -165,7 +173,27 @@ fn render_bookmark_list(
         .map(|(vi, &real_idx)| bookmark_item(state, vi, real_idx, list_focused))
         .collect();
 
-    frame.render_widget(List::new(items), list_inner_area);
+    frame.render_widget(List::new(items), rows_area);
+
+    // One hitbox per visible row, indexed by position in `filtered_indices`
+    // (the same space as `list_index`).
+    let hitboxes = (scroll_offset..total.min(scroll_offset + visible_count))
+        .enumerate()
+        .map(|(line, vi)| super::RowHitbox {
+            rect: ratatui::layout::Rect::new(
+                rows_area.x,
+                rows_area.y + line as u16,
+                rows_area.width,
+                1,
+            ),
+            index: vi,
+        })
+        .collect();
+
+    let geom = track.and_then(|t| {
+        super::scrollbar::render_into(frame, t, total, visible_count, state.list_index)
+    });
+    (hitboxes, geom)
 }
 
 /// Build a single bookmark list item (checkbox + path + optional `[wt]` marker).

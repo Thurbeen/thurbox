@@ -419,7 +419,11 @@ pub struct LeftPanelState<'a> {
     pub depths: &'a [u8],
 }
 
-pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelState<'_>) {
+pub fn render_left_panel(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut LeftPanelState<'_>,
+) -> Vec<super::RowHitbox> {
     // The session list fills the whole left panel — search lives in the global
     // `Ctrl+A` strip now, so there's no in-list search bar.
     render_session_section(
@@ -434,34 +438,13 @@ pub fn render_left_panel(frame: &mut Frame, area: Rect, state: &mut LeftPanelSta
         state.session_search_active,
         state.headers,
         state.depths,
-    );
+    )
 }
 
 /// Overlay scroll indicators ("^" N" / "v N") on the block borders when items
-/// are clipped above or below. Renders right-aligned on the top/bottom border
-/// lines, consuming no content space.
-pub(super) fn render_scroll_indicators(
-    frame: &mut Frame,
-    block_area: Rect,
-    total_items: usize,
-    list_state: &ListState,
-    item_height: u16,
-) {
-    let offset = list_state.offset();
-    // Inner height = block_area.height - 2 (top + bottom border)
-    let inner_height = block_area.height.saturating_sub(2);
-    let visible_count = inner_height
-        .checked_div(item_height)
-        .map(|n| n as usize)
-        .unwrap_or(0);
-
-    let items_above = offset;
-    let items_below = total_items.saturating_sub(offset + visible_count);
-
-    draw_scroll_indicators(frame, block_area, items_above, items_below);
-}
-
-/// Variable-height variant: uses per-item heights to compute the visible range.
+/// are clipped above or below, using per-item heights to compute the visible
+/// range. Renders right-aligned on the top/bottom border lines, consuming no
+/// content space.
 fn render_scroll_indicators_variable(
     frame: &mut Frame,
     block_area: Rect,
@@ -538,7 +521,7 @@ fn render_session_section(
     search_active: bool,
     headers: &[Option<String>],
     depths: &[u8],
-) {
+) -> Vec<super::RowHitbox> {
     let mut block = focus_block(" Sessions ", level);
 
     if !sessions.is_empty() {
@@ -556,7 +539,7 @@ fn render_session_section(
 
     if sessions.is_empty() {
         render_empty_sessions(frame, area, block);
-        return;
+        return Vec::new();
     }
 
     // Available width inside the block (subtract 2 for borders)
@@ -623,6 +606,32 @@ fn render_session_section(
     frame.render_stateful_widget(list, area, list_state);
 
     render_scroll_indicators_variable(frame, area, list_state, &item_heights);
+
+    // Hitboxes for the rows actually on screen, computed *after* the stateful
+    // render so `list_state.offset()` is the offset ratatui really used. A
+    // 2-line item (group header + session row) gets one hitbox spanning both
+    // lines, so clicking a group header selects that group's first session.
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let bottom = inner.y + inner.height;
+    let mut hitboxes = Vec::new();
+    let mut y = inner.y;
+    for (i, &h) in item_heights.iter().enumerate().skip(list_state.offset()) {
+        if y >= bottom || h == 0 {
+            break;
+        }
+        let height = h.min(bottom - y);
+        hitboxes.push(super::RowHitbox {
+            rect: Rect::new(inner.x, y, inner.width, height),
+            index: i,
+        });
+        y += h;
+    }
+    hitboxes
 }
 
 /// Render the centered "no sessions yet" placeholder inside the given block.
@@ -1050,6 +1059,44 @@ mod tests {
         let ordered = OrderedSessions::new(&sessions, &[None, None], 0);
         // Single "(no repo)" group: header on row 0, none after.
         assert_eq!(ordered.headers, vec![Some("(no repo)".to_string()), None]);
+    }
+
+    #[test]
+    fn session_section_hitboxes_span_group_headers() {
+        // Two sessions in one "(no repo)" group: the first item is 2 lines
+        // tall (header + row) and its hitbox spans both; the second is 1.
+        let n1 = info("n1");
+        let n2 = info("n2");
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut list_state = ListState::default();
+        let mut hitboxes = Vec::new();
+        terminal
+            .draw(|f| {
+                let sessions = vec![&n1, &n2];
+                let ordered = OrderedSessions::new(&sessions, &[None, None], 0);
+                hitboxes = render_left_panel(
+                    f,
+                    Rect::new(0, 0, 30, 12),
+                    &mut LeftPanelState {
+                        sessions: &ordered.sessions,
+                        active_session: ordered.active_index,
+                        show_selection: true,
+                        session_focus: FocusLevel::Focused,
+                        session_list_state: &mut list_state,
+                        session_match_positions: &ordered.match_positions,
+                        session_search_active: false,
+                        headers: &ordered.headers,
+                        depths: &ordered.depths,
+                    },
+                );
+            })
+            .unwrap();
+        assert_eq!(hitboxes.len(), 2);
+        assert_eq!(hitboxes[0].rect, Rect::new(1, 1, 28, 2));
+        assert_eq!(hitboxes[0].index, 0);
+        assert_eq!(hitboxes[1].rect, Rect::new(1, 3, 28, 1));
+        assert_eq!(hitboxes[1].index, 1);
     }
 
     #[test]

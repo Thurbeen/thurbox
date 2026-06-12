@@ -8,13 +8,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
-    widgets::{List, ListItem, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
 use super::{
-    centered_fixed_height_rect, render_modal_frame, selector_list_item, selector_nav_footer,
-    theme::Theme,
+    centered_fixed_height_rect, render_modal_frame, render_selector_rows, selector_line,
+    selector_nav_footer, theme::Theme,
 };
 use crate::session::theme_config::ThemeEntry;
 
@@ -23,7 +23,10 @@ pub struct ThemePickerState<'a> {
     pub selected_index: usize,
 }
 
-pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>) {
+pub fn render_theme_picker_modal(
+    frame: &mut Frame,
+    state: &ThemePickerState<'_>,
+) -> super::SelectorHits {
     let height = (state.entries.len() as u16).max(4) + 6;
     let area = centered_fixed_height_rect(60, height, frame.area());
 
@@ -43,7 +46,7 @@ pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(chunks[0]);
 
-    let items: Vec<ListItem<'_>> = state
+    let lines: Vec<Line<'_>> = state
         .entries
         .iter()
         .enumerate()
@@ -53,11 +56,11 @@ pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>
             } else {
                 entry.display_name.clone()
             };
-            selector_list_item(&label, i == state.selected_index)
+            selector_line(&label, i == state.selected_index)
         })
         .collect();
 
-    frame.render_widget(List::new(items), columns[0]);
+    let hits = render_selector_rows(frame, columns[0], lines, state.selected_index);
 
     if let Some(entry) = state.entries.get(state.selected_index) {
         let palette = &entry.palette;
@@ -102,4 +105,6 @@ pub fn render_theme_picker_modal(frame: &mut Frame, state: &ThemePickerState<'_>
     }
 
     frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[2]);
+    // Rows live in the left column only; the swatch column isn't clickable.
+    hits
 }

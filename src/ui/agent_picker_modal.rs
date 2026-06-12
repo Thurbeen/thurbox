@@ -1,11 +1,13 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    widgets::{List, ListItem, Paragraph},
+    text::Line,
+    widgets::Paragraph,
     Frame,
 };
 
 use super::{
-    centered_fixed_height_rect, render_modal_frame, selector_list_item, selector_nav_footer,
+    centered_fixed_height_rect, render_modal_frame, render_selector_rows, selector_line,
+    selector_nav_footer,
 };
 
 /// One selectable agent row: display name + the CLI command it launches.
@@ -21,7 +23,10 @@ pub struct AgentPickerState {
     pub selected_index: usize,
 }
 
-pub fn render_agent_picker_modal(frame: &mut Frame, state: &AgentPickerState) {
+pub fn render_agent_picker_modal(
+    frame: &mut Frame,
+    state: &AgentPickerState,
+) -> super::SelectorHits {
     let height = (state.choices.len() as u16) + 3;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
@@ -32,7 +37,7 @@ pub fn render_agent_picker_modal(frame: &mut Frame, state: &AgentPickerState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    let items: Vec<ListItem<'_>> = state
+    let lines: Vec<Line<'_>> = state
         .choices
         .iter()
         .enumerate()
@@ -42,10 +47,10 @@ pub fn render_agent_picker_modal(frame: &mut Frame, state: &AgentPickerState) {
             } else {
                 format!("{}  ({})", c.name, c.command)
             };
-            selector_list_item(&label, i == state.selected_index)
+            selector_line(&label, i == state.selected_index)
         })
         .collect();
 
-    frame.render_widget(List::new(items), chunks[0]);
     frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[1]);
+    render_selector_rows(frame, chunks[0], lines, state.selected_index)
 }

@@ -46,6 +46,7 @@ config_version = 1
 # global_search = true    # Ctrl+A search strip
 # info_panel = true       # F2 info panel
 # shell_pane = true       # Ctrl+T per-session shell
+# mouse = true            # mouse capture: clicks, wheel, drag-select, hover
 "#;
 
 /// Path to the settings file: `~/.config/thurbox/settings.toml`.

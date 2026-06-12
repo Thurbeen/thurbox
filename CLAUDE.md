@@ -742,6 +742,17 @@ backend dependency stays visible at each call site.
   `status_bar`, `repo_picker_modal` (repo selection with
   worktree toggle). `selection.rs` handles mouse-drag text
   selection, `links.rs` detects clickable URLs for Ctrl+Click.
+  Mouse clicks are routed through a per-frame registry
+  (`App::click_targets`, mirroring `scrollbar_hits`): list/modal
+  renderers return `ui::RowHitbox`es, `App::view` records them as
+  `ClickAction`s, and `handle_mouse_click` hit-tests them (rows
+  select/confirm, panes focus, modals swallow everything else; the
+  hovered row is underlined via mouse-move events). With a modal
+  open, the wheel steps its selection and overflowing picker lists
+  render a draggable scrollbar (`ScrollTarget::Modal`, drag replayed
+  as Up/Down through the modal's key handler). All of it is gated by
+  `[features] mouse` in settings.toml — disabled, mouse capture is
+  never enabled and the terminal keeps native mouse behavior.
   `agent_picker_modal` drives the new-session flow.
 - **`cli/`** — `thurbox-cli` subcommand dispatch (headless
   session ops + scheduling + editor command).

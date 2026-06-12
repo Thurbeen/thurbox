@@ -6,7 +6,6 @@ use ratatui::{
 };
 
 use super::render_list_modal_frame;
-use super::scrollbar;
 use super::theme::Theme;
 
 /// View-only entry for the restore sessions modal.
@@ -22,7 +21,10 @@ pub struct RestoreSessionsModalState<'a> {
     pub selected_index: usize,
 }
 
-pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsModalState<'_>) {
+pub fn render_restore_sessions_modal(
+    frame: &mut Frame,
+    state: &RestoreSessionsModalState<'_>,
+) -> super::SelectorHits {
     let empty_footer = Line::from(vec![
         Span::styled("Esc", Theme::keybind()),
         Span::raw(" close"),
@@ -36,24 +38,18 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
         Some("No deleted sessions"),
         Some(empty_footer),
     ) else {
-        return;
+        return (Vec::new(), None);
     };
 
-    // Session list — window the entries so the selected row stays visible,
-    // reserving the rightmost column for a scrollbar when the list overflows.
-    let height = list_area.height as usize;
-    let (rows_area, track) = scrollbar::reserve_track(list_area, state.entries.len(), height);
-    let (start, end) = super::file_viewer::visible_window(
-        state.entries.len(),
-        state.selected_index,
-        height.max(1),
-    );
-
-    let lines: Vec<Line<'_>> = state.entries[start..end]
+    // Session list — `render_selector_rows` windows the entries around the
+    // selection and reserves the rightmost column for a scrollbar when the
+    // list overflows.
+    let lines: Vec<Line<'_>> = state
+        .entries
         .iter()
         .enumerate()
-        .map(|(offset, entry)| {
-            let selected = start + offset == state.selected_index;
+        .map(|(i, entry)| {
+            let selected = i == state.selected_index;
             let wt_indicator = if entry.has_worktrees { " [wt]" } else { "" };
             let text = format!(
                 " {} ({}) {}{} ",
@@ -70,17 +66,7 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), rows_area);
-
-    if let Some(track) = track {
-        scrollbar::render_into(
-            frame,
-            track,
-            state.entries.len(),
-            height,
-            state.selected_index,
-        );
-    }
+    let hits = super::render_selector_rows(frame, list_area, lines, state.selected_index);
 
     // Footer
     let help = Line::from(vec![
@@ -90,6 +76,7 @@ pub fn render_restore_sessions_modal(frame: &mut Frame, state: &RestoreSessionsM
         Span::raw(" close"),
     ]);
     frame.render_widget(Paragraph::new(help), footer_area);
+    hits
 }
 
 #[cfg(test)]
@@ -144,6 +131,32 @@ mod tests {
         assert!(
             !text.contains("session-0 "),
             "first entry should have scrolled out of view:\n{text}"
+        );
+    }
+
+    #[test]
+    fn overflowing_list_reports_windowed_hitboxes_and_scrollbar() {
+        let list = entries(40);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits: super::super::SelectorHits = (Vec::new(), None);
+        terminal
+            .draw(|frame| {
+                hits = render_restore_sessions_modal(
+                    frame,
+                    &RestoreSessionsModalState {
+                        entries: &list,
+                        selected_index: 39,
+                    },
+                );
+            })
+            .unwrap();
+        let (rows, geom) = hits;
+        assert!(geom.is_some(), "overflowing list draws a scrollbar");
+        assert!(rows.len() < 40, "only the visible window is clickable");
+        assert!(
+            rows.iter().any(|r| r.index == 39),
+            "the selected row stays clickable"
         );
     }
 

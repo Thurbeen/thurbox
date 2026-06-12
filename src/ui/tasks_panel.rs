@@ -44,7 +44,11 @@ pub struct TaskPaneState<'a> {
     pub preview_selected: bool,
 }
 
-pub fn render_tasks_panel(frame: &mut Frame, area: Rect, state: &TaskPaneState<'_>) {
+pub fn render_tasks_panel(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TaskPaneState<'_>,
+) -> Vec<super::RowHitbox> {
     // Shared focus block: highlighted title + accent/rounded border when focused,
     // matching the session list and file viewer panes.
     let block = focus_block(" Tasks ", state.focus);
@@ -52,7 +56,7 @@ pub fn render_tasks_panel(frame: &mut Frame, area: Rect, state: &TaskPaneState<'
     frame.render_widget(block, area);
 
     if inner.height == 0 {
-        return;
+        return Vec::new();
     }
 
     // While focused, reserve the bottom row for a compact action footer that
@@ -73,6 +77,9 @@ pub fn render_tasks_panel(frame: &mut Frame, area: Rect, state: &TaskPaneState<'
     }
 
     render_task_list(frame, inner, state);
+    // One single-line hitbox per visible row (the hint footer, when present,
+    // was already subtracted from `inner`).
+    super::single_line_row_hitboxes(inner, state.entries.len())
 }
 
 fn render_task_list(frame: &mut Frame, area: Rect, state: &TaskPaneState<'_>) {
@@ -164,5 +171,61 @@ fn status_color(status: TaskStatus) -> ratatui::style::Color {
         TaskStatus::Todo => Theme::text_primary(),
         TaskStatus::InProgress => Theme::accent(),
         TaskStatus::Done => Theme::text_muted(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn entry(title: &str) -> TaskPaneEntry {
+        TaskPaneEntry {
+            title: title.into(),
+            status: TaskStatus::Todo,
+            match_positions: vec![],
+            dimmed: false,
+            linked: false,
+        }
+    }
+
+    fn hitboxes(focus: FocusLevel, count: usize) -> Vec<super::super::RowHitbox> {
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let entries: Vec<TaskPaneEntry> = (0..count).map(|i| entry(&format!("t{i}"))).collect();
+        let mut rows = Vec::new();
+        terminal
+            .draw(|f| {
+                rows = render_tasks_panel(
+                    f,
+                    Rect::new(0, 0, 20, 6),
+                    &TaskPaneState {
+                        entries: &entries,
+                        selected: 0,
+                        focus,
+                        preview_selected: false,
+                    },
+                );
+            })
+            .unwrap();
+        rows
+    }
+
+    #[test]
+    fn row_hitboxes_start_below_border() {
+        let rows = hitboxes(FocusLevel::Inactive, 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].rect, Rect::new(1, 1, 18, 1));
+        assert_eq!(rows[1].rect, Rect::new(1, 2, 18, 1));
+        assert_eq!(rows[1].index, 1);
+    }
+
+    #[test]
+    fn focused_panel_hitboxes_exclude_hint_footer() {
+        // 6 outer rows → 4 inner; while focused the bottom inner row is the
+        // action footer, so only 3 rows are clickable.
+        let rows = hitboxes(FocusLevel::Focused, 10);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.last().unwrap().rect.y, 3);
     }
 }

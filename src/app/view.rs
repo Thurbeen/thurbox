@@ -5,7 +5,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -21,14 +21,16 @@ use crate::ui::{
     terminal_view, theme_picker_modal, worktree_name_modal,
 };
 
-use super::{App, InputFocus, ScrollTarget, ScrollbarHit, TerminalView};
+use super::{App, ClickAction, ClickTarget, InputFocus, ScrollTarget, ScrollbarHit, TerminalView};
 use crate::ui::scrollbar::ScrollbarGeom;
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
-        // Rebuilt fresh each frame: every scrollbar drawn below records its
-        // geometry + drag target here for the mouse handlers to hit-test.
+        // Rebuilt fresh each frame: every scrollbar and clickable row drawn
+        // below records its geometry + target here for the mouse handlers to
+        // hit-test.
         self.scrollbar_hits.clear();
+        self.click_targets.clear();
 
         let areas = self.layout_for(frame.area());
 
@@ -55,7 +57,51 @@ impl App {
         self.render_footer(frame, areas.footer);
         self.render_modals(frame);
         self.repaint_theme_background(frame);
+        self.apply_hover_highlight(frame);
         self.apply_selection_highlight(frame);
+    }
+
+    /// Underline the clickable row under the mouse pointer (list panes and
+    /// selector-modal rows) so what a click would hit is visible before
+    /// clicking. Runs on the recorded click targets, after all rendering;
+    /// the selection highlight is applied later and wins on overlap.
+    fn apply_hover_highlight(&self, frame: &mut Frame) {
+        let Some((hx, hy)) = self.mouse_hover else {
+            return;
+        };
+        let modal_open = !matches!(self.modal, super::modals::Modal::None);
+        // While the global-search strip is open clicks are swallowed (it owns
+        // all input), so don't underline rows as if they were clickable.
+        if self.global_search.active && !modal_open {
+            return;
+        }
+        let pos = ratatui::layout::Position::new(hx, hy);
+        let hovered = self.click_targets.iter().find(|t| {
+            // While a modal is open, only its rows react — the pane targets
+            // recorded beneath the overlay are unreachable for clicks too.
+            (!modal_open || matches!(t.action, ClickAction::ModalRow(_)))
+                && matches!(
+                    t.action,
+                    ClickAction::SelectSession(_)
+                        | ClickAction::SelectTask(_)
+                        | ClickAction::SelectAutomation(_)
+                        | ClickAction::SelectFileRow(_)
+                        | ClickAction::ModalRow(_)
+                )
+                && t.rect.contains(pos)
+        });
+        let Some(target) = hovered else {
+            return;
+        };
+        let buf = frame.buffer_mut();
+        let rect = target.rect;
+        for y in rect.y..rect.y + rect.height {
+            for x in rect.x..rect.x + rect.width {
+                if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
+                    cell.modifier |= Modifier::UNDERLINED;
+                }
+            }
+        }
     }
 
     /// Render the top status-bar header with the active-session/theme badge.
@@ -130,7 +176,7 @@ impl App {
         // A (global) search is active iff there's a query — non-matching rows dim.
         let session_search_active = global_query.is_some();
 
-        project_list::render_left_panel(
+        let rows = project_list::render_left_panel(
             frame,
             left_area,
             &mut project_list::LeftPanelState {
@@ -145,10 +191,16 @@ impl App {
                 depths: &ordered.depths,
             },
         );
+        self.record_row_clicks(
+            rows,
+            ClickAction::SelectSession,
+            left_area,
+            InputFocus::SessionList,
+        );
     }
 
     /// Render the automations pane beneath the session list (when present).
-    fn render_automations_pane(&self, frame: &mut Frame, auto_area: Option<Rect>) {
+    fn render_automations_pane(&mut self, frame: &mut Frame, auto_area: Option<Rect>) {
         let Some(auto_area) = auto_area else {
             return;
         };
@@ -185,7 +237,7 @@ impl App {
             .min(entries.len().saturating_sub(1));
         let preview_selected =
             self.global_search_preview_kind() == Some(crate::app::search::SearchKind::Automation);
-        automations_panel::render_automations_pane(
+        let rows = automations_panel::render_automations_pane(
             frame,
             auto_area,
             &automations_panel::AutomationsPaneState {
@@ -194,6 +246,12 @@ impl App {
                 focus,
                 preview_selected,
             },
+        );
+        self.record_row_clicks(
+            rows,
+            ClickAction::SelectAutomation,
+            auto_area,
+            InputFocus::Automations,
         );
     }
 
@@ -244,7 +302,7 @@ impl App {
     }
 
     /// Render the tasks panel column (when present).
-    fn render_tasks_panel(&self, frame: &mut Frame, area: Option<Rect>) {
+    fn render_tasks_panel(&mut self, frame: &mut Frame, area: Option<Rect>) {
         let Some(area) = area else {
             return;
         };
@@ -277,7 +335,7 @@ impl App {
         };
         let preview_selected =
             self.global_search_preview_kind() == Some(crate::app::search::SearchKind::Task);
-        tasks_panel::render_tasks_panel(
+        let rows = tasks_panel::render_tasks_panel(
             frame,
             area,
             &tasks_panel::TaskPaneState {
@@ -287,6 +345,7 @@ impl App {
                 preview_selected,
             },
         );
+        self.record_row_clicks(rows, ClickAction::SelectTask, area, InputFocus::TaskList);
     }
 
     /// Record a scrollbar drawn this frame as a drag target, if one was drawn.
@@ -294,6 +353,27 @@ impl App {
         if let Some(geom) = geom {
             self.scrollbar_hits.push(ScrollbarHit { geom, target });
         }
+    }
+
+    /// Record one clickable region drawn this frame. Recording order is
+    /// priority order (first hit wins), so push row targets before their
+    /// pane's whole-rect `FocusPane` fallback.
+    fn record_click(&mut self, rect: Rect, action: ClickAction) {
+        self.click_targets.push(ClickTarget { rect, action });
+    }
+
+    /// Record a row hitbox per entry plus the pane's whole-rect fallback.
+    fn record_row_clicks(
+        &mut self,
+        rows: Vec<crate::ui::RowHitbox>,
+        to_action: fn(usize) -> ClickAction,
+        pane: Rect,
+        pane_focus: InputFocus,
+    ) {
+        for row in rows {
+            self.record_click(row.rect, to_action(row.index));
+        }
+        self.record_click(pane, ClickAction::FocusPane(pane_focus));
     }
 
     /// Render the file viewer in the right column (when present).
@@ -312,8 +392,15 @@ impl App {
             InputFocus::FileViewer => crate::ui::FocusLevel::Focused,
             _ => crate::ui::FocusLevel::Inactive,
         };
-        let geom = file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
+        let (geom, rows) =
+            file_viewer::render_file_viewer(frame, fv_area, &self.file_viewer, fv_focus);
         self.record_scrollbar(geom, ScrollTarget::FileViewer);
+        self.record_row_clicks(
+            rows,
+            ClickAction::SelectFileRow,
+            fv_area,
+            InputFocus::FileViewer,
+        );
     }
 
     /// Render the central pane. In the automations context (the pane or its
@@ -368,6 +455,11 @@ impl App {
             | InputFocus::FileViewer => crate::ui::FocusLevel::Active,
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
+
+        // A click anywhere in the central pane focuses the terminal (row
+        // targets in other panes were recorded first and win on overlap —
+        // there is none — and the scrollbar check runs before click targets).
+        self.record_click(terminal, ClickAction::FocusPane(InputFocus::Terminal));
 
         // Scope the immutable `session` borrow so it ends before the
         // `&mut self` record_scrollbar call below.
@@ -438,16 +530,22 @@ impl App {
         );
     }
 
-    /// Render any active modal overlay on top of everything else.
-    fn render_modals(&self, frame: &mut Frame) {
+    /// Render any active modal overlay on top of everything else. Selector
+    /// modals report their row hitboxes, recorded as `ModalRow` click
+    /// targets; text-input modals report none, so every click on them is
+    /// swallowed.
+    fn render_modals(&mut self, frame: &mut Frame) {
+        let mut modal_hits: crate::ui::SelectorHits = (Vec::new(), None);
+
         // Help overlay (rendered last, on top of everything)
         if let super::modals::Modal::Help(ref help) = self.modal {
-            render_help_overlay(frame, &self.keybindings, help);
+            modal_hits = render_help_overlay(frame, &self.keybindings, help);
         }
 
         // Task trigger-time action picker
         if let super::modals::Modal::TaskActionPicker(ref p) = self.modal {
-            crate::ui::task_action_picker_modal::render_task_action_picker_modal(frame, p);
+            modal_hits =
+                crate::ui::task_action_picker_modal::render_task_action_picker_modal(frame, p);
         }
 
         // Worktree name modal
@@ -476,7 +574,7 @@ impl App {
 
         // Branch selector modal
         if let super::modals::Modal::BranchSelector(ref bs) = self.modal {
-            branch_selector_modal::render_branch_selector_modal(
+            modal_hits = branch_selector_modal::render_branch_selector_modal(
                 frame,
                 &branch_selector_modal::BranchSelectorState {
                     branches: &bs.branches,
@@ -487,17 +585,17 @@ impl App {
 
         // Agent picker modal
         if let super::modals::Modal::AgentPicker(ref ap) = self.modal {
-            agent_picker_modal::render_agent_picker_modal(frame, ap);
+            modal_hits = agent_picker_modal::render_agent_picker_modal(frame, ap);
         }
 
         // Host picker modal
         if let super::modals::Modal::HostPicker(ref hp) = self.modal {
-            crate::ui::host_picker_modal::render_host_picker_modal(frame, hp);
+            modal_hits = crate::ui::host_picker_modal::render_host_picker_modal(frame, hp);
         }
 
         // Theme picker modal
         if let super::modals::Modal::ThemePicker(ref tp) = self.modal {
-            theme_picker_modal::render_theme_picker_modal(
+            modal_hits = theme_picker_modal::render_theme_picker_modal(
                 frame,
                 &theme_picker_modal::ThemePickerState {
                     entries: &crate::ui::theme::all_theme_entries(),
@@ -518,7 +616,7 @@ impl App {
                     has_worktrees: !d.worktrees.is_empty(),
                 })
                 .collect();
-            restore_sessions_modal::render_restore_sessions_modal(
+            modal_hits = restore_sessions_modal::render_restore_sessions_modal(
                 frame,
                 &restore_sessions_modal::RestoreSessionsModalState {
                     entries: &entries,
@@ -550,7 +648,7 @@ impl App {
                     enabled: e.enabled,
                 })
                 .collect();
-            automations_list_modal::render_automations_list_modal(
+            modal_hits = automations_list_modal::render_automations_list_modal(
                 frame,
                 &automations_list_modal::AutomationsListState {
                     entries: &entries,
@@ -561,7 +659,7 @@ impl App {
 
         // Repo picker modal
         if let super::modals::Modal::RepoPicker(ref rp) = self.modal {
-            crate::ui::repo_picker_modal::render_repo_picker_modal(
+            modal_hits = crate::ui::repo_picker_modal::render_repo_picker_modal(
                 frame,
                 &crate::ui::repo_picker_modal::RepoPickerState {
                     bookmarks: &rp.bookmarks,
@@ -583,6 +681,15 @@ impl App {
                 },
             );
         }
+
+        let (modal_rows, modal_geom) = modal_hits;
+        for row in modal_rows {
+            self.record_click(row.rect, ClickAction::ModalRow(row.index));
+        }
+        // The modal's own scrollbar: grabbable while the modal is open
+        // (pane scrollbars beneath the overlay are not — see
+        // `handle_modal_click`).
+        self.record_scrollbar(modal_geom, ScrollTarget::Modal);
     }
 
     /// Repaint cells that fell back to terminal-default colours with the
@@ -634,7 +741,11 @@ impl App {
     /// scoped automation (a preview while the list is focused, editable once the
     /// editor is focused), with the automation's run history beneath it. Shows a
     /// discoverability hint when there's nothing to edit.
-    fn render_automation_workspace(&self, frame: &mut Frame, area: Rect) -> Option<ScrollbarGeom> {
+    fn render_automation_workspace(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+    ) -> Option<ScrollbarGeom> {
         let editing = self.focus == InputFocus::AutomationEditor;
 
         let Some(m) = self.automation_ui.automation_editor.as_ref() else {
@@ -688,7 +799,19 @@ impl App {
             &automation_editor_modal::AutomationEditorState::from_modal(m, &preview, editing),
         );
 
+        // Clicks focus the in-pane editor / run-history panels. Direct field
+        // pushes (not `record_click`): `runs` above still borrows
+        // `self.automation_ui`, so no `&mut self` method can be called here.
+        self.click_targets.push(ClickTarget {
+            rect: editor_area,
+            action: ClickAction::FocusPane(InputFocus::AutomationEditor),
+        });
+
         if let Some(history_area) = history_area {
+            self.click_targets.push(ClickTarget {
+                rect: history_area,
+                action: ClickAction::FocusPane(InputFocus::AutomationRunHistory),
+            });
             let history_focus = if self.focus == InputFocus::AutomationRunHistory {
                 crate::ui::FocusLevel::Focused
             } else {
@@ -913,7 +1036,7 @@ fn render_help_overlay(
     frame: &mut Frame,
     keybindings: &KeyBindings,
     help: &super::modals::HelpModal,
-) {
+) -> crate::ui::SelectorHits {
     let area = centered_rect(60, 70, frame.area());
 
     let inner = crate::ui::render_modal_frame(frame, area, "Keybindings");
@@ -927,6 +1050,8 @@ fn render_help_overlay(
     // Line index of the selected action row, so the body can scroll to keep it
     // visible on short terminals.
     let mut selected_line = 0usize;
+    // (line index, action index) per rebindable row, for click hitboxes.
+    let mut action_rows: Vec<(usize, usize)> = Vec::new();
     for (title, actions) in crate::session::keybindings::help_sections() {
         help_lines.push(help_section(title));
         for action in actions {
@@ -939,6 +1064,7 @@ fn render_help_overlay(
             if selected {
                 selected_line = help_lines.len();
             }
+            action_rows.push((help_lines.len(), idx));
             help_lines.push(help_row(key, action.label(), selected));
             idx += 1;
         }
@@ -979,6 +1105,14 @@ fn render_help_overlay(
         "Terminal: scroll three lines",
     ));
     help_lines.push(help_line("Click+drag".into(), "Select text"));
+    help_lines.push(help_line(
+        "Click".into(),
+        "Select row / focus pane; pickers: confirm row",
+    ));
+    help_lines.push(help_line(
+        "Hover".into(),
+        "Underline the clickable row under the pointer",
+    ));
     help_lines.push(help_line(
         "*".into(),
         "Terminal: all other keys forwarded to session",
@@ -1023,6 +1157,33 @@ fn render_help_overlay(
         ))),
         footer,
     );
+
+    // Hitboxes for the rebindable action rows visible after scrolling;
+    // section headers and the fixed-keys reference are not clickable.
+    let total_actions = action_rows.len();
+    let hitboxes: Vec<crate::ui::RowHitbox> = action_rows
+        .into_iter()
+        .filter_map(|(line, idx)| {
+            let on_screen = line.checked_sub(scroll)?;
+            if on_screen >= body_h {
+                return None;
+            }
+            Some(crate::ui::RowHitbox {
+                rect: Rect::new(body.x, body.y + on_screen as u16, body.width, 1),
+                index: idx,
+            })
+        })
+        .collect();
+
+    // Scrollbar (action-index space, so a drag maps straight to a selection)
+    // when the body overflows the modal height.
+    let geom = if total > body_h {
+        let viewport = hitboxes.len().max(1);
+        crate::ui::scrollbar::render_into(frame, body, total_actions, viewport, help.selected)
+    } else {
+        None
+    };
+    (hitboxes, geom)
 }
 
 /// Format a slice of chords as the F1-help key column, e.g.

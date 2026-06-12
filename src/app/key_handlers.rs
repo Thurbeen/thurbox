@@ -170,7 +170,7 @@ impl App {
     ///
     /// Capture mode: the next keypress (any chord, including `ctrl+q` or `f1`)
     /// becomes the action's sole binding; `Esc` cancels without rebinding.
-    fn handle_help_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+    pub(super) fn handle_help_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         use crate::session::{Action, KeyChord};
 
         let actions = Action::rebindable_in_order();
@@ -254,7 +254,7 @@ impl App {
 
     /// Route the key to the open modal's handler, if any. Returns `true` if a
     /// modal was open and consumed the key.
-    fn handle_modal_key_if_open(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+    pub(super) fn handle_modal_key_if_open(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         use super::modals::Modal;
         match self.modal {
             Modal::RestoreSessions(_) => self.handle_restore_sessions_key(code),
@@ -420,7 +420,7 @@ impl App {
     /// Shared bookkeeping after a focus change via the `Ctrl+L`/`Ctrl+H` cycle:
     /// keep the in-pane editor + run history in sync, and start the run-history
     /// selection at the top (newest run) when entering that panel.
-    fn on_focus_changed(&mut self) {
+    pub(super) fn on_focus_changed(&mut self) {
         if self.focus == InputFocus::AutomationRunHistory {
             self.automation_ui.automation_run_index = 0;
         }
@@ -1475,7 +1475,7 @@ impl App {
 
     /// Expand the selected file-viewer node, opening it in the editor when it's
     /// a file (dirs just toggle). Shared by the `FileViewerExpand` action.
-    fn file_viewer_expand(&mut self) {
+    pub(super) fn file_viewer_expand(&mut self) {
         use crate::ui::file_viewer::Activation;
         // Capture root+file before activate() (activate only opens files, not dirs).
         let file_with_root = self.file_viewer.selected_file_with_root();

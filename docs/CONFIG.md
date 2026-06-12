@@ -122,6 +122,7 @@ touched, so re-enabling a flag is lossless.
 | `global_search` | global search strip (`Ctrl+A`) |
 | `info_panel` | info panel column (`F2`) |
 | `shell_pane` | per-session shell toggle (`Ctrl+T`) |
+| `mouse` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
@@ -131,7 +132,9 @@ commands still work — and `automation create` still arms the
 heartbeat, so an already-armed keeper window (or an OS timer from
 `packaging/`) keeps firing schedules externally. Disabling
 `shell_pane` hides existing shell panes but never kills their
-processes.
+processes. `mouse = false` skips terminal mouse capture entirely, so
+the terminal keeps its native mouse behavior (its own text selection,
+URL handling, etc.) and no click/wheel/hover handling runs in the TUI.
 
 ## themes.toml
 
