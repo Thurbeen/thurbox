@@ -817,7 +817,9 @@ List contexts use plain `j`/`k`/`Enter` for navigation.
 In the focused session list, `Shift+J`/`Shift+K` move the selected
 session down/up (manual reordering; whole groups move past a group
 edge). Terminal forwards all non-Ctrl keys to the PTY.
-`Shift+arrows/PageUp/PageDown` for scrollback.
+`Shift+arrows/PageUp/PageDown` for scrollback; `Alt+PageUp/PageDown`
+also page (fallback for terminals that claim `Shift+Page` for their
+own scrollback, e.g. Terminal.app/iTerm2).
 
 These defaults can be overridden two ways, both writing the same
 `~/.config/thurbox/keybindings.json` (an `Action` name → one or more
@@ -841,8 +843,8 @@ chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`):
   `Action::rebindable_in_order()` — the flattened
   `keybindings::help_sections()`, the shared order used by
   `render_help_overlay`.
-- **By hand-editing** the JSON file (e.g. via `$EDITOR`); read once at
-  startup.
+- **By hand-editing** the JSON file (e.g. via `$EDITOR`); reloaded live
+  (mtime poll — see `docs/CONFIG.md`).
 
 **Context-scoped bindings.** Each `Action` has a `KeyContext` (`Global`,
 `SessionList`, `FileViewer`, `Terminal`). Global actions are active
@@ -862,6 +864,37 @@ A few stateful keys stay literal (the F1 panel lists them under
 **Fixed (not rebindable)**): modal selectors (j/k/Enter/Esc), the
 automations/tasks panes, the file-viewer **search sub-mode**, and the
 terminal's catch-all PTY forwarding.
+
+### macOS
+
+Ctrl chords work unchanged in macOS terminals (raw mode bypasses
+flow control; `Ctrl+Y`'s DSUSP quirk is why the `F4` alternate
+exists). On top of that:
+
+- **Cmd chords.** `main.rs` enables the kitty keyboard protocol
+  (`PushKeyboardEnhancementFlags(DISAMBIGUATE_ESCAPE_CODES)`, gated
+  on `supports_keyboard_enhancement()`, popped on shutdown and in
+  the panic hook) so the Command key can be bound like any modifier:
+  `cmd+j` in `keybindings.json` (`super`/`command`/`win` are parse
+  aliases; `cmd` is the canonical display form) or captured live in
+  the F1 editor. Delivered by iTerm2 3.5+, kitty, WezTerm, Ghostty;
+  **not** Terminal.app (no kitty protocol — everything else still
+  works there). The emulator's own Cmd shortcuts (`Cmd+Q/W/N/T/C/V`,
+  `Cmd+K` clears, `Cmd+H` hides, `Cmd+digits` switch tabs) are
+  consumed at the GUI level and can never reach the TUI — only bind
+  what the terminal leaves free.
+- **macOS-only default alternates** — appended after the Ctrl
+  primaries via `Action::default_chords_for(macos)` (the
+  `cfg!(target_os = "macos")` decision lives in `default_chords()`;
+  Linux defaults are byte-identical): `Cmd+J`/`Cmd+Shift+J` =
+  next/previous session, `Cmd+L`/`Cmd+Shift+L` = focus
+  next/previous pane.
+- **Unbound Cmd chords are swallowed**, never forwarded to the PTY
+  (`agent::input::key_to_bytes` returns `None` for SUPER).
+- **F-keys** (`F1`–`F5` alternates) need `Fn` on Mac laptops unless
+  "Use F1, F2, etc. keys as standard function keys" is enabled;
+  `Cmd+V` pastes via the terminal's native paste (bracketed paste),
+  no binding needed.
 
 ## Themes
 

@@ -5458,6 +5458,45 @@ mod tests {
         assert!(app.text_selection.is_none());
     }
 
+    // --- Cmd/Super chord routing (kitty keyboard protocol) ---
+
+    #[test]
+    fn super_chord_dispatches_bound_global_action() {
+        let mut app = app_with_sessions(1);
+        app.keybindings.rebind(
+            crate::session::Action::ToggleFileViewer,
+            crate::session::KeyChord::cmd('e'),
+        );
+        assert!(!app.show_file_viewer);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::SUPER);
+        assert!(app.show_file_viewer, "bound Cmd chord must dispatch");
+    }
+
+    #[test]
+    fn super_chord_never_types_into_modal_text_input() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::SessionName(modals::SessionNameModal::default());
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::SUPER);
+        let modals::Modal::SessionName(ref sn) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(
+            sn.name.value(),
+            "",
+            "Cmd+J must not insert a bare 'j' into the text input"
+        );
+    }
+
+    #[test]
+    fn unbound_super_chord_skips_focus_letter_hotkeys() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::TaskList;
+        // Cmd+N is unbound: it must be swallowed, not treated as the task
+        // list's plain `n` (new task) hotkey.
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::SUPER);
+        assert_eq!(app.focus, InputFocus::TaskList, "no editor must open");
+    }
+
     #[test]
     fn scroll_clears_selection() {
         let mut app = app_with_sessions(1);

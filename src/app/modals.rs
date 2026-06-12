@@ -1127,6 +1127,10 @@ impl Modal {
     pub fn close(&mut self) {
         *self = Modal::None;
     }
+
+    pub fn is_open(&self) -> bool {
+        !matches!(self, Modal::None)
+    }
 }
 
 // ── TaskActionPickerModal ────────────────────────────────────────────────

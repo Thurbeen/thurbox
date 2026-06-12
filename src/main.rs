@@ -1,10 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyEventKind, MouseButton, MouseEventKind,
+    Event, KeyEventKind, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 
@@ -13,11 +15,46 @@ use thurbox::agent::{BackendRegistry, SessionBackend};
 use thurbox::app::{App, AppMessage};
 use thurbox::storage::Database;
 
+/// Whether we pushed kitty keyboard-protocol flags onto the terminal. The
+/// panic hook is installed before the push happens, so it reads this to know
+/// whether a matching pop is needed.
+static KEYBOARD_ENHANCEMENT_PUSHED: AtomicBool = AtomicBool::new(false);
+
+/// Enable the kitty keyboard protocol where the terminal supports it: with
+/// DISAMBIGUATE_ESCAPE_CODES, Cmd/Super-modified keys are reported at all
+/// (otherwise the terminal never delivers them), while plain keys keep their
+/// legacy encodings and no Release/Repeat events arrive — the
+/// `KeyEventKind::Press` filter in `run_loop` stays correct. The support
+/// query needs raw mode, so call this only after `ratatui::init()`.
+fn push_keyboard_enhancement() {
+    if matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    ) && execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
+    {
+        KEYBOARD_ENHANCEMENT_PUSHED.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Pop the kitty flags if (and only if) we pushed them — `ratatui::restore()`
+/// does not, so both the shutdown path and the panic hook call this before
+/// leaving raw mode.
+fn pop_keyboard_enhancement() {
+    if KEYBOARD_ENHANCEMENT_PUSHED.load(Ordering::SeqCst) {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Set up panic hook that restores terminal before printing the panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
+        pop_keyboard_enhancement();
         let _ = execute!(
             std::io::stdout(),
             DisableBracketedPaste,
@@ -101,6 +138,7 @@ async fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    push_keyboard_enhancement();
     let size = terminal.size()?;
 
     let mut app = App::new(size.height, size.width, backends, agents, db);
@@ -126,6 +164,7 @@ async fn main() -> Result<()> {
     let res = run_loop(&mut terminal, &mut app).await;
 
     app.shutdown();
+    pop_keyboard_enhancement();
     execute!(
         std::io::stdout(),
         DisableBracketedPaste,

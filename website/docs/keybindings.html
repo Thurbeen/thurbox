@@ -108,6 +108,8 @@
             <code>Ctrl</code>
             modifier (intercepted as global commands) and
             <code>Shift+arrow/page</code>
+            /
+            <code>Alt+page</code>
             keys (for scrollback).
           </p>
           <div class="info-box">
@@ -322,6 +324,30 @@
             </tbody>
           </table>
 
+          <div class="info-box">
+            <p>
+              <strong>macOS:</strong>
+              in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm, Ghostty) the Command key
+              works as a modifier:
+              <code>Cmd+J</code>
+              /
+              <code>Cmd+Shift+J</code>
+              switch sessions,
+              <code>Cmd+L</code>
+              /
+              <code>Cmd+Shift+L</code>
+              cycle panes, and any action can be rebound to a
+              <code>cmd+&hellip;</code>
+              chord (aliases:
+              <code>super</code>
+              ,
+              <code>command</code>
+              ). Terminal.app delivers no Cmd chords; everything else works there. F1&ndash;F5 need
+              <code>Fn</code>
+              on Mac laptops unless function keys are set to standard.
+            </p>
+          </div>
+
           <h2 id="list-navigation">
             List Navigation
             <a href="#list-navigation" class="heading-anchor">#</a>
@@ -422,6 +448,17 @@
                   <code>Shift+PageDown</code>
                 </td>
                 <td>Scroll half page</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>Alt+PageUp</code>
+                  /
+                  <code>Alt+PageDown</code>
+                </td>
+                <td>
+                  Scroll half page (fallback where the terminal claims Shift+Page, e.g.
+                  Terminal.app/iTerm2)
+                </td>
               </tr>
               <tr>
                 <td>Mouse wheel</td>

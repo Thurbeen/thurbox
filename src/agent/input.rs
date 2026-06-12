@@ -3,6 +3,12 @@ use crossterm::event::{KeyCode, KeyModifiers};
 /// Translate a crossterm key event into the ANSI byte sequence that should be
 /// sent to the PTY. Follows xterm-style modifier encoding conventions.
 pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
+    // Cmd/Super-modified keys have no legacy PTY encoding and the inner app
+    // never negotiated the kitty protocol — swallow rather than inject the
+    // bare key into the agent.
+    if modifiers.contains(KeyModifiers::SUPER) {
+        return None;
+    }
     let shift = modifiers.contains(KeyModifiers::SHIFT);
     let alt = modifiers.contains(KeyModifiers::ALT);
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
@@ -456,5 +462,19 @@ mod tests {
             key_to_bytes(KeyCode::Char('z'), KeyModifiers::CONTROL),
             Some(vec![0x1a])
         );
+    }
+
+    #[test]
+    fn super_modified_keys_are_swallowed() {
+        // An unbound Cmd+letter must not inject the bare key into the agent.
+        assert_eq!(key_to_bytes(KeyCode::Char('j'), KeyModifiers::SUPER), None);
+        assert_eq!(
+            key_to_bytes(
+                KeyCode::Char('j'),
+                KeyModifiers::SUPER | KeyModifiers::CONTROL
+            ),
+            None
+        );
+        assert_eq!(key_to_bytes(KeyCode::Enter, KeyModifiers::SUPER), None);
     }
 }

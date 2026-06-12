@@ -208,11 +208,28 @@ impl Action {
         }
     }
 
+    /// Default key chord(s) bound to this action for the platform we were
+    /// compiled for. `cfg!(target_os)` is decided at exactly this one
+    /// callsite; everything else goes through [`Action::default_chords_for`]
+    /// so Linux CI can test both platform sets.
+    pub fn default_chords(self) -> Vec<KeyChord> {
+        self.default_chords_for(cfg!(target_os = "macos"))
+    }
+
     /// Default key chord(s) bound to this action. Exhaustive match —
     /// adding a new `Action` variant without a default chord here is a
     /// compile error.
-    pub fn default_chords(self) -> Vec<KeyChord> {
-        match self {
+    ///
+    /// With `macos` set, a few Cmd alternates are **appended** after the
+    /// cross-platform chords (the primaries — and so the rendered hints —
+    /// are identical on every platform). The Cmd set is deliberately tiny:
+    /// macOS terminals claim most of the Cmd namespace at the GUI level
+    /// (Cmd+Q/W/N/T/C/V/F, Cmd+K clears, Cmd+H hides, Cmd+digits switch
+    /// tabs), and only kitty-protocol terminals deliver Cmd at all — so we
+    /// add one coherent pattern (Cmd mirrors the Ctrl primary, Shift
+    /// reverses) on letters no major terminal claims.
+    pub fn default_chords_for(self, macos: bool) -> Vec<KeyChord> {
+        let mut chords = match self {
             Action::QuitApp => vec![KeyChord::ctrl('q')],
             Action::NewSession => vec![KeyChord::ctrl('n')],
             Action::DeleteSession => vec![KeyChord::ctrl('d')],
@@ -266,9 +283,35 @@ impl Action {
             }
             Action::TerminalScrollUp => vec![KeyChord::shift(KeyCode::Up)],
             Action::TerminalScrollDown => vec![KeyChord::shift(KeyCode::Down)],
-            Action::TerminalPageUp => vec![KeyChord::shift(KeyCode::PageUp)],
-            Action::TerminalPageDown => vec![KeyChord::shift(KeyCode::PageDown)],
+            // Alt+Page fallbacks: Terminal.app/iTerm2 intercept Shift+PageUp/
+            // PageDown for their own scrollback, and Mac laptops reach PageUp
+            // only via Fn — Alt+PageUp (Fn+Option+Up) is unclaimed everywhere.
+            Action::TerminalPageUp => {
+                vec![
+                    KeyChord::shift(KeyCode::PageUp),
+                    KeyChord::alt(KeyCode::PageUp),
+                ]
+            }
+            Action::TerminalPageDown => {
+                vec![
+                    KeyChord::shift(KeyCode::PageDown),
+                    KeyChord::alt(KeyCode::PageDown),
+                ]
+            }
+        };
+        if macos {
+            match self {
+                Action::NextSession => chords.push(KeyChord::cmd('j')),
+                // Cmd+K is "clear buffer" in Terminal.app/iTerm2/kitty/Ghostty
+                // — Shift reverses the pair instead.
+                Action::PreviousSession => chords.push(KeyChord::cmd_shift('j')),
+                Action::FocusForward => chords.push(KeyChord::cmd('l')),
+                // Cmd+H is OS-level Hide — Shift-reverse again.
+                Action::FocusBackward => chords.push(KeyChord::cmd_shift('l')),
+                _ => {}
+            }
         }
+        chords
     }
 
     /// Rebindable actions in F1 help render order — the flattened
@@ -393,12 +436,36 @@ impl KeyChord {
         Self::normalized(KeyModifiers::SHIFT, code)
     }
 
+    /// An `Alt`+key chord (e.g. `Alt+PageUp`).
+    pub fn alt(code: KeyCode) -> Self {
+        Self::normalized(KeyModifiers::ALT, code)
+    }
+
+    /// A `Cmd`+char chord (macOS Command key — crossterm's SUPER modifier).
+    /// Only deliverable by kitty-keyboard-protocol terminals.
+    pub fn cmd(c: char) -> Self {
+        Self::normalized(KeyModifiers::SUPER, KeyCode::Char(c))
+    }
+
+    /// A `Cmd+Shift`+char chord.
+    pub fn cmd_shift(c: char) -> Self {
+        Self::normalized(KeyModifiers::SUPER | KeyModifiers::SHIFT, KeyCode::Char(c))
+    }
+
     /// Build a chord, normalizing the Shift+letter encoding ambiguity:
     /// terminals deliver e.g. Shift+n as `Char('N')` (sometimes with the SHIFT
     /// modifier, sometimes without), and `KeyChord::parse` lowercases letters.
     /// We canonicalize every uppercase `Char` to `Shift` + the lowercase letter
-    /// so capture, lookup, and the JSON round-trip all agree.
+    /// so capture, lookup, and the JSON round-trip all agree. Modifiers are
+    /// also masked to the supported set (Ctrl/Alt/Shift/Super): under the kitty
+    /// keyboard protocol terminals may report extra bits (HYPER, META,
+    /// KEYPAD, …) that would otherwise make lookups silently fail.
     pub fn normalized(mods: KeyModifiers, code: KeyCode) -> Self {
+        let mods = mods
+            & (KeyModifiers::CONTROL
+                | KeyModifiers::ALT
+                | KeyModifiers::SHIFT
+                | KeyModifiers::SUPER);
         if let KeyCode::Char(c) = code {
             if c.is_ascii_uppercase() {
                 return Self {
@@ -421,6 +488,9 @@ impl KeyChord {
         }
         if self.mods.contains(KeyModifiers::SHIFT) {
             parts.push("shift");
+        }
+        if self.mods.contains(KeyModifiers::SUPER) {
+            parts.push("cmd");
         }
         let key = match self.code {
             KeyCode::Char(c) => c.to_string(),
@@ -446,7 +516,9 @@ impl KeyChord {
         parts.join("+")
     }
 
-    /// Parse `"ctrl+n"`, `"f1"`, `"shift+pageup"`. Case-insensitive.
+    /// Parse `"ctrl+n"`, `"f1"`, `"shift+pageup"`, `"cmd+j"`. Case-insensitive.
+    /// `cmd`/`super`/`command`/`win` all mean the SUPER modifier (`cmd` is the
+    /// canonical display form).
     pub fn parse(s: &str) -> Option<Self> {
         let lc = s.trim().to_ascii_lowercase();
         if lc.is_empty() {
@@ -461,6 +533,7 @@ impl KeyChord {
                 "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
                 "alt" | "meta" => mods |= KeyModifiers::ALT,
                 "shift" => mods |= KeyModifiers::SHIFT,
+                "cmd" | "super" | "command" | "win" => mods |= KeyModifiers::SUPER,
                 _ => return None,
             }
         }
@@ -1071,6 +1144,112 @@ mod tests {
             kb.rebind(Action::FileViewerDown, KeyChord::ctrl('q')),
             Some(Action::QuitApp)
         );
+    }
+
+    #[test]
+    fn cmd_chord_parse_aliases_and_canonical_display() {
+        for s in ["cmd+j", "super+j", "command+j", "win+j"] {
+            assert_eq!(KeyChord::parse(s), Some(KeyChord::cmd('j')), "{s}");
+        }
+        assert_eq!(KeyChord::cmd('j').display(), "cmd+j");
+        assert_eq!(KeyChord::cmd_shift('j').display(), "shift+cmd+j");
+        // Both forms round-trip through display/parse.
+        for chord in [KeyChord::cmd('j'), KeyChord::cmd_shift('j')] {
+            assert_eq!(KeyChord::parse(&chord.display()), Some(chord));
+        }
+    }
+
+    #[test]
+    fn normalized_masks_unsupported_modifier_bits() {
+        // Kitty-protocol terminals can report HYPER/META/KEYPAD bits the app
+        // never binds — they must not make lookups fail.
+        let chord = KeyChord::normalized(
+            KeyModifiers::CONTROL | KeyModifiers::HYPER | KeyModifiers::META,
+            KeyCode::Char('q'),
+        );
+        assert_eq!(chord, KeyChord::ctrl('q'));
+        let kb = KeyBindings::default();
+        assert_eq!(
+            kb.lookup(
+                KeyCode::Char('q'),
+                KeyModifiers::CONTROL | KeyModifiers::HYPER
+            ),
+            Some(Action::QuitApp)
+        );
+    }
+
+    #[test]
+    fn macos_defaults_are_additive_superset() {
+        // The Linux chord list must be a prefix of the macOS one for every
+        // action: primaries (and so rendered hints) identical on both
+        // platforms, Cmd alternates strictly appended.
+        for action in Action::all() {
+            let linux = action.default_chords_for(false);
+            let macos = action.default_chords_for(true);
+            assert!(
+                macos.len() >= linux.len() && macos[..linux.len()] == linux[..],
+                "{action:?}: {linux:?} is not a prefix of {macos:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn macos_default_set_has_no_conflicts() {
+        let map = Action::all()
+            .iter()
+            .map(|a| (*a, a.default_chords_for(true)))
+            .collect();
+        let kb = KeyBindings { map };
+        let warnings = kb.conflict_warnings();
+        assert!(warnings.is_empty(), "macOS defaults conflict: {warnings:?}");
+    }
+
+    #[test]
+    fn rebind_steals_cmd_chord_across_overlapping_contexts() {
+        let map = Action::all()
+            .iter()
+            .map(|a| (*a, a.default_chords_for(true)))
+            .collect();
+        let mut kb = KeyBindings { map };
+        // cmd+j belongs to the global NextSession; a scoped action grabbing it
+        // steals it like any other chord.
+        assert_eq!(
+            kb.rebind(Action::FileViewerDown, KeyChord::cmd('j')),
+            Some(Action::NextSession)
+        );
+        assert!(!kb
+            .chords_for(Action::NextSession)
+            .contains(&KeyChord::cmd('j')));
+    }
+
+    #[test]
+    fn cmd_chord_json_round_trip() {
+        let mut kb = KeyBindings::default();
+        kb.rebind(Action::NextSession, KeyChord::cmd('j'));
+        let parsed = KeyBindings::from_json(&kb.to_json().unwrap()).unwrap();
+        assert_eq!(
+            parsed.chords_for(Action::NextSession),
+            &[KeyChord::cmd('j')]
+        );
+    }
+
+    #[test]
+    fn terminal_paging_has_alt_fallback() {
+        // Shift+PageUp/PageDown is intercepted by Terminal.app/iTerm2
+        // scrollback, so the Alt variants must resolve too — on every platform.
+        let kb = KeyBindings::default();
+        for (code, action) in [
+            (KeyCode::PageUp, Action::TerminalPageUp),
+            (KeyCode::PageDown, Action::TerminalPageDown),
+        ] {
+            for mods in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+                assert_eq!(
+                    kb.lookup_in(KeyContext::Terminal, code, mods),
+                    Some(action),
+                    "{action:?} via {mods:?}"
+                );
+            }
+        }
     }
 
     #[test]

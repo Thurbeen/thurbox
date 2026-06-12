@@ -43,6 +43,25 @@ impl App {
             return;
         }
 
+        // Cmd/Super chords are commands, never text: only the keybinding
+        // lookup may consume them. The handlers below (modal inputs, the
+        // search query, in-pane editors, list hotkeys) predate the kitty
+        // keyboard protocol and match `Char` without checking SUPER, so a
+        // chord like Cmd+J would otherwise type a bare `j`. While a modal or
+        // the search strip owns input the chord is swallowed outright,
+        // mirroring how Ctrl chords are unavailable there. (The terminal
+        // pass-through swallows SUPER on its own — `agent::input::key_to_bytes`.)
+        if mods.contains(KeyModifiers::SUPER) {
+            if !self.modal.is_open() && !self.global_search.active {
+                self.text_selection = None;
+                let context = self.focus_key_context();
+                if let Some(action) = self.keybindings.lookup_in(context, code, mods) {
+                    self.dispatch_action(action);
+                }
+            }
+            return;
+        }
+
         // An open modal captures all input.
         if self.handle_modal_key_if_open(code, mods) {
             return;
@@ -164,7 +183,10 @@ impl App {
                 help.capturing = false;
                 return true;
             }
-            let chord = KeyChord { mods, code };
+            // Normalize so the toast below shows the stored chord (masked
+            // modifiers, canonical Shift+letter) — `rebind` normalizes again
+            // for storage.
+            let chord = KeyChord::normalized(mods, code);
             let selected = help.selected.min(actions.len().saturating_sub(1));
             help.capturing = false;
             let action = actions[selected];

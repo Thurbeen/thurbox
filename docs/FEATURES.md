@@ -291,7 +291,8 @@ Headless: `thurbox-cli session create --host devbox --repo-path
 
 When the terminal panel is focused, **all keys are forwarded to the
 PTY** except those with a `Ctrl` modifier (intercepted as global
-commands) and `Shift+arrow/page` keys (intercepted for scrollback).
+commands) and `Shift+arrow/page` / `Alt+page` keys (intercepted for
+scrollback).
 
 **Why Ctrl, not Alt?**
 
@@ -354,8 +355,8 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Esc` | Repo picker | Cancel | |
 | `Shift+Up` | Focused terminal | Scroll up 1 line | |
 | `Shift+Down` | Focused terminal | Scroll down 1 line | |
-| `Shift+PageUp` | Focused terminal | Scroll up half page | |
-| `Shift+PageDown` | Focused terminal | Scroll down half page | |
+| `Shift+PageUp` / `Alt+PageUp` | Focused terminal | Scroll up half page | |
+| `Shift+PageDown` / `Alt+PageDown` | Focused terminal | Scroll down half page | |
 | Mouse wheel | Focused terminal | Scroll up/down 3 lines | |
 | All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) | |
 
@@ -382,6 +383,34 @@ actions whose scopes overlap. A handful of stateful keys stay fixed (shown in
 the F1 panel under *Fixed (not rebindable)*): modal selectors
 (`j`/`k`/`Enter`/`Esc`), the automations/tasks panes, the file-viewer search
 sub-mode, and the terminal's catch-all PTY forwarding.
+
+### macOS
+
+Ctrl chords pass through macOS terminals unchanged (raw mode disables
+flow control; the `Ctrl+Y` DSUSP quirk is why the `F4` alternate
+exists). Beyond that:
+
+- **Cmd as a modifier.** Thurbox enables the kitty keyboard protocol
+  when the terminal supports it, so the Command key is a first-class
+  modifier: write `cmd+j` in `keybindings.json` (`super`, `command`,
+  and `win` parse as aliases; `cmd` is canonical) or capture a Cmd
+  chord live in the F1 editor. Supported by iTerm2 3.5+, kitty,
+  WezTerm, and Ghostty; Terminal.app lacks the protocol, so Cmd
+  chords never arrive there (everything else degrades gracefully).
+  Note the emulator consumes its own Cmd shortcuts (`Cmd+Q/W/N/T/C/V`,
+  `Cmd+K` clear, `Cmd+H` hide, `Cmd+digit` tabs) before Thurbox can
+  see them — only unclaimed chords are bindable.
+- **macOS default alternates.** On macOS builds four Cmd chords are
+  appended after the Ctrl primaries (Linux defaults are identical):
+  `Cmd+J` / `Cmd+Shift+J` select the next/previous session and
+  `Cmd+L` / `Cmd+Shift+L` cycle pane focus forward/backward. The
+  pattern is "Cmd mirrors the Ctrl primary, Shift reverses" —
+  `Cmd+K` and `Cmd+H` themselves are unusable (see above).
+- **Unbound Cmd chords are swallowed**, never forwarded to the PTY:
+  injecting the bare letter into the agent would corrupt its input.
+- **F-keys** (`F1`–`F5` alternates) require `Fn` on Mac laptops
+  unless function keys are set to standard; `Cmd+V` already pastes
+  through the terminal's native paste → bracketed paste path.
 
 ---
 
@@ -1108,8 +1137,12 @@ the offset is 0, new output naturally stays at the bottom.
 
 ### Scroll keybindings
 
-`Shift+Up/Down` scrolls one line, `Shift+PageUp/PageDown` scrolls
-half a page, and the mouse wheel scrolls three lines per tick.
+`Shift+Up/Down` scrolls one line, `Shift+PageUp/PageDown` (or
+`Alt+PageUp/PageDown`) scrolls half a page, and the mouse wheel
+scrolls three lines per tick. The `Alt+Page` pair exists because
+Terminal.app and iTerm2 claim `Shift+Page` for their own scrollback,
+so on macOS those chords never reach Thurbox (`Fn+Option+Up/Down`
+on a Mac laptop).
 Any other keypress while scrolled up snaps back to the bottom
 before forwarding to the PTY. This matches the mental model of
 "I'm reading history, and when I start typing I'm back in the

@@ -394,6 +394,12 @@ command = "codex"
 | `F2` | Toggle info panel | Next to F1 |
 | `F3` | Toggle file viewer | Next to F2 |
 
+**macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
+Ghostty) the Command key works as a modifier — `Cmd+J`/`Cmd+Shift+J`
+switch sessions and `Cmd+L`/`Cmd+Shift+L` cycle panes by default, and
+any action can be rebound to a `cmd+…` chord from the F1 editor.
+Terminal.app delivers no Cmd chords; everything else works there.
+
 ### List Navigation
 
 | Key | Action |
@@ -411,6 +417,7 @@ Session search matches against name, agent, and branch.
 |-----|--------|
 | `Shift+Up` / `Shift+Down` | Scroll 1 line |
 | `Shift+PageUp` / `Shift+PageDown` | Scroll half page |
+| `Alt+PageUp` / `Alt+PageDown` | Scroll half page (fallback where the terminal claims `Shift+Page`, e.g. Terminal.app/iTerm2) |
 | Mouse wheel | Scroll 3 lines |
 | Mouse drag | Select text |
 | Any other key | Snap to bottom + forward to PTY |

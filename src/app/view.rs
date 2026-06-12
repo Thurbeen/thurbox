@@ -986,6 +986,18 @@ fn render_help_overlay(
         "Terminal: all other keys forwarded to session",
     ));
 
+    // Cmd chords only arrive through the kitty keyboard protocol — worth a
+    // note on the platform whose defaults include them.
+    #[cfg(target_os = "macos")]
+    {
+        help_lines.push(Line::from(""));
+        help_lines.push(help_section("macOS"));
+        help_lines.push(help_line(
+            "cmd+…".into(),
+            "Needs a kitty-protocol terminal (iTerm2 3.5+, kitty, WezTerm, Ghostty) — not Terminal.app",
+        ));
+    }
+
     // Reserve the bottom row for the controls footer so it stays visible even
     // when the body overflows the modal height (the body scrolls, the footer
     // never does).

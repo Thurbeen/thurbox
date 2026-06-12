@@ -137,10 +137,14 @@ Maps `Action` names to one or more chord strings:
 
 - Preferred editing path is the **F1 panel** (live capture, conflict
   stealing, immediate persistence). Hand-edits are read at startup.
-- Chord syntax: `[ctrl+][alt+][shift+]<key>` where `<key>` is a letter,
-  `f1`–`f12`, or a named key (`enter`, `esc`, `tab`, arrows, `home`,
-  `end`, `pageup`, `pagedown`, `backspace`, `delete`, `insert`).
-  Case-insensitive.
+- Chord syntax: `[ctrl+][alt+][shift+][cmd+]<key>` where `<key>` is a
+  letter, `f1`–`f12`, or a named key (`enter`, `esc`, `tab`, arrows,
+  `home`, `end`, `pageup`, `pagedown`, `backspace`, `delete`,
+  `insert`). Case-insensitive. `cmd` (aliases `super`, `command`,
+  `win`) is the macOS Command key — delivered only by
+  kitty-keyboard-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
+  Ghostty; not Terminal.app), and only for chords the emulator
+  doesn't claim itself.
 - Unknown action names, invalid chords, and the same chord bound to two
   actions in overlapping contexts are reported at startup (the file
   still loads; bad entries fall back to defaults).
