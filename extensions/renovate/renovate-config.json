@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Global Renovate config for the thurbox renovate extension. Workers pass",
+    "this via RENOVATE_CONFIG_FILE and ALWAYS run `--platform=local`, so every",
+    "setting here is applied against a local checkout (no bot, no token).",
+    "The per-repo `strategy` column in repos.md is layered on top of this as a",
+    "RENOVATE_CONFIG overlay (patch -> patch only; minor -> patch+minor; major",
+    "/all -> everything). Tune grouping, ranges, and ignored deps here."
+  ],
+  "extends": ["config:recommended"],
+  "dependencyDashboard": false,
+  "separateMajorMinor": true,
+  "rangeStrategy": "bump",
+  "packageRules": [
+    {
+      "description": "Group all non-major updates into a single set of changes.",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "non-major dependencies"
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": false
+  }
+}

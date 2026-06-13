@@ -67,6 +67,7 @@
             <li><a href="extension-flow.html">Flow</a></li>
             <li><a href="extension-forge.html">Forge</a></li>
             <li><a href="extension-ci-shepherd.html">CI-shepherd</a></li>
+            <li><a href="extension-renovate.html">Renovate</a></li>
           </ul>
           <h4>Reference</h4>
           <ul>
@@ -151,12 +152,14 @@
           <div class="info-box">
             <p>
               <strong>
-                Three extensions ship today:
+                Four extensions ship today:
                 <a href="extension-flow.html">flow</a>
                 ,
                 <a href="extension-forge.html">forge</a>
-                , and
+                ,
                 <a href="extension-ci-shepherd.html">ci-shepherd</a>
+                , and
+                <a href="extension-renovate.html">renovate</a>
                 .
               </strong>
               Each has its own page (see
@@ -538,6 +541,16 @@ prompt = "tick"</code></pre>
                 <p>
                   Watches open change requests (PRs/MRs on any git forge) and dispatches a worker to
                   fix failing CI or a changes-requested review.
+                </p>
+              </div>
+            </a>
+            <a href="extension-renovate.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x1f504;</div>
+                <h3>renovate</h3>
+                <p>
+                  Keeps local repos on up-to-date dependencies: a worker runs Renovate's local
+                  platform, tests the bumps, and opens a review PR.
                 </p>
               </div>
             </a>

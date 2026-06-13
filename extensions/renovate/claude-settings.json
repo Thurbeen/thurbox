@@ -1,0 +1,25 @@
+{
+  "_comment": "Installed by thurbox `extension install renovate` (template: claude-settings.json). Re-installing overwrites this file; remove this line to keep your own edits.",
+  "permissions": {
+    "allow": [
+      "Bash(thurbox-cli:*)",
+      "Bash({home}/scripts/renovate-snapshot.sh:*)",
+      "Bash({home}/scripts/dispatch-update.sh:*)",
+      "Bash({home}/scripts/renovate-run.sh:*)",
+      "Bash({home}/scripts/parse-result.sh:*)",
+      "Bash(./scripts/renovate-snapshot.sh:*)",
+      "Bash(./scripts/dispatch-update.sh:*)",
+      "Bash(./scripts/renovate-run.sh:*)",
+      "Bash(./scripts/parse-result.sh:*)",
+      "Bash(npx:*)",
+      "Bash(renovate:*)",
+      "Bash(gh:*)",
+      "Bash(glab:*)",
+      "Bash(git:*)",
+      "Bash(jq:*)",
+      "Read(/{home}/**)",
+      "Edit(/{home}/**)",
+      "Write(/{home}/**)"
+    ]
+  }
+}

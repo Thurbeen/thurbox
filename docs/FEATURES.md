@@ -809,6 +809,12 @@ Two more ship in `extensions/`, both built the same agent-agnostic way
   agent at runtime) and dispatches a `shepherd-worker` fixer for each with
   **failing CI** or a **changes-requested review**.
   `thurbox-cli extension install ci-shepherd`.
+- **`renovate`** — keeps local repos on up-to-date dependencies. A weekly
+  `renovate-tick` dispatches a `renovate-worker` per watched repo that runs
+  **Renovate's local platform only** (`--platform=local`, no bot/token/PR),
+  tests the bumps, commits to a fresh `renovate/updates-<ts>` branch, and
+  opens a review PR. Per-repo `strategy` (patch/minor/major/all) layers onto a
+  global `renovate-config.json`. `thurbox-cli extension install renovate`.
 
 ---
 

@@ -598,6 +598,19 @@ sync, but the TUI editor never sets it.)
   add -b` (which fails on an existing branch), `dispatch-fix.sh` adopts the
   request branch itself (git-universal) into a shepherd-owned worktree. Spec:
   `SHEPHERD.md`.
+- **`extensions/renovate/`** *(experimental)* — keeps local repos on up-to-date
+  dependencies. A `renovate` session sweeps a `repos.md` watch list on a weekly
+  `renovate-tick` automation and dispatches a `renovate-worker` per eligible
+  repo; the worker runs **Renovate's `local` platform only**
+  (`scripts/renovate-run.sh` hard-codes `--platform=local` — no hosted bot, no
+  token, no Renovate-opened PR), tests the result, commits to a fresh
+  `renovate/updates-<ts>` branch, and opens a review PR. Updaters are thurbox
+  **tasks** (`update <repo> deps …`) that self-report with the same
+  `===RESULT===` sentinel as flow. Unlike ci-shepherd it starts a *new* branch,
+  so `scripts/dispatch-update.sh` uses thurbox's native `--worktree` (no branch
+  adoption). Version strategy is per-repo (`strategy` column: `patch`/`minor`/
+  `major`/`all`, layered as a `RENOVATE_CONFIG` overlay) plus a global
+  `renovate-config.json`. Spec: `RENOVATE.md`.
 
 ### Extension manifests + self-heal (`thurbox-cli extension`)
 

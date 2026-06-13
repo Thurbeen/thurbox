@@ -1,0 +1,98 @@
+# Renovate extension manifest.
+#
+# Single source of truth for installing + running renovate. Install it with
+# `thurbox-cli extension install renovate` (or point at this directory:
+# `thurbox-cli extension install ./extensions/renovate`). thurbox fetches this
+# file, lays down the [[files]] / [[symlinks]] under `home`, registers the
+# [[agents]] in agents.toml, then activates the [[sessions]] + [[automations]]
+# and self-heals them if deleted. `{home}` is replaced with the resolved home
+# dir. Turn it off with `thurbox-cli extension deactivate renovate`.
+
+name = "renovate"
+description = "Keeps local repos on up-to-date dependencies via Renovate's local platform"
+config_version = 1
+home = "~/renovate"
+
+# --- agents registered in agents.toml (override the model by editing it) ------
+
+[[agents]]
+name = "renovate"
+command = "claude"
+args = ["--model", "claude-haiku-4-5"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+[[agents]]
+name = "renovate-worker"
+command = "claude"
+args = ["--model", "claude-opus-4-8"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+# --- payload files laid down under home ---------------------------------------
+
+[[files]]
+path = "RENOVATE.md"
+
+[[files]]
+path = "scripts/renovate-snapshot.sh"
+executable = true
+
+[[files]]
+path = "scripts/dispatch-update.sh"
+executable = true
+
+[[files]]
+path = "scripts/renovate-run.sh"
+executable = true
+
+[[files]]
+path = "scripts/parse-result.sh"
+executable = true
+
+# Watch list — seeded once, then user-owned (never clobbered on reinstall).
+[[files]]
+path = "repos.md"
+if_absent = true
+
+# Renovate's own config the workers pass via RENOVATE_CONFIG_FILE — seeded once,
+# then user-owned (tune your global update strategy here).
+[[files]]
+path = "renovate-config.json"
+if_absent = true
+
+# Pre-approve renovate's tooling so unattended ticks run without prompts. {home}
+# is substituted with the resolved home path.
+[[files]]
+path = ".claude/settings.json"
+source = "claude-settings.json"
+substitute = true
+
+# --- context-file symlinks: surface RENOVATE.md to each CLI's convention ------
+
+[[symlinks]]
+link = "CLAUDE.md"
+target = "RENOVATE.md"
+
+[[symlinks]]
+link = "AGENTS.md"
+target = "RENOVATE.md"
+
+[[symlinks]]
+link = "GEMINI.md"
+target = "RENOVATE.md"
+
+# --- runtime resources: ensured on activate, self-healed if deleted -----------
+
+[[sessions]]
+name = "renovate"
+agent = "renovate"
+repo_path = "{home}"
+
+[[automations]]
+name = "renovate-tick"
+trigger = "cron:0 9 * * 1"
+session_ref = "renovate"
+prompt = "tick"
