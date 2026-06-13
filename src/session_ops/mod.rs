@@ -13,9 +13,9 @@ pub mod spawn;
 pub use delete::{delete_session_headless, ForceDeleteReport};
 pub use extensions::{
     activate_extension, deactivate_extension, ensure_extension, extension_health,
-    heal_active_extensions, install_extension, uninstall_extension, update_all_extensions,
-    update_extension, DeactivateReport, EnsureReport, ExtensionHealth, InstallReport,
-    UninstallReport, UpdateReport,
+    heal_active_extensions, install_extension, reinstall_extension, uninstall_extension,
+    update_all_extensions, update_extension, DeactivateReport, EnsureReport, ExtensionHealth,
+    InstallReport, ReinstallReport, UninstallReport, UpdateReport,
 };
 pub use restart::restart_session_headless;
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};

@@ -358,8 +358,9 @@ create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `editor`, `config`
 (validate/show — strict-parses every config file / prints the
 effective resolved config; see `docs/CONFIG.md`), `extension`
-(alias `ext`: install/uninstall/list/update/activate/deactivate/status —
-manage opt-in extensions; see below). Pass `--pretty` for indented JSON.
+(alias `ext`: install/uninstall/reinstall/list/available/update/activate/
+deactivate/status — manage opt-in extensions; see below). Pass `--pretty` for
+indented JSON.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB
 row is marked deleted (the TUI tears down the tmux window/worktree
@@ -646,22 +647,36 @@ the symlinks, registers the agents (`ensure_agents_registered` appends to
 agents.toml, preserving existing entries), writes the home-resolved
 manifest to the discovery dir, and activates. A `substitute` file the user
 edited (its managed marker removed) is not clobbered on reinstall unless
-`--force`. `uninstall <name> [--purge]`
-(`session_ops::uninstall_extension`) reverses it: tear down session +
+`--force`. A **bare-name** install that can't fetch its manifest (a typo or an
+unknown extension) is turned into a discovery error
+(`agent::extension_config::unknown_extension_help`): it names the known official
+extensions (`OFFICIAL_EXTENSIONS`), offers a Levenshtein "did you mean?"
+suggestion, and points at `extension available`. `uninstall <name> [--purge]`
+(`session_ops::uninstall_extension`) reverses install: tear down session +
 automation, remove the extension's agents (`remove_agents_from_toml`,
 text-edit to preserve comments), delete the manifest, and with `--purge`
-delete the home dir. Flow's `install.sh` is now a thin shim over `install`.
+delete the home dir. `reinstall <name> [--purge]`
+(`session_ops::reinstall_extension`) is the clean-slate hammer — a full
+uninstall followed by a fresh `install --force` from the recorded source
+(rewriting even user-edited seed/`substitute` files; `--purge` also resets the
+home dir), heavier than `update --force` which only refreshes payload files in
+place. Flow's `install.sh` is a thin shim over `install`.
 
 `thurbox-cli extension` (alias `ext`) — `install` / `uninstall <name>
-[--purge]` / `list` / `update <name>|--all [--force]` / `activate <name>` /
-`deactivate <name> [--force] [--purge]` / `status [<name>]` — wraps
-`session_ops::extensions`: `ensure_extension` idempotently (re)creates any
-missing declared resource (reusing `spawn_session_headless` +
+[--purge]` / `reinstall <name> [--purge]` / `list` / `available [<query>]`
+(alias `search`) / `update [<name>] [--all] [--force]` (no name ⇒ all) /
+`activate <name>` / `deactivate <name> [--force] [--purge]` / `status [<name>]`
+— wraps `session_ops::extensions`: `ensure_extension` idempotently (re)creates
+any missing declared resource (reusing `spawn_session_headless` +
 `db.create_automation`, matching by name so existing ones are reused);
 `activate_extension` also records the name in the SQLite `metadata`
 `active_extensions` JSON set; `deactivate_extension` tears the resources
 down and clears the set. The CLI layer arms the tmux automation heartbeat
-on activate so a `Send` automation actually fires headlessly.
+on activate so a `Send` automation actually fires headlessly. `available`
+lists the official extensions (`OFFICIAL_EXTENSIONS`) for discovery — offline,
+with an `installed` flag and ready-to-run `install_command` per entry. Every
+mutating subcommand's JSON carries a human-readable `summary` line (and
+`list`/`status` surface each extension's `description`).
 
 **Versioning + update.** A manifest declares its own `version` and a
 `min_thurbox_version` (soft compat gate — install/activate/heal *warn*,

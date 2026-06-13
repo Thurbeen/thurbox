@@ -51,6 +51,111 @@ pub fn official_base() -> String {
     format!("{OFFICIAL_REPO_RAW}/{}/extensions", official_ref())
 }
 
+/// One officially-distributed extension, surfaced for discovery
+/// (`thurbox-cli extension available`) and typo help on a failed bare-name
+/// install. Each installs by its bare `name` against [`official_base`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfficialExtension {
+    /// Bare install name (`thurbox-cli extension install <name>`).
+    pub name: &'static str,
+    /// One-line human summary, mirrored from the extension's own manifest.
+    pub description: &'static str,
+}
+
+/// The official extensions shipped in `extensions/<name>/` of the thurbox repo.
+///
+/// **Source of truth for discovery + typo suggestions.** Keep in sync when an
+/// extension is added/removed under `extensions/` (descriptions mirror each
+/// `extension.toml`'s `description`). This is intentionally a small static list
+/// rather than a remote index so `extension available` works offline and a typo
+/// can be caught without a network round-trip.
+pub const OFFICIAL_EXTENSIONS: &[OfficialExtension] = &[
+    OfficialExtension {
+        name: "flow",
+        description: "Focus-protecting triage agent",
+    },
+    OfficialExtension {
+        name: "forge",
+        description: "Workflow analyst that proposes new automations",
+    },
+    OfficialExtension {
+        name: "ci-shepherd",
+        description: "Watches change requests (PR/MR) and dispatches CI/review fixers",
+    },
+    OfficialExtension {
+        name: "renovate",
+        description: "Keeps local repos on up-to-date dependencies via Renovate's local platform",
+    },
+];
+
+/// Whether an install `target` is a **bare name** (not a URL or path) — i.e. it
+/// resolves against the official source. Mirrors the branch in [`resolve_source`].
+pub fn is_bare_name(target: &str) -> bool {
+    let t = target.trim();
+    !(t.starts_with("https://")
+        || t.starts_with("http://")
+        || t.contains('/')
+        || t.starts_with('.')
+        || t.starts_with('~'))
+}
+
+/// Suggest the closest official extension name to `name` (for a "did you mean?"
+/// hint), within a small edit-distance budget so unrelated typos suggest nothing.
+pub fn suggest_extension(name: &str) -> Option<&'static str> {
+    let name = name.trim().to_lowercase();
+    // Budget scales a little with length: tolerate a couple of edits for short
+    // names (a transposition is 2), more for longer ones, but never so loose that
+    // everything matches.
+    let budget = (name.len() / 3).clamp(2, 3);
+    OFFICIAL_EXTENSIONS
+        .iter()
+        .map(|e| (e.name, levenshtein(&name, e.name)))
+        .filter(|(_, d)| *d <= budget)
+        .min_by_key(|(_, d)| *d)
+        .map(|(n, _)| n)
+}
+
+/// Build a helpful error for a failed **bare-name** install: surface the real
+/// fetch failure, list the known official extensions, and offer a "did you
+/// mean?" suggestion plus a pointer at `extension available`.
+pub fn unknown_extension_help(name: &str, cause: &str) -> String {
+    let mut msg = format!("could not install extension '{name}': {cause}\n");
+    if let Some(suggestion) = suggest_extension(name) {
+        msg.push_str(&format!("\nDid you mean '{suggestion}'?\n"));
+    }
+    msg.push_str("\nKnown official extensions:\n");
+    for ext in OFFICIAL_EXTENSIONS {
+        msg.push_str(&format!("  {:<12} {}\n", ext.name, ext.description));
+    }
+    msg.push_str(
+        "\nRun `thurbox-cli extension available` to list them, or pass a URL / local path.",
+    );
+    msg
+}
+
+/// Classic Levenshtein edit distance (two-row DP). Small inputs only.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
 /// The extension-manifest discovery directory:
 /// `~/.config/thurbox/extensions/` (sibling of `config.toml`).
 pub fn extensions_dir() -> Option<PathBuf> {
@@ -479,6 +584,49 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         assert!(list_manifests().is_empty());
+    }
+
+    #[test]
+    fn is_bare_name_only_for_plain_names() {
+        assert!(is_bare_name("flow"));
+        assert!(is_bare_name("ci-shepherd"));
+        assert!(!is_bare_name("https://example.com/flow"));
+        assert!(!is_bare_name("./flow"));
+        assert!(!is_bare_name("~/flow"));
+        assert!(!is_bare_name("/abs/flow"));
+        assert!(!is_bare_name("a/b"));
+    }
+
+    #[test]
+    fn suggest_extension_catches_typos_but_not_noise() {
+        assert_eq!(suggest_extension("flwo"), Some("flow"));
+        assert_eq!(suggest_extension("forge"), Some("forge"));
+        assert_eq!(suggest_extension("renovat"), Some("renovate"));
+        assert_eq!(suggest_extension("ci-shepard"), Some("ci-shepherd"));
+        // Unrelated input shouldn't map to anything.
+        assert_eq!(suggest_extension("zzzzzzzzzz"), None);
+    }
+
+    #[test]
+    fn unknown_extension_help_lists_known_and_suggests() {
+        let msg = unknown_extension_help("flwo", "curl: HTTP 404");
+        assert!(msg.contains("could not install extension 'flwo'"));
+        assert!(msg.contains("curl: HTTP 404"));
+        assert!(msg.contains("Did you mean 'flow'?"));
+        // Every official extension is listed for discovery.
+        for ext in OFFICIAL_EXTENSIONS {
+            assert!(msg.contains(ext.name), "missing {}", ext.name);
+        }
+        assert!(msg.contains("extension available"));
+    }
+
+    #[test]
+    fn levenshtein_basics() {
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", ""), 3);
+        assert_eq!(levenshtein("flow", "flow"), 0);
+        assert_eq!(levenshtein("flwo", "flow"), 2);
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
     }
 
     #[test]

@@ -60,6 +60,8 @@ pub struct DeactivateReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionHealth {
     pub name: String,
+    /// The extension's own one-line description (`description` in its manifest).
+    pub description: Option<String>,
     pub active: bool,
     /// `(session_name, present)` for each declared session.
     pub sessions: Vec<(String, bool)>,
@@ -131,7 +133,17 @@ pub fn install_extension(
     // Agent-layer helpers are reached fully-qualified (no `use crate::agent`) per
     // the session_ops → agent path-only architecture rule.
     let source = crate::agent::extension_config::resolve_source(target);
-    let (def, warnings) = crate::agent::extension_config::load_manifest_from_source(&source)?;
+    let (def, warnings) = match crate::agent::extension_config::load_manifest_from_source(&source) {
+        Ok(v) => v,
+        // A bare name that can't be fetched is almost always a typo or an unknown
+        // extension — turn the raw curl/404 into discovery guidance.
+        Err(e) if crate::agent::extension_config::is_bare_name(target) => {
+            return Err(crate::agent::extension_config::unknown_extension_help(
+                target, &e,
+            ));
+        }
+        Err(e) => return Err(e),
+    };
     for w in &warnings {
         tracing::warn!("{w}");
     }
@@ -293,6 +305,53 @@ pub fn update_all_extensions(
             (name, result)
         })
         .collect()
+}
+
+/// What [`reinstall_extension`] did: the uninstall teardown followed by a fresh
+/// install from the recorded source.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReinstallReport {
+    pub name: String,
+    pub uninstall: UninstallReport,
+    pub install: InstallReport,
+}
+
+/// Clean-slate reinstall: fully [`uninstall_extension`] the extension (tearing
+/// down its session/automation, removing its agents, deleting its manifest, and
+/// — with `purge_home` — its home dir), then re-[`install_extension`] from the
+/// **recorded source** with `force` so even user-edited seed/`substitute` files
+/// are rewritten.
+///
+/// This is the heavier hammer than `update --force`: `update` refreshes payload
+/// files in place but never removes now-stale agents or runtime resources, while
+/// `reinstall` removes everything first and lays it down fresh. The extension's
+/// home is preserved unless `purge_home`. Errors if the extension isn't
+/// installed or its manifest recorded no source (older installs — uninstall +
+/// install by hand instead).
+pub fn reinstall_extension(
+    db: &Database,
+    name: &str,
+    purge_home: bool,
+) -> Result<ReinstallReport, String> {
+    let installed = crate::agent::extension_config::load_manifest(name)
+        .ok_or_else(|| format!("extension '{name}' is not installed (no manifest found)"))?;
+    let source = installed.source.clone().ok_or_else(|| {
+        format!(
+            "extension '{name}' has no recorded install source (installed by an older thurbox); \
+             reinstall it by hand: `thurbox-cli extension uninstall {name}` then \
+             `thurbox-cli extension install {name}`"
+        )
+    })?;
+    // Keep the extension in its existing home unless the caller purges it.
+    let home = installed.home.clone();
+
+    let uninstall = uninstall_extension(db, name, purge_home)?;
+    let install = install_extension(db, &source, home.as_deref(), true)?;
+    Ok(ReinstallReport {
+        name: name.to_string(),
+        uninstall,
+        install,
+    })
 }
 
 /// What [`uninstall_extension`] removed.
@@ -653,6 +712,7 @@ pub fn extension_health(db: &Database, def: &ExtensionDef) -> Result<ExtensionHe
     let current = crate::agent::extension_config::binary_version();
     Ok(ExtensionHealth {
         name: def.name.clone(),
+        description: def.description.clone(),
         active,
         sessions: def
             .sessions
@@ -1121,6 +1181,57 @@ prompt = "tick"
         })
         .unwrap();
         let err = update_extension(&db, "legacy", false).unwrap_err();
+        assert!(err.contains("no recorded install source"), "got: {err}");
+    }
+
+    #[test]
+    fn reinstall_tears_down_then_installs_fresh() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        insert_session(&db, "flow");
+
+        let src = tempfile::TempDir::new().unwrap();
+        let home = temp.path().join("flowhome");
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                "name = \"flow\"\nversion = \"1.0.0\"\nhome = \"{}\"\n[[files]]\npath = \"seed.md\"\nif_absent = true\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
+                home.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join("seed.md"), "pristine seed").unwrap();
+        let target = src.path().to_string_lossy().to_string();
+
+        install_extension(&db, &target, None, false).unwrap();
+        // User edits the if_absent seed — update without --force would keep it.
+        std::fs::write(home.join("seed.md"), "user edit").unwrap();
+
+        let report = reinstall_extension(&db, "flow", false).unwrap();
+        assert_eq!(report.name, "flow");
+        assert!(report.uninstall.manifest_removed);
+        assert_eq!(report.install.version.as_deref(), Some("1.0.0"));
+        // Reinstall forces even the if_absent seed back to pristine.
+        assert_eq!(
+            std::fs::read_to_string(home.join("seed.md")).unwrap(),
+            "pristine seed"
+        );
+        // The extension is installed + active again afterwards.
+        assert!(crate::agent::extension_config::load_manifest("flow").is_some());
+    }
+
+    #[test]
+    fn reinstall_errors_when_no_recorded_source() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        crate::agent::extension_config::write_manifest(&ExtensionDef {
+            name: "legacy".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let err = reinstall_extension(&db, "legacy", false).unwrap_err();
         assert!(err.contains("no recorded install source"), "got: {err}");
     }
 

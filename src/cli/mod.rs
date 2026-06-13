@@ -445,6 +445,57 @@ mod tests {
     }
 
     #[test]
+    fn parse_extension_update_no_name_means_all() {
+        // No name and no --all is now valid: it updates every installed extension.
+        let cli = Cli::try_parse_from(["thurbox-cli", "extension", "update"]).unwrap();
+        let Command::Extension {
+            action: extensions::Action::Update { name, all, force },
+        } = cli.command
+        else {
+            panic!("expected Extension::Update");
+        };
+        assert!(name.is_none());
+        assert!(!all);
+        assert!(!force);
+    }
+
+    #[test]
+    fn parse_extension_reinstall() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "extension", "reinstall", "flow", "--purge"])
+            .unwrap();
+        let Command::Extension {
+            action: extensions::Action::Reinstall { name, purge },
+        } = cli.command
+        else {
+            panic!("expected Extension::Reinstall");
+        };
+        assert_eq!(name, "flow");
+        assert!(purge);
+    }
+
+    #[test]
+    fn parse_extension_available_and_search_alias() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "extension", "available"]).unwrap();
+        let Command::Extension {
+            action: extensions::Action::Available { query },
+        } = cli.command
+        else {
+            panic!("expected Extension::Available");
+        };
+        assert!(query.is_none());
+
+        // `search` is an alias and accepts a filter query.
+        let cli = Cli::try_parse_from(["thurbox-cli", "ext", "search", "deps"]).unwrap();
+        let Command::Extension {
+            action: extensions::Action::Available { query },
+        } = cli.command
+        else {
+            panic!("expected Extension::Available via search alias");
+        };
+        assert_eq!(query.as_deref(), Some("deps"));
+    }
+
+    #[test]
     fn extension_alias_ext_parses() {
         let cli = Cli::try_parse_from(["thurbox-cli", "ext", "list"]).unwrap();
         assert!(matches!(
