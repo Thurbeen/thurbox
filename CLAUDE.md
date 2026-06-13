@@ -358,8 +358,8 @@ create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `editor`, `config`
 (validate/show — strict-parses every config file / prints the
 effective resolved config; see `docs/CONFIG.md`), `extension`
-(alias `ext`: install/uninstall/list/activate/deactivate/status — manage
-opt-in extensions; see below). Pass `--pretty` for indented JSON.
+(alias `ext`: install/uninstall/list/update/activate/deactivate/status —
+manage opt-in extensions; see below). Pass `--pretty` for indented JSON.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB
 row is marked deleted (the TUI tears down the tmux window/worktree
@@ -640,8 +640,8 @@ text-edit to preserve comments), delete the manifest, and with `--purge`
 delete the home dir. Flow's `install.sh` is now a thin shim over `install`.
 
 `thurbox-cli extension` (alias `ext`) — `install` / `uninstall <name>
-[--purge]` / `list` / `activate <name>` / `deactivate <name> [--force]
-[--purge]` / `status [<name>]` — wraps
+[--purge]` / `list` / `update <name>|--all [--force]` / `activate <name>` /
+`deactivate <name> [--force] [--purge]` / `status [<name>]` — wraps
 `session_ops::extensions`: `ensure_extension` idempotently (re)creates any
 missing declared resource (reusing `spawn_session_headless` +
 `db.create_automation`, matching by name so existing ones are reused);
@@ -649,6 +649,23 @@ missing declared resource (reusing `spawn_session_headless` +
 `active_extensions` JSON set; `deactivate_extension` tears the resources
 down and clears the set. The CLI layer arms the tmux automation heartbeat
 on activate so a `Send` automation actually fires headlessly.
+
+**Versioning + update.** A manifest declares its own `version` and a
+`min_thurbox_version` (soft compat gate — install/activate/heal *warn*,
+never block, if the binary is older). The installer stamps two provenance
+fields into the discovery-dir copy: `installed_with` (the thurbox version
+that installed it) and `source` (the resolved install target). After a
+thurbox upgrade the on-disk copy is older than the binary, so
+`ExtensionDef::is_stale` flags it (`extension list`/`status`, and a
+self-heal nudge). `update_extension` re-runs `install_extension` from the
+recorded `source` — a bare name re-resolves against the *new* binary's
+release tag, so the matching extension version is pulled — preserving
+user-edited files unless `--force`; `update_all_extensions` does every
+installed one. Version helpers (`compare_versions`, `is_dev_version`,
+`is_stale`, `compat_warning`) are pure functions in
+`session::extension_def`; dev builds (`0.0.0-dev`) skip staleness/compat
+since their version doesn't order against tags. No version-snapshot store:
+rollback = pin a tagged install URL or downgrade the binary + `update`.
 
 **Self-heal**: `session_ops::heal_active_extensions` re-ensures every
 active extension and is called at **TUI startup** (`main.rs`, before

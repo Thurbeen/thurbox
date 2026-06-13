@@ -80,6 +80,24 @@ Re-enable any time with `thurbox-cli extension activate flow` (no full
 reinstall needed). `thurbox-cli extension list` shows whether flow is
 active and healthy.
 
+### Updating
+
+Flow is **pinned to your thurbox version**: a bare-name install fetches
+the copy that matches your binary's release tag. After you upgrade
+thurbox, `extension list`/`status` mark flow `stale` (and self-heal prints
+a one-line nudge at startup) because the on-disk copy predates the new
+binary. Refresh it with:
+
+```bash
+thurbox-cli extension update flow      # re-fetch the version matching your thurbox
+thurbox-cli extension update --all     # update every installed extension
+```
+
+`update` re-lays flow's payload from its recorded source but keeps files
+you've edited — `repos.md` and a customised `.claude/settings.json` are
+preserved unless you pass `--force`. To pin an older flow, install from a
+tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
+
 ## Use
 
 - Open the `flow` session in the thurbox TUI and type at it — anything

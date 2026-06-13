@@ -38,6 +38,19 @@ pub enum Action {
     },
     /// List installed extensions and whether each is active/healthy.
     List,
+    /// Update an installed extension by re-fetching it from its recorded source
+    /// (a bare name re-resolves to the running binary's release tag, so the
+    /// matching version is pulled). Preserves user-edited files unless --force.
+    Update {
+        /// Extension name. Omit and pass --all to update every installed one.
+        name: Option<String>,
+        /// Update every installed extension instead of a single named one.
+        #[arg(long)]
+        all: bool,
+        /// Also overwrite user-edited `substitute` files and `if_absent` seeds.
+        #[arg(long)]
+        force: bool,
+    },
     /// Activate an extension: (re)create its sessions/automations and mark it
     /// active so thurbox self-heals them. Idempotent.
     Activate {
@@ -76,17 +89,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 crate::session_ops::install_extension(db, &target, home.as_deref(), force)?;
             // Arm the heartbeat so the extension's automations fire headlessly.
             arm_heartbeat();
-            Ok(json!({
-                "installed": report.name,
-                "home": report.home,
-                "files_written": report.files_written,
-                "files_skipped": report.files_skipped,
-                "symlinks_created": report.symlinks_created,
-                "symlinks_skipped": report.symlinks_skipped,
-                "agents_added": report.agents_added,
-                "sessions_created": report.ensure.sessions_created,
-                "automations_created": report.ensure.automations_created,
-            }))
+            Ok(install_report_to_json(&report))
         }
         Action::Uninstall { name, purge } => {
             let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
@@ -109,6 +112,30 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             }
             Ok(Value::Array(out))
         }
+        Action::Update { name, all, force } => match (name, all) {
+            (Some(_), true) => Err("pass either a name or --all, not both".to_string()),
+            (None, false) => {
+                Err("specify an extension name, or --all to update every installed one".to_string())
+            }
+            (Some(name), false) => {
+                let report = crate::session_ops::update_extension(db, &name, force)?;
+                // Arm the heartbeat so the refreshed automations keep firing headlessly.
+                arm_heartbeat();
+                Ok(update_report_to_json(&report))
+            }
+            (None, true) => {
+                let results = crate::session_ops::update_all_extensions(db, force);
+                arm_heartbeat();
+                let out: Vec<Value> = results
+                    .into_iter()
+                    .map(|(name, result)| match result {
+                        Ok(report) => update_report_to_json(&report),
+                        Err(e) => json!({ "name": name, "error": e }),
+                    })
+                    .collect();
+                Ok(Value::Array(out))
+            }
+        },
         Action::Activate { name } => {
             let def = load_manifest(&name)?;
             let report = crate::session_ops::activate_extension(db, &def)?;
@@ -187,11 +214,46 @@ fn health_to_json(h: &crate::session_ops::ExtensionHealth) -> Value {
         "name": h.name,
         "active": h.active,
         "healthy": h.is_healthy(),
+        "version": h.version,
+        "installed_with": h.installed_with,
+        "current_binary": h.current_binary,
+        "stale": h.stale,
+        "compat_warning": h.compat_warning,
         "sessions": h.sessions.iter()
             .map(|(n, present)| json!({ "name": n, "present": present }))
             .collect::<Vec<_>>(),
         "automations": h.automations.iter()
             .map(|(n, present)| json!({ "name": n, "present": present }))
             .collect::<Vec<_>>(),
+    })
+}
+
+fn install_report_to_json(report: &crate::session_ops::InstallReport) -> Value {
+    json!({
+        "installed": report.name,
+        "home": report.home,
+        "version": report.version,
+        "previous_version": report.previous_version,
+        "compat_warning": report.compat_warning,
+        "files_written": report.files_written,
+        "files_skipped": report.files_skipped,
+        "symlinks_created": report.symlinks_created,
+        "symlinks_skipped": report.symlinks_skipped,
+        "agents_added": report.agents_added,
+        "sessions_created": report.ensure.sessions_created,
+        "automations_created": report.ensure.automations_created,
+    })
+}
+
+fn update_report_to_json(report: &crate::session_ops::UpdateReport) -> Value {
+    json!({
+        "updated": report.name,
+        "changed": report.changed,
+        "previous_version": report.install.previous_version,
+        "version": report.install.version,
+        "compat_warning": report.install.compat_warning,
+        "files_written": report.install.files_written,
+        "files_skipped": report.install.files_skipped,
+        "home": report.install.home,
     })
 }

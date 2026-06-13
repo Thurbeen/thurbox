@@ -419,6 +419,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_extension_update() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "extension", "update", "flow"]).unwrap();
+        let Command::Extension {
+            action: extensions::Action::Update { name, all, force },
+        } = cli.command
+        else {
+            panic!("expected Extension::Update");
+        };
+        assert_eq!(name.as_deref(), Some("flow"));
+        assert!(!all);
+        assert!(!force);
+
+        let all_cli =
+            Cli::try_parse_from(["thurbox-cli", "ext", "update", "--all", "--force"]).unwrap();
+        let Command::Extension {
+            action: extensions::Action::Update { name, all, force },
+        } = all_cli.command
+        else {
+            panic!("expected Extension::Update");
+        };
+        assert!(name.is_none());
+        assert!(all);
+        assert!(force);
+    }
+
+    #[test]
     fn extension_alias_ext_parses() {
         let cli = Cli::try_parse_from(["thurbox-cli", "ext", "list"]).unwrap();
         assert!(matches!(

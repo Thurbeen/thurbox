@@ -65,6 +65,18 @@ pub struct ExtensionHealth {
     pub sessions: Vec<(String, bool)>,
     /// `(automation_name, present)` for each declared automation.
     pub automations: Vec<(String, bool)>,
+    /// The extension's own declared version (`version` in its manifest), if any.
+    pub version: Option<String>,
+    /// The thurbox version that installed it (`installed_with`), if recorded.
+    pub installed_with: Option<String>,
+    /// The running binary's version (the staleness reference point).
+    pub current_binary: String,
+    /// `true` when the binary upgraded since install — `extension update` would
+    /// refresh it. Always `false` on a dev build.
+    pub stale: bool,
+    /// A compatibility warning when the binary is older than the extension's
+    /// declared `min_thurbox_version`, else `None`.
+    pub compat_warning: Option<String>,
 }
 
 impl ExtensionHealth {
@@ -91,6 +103,14 @@ pub struct InstallReport {
     pub agents_added: Vec<String>,
     /// The activate result (sessions/automations created).
     pub ensure: EnsureReport,
+    /// The newly-installed extension's declared `version` (if any).
+    pub version: Option<String>,
+    /// The version that was installed before this run (for `update` to report a
+    /// `0.9.0 → 1.0.0` move). `None` on a first install.
+    pub previous_version: Option<String>,
+    /// A compatibility warning if the running binary is older than the
+    /// extension's declared `min_thurbox_version`.
+    pub compat_warning: Option<String>,
 }
 
 /// Install an extension end-to-end from a `target` (a bare name resolved against
@@ -116,6 +136,11 @@ pub fn install_extension(
         tracing::warn!("{w}");
     }
 
+    // Record the previously-installed version (if any) before we overwrite the
+    // discovery manifest, so an install-over-existing / update can report a move.
+    let previous_version =
+        crate::agent::extension_config::load_manifest(&def.name).and_then(|prev| prev.version);
+
     let home_raw = home_override
         .map(str::to_string)
         .or_else(|| def.home.clone())
@@ -128,11 +153,18 @@ pub fn install_extension(
     let home = crate::agent::extension_config::expand_tilde(&home_raw);
     let home_str = home.to_string_lossy().to_string();
 
+    let current = crate::agent::extension_config::binary_version();
     let mut report = InstallReport {
         name: def.name.clone(),
         home: home_str.clone(),
+        version: def.version.clone(),
+        previous_version,
+        compat_warning: def.compat_warning(current),
         ..Default::default()
     };
+    if let Some(w) = &report.compat_warning {
+        tracing::warn!("{w}");
+    }
 
     // 1. Payload files.
     for f in &def.files {
@@ -194,12 +226,73 @@ pub fn install_extension(
     // 3. Agents → agents.toml (idempotent).
     report.agents_added = crate::agent::extension_config::ensure_agents_registered(&def.agents)?;
 
-    // 4. Persist the home-resolved manifest to the discovery dir, then activate.
-    let resolved = def.resolved_for_home(&home_str);
+    // 4. Persist the home-resolved manifest (stamped with install provenance —
+    //    which binary installed it + where from) to the discovery dir, then
+    //    activate. `target` is recorded verbatim so `update` re-fetches the same
+    //    source (a bare name re-resolves against the *current* binary's tag).
+    let resolved = def
+        .resolved_for_home(&home_str)
+        .with_provenance(current, target);
     crate::agent::extension_config::write_manifest(&resolved)?;
     report.ensure = activate_extension(db, &resolved)?;
 
     Ok(report)
+}
+
+/// What [`update_extension`] did to one extension.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateReport {
+    pub name: String,
+    /// `true` when the declared `version` changed (a real upgrade/downgrade).
+    pub changed: bool,
+    /// The underlying re-install report (files refreshed, version move, …).
+    pub install: InstallReport,
+}
+
+/// Re-install an already-installed extension from its **recorded source**,
+/// refreshing its payload + manifest to match the running binary. This is the
+/// mechanism that keeps extensions in sync after a thurbox upgrade: a bare-name
+/// source re-resolves against the new binary's release tag, so the matching
+/// extension version is fetched.
+///
+/// User-edited `substitute` files and `if_absent` seed files are preserved
+/// (same rules as install; pass `force` to overwrite them). Errors if the
+/// extension isn't installed or its manifest recorded no source.
+pub fn update_extension(db: &Database, name: &str, force: bool) -> Result<UpdateReport, String> {
+    let installed = crate::agent::extension_config::load_manifest(name)
+        .ok_or_else(|| format!("extension '{name}' is not installed (no manifest found)"))?;
+    let source = installed.source.clone().ok_or_else(|| {
+        format!(
+            "extension '{name}' has no recorded install source (installed by an older thurbox); \
+             reinstall it with `thurbox-cli extension install {name}`"
+        )
+    })?;
+    // Keep it in its existing home, regardless of what the new manifest defaults to.
+    let home = installed.home.clone();
+    let install = install_extension(db, &source, home.as_deref(), force)?;
+    let changed = install.previous_version != install.version;
+    Ok(UpdateReport {
+        name: name.to_string(),
+        changed,
+        install,
+    })
+}
+
+/// Update every installed extension (see [`update_extension`]), returning a
+/// per-extension result so one failure doesn't abort the rest. The names come
+/// from the discovery dir, in sorted order.
+pub fn update_all_extensions(
+    db: &Database,
+    force: bool,
+) -> Vec<(String, Result<UpdateReport, String>)> {
+    crate::agent::extension_config::list_manifests()
+        .into_iter()
+        .map(|def| {
+            let name = def.name.clone();
+            let result = update_extension(db, &name, force);
+            (name, result)
+        })
+        .collect()
 }
 
 /// What [`uninstall_extension`] removed.
@@ -497,6 +590,20 @@ pub fn heal_active_extensions(db: &Database) -> Vec<String> {
             ));
             continue;
         };
+        // Nudge once-per-pass when the binary upgraded since install, or when the
+        // extension wants a newer thurbox than this one. Both clear after the
+        // user acts (`extension update` / a thurbox upgrade), so they don't
+        // persist as noise.
+        let current = crate::agent::extension_config::binary_version();
+        if let Some(w) = def.compat_warning(current) {
+            messages.push(w);
+        } else if def.is_stale(current) {
+            messages.push(format!(
+                "extension '{name}' was installed under thurbox {} but this binary is {current}; \
+                 run `thurbox-cli extension update {name}` to refresh it",
+                def.installed_with.as_deref().unwrap_or("an older version")
+            ));
+        }
         match ensure_extension(db, &def) {
             Ok(report) if report.created_anything() => {
                 let mut parts = Vec::new();
@@ -543,6 +650,7 @@ pub fn extension_health(db: &Database, def: &ExtensionDef) -> Result<ExtensionHe
         .iter()
         .any(|n| n == &def.name);
 
+    let current = crate::agent::extension_config::binary_version();
     Ok(ExtensionHealth {
         name: def.name.clone(),
         active,
@@ -556,6 +664,11 @@ pub fn extension_health(db: &Database, def: &ExtensionDef) -> Result<ExtensionHe
             .iter()
             .map(|a| (a.name.clone(), automation_names.contains(&a.name)))
             .collect(),
+        version: def.version.clone(),
+        installed_with: def.installed_with.clone(),
+        current_binary: current.to_string(),
+        stale: def.is_stale(current),
+        compat_warning: def.compat_warning(current),
     })
 }
 
@@ -594,6 +707,10 @@ mod tests {
             name: "flow".into(),
             description: None,
             config_version: Some(1),
+            version: None,
+            min_thurbox_version: None,
+            installed_with: None,
+            source: None,
             home: None,
             agents: Vec::new(),
             files: Vec::new(),
@@ -783,6 +900,12 @@ prompt = "tick"
         let stored = crate::agent::extension_config::load_manifest("flow").unwrap();
         // repo_path was resolved from {home} to the absolute home.
         assert_eq!(stored.sessions[0].repo_path, home);
+        // Install provenance is stamped into the discovery manifest.
+        assert_eq!(
+            stored.installed_with.as_deref(),
+            Some(crate::agent::extension_config::binary_version())
+        );
+        assert_eq!(stored.source.as_deref(), Some(target.as_str()));
         assert_eq!(report.ensure.automations_created, ["flow-tick"]);
 
         // Re-install is idempotent: repos.md kept (if_absent), no new agents.
@@ -935,6 +1058,70 @@ prompt = "tick"
             Some(home.to_string_lossy().as_ref())
         );
         assert!(!home.exists(), "home removed with --purge");
+    }
+
+    #[test]
+    fn update_refetches_from_recorded_source_and_reports_version_move() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        insert_session(&db, "flow");
+
+        let src = tempfile::TempDir::new().unwrap();
+        let home = temp.path().join("flowhome");
+        let manifest = |version: &str| {
+            format!(
+                "name = \"flow\"\nversion = \"{version}\"\nhome = \"{}\"\n[[files]]\npath = \"FLOW.md\"\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
+                home.display()
+            )
+        };
+        std::fs::write(src.path().join("extension.toml"), manifest("1.0.0")).unwrap();
+        std::fs::write(src.path().join("FLOW.md"), "v1 spec").unwrap();
+        let target = src.path().to_string_lossy().to_string();
+
+        install_extension(&db, &target, None, false).unwrap();
+        let stored = crate::agent::extension_config::load_manifest("flow").unwrap();
+        assert_eq!(stored.version.as_deref(), Some("1.0.0"));
+        assert_eq!(stored.source.as_deref(), Some(target.as_str()));
+
+        // Author publishes a new version at the same source; update pulls it.
+        std::fs::write(src.path().join("extension.toml"), manifest("2.0.0")).unwrap();
+        std::fs::write(src.path().join("FLOW.md"), "v2 spec").unwrap();
+
+        let report = update_extension(&db, "flow", false).unwrap();
+        assert!(report.changed, "version moved 1.0.0 -> 2.0.0");
+        assert_eq!(report.install.previous_version.as_deref(), Some("1.0.0"));
+        assert_eq!(report.install.version.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            std::fs::read_to_string(home.join("FLOW.md")).unwrap(),
+            "v2 spec"
+        );
+        assert_eq!(
+            crate::agent::extension_config::load_manifest("flow")
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("2.0.0")
+        );
+
+        // A no-op update (same source, unchanged) reports changed = false.
+        let again = update_extension(&db, "flow", false).unwrap();
+        assert!(!again.changed);
+    }
+
+    #[test]
+    fn update_errors_when_no_recorded_source() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        // A manifest installed by an older thurbox carries no `source`.
+        crate::agent::extension_config::write_manifest(&ExtensionDef {
+            name: "legacy".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let err = update_extension(&db, "legacy", false).unwrap_err();
+        assert!(err.contains("no recorded install source"), "got: {err}");
     }
 
     #[test]

@@ -20,15 +20,27 @@ use crate::session::{AgentDef, ExtensionDef};
 /// Raw-content root of the thurbox repo (no git ref).
 const OFFICIAL_REPO_RAW: &str = "https://raw.githubusercontent.com/Thurbeen/thurbox";
 
+/// The running binary's version string (e.g. `0.113.0`, or `0.0.0-dev` for a
+/// development build), injected at compile time by `build.rs`. The reference
+/// point for extension staleness + compatibility checks.
+pub fn binary_version() -> &'static str {
+    env!("THURBOX_VERSION")
+}
+
+/// Whether this is an unstable development build (its version doesn't order
+/// against release tags, so version checks are skipped for it).
+pub fn is_dev_build() -> bool {
+    cfg!(dev_build) || crate::session::extension_def::is_dev_version(binary_version())
+}
+
 /// The git ref to fetch official extensions from: the running binary's release
 /// tag (`v0.7.0`), so a fetched extension matches the binary that reads it. Dev
 /// builds track `main`.
 fn official_ref() -> String {
-    let version = env!("THURBOX_VERSION");
-    if cfg!(dev_build) || version.contains("-dev") {
+    if is_dev_build() {
         "main".to_string()
     } else {
-        format!("v{version}")
+        format!("v{}", binary_version())
     }
 }
 

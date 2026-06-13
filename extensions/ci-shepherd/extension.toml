@@ -11,6 +11,8 @@
 name = "ci-shepherd"
 description = "Watches change requests (PR/MR) and dispatches CI/review fixers"
 config_version = 1
+version = "1.0.0"                 # this extension's own version; bump on changes
+min_thurbox_version = "0.113.0"  # needs the `extension install`/self-heal machinery
 home = "~/ci-shepherd"
 
 # --- agents registered in agents.toml (override the model by editing it) ------

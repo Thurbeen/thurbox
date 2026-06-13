@@ -193,7 +193,9 @@ and a **runtime** spec:
 ```toml
 name = "flow"
 description = "Focus-protecting triage agent"
-config_version = 1
+config_version = 1              # manifest *format* version (for migrations)
+version = "1.0.0"              # the extension's own version (bumped by its author)
+min_thurbox_version = "0.113.0" # minimum thurbox; older binaries get a warning
 home = "~/flow"                 # install home; {home} is substituted everywhere
 
 # install spec ---------------------------------------------------------------
@@ -240,11 +242,14 @@ thurbox-cli extension install ./extensions/flow   # from a local dir
 thurbox-cli extension install <url> --home ~/x    # from a URL, custom home
 thurbox-cli extension uninstall <name>     # reverse install (keep home dir)
 thurbox-cli extension uninstall <name> --purge    # also delete the home dir
-thurbox-cli extension list                 # installed + active/healthy state
+thurbox-cli extension list                 # installed + active/healthy + version/stale
+thurbox-cli extension update <name>        # re-fetch from recorded source (refresh)
+thurbox-cli extension update --all         # update every installed extension
+thurbox-cli extension update <name> --force # also overwrite user-edited seed files
 thurbox-cli extension activate <name>      # (re)create resources + mark active
 thurbox-cli extension deactivate <name>    # tear down + stop self-heal
 thurbox-cli extension deactivate <name> --force --purge  # also kill tmux + drop manifest
-thurbox-cli extension status [<name>]      # per-resource presence
+thurbox-cli extension status [<name>]      # per-resource presence + version/stale
 ```
 
 A bare name installs from the official source
@@ -264,6 +269,42 @@ a no-op (they come back); `extension deactivate` is the real off-switch.
 Self-heal while the TUI is closed depends on the automation heartbeat
 (`[features] automations = true`); with automations off, healing happens
 at the next TUI startup only.
+
+### Versioning + the update lifecycle
+
+Extensions carry two version markers, and the installer stamps two more
+into the discovery-dir copy so staleness can be detected:
+
+| Field | Where set | Purpose |
+|-------|-----------|---------|
+| `version` | source manifest | the extension's own semver (author-bumped) |
+| `min_thurbox_version` | source manifest | minimum thurbox; older binaries warn |
+| `installed_with` | stamped on install | the thurbox version that installed it |
+| `source` | stamped on install | the target it was installed from |
+
+A **bare-name** install (`extension install flow`) fetches from the
+official source **pinned to the running binary's release tag**, so the
+extension you get always matches your thurbox. When you later **upgrade
+thurbox**, the on-disk copy is now older than the binary — thurbox
+flags it as `stale` (in `extension list`/`status`, and as a one-line
+nudge from self-heal at startup). Run `extension update <name>` (or
+`--all`) to re-fetch from the recorded `source`; because a bare name
+re-resolves against the *new* binary's tag, this pulls the version that
+matches your upgraded thurbox. Updates honour the same file rules as
+install — user-edited `substitute` files and `if_absent` seeds are
+preserved unless you pass `--force`.
+
+`min_thurbox_version` is a **soft** gate: an extension authored for a
+newer thurbox still installs on an older binary, but install/activate and
+self-heal emit a compatibility warning so the mismatch is visible.
+**Dev builds** (`0.0.0-dev`) skip both the staleness and compatibility
+checks — their version doesn't order against release tags.
+
+**Rollback.** There's no version snapshot store: to roll an extension
+back, pin a specific thurbox tag — `extension install
+https://raw.githubusercontent.com/Thurbeen/thurbox/v0.112.0/extensions/flow`
+— or downgrade the binary and run `extension update`, which re-resolves
+the bare name to that older tag.
 
 ## SQLite-backed settings
 

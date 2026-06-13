@@ -111,6 +111,28 @@ pub struct ExtensionDef {
     /// Manifest-format version, for future migrations. Currently `1`.
     #[serde(default)]
     pub config_version: Option<u32>,
+    /// The extension's own semantic version (e.g. `"1.2.0"`), authored in the
+    /// source `extension.toml` and bumped by the extension's maintainer. Lets
+    /// `extension update` report what moved and surfaces in `extension list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Minimum thurbox version this extension needs (e.g. `"0.113.0"`). Install
+    /// and activate emit a compatibility **warning** (never a hard block, to
+    /// stay graceful) when the running binary is older. Dev builds skip it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_thurbox_version: Option<String>,
+    /// The thurbox version that performed the install. **Stamped** into the
+    /// discovery-dir copy by the installer (never authored in source); compared
+    /// against the running binary to flag a stale extension after a thurbox
+    /// upgrade. `None` in a source manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_with: Option<String>,
+    /// The resolved install target (a bare name, `http(s)://` URL, or local
+    /// path) the extension was installed from. **Stamped** into the discovery
+    /// copy so `extension update` can re-fetch from the same place. `None` in a
+    /// source manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// Default install home directory (may use `~`), where payload files land
     /// and the session runs. The `--home` flag overrides it. Required to
     /// install; unused once installed.
@@ -154,6 +176,84 @@ impl ExtensionDef {
         }
         out
     }
+
+    /// Stamp install provenance onto the (resolved) manifest before it's written
+    /// to the discovery dir: which thurbox version installed it and where it came
+    /// from, so staleness can be detected and `update` can re-fetch. Returns
+    /// `self` for chaining off [`resolved_for_home`].
+    pub fn with_provenance(mut self, installed_with: &str, source: &str) -> ExtensionDef {
+        self.installed_with = Some(installed_with.to_string());
+        self.source = Some(source.to_string());
+        self
+    }
+
+    /// Whether this extension was installed under a thurbox version different
+    /// from `current` — i.e. an upgrade has happened since and re-running
+    /// `extension update` would refresh it. Always `false` for a dev build
+    /// (`current` is unstable) or a manifest with no recorded install version.
+    pub fn is_stale(&self, current: &str) -> bool {
+        if is_dev_version(current) {
+            return false;
+        }
+        match &self.installed_with {
+            Some(installed) => installed != current,
+            None => false,
+        }
+    }
+
+    /// A compatibility warning if this extension declares a `min_thurbox_version`
+    /// the running `current` binary doesn't satisfy, else `None`. Dev builds are
+    /// treated as compatible with everything (their version is unstable).
+    pub fn compat_warning(&self, current: &str) -> Option<String> {
+        if is_dev_version(current) {
+            return None;
+        }
+        let min = self.min_thurbox_version.as_deref()?;
+        if compare_versions(current, min) == std::cmp::Ordering::Less {
+            Some(format!(
+                "extension '{}' wants thurbox >= {min} but this binary is {current}; \
+                 some features may not work — upgrade thurbox",
+                self.name
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether a version string denotes an unstable dev build (`0.0.0-dev`, or any
+/// version carrying a `-dev`/pre-release suffix). Such builds skip staleness and
+/// compatibility checks because their version doesn't order against releases.
+pub fn is_dev_version(v: &str) -> bool {
+    v.contains("-dev") || v.trim_start_matches('v').starts_with("0.0.0")
+}
+
+/// Compare two dotted version strings (`a.b.c`, optional leading `v`, any
+/// `-suffix` ignored) numerically, component by component. Missing trailing
+/// components count as `0` (so `1.2` == `1.2.0`). Non-numeric components sort as
+/// `0`. A dependency-free stand-in for the `semver` crate, sufficient for the
+/// `major.minor.patch` tags thurbox ships.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |s: &str| -> Vec<u64> {
+        s.trim_start_matches('v')
+            .split('-')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let (pa, pb) = (parts(a), parts(b));
+    let n = pa.len().max(pb.len());
+    for i in 0..n {
+        let x = pa.get(i).copied().unwrap_or(0);
+        let y = pb.get(i).copied().unwrap_or(0);
+        match x.cmp(&y) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 #[cfg(test)]
@@ -199,6 +299,10 @@ prompt = "tick"
             name: "flow".into(),
             description: None,
             config_version: Some(1),
+            version: Some("1.0.0".into()),
+            min_thurbox_version: Some("0.113.0".into()),
+            installed_with: Some("0.113.0".into()),
+            source: Some("flow".into()),
             home: Some("~/flow".into()),
             agents: vec![AgentDef {
                 name: "flow".into(),
@@ -259,6 +363,80 @@ prompt = "tick"
         );
         // Original is untouched.
         assert_eq!(def.sessions[0].repo_path, PathBuf::from("{home}"));
+    }
+
+    #[test]
+    fn compare_versions_orders_numerically() {
+        use std::cmp::Ordering;
+        assert_eq!(compare_versions("0.113.0", "0.113.0"), Ordering::Equal);
+        assert_eq!(compare_versions("0.114.0", "0.113.0"), Ordering::Greater);
+        assert_eq!(compare_versions("0.113.0", "0.114.0"), Ordering::Less);
+        // Numeric, not lexical: 0.20 > 0.9.
+        assert_eq!(compare_versions("0.20.0", "0.9.0"), Ordering::Greater);
+        // Leading `v` and missing trailing components are tolerated.
+        assert_eq!(compare_versions("v1.2", "1.2.0"), Ordering::Equal);
+        assert_eq!(compare_versions("2.0.0", "1.99.99"), Ordering::Greater);
+        // Pre-release suffix is ignored for ordering.
+        assert_eq!(compare_versions("0.113.0-rc1", "0.113.0"), Ordering::Equal);
+    }
+
+    #[test]
+    fn is_dev_version_detects_unstable_builds() {
+        assert!(is_dev_version("0.0.0-dev"));
+        assert!(is_dev_version("0.113.0-dev"));
+        assert!(is_dev_version("0.0.0"));
+        assert!(!is_dev_version("0.113.0"));
+        assert!(!is_dev_version("v1.2.3"));
+    }
+
+    #[test]
+    fn is_stale_compares_install_version_to_current() {
+        let mut def = ExtensionDef {
+            name: "flow".into(),
+            installed_with: Some("0.113.0".into()),
+            ..Default::default()
+        };
+        assert!(def.is_stale("0.114.0"), "binary upgraded → stale");
+        assert!(!def.is_stale("0.113.0"), "same version → fresh");
+        // Dev binary never flags staleness (its version is unstable).
+        assert!(!def.is_stale("0.0.0-dev"));
+        // No recorded install version → can't be stale.
+        def.installed_with = None;
+        assert!(!def.is_stale("0.114.0"));
+    }
+
+    #[test]
+    fn compat_warning_fires_only_when_binary_too_old() {
+        let def = ExtensionDef {
+            name: "flow".into(),
+            min_thurbox_version: Some("0.113.0".into()),
+            ..Default::default()
+        };
+        assert!(
+            def.compat_warning("0.112.0").is_some(),
+            "older binary warns"
+        );
+        assert!(def.compat_warning("0.113.0").is_none(), "exact match ok");
+        assert!(def.compat_warning("0.200.0").is_none(), "newer binary ok");
+        // Dev builds are treated as compatible with everything.
+        assert!(def.compat_warning("0.0.0-dev").is_none());
+        // No declared minimum → never warns.
+        let bare = ExtensionDef {
+            name: "x".into(),
+            ..Default::default()
+        };
+        assert!(bare.compat_warning("0.1.0").is_none());
+    }
+
+    #[test]
+    fn with_provenance_stamps_install_metadata() {
+        let def = ExtensionDef {
+            name: "flow".into(),
+            ..Default::default()
+        }
+        .with_provenance("0.113.0", "flow");
+        assert_eq!(def.installed_with.as_deref(), Some("0.113.0"));
+        assert_eq!(def.source.as_deref(), Some("flow"));
     }
 
     #[test]
