@@ -109,7 +109,8 @@ branch; `clean` removes the worktree once the request is no longer actionable
 | Path | Purpose |
 |------|---------|
 | `SHEPHERD.md` | The agent behavior spec (modes, actionability rules, output contract) |
-| `scripts/provider.sh` | The forge adapter layer — normalizes GitHub/GitLab/Bitbucket onto one contract (incl. the `rebase` behind/conflict signal) |
+| `scripts/provider.sh` | The forge adapter layer — normalizes GitHub/GitLab/Bitbucket onto one contract (incl. the `rebase` behind/conflict signal, overridden by a git-local check) |
+| `scripts/rebase-check.sh` | Authoritative git-local behind/conflict check (`none`/`NEEDED`/`CONFLICT`) — fetched `origin/<base>` vs `origin/<head>`; unit-tested by `rebase-check.bats` |
 | `scripts/classify.sh` | Pure request → action-flag classifier (`CHANGES-REQ`/`CI-FAIL`/`REBASE`/…); unit-tested by `classify.bats` |
 | `scripts/shepherd-snapshot.sh` | One-call view: watched requests (with action flags) + fixer tasks/sessions/worktrees |
 | `scripts/dispatch-fix.sh` | Prepare a request-branch worktree + create and run the fixer task |

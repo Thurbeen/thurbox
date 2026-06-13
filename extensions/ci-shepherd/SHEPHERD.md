@@ -81,6 +81,13 @@ the merge until it's rebased. CI-FAIL outranks REBASE on purpose: clear red
 checks first, since the rebase re-runs CI and is the last gate before a clean
 request can merge. The per-request line shows `rebase=NEEDED|CONFLICT|none`.
 
+The `rebase` signal is **git-local and authoritative**: the snapshot fetches
+`origin` and tests each request's head against its base directly
+(`rebase-check.sh`), rather than trusting the forge's lazily-computed merge state
+(which is frequently stale, so a behind branch would otherwise read as `none`).
+The forge's own value is kept only as a fallback for heads that aren't on
+`origin` (fork PRs).
+
 ## TICK (be silent unless action is needed)
 
 1. **Dispatch** a fixer for every request that is actionable AND has no live

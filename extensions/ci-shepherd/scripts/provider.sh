@@ -30,8 +30,18 @@
 # base (branch-protection "require branches to be up to date" will block the
 # merge); CONFLICT = it has diverged so far it no longer merges cleanly (a rebase
 # with conflict resolution is required). Providers that can't tell map to "none".
+#
+# The forges compute this lazily/asynchronously, so an API read is often stale.
+# The `list` verb therefore OVERRIDES each request's `rebase` with an authoritative
+# git-local check (augment_rebase): it fetches origin once, then runs
+# rebase-check.sh against origin/<base> vs origin/<head>. The forge's own value is
+# only kept as a fallback when the head can't be resolved locally (a fork PR).
+# Each `*_list` emits an extra `base` field for this; augment_rebase strips it so
+# the normalized output shape above is unchanged.
 
 set -euo pipefail
+
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 VERB="${1:-}"; REPO="${2:-}"; shift 2 || true
 [ -n "$VERB" ] && [ -n "$REPO" ] || { echo "usage: provider.sh <verb> <repo> [args]" >&2; exit 2; }
@@ -55,15 +65,17 @@ resolve_provider() {
 github_list() { # <author>
   have gh || { echo "gh (GitHub CLI) not installed" >&2; return 3; }
   ( cd "$REPO" && gh pr list --author "$1" --state open \
-      --json number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,mergeStateStatus,mergeable,url ) \
+      --json number,title,headRefName,baseRefName,isDraft,reviewDecision,statusCheckRollup,mergeStateStatus,mergeable,url ) \
   | jq '[ .[] | {
-      number, title, branch: .headRefName, draft: .isDraft, url,
+      number, title, branch: .headRefName, base: .baseRefName, draft: .isDraft, url,
       review: ((.reviewDecision // "") | if . == "" then "none" else . end),
       ci: ((.statusCheckRollup // []) | map(.conclusion // .state // "")
            | if length == 0 then "none"
              elif any(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT") then "FAIL"
              elif any(. == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED") then "PENDING"
              else "OK" end),
+      # Fallback only (augment_rebase overrides this with a git-local check, which
+      # is authoritative for same-repo PRs and avoids the lazy forge merge state).
       # mergeStateStatus BEHIND = out of date with base (branch protection blocks);
       # DIRTY / mergeable CONFLICTING = diverged, a conflict-resolving rebase needed.
       rebase: ((.mergeStateStatus // "") as $m | (.mergeable // "") as $g
@@ -88,7 +100,7 @@ gitlab_list() { # <author>
   # glab proxies the raw GitLab MR API, whose field names we normalize here.
   ( cd "$REPO" && glab mr list --state opened ${author:+--author "$author"} --output json ) \
   | jq '[ .[] | {
-      number: .iid, title, branch: .source_branch,
+      number: .iid, title, branch: .source_branch, base: .target_branch,
       draft: (.draft // .work_in_progress // false),
       url: .web_url,
       review: (if (.blocking_discussions_resolved == false) then "CHANGES_REQUESTED" else "none" end),
@@ -135,13 +147,13 @@ bitbucket_list() { # <author> (filtered client-side; Bitbucket has no review-dec
   bb_curl GET "pullrequests?state=OPEN&pagelen=50" \
   | jq --arg author "$author" '[ .values[]
       | select($author == "@me" or $author == "*" or (.author.nickname // "") == $author)
-      | { number: .id, title, branch: .source.branch.name,
+      | { number: .id, title, branch: .source.branch.name, base: .destination.branch.name,
           draft: (.draft // false), url: .links.html.href,
           review: ([.participants[]? | select(.state == "changes_requested")] | if length>0 then "CHANGES_REQUESTED" else "none" end),
           ci: "none",
-          # Bitbucket list payload exposes neither ahead/behind nor merge state,
-          # so we cannot tell from here; the shepherd agent can inspect a
-          # specific PR if needed.
+          # The Bitbucket list payload exposes neither ahead/behind nor merge
+          # state, so the forge value is always "none"; augment_rebase fills it
+          # from the git-local check for same-repo PRs.
           rebase: "none" } ]'
 }
 bitbucket_meta() { # <number>
@@ -154,6 +166,31 @@ bitbucket_checkout() { # <worktree> <number>
 }
 bitbucket_feedback_cmd() { printf 'provider.sh _bb-comments %q %s' "$REPO" "$1"; }
 bitbucket_comment_cmd()  { printf 'provider.sh _bb-comment %q %s' "$REPO" "$1"; }
+
+# Override each request's `rebase` with an authoritative git-local check, since
+# the forges compute their merge state lazily and often hand back a stale value.
+# Reads a normalized JSON array (each element carrying a helper `base` field) on
+# stdin, fetches origin once, and for every request whose head+base resolve
+# locally replaces `rebase` with rebase-check.sh's verdict (origin/<base> vs
+# origin/<head>). Unresolvable heads (fork PRs) keep the forge's value. The helper
+# `base` field is stripped so the emitted shape matches the normalized contract.
+augment_rebase() {
+  raw="$(cat)"
+  [ -n "$raw" ] || { echo '[]'; return; }
+  [ "$(printf '%s' "$raw" | jq 'length')" -gt 0 ] || { printf '%s\n' "$raw"; return; }
+  # One fetch brings every request's base + same-repo head up to date locally.
+  git -C "$REPO" fetch --quiet origin 2>/dev/null || true
+  printf '%s' "$raw" | jq -c '.[]' | while IFS= read -r el; do
+    head="$(printf '%s' "$el" | jq -r '.branch // empty')"
+    base="$(printf '%s' "$el" | jq -r '.base // empty')"
+    rb="$(printf '%s' "$el" | jq -r '.rebase // "none"')"
+    if [ -n "$head" ] && [ -n "$base" ]; then
+      local_rb="$("$HERE/rebase-check.sh" "$REPO" "origin/$base" "origin/$head" 2>/dev/null || echo unknown)"
+      case "$local_rb" in none|NEEDED|CONFLICT) rb="$local_rb" ;; esac
+    fi
+    printf '%s' "$el" | jq -c --arg rb "$rb" '.rebase = $rb | del(.base)'
+  done | jq -s '.'
+}
 
 # What the agent reads to DECIDE how to handle this repo's forge each time:
 # the remote, the best forge guess, and which clients are installed. For a
@@ -182,7 +219,7 @@ PROV="$(resolve_provider)"
 case "$VERB" in
   provider-of)   echo "$PROV" ;;
   describe)      describe ;;
-  list)          "${PROV}_list" "${1:?author}" ;;
+  list)          "${PROV}_list" "${1:?author}" | augment_rebase ;;
   meta)          "${PROV}_meta" "${1:?number}" ;;
   checkout)      "${PROV}_checkout" "${1:?worktree}" "${2:?number}" ;;
   feedback-cmd)  "${PROV}_feedback_cmd" "${1:?number}" ;;
