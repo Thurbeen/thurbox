@@ -180,7 +180,7 @@ impl ExtensionDef {
     /// Stamp install provenance onto the (resolved) manifest before it's written
     /// to the discovery dir: which thurbox version installed it and where it came
     /// from, so staleness can be detected and `update` can re-fetch. Returns
-    /// `self` for chaining off [`resolved_for_home`].
+    /// `self` for chaining off [`Self::resolved_for_home`].
     pub fn with_provenance(mut self, installed_with: &str, source: &str) -> ExtensionDef {
         self.installed_with = Some(installed_with.to_string());
         self.source = Some(source.to_string());
