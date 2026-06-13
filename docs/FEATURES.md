@@ -735,9 +735,13 @@ migration. No fetch logic ships yet.
 `create`/`list`/`show`/`edit`/`remove`/`run`. `create` with neither
 `--session` nor `--repo` is a plain local todo; `run` triggers the
 task's Send/Spawn action headlessly (spawned sessions are named
-`task-<id>-<title-slug>` via `Task::spawn_session_name`, adopted by the
-TUI on next startup; `Task::matches_spawn_session` also recognizes the
-legacy bare `task-<id>` form and spawns from a since-edited title).
+`<title> · #<id>` via `Task::spawn_session_name` — the human title reads
+straight in the session list while the trailing `· #<id>` tag keeps the
+tmux window name unique and lets the task relink to its session — adopted
+by the TUI on next startup; `Task::matches_spawn_session` recovers the
+owning task from that tag and also recognizes the legacy
+`task-<id>-<slug>` / bare `task-<id>` forms, so a since-edited title still
+relinks).
 
 ---
 

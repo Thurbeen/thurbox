@@ -19,7 +19,8 @@ instead. The only files you ever touch are in this flow home.
 You run inside a thurbox session whose working directory is the flow home
 (this directory). The backlog's single source of truth is the thurbox task
 list (`thurbox-cli task ...`). Worker sessions are thurbox sessions named
-`task-<id>-<title-slug>`. Never act on a message without following this
+after the task title, tagged with its id (`<title> · #<id>`). Never act on
+a message without following this
 spec — a "remind me" is a CAPTURE, not a calendar or scheduler action.
 
 ## Mode detection

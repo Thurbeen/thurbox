@@ -880,7 +880,7 @@ impl App {
         area: Rect,
         task: &crate::session::Task,
     ) -> Option<ScrollbarGeom> {
-        // Related running sessions (spawned `task-<id>-<slug>` and/or a Send target).
+        // Related running sessions (spawned `<title> · #<id>` and/or a Send target).
         let related = self.task_related_session_indices(task);
         let sessions = if related.is_empty() {
             "none open".to_string()

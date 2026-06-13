@@ -536,7 +536,7 @@ sync, but the TUI editor never sets it.)
   scroll the preview, `n` new, `e`/`Enter` open the central-pane editor,
   `Space` cycle status, `r` open the **trigger-time action picker**, `o` **open
   the task's related session** (`App::open_task_related_session` — jumps to the
-  spawned `task-<id>-<slug>` window or a Send target, else a status hint), `d`/`Ctrl+D`
+  spawned `<title> · #<id>` window or a Send target, else a status hint), `d`/`Ctrl+D`
   delete, `Esc` back to the session list. In the editor: field nav +
   `Enter`/`Ctrl+S` save (→ back to panel), `Esc` discard; the editor captures
   its keys before global bindings (so `e`/`d` edit text) via

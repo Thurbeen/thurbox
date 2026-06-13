@@ -34,7 +34,7 @@ pub(crate) struct TaskUiState {
     pub(crate) pending_task_prompt: Option<(i64, String)>,
     /// Live `task id → session id` links recorded when a task is triggered from
     /// the TUI (Spawn-new or Send). TUI spawns get a user-chosen session name
-    /// rather than the `task-<id>-<slug>` convention, so the name alone can't
+    /// rather than the `<title> · #<id>` convention, so the name alone can't
     /// recover the link — this map does. Consulted by
     /// `task_related_session_indices` alongside the name convention and any
     /// persisted `Send` action. In-memory only (the spawn-name convention is

@@ -2,7 +2,7 @@
 //!
 //! Tasks are persisted to the shared database; the TUI's right-side panel reads
 //! them. `run` triggers a task's agent action headlessly (Send into a live tmux
-//! window, or Spawn a fresh session named `task-<id>-<title-slug>` seeded with
+//! window, or Spawn a fresh session named `<title> · #<id>` seeded with
 //! the title).
 
 use clap::Subcommand;
@@ -179,8 +179,8 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
         }) => {
             let name = task.spawn_session_name();
             // Reuse an existing session window (re-trigger / restored session).
-            // Match by convention rather than exact name so legacy `task-<id>`
-            // sessions and spawns from a since-edited title are found too.
+            // Match by the `· #<id>` tag rather than the exact name so a
+            // since-edited title (and legacy `task-<id>` sessions) are found too.
             let existing = db
                 .list_active_sessions()
                 .map_err(|e| format!("list_active_sessions: {e}"))?

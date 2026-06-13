@@ -2333,7 +2333,7 @@ impl App {
         if let Some((task_id, title)) = task_prompt {
             let new_id = self.sessions[self.active_index].info.id;
             // Record the link now — the session was named by the user, so the
-            // `task-<id>-<slug>` convention can't recover it later.
+            // `<title> · #<id>` convention can't recover it later.
             self.task_ui.task_session_links.insert(task_id, new_id);
             let prompt = self.task_agent_prompt(task_id, &title);
             self.send_prompt_to_session(new_id, &prompt, AGENT_BOOT_DELAY_TICKS);
@@ -3778,7 +3778,7 @@ impl App {
     /// queue `prompt` into it. The session is named `name`; a recurring caller
     /// reuses that session on later invocations (and after a TUI restart, where
     /// it is restored from the database by name). Shared by automations
-    /// (`auto-<id>`) and tasks (`task-<id>-<title-slug>`).
+    /// (`auto-<id>`) and tasks (`<title> · #<id>`).
     fn spawn_and_prompt(
         &mut self,
         name: String,
@@ -4150,8 +4150,8 @@ impl App {
     /// Indices into `self.sessions` of the **currently-open** sessions a task is
     /// related to, in display order:
     ///
-    /// - the session named by the spawn convention (`task-<id>-<title-slug>`,
-    ///   or the legacy bare `task-<id>`) — used by the headless `task run`
+    /// - the session named by the spawn convention (`<title> · #<id>`, or the
+    ///   legacy `task-<id>-<slug>` / bare `task-<id>`) — used by the headless `task run`
     ///   (and what survives a restart; see [`Task::matches_spawn_session`]);
     /// - the target of a persisted `Send` action (`task.action`), when one is
     ///   set via the CLI; and

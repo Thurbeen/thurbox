@@ -84,8 +84,9 @@ active and healthy.
 
 - Open the `flow` session in the thurbox TUI and type at it — anything
   that isn't `tick`/`status`/`clean` is treated as a brain-dump.
-- Dispatchable items spawn a worker immediately (`task-<id>-<slug>`
-  session, on a `flow/<slug>` worktree branch whenever the repo is git).
+- Dispatchable items spawn a worker immediately (a session named after the
+  task title, `<title> · #<id>`, on a `flow/<slug>` worktree branch whenever
+  the repo is git).
 - **Plan-first dispatch**: every worker prompt carries a mandatory
   planning phase. Before writing any code the worker posts a short PLAN —
   problem statement, concrete acceptance criteria, and an implementation

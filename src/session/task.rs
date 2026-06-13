@@ -127,39 +127,36 @@ impl Task {
     }
 
     /// Session name used when this task is dispatched via a `Spawn` action:
-    /// `task-<id>-<title-slug>` (e.g. `task-42-wire-up-ssh-backend`), capped at
-    /// [`SPAWN_SESSION_NAME_MAX`] chars. Falls back to plain `task-<id>` when
-    /// the title yields no slug. Shared by the headless `task run` path; use
-    /// [`matches_spawn_session`](Self::matches_spawn_session) to recognize the
-    /// session later (it also accepts the legacy bare `task-<id>` form).
+    /// the human task title with a compact id tag, e.g.
+    /// `Wire up SSH backend · #42`. The title is kept verbatim (author casing
+    /// and spacing) so the session list reads like the task itself; the trailing
+    /// [`TASK_ID_TAG`]`<id>` keeps the name unique (the tmux window name is
+    /// derived from it) and lets [`matches_spawn_session`](Self::matches_spawn_session)
+    /// recover the owning task. The whole name is bounded by
+    /// [`SPAWN_SESSION_NAME_MAX`], truncating the title at a word boundary.
+    /// Falls back to the bare `task-<id>` form when the title is empty. Shared by
+    /// the headless `task run` path.
     pub fn spawn_session_name(&self) -> String {
-        let prefix = format!("task-{}", self.id);
-        let budget = SPAWN_SESSION_NAME_MAX.saturating_sub(prefix.len() + 1);
-        let mut slug = String::new();
-        for c in self.title.chars() {
-            if c.is_ascii_alphanumeric() {
-                slug.push(c.to_ascii_lowercase());
-            } else if !slug.is_empty() && !slug.ends_with('-') {
-                slug.push('-');
-            }
-            if slug.len() >= budget {
-                break;
-            }
-        }
-        slug.truncate(budget);
-        let slug = slug.trim_end_matches('-');
-        if slug.is_empty() {
-            prefix
+        let suffix = format!("{TASK_ID_TAG}{}", self.id);
+        let budget = SPAWN_SESSION_NAME_MAX.saturating_sub(suffix.len());
+        let title = truncate_title(&self.title, budget);
+        if title.is_empty() {
+            format!("task-{}", self.id)
         } else {
-            format!("{prefix}-{slug}")
+            format!("{title}{suffix}")
         }
     }
 
-    /// Whether `name` is this task's spawned session: the current
-    /// `task-<id>-<slug>` convention or the legacy bare `task-<id>` (which
-    /// pre-slug sessions still carry; the title may also have been edited
-    /// since the spawn, so only the `task-<id>` part is significant).
+    /// Whether `name` is this task's spawned session. Recognizes the current
+    /// `… · #<id>` convention (matched on the exact tag-and-id suffix, whose
+    /// ` · #` boundary keeps `#4` from matching `…#14`) as well as the legacy
+    /// `task-<id>-<slug>` and bare `task-<id>` forms still carried by sessions
+    /// spawned before this naming change (the title may also have been edited
+    /// since the spawn, so only the id is significant).
     pub fn matches_spawn_session(&self, name: &str) -> bool {
+        if name.ends_with(&format!("{TASK_ID_TAG}{}", self.id)) {
+            return true;
+        }
         let prefix = format!("task-{}", self.id);
         name == prefix
             || name
@@ -168,9 +165,36 @@ impl Task {
     }
 }
 
-/// Cap for [`Task::spawn_session_name`], matching the session-name limit used
-/// elsewhere (tmux window names stay readable in the TUI session list).
+/// Upper bound on a spawned session name (bytes), matching `validate_safe_name`.
+/// tmux window names stay readable in the TUI session list well under this.
 pub const SPAWN_SESSION_NAME_MAX: usize = 64;
+
+/// Separator + marker that tags a spawned session name with its task id, e.g.
+/// the ` · #` in `Wire up SSH backend · #42`. The surrounding spaces and `#`
+/// make the trailing-id match in [`Task::matches_spawn_session`] unambiguous.
+pub const TASK_ID_TAG: &str = " · #";
+
+/// The task title trimmed and whitespace-collapsed to a single line, truncated
+/// at a word boundary so its byte length does not exceed `budget` (never
+/// splitting a multi-byte char or leaving trailing whitespace).
+fn truncate_title(title: &str, budget: usize) -> String {
+    let collapsed = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.len() <= budget {
+        return collapsed;
+    }
+    // Cut at the last char boundary within budget, then back off to the last
+    // whole word so we never dangle a half word.
+    let mut end = budget;
+    while end > 0 && !collapsed.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &collapsed[..end];
+    let trimmed = match head.rsplit_once(' ') {
+        Some((words, _partial)) => words,
+        None => head,
+    };
+    trimmed.trim_end().to_string()
+}
 
 #[cfg(test)]
 mod tests {
@@ -231,43 +255,64 @@ mod tests {
     }
 
     #[test]
-    fn spawn_session_name_slugs_the_title() {
+    fn spawn_session_name_keeps_the_title_verbatim() {
+        // The human title is preserved (casing + spacing), tagged with the id.
         assert_eq!(
             sample_task(None).spawn_session_name(),
-            "task-42-wire-up-ssh-backend"
+            "Wire up SSH backend · #42"
         );
     }
 
     #[test]
-    fn spawn_session_name_collapses_symbols_and_caps_length() {
+    fn spawn_session_name_collapses_whitespace() {
         let mut task = sample_task(None);
-        task.title = "Fix: TUI crash!! (on concurrent CLI commands)".to_string();
-        assert_eq!(
-            task.spawn_session_name(),
-            "task-42-fix-tui-crash-on-concurrent-cli-commands"
+        task.title = "  Fix   TUI\tcrash  ".to_string();
+        // Internal runs collapse to single spaces; ends are trimmed.
+        assert_eq!(task.spawn_session_name(), "Fix TUI crash · #42");
+    }
+
+    #[test]
+    fn spawn_session_name_truncates_long_titles_at_a_word_boundary() {
+        let mut task = sample_task(None);
+        task.title = "Improve task session naming with simpler shorter human readable identifiers"
+            .to_string();
+        let name = task.spawn_session_name();
+        assert!(name.len() <= SPAWN_SESSION_NAME_MAX);
+        assert!(name.ends_with(" · #42"));
+        // The kept title portion is whole words (no dangling partial word).
+        let title = name.strip_suffix(" · #42").unwrap();
+        assert!(!title.ends_with(' '));
+        assert!(
+            "Improve task session naming with simpler shorter human readable identifiers"
+                .starts_with(title)
         );
+        // A single pathological word is hard-capped, still within budget.
         task.title = "x".repeat(200);
         let name = task.spawn_session_name();
         assert!(name.len() <= SPAWN_SESSION_NAME_MAX);
-        assert!(name.starts_with("task-42-x"));
-        // Truncation never leaves a dangling hyphen.
-        assert!(!name.ends_with('-'));
+        assert!(name.ends_with(" · #42"));
     }
 
     #[test]
-    fn spawn_session_name_falls_back_to_bare_id() {
+    fn spawn_session_name_falls_back_to_bare_id_for_blank_title() {
         let mut task = sample_task(None);
-        task.title = "??? !!!".to_string();
+        task.title = "   ".to_string();
         assert_eq!(task.spawn_session_name(), "task-42");
     }
 
     #[test]
     fn matches_spawn_session_accepts_current_and_legacy_names() {
         let task = sample_task(None);
+        // Current convention: trailing " · #<id>" tag.
+        assert!(task.matches_spawn_session("Wire up SSH backend · #42"));
+        assert!(task.matches_spawn_session("Some since-edited title · #42"));
+        // Legacy forms still relink after a restart.
         assert!(task.matches_spawn_session("task-42-wire-up-ssh-backend"));
-        assert!(task.matches_spawn_session("task-42-some-older-title")); // title edited
-        assert!(task.matches_spawn_session("task-42")); // legacy convention
-        assert!(!task.matches_spawn_session("task-421")); // different task id
+        assert!(task.matches_spawn_session("task-42")); // legacy bare convention
+                                                        // Different task ids never match — including the tricky #4 vs #42 boundary.
+        assert!(!task.matches_spawn_session("Wire up SSH backend · #421"));
+        assert!(!task.matches_spawn_session("Wire up SSH backend · #4"));
+        assert!(!task.matches_spawn_session("task-421"));
         assert!(!task.matches_spawn_session("task-4"));
         assert!(!task.matches_spawn_session("my-task-42"));
     }
