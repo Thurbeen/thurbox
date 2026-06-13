@@ -62,6 +62,10 @@ executable = true
 path = "scripts/parse-result.sh"
 executable = true
 
+[[files]]
+path = "scripts/parse-questions.sh"
+executable = true
+
 # Routing table — seeded once, then user-owned (never clobbered on reinstall).
 [[files]]
 path = "repos.md"

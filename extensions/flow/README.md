@@ -106,13 +106,19 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
   task title, `<title> · #<id>`, on a `flow/<slug>` worktree branch whenever
   the repo is git).
 - **Plan-first dispatch**: every worker prompt carries a mandatory
-  planning phase. Before writing any code the worker posts a short PLAN —
-  problem statement, concrete acceptance criteria, and an implementation
-  approach/architecture — then builds strictly against it, so dispatched
-  work stays scoped to what you asked for. The flow agent seeds the
-  acceptance criterion (`--accept`) at capture; the worker fills in the
-  rest. (Pass `--no-plan` to `create-task.sh` for trivial mechanical
-  changes where a plan is overkill.)
+  planning phase — clarify, then plan, then build. Before writing any code
+  the worker (1) asks **at least 3 clarifying questions** and waits, (2)
+  builds a structured plan in its CLI's plan mode (Claude Code's `/plan`)
+  when it has one — problem, concrete acceptance criteria, approach — then
+  (3) builds strictly against it, so dispatched work stays scoped to what you
+  asked for. The flow agent seeds the acceptance criterion (`--accept`) at
+  capture; the worker fills in the rest. (Pass `--no-plan` to
+  `create-task.sh` for trivial mechanical changes where a plan is overkill.)
+- **Clarifying-questions relay**: those worker questions come back to the
+  `flow` session — it surfaces them under "Needs you", you type the answers
+  naturally, and flow relays them straight back to the waiting worker. Flow
+  is a pure pass-through: it never answers or invents questions, it just wires
+  the worker to you and back.
 - `status` for a one-screen report; `clean` to groom the backlog.
 - Every tick prints a **board** — a quick-glance table of all live
   `flow`/`task-*` sessions with status, age, and the task they're working
@@ -133,6 +139,7 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
 | `scripts/flow-snapshot.sh` | One-call backlog + sessions view |
 | `scripts/flow-summary.sh` | At-a-glance board table (printed atop every tick) |
 | `scripts/parse-result.sh` | Extract the worker `===RESULT===` sentinel |
+| `scripts/parse-questions.sh` | Extract a worker's pending `===QUESTIONS===` block (the clarifying-questions relay) |
 | `install.sh` | Thin shim → `thurbox-cli extension install` (curl\|sh bootstrap) |
 
 ## Uninstall

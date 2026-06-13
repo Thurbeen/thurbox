@@ -13,11 +13,14 @@
 # Plan-first dispatch: when an acceptance criterion is supplied (--accept) the
 # script OWNS the worker prompt. It composes a standardized description —
 #   priority/repo/accept header → the user's words → a mandatory **Planning
-#   phase** → the result/notify footer — so every worker runs a planning step
-# (problem → acceptance criteria → approach) BEFORE touching code, and the plan
-# is fed straight into the worker prompt to keep it from drifting. The flow
-# agent no longer hand-types this boilerplate; it passes the structured flags
-# and the script keeps the contract identical across every dispatch.
+#   phase** → the result/notify footer — so every worker follows the same
+# clarify → plan → build contract BEFORE touching code. The planning phase makes
+# the worker (1) ask >=3 clarifying questions via a ===QUESTIONS=== sentinel and
+# WAIT (the flow agent relays them to the user and sends the answers back), then
+# (2) build the plan in its CLI's plan mode (Claude Code: /plan / EnterPlanMode)
+# when it has one, then (3) implement strictly against it. The flow agent no
+# longer hand-types this boilerplate; it passes the structured flags and the
+# script keeps the contract identical across every dispatch.
 #
 # Without --accept the legacy behavior is preserved: --description is used
 # verbatim, with no header/planning/footer composition (plain todos, or any
@@ -75,16 +78,31 @@ build_description() {
 
 ## Planning phase — do this FIRST, before writing any code
 
-Post a short PLAN as your opening message, then build strictly against it:
+Clarify, then plan, then build — strictly in that order.
 
-1. **Problem** — restate the problem in 1–2 sentences.
-2. **Acceptance criteria** — the concrete, checkable conditions for "done".
-   Start from the `accept:` line above and make each item testable.
-3. **Approach** — the implementation approach / architecture: the files you'll
-   touch, the design, and any risks or open questions.
+1. **Ask clarifying questions first.** Unless the task is genuinely trivial and
+   unambiguous, ask **at least 3** clarifying questions (more if it needs them)
+   about scope, edge cases, the acceptance bar, and anything underspecified.
+   Print them as ONE block, then STOP:
 
-Implement against that plan. If the work would drift outside it, stop and note
-the change rather than silently expanding scope.
+       ===QUESTIONS===
+       {"questions": ["<q1>", "<q2>", "<q3>"]}
+
+   End your turn and wait — do NOT plan or write code yet. The flow agent relays
+   your questions to the user and sends the answers back to this session; resume
+   only when they arrive.
+
+2. **Plan.** With the answers in hand, build a structured plan. If your CLI has
+   a plan mode (Claude Code: `/plan` / EnterPlanMode), use it; otherwise post the
+   plan as a message. Cover:
+   - **Problem** — restate the problem in 1–2 sentences.
+   - **Acceptance criteria** — the concrete, checkable conditions for "done".
+     Start from the `accept:` line above and make each item testable.
+   - **Approach** — the implementation approach / architecture: the files you'll
+     touch, the design, and any risks or open questions.
+
+3. **Implement** strictly against the plan. If the work would drift outside it,
+   stop and note the change rather than silently expanding scope.
 PLAN_BLOCK
   fi
   if [[ "$WORKER" -eq 1 ]]; then

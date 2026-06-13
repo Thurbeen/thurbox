@@ -24,6 +24,10 @@ setup() {
   [[ "$output" == *"accept: requests over the limit get 429"* ]]
   [[ "$output" == *"Throttle the API."* ]]
   [[ "$output" == *"## Planning phase"* ]]
+  [[ "$output" == *"at least 3"* ]]
+  [[ "$output" == *"===QUESTIONS==="* ]]
+  [[ "$output" == *"/plan"* ]]
+  [[ "$output" == *"plan mode"* ]]
   [[ "$output" == *"**Problem**"* ]]
   [[ "$output" == *"**Acceptance criteria**"* ]]
   [[ "$output" == *"**Approach**"* ]]
@@ -38,6 +42,7 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"accept: typo fixed"* ]]
   [[ "$output" != *"## Planning phase"* ]]
+  [[ "$output" != *"===QUESTIONS==="* ]]
   [[ "$output" == *"===RESULT==="* ]]
 }
 
