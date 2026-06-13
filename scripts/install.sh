@@ -9,6 +9,15 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
 TEMP_DIR=""
 
+# Colors (auto-disabled when stderr is not a terminal, NO_COLOR is set, or TERM=dumb)
+C_RESET=''; C_BOLD=''; C_DIM=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_CYAN=''; C_MAGENTA=''
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+  ESC=$(printf '\033')
+  C_RESET="${ESC}[0m"; C_BOLD="${ESC}[1m"; C_DIM="${ESC}[2m"
+  C_RED="${ESC}[31m"; C_GREEN="${ESC}[32m"; C_YELLOW="${ESC}[33m"
+  C_CYAN="${ESC}[36m"; C_MAGENTA="${ESC}[35m"
+fi
+
 # Cleanup
 cleanup() {
   [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR" || true
@@ -16,9 +25,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Logging
-info() { echo "→ $*" >&2; }
-error() { echo "✗ Error: $*" >&2; }
-success() { echo "✓ $*" >&2; }
+info() { printf '%b\n' "${C_CYAN}▸${C_RESET} $*" >&2; }
+error() { printf '%b\n' "${C_RED}${C_BOLD}✗ Error:${C_RESET}${C_RED} $*${C_RESET}" >&2; }
+success() { printf '%b\n' "${C_GREEN}✓${C_RESET} $*" >&2; }
+warn() { printf '%b\n' "${C_YELLOW}⚠${C_RESET} $*" >&2; }
+step() { printf '%b\n' "  ${C_DIM}$*${C_RESET}" >&2; }
+
+# Thurbox ASCII art banner (doom font)
+banner() {
+  printf '%b' "$C_BOLD$C_MAGENTA" >&2
+  printf '%s\n' \
+'   _____ _   _ _   _____________  _______   __' \
+'  |_   _| | | | | | | ___ \ ___ \|  _  \ \ / /' \
+'    | | | |_| | | | | |_/ / |_/ /| | | |\ V / ' \
+'    | | |  _  | | | |    /| ___ \| | | |/   \ ' \
+'    | | | | | | |_| | |\ \| |_/ /\ \_/ / /^\ \' \
+'    \_/ \_| |_/\___/\_| \_\____/  \___/\/   \/' >&2
+  printf '%b\n\n' "$C_RESET  ${C_DIM}multi-session coding-agent orchestrator${C_RESET}" >&2
+}
 
 # Detect platform
 detect_platform() {
@@ -158,42 +182,44 @@ do_install() {
 
 # Show success message
 show_success() {
-  success "Thurbox installed to $1/thurbox"
+  printf '\n' >&2
+  success "Thurbox installed to ${C_BOLD}$1/thurbox${C_RESET}"
 
   if ! echo "$PATH" | grep -q "$1"; then
-    echo "⚠ Add to PATH: export PATH=\"$1:\$PATH\""
+    warn "Add to PATH: ${C_BOLD}export PATH=\"$1:\$PATH\"${C_RESET}"
   fi
 
-  echo "Setup:"
-  echo "  • Install tmux >= 3.2"
-  echo "  • Install a coding-agent CLI (claude, codex, gemini, opencode, aider, …)"
-  echo "  • Run: thurbox"
-  echo "  • Scriptable CLI: thurbox-cli"
+  printf '\n%b\n' "${C_BOLD}${C_MAGENTA}Next steps${C_RESET}" >&2
+  step "• Install tmux >= 3.2"
+  step "• Install a coding-agent CLI (claude, codex, gemini, opencode, aider, …)"
+  step "• Launch the TUI:    ${C_CYAN}thurbox${C_RESET}"
+  step "• Scriptable CLI:    ${C_CYAN}thurbox-cli${C_RESET}"
 }
 
 # Main
 main() {
-  info "Thurbox Installer"
+  banner
 
   local platform target version binary
 
   platform=$(detect_platform) || return 1
-  info "Platform: $platform"
+  info "Platform: ${C_BOLD}$platform${C_RESET}"
 
   target=$(get_target "$platform") || return 1
-  info "Target: $target"
+  info "Target:   ${C_BOLD}$target${C_RESET}"
 
   TEMP_DIR=$(mktemp -d) || { error "Failed to create temp dir"; return 1; }
 
   version=$(get_version) || return 1
-  info "Version: $version"
+  info "Version:  ${C_BOLD}$version${C_RESET}"
 
   binary=$(get_binary "$version" "$target" "$TEMP_DIR") || return 1
 
   do_install "$binary" "$INSTALL_DIR"
 
   show_success "$INSTALL_DIR"
-  success "Installation complete!"
+  printf '\n' >&2
+  success "${C_BOLD}Installation complete!${C_RESET} Happy hacking ${C_MAGENTA}❯_${C_RESET}"
 }
 
 if [ -z "$TEST_TMPDIR" ]; then main "$@"; fi

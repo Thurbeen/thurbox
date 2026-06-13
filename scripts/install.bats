@@ -64,8 +64,23 @@
   grep -q "trap cleanup" "${BATS_TEST_DIRNAME}/install.sh"
 }
 
-@test "script is under 210 lines" {
-  [ $(wc -l < "${BATS_TEST_DIRNAME}/install.sh") -lt 210 ]
+@test "script is under 250 lines" {
+  [ $(wc -l < "${BATS_TEST_DIRNAME}/install.sh") -lt 250 ]
+}
+
+@test "script contains banner function" {
+  grep -q "^banner()" "${BATS_TEST_DIRNAME}/install.sh"
+}
+
+@test "banner renders ASCII art to stderr" {
+  run sh -c "TEST_TMPDIR=1 . '${BATS_TEST_DIRNAME}/install.sh'; banner" 2>&1
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+}
+
+@test "colors disabled when NO_COLOR is set" {
+  run sh -c "TEST_TMPDIR=1 NO_COLOR=1 . '${BATS_TEST_DIRNAME}/install.sh'; printf '%s' \"\$C_RED\""
+  [ -z "$output" ]
 }
 
 @test "script has logging functions" {

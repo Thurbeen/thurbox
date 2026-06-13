@@ -51,6 +51,8 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 
 **Features:**
 
+- Thurbox ASCII-art banner (doom font) + colorized output (auto-disabled
+  when stderr is not a TTY, `NO_COLOR` is set, or `TERM=dumb`)
 - Platform detection (Linux/macOS, x86_64/aarch64)
 - Automatic version fetching with API rate limit fallback (scrapes releases page)
 - SHA256 checksum verification
@@ -66,7 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 **Testing:**
 
 - Comprehensive test suite in `scripts/install.bats` using bats-core framework
-- 25 tests covering platform detection, checksum verification, binary extraction, and error handling
+- 28 tests covering platform detection, checksum verification, binary extraction,
+  error handling, the ASCII banner, and `NO_COLOR` handling
 - Run tests locally: `bats scripts/install.bats`
 - CI runs tests automatically on every commit
 
