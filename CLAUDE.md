@@ -559,8 +559,9 @@ sync, but the TUI editor never sets it.)
 ## Extensions
 
 `extensions/` holds opt-in, **agent-agnostic** add-ons that build on
-`thurbox-cli` without touching the core binary. Each ships its own
-curl-able `install.sh`.
+`thurbox-cli` without touching the core binary. Each ships an
+`extension.toml` manifest installed via `thurbox-cli extension install
+<name>` (with a thin curl-able `install.sh` shim over it).
 
 - **`extensions/flow/`** *(experimental — new and under active
   testing)* — a focus-protecting triage agent: brain-dumps
@@ -573,6 +574,30 @@ curl-able `install.sh`.
   symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). Install with
   `thurbox-cli extension install flow` (its `install.sh` is a thin shim
   over that). See `extensions/flow/README.md`.
+- **`extensions/forge/`** *(experimental)* — a workflow analyst that mines
+  your tasks/sessions/automations (and their run history) for **recurring
+  patterns** and writes ready-to-apply `thurbox-cli automation` proposals. It
+  **proposes, never imposes**: a scan (driven by a weekly `forge-scan`
+  automation on the `forge` session) only reads state and writes
+  `proposals.jsonl` (rendered to `proposals.md`); nothing is created until you
+  `apply <slug>` — and `proposals.sh apply` refuses any command not starting
+  with `thurbox-cli`. Spec: `FORGE.md`.
+- **`extensions/ci-shepherd/`** *(experimental)* — watches your open change
+  requests (GitHub PRs / GitLab MRs / Bitbucket PRs; repos in `repos.md`) and
+  dispatches a `shepherd-worker` fixer for each one with **failing CI** or a
+  **changes-requested review**. A `shepherd` session monitors via a
+  `shepherd-tick` automation; fixers are thurbox **tasks** (`fix #<n>: …`) that
+  self-report with the same `===RESULT===` sentinel as flow. It is
+  **forge-agnostic**: the only thing baked in is **git**; *how* to talk to a
+  repo's host is decided by the shepherd agent each tick — built-in **fast
+  paths** (github `gh`/gitlab `glab`/bitbucket REST via `scripts/provider.sh`)
+  plus an **agent-driven** path for any other git forge (`provider.sh describe`
+  hands the agent the remote + installed clients; it lists the repo itself and
+  passes `--branch`/`--checkout-cmd`/`--feedback-cmd`/`--comment-cmd` to
+  `dispatch-fix.sh`). Because thurbox's `--worktree` always runs `git worktree
+  add -b` (which fails on an existing branch), `dispatch-fix.sh` adopts the
+  request branch itself (git-universal) into a shepherd-owned worktree. Spec:
+  `SHEPHERD.md`.
 
 ### Extension manifests + self-heal (`thurbox-cli extension`)
 

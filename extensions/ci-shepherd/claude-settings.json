@@ -1,0 +1,23 @@
+{
+  "_comment": "Installed by thurbox `extension install ci-shepherd` (template: claude-settings.json). Re-installing overwrites this file; remove this line to keep your own edits.",
+  "permissions": {
+    "allow": [
+      "Bash(thurbox-cli:*)",
+      "Bash({home}/scripts/shepherd-snapshot.sh:*)",
+      "Bash({home}/scripts/dispatch-fix.sh:*)",
+      "Bash({home}/scripts/provider.sh:*)",
+      "Bash({home}/scripts/parse-result.sh:*)",
+      "Bash(./scripts/shepherd-snapshot.sh:*)",
+      "Bash(./scripts/dispatch-fix.sh:*)",
+      "Bash(./scripts/provider.sh:*)",
+      "Bash(./scripts/parse-result.sh:*)",
+      "Bash(gh:*)",
+      "Bash(glab:*)",
+      "Bash(git:*)",
+      "Bash(jq:*)",
+      "Read(/{home}/**)",
+      "Edit(/{home}/**)",
+      "Write(/{home}/**)"
+    ]
+  }
+}

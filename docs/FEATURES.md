@@ -794,6 +794,22 @@ deleted. `extension uninstall flow [--purge]` reverses it. The
 CLI. See the generic mechanism (manifest format, lifecycle commands,
 self-heal) in `docs/CONFIG.md` and `extensions/flow/README.md`.
 
+### Sibling extensions
+
+Two more ship in `extensions/`, both built the same agent-agnostic way
+(manifest + scripts + a dedicated session/automation that self-heals):
+
+- **`forge`** — a workflow analyst. A weekly `forge-scan` mines your
+  tasks/sessions/automations for **recurring patterns** and writes
+  ready-to-apply `thurbox-cli automation` proposals; it *proposes, never
+  imposes* (nothing is created until you `apply <slug>`, and apply refuses
+  any non-`thurbox-cli` command). `thurbox-cli extension install forge`.
+- **`ci-shepherd`** — watches your open change requests (GitHub PRs /
+  GitLab MRs / Bitbucket PRs and **any other git forge**, decided by the
+  agent at runtime) and dispatches a `shepherd-worker` fixer for each with
+  **failing CI** or a **changes-requested review**.
+  `thurbox-cli extension install ci-shepherd`.
+
 ---
 
 ## Global Search

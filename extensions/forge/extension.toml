@@ -1,0 +1,80 @@
+# Forge extension manifest.
+#
+# Single source of truth for installing + running forge. Install it with
+# `thurbox-cli extension install forge` (or point at this directory:
+# `thurbox-cli extension install ./extensions/forge`). thurbox fetches this file,
+# lays down the [[files]] / [[symlinks]] under `home`, registers the [[agents]]
+# in agents.toml, then activates the [[sessions]] + [[automations]] and
+# self-heals them if they're ever deleted. `{home}` is replaced with the
+# resolved home dir. Turn forge off with `thurbox-cli extension deactivate forge`.
+
+name = "forge"
+description = "Workflow analyst that proposes new automations"
+config_version = 1
+home = "~/forge"
+
+# --- agents registered in agents.toml (override the model by editing it) ------
+
+[[agents]]
+name = "forge"
+command = "claude"
+args = ["--model", "claude-sonnet-4-6"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+# --- payload files laid down under home ---------------------------------------
+
+[[files]]
+path = "FORGE.md"
+
+[[files]]
+path = "scripts/forge-snapshot.sh"
+executable = true
+
+[[files]]
+path = "scripts/proposals.sh"
+executable = true
+
+# Proposal store — seeded once, then user/agent-owned (never clobbered).
+[[files]]
+path = "proposals.jsonl"
+if_absent = true
+
+[[files]]
+path = "proposals.md"
+if_absent = true
+
+# Pre-approve forge's tooling so unattended scans run without prompts. {home} is
+# substituted with the resolved home path.
+[[files]]
+path = ".claude/settings.json"
+source = "claude-settings.json"
+substitute = true
+
+# --- context-file symlinks: surface FORGE.md to each CLI's convention ---------
+
+[[symlinks]]
+link = "CLAUDE.md"
+target = "FORGE.md"
+
+[[symlinks]]
+link = "AGENTS.md"
+target = "FORGE.md"
+
+[[symlinks]]
+link = "GEMINI.md"
+target = "FORGE.md"
+
+# --- runtime resources: ensured on activate, self-healed if deleted -----------
+
+[[sessions]]
+name = "forge"
+agent = "forge"
+repo_path = "{home}"
+
+[[automations]]
+name = "forge-scan"
+trigger = "cron:0 9 * * 1"
+session_ref = "forge"
+prompt = "scan"

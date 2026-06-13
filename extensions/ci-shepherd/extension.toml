@@ -1,0 +1,92 @@
+# CI-shepherd extension manifest.
+#
+# Single source of truth for installing + running ci-shepherd. Install it with
+# `thurbox-cli extension install ci-shepherd` (or point at this directory:
+# `thurbox-cli extension install ./extensions/ci-shepherd`). thurbox fetches this
+# file, lays down the [[files]] / [[symlinks]] under `home`, registers the
+# [[agents]] in agents.toml, then activates the [[sessions]] + [[automations]]
+# and self-heals them if deleted. `{home}` is replaced with the resolved home
+# dir. Turn it off with `thurbox-cli extension deactivate ci-shepherd`.
+
+name = "ci-shepherd"
+description = "Watches change requests (PR/MR) and dispatches CI/review fixers"
+config_version = 1
+home = "~/ci-shepherd"
+
+# --- agents registered in agents.toml (override the model by editing it) ------
+
+[[agents]]
+name = "shepherd"
+command = "claude"
+args = ["--model", "claude-haiku-4-5"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+[[agents]]
+name = "shepherd-worker"
+command = "claude"
+args = ["--model", "claude-opus-4-8"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+# --- payload files laid down under home ---------------------------------------
+
+[[files]]
+path = "SHEPHERD.md"
+
+[[files]]
+path = "scripts/shepherd-snapshot.sh"
+executable = true
+
+[[files]]
+path = "scripts/dispatch-fix.sh"
+executable = true
+
+[[files]]
+path = "scripts/provider.sh"
+executable = true
+
+[[files]]
+path = "scripts/parse-result.sh"
+executable = true
+
+# Watch list — seeded once, then user-owned (never clobbered on reinstall).
+[[files]]
+path = "repos.md"
+if_absent = true
+
+# Pre-approve shepherd's tooling so unattended ticks run without prompts. {home}
+# is substituted with the resolved home path.
+[[files]]
+path = ".claude/settings.json"
+source = "claude-settings.json"
+substitute = true
+
+# --- context-file symlinks: surface SHEPHERD.md to each CLI's convention ------
+
+[[symlinks]]
+link = "CLAUDE.md"
+target = "SHEPHERD.md"
+
+[[symlinks]]
+link = "AGENTS.md"
+target = "SHEPHERD.md"
+
+[[symlinks]]
+link = "GEMINI.md"
+target = "SHEPHERD.md"
+
+# --- runtime resources: ensured on activate, self-healed if deleted -----------
+
+[[sessions]]
+name = "shepherd"
+agent = "shepherd"
+repo_path = "{home}"
+
+[[automations]]
+name = "shepherd-tick"
+trigger = "cron:*/15 * * * *"
+session_ref = "shepherd"
+prompt = "tick"

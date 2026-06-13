@@ -1,0 +1,16 @@
+{
+  "_comment": "Installed by thurbox `extension install forge` (template: claude-settings.json). Re-installing overwrites this file; remove this line to keep your own edits.",
+  "permissions": {
+    "allow": [
+      "Bash(thurbox-cli:*)",
+      "Bash({home}/scripts/forge-snapshot.sh:*)",
+      "Bash({home}/scripts/proposals.sh:*)",
+      "Bash(./scripts/forge-snapshot.sh:*)",
+      "Bash(./scripts/proposals.sh:*)",
+      "Bash(jq:*)",
+      "Read(/{home}/**)",
+      "Edit(/{home}/**)",
+      "Write(/{home}/**)"
+    ]
+  }
+}
