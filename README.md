@@ -109,38 +109,61 @@ list:
 
 ![Tasks demo](./docs/media/tasks-demo.gif)
 
-### Flow extension
+### Extensions
 
-- An opt-in, **agent-agnostic** add-on (`extensions/flow/`) that
-  turns the task list into a focus-protecting workflow: brain-dump
-  at a dedicated cheap **flow session** and it captures everything
-  into tasks, dispatches the dispatchable ones to worker sessions
-  (each on its own `flow/<slug>` worktree branch), monitors them
-  via a tick automation, and ends every reply with the single next
-  thing to focus on.
-- The triager and the workers are plain `agents.toml` aliases
-  (`flow`, `flow-worker`, `flow-worker-heavy`) — map them to
-  claude, codex, gemini, opencode, vibe, or anything else. The
-  behavior is a plain context file (`FLOW.md`) surfaced to
-  whichever CLI you pick via `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`
-  symlinks.
-- One-command install (idempotent, self-healing):
+- Opt-in, **agent-agnostic** add-ons that build on `thurbox-cli`
+  without touching the core binary. Each extension is **data, not
+  code**: it ships an `extension.toml` manifest declaring the agents,
+  sessions, automations, and payload files it needs, so thurbox
+  installs and **self-heals** it without knowing anything specific
+  about it. The agents it registers are plain `agents.toml` aliases
+  you can map to claude, codex, gemini, opencode, vibe, or anything
+  else; the behavior lives in a plain context file surfaced to
+  whichever CLI you pick.
+- One command installs, activates, and (on every TUI start / headless
+  tick) re-ensures each extension's resources — idempotent and
+  self-healing:
 
   ```bash
-  thurbox-cli extension install flow
+  thurbox-cli extension install <name>     # install + activate
+  thurbox-cli extension list               # what's installed
+  thurbox-cli extension available          # the built-ins, with install commands
+  thurbox-cli extension uninstall <name>   # add --purge to delete its home dir too
   ```
 
-  Uninstall just as easily with `thurbox-cli extension uninstall
-  flow` (add `--purge` to also delete `~/flow`).
+- **Built-in extensions** (fetched, pinned to your binary's release,
+  from the official source — `thurbox-cli extension available` lists
+  them):
+  - **`flow`** — a focus-protecting triage agent. Brain-dump at a
+    dedicated cheap **flow session** and it captures everything into
+    tasks, dispatches the dispatchable ones to worker sessions (each
+    on its own `flow/<slug>` worktree branch, plan-first), monitors
+    them via a tick automation, and ends every reply with the single
+    next thing to focus on.
+  - **`forge`** — a workflow analyst that mines your tasks, sessions,
+    and automations for **recurring patterns** and writes
+    ready-to-apply `thurbox-cli automation` proposals. It proposes,
+    never imposes: nothing is created until you `apply` a proposal.
+  - **`ci-shepherd`** — watches your open change requests (GitHub
+    PRs / GitLab MRs / Bitbucket PRs) and dispatches a fixer for each
+    one with **failing CI**, a **changes-requested review**, or a
+    branch that is **behind its target**. Forge-agnostic — the only
+    thing baked in is git.
+  - **`renovate`** — keeps local repos on up-to-date dependencies.
+    Sweeps a watch list, runs **Renovate's `local` platform** (no
+    hosted bot, no token), tests the result, and opens a review PR
+    per eligible repo.
 
-> **Note:** The flow extension is a brand-new, **experimental**
-> feature under active testing — expect its behavior, spec, and
-> manifest to change between releases.
+> **Note:** Extensions are a brand-new, **experimental** capability
+> under active testing — expect their behavior, specs, and manifests
+> to change between releases.
 
-Flow is the reference **extension**: opt-in, agent-agnostic add-ons
-managed by `thurbox-cli extension install/uninstall/activate/
-deactivate`. See the [Extensions guide](https://thurbeen.github.io/thurbox/docs/extensions.html)
-and [`extensions/flow/README.md`](./extensions/flow/README.md).
+See the [Extensions guide](https://thurbeen.github.io/thurbox/docs/extensions.html)
+and each extension's README under
+[`extensions/`](./extensions/) ([flow](./extensions/flow/README.md),
+[forge](./extensions/forge/README.md),
+[ci-shepherd](./extensions/ci-shepherd/README.md),
+[renovate](./extensions/renovate/README.md)).
 
 ### Global search
 
@@ -583,6 +606,30 @@ thurbox-cli automation tick              # fire all due automations now
 headless entry point the tmux heartbeat keeper and any
 systemd/cron timer call to fire due automations without a TUI.
 
+### Extensions (alias `ext`)
+
+Manage opt-in add-ons (see [Extensions](#extensions) for the model).
+Every subcommand prints a JSON result with a human-readable `summary`.
+
+```bash
+thurbox-cli extension install <name|url|dir>   # install + activate
+thurbox-cli extension list                     # installed, with staleness flags
+thurbox-cli extension available [query]        # built-ins, with install commands
+thurbox-cli extension status <name>            # one extension's health
+thurbox-cli extension update [--all] [--force] # refresh payload (no name => all)
+thurbox-cli extension reinstall <name>         # clean-slate uninstall + install
+thurbox-cli extension activate <name>          # (re)create its sessions/automations
+thurbox-cli extension deactivate <name>        # tear them down (real off-switch)
+thurbox-cli extension uninstall <name> [--purge]
+```
+
+A bare `<name>` resolves against the official source, **pinned to your
+binary's release tag** so the fetched extension matches the binary;
+a URL or local dir installs from there instead. Installed extensions
+**self-heal** — their declared sessions and automations are re-ensured
+at TUI startup and on every headless `automation tick`, so `deactivate`
+(not deleting the session) is the way to turn one off.
+
 ### Editor
 
 ```bash
@@ -694,7 +741,7 @@ cog commit fix "resolve memory leak" cli
 
 ### Valid Scopes
 
-`api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`
+`api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`, `mcp`
 
 ## Contributing
 
