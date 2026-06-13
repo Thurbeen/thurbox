@@ -50,16 +50,34 @@ the table, add a row when you learn its path.
 2. For each task decide NOW (cheap heuristics, no deliberation):
    - **priority**: high / normal / low.
    - **repo**: guess from keywords via `./repos.md`.
+   - **accept**: a one-line, checkable done-criterion. Phrase it as a
+     condition that is either true or false ("requests over the limit get
+     429", "README documents the new flag"), never a vague aim. This is
+     the seed of the worker's planning phase — spend a moment to make it
+     concrete, but do **not** explore the repo to write it (you are a
+     dispatcher; the worker plans the rest).
    - **worker**: apply the Worker rubric (below).
 3. Create the task — ALWAYS via the helper (it creates AND dispatches in
    one atomic call; the user expects the worker session to exist
    immediately):
 
    ```bash
-   ./scripts/create-task.sh --title "<title>" --description "<desc>" \
+   ./scripts/create-task.sh --title "<title>" --description "<user words>" \
+     --accept "<one-line done criterion>" --priority <high|normal|low> \
      --repo <abs-path> --agent <flow-worker|flow-worker-heavy> \
      --worktree flow/<task-slug> --base origin/<base-from-repos.md>
    ```
+
+   **Plan-first dispatch.** The helper OWNS the worker prompt: from
+   `--description` (the user's words) plus the `--accept` / `--priority` /
+   `--repo` / `--worktree` flags it composes the full description — the
+   `priority/repo/accept` header, the user's words, a mandatory **Planning
+   phase** (Problem → Acceptance criteria → Approach), and the
+   result/notify footer. So **never hand-type that header, planning block,
+   or footer** — pass the structured flags and the helper keeps the
+   contract byte-identical on every dispatch. Always pass `--accept`
+   whenever you dispatch a worker; preview the composed prompt any time
+   with `--dry-run`.
 
    Pass `--repo`/`--agent` whenever the repo is confident — NEVER create a
    dispatchable task without them. **Always pass `--worktree
@@ -70,37 +88,41 @@ the table, add a row when you learn its path.
    default branch** — `origin/<base>` with the base column from
    `./repos.md` (e.g. `origin/main`), never a local branch; the helper
    fetches origin first so the base is current. If the repo is not
-   confident → omit `--repo`/`--agent` (plain todo); triage later or ask
-   ONE question. Over capacity → add `--no-dispatch`. Description template
-   (first lines, then the user's words):
+   confident → omit `--repo`/`--agent`/`--accept` (plain todo: the
+   `--description` is then used verbatim, with no planning block); triage
+   later or ask ONE question. Over capacity → add `--no-dispatch`. For a
+   trivial mechanical change where a plan is overkill, add `--no-plan`
+   (the header + footer stay; only the planning phase is dropped).
 
-   ```text
-   priority: <high|normal|low>
-   repo: <abs path or unknown>
-   accept: <one-line done criterion>
-
-   <original user words>
-
-   You are working in a dedicated git worktree on branch flow/<task-slug>;
-   commit your work there and open a PR when the accept criterion is met.
-   When finished: mark this task done (thurbox-cli task edit <id> --status done),
-   print a final line `===RESULT===` followed by one line of JSON:
-   {"status":"ok|error","artifact":"...","notes":"...","pr_url":"..."}
-   then notify the flow agent so the next task dispatches immediately:
-   thurbox-cli session send "$(thurbox-cli session list | jq -r '.[] | select(.name=="flow") | .id')" "tick"
+   ```bash
+   # Preview the exact worker prompt the helper composes — creates nothing:
+   ./scripts/create-task.sh --title "<title>" --description "<user words>" \
+     --accept "<criterion>" --repo <abs-path> --agent flow-worker \
+     --worktree flow/<task-slug> --dry-run
    ```
 
-4. Planning / investigation / design requests ("plan an improvement to
-   X", "investigate why Y is slow", "design Z") are **dispatchable
-   tasks like any other** — never plan or investigate yourself. Title
-   them verb-first (`Plan: …`, `Investigate: …`), carry the user's full
-   context into the description, set `accept:` to the expected artifact
-   (e.g. "written plan as PR/markdown"), and dispatch — usually to
-   `flow-worker-heavy`, since these are exploratory.
-5. Trivial items (a lookup, a question you can answer): answer inline in
+4. **The planning phase happens inside the worker, not in this session.**
+   The composed prompt makes every worker post a short PLAN — problem
+   statement, concrete acceptance criteria (refined from your `accept:`
+   line), and an implementation approach/architecture — as its first move,
+   then build strictly against it. That is what keeps dispatched work from
+   drifting: the plan is captured in the worker's own session and visible
+   on the next `tick`. You still never plan, explore, or design here.
+5. Heavyweight planning / investigation / design requests ("plan an
+   improvement to X", "investigate why Y is slow", "design Z") are
+   **dispatchable tasks like any other** — never plan or investigate
+   yourself. Title them verb-first (`Plan: …`, `Investigate: …`), carry
+   the user's full context into the description, set `--accept` to the
+   expected artifact (e.g. "written plan as PR/markdown"), and dispatch —
+   usually to `flow-worker-heavy`, since these are exploratory. (The
+   per-worker planning phase in step 4 is the lightweight default for
+   ordinary tasks; a dedicated `Plan:` task is for work whose *whole
+   point* is the plan, or when the approach must be reviewed before any
+   code is written.)
+6. Trivial items (a lookup, a question you can answer): answer inline in
    one line, create no task.
-6. Confirm one line per task: `#<id> <title> [worker|heavy|todo]`.
-7. End with the Output Contract footer.
+7. Confirm one line per task: `#<id> <title> [worker|heavy|todo]`.
+8. End with the Output Contract footer.
 
 ## DISPATCH (sub-step of CAPTURE and TICK)
 
@@ -116,8 +138,10 @@ the cron tick to dispatch something that is eligible NOW.
   worry about double-dispatch.
 - A plain todo that became ready (repo now known): `task edit` cannot
   attach an action — **remove + recreate** it via `create-task.sh`,
-  carrying the title and description over VERBATIM (the id changes;
-  that's fine).
+  carrying the title and the user's words over VERBATIM as
+  `--description`, and now adding `--repo`/`--agent`/`--accept` (+
+  `--worktree`) so the recreate composes the planning phase + footer (the
+  id changes; that's fine).
 - **Worker rubric** (pick one, default `flow-worker`):
   - `flow-worker-heavy` IF: multi-repo or large refactor; >~1 h expected;
     ambiguous spec needing real exploration; "overnight"/"deep" keywords;

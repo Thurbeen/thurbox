@@ -86,6 +86,14 @@ active and healthy.
   that isn't `tick`/`status`/`clean` is treated as a brain-dump.
 - Dispatchable items spawn a worker immediately (`task-<id>-<slug>`
   session, on a `flow/<slug>` worktree branch whenever the repo is git).
+- **Plan-first dispatch**: every worker prompt carries a mandatory
+  planning phase. Before writing any code the worker posts a short PLAN —
+  problem statement, concrete acceptance criteria, and an implementation
+  approach/architecture — then builds strictly against it, so dispatched
+  work stays scoped to what you asked for. The flow agent seeds the
+  acceptance criterion (`--accept`) at capture; the worker fills in the
+  rest. (Pass `--no-plan` to `create-task.sh` for trivial mechanical
+  changes where a plan is overkill.)
 - `status` for a one-screen report; `clean` to groom the backlog.
 - Workers self-report: they mark their task done, print a
   `===RESULT===` JSON line, and ping the flow session so the next task
@@ -99,7 +107,7 @@ active and healthy.
 | `FLOW.md` | The agent behavior spec (modes, dispatch rules, output contract) |
 | `claude-settings.json` | Permission template (`{home}`-substituted into `.claude/settings.json`) |
 | `repos.md` | Routing-table seed (installed once, then user-owned) |
-| `scripts/create-task.sh` | Atomic task create + dispatch |
+| `scripts/create-task.sh` | Atomic task create + dispatch; composes the plan-first worker prompt (`--dry-run` to preview) |
 | `scripts/flow-snapshot.sh` | One-call backlog + sessions view |
 | `scripts/parse-result.sh` | Extract the worker `===RESULT===` sentinel |
 | `install.sh` | Thin shim → `thurbox-cli extension install` (curl\|sh bootstrap) |

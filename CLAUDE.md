@@ -572,7 +572,11 @@ sync, but the TUI editor never sets it.)
   `flow/<slug>` worktree branches, agents `flow-worker` /
   `flow-worker-heavy` mapped in `agents.toml` to any CLI), a dedicated
   `flow` session monitors them via a `flow-tick` automation, and every
-  reply ends with the single next thing to focus on. The behavior spec
+  reply ends with the single next thing to focus on. Dispatch is
+  **plan-first**: `scripts/create-task.sh` owns the worker prompt and
+  injects a mandatory planning phase (problem → acceptance criteria →
+  approach, seeded from `--accept`) so each worker plans before it codes
+  and stays in scope. The behavior spec
   is `FLOW.md`, surfaced to whichever CLI runs it via context-file
   symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). Install with
   `thurbox-cli extension install flow` (its `install.sh` is a thin shim
