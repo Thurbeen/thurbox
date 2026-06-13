@@ -82,6 +82,12 @@ repos:
         files: scripts/install\.(sh|bats)
         pass_filenames: false
 
+      - id: shellcheck
+        name: ShellCheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+
       - id: rumdl-check
         name: Markdown lint check
         entry: rumdl check .

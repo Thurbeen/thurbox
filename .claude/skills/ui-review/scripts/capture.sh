@@ -105,6 +105,7 @@ trap cleanup EXIT INT TERM
 
 # --- Agent registry ----------------------------------------------------------
 {
+    # shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
     first=$(printf '%s\n' $AGENTS | head -n1)
     echo "default = \"$first\""
     if [ "$STUB" -eq 1 ]; then
@@ -218,7 +219,7 @@ MANIFEST
     printf '\n]\n'
 } > "$OUT_DIR/manifest.json"
 
-count=$(ls -1 "$OUT_DIR"/*.png 2>/dev/null | wc -l | tr -d ' ')
+count=$(find "$OUT_DIR" -maxdepth 1 -name '*.png' 2>/dev/null | wc -l | tr -d ' ')
 log "Captured $count screenshot(s)."
 [ "$count" -eq 0 ] && { log "no screenshots produced"; exit 1; }
 

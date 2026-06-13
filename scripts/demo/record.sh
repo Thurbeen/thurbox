@@ -121,6 +121,7 @@ trap cleanup EXIT INT TERM
 
 # --- Agent registry: one entry per available CLI, launched with no args ------
 {
+    # shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
     first=$(printf '%s\n' $AGENTS | head -n1)
     echo "default = \"$first\""
     for a in $AGENTS; do
@@ -187,6 +188,7 @@ done
 # These give the `tasks` and `search` clips real content to render (the search
 # strip searches across sessions, tasks AND automations at once). Only needed
 # for those two tapes, but seeding is cheap and harmless for the others.
+# shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
 if printf '%s ' $TAPES | grep -Eq '(^| )(tasks|search)( |$)'; then
     echo "==> Seeding demo tasks + an automation"
     # A plain local todo plus one already in progress, so the checkbox glyphs

@@ -108,6 +108,7 @@ cmd_ssh() { ssh_remote "${@:-bash -l}"; }
 
 # Remove any worktrees/branches/tmux state the test left on the container.
 remote_reset() {
+  # shellcheck disable=SC2016 # body runs on the remote; vars must stay unexpanded locally
   ssh_remote '
     cd /srv/repo || exit 0
     git worktree list --porcelain | awk "/^worktree/ {print \$2}" | grep -v "^/srv/repo$" \

@@ -92,7 +92,7 @@ CI pipelines must be reproducible and deterministic. Every check is a
 script or tool that produces the same result given the same input.
 LLM-generated judgments (code review bots, AI-powered linters)
 are never gating — they may advise, but deterministic tools
-(`clippy`, `nextest`, `cargo-deny`, `cog`, `rumdl`)
+(`clippy`, `nextest`, `cargo-deny`, `cog`, `rumdl`, `shellcheck`)
 make the pass/fail decision.
 Changes to CI configuration require careful review
 because a broken pipeline affects every contributor.

@@ -34,6 +34,7 @@ step() { printf '%b\n' "  ${C_DIM}$*${C_RESET}" >&2; }
 # Thurbox ASCII art banner (doom font)
 banner() {
   printf '%b' "$C_BOLD$C_MAGENTA" >&2
+  # shellcheck disable=SC1003 # trailing backslashes are ASCII art, not quote escapes
   printf '%s\n' \
 '   _____ _   _ _   _____________  _______   __' \
 '  |_   _| | | | | | | ___ \ ___ \|  _  \ \ / /' \
@@ -46,8 +47,8 @@ banner() {
 
 # Detect platform
 detect_platform() {
-  local os=$(uname -s)
-  local arch=$(uname -m)
+  local os="$(uname -s)"
+  local arch="$(uname -m)"
 
   case "$os" in
     Linux) os="linux" ;;
@@ -107,8 +108,8 @@ get_version() {
   [ -n "$VERSION" ] && { echo "$VERSION"; return 0; }
 
   # Try API
-  local response=$(fetch_url "https://api.github.com/repos/${REPO}/releases/latest")
-  local v=$(echo "$response" | grep -o '"tag_name":"[^"]*' | head -1 | cut -d'"' -f4)
+  local response="$(fetch_url "https://api.github.com/repos/${REPO}/releases/latest")"
+  local v="$(echo "$response" | grep -o '"tag_name":"[^"]*' | head -1 | cut -d'"' -f4)"
   [ -n "$v" ] && { echo "$v"; return 0; }
 
   # Fallback: scrape releases page
@@ -122,7 +123,7 @@ get_version() {
 
 # Extract checksum from file
 get_checksum() {
-  local line=$(grep "thurbox.*$2" "$1" | head -1)
+  local line="$(grep "thurbox.*$2" "$1" | head -1)"
   [ -z "$line" ] && { error "Checksum not found for $2"; return 1; }
   echo "$line" | awk '{print $1}'
 }
@@ -163,7 +164,7 @@ get_binary() {
   download "${url_base}/${base}.tar.gz" "$tmpdir/binary.tar.gz" || { error "Download failed"; return 1; }
 
   info "Verifying checksum..."
-  local sum=$(get_checksum "$tmpdir/checksums.txt" "$target") || { error "Target not found in checksums"; return 1; }
+  local sum="$(get_checksum "$tmpdir/checksums.txt" "$target")" || { error "Target not found in checksums"; return 1; }
   check_sum "$tmpdir/binary.tar.gz" "$sum" || return 1
 
   echo "$tmpdir/binary.tar.gz"

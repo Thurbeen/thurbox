@@ -856,14 +856,18 @@ tokio::main → load AgentRegistry (agents.toml)
 
 ## Pre-commit Hooks
 
-16 hooks run automatically via `prek` (Rust-based pre-commit
+17 hooks run automatically via `prek` (Rust-based pre-commit
 framework). Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
 - **pre-commit**: fmt, clippy, check, nextest, architecture,
-  deny, doc, bats, rumdl, prettier, htmlhint, stylelint,
-  eslint
+  deny, doc, bats, shellcheck, rumdl, prettier, htmlhint,
+  stylelint, eslint
 - **pre-push**: commit history check (`cog check`)
+
+Shell scripts are linted with **shellcheck** (config in
+`.shellcheckrc`); install it from your package manager (it is not a
+cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 
 ## Key Technical Details
 

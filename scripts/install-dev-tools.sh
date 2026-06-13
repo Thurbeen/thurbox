@@ -24,6 +24,15 @@ $INSTALL_CMD cargo-modules
 $INSTALL_CMD cargo-deny
 $INSTALL_CMD rumdl
 
+# ShellCheck is not a cargo crate — install it from your package manager
+if ! command -v shellcheck &> /dev/null; then
+    echo ""
+    echo "⚠️  shellcheck not found — install it for the pre-commit shell linter:"
+    echo "     Debian/Ubuntu: sudo apt-get install shellcheck"
+    echo "     macOS:         brew install shellcheck"
+    echo "     Arch:          sudo pacman -S shellcheck"
+fi
+
 # Install nightly tools
 echo ""
 echo "📦 Installing nightly Rust tools..."

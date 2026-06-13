@@ -1,0 +1,22 @@
+# ShellCheck configuration for thurbox shell scripts.
+# Run by the `shellcheck` pre-commit hook and the CI `shellcheck` job.
+#
+# The disabled checks below flag patterns that are intentional, idiomatic,
+# and safe in this codebase. Everything else (including real word-splitting
+# and quoting bugs) stays enabled.
+
+# SC1007: `CDPATH= cd -- ... && pwd` — neutralising CDPATH before `cd` is a
+#         deliberate prefix assignment, not an accidental `var = value` typo.
+disable=SC1007
+
+# SC2015: `A && B || C` — the require-both / cleanup-or-true idiom is used on
+#         purpose throughout (e.g. `[ -n "$a" ] && [ -n "$b" ] || die`).
+disable=SC2015
+
+# SC2155: declare-and-assign-on-one-line — paired with the `local x=$(cmd)`
+#         idiom below; the masked exit status is never consulted here.
+disable=SC2155
+
+# SC3043: `local` is undefined in strict POSIX sh, but every real-world sh
+#         (dash, busybox, ash) supports it and install.sh relies on it.
+disable=SC3043
