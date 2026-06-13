@@ -41,6 +41,18 @@ setup() {
   [[ "$output" == *"===RESULT==="* ]]
 }
 
+@test "--accept without a repo composes the header only (no planning, no footer)" {
+  run "$SCRIPT" --title "Idea" --description "some notes" \
+    --accept "decided one way or the other" --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"priority: normal"* ]]   # default priority
+  [[ "$output" == *"repo: unknown"* ]]       # default repo
+  [[ "$output" == *"accept: decided one way or the other"* ]]
+  [[ "$output" == *"some notes"* ]]
+  [[ "$output" != *"## Planning phase"* ]]   # gated on a worker dispatch
+  [[ "$output" != *"===RESULT==="* ]]        # footer is worker-only
+}
+
 @test "plain todo without --accept keeps the description verbatim" {
   run "$SCRIPT" --title "Revisit caching" \
     --description "low priority idea" --dry-run
