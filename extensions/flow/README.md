@@ -37,7 +37,7 @@ That single command is the installer — it reads flow's
    settings, and a `repos.md` routing table (edit it!);
 2. registers the `flow` / `flow-worker` / `flow-worker-heavy` entries in
    `~/.config/thurbox/agents.toml` (defaults: claude on haiku for the
-   triager, opus / fable for workers — edit agents.toml to change the
+   triager, opus for workers — edit agents.toml to change the
    CLI/model);
 3. writes the manifest to `~/.config/thurbox/extensions/flow.toml` and
    activates it, creating the dedicated `flow` session and a `flow-tick`

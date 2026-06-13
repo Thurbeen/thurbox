@@ -36,7 +36,7 @@ new_session_args = ["--session-id", "{id}"]
 [[agents]]
 name = "flow-worker-heavy"
 command = "claude"
-args = ["--model", "claude-fable-5"]
+args = ["--model", "claude-opus-4-8"]
 resume_args = ["--resume", "{id}"]
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]
