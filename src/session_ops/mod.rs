@@ -6,10 +6,16 @@
 //! thurbox` server.
 
 pub mod delete;
+pub mod extensions;
 pub mod restart;
 pub mod spawn;
 
 pub use delete::{delete_session_headless, ForceDeleteReport};
+pub use extensions::{
+    activate_extension, deactivate_extension, ensure_extension, extension_health,
+    heal_active_extensions, install_extension, uninstall_extension, DeactivateReport, EnsureReport,
+    ExtensionHealth, InstallReport, UninstallReport,
+};
 pub use restart::restart_session_headless;
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 

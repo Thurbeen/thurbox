@@ -240,6 +240,14 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
 /// Fire every due automation headlessly: claim (atomic CAS, so this is safe to
 /// run alongside the TUI and other tickers), perform the action, record the run.
 fn tick(db: &Database) -> Result<Value, String> {
+    // Self-heal active extensions before firing: this runs from the tmux
+    // heartbeat keeper every 60s, so a deleted flow session/automation is
+    // recreated even with the TUI closed. Best-effort — heal messages are
+    // reported but never abort the due-automation pass below.
+    let healed = crate::session_ops::heal_active_extensions(db);
+    for m in &healed {
+        tracing::info!("{m}");
+    }
     let now = current_time_millis();
     let due = db
         .due_automations(now)
@@ -269,7 +277,7 @@ fn tick(db: &Database) -> Result<Value, String> {
             "detail": detail,
         }));
     }
-    Ok(json!({ "fired": fired, "skipped": skipped }))
+    Ok(json!({ "fired": fired, "skipped": skipped, "healed": healed }))
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.

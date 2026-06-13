@@ -1,5 +1,6 @@
 pub mod agent_def;
 pub mod automation;
+pub mod extension_def;
 pub mod host_def;
 pub mod keybindings;
 pub mod settings;
@@ -10,6 +11,9 @@ pub use agent_def::{AgentDef, AgentRegistry};
 pub use automation::{
     parse_hhmm, preset_to_cron, Automation, AutomationAction, AutomationRun, AutomationRunStatus,
     AutomationSchedule, SchedulePreset,
+};
+pub use extension_def::{
+    ExtensionAutomation, ExtensionDef, ExtensionFile, ExtensionSession, ExtensionSymlink,
 };
 pub use host_def::{is_ssh_backend, HostDef, HostRegistry, SSH_BACKEND_PREFIX};
 pub use keybindings::{Action, KeyBindings, KeyChord, KeyContext};

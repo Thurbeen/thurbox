@@ -6,6 +6,7 @@ use super::Database;
 
 const EDITOR_COMMAND_KEY: &str = "editor_command";
 const THEME_KEY: &str = "active_theme";
+const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
 
 impl Database {
     /// Get the configured editor command (e.g. `code`, `nvim --remote-tab`).
@@ -61,6 +62,68 @@ impl Database {
         }
         Ok(())
     }
+
+    /// The set of currently-active extension names (e.g. `["flow"]`), stored as
+    /// a JSON array under the `active_extensions` metadata key. Drives self-heal:
+    /// thurbox re-ensures each active extension's resources on startup and tick.
+    /// A malformed/missing value reads as an empty set rather than erroring.
+    pub fn get_active_extensions(&self) -> rusqlite::Result<Vec<String>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![ACTIVE_EXTENSIONS_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(raw
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default())
+    }
+
+    /// Persist the active-extension set as a JSON array. An empty set deletes the
+    /// key (mirrors the editor/theme reset-on-empty convention).
+    fn set_active_extensions(&self, names: &[String]) -> rusqlite::Result<()> {
+        if names.is_empty() {
+            self.conn.execute(
+                "DELETE FROM metadata WHERE key = ?1",
+                params![ACTIVE_EXTENSIONS_KEY],
+            )?;
+        } else {
+            let json = serde_json::to_string(names).unwrap_or_else(|_| "[]".into());
+            self.conn.execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![ACTIVE_EXTENSIONS_KEY, json],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Mark an extension active (idempotent). Returns `true` if it was newly
+    /// added, `false` if already active.
+    pub fn add_active_extension(&self, name: &str) -> rusqlite::Result<bool> {
+        let mut names = self.get_active_extensions()?;
+        if names.iter().any(|n| n == name) {
+            return Ok(false);
+        }
+        names.push(name.to_string());
+        self.set_active_extensions(&names)?;
+        Ok(true)
+    }
+
+    /// Mark an extension inactive (idempotent). Returns `true` if it was removed,
+    /// `false` if it wasn't active. Self-heal will no longer resurrect it.
+    pub fn remove_active_extension(&self, name: &str) -> rusqlite::Result<bool> {
+        let mut names = self.get_active_extensions()?;
+        let before = names.len();
+        names.retain(|n| n != name);
+        if names.len() == before {
+            return Ok(false);
+        }
+        self.set_active_extensions(&names)?;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -104,5 +167,36 @@ mod tests {
 
         db.set_active_theme("").unwrap();
         assert_eq!(db.get_active_theme().unwrap(), None);
+    }
+
+    #[test]
+    fn active_extensions_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.get_active_extensions().unwrap().is_empty());
+
+        // Add is idempotent and preserves order.
+        assert!(db.add_active_extension("flow").unwrap());
+        assert!(!db.add_active_extension("flow").unwrap());
+        assert!(db.add_active_extension("other").unwrap());
+        assert_eq!(db.get_active_extensions().unwrap(), ["flow", "other"]);
+
+        // Remove is idempotent; removing the last entry clears the key.
+        assert!(db.remove_active_extension("flow").unwrap());
+        assert!(!db.remove_active_extension("flow").unwrap());
+        assert_eq!(db.get_active_extensions().unwrap(), ["other"]);
+        assert!(db.remove_active_extension("other").unwrap());
+        assert!(db.get_active_extensions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_active_extensions_reads_as_empty() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO metadata (key, value) VALUES ('active_extensions', 'not json')",
+                [],
+            )
+            .unwrap();
+        assert!(db.get_active_extensions().unwrap().is_empty());
     }
 }

@@ -678,3 +678,41 @@ load-bearing contract.
 - *A separate repository* — the extension scripts against
   `thurbox-cli`'s JSON surface and should version and CI alongside
   it.
+
+## ADR-21: Declarative extension manifests + first-class lifecycle
+
+**Choice**: Extend ADR-20 by teaching the core a single declarative
+**manifest format** (`extension.toml`, `session::ExtensionDef`) and a
+first-class lifecycle on the public surface:
+`thurbox-cli extension install/uninstall/activate/deactivate/list/status`
+(`session_ops::*`, `agent::extension_config`). The manifest has an
+*install* half (`home`, `[[agents]]`, `[[files]]`, `[[symlinks]]`) and a
+*runtime* half (`[[sessions]]`, `[[automations]]`). `install` resolves a
+source (a bare name → the official repo pinned to the binary's release
+tag; a path; or an `http(s)://` base — fetched via `curl`/`wget`), lays
+down the payload, registers agents (append-only, comment-preserving),
+writes the home-resolved manifest to the discovery dir, and activates.
+Active extensions are recorded in SQLite `metadata` and **self-healed**
+(missing sessions/automations recreated) at TUI startup and on every
+`automation tick`. The core still knows the *format*, never a specific
+extension; flow's `install.sh` becomes a thin shim over the CLI.
+
+**Why**: ADR-20 left each extension to reimplement bootstrap in bespoke
+shell, and gave no way to recover from a half-removed extension. Folding
+the mechanics behind one data-driven command makes install reproducible
+and uninstall symmetric, and self-heal makes an active extension robust
+against accidental deletion — all while staying extension-neutral
+(reusing `spawn_session_headless`, `db.create_automation`, `AgentDef`).
+Pinning the fetch to the binary's release tag keeps a fetched extension
+in sync with the binary that reads it.
+
+**Rejected**:
+
+- *Embedding extension assets in the binary* (the option ADR-20
+  rejected) — still rejected; `install` fetches **data** at runtime, it
+  does not bake assets in, so the agent-neutral core is preserved.
+- *Adding an HTTP client dependency* — `curl`/`wget` shell-out matches
+  the existing installer and keeps the dependency tree small.
+- *Re-serializing `agents.toml` to add/remove agents* — would drop user
+  comments/formatting; the installer edits text (append on install,
+  block-removal by name on uninstall) instead.

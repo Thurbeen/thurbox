@@ -136,6 +136,18 @@ async fn main() -> Result<()> {
         thurbox::ui::theme::ensure_initialized();
     }
 
+    // Self-heal active extensions: re-create any session/automation a managed
+    // extension declares but that has since been deleted. Runs before the
+    // session restore below (so healed sessions are adopted like any other) and
+    // before the TUI takes over the terminal (so tmux spawn output can't corrupt
+    // it). Deleting an active extension's resources is therefore a no-op — they
+    // come back; `thurbox-cli extension deactivate <name>` is the real off-switch.
+    let heal_messages = thurbox::session_ops::heal_active_extensions(&db);
+    for m in &heal_messages {
+        tracing::info!("{m}");
+    }
+    config_warnings.extend(heal_messages);
+
     let mut terminal = ratatui::init();
     // Mouse capture is opt-out (`[features] mouse = false` in settings.toml):
     // without it the terminal keeps its native mouse behavior and no mouse

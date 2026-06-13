@@ -784,11 +784,15 @@ task status (workers self-mark done) with an orchestrate-style
 
 ### Install
 
-`extensions/flow/install.sh` (curl-able, idempotent, POSIX sh) sets up
-the flow home, appends missing agents.toml aliases (overridable via
-`FLOW_CMD`/`WORKER_CMD`/`WORKER_HEAVY_CMD` + `*_ARGS` env vars),
-creates the dedicated `flow` session and the `flow-tick` automation.
-See `extensions/flow/README.md`.
+Flow installs with the generic extension installer —
+`thurbox-cli extension install flow` — which reads flow's
+`extension.toml` manifest: it lays down the flow home, registers the
+agents.toml aliases, creates the dedicated `flow` session + `flow-tick`
+automation, and marks the extension active so they **self-heal** if
+deleted. `extension uninstall flow [--purge]` reverses it. The
+`extensions/flow/install.sh` curl one-liner is now a thin shim over the
+CLI. See the generic mechanism (manifest format, lifecycle commands,
+self-heal) in `docs/CONFIG.md` and `extensions/flow/README.md`.
 
 ---
 

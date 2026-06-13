@@ -13,6 +13,7 @@ use crate::storage::Database;
 pub mod automations;
 pub mod config;
 pub mod editor;
+pub mod extensions;
 pub mod sessions;
 pub mod tasks;
 
@@ -57,6 +58,12 @@ pub enum Command {
         #[command(subcommand)]
         action: config::Action,
     },
+    /// Activate/deactivate opt-in extensions (e.g. flow).
+    #[command(alias = "ext")]
+    Extension {
+        #[command(subcommand)]
+        action: extensions::Action,
+    },
 }
 
 /// Run a parsed CLI invocation against `db` and write JSON to stdout.
@@ -67,6 +74,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Automation { action } => automations::run(action, db),
         Command::Task { action } => tasks::run(action, db),
         Command::Config { action } => config::run(action, db),
+        Command::Extension { action } => extensions::run(action, db),
     }?;
 
     let text = if cli.pretty {
@@ -330,6 +338,93 @@ mod tests {
             cli.command,
             Command::Task {
                 action: tasks::Action::List
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_extension_install() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "extension",
+            "install",
+            "flow",
+            "--home",
+            "/home/me/flow",
+            "--force",
+        ])
+        .unwrap();
+        let Command::Extension {
+            action:
+                extensions::Action::Install {
+                    target,
+                    home,
+                    force,
+                },
+        } = cli.command
+        else {
+            panic!("expected Extension::Install");
+        };
+        assert_eq!(target, "flow");
+        assert_eq!(home.as_deref(), Some("/home/me/flow"));
+        assert!(force);
+    }
+
+    #[test]
+    fn parse_extension_uninstall() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "extension", "uninstall", "flow", "--purge"])
+            .unwrap();
+        let Command::Extension {
+            action: extensions::Action::Uninstall { name, purge },
+        } = cli.command
+        else {
+            panic!("expected Extension::Uninstall");
+        };
+        assert_eq!(name, "flow");
+        assert!(purge);
+    }
+
+    #[test]
+    fn parse_extension_activate() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "extension", "activate", "flow"]).unwrap();
+        let Command::Extension {
+            action: extensions::Action::Activate { name },
+        } = cli.command
+        else {
+            panic!("expected Extension::Activate");
+        };
+        assert_eq!(name, "flow");
+    }
+
+    #[test]
+    fn parse_extension_deactivate_with_flags() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "extension",
+            "deactivate",
+            "flow",
+            "--force",
+            "--purge",
+        ])
+        .unwrap();
+        let Command::Extension {
+            action: extensions::Action::Deactivate { name, force, purge },
+        } = cli.command
+        else {
+            panic!("expected Extension::Deactivate");
+        };
+        assert_eq!(name, "flow");
+        assert!(force);
+        assert!(purge);
+    }
+
+    #[test]
+    fn extension_alias_ext_parses() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "ext", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Extension {
+                action: extensions::Action::List
             }
         ));
     }

@@ -1,0 +1,96 @@
+# Flow extension manifest.
+#
+# This is the single source of truth for installing + running flow. Install it
+# with `thurbox-cli extension install flow` (or point at this directory:
+# `thurbox-cli extension install ./extensions/flow`). thurbox fetches this file,
+# lays down the [[files]] / [[symlinks]] under `home`, registers the [[agents]]
+# in agents.toml, then activates the [[sessions]] + [[automations]] and
+# self-heals them if they're ever deleted. `{home}` is replaced with the
+# resolved home dir. Turn flow off with `thurbox-cli extension deactivate flow`.
+
+name = "flow"
+description = "Focus-protecting triage agent"
+config_version = 1
+home = "~/flow"
+
+# --- agents registered in agents.toml (override the model by editing it) ------
+
+[[agents]]
+name = "flow"
+command = "claude"
+args = ["--model", "claude-haiku-4-5"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+[[agents]]
+name = "flow-worker"
+command = "claude"
+args = ["--model", "claude-opus-4-8"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+[[agents]]
+name = "flow-worker-heavy"
+command = "claude"
+args = ["--model", "claude-fable-5"]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+# --- payload files laid down under home ---------------------------------------
+
+[[files]]
+path = "FLOW.md"
+
+[[files]]
+path = "scripts/create-task.sh"
+executable = true
+
+[[files]]
+path = "scripts/flow-snapshot.sh"
+executable = true
+
+[[files]]
+path = "scripts/parse-result.sh"
+executable = true
+
+# Routing table — seeded once, then user-owned (never clobbered on reinstall).
+[[files]]
+path = "repos.md"
+if_absent = true
+
+# Pre-approve flow's tooling so unattended ticks run without prompts. {home} is
+# substituted with the resolved home path.
+[[files]]
+path = ".claude/settings.json"
+source = "claude-settings.json"
+substitute = true
+
+# --- context-file symlinks: surface FLOW.md to each CLI's convention ----------
+
+[[symlinks]]
+link = "CLAUDE.md"
+target = "FLOW.md"
+
+[[symlinks]]
+link = "AGENTS.md"
+target = "FLOW.md"
+
+[[symlinks]]
+link = "GEMINI.md"
+target = "FLOW.md"
+
+# --- runtime resources: ensured on activate, self-healed if deleted -----------
+
+[[sessions]]
+name = "flow"
+agent = "flow"
+repo_path = "{home}"
+
+[[automations]]
+name = "flow-tick"
+trigger = "cron:*/5 * * * *"
+session_ref = "flow"
+prompt = "tick"

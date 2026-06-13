@@ -354,8 +354,9 @@ send/capture), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `editor`, `config`
 (validate/show — strict-parses every config file / prints the
-effective resolved config; see `docs/CONFIG.md`). Pass
-`--pretty` for indented JSON.
+effective resolved config; see `docs/CONFIG.md`), `extension`
+(alias `ext`: install/uninstall/list/activate/deactivate/status — manage
+opt-in extensions; see below). Pass `--pretty` for indented JSON.
 
 `session delete <uuid>` **soft-deletes** by default — only the DB
 row is marked deleted (the TUI tears down the tmux window/worktree
@@ -569,8 +570,61 @@ curl-able `install.sh`.
   `flow` session monitors them via a `flow-tick` automation, and every
   reply ends with the single next thing to focus on. The behavior spec
   is `FLOW.md`, surfaced to whichever CLI runs it via context-file
-  symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). See
-  `extensions/flow/README.md`.
+  symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). Install with
+  `thurbox-cli extension install flow` (its `install.sh` is a thin shim
+  over that). See `extensions/flow/README.md`.
+
+### Extension manifests + self-heal (`thurbox-cli extension`)
+
+Extensions stay **data, not binary** (ADR-20): core thurbox knows a
+declarative **manifest format**, never a specific extension. Each
+extension ships an `extension.toml` (`session::ExtensionDef`, pure data in
+`session/extension_def.rs`; loaded by `agent::extension_config`). It has
+two halves: an **install** spec (`home`, `[[agents]]` to register in
+agents.toml, `[[files]]` payload, `[[symlinks]]`) and a **runtime** spec
+(`[[sessions]]` + `[[automations]]` to ensure/self-heal). The `{home}`
+token is substituted with the resolved home dir.
+
+`thurbox-cli extension install <name|url|dir> [--home <dir>] [--force]`
+(`session_ops::install_extension`) is the one-command installer: it
+resolves the source (`agent::extension_config::resolve_source` — a bare
+name → the official source `official_base()/<name>` over curl/wget,
+**pinned to the binary's release tag** (`main` for dev builds) so a
+fetched extension matches the binary; a path → a local dir), fetches + lays
+down the payload files (with `executable` / `if_absent` / `substitute`
+flags; paths are validated against traversal — no absolute/`..`), creates
+the symlinks, registers the agents (`ensure_agents_registered` appends to
+agents.toml, preserving existing entries), writes the home-resolved
+manifest to the discovery dir, and activates. A `substitute` file the user
+edited (its managed marker removed) is not clobbered on reinstall unless
+`--force`. `uninstall <name> [--purge]`
+(`session_ops::uninstall_extension`) reverses it: tear down session +
+automation, remove the extension's agents (`remove_agents_from_toml`,
+text-edit to preserve comments), delete the manifest, and with `--purge`
+delete the home dir. Flow's `install.sh` is now a thin shim over `install`.
+
+`thurbox-cli extension` (alias `ext`) — `install` / `uninstall <name>
+[--purge]` / `list` / `activate <name>` / `deactivate <name> [--force]
+[--purge]` / `status [<name>]` — wraps
+`session_ops::extensions`: `ensure_extension` idempotently (re)creates any
+missing declared resource (reusing `spawn_session_headless` +
+`db.create_automation`, matching by name so existing ones are reused);
+`activate_extension` also records the name in the SQLite `metadata`
+`active_extensions` JSON set; `deactivate_extension` tears the resources
+down and clears the set. The CLI layer arms the tmux automation heartbeat
+on activate so a `Send` automation actually fires headlessly.
+
+**Self-heal**: `session_ops::heal_active_extensions` re-ensures every
+active extension and is called at **TUI startup** (`main.rs`, before
+session restore so healed sessions are adopted normally) and at the top of
+the headless **`automation tick`** (`cli/automations.rs`, so healing works
+with the TUI closed via the heartbeat keeper). Consequence: while an
+extension is active, deleting its session/automation is a no-op — they're
+recreated (a startup status toast says so). `extension deactivate` is the
+real off-switch. Headless healing requires `[features] automations = true`
+(the heartbeat); with it off, healing happens only at TUI startup. The
+flow installer now delegates its bootstrap to `extension activate flow`
+(with an inline fallback for older thurbox).
 
 ## Global search (`Ctrl+A`)
 

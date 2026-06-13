@@ -19,6 +19,7 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/settings.toml` | TOML | you | startup | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | **live** (mtime poll) | key chord overrides |
+| `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings) |
 
@@ -181,6 +182,89 @@ Maps `Action` names to one or more chord strings:
 - Action names and defaults: see the table in CLAUDE.md / README, or
   `src/session/keybindings.rs`.
 
+## extensions/
+
+Each opt-in extension (see `extensions/<name>/`) is described by a single
+`extension.toml` manifest. `thurbox-cli extension install` writes the
+home-resolved copy to `~/.config/thurbox/extensions/<name>.toml` (thurbox
+never seeds this dir). The manifest has two halves — an **install** spec
+and a **runtime** spec:
+
+```toml
+name = "flow"
+description = "Focus-protecting triage agent"
+config_version = 1
+home = "~/flow"                 # install home; {home} is substituted everywhere
+
+# install spec ---------------------------------------------------------------
+[[agents]]                      # registered in agents.toml (existing kept)
+name = "flow"
+command = "claude"
+args = ["--model", "claude-haiku-4-5"]
+
+[[files]]                       # fetched from the source, written under home
+path = "FLOW.md"
+[[files]]
+path = "scripts/create-task.sh"
+executable = true               # chmod +x
+[[files]]
+path = "repos.md"
+if_absent = true                # seed once; never clobbered on reinstall
+[[files]]
+path = ".claude/settings.json"
+source = "claude-settings.json" # source path differs from dest
+substitute = true               # replace {home} in the content
+
+[[symlinks]]                    # never clobbers a real file at `link`
+link = "CLAUDE.md"
+target = "FLOW.md"
+
+# runtime spec (ensured on activate, self-healed if deleted) -----------------
+[[sessions]]
+name = "flow"
+agent = "flow"
+repo_path = "{home}"            # resolved to the absolute home at install
+
+[[automations]]
+name = "flow-tick"
+trigger = "cron:*/5 * * * *"    # same grammar as `automation create --trigger`
+session_ref = "flow"           # must match a [[sessions]] name above
+prompt = "tick"
+```
+
+Manage extensions with the CLI:
+
+```bash
+thurbox-cli extension install flow         # fetch + lay files + agents + activate
+thurbox-cli extension install ./extensions/flow   # from a local dir
+thurbox-cli extension install <url> --home ~/x    # from a URL, custom home
+thurbox-cli extension uninstall <name>     # reverse install (keep home dir)
+thurbox-cli extension uninstall <name> --purge    # also delete the home dir
+thurbox-cli extension list                 # installed + active/healthy state
+thurbox-cli extension activate <name>      # (re)create resources + mark active
+thurbox-cli extension deactivate <name>    # tear down + stop self-heal
+thurbox-cli extension deactivate <name> --force --purge  # also kill tmux + drop manifest
+thurbox-cli extension status [<name>]      # per-resource presence
+```
+
+A bare name installs from the official source
+(`raw.githubusercontent.com/Thurbeen/thurbox/<ref>/extensions/<name>`,
+fetched via curl/wget) — `<ref>` is the running binary's release tag
+(`main` for dev builds), so a fetched extension matches your binary. A
+path or `http(s)://` URL installs from there instead. Payload paths are
+validated against traversal (no absolute paths or `..`), and a
+`substitute` file you've edited isn't overwritten on reinstall (use
+`--force`). Payload files are fetched as **text** (specs/scripts/JSON),
+not binaries.
+
+While an extension is **active**, thurbox **self-heals** its declared
+resources: on TUI startup and on every `automation tick` it re-creates
+any session/automation that has been deleted. So deleting them by hand is
+a no-op (they come back); `extension deactivate` is the real off-switch.
+Self-heal while the TUI is closed depends on the automation heartbeat
+(`[features] automations = true`); with automations off, healing happens
+at the next TUI startup only.
+
 ## SQLite-backed settings
 
 Live in the `metadata` table and apply immediately (no restart):
@@ -189,6 +273,7 @@ Live in the `metadata` table and apply immediately (no restart):
 |-----|---------|---------|
 | `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (nine built-ins) |
 | `editor_command` | `thurbox-cli editor set "<cmd>"` | what `Ctrl+O` runs |
+| `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked

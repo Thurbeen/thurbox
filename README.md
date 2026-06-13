@@ -124,17 +124,23 @@ list:
   behavior is a plain context file (`FLOW.md`) surfaced to
   whichever CLI you pick via `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`
   symlinks.
-- One-line install (idempotent):
+- One-command install (idempotent, self-healing):
 
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/flow/install.sh | sh
+  thurbox-cli extension install flow
   ```
+
+  Uninstall just as easily with `thurbox-cli extension uninstall
+  flow` (add `--purge` to also delete `~/flow`).
 
 > **Note:** The flow extension is a brand-new, **experimental**
 > feature under active testing — expect its behavior, spec, and
-> installer to change between releases.
+> manifest to change between releases.
 
-See [`extensions/flow/README.md`](./extensions/flow/README.md).
+Flow is the reference **extension**: opt-in, agent-agnostic add-ons
+managed by `thurbox-cli extension install/uninstall/activate/
+deactivate`. See the [Extensions guide](https://thurbeen.github.io/thurbox/docs/extensions.html)
+and [`extensions/flow/README.md`](./extensions/flow/README.md).
 
 ### Global search
 

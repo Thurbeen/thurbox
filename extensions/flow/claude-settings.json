@@ -1,0 +1,18 @@
+{
+  "_comment": "Installed by thurbox `extension install flow` (template: claude-settings.json). Re-installing overwrites this file; remove this line to keep your own edits.",
+  "permissions": {
+    "allow": [
+      "Bash(thurbox-cli:*)",
+      "Bash({home}/scripts/create-task.sh:*)",
+      "Bash({home}/scripts/flow-snapshot.sh:*)",
+      "Bash({home}/scripts/parse-result.sh:*)",
+      "Bash(./scripts/create-task.sh:*)",
+      "Bash(./scripts/flow-snapshot.sh:*)",
+      "Bash(./scripts/parse-result.sh:*)",
+      "Bash(jq:*)",
+      "Read(/{home}/**)",
+      "Edit(/{home}/**)",
+      "Write(/{home}/**)"
+    ]
+  }
+}

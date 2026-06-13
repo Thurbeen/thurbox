@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Extensions — Thurbox Docs</title>
+    <meta
+      name="description"
+      content="Thurbox extensions: install, activate, deactivate, and self-heal opt-in, agent-agnostic add-ons with thurbox-cli, plus the extension.toml manifest format and how to author one."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&family=Press+Start+2P&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <!-- prettier-ignore -->
+      <a href="../index.html" class="nav-brand">thur<span>box</span></a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="extensions.html" class="current-page">Extensions</a></li>
+            <li><a href="keybindings.html">Keybindings</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="architecture.html">Architecture</a></li>
+          </ul>
+          <h4>Developer</h4>
+          <ul>
+            <li><a href="ui-review.html">UI/UX Review</a></li>
+          </ul>
+          <h4>On This Page</h4>
+          <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#install">Install</a></li>
+            <li><a href="#lifecycle">Lifecycle commands</a></li>
+            <li><a href="#sources">Sources &amp; versioning</a></li>
+            <li><a href="#self-heal">Self-healing</a></li>
+            <li><a href="#manifest">The manifest</a></li>
+            <li><a href="#authoring">Authoring an extension</a></li>
+            <li><a href="#flow">The flow extension</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <a href="index.html">Docs</a>
+            <span class="separator">/</span>
+            <span class="current">Extensions</span>
+          </div>
+
+          <h1>Extensions</h1>
+          <p>
+            Extensions are opt-in,
+            <strong>agent-agnostic</strong>
+            add-ons that
+            <em>compose</em>
+            Thurbox through the public
+            <code>thurbox-cli</code>
+            surface &mdash; they never extend the binary. The core knows a declarative
+            <strong>manifest format</strong>
+            , never any specific extension, so the same machinery installs and manages any of them.
+          </p>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            An extension is a directory with a single
+            <code>extension.toml</code>
+            manifest plus the files it ships (specs, scripts, config templates). One command
+            installs it:
+            <code>thurbox-cli</code>
+            fetches the manifest, lays the files down under a home directory, registers any agents
+            the extension needs in
+            <code>agents.toml</code>
+            , then creates &mdash; and keeps alive &mdash; the sessions and automations the
+            extension declares.
+          </p>
+          <ul>
+            <li>
+              <strong>Data, not binary.</strong>
+              Nothing about an extension is compiled in; the core reads a manifest and acts on it.
+            </li>
+            <li>
+              <strong>Agent-neutral.</strong>
+              Extensions reach coding agents only through
+              <code>agents.toml</code>
+              aliases you remap to any CLI (claude, codex, gemini, opencode, vibe, &hellip;).
+            </li>
+            <li>
+              <strong>Self-healing.</strong>
+              While an extension is active, deleting its session or automation is a no-op &mdash;
+              Thurbox recreates it. Deactivating is the real off-switch.
+            </li>
+          </ul>
+          <div class="info-box">
+            <p>
+              <strong>
+                The only built-in extension today is
+                <a href="#flow">flow</a>
+                .
+              </strong>
+              The examples below use it, but every command and manifest field is generic.
+            </p>
+          </div>
+
+          <h2 id="install">
+            Install
+            <a href="#install" class="heading-anchor">#</a>
+          </h2>
+          <p>Install an extension by name from the official source:</p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install flow</code></pre>
+          <p>
+            That single command is the whole installer. It resolves the source, fetches the manifest
+            and payload, writes them under the extension home (
+            <code>~/flow</code>
+            by default;
+            <code>--home &lt;dir&gt;</code>
+            to override), registers the extension's agents, writes the resolved manifest to
+            <code>~/.config/thurbox/extensions/&lt;name&gt;.toml</code>
+            , and activates it. It is idempotent &mdash; re-running refreshes shipped files while
+            keeping your own data (seeded files you've edited, agent tweaks).
+          </p>
+          <div class="info-box warning">
+            <p>
+              <strong>Heads up:</strong>
+              The flow extension is
+              <strong>experimental</strong>
+              and under active testing &mdash; its behavior, spec, and manifest may change between
+              releases.
+            </p>
+          </div>
+
+          <h2 id="lifecycle">
+            Lifecycle commands
+            <a href="#lifecycle" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            All extension management lives under
+            <code>thurbox-cli extension</code>
+            (alias
+            <code>ext</code>
+            ):
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>What it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>install &lt;name|url|dir&gt;</code></td>
+                <td>Fetch + lay down files, register agents, write manifest, and activate.</td>
+              </tr>
+              <tr>
+                <td><code>uninstall &lt;name&gt;</code></td>
+                <td>
+                  Reverse an install: tear down the session/automation, remove the extension's
+                  agents, and delete the manifest. Add
+                  <code>--purge</code>
+                  to also delete the home dir.
+                </td>
+              </tr>
+              <tr>
+                <td><code>activate &lt;name&gt;</code></td>
+                <td>(Re)create the declared sessions/automations and mark the extension active.</td>
+              </tr>
+              <tr>
+                <td><code>deactivate &lt;name&gt;</code></td>
+                <td>
+                  Tear down resources and stop self-heal (the off-switch). Add
+                  <code>--force</code>
+                  to kill tmux/worktrees,
+                  <code>--purge</code>
+                  to also drop the manifest.
+                </td>
+              </tr>
+              <tr>
+                <td><code>list</code></td>
+                <td>Show installed extensions with their active / healthy state.</td>
+              </tr>
+              <tr>
+                <td><code>status [&lt;name&gt;]</code></td>
+                <td>Per-resource presence for one extension (or all).</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            <strong>Install vs. activate.</strong>
+            <code>install</code>
+            also lays down files and registers agents;
+            <code>activate</code>
+            only (re)creates the runtime resources from an already-installed manifest. Use
+            <code>deactivate</code>
+            to switch an extension off but keep it installed for a later
+            <code>activate</code>
+            .
+          </p>
+
+          <h2 id="sources">
+            Sources &amp; versioning
+            <a href="#sources" class="heading-anchor">#</a>
+          </h2>
+          <p>The install target can be three things:</p>
+          <ul>
+            <li>
+              <strong>A bare name</strong>
+              (
+              <code>flow</code>
+              ) &mdash; fetched from the official source over
+              <code>curl</code>
+              /
+              <code>wget</code>
+              , pinned to your binary's release tag (dev builds track
+              <code>main</code>
+              ), so a fetched extension always matches the binary reading it.
+            </li>
+            <li>
+              <strong>A local directory</strong>
+              (
+              <code>./extensions/flow</code>
+              ) &mdash; installs from a checkout.
+            </li>
+            <li>
+              <strong>
+                An
+                <code>http(s)://</code>
+                base URL
+              </strong>
+              &mdash; installs from your own source.
+            </li>
+          </ul>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install ./extensions/flow
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install https://example.com/ext/flow --home ~/work/flow</code></pre>
+          <div class="info-box">
+            <p>
+              <strong>Safety:</strong>
+              payload paths are validated against traversal (no absolute paths or
+              <code>..</code>
+              ), a config template you've edited isn't overwritten on reinstall (use
+              <code>--force</code>
+              ), and payload files are fetched as text (specs, scripts, JSON) &mdash; not binaries.
+            </p>
+          </div>
+
+          <h2 id="self-heal">
+            Self-healing
+            <a href="#self-heal" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            An installed extension is recorded in an
+            <strong>active set</strong>
+            . On TUI startup and on every automation tick, Thurbox re-ensures each active
+            extension's declared sessions and automations exist &mdash; so deleting them by hand
+            (TUI
+            <code>Ctrl+D</code>
+            , a
+            <code>clean</code>
+            , or
+            <code>thurbox-cli session/automation delete</code>
+            ) is a no-op: they come back. This is what makes an extension hard to half-remove by
+            accident.
+          </p>
+          <ul>
+            <li>
+              <code>deactivate &lt;name&gt;</code>
+              removes the extension from the active set, so self-heal stops resurrecting it &mdash;
+              the real off-switch.
+            </li>
+            <li>
+              Headless self-heal (while the TUI is closed) rides the automation heartbeat, so it
+              needs
+              <code>[features] automations = true</code>
+              ; with automations off, healing happens at the next TUI startup only.
+            </li>
+          </ul>
+
+          <h2 id="manifest">
+            The manifest
+            <a href="#manifest" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            An extension is fully described by its
+            <code>extension.toml</code>
+            . It has two halves: an
+            <strong>install</strong>
+            spec (what to lay down) and a
+            <strong>runtime</strong>
+            spec (what to keep alive). The
+            <code>{home}</code>
+            token is substituted with the resolved home directory.
+          </p>
+          <pre><code>name = "flow"
+description = "Focus-protecting triage agent"
+config_version = 1
+home = "~/flow"                 # install home; {home} is substituted everywhere
+
+# install spec ---------------------------------------------------------------
+[[agents]]                      # registered in agents.toml (existing kept)
+name = "flow"
+command = "claude"
+args = ["--model", "claude-haiku-4-5"]
+
+[[files]]                       # fetched from the source, written under home
+path = "FLOW.md"
+[[files]]
+path = "scripts/create-task.sh"
+executable = true               # chmod +x
+[[files]]
+path = "repos.md"
+if_absent = true                # seed once; never clobbered on reinstall
+[[files]]
+path = ".claude/settings.json"
+source = "claude-settings.json" # source path differs from dest
+substitute = true               # replace {home} in the content
+
+[[symlinks]]                    # never clobbers a real file at `link`
+link = "CLAUDE.md"
+target = "FLOW.md"
+
+# runtime spec (ensured on activate, self-healed if deleted) -----------------
+[[sessions]]
+name = "flow"
+agent = "flow"
+repo_path = "{home}"            # resolved to the absolute home at install
+
+[[automations]]
+name = "flow-tick"
+trigger = "cron:*/5 * * * *"    # same grammar as `automation create --trigger`
+session_ref = "flow"            # must match a [[sessions]] name above
+prompt = "tick"</code></pre>
+          <table>
+            <thead>
+              <tr>
+                <th>Section</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>home</code></td>
+                <td>
+                  Default install directory; overridable with
+                  <code>--home</code>
+                  .
+                </td>
+              </tr>
+              <tr>
+                <td><code>[[agents]]</code></td>
+                <td>
+                  Agent definitions appended to
+                  <code>agents.toml</code>
+                  (existing names are kept).
+                </td>
+              </tr>
+              <tr>
+                <td><code>[[files]]</code></td>
+                <td>
+                  Payload files written under
+                  <code>home</code>
+                  . Flags:
+                  <code>executable</code>
+                  ,
+                  <code>if_absent</code>
+                  (seed once),
+                  <code>substitute</code>
+                  (
+                  <code>{home}</code>
+                  in content), and
+                  <code>source</code>
+                  (when the source path differs from the destination).
+                </td>
+              </tr>
+              <tr>
+                <td><code>[[symlinks]]</code></td>
+                <td>
+                  Symlinks created under
+                  <code>home</code>
+                  (never clobber a real file).
+                </td>
+              </tr>
+              <tr>
+                <td><code>[[sessions]]</code></td>
+                <td>Sessions ensured on activate and self-healed if deleted.</td>
+              </tr>
+              <tr>
+                <td><code>[[automations]]</code></td>
+                <td>
+                  Automations ensured on activate;
+                  <code>session_ref</code>
+                  names a session above.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="authoring">
+            Authoring an extension
+            <a href="#authoring" class="heading-anchor">#</a>
+          </h2>
+          <ol>
+            <li>
+              Create a directory with an
+              <code>extension.toml</code>
+              and the files it references (
+              <code>[[files]]</code>
+              paths are relative to both the source and the home dir).
+            </li>
+            <li>
+              Build the behavior on the
+              <code>thurbox-cli</code>
+              surface (
+              <code>session</code>
+              ,
+              <code>task</code>
+              ,
+              <code>automation</code>
+              ) plus standard tools &mdash; no core changes, no vendor lock-in.
+            </li>
+            <li>
+              Test locally with
+              <code>thurbox-cli extension install ./your-ext</code>
+              , then publish the directory (e.g. under
+              <code>extensions/&lt;name&gt;/</code>
+              ) so
+              <code>install &lt;name&gt;</code>
+              can fetch it.
+            </li>
+          </ol>
+          <p>
+            For the exact config-file locations and the metadata key that tracks active extensions,
+            see the
+            <a
+              href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md"
+              target="_blank"
+              rel="noopener"
+            >
+              configuration reference
+            </a>
+            .
+          </p>
+
+          <h2 id="flow">
+            The flow extension
+            <a href="#flow" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <a href="features.html#flow-extension">Flow</a>
+            is the reference extension: a focus-protecting triage agent. You brain-dump at a cheap,
+            dedicated
+            <em>flow session</em>
+            ; it captures everything into the task list, dispatches real work to worker sessions
+            (each on its own
+            <code>flow/&lt;slug&gt;</code>
+            worktree branch), monitors them quietly, and ends every reply with the single next thing
+            to focus on.
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install flow      <span class="syn-comment"># set it up</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall flow    <span class="syn-comment"># reverse it (--purge also deletes ~/flow)</span></code></pre>
+          <p>
+            See
+            <a
+              href="https://github.com/Thurbeen/thurbox/tree/main/extensions/flow"
+              target="_blank"
+              rel="noopener"
+            >
+              extensions/flow
+            </a>
+            for the behavior spec and helper scripts.
+          </p>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>
