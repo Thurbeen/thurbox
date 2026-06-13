@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ci-shepherd extension — Thurbox Docs</title>
+    <meta
+      name="description"
+      content="The ci-shepherd extension: watches your open change requests (GitHub PRs, GitLab MRs, Bitbucket PRs, and any git forge) and dispatches a worker to fix failing CI or a changes-requested review."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&family=Press+Start+2P&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <!-- prettier-ignore -->
+      <a href="../index.html" class="nav-brand">thur<span>box</span></a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="keybindings.html">Keybindings</a></li>
+          </ul>
+          <h4>Extensions</h4>
+          <ul>
+            <li><a href="extensions.html">Overview</a></li>
+            <li><a href="extension-flow.html">Flow</a></li>
+            <li><a href="extension-forge.html">Forge</a></li>
+            <li><a href="extension-ci-shepherd.html" class="current-page">CI-shepherd</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="architecture.html">Architecture</a></li>
+          </ul>
+          <h4>Developer</h4>
+          <ul>
+            <li><a href="ui-review.html">UI/UX Review</a></li>
+          </ul>
+          <h4>On This Page</h4>
+          <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#forges">Forges: any git host</a></li>
+            <li><a href="#requirements">Requirements</a></li>
+            <li><a href="#install">Install</a></li>
+            <li><a href="#use">Use</a></li>
+            <li><a href="#branch">How the fixer gets the branch</a></li>
+            <li><a href="#files">Files</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <a href="index.html">Docs</a>
+            <span class="separator">/</span>
+            <a href="extensions.html">Extensions</a>
+            <span class="separator">/</span>
+            <span class="current">ci-shepherd</span>
+          </div>
+
+          <h1>ci-shepherd</h1>
+          <p>
+            CI-shepherd watches your open
+            <strong>change requests</strong>
+            &mdash; GitHub PRs, GitLab MRs, Bitbucket PRs &mdash; and whenever one picks up
+            <strong>failing CI</strong>
+            or a
+            <strong>changes-requested review</strong>
+            , dispatches a worker session to address it: the worker checks out the request branch,
+            fixes the feedback, pushes to the same branch (so the request updates), and leaves a
+            comment &mdash; then pings the shepherd so the next one dispatches. It turns review
+            round-trips into background work.
+          </p>
+          <div class="info-box warning">
+            <p>
+              <strong>Experimental.</strong>
+              ci-shepherd is new and under active testing &mdash; its behavior spec, scripts, and
+              manifest may change between releases.
+            </p>
+          </div>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            A
+            <code>shepherd</code>
+            session sweeps your watched repos on a
+            <code>shepherd-tick</code>
+            automation (every 15&nbsp;min). Fixers are Thurbox
+            <strong>tasks</strong>
+            (
+            <code>fix #&lt;n&gt;: &hellip;</code>
+            ): each runs in an isolated worktree on the request branch and self-reports via the same
+            <code>===RESULT===</code>
+            sentinel as flow. The monitor and fixer are plain
+            <code>agents.toml</code>
+            aliases (
+            <code>shepherd</code>
+            ,
+            <code>shepherd-worker</code>
+            ), so each can be any CLI.
+          </p>
+
+          <h2 id="forges">
+            Forges: any git host
+            <a href="#forges" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The only thing baked in is
+            <strong>git</strong>
+            &mdash;
+            <em>how</em>
+            to talk to a repo's host is decided by the shepherd agent, fresh each tick. There are
+            two paths, picked per repo automatically:
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Path</th>
+                <th>Forges</th>
+                <th>How</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Built-in fast path</strong></td>
+                <td>
+                  GitHub (
+                  <code>gh</code>
+                  ), GitLab (
+                  <code>glab</code>
+                  ), Bitbucket (
+                  <code>curl</code>
+                  + token)
+                </td>
+                <td>
+                  <code>provider.sh</code>
+                  lists requests and supplies the branch/checkout/comment commands; the agent just
+                  dispatches by number.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Agent-driven</strong></td>
+                <td>
+                  any other git forge &mdash; Gitea/Forgejo/Codeberg, Azure DevOps, Sourcehut,
+                  self-hosted GitHub/GitLab, &hellip;
+                </td>
+                <td>
+                  <code>provider.sh describe</code>
+                  hands the agent the remote + installed clients; it lists the requests itself and
+                  passes the commands it chose to
+                  <code>dispatch-fix.sh</code>
+                  .
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            So there is
+            <strong>no forge allow-list</strong>
+            &mdash; anything reachable by a git remote and a CLI/REST API works, because the agent
+            reasons about it at runtime. The three built-ins are an optimization (cheap,
+            deterministic) for the common hosts.
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>Verification status:</strong>
+              the GitHub fast path is verified end-to-end; the GitLab and Bitbucket fast paths are
+              implemented against their documented APIs but not yet run live; the agent-driven path
+              depends on the agent and the forge's own CLI/API.
+            </p>
+          </div>
+
+          <h2 id="requirements">
+            Requirements
+            <a href="#requirements" class="heading-anchor">#</a>
+          </h2>
+          <ul>
+            <li>
+              <code>git</code>
+              ,
+              <code>jq</code>
+              , and
+              <code>thurbox-cli</code>
+              on
+              <code>PATH</code>
+              .
+            </li>
+            <li>
+              The client for each forge you watch, authenticated:
+              <code>gh auth login</code>
+              /
+              <code>glab auth login</code>
+              , or
+              <code>BB_TOKEN</code>
+              (or
+              <code>BB_USER</code>
+              +
+              <code>BB_APP_PASSWORD</code>
+              ) for Bitbucket.
+            </li>
+          </ul>
+
+          <h2 id="install">
+            Install
+            <a href="#install" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            ci-shepherd is a Thurbox
+            <a href="extensions.html">extension</a>
+            (a declarative
+            <code>extension.toml</code>
+            manifest):
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install ci-shepherd    <span class="syn-comment"># or ./extensions/ci-shepherd</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall ci-shepherd  <span class="syn-comment"># --purge also deletes ~/ci-shepherd</span></code></pre>
+          <p>
+            Installing lays down the shepherd home (
+            <code>~/ci-shepherd</code>
+            ; override with
+            <code>--home</code>
+            ), registers the
+            <code>shepherd</code>
+            /
+            <code>shepherd-worker</code>
+            agents, and activates the
+            <code>shepherd</code>
+            session plus the
+            <code>shepherd-tick</code>
+            automation &mdash; both
+            <strong>self-healed</strong>
+            by Thurbox.
+          </p>
+
+          <h2 id="use">
+            Use
+            <a href="#use" class="heading-anchor">#</a>
+          </h2>
+          <ul>
+            <li>
+              Add the repos to watch to
+              <code>~/ci-shepherd/repos.md</code>
+              (one row each;
+              <code>author</code>
+              defaults to
+              <code>@me</code>
+              ,
+              <code>provider</code>
+              to
+              <code>auto</code>
+              ).
+            </li>
+            <li>
+              The shepherd sweeps on its schedule; trigger one now by sending
+              <code>tick</code>
+              to the shepherd session.
+            </li>
+            <li>
+              <code>status</code>
+              for a one-screen report;
+              <code>clean</code>
+              to prune merged/closed worktrees.
+            </li>
+          </ul>
+
+          <h2 id="branch">
+            How the fixer gets the branch
+            <a href="#branch" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Thurbox's own
+            <code>--worktree</code>
+            always runs
+            <code>git worktree add -b</code>
+            , which fails on a branch that already exists &mdash; and a request's head branch always
+            does. So
+            <code>dispatch-fix.sh</code>
+            adopts the branch itself into a shepherd-owned worktree under
+            <code>~/ci-shepherd/worktrees/&lt;repo&gt;-&lt;provider&gt;-&lt;n&gt;</code>
+            , then spawns the fixer there. The checkout is git-universal: a built-in forge uses the
+            provider's checkout (
+            <code>gh pr checkout</code>
+            /
+            <code>glab mr checkout</code>
+            /
+            <code>git fetch</code>
+            ), any other forge uses the agent-supplied
+            <code>--checkout-cmd</code>
+            (or a plain
+            <code>git fetch origin &lt;branch&gt;</code>
+            fallback). The worker pushes straight to the request branch;
+            <code>clean</code>
+            removes the worktree once the request is no longer actionable (refusing if it has
+            uncommitted work).
+          </p>
+
+          <h2 id="files">
+            Files
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            See
+            <a
+              href="https://github.com/Thurbeen/thurbox/tree/main/extensions/ci-shepherd"
+              target="_blank"
+              rel="noopener"
+            >
+              extensions/ci-shepherd
+            </a>
+            for the
+            <code>SHEPHERD.md</code>
+            behavior spec, the
+            <code>extension.toml</code>
+            manifest, and the helper scripts (
+            <code>provider.sh</code>
+            &mdash; the forge adapter layer,
+            <code>shepherd-snapshot.sh</code>
+            ,
+            <code>dispatch-fix.sh</code>
+            ,
+            <code>parse-result.sh</code>
+            ).
+          </p>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>

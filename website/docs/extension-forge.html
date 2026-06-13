@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>forge extension — Thurbox Docs</title>
+    <meta
+      name="description"
+      content="The forge extension: a workflow analyst that mines your Thurbox tasks, sessions, and automations for recurring patterns and writes ready-to-apply automation proposals."
+    />
+    <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&family=Press+Start+2P&display=swap"
+    />
+    <link rel="stylesheet" href="../css/variables.css" />
+    <link rel="stylesheet" href="../css/base.css" />
+    <link rel="stylesheet" href="../css/layout.css" />
+    <link rel="stylesheet" href="../css/components.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+  </head>
+  <body>
+    <nav class="nav scrolled" id="nav">
+      <!-- prettier-ignore -->
+      <a href="../index.html" class="nav-brand">thur<span>box</span></a>
+      <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="../index.html#features">Features</a></li>
+        <li><a href="../index.html#installation">Install</a></li>
+        <li><a href="index.html" style="color: var(--text-primary)">Docs</a></li>
+        <li>
+          <a
+            href="https://github.com/Thurbeen/thurbox"
+            class="github-link"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg class="icon-github" viewBox="0 0 16 16">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <div class="docs-page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="installation.html">Installation</a></li>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="keybindings.html">Keybindings</a></li>
+          </ul>
+          <h4>Extensions</h4>
+          <ul>
+            <li><a href="extensions.html">Overview</a></li>
+            <li><a href="extension-flow.html">Flow</a></li>
+            <li><a href="extension-forge.html" class="current-page">Forge</a></li>
+            <li><a href="extension-ci-shepherd.html">CI-shepherd</a></li>
+          </ul>
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="architecture.html">Architecture</a></li>
+          </ul>
+          <h4>Developer</h4>
+          <ul>
+            <li><a href="ui-review.html">UI/UX Review</a></li>
+          </ul>
+          <h4>On This Page</h4>
+          <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#install">Install</a></li>
+            <li><a href="#use">Use</a></li>
+            <li><a href="#safety">How a proposal is applied safely</a></li>
+            <li><a href="#files">Files</a></li>
+          </ul>
+        </aside>
+
+        <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+          &#9776;
+        </button>
+
+        <main class="docs-content">
+          <div class="breadcrumbs">
+            <a href="../index.html">Home</a>
+            <span class="separator">/</span>
+            <a href="index.html">Docs</a>
+            <span class="separator">/</span>
+            <a href="extensions.html">Extensions</a>
+            <span class="separator">/</span>
+            <span class="current">forge</span>
+          </div>
+
+          <h1>forge</h1>
+          <p>
+            A workflow analyst that automates your Thurbox for you. forge watches how you actually
+            use Thurbox &mdash; your task backlog, the sessions you keep spawning, your existing
+            automations and how often they fire or fail &mdash; and turns the
+            <strong>recurring patterns</strong>
+            into concrete, ready-to-apply proposals: mostly new
+            <code>thurbox-cli automation</code>
+            s, sometimes a pointer to another extension.
+          </p>
+          <div class="info-box warning">
+            <p>
+              <strong>Experimental.</strong>
+              forge is new and under active testing &mdash; its behavior spec, scripts, and manifest
+              may change between releases.
+            </p>
+          </div>
+          <div class="info-box">
+            <p>
+              <strong>Proposes, never imposes.</strong>
+              A scan only ever reads state and writes a proposal file, so it is safe to run
+              unattended on a schedule. Nothing is created until you explicitly
+              <code>apply</code>
+              it.
+            </p>
+          </div>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            A weekly
+            <code>forge-scan</code>
+            automation drives a dedicated
+            <code>forge</code>
+            session. Each scan clusters your tasks/sessions/automations by intent and, where a
+            pattern repeats, writes a proposal to
+            <code>~/forge/proposals.jsonl</code>
+            (rendered for humans into
+            <code>~/forge/proposals.md</code>
+            ). Like Thurbox itself, forge is
+            <strong>agent-agnostic</strong>
+            : the analyst is a plain
+            <code>agents.toml</code>
+            alias (
+            <code>forge</code>
+            ), so it can be claude, codex, gemini, opencode, vibe, &hellip;
+          </p>
+
+          <h2 id="install">
+            Install
+            <a href="#install" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            forge is a Thurbox
+            <a href="extensions.html">extension</a>
+            (a declarative
+            <code>extension.toml</code>
+            manifest):
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install forge      <span class="syn-comment"># or ./extensions/forge from a checkout</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall forge    <span class="syn-comment"># --purge also deletes ~/forge</span></code></pre>
+          <p>
+            Installing lays down the forge home (
+            <code>~/forge</code>
+            ; override with
+            <code>--home</code>
+            ), registers the
+            <code>forge</code>
+            agent (claude on sonnet by default &mdash; edit the
+            <code>agents.toml</code>
+            entry to change), and activates the
+            <code>forge</code>
+            session plus the weekly
+            <code>forge-scan</code>
+            automation &mdash; both
+            <strong>self-healed</strong>
+            by Thurbox.
+          </p>
+
+          <h2 id="use">
+            Use
+            <a href="#use" class="heading-anchor">#</a>
+          </h2>
+          <ul>
+            <li>
+              forge scans on its schedule; trigger one now by sending
+              <code>scan</code>
+              to the forge session.
+            </li>
+            <li>
+              <code>status</code>
+              for a one-screen list of open proposals; review the rendered backlog in
+              <code>~/forge/proposals.md</code>
+              .
+            </li>
+            <li>
+              <code>apply &lt;slug&gt;</code>
+              runs the proposal's stored command and marks it applied;
+              <code>dismiss &lt;slug&gt;</code>
+              buries one so future scans won't resurface it.
+            </li>
+            <li>Anything else you type is treated as an ad-hoc question about your workflow.</li>
+          </ul>
+
+          <h2 id="safety">
+            How a proposal is applied safely
+            <a href="#safety" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <code>proposals.jsonl</code>
+            is the source of truth;
+            <code>proposals.md</code>
+            is the human render. Every proposal carries an exact command, and
+            <code>proposals.sh apply</code>
+            <strong>
+              refuses to run anything that does not start with
+              <code>thurbox-cli</code>
+            </strong>
+            &mdash; so applying a proposal can only ever create or edit a Thurbox automation, never
+            run arbitrary shell.
+          </p>
+
+          <h2 id="files">
+            Files
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            See
+            <a
+              href="https://github.com/Thurbeen/thurbox/tree/main/extensions/forge"
+              target="_blank"
+              rel="noopener"
+            >
+              extensions/forge
+            </a>
+            for the
+            <code>FORGE.md</code>
+            behavior spec (modes, signal sources, proposal rubric), the
+            <code>extension.toml</code>
+            manifest, and the helper scripts (
+            <code>forge-snapshot.sh</code>
+            ,
+            <code>proposals.sh</code>
+            ).
+          </p>
+        </main>
+      </div>
+    </div>
+
+    <script src="../js/main.js"></script>
+  </body>
+</html>
