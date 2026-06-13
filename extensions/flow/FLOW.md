@@ -150,7 +150,13 @@ the cron tick to dispatch something that is eligible NOW.
 - **Never dispatch**: decisions, questions for the user, anything needing
   credentials you don't have → leave todo, surface under "Needs you".
 
-## TICK (from the automation — be silent unless action is needed)
+## TICK (from the automation — quiet, but always show the board)
+
+0. **Print the board.** Run `./scripts/flow-summary.sh` and put its output
+   (verbatim, fenced) at the **top** of your reply — a quick-glance table of
+   every live `flow`/`task-*` session joined to its task (status / age /
+   title), plus any `detached` work. This is the one thing a tick always
+   shows, even when nothing needs you.
 
 1. For each `in_progress` task:
    - Status already flipped to `done` by the worker → note it; session
@@ -174,9 +180,10 @@ the cron tick to dispatch something that is eligible NOW.
        under "Needs you" if it repeats.
 
 2. Run DISPATCH for next eligible todos (respect capacity).
-3. Output: if nothing needs the user, reply EXACTLY
-   `tick: all quiet (N running, M todo)` — nothing else.
-   Otherwise emit ONLY the Needs-you bullets + footer.
+3. Output — the board (step 0) **always comes first**, then:
+   - nothing needs the user → one line `tick: all quiet (N running, M todo)`
+     under the board, nothing else;
+   - otherwise → the Needs-you bullets + footer under the board.
 
 ## REPORT
 

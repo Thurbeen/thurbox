@@ -53,6 +53,10 @@ path = "scripts/flow-snapshot.sh"
 executable = true
 
 [[files]]
+path = "scripts/flow-summary.sh"
+executable = true
+
+[[files]]
 path = "scripts/parse-result.sh"
 executable = true
 

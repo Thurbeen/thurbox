@@ -95,6 +95,9 @@ active and healthy.
   rest. (Pass `--no-plan` to `create-task.sh` for trivial mechanical
   changes where a plan is overkill.)
 - `status` for a one-screen report; `clean` to groom the backlog.
+- Every tick prints a **board** — a quick-glance table of all live
+  `flow`/`task-*` sessions with status, age, and the task they're working
+  (`scripts/flow-summary.sh`) — so you can see the whole picture at once.
 - Workers self-report: they mark their task done, print a
   `===RESULT===` JSON line, and ping the flow session so the next task
   dispatches without waiting for the cron tick.
@@ -109,6 +112,7 @@ active and healthy.
 | `repos.md` | Routing-table seed (installed once, then user-owned) |
 | `scripts/create-task.sh` | Atomic task create + dispatch; composes the plan-first worker prompt (`--dry-run` to preview) |
 | `scripts/flow-snapshot.sh` | One-call backlog + sessions view |
+| `scripts/flow-summary.sh` | At-a-glance board table (printed atop every tick) |
 | `scripts/parse-result.sh` | Extract the worker `===RESULT===` sentinel |
 | `install.sh` | Thin shim → `thurbox-cli extension install` (curl\|sh bootstrap) |
 
