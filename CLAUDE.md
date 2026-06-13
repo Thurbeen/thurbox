@@ -591,8 +591,12 @@ sync, but the TUI editor never sets it.)
   with `thurbox-cli`. Spec: `FORGE.md`.
 - **`extensions/ci-shepherd/`** *(experimental)* — watches your open change
   requests (GitHub PRs / GitLab MRs / Bitbucket PRs; repos in `repos.md`) and
-  dispatches a `shepherd-worker` fixer for each one with **failing CI** or a
-  **changes-requested review**. A `shepherd` session monitors via a
+  dispatches a `shepherd-worker` fixer for each one with **failing CI**, a
+  **changes-requested review**, or a branch that is **behind its target**
+  (needs rebase — the normalized `rebase` signal from `provider.sh`, surfaced
+  as the `REBASE` action flag by `scripts/classify.sh`; `dispatch-fix.sh
+  --rebase` makes the worker rebase onto the base and force-push before
+  fixing). A `shepherd` session monitors via a
   `shepherd-tick` automation; fixers are thurbox **tasks** (`fix #<n>: …`) that
   self-report with the same `===RESULT===` sentinel as flow. It is
   **forge-agnostic**: the only thing baked in is **git**; *how* to talk to a

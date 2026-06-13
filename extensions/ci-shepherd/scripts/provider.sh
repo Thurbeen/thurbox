@@ -12,7 +12,7 @@
 # Verbs (the adapter contract):
 #   provider-of <repo>                  -> prints the resolved provider name
 #   list <repo> <author>                -> normalized JSON array (see shape below)
-#   meta <repo> <number>                -> {"title":..,"branch":..,"url":..}
+#   meta <repo> <number>                -> {"title":..,"branch":..,"base":..,"url":..}
 #   checkout <repo> <worktree> <number> -> checks the PR/MR branch out into <worktree>
 #   feedback-cmd <repo> <number>        -> prints the shell command the WORKER runs
 #                                          to read review feedback
@@ -22,7 +22,14 @@
 # Normalized `list` element (all providers map their API onto this):
 #   {"number":42,"title":"..","branch":"feat/x","draft":false,
 #    "review":"CHANGES_REQUESTED|APPROVED|REVIEW_REQUIRED|none",
-#    "ci":"FAIL|PENDING|OK|none","url":".."}
+#    "ci":"FAIL|PENDING|OK|none",
+#    "rebase":"NEEDED|CONFLICT|none","url":".."}
+#
+# `rebase` tells the shepherd a request can't merge as-is and must be brought up
+# to date with its target branch first: NEEDED = the head branch is *behind* the
+# base (branch-protection "require branches to be up to date" will block the
+# merge); CONFLICT = it has diverged so far it no longer merges cleanly (a rebase
+# with conflict resolution is required). Providers that can't tell map to "none".
 
 set -euo pipefail
 
@@ -48,7 +55,7 @@ resolve_provider() {
 github_list() { # <author>
   have gh || { echo "gh (GitHub CLI) not installed" >&2; return 3; }
   ( cd "$REPO" && gh pr list --author "$1" --state open \
-      --json number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,url ) \
+      --json number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,mergeStateStatus,mergeable,url ) \
   | jq '[ .[] | {
       number, title, branch: .headRefName, draft: .isDraft, url,
       review: ((.reviewDecision // "") | if . == "" then "none" else . end),
@@ -56,11 +63,17 @@ github_list() { # <author>
            | if length == 0 then "none"
              elif any(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT") then "FAIL"
              elif any(. == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED") then "PENDING"
-             else "OK" end) } ]'
+             else "OK" end),
+      # mergeStateStatus BEHIND = out of date with base (branch protection blocks);
+      # DIRTY / mergeable CONFLICTING = diverged, a conflict-resolving rebase needed.
+      rebase: ((.mergeStateStatus // "") as $m | (.mergeable // "") as $g
+           | if $m == "BEHIND" then "NEEDED"
+             elif $m == "DIRTY" or $g == "CONFLICTING" then "CONFLICT"
+             else "none" end) } ]'
 }
 github_meta() { # <number>
-  ( cd "$REPO" && gh pr view "$1" --json title,headRefName,url ) \
-  | jq '{title, branch: .headRefName, url}'
+  ( cd "$REPO" && gh pr view "$1" --json title,headRefName,baseRefName,url ) \
+  | jq '{title, branch: .headRefName, base: .baseRefName, url}'
 }
 github_checkout() { ( cd "$2" && gh pr checkout "$3" ); }   # <worktree> <number>
 github_feedback_cmd() { printf 'gh pr view %s --comments; gh api "repos/{owner}/{repo}/pulls/%s/comments"' "$1" "$1"; }
@@ -82,11 +95,16 @@ gitlab_list() { # <author>
       ci: ((.pipeline.status // (.head_pipeline.status) // "none") as $s
            | if $s == "failed" or $s == "canceled" then "FAIL"
              elif $s == "running" or $s == "pending" or $s == "created" then "PENDING"
-             elif $s == "success" then "OK" else "none" end) } ]'
+             elif $s == "success" then "OK" else "none" end),
+      # cannot_be_merged = a real merge conflict; diverged_commits_count>0 = behind
+      # the target (fast-forward-only projects need a rebase to merge).
+      rebase: (if (.merge_status // "") == "cannot_be_merged" then "CONFLICT"
+               elif ((.diverged_commits_count // 0) > 0) then "NEEDED"
+               else "none" end) } ]'
 }
 gitlab_meta() { # <number>
   ( cd "$REPO" && glab mr view "$1" --output json ) \
-  | jq '{title, branch: .source_branch, url: .web_url}'
+  | jq '{title, branch: .source_branch, base: .target_branch, url: .web_url}'
 }
 gitlab_checkout() { ( cd "$2" && glab mr checkout "$3" ); }   # <worktree> <number>
 gitlab_feedback_cmd() { printf 'glab mr view %s --comments' "$1"; }
@@ -120,11 +138,15 @@ bitbucket_list() { # <author> (filtered client-side; Bitbucket has no review-dec
       | { number: .id, title, branch: .source.branch.name,
           draft: (.draft // false), url: .links.html.href,
           review: ([.participants[]? | select(.state == "changes_requested")] | if length>0 then "CHANGES_REQUESTED" else "none" end),
-          ci: "none" } ]'
+          ci: "none",
+          # Bitbucket list payload exposes neither ahead/behind nor merge state,
+          # so we cannot tell from here; the shepherd agent can inspect a
+          # specific PR if needed.
+          rebase: "none" } ]'
 }
 bitbucket_meta() { # <number>
   bb_curl GET "pullrequests/$1" \
-  | jq '{title, branch: .source.branch.name, url: .links.html.href}'
+  | jq '{title, branch: .source.branch.name, base: .destination.branch.name, url: .links.html.href}'
 }
 bitbucket_checkout() { # <worktree> <number>
   branch="$(bitbucket_meta "$2" | jq -r '.branch')"

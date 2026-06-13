@@ -4,11 +4,13 @@
 > expect the behavior spec, scripts, and installer to change between releases.
 
 CI-shepherd watches your open **change requests** — GitHub PRs, GitLab MRs,
-Bitbucket PRs — and whenever one picks up **failing CI** or a
-**changes-requested review**, dispatches a worker session to address it: the
-worker checks out the request branch, fixes the feedback, pushes to the same
-branch (so the request updates), and leaves a comment — then pings the shepherd
-so the next one dispatches. It turns review round-trips into background work.
+Bitbucket PRs — and whenever one picks up **failing CI**, a
+**changes-requested review**, or falls **behind its target branch** (a rebase
+branch-protection requires before merge), dispatches a worker session to address
+it: the worker checks out the request branch, rebases it onto the target if it's
+behind, fixes the feedback, pushes to the same branch (so the request updates),
+and leaves a comment — then pings the shepherd so the next one dispatches. It
+turns review round-trips into background work.
 
 ```text
 ---
@@ -107,7 +109,8 @@ branch; `clean` removes the worktree once the request is no longer actionable
 | Path | Purpose |
 |------|---------|
 | `SHEPHERD.md` | The agent behavior spec (modes, actionability rules, output contract) |
-| `scripts/provider.sh` | The forge adapter layer — normalizes GitHub/GitLab/Bitbucket onto one contract |
+| `scripts/provider.sh` | The forge adapter layer — normalizes GitHub/GitLab/Bitbucket onto one contract (incl. the `rebase` behind/conflict signal) |
+| `scripts/classify.sh` | Pure request → action-flag classifier (`CHANGES-REQ`/`CI-FAIL`/`REBASE`/…); unit-tested by `classify.bats` |
 | `scripts/shepherd-snapshot.sh` | One-call view: watched requests (with action flags) + fixer tasks/sessions/worktrees |
 | `scripts/dispatch-fix.sh` | Prepare a request-branch worktree + create and run the fixer task |
 | `scripts/parse-result.sh` | Extract the worker `===RESULT===` sentinel |

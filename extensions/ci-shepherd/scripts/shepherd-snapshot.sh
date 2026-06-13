@@ -48,15 +48,8 @@ else
         esac
         CRS="$(PROVIDER="$provider" "$HERE/provider.sh" list "$path" "$author" 2>&1)" \
           || { echo "  (provider error: $(printf '%s' "$CRS" | head -1))"; continue; }
-        printf '%s' "$CRS" | jq -r '
-          if length == 0 then "  (no open requests)" else
-          .[] |
-          (if .draft then "draft"
-           elif .review == "CHANGES_REQUESTED" then "CHANGES-REQ"
-           elif .ci == "FAIL" then "CI-FAIL"
-           else "ok" end) as $flag |
-          "  #\(.number)  [\($flag)]  \(.title)  (head=\(.branch), CI=\(.ci), review=\(.review))"
-          end' 2>/dev/null || echo "  (could not parse provider output)"
+        printf '%s' "$CRS" | "$HERE/classify.sh" 2>/dev/null \
+          || echo "  (could not parse provider output)"
       done
 fi
 

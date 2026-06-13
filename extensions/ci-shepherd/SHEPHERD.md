@@ -65,19 +65,28 @@ installed, surface it under "Needs you" rather than guessing.
 ```
 
 It reads `./repos.md` (the watch list) and, for each repo with a **built-in**
-forge, lists its open requests with a derived **action flag** (`CI-FAIL`,
-`CHANGES-REQ`, `ok`, `draft`); for any **other** forge it instead prints the
-`describe` block and an `ACTION:` line telling you to list that repo yourself
+forge, lists its open requests with a derived **action flag** (`CHANGES-REQ`,
+`CI-FAIL`, `REBASE`, `ok`, `draft`); for any **other** forge it instead prints
+the `describe` block and an `ACTION:` line telling you to list that repo yourself
 (see *Forge handling*). Then it shows the live `fix-*` / `task-*` tasks and
 sessions. The relevant forge client must be authenticated (`gh auth status` /
 `glab auth status` / Bitbucket `BB_TOKEN`); if a repo shows a provider error,
 surface it once under "Needs you" and move on.
 
+**Action flags** (precedence, highest first): `draft` (skip) → `CHANGES-REQ` →
+`CI-FAIL` → `REBASE` → `ok`. **`REBASE`** means the request is **behind its
+target branch** (`rebase=NEEDED`) or has **diverged into conflict**
+(`rebase=CONFLICT`) — branch protection ("require branches up to date") blocks
+the merge until it's rebased. CI-FAIL outranks REBASE on purpose: clear red
+checks first, since the rebase re-runs CI and is the last gate before a clean
+request can merge. The per-request line shows `rebase=NEEDED|CONFLICT|none`.
+
 ## TICK (be silent unless action is needed)
 
 1. **Dispatch** a fixer for every request that is actionable AND has no live
    fixer:
-   - **Actionable**: flag is `CI-FAIL` or `CHANGES-REQ`, and not `draft`.
+   - **Actionable**: flag is `CI-FAIL`, `CHANGES-REQ`, or `REBASE`, and not
+     `draft`.
    - **Already handled**: a `fix #<n>` task exists for that repo+number that is
      not `done` → skip (a worker is on it). If the task is `done` but the
      request is STILL actionable, the previous fix didn't land it →
@@ -91,10 +100,20 @@ surface it once under "Needs you" and move on.
        --agent shepherd-worker
      ```
 
+     **REBASE flag** — add `--rebase` so the worker rebases the branch onto its
+     target before anything else and force-pushes (the base is filled from the
+     provider meta; override with `--base <branch>` if needed):
+
+     ```bash
+     ./scripts/dispatch-fix.sh --repo <abs-repo-path> --number <n> \
+       --agent shepherd-worker --rebase
+     ```
+
      **Any other forge** — follow *Forge handling* above: list it yourself and
      pass the `--branch`/`--checkout-cmd`/`--feedback-cmd`/`--comment-cmd` you
-     chose. Either way `dispatch-fix.sh` prepares an isolated worktree on the
-     request's branch, seeds the fixer task with the full context, and runs it.
+     chose (add `--rebase --base <target>` if it's behind). Either way
+     `dispatch-fix.sh` prepares an isolated worktree on the request's branch,
+     seeds the fixer task with the full context, and runs it.
 
 2. **Monitor** each in-flight fixer task (`in_progress`):
    - Worker marked the task `done` → note it; the request re-checks next tick
@@ -123,7 +142,7 @@ surface it once under "Needs you" and move on.
 One screen max:
 
 - **Fixing**: `#task #n <repo> [worker] (age)`
-- **Actionable, unassigned**: `#n <repo> — CI-FAIL|CHANGES-REQ`
+- **Actionable, unassigned**: `#n <repo> — CI-FAIL|CHANGES-REQ|REBASE`
 - **Needs you**: true blockers only (a worker's question, a request that keeps
   failing after a fix, a provider auth error)
 - Footer.
