@@ -3,10 +3,11 @@
 # their tasks (status / age / title). Printed at the top of every TICK so the
 # user can see the whole board without parsing verbose worker output.
 #
-# Each row is one live `flow` / `task-*` session. `task-<id>-…` sessions are
-# joined to task #<id> for status, age (from created_at) and title; a session
-# whose task is gone shows "orphan", and tasks whose worker session is missing
-# are listed under a "detached" footer line (so stale work isn't silently lost).
+# Each row is one live `flow` / worker session. Worker sessions are named
+# "<title> · #<id>" (current) or "task-<id>[-…]" (legacy); they are joined to
+# task #<id> for status, age (from created_at) and title; a session whose task
+# is gone shows "orphan", and tasks whose worker session is missing are listed
+# under a "detached" footer line (so stale work isn't silently lost).
 #
 # Columns: ID  SESSION  AGENT  STATUS  AGE  TITLE
 # Status glyphs: ◆ monitor (flow) · ● running · ○ queued · ✔ done · ⚠ orphan
@@ -38,9 +39,12 @@ ROWS="$(printf '%s' "$SESSIONS" | jq -r --argjson tasks "$TASKS" '
     else $st end;
 
   [ .[]
-    | select(.name == "flow" or (.name | startswith("task-")))
-    # extract <id> from a task-<id>-… session name (null for the flow session)
-    | (.name | [scan("^task-([0-9]+)-")] | (first // [])[0]) as $tid
+    # extract <id> from "<title> · #<id>" (current) or "task-<id>[-…]" (legacy);
+    # null for the flow session and any non-worker session
+    | (.name
+       | (([scan(" · #([0-9]+)$")] | (first // [])[0])
+          // ([scan("^task-([0-9]+)(?:-|$)")] | (first // [])[0]))) as $tid
+    | select(.name == "flow" or $tid != null)
     | (if $tid then $byid[$tid] else null end) as $task
     | {
         id:      (if $tid then "#\($tid)" else "—" end),
@@ -76,12 +80,21 @@ else
   printf '%s\n' "$ROWS" | tr '\t' ' '
 fi
 
-# Footer: tasks that are in_progress but whose worker session is gone (detached)
+# Footer: tasks that are in_progress but whose worker session is gone (detached).
+# A session belongs to task <id> when its name ends with " · #<id>" (current) or
+# equals "task-<id>" / starts with "task-<id>-" (legacy) — mirrors
+# Task::matches_spawn_session.
 DETACHED="$(printf '%s' "$TASKS" | jq -r --argjson sessions "$SESSIONS" '
   ($sessions | map(.name)) as $names |
+  # does session name $n belong to task $id?
+  def belongs($n; $id):
+    ($n | endswith(" · #\($id)"))
+    or ($n == "task-\($id)")
+    or ($n | startswith("task-\($id)-"));
   .[]
   | select(.status == "in_progress")
-  | select( [ $names[] | startswith("task-\(.id|tostring)-") ] | any | not )
+  | (.id|tostring) as $id
+  | select( [ $names[] | belongs(.; $id) ] | any | not )
   | "  #\(.id) \(.title)"
 ' 2>/dev/null || true)"
 

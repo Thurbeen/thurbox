@@ -55,8 +55,9 @@ new, unrelated work. See the ANSWER section.
 ./scripts/flow-snapshot.sh
 ```
 
-This prints the backlog grouped by status plus the live `task-*` / `flow`
-sessions. Also read `./repos.md` — the repo routing table (name → path →
+This prints the backlog grouped by status plus the live `flow` / worker
+(`… · #<id>`) sessions, each tagged with its `#<id>`. Also read `./repos.md` —
+the repo routing table (name → path →
 base branch → keywords). If a repo mentioned by the user is missing from
 the table, add a row when you learn its path.
 
@@ -151,7 +152,7 @@ and a worker's `result` message wakes you the moment it finishes — never wait
 for the cron tick to dispatch something that is eligible NOW.
 
 - Eligible: `status=todo` AND has a spawn action AND capacity OK
-  (**max 3** running `task-*` sessions).
+  (**max 3** running worker (`… · #<id>`) sessions).
 - Dispatch: `thurbox-cli task run <id>` — this spawns the worker session,
   seeds the full task prompt, and advances todo → in_progress. Re-running
   on a non-todo task is harmless (it only reuses the window), so never
@@ -208,7 +209,8 @@ When the user replies to questions or a plan you surfaced:
 
 1. Identify the waiting worker. Usually it's the one whose message you most
    recently surfaced; map its `#<id>` to the session uuid via `flow-snapshot.sh`
-   / `session list` (session name `task-<id>-…` / `… · #<id>`). If several
+   (its `## sessions` block prints each worker's `#<id>` next to its uuid) or
+   `session list` (session name `… · #<id>`, or legacy `task-<id>-…`). If several
    workers are waiting and the reply doesn't make the target obvious, route by
    content — or ask ONE short routing question (`#<id> or #<id>?`).
 2. Relay the reply verbatim into that worker's session:
@@ -230,8 +232,8 @@ stale state.
 
 0. **Print the board.** Run `./scripts/flow-summary.sh` and put its output
    (verbatim, fenced) at the **top** of your reply — a quick-glance table of
-   every live `flow`/`task-*` session joined to its task (status / age /
-   title), plus any `detached` work. This is the one thing a tick always
+   every live `flow` / worker (`… · #<id>`) session joined to its task (status /
+   age / title), plus any `detached` work. This is the one thing a tick always
    shows, even when nothing needs you.
 
 1. **Drain the queue** — run DRAIN (claim the inbox, surface questions/plans,
@@ -240,8 +242,8 @@ stale state.
 2. **Reconcile** each `in_progress` task:
    - Status already flipped to `done` by the worker → note it; session
      cleanup happens in CLEAN.
-   - Worker session (name `task-<id>-…` / `… · #<id>`) missing from the session
-     list → stale: reset to todo (`task edit <id> --status todo`).
+   - Worker session (name `… · #<id>`, or legacy `task-<id>-…`) missing from the
+     session list → stale: reset to todo (`task edit <id> --status todo`).
    - Otherwise it's still working — leave it. (As a last-resort liveness check
      for a worker that died WITHOUT sending a `result`, you may
      `thurbox-cli session capture <uuid> --lines 40` and flag an obvious crash
@@ -269,7 +271,7 @@ One screen max:
 - Duplicate titles → keep oldest, remove the rest (list what was
   removed).
 - `in_progress` with no session → reset to todo.
-- Orphan `task-*` sessions whose task is done/removed →
+- Orphan worker (`… · #<id>`) sessions whose task is done/removed →
   `thurbox-cli session delete <uuid> --force`.
 - **Never** remove a todo without listing it first and getting a yes.
 

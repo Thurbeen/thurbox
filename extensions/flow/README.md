@@ -13,7 +13,7 @@ focus on:
 ```text
 ---
 Needs you: PR #42 has a failing migration — approve the schema change?
-🎯 Next: review task-7-add-rate-limiting (worker finished, PR open)
+🎯 Next: review "Add rate limiting · #7" (worker finished, PR open)
 ```
 
 Flow is **agent-agnostic**, like thurbox itself: the triager and the
@@ -125,8 +125,8 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
   each tagged by its `#<id>`.
 - `status` for a one-screen report; `clean` to groom the backlog.
 - Every tick prints a **board** — a quick-glance table of all live
-  `flow`/`task-*` sessions with status, age, and the task they're working
-  (`scripts/flow-summary.sh`) — so you can see the whole picture at once. The
+  `flow` / worker (`… · #<id>`) sessions with status, age, and the task they're
+  working (`scripts/flow-summary.sh`) — so you can see the whole picture at once. The
   `flow-tick` automation is now a **safety net**: worker pushes drive the
   interactive loop; the cron tick just drains anything a missed wake left queued
   and grooms stale state.
