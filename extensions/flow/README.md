@@ -107,7 +107,9 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
   the repo is git).
 - **Plan-first dispatch**: every worker prompt carries a mandatory
   planning phase — clarify, then plan, then build. Before writing any code
-  the worker (1) asks **at least 3 clarifying questions** and waits, (2)
+  the worker (1) asks clarifying questions **one at a time** — a single question,
+  then it waits for your answer before sending the next, adaptively (often 3+,
+  but fewer if an early answer makes later ones moot) — (2)
   writes a structured plan — problem, concrete acceptance criteria, approach —
   and waits for your **approval**, then (3) builds strictly against the
   approved plan, so dispatched work stays scoped to what you asked for. The flow
@@ -117,7 +119,7 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
 - **Event-driven relay via a message queue**: workers hand the `flow` session
   clean, structured payloads through the durable `thurbox-cli message` queue —
   `--kind questions`, `--kind plan`, `--kind result` — instead of flow scraping
-  their terminals. Each push also wakes flow, so it surfaces the questions or
+  their terminals. Each push also wakes flow, so it surfaces the question or
   plan under "Needs you" immediately; you type your answer / approval naturally
   and flow relays it straight back to the waiting worker (`session send`). Flow
   is a pure pass-through: it never answers, invents, or approves — it just wires

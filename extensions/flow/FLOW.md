@@ -89,8 +89,9 @@ the table, add a row when you learn its path.
    `--description` (the user's words) plus the `--accept` / `--priority` /
    `--repo` / `--worktree` flags it composes the full description — the
    `priority/repo/accept` header, the user's words, a mandatory **Planning
-   phase** (clarify → plan → build: ask ≥3 clarifying questions and wait,
-   then send a written plan and wait for approval, then implement), and the
+   phase** (clarify → plan → build: ask clarifying questions one at a time,
+   waiting for each answer before the next, then send a written plan and wait for
+   approval, then implement), and the
    result/notify footer. So
    **never hand-type that header, planning block, or footer** — pass the
    structured flags and the helper keeps the contract byte-identical on every
@@ -120,8 +121,10 @@ the table, add a row when you learn its path.
    ```
 
 4. **The planning phase happens inside the worker, not in this session.**
-   The composed prompt makes every worker, in order: (a) ask **≥3 clarifying
-   questions** (pushed via `message send --kind questions`) and WAIT, (b) send a
+   The composed prompt makes every worker, in order: (a) ask clarifying questions
+   **one at a time** — a single question pushed via `message send --kind
+   questions`, then WAIT for its answer before the next, adaptively dropping later
+   questions once an answer clarifies enough — then (b) send a
    written plan (`--kind plan`) — problem, concrete acceptance criteria (refined
    from your `accept:` line), and approach — and WAIT for the user's approval,
    then (c) build strictly against the approved plan and report (`--kind
@@ -185,8 +188,11 @@ first step of every TICK, so a missed wake never strands a worker.
 
    Each item is JSON: `{ "kind", "body", "from_task_id", ... }`.
 2. For each message, by `kind`:
-   - **`questions`** → the worker is parked waiting on you. List the `body`
-     **verbatim** under "Needs you", tagged `#<from_task_id> <title>`.
+   - **`questions`** → the worker is parked waiting on you with a **single**
+     clarifying question (workers ask one at a time, not in a batch). List the
+     `body` **verbatim** under "Needs you", tagged `#<from_task_id> <title>`. The
+     user's answer lets the worker send its next question (another `questions`
+     message) or move on to the plan.
    - **`plan`** → the worker wants approval before it codes. Show the `body`
      **verbatim** under "Needs you", tagged `#<from_task_id> <title>`, and make
      clear it needs an **approve / change** decision.
@@ -199,13 +205,16 @@ first step of every TICK, so a missed wake never strands a worker.
 
 ## ANSWER (relay the user's reply to a waiting worker)
 
-A worker asks **≥3 clarifying questions**, then later sends a **plan**, WAITING
-after each — building nothing until it hears back. You surfaced those (in DRAIN)
-and now relay the user's reply (answers, or **approve / change** on a plan).
+A worker asks clarifying questions **one at a time** (a single question, then it
+WAITS for the answer before sending the next), then later sends a **plan**,
+WAITING after each — building nothing until it hears back. You surfaced those (in
+DRAIN) and now relay the user's reply (the answer to the current question, or
+**approve / change** on a plan). The worker uses each answer to send its next
+question or to move on; you just keep relaying.
 **You are a pure wire: never answer, reword, expand, or approve on your own —
 pass it through.**
 
-When the user replies to questions or a plan you surfaced:
+When the user replies to a question or a plan you surfaced:
 
 1. Identify the waiting worker. Usually it's the one whose message you most
    recently surfaced; map its `#<id>` to the session uuid via `flow-snapshot.sh`

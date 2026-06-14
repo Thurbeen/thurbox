@@ -24,8 +24,14 @@ setup() {
   [[ "$output" == *"accept: requests over the limit get 429"* ]]
   [[ "$output" == *"Throttle the API."* ]]
   [[ "$output" == *"## Planning phase"* ]]
-  [[ "$output" == *"at least 3"* ]]
+  # Clarifying questions go out ONE AT A TIME, not batched into a single message.
+  [[ "$output" == *"ONE AT A TIME"* ]]
+  [[ "$output" == *"never batched"* ]]
+  [[ "$output" == *"Send a SINGLE question"* ]]
   [[ "$output" == *"message send --to flow --kind questions"* ]]
+  # The old batched phrasing (and its multi-question example body) must be gone.
+  [[ "$output" != *"as ONE message"* ]]
+  [[ "$output" != *"Q1 ..."* ]]
   [[ "$output" == *"message send --to flow --kind plan"* ]]
   [[ "$output" == *"## Problem"* ]]
   [[ "$output" == *"## Acceptance criteria"* ]]

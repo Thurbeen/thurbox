@@ -15,9 +15,11 @@
 #   priority/repo/accept header → the user's words → a mandatory **Planning
 #   phase** → the result/notify footer — so every worker follows the same
 # clarify → plan → build contract BEFORE touching code. The planning phase makes
-# the worker (1) ask >=3 clarifying questions and push them to the flow session
-# via `thurbox-cli message send --kind questions` and WAIT (flow relays them to
-# the user and sends the answers back), then (2) push a written plan via
+# the worker (1) ask clarifying questions ONE AT A TIME — push a single question
+# via `thurbox-cli message send --kind questions` and WAIT for its answer before
+# sending the next (flow relays each question to the user and sends the answer
+# back), adaptively, dropping later questions once an answer clarifies enough —
+# then (2) push a written plan via
 # `--kind plan` and WAIT for the user's approval (relayed by flow), then
 # (3) implement strictly against the approved plan. Worker → flow handoffs go
 # through the durable message queue (not pane scraping); flow → worker replies
@@ -86,19 +88,21 @@ flow agent through the thurbox message queue (replace <id> with THIS task's id);
 flow surfaces each message to the user and relays the user's reply to you as a
 new message in this session.
 
-1. **Ask clarifying questions first.** Unless the task is genuinely trivial and
-   unambiguous, ask **at least 3** clarifying questions (more if it needs them)
-   about scope, edge cases, the acceptance bar, and anything underspecified.
-   Send them to flow as ONE message, then STOP:
+1. **Ask clarifying questions ONE AT A TIME.** Unless the task is genuinely
+   trivial and unambiguous, ask clarifying questions about scope, edge cases, the
+   acceptance bar, and anything underspecified — but send them **one at a time, in
+   order, never batched**. Send a SINGLE question, then STOP:
 
        thurbox-cli message send --to flow --kind questions --task <id> \
-         --body 'Q1 ...
-       Q2 ...
-       Q3 ...'
+         --body 'Q: ...'
 
-   End your turn and wait — do NOT plan or write code yet. Flow relays your
-   questions to the user and sends the answers back as a new message here;
-   resume only when they arrive.
+   End your turn and wait — do NOT send the next question, plan, or write code
+   yet. Flow relays that one question to the user and sends the answer back as a
+   new message here; resume only when it arrives, then send your next question
+   the same way (one message, then STOP). Ask **as many as you need** (typically
+   3+), but be adaptive: let each answer shape the next question, and once an
+   answer clarifies enough that the remaining questions are moot, drop them and
+   proceed straight to the plan.
 
 2. **Plan, then wait for approval.** With the answers in hand, write a structured
    plan and send it to flow for the user to approve — do NOT start coding yet:
