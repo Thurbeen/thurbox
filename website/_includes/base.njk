@@ -4,6 +4,7 @@ extraCss: []
 footer: false
 navScrolled: false
 activeNav: ''
+hasOwnMain: false
 ---
 <!doctype html>
 <html lang="en">
@@ -28,6 +29,7 @@ activeNav: ''
     {%- endfor %}
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <nav class="nav{% if navScrolled %} scrolled{% endif %}" id="nav">
       <!-- prettier-ignore -->
       <a href="{{ root }}/index.html" class="nav-brand">thur<span>box</span></a>
@@ -67,7 +69,11 @@ activeNav: ''
       </ul>
     </nav>
 
+    {%- if hasOwnMain %}
     {{ content | safe }}
+    {%- else %}
+    <main id="main-content">{{ content | safe }}</main>
+    {%- endif %}
 
     {%- if footer %}
     <footer class="footer">

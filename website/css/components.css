@@ -55,6 +55,11 @@
   color: var(--text-primary);
 }
 
+.nav-links a.active {
+  color: var(--cyan);
+  text-shadow: var(--glow-red);
+}
+
 .nav-links .github-link {
   display: flex;
   align-items: center;

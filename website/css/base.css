@@ -171,3 +171,26 @@ hr {
   background: rgb(255, 92, 84, 0.4);
   color: #fff;
 }
+
+/* Keyboard focus — visible ring on every interactive element */
+:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* Skip to main content (visible only when focused) */
+.skip-link {
+  position: fixed;
+  top: var(--space-sm);
+  left: -9999px;
+  z-index: 200;
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  background: var(--green);
+  color: #0a2e0a;
+}
+
+.skip-link:focus {
+  left: var(--space-sm);
+}
