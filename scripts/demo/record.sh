@@ -18,9 +18,15 @@
 # is sent to any agent; they are launched and left on their start screens.
 #
 # Isolation (so this never touches your real thurbox, tmux, or agent accounts):
-#   * HOME points at a throwaway dir  -> agents boot FRESH (no account/email or
-#     past conversations leak into the video). Some CLIs may show a login/welcome
-#     screen rather than a chat UI; that is expected for a clean-room recording.
+#   * HOME points at a throwaway dir  -> agents boot with NO chat history (no past
+#     conversations leak into the video). To avoid login/trust dialogs on screen,
+#     each CLI's auth *token* is copied into the throwaway HOME and every demo repo
+#     is marked trusted (see "Seed agent credentials + pre-trust" below). Only the
+#     token is copied, never history; auth files absent for a CLI you are not
+#     logged into are simply skipped. No account email/handle is shown on screen:
+#     codex/gemini surface no identity when logged in, and claude is left logged
+#     out on purpose (only its folder trust is pre-accepted) because it would
+#     otherwise print your account email — see the claude note below.
 #   * TMUX_TMPDIR points at a throwaway dir -> the `thurbox-dev` tmux server lives
 #     in its own socket directory, so cleanup can't kill dev sessions you already
 #     have running.
@@ -98,6 +104,7 @@ CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
 export THURBOX_BIN   # consumed by the tapes (they `exec "$THURBOX_BIN"`)
 
 # --- Isolated environment ----------------------------------------------------
+REAL_HOME="$HOME"                        # captured before the override below
 DEMO_HOME=$(mktemp -d "${TMPDIR:-/tmp}/thurbox-demo.XXXXXX")
 export HOME="$DEMO_HOME/home"            # fresh agent auth (no real creds/history)
 export XDG_DATA_HOME="$DEMO_HOME/data"
@@ -177,6 +184,64 @@ for r in api-server shared-lib web-app; do
     git -C "$repo" -c user.email=demo@thurbox -c user.name=demo \
         commit -q -m "init $r"
 done
+
+# --- Seed agent credentials + pre-trust the demo folders ---------------------
+# Agent CLIs (a) authenticate via files under $HOME and (b) prompt "do you trust
+# this folder?" on first launch in an unknown dir. The throwaway $HOME wipes both,
+# so without this the recordings show login/trust dialogs instead of the ready
+# chat UI. Seed each CLI's auth token (NOT its chat history) and mark every demo
+# repo trusted. opencode needs neither (it boots straight into a ready UI). The
+# auth files are only copied when present, so this is a no-op for any CLI you are
+# not logged into. Per-CLI on-disk formats:
+#   codex  -> ~/.codex/{auth.json, config.toml: [projects."<p>"] trust_level}
+#   gemini -> ~/.gemini/{oauth_creds.json, google_accounts.json, settings.json,
+#                        trustedFolders.json: {"<p>": "TRUST_FOLDER"}}
+#   claude -> ~/.claude/.credentials.json + ~/.claude.json projects."<p>"
+#             .hasTrustDialogAccepted (+ a binary symlink so its self-install
+#             check stays quiet under the throwaway HOME)
+# The trusted dirs: the sample repo plus the parent-folder repos the
+# session-creation tape browses.
+set -- "$DEMO_REPO" "$PROJECTS_DIR" "$PROJECTS_DIR/api-server" \
+    "$PROJECTS_DIR/shared-lib" "$PROJECTS_DIR/web-app"
+
+# codex: auth token + one trusted [projects] table per demo dir
+if [ -f "$REAL_HOME/.codex/auth.json" ]; then
+    mkdir -p "$HOME/.codex"
+    cp "$REAL_HOME/.codex/auth.json" "$HOME/.codex/auth.json"
+    for p in "$@"; do
+        printf '[projects."%s"]\ntrust_level = "trusted"\n\n' "$p" \
+            >> "$HOME/.codex/config.toml"
+    done
+fi
+
+# gemini: oauth creds + the selected-auth setting + a trusted-folders map
+if [ -f "$REAL_HOME/.gemini/oauth_creds.json" ]; then
+    mkdir -p "$HOME/.gemini"
+    cp "$REAL_HOME/.gemini/oauth_creds.json" "$HOME/.gemini/oauth_creds.json"
+    [ -f "$REAL_HOME/.gemini/google_accounts.json" ] && \
+        cp "$REAL_HOME/.gemini/google_accounts.json" \
+            "$HOME/.gemini/google_accounts.json"
+    printf '{"security":{"auth":{"selectedType":"oauth-personal"}}}\n' \
+        > "$HOME/.gemini/settings.json"
+    jq -n '$ARGS.positional | map({(.): "TRUST_FOLDER"}) | add' --args "$@" \
+        > "$HOME/.gemini/trustedFolders.json"
+fi
+
+# claude: trust + onboarding flags only — deliberately NOT logged in. claude's
+# welcome box renders the account's organizationName, and a personal org is
+# auto-named after your email; worse, claude force-syncs that field from the
+# server (overwriting any seeded override, even via a read-only file, since it
+# writes through a temp-file rename), so a logged-in claude would print your email
+# in the recording. We therefore leave it logged out: trust is pre-accepted (no
+# trust dialog) and it shows a clean "Welcome back!" with no account identity. The
+# binary symlink keeps its self-install check ("claude command missing") quiet.
+mkdir -p "$HOME/.local/bin"
+jq -n '{hasCompletedOnboarding: true,
+        projects: ($ARGS.positional
+                   | map({(.): {hasTrustDialogAccepted: true}}) | add)}' \
+    --args "$@" > "$HOME/.claude.json"
+claude_bin=$(command -v claude 2>/dev/null || true)
+[ -n "$claude_bin" ] && ln -sf "$(readlink -f "$claude_bin")" "$HOME/.local/bin/claude"
 
 # --- Pre-seed one session per agent so the TUI opens populated ---------------
 echo "==> Seeding one session per agent:$AGENTS"
