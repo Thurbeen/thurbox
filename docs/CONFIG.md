@@ -229,7 +229,7 @@ repo_path = "{home}"            # resolved to the absolute home at install
 
 [[automations]]
 name = "flow-tick"
-trigger = "cron:*/5 * * * *"    # same grammar as `automation create --trigger`
+trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
 session_ref = "flow"           # must match a [[sessions]] name above
 prompt = "tick"
 ```

@@ -235,35 +235,45 @@ When the user replies to a question or a plan you surfaced:
 
 ## TICK (from the automation — quiet janitor + safety net)
 
-The interactive loop is driven by worker pushes (DRAIN/ANSWER); the cron tick is
-the **safety net** — it drains anything a missed wake left queued and grooms
-stale state.
+The interactive loop is driven by worker pushes (DRAIN/ANSWER); the cron tick
+(every 10 min) is the **safety net** — it drains anything a missed wake left
+queued and grooms stale state. It runs **quietly**: a tick that finds nothing to
+report prints a single minimal line and nothing else, so routine ticks never
+interrupt the user. The board appears **only** when something actually needs
+attention.
 
-0. **Print the board.** Run `./scripts/flow-summary.sh` and put its output
-   (verbatim, fenced) at the **top** of your reply — a quick-glance table of
-   every live `flow` / worker (`… · #<id>`) session joined to its task (status /
-   age / title), plus any `detached` work. This is the one thing a tick always
-   shows, even when nothing needs you.
+Do the work first, track whether anything happened, then decide what to print.
 
 1. **Drain the queue** — run DRAIN (claim the inbox, surface questions/plans,
-   close out results). This catches any worker whose wake nudge was lost.
+   close out results). This catches any worker whose wake nudge was lost. Note
+   any surfaced questions/plans/results (incl. errors) as **events**.
 
 2. **Reconcile** each `in_progress` task:
-   - Status already flipped to `done` by the worker → note it; session
-     cleanup happens in CLEAN.
+   - Status already flipped to `done` by the worker → note it as an event;
+     session cleanup happens in CLEAN.
    - Worker session (name `… · #<id>`, or legacy `task-<id>-…`) missing from the
-     session list → stale: reset to todo (`task edit <id> --status todo`).
+     session list → stale: reset to todo (`task edit <id> --status todo`) — an
+     event.
    - Otherwise it's still working — leave it. (As a last-resort liveness check
      for a worker that died WITHOUT sending a `result`, you may
      `thurbox-cli session capture <uuid> --lines 40` and flag an obvious crash
      or user-addressed prompt under "Needs you"; the queue, not the pane, is the
      normal channel.)
 
-3. Run DISPATCH for next eligible todos (respect capacity).
-4. Output — the board (step 0) **always comes first**, then:
-   - nothing needs the user → one line `tick: all quiet (N running, M todo)`
-     under the board, nothing else;
-   - otherwise → the Needs-you bullets + footer under the board.
+3. Run DISPATCH for next eligible todos (respect capacity). A worker you
+   actually dispatch is an event.
+
+4. **Output — conditional on events.** An *event* is anything from steps 1–3
+   (a surfaced question/plan/result, a worker error/blocker, a stale reset, an
+   orphan session, or a fresh dispatch), or any pending Needs-you item.
+   - **No events, nothing needs you** → print **only** one minimal line
+     `tick: N running, M todo` (N = running workers, M = queued todos). No board,
+     no footer, nothing else.
+   - **Otherwise** → run `./scripts/flow-summary.sh` and put its output
+     (verbatim, fenced) at the **top** of your reply — a quick-glance table of
+     every live `flow` / worker (`… · #<id>`) session joined to its task (status
+     / age / title), plus any `detached` work — then the Needs-you bullets +
+     footer beneath it.
 
 ## REPORT
 

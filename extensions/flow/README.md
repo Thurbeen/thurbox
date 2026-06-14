@@ -41,7 +41,7 @@ That single command is the installer — it reads flow's
    CLI/model);
 3. writes the manifest to `~/.config/thurbox/extensions/flow.toml` and
    activates it, creating the dedicated `flow` session and a `flow-tick`
-   automation (every 5 minutes) that keeps it monitoring workers even
+   automation (every 10 minutes) that keeps it monitoring workers even
    while the TUI is closed.
 
 It's idempotent — re-run it any time to pull the latest spec/scripts,
@@ -126,12 +126,15 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
   the worker to you and back. Several workers can be mid-conversation at once,
   each tagged by its `#<id>`.
 - `status` for a one-screen report; `clean` to groom the backlog.
-- Every tick prints a **board** — a quick-glance table of all live
+- A tick prints the **board** — a quick-glance table of all live
   `flow` / worker (`… · #<id>`) sessions with status, age, and the task they're
-  working (`scripts/flow-summary.sh`) — so you can see the whole picture at once. The
-  `flow-tick` automation is now a **safety net**: worker pushes drive the
-  interactive loop; the cron tick just drains anything a missed wake left queued
-  and grooms stale state.
+  working (`scripts/flow-summary.sh`) — **only when something needs attention**
+  (a surfaced question/plan/result, an error/blocker, a stale reset, an orphan
+  session, or a fresh dispatch). A quiet tick prints just one minimal line
+  (`tick: N running, M todo`), so routine ticks don't interrupt you. The
+  `flow-tick` automation is a **safety net** that fires every 10 minutes: worker
+  pushes drive the interactive loop; the cron tick just drains anything a missed
+  wake left queued and grooms stale state.
 - Workers self-report: they mark their task done and send a `--kind result`
   message, which wakes flow so the next task dispatches without waiting for the
   cron tick.

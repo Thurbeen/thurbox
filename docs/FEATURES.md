@@ -778,7 +778,7 @@ Dispatch is **eager**: capture creates the task *and* spawns its
 worker in one atomic helper call (`create-task.sh`); workers send a
 `tick` back to the flow session when they finish so a freed capacity
 slot dispatches the next task immediately; a `flow-tick` cron
-automation (default every 5 min) is only the safety net that catches
+automation (default every 10 min) is only the safety net that catches
 crashed workers and stale state. Workers always get a
 `flow/<task-slug>` worktree branch on git repos, so they never dirty
 the main checkout and parallelize per repo. Completion is detected by
