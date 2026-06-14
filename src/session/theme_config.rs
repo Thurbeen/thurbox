@@ -684,7 +684,9 @@ fn tokyo_night_day_palette() -> ThemePalette {
     let blue = Color::Rgb(0x2E, 0x7D, 0xE9);
     let cyan = Color::Rgb(0x00, 0x71, 0x97);
     let purple = Color::Rgb(0x98, 0x54, 0xF1);
-    let magenta = Color::Rgb(0x78, 0x47, 0xBD);
+    // Deepened from #7847BD so the selected-session name (which now uses
+    // `selection_fg`) clears ~4.5:1 contrast on the light `selection_bg` band.
+    let magenta = Color::Rgb(0x5A, 0x3A, 0x9E);
     let green = Color::Rgb(0x58, 0x75, 0x39);
     let yellow = Color::Rgb(0x8C, 0x6C, 0x3E);
     let orange = Color::Rgb(0xB1, 0x5C, 0x00);

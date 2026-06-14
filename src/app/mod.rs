@@ -4968,7 +4968,11 @@ impl App {
 fn format_automation_summary(auto: &Automation, now: u64) -> String {
     let schedule = match &auto.schedule {
         AutomationSchedule::Once { .. } => "once".to_string(),
-        AutomationSchedule::Cron { expr } => expr.clone(),
+        // Show a human-readable schedule for preset cron shapes; fall back to the
+        // raw expression for power-user crons that don't map to a preset.
+        AutomationSchedule::Cron { expr } => {
+            modals::humanize_cron(expr).unwrap_or_else(|| expr.clone())
+        }
     };
     let action = auto.action.kind();
     let when = if !auto.enabled {

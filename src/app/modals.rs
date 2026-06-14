@@ -788,6 +788,37 @@ fn recognize_cron(expr: &str) -> Option<(TriggerKind, u32, u32, u32)> {
     }
 }
 
+/// Render a cron expression as a short, human-readable schedule
+/// (e.g. `daily 09:00`, `hourly :05`, `weekdays 09:00`, `Mondays 09:00`).
+/// Returns `None` for expressions that don't match a known preset shape, so the
+/// caller can fall back to the raw cron string for power-user expressions.
+pub(crate) fn humanize_cron(expr: &str) -> Option<String> {
+    let (kind, hour, minute, dow) = recognize_cron(expr)?;
+    let hhmm = format!("{hour:02}:{minute:02}");
+    Some(match kind {
+        TriggerKind::Hourly => format!("hourly :{minute:02}"),
+        TriggerKind::Daily => format!("daily {hhmm}"),
+        TriggerKind::Weekdays => format!("weekdays {hhmm}"),
+        TriggerKind::Weekly => format!("{} {hhmm}", weekday_plural(dow)),
+        // `recognize_cron` never yields Once/Cron, but stay total.
+        TriggerKind::Once | TriggerKind::Cron => return None,
+    })
+}
+
+/// Pluralised weekday name for a Unix cron day-of-week number (0 or 7 = Sunday).
+fn weekday_plural(dow: u32) -> &'static str {
+    match dow % 7 {
+        0 => "Sundays",
+        1 => "Mondays",
+        2 => "Tuesdays",
+        3 => "Wednesdays",
+        4 => "Thursdays",
+        5 => "Fridays",
+        6 => "Saturdays",
+        _ => "weekly",
+    }
+}
+
 // ── AutomationsListModal ────────────────────────────────────────────────
 
 /// An entry in the automations list modal.
@@ -1578,6 +1609,24 @@ mod tests {
         assert_eq!(recognize_cron("0 9 1 * *"), None);
         assert_eq!(recognize_cron("*/5 * * * *"), None);
         assert_eq!(recognize_cron("0 9 * *"), None);
+    }
+
+    #[test]
+    fn test_humanize_cron_presets_and_raw() {
+        assert_eq!(humanize_cron("5 * * * *").as_deref(), Some("hourly :05"));
+        assert_eq!(humanize_cron("0 9 * * *").as_deref(), Some("daily 09:00"));
+        assert_eq!(
+            humanize_cron("30 17 * * 1-5").as_deref(),
+            Some("weekdays 17:30")
+        );
+        assert_eq!(humanize_cron("0 9 * * 1").as_deref(), Some("Mondays 09:00"));
+        assert_eq!(
+            humanize_cron("15 8 * * 0").as_deref(),
+            Some("Sundays 08:15")
+        );
+        // Unrecognized shapes return None so the caller keeps the raw expression.
+        assert_eq!(humanize_cron("*/5 * * * *"), None);
+        assert_eq!(humanize_cron("0 9 1 * *"), None);
     }
 
     #[test]

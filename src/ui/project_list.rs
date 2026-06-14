@@ -739,7 +739,12 @@ fn build_session_line<'a>(
     let name_style = if is_dimmed {
         Style::default().fg(Theme::text_muted())
     } else if is_active {
-        Theme::selected_item()
+        // The active row is painted with the list's `selection_bg`, so the name
+        // must use the theme's `selection_fg` (not `accent`) to stay legible on
+        // that background — each theme tunes the pair for contrast.
+        Style::default()
+            .fg(Theme::selection_fg())
+            .add_modifier(Modifier::BOLD)
     } else {
         Theme::normal_item()
     };

@@ -305,7 +305,16 @@ impl FileViewerState {
     pub fn rebuild_from_session(&mut self, info: &SessionInfo) {
         self.roots = expected_root_paths(info)
             .into_iter()
-            .map(FileNode::new_dir)
+            .map(|path| {
+                // Auto-expand the top level of each root so the viewer opens to a
+                // populated tree instead of a single collapsed folder that reads
+                // as empty. Only the first level is read (no recursion) to keep
+                // the rebuild cheap.
+                let mut node = FileNode::new_dir(path);
+                node.children = Some(read_dir_sorted(&node.path));
+                node.expanded = true;
+                node
+            })
             .collect();
         self.selected = 0;
     }
@@ -870,6 +879,12 @@ mod tests {
         assert_eq!(st.roots.len(), 2);
         assert_eq!(st.roots[0].path, PathBuf::from("/tmp/a/wt"));
         assert_eq!(st.roots[1].path, PathBuf::from("/tmp/b"));
+        // The top level of each root is auto-expanded on rebuild so the viewer
+        // opens to a populated tree (children read even if the dir is empty).
+        for root in &st.roots {
+            assert!(root.expanded, "root should be expanded after rebuild");
+            assert!(root.children.is_some(), "root children should be read");
+        }
     }
 
     #[test]
@@ -890,17 +905,30 @@ mod tests {
 
     #[test]
     fn activate_on_missing_dir_toggles() {
-        // /nonexistent path: read_dir returns empty, but we still mark it expanded.
+        // /nonexistent path: read_dir returns empty. The root starts auto-expanded
+        // after rebuild, so the first activate collapses it and the next re-expands.
         let mut info = SessionInfo::new("t".into());
         info.additional_dirs
             .push(PathBuf::from("/this-path-does-not-exist-xyz"));
         let mut st = FileViewerState::new();
         st.rebuild_from_session(&info);
+        assert!(st.roots[0].expanded, "root is auto-expanded on rebuild");
         match st.activate() {
             Activation::Toggled => {}
             _ => panic!("expected Toggled"),
         }
-        assert!(st.roots[0].expanded);
+        assert!(
+            !st.roots[0].expanded,
+            "activate collapses the expanded root"
+        );
+        match st.activate() {
+            Activation::Toggled => {}
+            _ => panic!("expected Toggled"),
+        }
+        assert!(
+            st.roots[0].expanded,
+            "activate re-expands the collapsed root"
+        );
     }
 
     #[test]

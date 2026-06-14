@@ -74,10 +74,14 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
+    /// A status glyph chosen for **shape** distinctiveness, not just colour, so
+    /// the state survives in greyscale / for colour-blind users: filled circle
+    /// (busy) vs. diamond (waiting) vs. hollow circle (idle) vs. cross (error)
+    /// vs. triangle (attention).
     pub fn icon(self) -> &'static str {
         match self {
             Self::Busy => "●",
-            Self::Waiting => "◉",
+            Self::Waiting => "◆",
             Self::Idle => "○",
             Self::Error => "✗",
             Self::Attention => "▲",
@@ -276,8 +280,12 @@ mod tests {
     #[test]
     fn session_status_display_and_icon() {
         assert_eq!(SessionStatus::Busy.to_string(), "Busy");
+        // Glyphs are shape-distinct (not all circles) so status reads without colour.
+        assert_eq!(SessionStatus::Busy.icon(), "●");
+        assert_eq!(SessionStatus::Waiting.icon(), "◆");
         assert_eq!(SessionStatus::Idle.icon(), "○");
         assert_eq!(SessionStatus::Error.icon(), "✗");
+        assert_eq!(SessionStatus::Attention.icon(), "▲");
     }
 
     #[test]
