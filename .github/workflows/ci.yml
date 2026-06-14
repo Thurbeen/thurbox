@@ -136,17 +136,15 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
       - run: npm ci
-      - name: Prettier
-        run: npx prettier --check 'website/**/*.{html,css,js}'
-      - name: HTMLHint
-        run: npx htmlhint 'website/**/*.html'
-      - name: Stylelint
-        run: npx stylelint 'website/**/*.css'
-      - name: ESLint
-        run: npx eslint 'website/**/*.js'
+      # Page .html sources carry YAML front matter and are partial Eleventy
+      # templates, so Prettier/HTMLHint run on the CSS/JS sources and on the
+      # built _site output rather than the page sources. lint:website builds
+      # the site first, then runs every linter.
+      - name: Lint website
+        run: npm run lint:website
 
   sonarqube:
     name: SonarQube
