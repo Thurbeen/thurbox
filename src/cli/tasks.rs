@@ -412,3 +412,91 @@ fn task_to_json(t: &Task) -> Value {
         "updated_at": t.updated_at,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal local task for render tests.
+    fn task(id: i64, title: &str, status: TaskStatus, action: Option<AutomationAction>) -> Task {
+        Task {
+            id,
+            title: title.to_string(),
+            description: None,
+            status,
+            action,
+            source: SOURCE_LOCAL.to_string(),
+            external_id: None,
+            external_url: None,
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn status_glyph_covers_every_status() {
+        assert_eq!(status_glyph(TaskStatus::Todo), "☐ todo");
+        assert_eq!(status_glyph(TaskStatus::InProgress), "◐ in-progress");
+        assert_eq!(status_glyph(TaskStatus::Done), "☑ done");
+    }
+
+    #[test]
+    fn action_label_distinguishes_send_spawn_and_none() {
+        assert_eq!(task_action_label(&None), "-");
+        assert_eq!(
+            task_action_label(&Some(AutomationAction::Send {
+                session_id: SessionId::default(),
+            })),
+            "send"
+        );
+        assert_eq!(
+            task_action_label(&Some(AutomationAction::Spawn {
+                repo_path: "/x".into(),
+                worktree_branch: None,
+                base_branch: None,
+                agent: None,
+            })),
+            "spawn"
+        );
+    }
+
+    #[test]
+    fn render_task_list_empty_and_rows() {
+        assert_eq!(render_task_list(&[]), "No tasks.");
+        let rendered = render_task_list(&[task(1, "Write docs", TaskStatus::Todo, None)]);
+        assert!(rendered.contains("ID"));
+        assert!(rendered.contains("Write docs"));
+        assert!(rendered.contains("☐ todo"));
+    }
+
+    #[test]
+    fn render_task_detail_appends_description() {
+        let mut t = task(7, "Title", TaskStatus::InProgress, None);
+        t.description = Some("notes here".to_string());
+        let rendered = render_task_detail(&t);
+        assert!(rendered.contains("id:"));
+        assert!(rendered.contains("Title"));
+        assert!(rendered.ends_with("notes here"));
+    }
+
+    #[test]
+    fn render_task_run_summarizes_each_outcome() {
+        assert_eq!(
+            render_task_run(&json!({ "spawned": "demo", "id": 1 })),
+            "Spawned session 'demo' for the task."
+        );
+        assert_eq!(
+            render_task_run(&json!({ "reused": "demo", "id": 1 })),
+            "Re-sent the task to existing session 'demo'."
+        );
+        assert_eq!(
+            render_task_run(&json!({ "sent": true, "id": 1 })),
+            "Sent the task to its session."
+        );
+        assert_eq!(
+            render_task_run(&json!({ "skipped": "no agent", "id": 1 })),
+            "Skipped: no agent"
+        );
+    }
+}

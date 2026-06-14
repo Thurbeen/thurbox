@@ -590,6 +590,43 @@ mod tests {
     }
 
     #[test]
+    fn render_tick_counts_fired_skipped_and_healed() {
+        let v = json!({
+            "fired": [{ "id": 1 }, { "id": 2 }],
+            "skipped": [{ "id": 3 }],
+            "healed": [],
+        });
+        assert_eq!(
+            render_tick(&v),
+            "Tick: 2 fired, 1 skipped, 0 extension(s) healed."
+        );
+    }
+
+    #[test]
+    fn render_automation_list_empty_is_friendly() {
+        assert_eq!(render_automation_list(&[]), "No automations.");
+    }
+
+    #[test]
+    fn action_label_distinguishes_send_and_spawn() {
+        assert_eq!(
+            automation_action_label(&AutomationAction::Send {
+                session_id: SessionId::default(),
+            }),
+            "send"
+        );
+        assert_eq!(
+            automation_action_label(&AutomationAction::Spawn {
+                repo_path: "/x".into(),
+                worktree_branch: None,
+                base_branch: None,
+                agent: None,
+            }),
+            "spawn"
+        );
+    }
+
+    #[test]
     fn run_to_json_emits_related_session_id() {
         let sid = SessionId::default();
         let run = AutomationRun {

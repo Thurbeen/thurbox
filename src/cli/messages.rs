@@ -192,11 +192,15 @@ fn render_inbox(recipient: &str, messages: &[SessionMessage], claimed: bool) -> 
     )
 }
 
-/// First line of a body, truncated for table display.
+/// Max display width of a message-body preview in the inbox table.
+const BODY_PREVIEW_MAX: usize = 60;
+
+/// First line of a body, truncated to [`BODY_PREVIEW_MAX`] (ellipsis included)
+/// for table display.
 fn first_line(body: &str) -> String {
     let line = body.lines().next().unwrap_or("");
-    if line.chars().count() > 60 {
-        let truncated: String = line.chars().take(57).collect();
+    if line.chars().count() > BODY_PREVIEW_MAX {
+        let truncated: String = line.chars().take(BODY_PREVIEW_MAX - 1).collect();
         format!("{truncated}…")
     } else {
         line.to_string()
@@ -465,5 +469,30 @@ mod tests {
         assert_eq!(v["pruned"], 0);
         assert_eq!(v["older_than_days"], 7);
         assert_eq!(v["read_only"], true);
+    }
+
+    #[test]
+    fn first_line_keeps_short_and_first_line_only() {
+        assert_eq!(first_line("hello"), "hello");
+        assert_eq!(first_line("line one\nline two"), "line one");
+        assert_eq!(first_line(""), "");
+    }
+
+    #[test]
+    fn first_line_truncates_to_preview_max_with_ellipsis() {
+        let long = "x".repeat(BODY_PREVIEW_MAX + 10);
+        let rendered = first_line(&long);
+        // Result is exactly BODY_PREVIEW_MAX wide: (MAX-1) chars + the ellipsis.
+        assert_eq!(rendered.chars().count(), BODY_PREVIEW_MAX);
+        assert!(rendered.ends_with('…'));
+    }
+
+    #[test]
+    fn render_inbox_reports_empty_and_claimed_wording() {
+        assert_eq!(render_inbox("flow", &[], false), "No messages for 'flow'.");
+        assert_eq!(
+            render_inbox("flow", &[], true),
+            "No unread messages for 'flow'."
+        );
     }
 }

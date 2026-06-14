@@ -157,17 +157,23 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
             let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
             if force {
-                human.push_str(&format!(
-                    "\n  killed window:       {}\n  removed worktrees:   {}\n  disabled automations: {}",
-                    report.killed_window,
-                    report.removed_worktrees.len(),
-                    report.disabled_automations
-                ));
+                // Aligned, two-space-indented detail under the header line.
+                let mut detail: Vec<(&str, String)> = vec![
+                    ("killed window", report.killed_window.to_string()),
+                    (
+                        "removed worktrees",
+                        report.removed_worktrees.len().to_string(),
+                    ),
+                    (
+                        "disabled automations",
+                        report.disabled_automations.to_string(),
+                    ),
+                ];
                 if !report.worktree_errors.is_empty() {
-                    human.push_str(&format!(
-                        "\n  worktree errors:     {}",
-                        report.worktree_errors.join("; ")
-                    ));
+                    detail.push(("worktree errors", report.worktree_errors.join("; ")));
+                }
+                for line in output::kv(&detail).lines() {
+                    human.push_str(&format!("\n  {line}"));
                 }
             }
             Ok(CommandOutput::new(
@@ -258,20 +264,13 @@ fn render_session_list(sessions: &[SharedSession]) -> String {
     let rows: Vec<Vec<String>> = sessions
         .iter()
         .map(|s| {
-            let branch = s
-                .worktrees
-                .first()
-                .map(|w| w.branch.clone())
-                .unwrap_or_default();
+            // `dash` already maps an empty branch (no worktree) to "-".
+            let branch = s.worktrees.first().map(|w| w.branch.as_str());
             vec![
                 s.name.clone(),
                 s.agent.clone(),
                 s.backend_type.clone(),
-                output::dash(if branch.is_empty() {
-                    None
-                } else {
-                    Some(&branch)
-                }),
+                output::dash(branch),
                 output::dash(s.cwd.as_ref().map(|p| p.display().to_string()).as_deref()),
                 s.id.to_string(),
             ]
@@ -280,9 +279,10 @@ fn render_session_list(sessions: &[SharedSession]) -> String {
     output::table(&["NAME", "AGENT", "BACKEND", "BRANCH", "CWD", "ID"], &rows)
 }
 
-/// Render a single session as an aligned key/value block.
+/// Render a single session as an aligned key/value block, with any worktrees
+/// listed one per line beneath it.
 fn render_session_detail(s: &SharedSession) -> String {
-    let mut pairs: Vec<(&str, String)> = vec![
+    let pairs: Vec<(&str, String)> = vec![
         ("name", s.name.clone()),
         ("id", s.id.to_string()),
         ("agent", s.agent.clone()),
@@ -300,16 +300,15 @@ fn render_session_detail(s: &SharedSession) -> String {
             output::dash(s.parent_session_id.map(|id| id.to_string()).as_deref()),
         ),
     ];
-    if !s.worktrees.is_empty() {
-        let wt = s
-            .worktrees
-            .iter()
-            .map(|w| format!("{} @ {}", w.branch, w.worktree_path.display()))
-            .collect::<Vec<_>>()
-            .join("\n              ");
-        pairs.push(("worktrees", wt));
+    let mut block = output::kv(&pairs);
+    for w in &s.worktrees {
+        block.push_str(&format!(
+            "\nworktree:  {} @ {}",
+            w.branch,
+            w.worktree_path.display()
+        ));
     }
-    output::kv(&pairs)
+    block
 }
 
 fn parse_session_id(uuid: &str) -> Result<SessionId, String> {
@@ -356,6 +355,34 @@ mod tests {
         let v = run(Action::List { parent: None }, &db).unwrap();
         assert!(v.is_array(), "got {v}");
         assert_eq!(v.as_array().unwrap().len(), 0);
+        // The human rendering for an empty list is a friendly line, not a table.
+        assert_eq!(v.human, "No active sessions.");
+    }
+
+    #[test]
+    fn render_session_list_tabulates_rows() {
+        let s = SharedSession {
+            id: SessionId::default(),
+            name: "demo".into(),
+            agent: "dev".into(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: Some(std::path::PathBuf::from("/tmp/repo")),
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        let rendered = render_session_list(std::slice::from_ref(&s));
+        assert!(rendered.contains("NAME"));
+        assert!(rendered.contains("demo"));
+        assert!(rendered.contains("local-tmux"));
+        // No worktree → branch column shows a dash.
+        assert!(rendered.contains('-'));
     }
 
     #[test]

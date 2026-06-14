@@ -160,19 +160,11 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
         let entry = &report[key];
         let exists = entry["exists"].as_bool().unwrap_or(false);
         let valid = entry["valid"].as_bool().unwrap_or(false);
-        let mark = if !exists {
-            "·" // absent files are valid (defaults apply)
-        } else if valid {
-            "✓"
-        } else {
-            "✗"
-        };
-        let status = if !exists {
-            "absent"
-        } else if valid {
-            "ok"
-        } else {
-            "invalid"
+        // Absent files are valid (defaults/seeding apply), so flag them apart.
+        let (mark, status) = match (exists, valid) {
+            (false, _) => ("·", "absent"),
+            (true, true) => ("✓", "ok"),
+            (true, false) => ("✗", "invalid"),
         };
         lines.push(format!("{mark} {label}  {status}"));
         if let Some(problems) = entry["problems"].as_array() {

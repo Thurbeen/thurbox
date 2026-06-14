@@ -1,6 +1,7 @@
 //! Editor command get/set subcommands.
 
 use clap::Subcommand;
+use serde_json::json;
 
 use crate::cli::output::CommandOutput;
 use crate::storage::Database;
@@ -26,10 +27,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 Some(c) if !c.is_empty() => format!("Editor: {c}"),
                 _ => "Editor: (not set)".to_string(),
             };
-            Ok(CommandOutput::new(
-                serde_json::json!({ "command": cmd }),
-                human,
-            ))
+            Ok(CommandOutput::new(json!({ "command": cmd }), human))
         }
         Action::Set { command } => {
             db.set_editor_command(&command)
@@ -40,7 +38,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 format!("Editor set to: {command}")
             };
             Ok(CommandOutput::new(
-                serde_json::json!({
+                json!({
                     "command": if command.is_empty() { None } else { Some(command) }
                 }),
                 human,

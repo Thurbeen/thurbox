@@ -262,4 +262,43 @@ mod tests {
         // Deref still exposes the JSON for callers/tests.
         assert_eq!(out["ok"], true);
     }
+
+    #[test]
+    fn from_summary_falls_back_to_compact_json() {
+        let out = CommandOutput::from_summary(json!({ "ok": true }));
+        assert_eq!(out.human, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn table_with_no_rows_is_header_only() {
+        assert_eq!(table(&["A", "B"], &[]), "A  B");
+    }
+
+    #[test]
+    fn kv_with_no_pairs_is_empty() {
+        assert_eq!(kv(&[]), "");
+    }
+
+    #[test]
+    fn dash_maps_none_and_empty_to_dash() {
+        assert_eq!(dash(None), "-");
+        assert_eq!(dash(Some("")), "-");
+        assert_eq!(dash(Some("x")), "x");
+    }
+
+    #[test]
+    fn render_picks_the_matching_representation() {
+        let out = CommandOutput::new(json!({ "k": 1 }), "human line");
+        assert_eq!(Format::Human.render(&out), "human line");
+        assert_eq!(Format::Json.render(&out), "{\"k\":1}");
+        assert_eq!(Format::JsonPretty.render(&out), "{\n  \"k\": 1\n}");
+    }
+
+    #[test]
+    fn failed_carries_the_exit_message() {
+        let out = CommandOutput::failed(json!({}), "report", "boom");
+        assert_eq!(out.failure.as_deref(), Some("boom"));
+        // Output still renders normally before the caller acts on `failure`.
+        assert_eq!(Format::Human.render(&out), "report");
+    }
 }
