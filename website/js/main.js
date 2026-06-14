@@ -73,12 +73,14 @@
   });
 
   // ---- Active sidebar link (docs pages) ----
-  var sidebarLinks = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  // Matches both in-page anchors (#id) and same-page section links
+  // (page.html#id) so the section-enumerating sidebar highlights on scroll.
+  var sidebarLinks = document.querySelectorAll('.docs-sidebar a[href*="#"]');
   if (sidebarLinks.length > 0) {
     var headings = [];
     sidebarLinks.forEach(function (link) {
-      var id = link.getAttribute('href').slice(1);
-      var heading = document.getElementById(id);
+      var id = link.getAttribute('href').split('#')[1];
+      var heading = id ? document.getElementById(id) : null;
       if (heading) headings.push({ el: heading, link: link });
     });
 

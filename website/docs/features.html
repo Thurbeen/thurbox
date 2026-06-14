@@ -4,23 +4,6 @@ title: 'Features — Thurbox Docs'
 description: 'Thurbox features: persistent coding-agent sessions, agent definitions, git worktrees, remote SSH sessions, automations, a responsive UI, and a headless CLI.'
 currentPage: 'features'
 breadcrumb: 'Features'
-onThisPage:
-  - { id: 'session-orchestration', label: 'Sessions' }
-  - { id: 'agent-definitions', label: 'Agent Definitions' }
-  - { id: 'automations', label: 'Automations' }
-  - { id: 'tasks', label: 'Tasks' }
-  - { id: 'extensions', label: 'Extensions' }
-  - { id: 'git-worktrees', label: 'Git Worktrees' }
-  - { id: 'remote-ssh-sessions', label: 'Remote SSH Sessions' }
-  - { id: 'worktree-sync', label: 'Worktree Sync' }
-  - { id: 'session-forking', label: 'Session Forking' }
-  - { id: 'global-search', label: 'Global Search' }
-  - { id: 'responsive-ui', label: 'Responsive UI' }
-  - { id: 'themes', label: 'Themes' }
-  - { id: 'mouse-navigation', label: 'Mouse Navigation' }
-  - { id: 'feature-flags', label: 'Feature Flags' }
-  - { id: 'session-persistence', label: 'Session Persistence' }
-  - { id: 'headless-cli', label: 'Headless CLI' }
 ---
 <h1>Features</h1>
 
@@ -290,56 +273,6 @@ onThisPage:
               ):
               <code>create/list/show/edit/remove/run</code>
               . External issue-tracker sync (Jira, GitHub Issues) is scaffolded for a later release.
-            </li>
-          </ul>
-
-          <h2 id="extensions">
-            Extensions
-            <a href="#extensions" class="heading-anchor">#</a>
-          </h2>
-          <div class="info-box warning">
-            <p>
-              <strong>Heads up:</strong>
-              Extensions are
-              <strong>experimental</strong>
-              and under active testing &mdash; expect their behavior, specs, and installers to
-              change between releases.
-            </p>
-          </div>
-          <p>
-            Opt-in,
-            <strong>agent-agnostic</strong>
-            add-ons that compose Thurbox through
-            <code>thurbox-cli</code>
-            &mdash; never the binary. Each ships a declarative manifest and installs in one command (
-            <code>thurbox-cli extension install &lt;name&gt;</code>
-            ); while active, Thurbox keeps the extension's sessions and automations
-            <strong>self-healed</strong>
-            , re-creating any you delete until you deactivate it.
-          </p>
-          <ul>
-            <li>
-              Four extensions ship today (all experimental):
-              <strong>flow</strong>
-              (a focus-protecting triage agent),
-              <strong>forge</strong>
-              (a workflow analyst that proposes automations),
-              <strong>ci-shepherd</strong>
-              (watches change requests and dispatches CI/review fixers), and
-              <strong>renovate</strong>
-              (keeps local repos on up-to-date dependencies).
-            </li>
-            <li>
-              An extension registers its agents in
-              <code>agents.toml</code>
-              and lays down its payload from the manifest &mdash; map its worker agents to claude,
-              codex, gemini, opencode, vibe, or anything else.
-            </li>
-            <li>
-              See the
-              <a href="extensions.html">Extensions</a>
-              page for the full lifecycle (install, activate, update, self-heal), the manifest
-              format, and a guide to authoring your own.
             </li>
           </ul>
 

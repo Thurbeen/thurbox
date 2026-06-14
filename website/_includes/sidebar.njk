@@ -3,8 +3,23 @@
     { slug: "installation", href: "installation.html", label: "Installation" }
   ]},
   { heading: "Features", links: [
-    { slug: "features", href: "features.html", label: "Overview" },
-    { subheading: "Extensions" },
+    { href: "features.html#session-orchestration", label: "Sessions" },
+    { href: "features.html#agent-definitions", label: "Agent Definitions" },
+    { href: "features.html#automations", label: "Automations" },
+    { href: "features.html#tasks", label: "Tasks" },
+    { href: "features.html#git-worktrees", label: "Git Worktrees" },
+    { href: "features.html#remote-ssh-sessions", label: "Remote SSH Sessions" },
+    { href: "features.html#worktree-sync", label: "Worktree Sync" },
+    { href: "features.html#session-forking", label: "Session Forking" },
+    { href: "features.html#global-search", label: "Global Search" },
+    { href: "features.html#responsive-ui", label: "Responsive UI" },
+    { href: "features.html#themes", label: "Themes" },
+    { href: "features.html#mouse-navigation", label: "Mouse Navigation" },
+    { href: "features.html#feature-flags", label: "Feature Flags" },
+    { href: "features.html#session-persistence", label: "Session Persistence" },
+    { href: "features.html#headless-cli", label: "Headless CLI" }
+  ]},
+  { heading: "Extensions", links: [
     { slug: "extensions", href: "extensions.html", label: "Overview" },
     { slug: "extension-flow", href: "extension-flow.html", label: "Flow" },
     { slug: "extension-forge", href: "extension-forge.html", label: "Forge" },
@@ -27,9 +42,6 @@
   <h4>{{ section.heading }}</h4>
   <ul>
     {%- for link in section.links %}
-    {%- if link.subheading %}
-    <li class="sidebar-subheading">{{ link.subheading }}</li>
-    {%- else %}
     <li>
       <a
         href="{{ link.href }}"
@@ -37,7 +49,6 @@
         >{{ link.label }}</a
       >
     </li>
-    {%- endif %}
     {%- endfor %}
   </ul>
   {%- endfor %}
