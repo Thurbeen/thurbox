@@ -248,6 +248,12 @@ fn tick(db: &Database) -> Result<Value, String> {
     for m in &healed {
         tracing::info!("{m}");
     }
+    // Best-effort retention sweep of the inter-session mailbox (read messages
+    // older than the default window), so the queue self-bounds with the TUI
+    // closed. Never abort the due-automation pass over it.
+    if let Err(e) = db.prune_old_messages() {
+        tracing::debug!("prune_old_messages: {e}");
+    }
     let now = current_time_millis();
     let due = db
         .due_automations(now)

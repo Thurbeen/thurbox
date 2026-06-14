@@ -208,9 +208,21 @@
               to groom the backlog.
             </li>
             <li>
-              Workers self-report: they mark their task done, print a
-              <code>===RESULT===</code>
-              JSON line, and ping the flow session so the next task dispatches without waiting for
+              <strong>Plan-first, with a relay:</strong>
+              before writing any code each worker asks
+              <strong>&ge;3 clarifying questions</strong>
+              and waits, then sends a written
+              <strong>plan</strong>
+              and waits for your approval, then builds. It hands these to the flow session over the
+              message queue (
+              <code>message send --kind questions|plan|result</code>
+              ); flow surfaces them under &ldquo;Needs you,&rdquo; you answer / approve naturally,
+              and flow relays your reply straight back to the worker &mdash; a pure pass-through.
+            </li>
+            <li>
+              Workers self-report: they mark their task done and send a
+              <code>--kind result</code>
+              message, which wakes the flow session so the next task dispatches without waiting for
               the cron tick.
             </li>
           </ul>
@@ -224,16 +236,22 @@
             <strong>eager</strong>
             : capture creates the task
             <em>and</em>
-            spawns its worker in one atomic helper call; workers send a
-            <code>tick</code>
-            back when they finish so a freed slot dispatches the next task immediately. The
+            spawns its worker in one atomic helper call. Worker&harr;flow coordination is
+            <strong>event-driven over the inter-session message queue</strong>
+            (
+            <a href="features.html#headless-cli"><code>thurbox-cli message</code></a>
+            ): a worker pushes a structured
+            <code>questions</code>
+            ,
+            <code>plan</code>
+            , or
+            <code>result</code>
+            message (which also wakes flow), and flow drains its inbox with
+            <code>message inbox --for flow --claim</code>
+            &mdash; clean JSON, never scraped from a rendered terminal. The
             <code>flow-tick</code>
-            cron automation (default every 5&nbsp;min) is the safety net that catches crashed
-            workers and stale state. Completion is detected by task status with the
-            <code>===RESULT===</code>
-            JSON sentinel as a fallback, parsed from
-            <code>session capture</code>
-            output.
+            cron automation (default every 5&nbsp;min) is demoted to a safety net: it drains
+            anything a missed wake left queued, catches crashed workers, and grooms stale state.
           </p>
 
           <h2 id="files">

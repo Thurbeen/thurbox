@@ -25,14 +25,16 @@ setup() {
   [[ "$output" == *"Throttle the API."* ]]
   [[ "$output" == *"## Planning phase"* ]]
   [[ "$output" == *"at least 3"* ]]
-  [[ "$output" == *"===QUESTIONS==="* ]]
-  [[ "$output" == *"/plan"* ]]
-  [[ "$output" == *"plan mode"* ]]
-  [[ "$output" == *"**Problem**"* ]]
-  [[ "$output" == *"**Acceptance criteria**"* ]]
-  [[ "$output" == *"**Approach**"* ]]
+  [[ "$output" == *"message send --to flow --kind questions"* ]]
+  [[ "$output" == *"message send --to flow --kind plan"* ]]
+  [[ "$output" == *"## Problem"* ]]
+  [[ "$output" == *"## Acceptance criteria"* ]]
+  [[ "$output" == *"## Approach"* ]]
+  # The interactive plan-mode modal is gone (it stalls headless workers).
+  [[ "$output" != *"EnterPlanMode"* ]]
+  [[ "$output" != *"===QUESTIONS==="* ]]
   [[ "$output" == *"branch flow/add-rate-limiting"* ]]
-  [[ "$output" == *"===RESULT==="* ]]
+  [[ "$output" == *"message send --to flow --kind result"* ]]
 }
 
 @test "--no-plan drops only the planning phase, keeps header and footer" {
@@ -42,8 +44,9 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"accept: typo fixed"* ]]
   [[ "$output" != *"## Planning phase"* ]]
-  [[ "$output" != *"===QUESTIONS==="* ]]
-  [[ "$output" == *"===RESULT==="* ]]
+  [[ "$output" != *"--kind questions"* ]]
+  # Footer (the result report) stays even with the planning phase dropped.
+  [[ "$output" == *"message send --to flow --kind result"* ]]
 }
 
 @test "--accept without a repo composes the header only (no planning, no footer)" {
@@ -55,7 +58,7 @@ setup() {
   [[ "$output" == *"accept: decided one way or the other"* ]]
   [[ "$output" == *"some notes"* ]]
   [[ "$output" != *"## Planning phase"* ]]   # gated on a worker dispatch
-  [[ "$output" != *"===RESULT==="* ]]        # footer is worker-only
+  [[ "$output" != *"--kind result"* ]]       # footer is worker-only
 }
 
 @test "plain todo without --accept keeps the description verbatim" {

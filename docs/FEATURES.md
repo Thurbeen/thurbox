@@ -1186,6 +1186,42 @@ is still defensive: cycle members render flat rather than vanish.
 
 ---
 
+## Inter-Session Messages (Mailbox Queue)
+
+A general, agent-neutral message queue (`session_messages` table, schema
+v32; `thurbox-cli message`) lets one session hand another a **structured
+payload** — addressed to a session, with a free-form `kind` tag, a `body`,
+and optional `from_session_id`/`from_task_id` provenance. It is the channel
+extensions use for agent↔agent coordination; flow's clarify→plan→build
+relay is the first consumer.
+
+### Why push, not pane-scraping
+
+Agent CLIs are TUIs: their output is rendered with box chrome, prefixes,
+and line-wrapping, so grepping a captured pane for a sentinel is fragile
+and only as timely as the next poll. The queue inverts the channel — a
+worker **pushes** a clean payload (`message send`) and a `--wake` nudge
+types a short `inbox` token into the recipient's pane so it drains
+immediately. The payload always travels through the durable DB, never the
+pane; the wake is just an idempotent "go look" (a missed or colliding wake
+only delays a drain to the next nudge/tick).
+
+### Why exactly-once and bounded
+
+`claim_messages` is a single `UPDATE … WHERE read_at IS NULL … RETURNING`
+statement: SQLite serializes writers, so the TUI, a cron tick, and a wake
+nudge can drain the same inbox concurrently without ever handing one
+message to two claimers or dropping one. Growth is bounded on both ends —
+`enqueue_message` rejects past a per-recipient unread cap (backpressure,
+not silent loss) and caps `kind`/`body` size, while a time-based retention
+sweep (`prune_old_messages`, read messages older than the default window)
+runs at DB open and on each `automation tick`, mirroring audit-log
+pruning. The table is intentionally **not** audited — it is high-churn and
+ephemeral. The same `PRAGMA data_version` polling that backs every other
+table lets a future TUI inbox surface unread counts with no schema change.
+
+---
+
 ## Terminal Scrollback
 
 ### Scrollback buffer

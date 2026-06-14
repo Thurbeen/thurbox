@@ -108,24 +108,31 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
 - **Plan-first dispatch**: every worker prompt carries a mandatory
   planning phase — clarify, then plan, then build. Before writing any code
   the worker (1) asks **at least 3 clarifying questions** and waits, (2)
-  builds a structured plan in its CLI's plan mode (Claude Code's `/plan`)
-  when it has one — problem, concrete acceptance criteria, approach — then
-  (3) builds strictly against it, so dispatched work stays scoped to what you
-  asked for. The flow agent seeds the acceptance criterion (`--accept`) at
-  capture; the worker fills in the rest. (Pass `--no-plan` to
-  `create-task.sh` for trivial mechanical changes where a plan is overkill.)
-- **Clarifying-questions relay**: those worker questions come back to the
-  `flow` session — it surfaces them under "Needs you", you type the answers
-  naturally, and flow relays them straight back to the waiting worker. Flow
-  is a pure pass-through: it never answers or invents questions, it just wires
-  the worker to you and back.
+  writes a structured plan — problem, concrete acceptance criteria, approach —
+  and waits for your **approval**, then (3) builds strictly against the
+  approved plan, so dispatched work stays scoped to what you asked for. The flow
+  agent seeds the acceptance criterion (`--accept`) at capture; the worker fills
+  in the rest. (Pass `--no-plan` to `create-task.sh` for trivial mechanical
+  changes where a plan is overkill.)
+- **Event-driven relay via a message queue**: workers hand the `flow` session
+  clean, structured payloads through the durable `thurbox-cli message` queue —
+  `--kind questions`, `--kind plan`, `--kind result` — instead of flow scraping
+  their terminals. Each push also wakes flow, so it surfaces the questions or
+  plan under "Needs you" immediately; you type your answer / approval naturally
+  and flow relays it straight back to the waiting worker (`session send`). Flow
+  is a pure pass-through: it never answers, invents, or approves — it just wires
+  the worker to you and back. Several workers can be mid-conversation at once,
+  each tagged by its `#<id>`.
 - `status` for a one-screen report; `clean` to groom the backlog.
 - Every tick prints a **board** — a quick-glance table of all live
   `flow`/`task-*` sessions with status, age, and the task they're working
-  (`scripts/flow-summary.sh`) — so you can see the whole picture at once.
-- Workers self-report: they mark their task done, print a
-  `===RESULT===` JSON line, and ping the flow session so the next task
-  dispatches without waiting for the cron tick.
+  (`scripts/flow-summary.sh`) — so you can see the whole picture at once. The
+  `flow-tick` automation is now a **safety net**: worker pushes drive the
+  interactive loop; the cron tick just drains anything a missed wake left queued
+  and grooms stale state.
+- Workers self-report: they mark their task done and send a `--kind result`
+  message, which wakes flow so the next task dispatches without waiting for the
+  cron tick.
 
 ## Files
 
@@ -138,8 +145,7 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
 | `scripts/create-task.sh` | Atomic task create + dispatch; composes the plan-first worker prompt (`--dry-run` to preview) |
 | `scripts/flow-snapshot.sh` | One-call backlog + sessions view |
 | `scripts/flow-summary.sh` | At-a-glance board table (printed atop every tick) |
-| `scripts/parse-result.sh` | Extract the worker `===RESULT===` sentinel |
-| `scripts/parse-questions.sh` | Extract a worker's pending `===QUESTIONS===` block (the clarifying-questions relay) |
+| `scripts/parse-result.sh` | Fallback-only: extract a `===RESULT===` sentinel from a worker that died without sending a `result` message |
 | `install.sh` | Thin shim → `thurbox-cli extension install` (curl\|sh bootstrap) |
 
 ## Uninstall

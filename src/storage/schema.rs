@@ -4,9 +4,10 @@ use rusqlite::Connection;
 ///
 /// v29 is reserved by the in-flight `improve-agent-thurbox-cli` branch
 /// (`session_labels` + `session_spawn_config`); v30 added
-/// `parent_session_id`, v31 adds `display_order`.
+/// `parent_session_id`, v31 added `display_order`, v32 adds
+/// `session_messages` (the inter-session mailbox).
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 31;
+pub const SCHEMA_VERSION: u32 = 32;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -138,6 +139,21 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status
             ON tasks(status) WHERE deleted_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS session_messages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            to_session_id   TEXT NOT NULL,
+            from_session_id TEXT,
+            from_task_id    INTEGER,
+            kind            TEXT NOT NULL DEFAULT 'note',
+            body            TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            read_at         INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_messages_unread
+            ON session_messages(to_session_id) WHERE read_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_session_messages_created
+            ON session_messages(created_at);
         ",
     )?;
 
@@ -199,6 +215,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (28, migrate_v28_run_related_session),
         (30, migrate_v30_parent_session_id),
         (31, migrate_v31_display_order),
+        (32, migrate_v32_session_messages),
     ];
 
     for &(target, step) in steps {
@@ -875,6 +892,30 @@ fn migrate_v31_display_order(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v31 → v32: add the `session_messages` table (inter-session mailbox).
+///
+/// Idempotent CREATE: fresh v32 databases already have the table from
+/// `initialize`; existing databases get it here. No data backfill.
+fn migrate_v32_session_messages(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_messages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            to_session_id   TEXT NOT NULL,
+            from_session_id TEXT,
+            from_task_id    INTEGER,
+            kind            TEXT NOT NULL DEFAULT 'note',
+            body            TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            read_at         INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_messages_unread
+            ON session_messages(to_session_id) WHERE read_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_session_messages_created
+            ON session_messages(created_at);",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,6 +952,7 @@ mod tests {
         assert!(tables.contains(&"automation_runs".to_string()));
         assert!(tables.contains(&"repo_bookmarks".to_string()));
         assert!(tables.contains(&"tasks".to_string()));
+        assert!(tables.contains(&"session_messages".to_string()));
         // The legacy one-shot table is replaced by `automations`.
         assert!(!tables.contains(&"scheduled_commands".to_string()));
         // Dropped Claude-config tables should NOT exist.
@@ -1099,6 +1141,42 @@ mod tests {
             has_column,
             "related_session_id column should be added at v28"
         );
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v31_adds_session_messages_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v31 state: metadata pinned to 31, no session_messages table.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '31');",
+        )
+        .unwrap();
+
+        let has_before: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_messages'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(!has_before);
+
+        migrate(&conn).unwrap();
+
+        let has_after: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_messages'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_after, "session_messages table should be created at v32");
 
         let version: String = conn
             .query_row(

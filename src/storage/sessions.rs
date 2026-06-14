@@ -247,6 +247,15 @@ impl Database {
         Ok(sessions.into_iter().next())
     }
 
+    /// Get a single active (non-deleted) session by its name. Names are not
+    /// enforced unique; the first match (by display/creation order) is returned,
+    /// consistent with [`get_session_by_id`](Self::get_session_by_id).
+    pub fn get_session_by_name(&self, name: &str) -> rusqlite::Result<Option<SharedSession>> {
+        let sessions =
+            self.query_sessions("s.deleted_at IS NULL AND s.name = ?1", params![name])?;
+        Ok(sessions.into_iter().next())
+    }
+
     /// Get just the name of an active session by its ID.
     pub fn get_session_name(&self, id: SessionId) -> rusqlite::Result<Option<String>> {
         Ok(self

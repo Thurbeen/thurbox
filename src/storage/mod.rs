@@ -13,6 +13,7 @@
 pub mod audit;
 pub mod automations;
 pub mod keybindings;
+pub mod messages;
 pub mod repo_bookmarks;
 mod schema;
 mod sessions;
@@ -55,6 +56,9 @@ impl Database {
         // Best-effort retention; opening the DB must not fail over old breadcrumbs.
         if let Err(e) = db.prune_audit_log() {
             tracing::warn!("Failed to prune audit log: {e}");
+        }
+        if let Err(e) = db.prune_old_messages() {
+            tracing::warn!("Failed to prune session messages: {e}");
         }
         Ok(db)
     }

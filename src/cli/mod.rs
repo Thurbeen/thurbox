@@ -14,6 +14,7 @@ pub mod automations;
 pub mod config;
 pub mod editor;
 pub mod extensions;
+pub mod messages;
 pub mod sessions;
 pub mod tasks;
 
@@ -53,6 +54,12 @@ pub enum Command {
         #[command(subcommand)]
         action: tasks::Action,
     },
+    /// Send/read inter-session messages (the mailbox queue).
+    #[command(alias = "msg")]
+    Message {
+        #[command(subcommand)]
+        action: messages::Action,
+    },
     /// Validate or inspect the config files.
     Config {
         #[command(subcommand)]
@@ -73,6 +80,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Session { action } => sessions::run(action, db),
         Command::Automation { action } => automations::run(action, db),
         Command::Task { action } => tasks::run(action, db),
+        Command::Message { action } => messages::run(action, db),
         Command::Config { action } => config::run(action, db),
         Command::Extension { action } => extensions::run(action, db),
     }?;
@@ -504,6 +512,91 @@ mod tests {
                 action: extensions::Action::List
             }
         ));
+    }
+
+    #[test]
+    fn parse_message_send_requires_to_kind_body() {
+        assert!(
+            Cli::try_parse_from(["thurbox-cli", "message", "send", "--to", "flow"]).is_err(),
+            "missing --kind/--body should fail"
+        );
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "message",
+            "send",
+            "--to",
+            "flow",
+            "--kind",
+            "questions",
+            "--body",
+            "q1?",
+            "--task",
+            "5",
+            "--no-wake",
+        ])
+        .unwrap();
+        let Command::Message {
+            action:
+                messages::Action::Send {
+                    to,
+                    kind,
+                    body,
+                    task,
+                    no_wake,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected Message::Send");
+        };
+        assert_eq!(to, "flow");
+        assert_eq!(kind, "questions");
+        assert_eq!(body, "q1?");
+        assert_eq!(task, Some(5));
+        assert!(no_wake);
+    }
+
+    #[test]
+    fn parse_message_inbox_claim() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "message",
+            "inbox",
+            "--for",
+            "flow",
+            "--claim",
+        ])
+        .unwrap();
+        let Command::Message {
+            action:
+                messages::Action::Inbox {
+                    for_session,
+                    claim,
+                    all,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected Message::Inbox");
+        };
+        assert_eq!(for_session, "flow");
+        assert!(claim);
+        assert!(!all);
+    }
+
+    #[test]
+    fn message_alias_msg_parses() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "msg", "prune", "--older-than-days", "30"])
+            .unwrap();
+        let Command::Message {
+            action: messages::Action::Prune {
+                older_than_days, ..
+            },
+        } = cli.command
+        else {
+            panic!("expected Message::Prune via msg alias");
+        };
+        assert_eq!(older_than_days, Some(30));
     }
 
     #[test]

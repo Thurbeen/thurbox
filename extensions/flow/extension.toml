@@ -11,8 +11,8 @@
 name = "flow"
 description = "Focus-protecting triage agent"
 config_version = 1
-version = "1.0.0"                 # this extension's own version; bump on changes
-min_thurbox_version = "0.113.0"  # needs the `extension install`/self-heal machinery
+version = "1.1.0"                 # this extension's own version; bump on changes
+min_thurbox_version = "0.120.0"  # needs the `thurbox-cli message` mailbox queue
 home = "~/flow"
 
 # --- agents registered in agents.toml (override the model by editing it) ------
@@ -60,10 +60,6 @@ executable = true
 
 [[files]]
 path = "scripts/parse-result.sh"
-executable = true
-
-[[files]]
-path = "scripts/parse-questions.sh"
 executable = true
 
 # Routing table — seeded once, then user-owned (never clobbered on reinstall).

@@ -15,12 +15,15 @@
 #   priority/repo/accept header → the user's words → a mandatory **Planning
 #   phase** → the result/notify footer — so every worker follows the same
 # clarify → plan → build contract BEFORE touching code. The planning phase makes
-# the worker (1) ask >=3 clarifying questions via a ===QUESTIONS=== sentinel and
-# WAIT (the flow agent relays them to the user and sends the answers back), then
-# (2) build the plan in its CLI's plan mode (Claude Code: /plan / EnterPlanMode)
-# when it has one, then (3) implement strictly against it. The flow agent no
-# longer hand-types this boilerplate; it passes the structured flags and the
-# script keeps the contract identical across every dispatch.
+# the worker (1) ask >=3 clarifying questions and push them to the flow session
+# via `thurbox-cli message send --kind questions` and WAIT (flow relays them to
+# the user and sends the answers back), then (2) push a written plan via
+# `--kind plan` and WAIT for the user's approval (relayed by flow), then
+# (3) implement strictly against the approved plan. Worker → flow handoffs go
+# through the durable message queue (not pane scraping); flow → worker replies
+# arrive as normal session input. The flow agent no longer hand-types this
+# boilerplate; it passes the structured flags and the script keeps the contract
+# identical across every dispatch.
 #
 # Without --accept the legacy behavior is preserved: --description is used
 # verbatim, with no header/planning/footer composition (plain todos, or any
@@ -78,43 +81,57 @@ build_description() {
 
 ## Planning phase — do this FIRST, before writing any code
 
-Clarify, then plan, then build — strictly in that order.
+Clarify, then plan, then build — strictly in that order. You report back to the
+flow agent through the thurbox message queue (replace <id> with THIS task's id);
+flow surfaces each message to the user and relays the user's reply to you as a
+new message in this session.
 
 1. **Ask clarifying questions first.** Unless the task is genuinely trivial and
    unambiguous, ask **at least 3** clarifying questions (more if it needs them)
    about scope, edge cases, the acceptance bar, and anything underspecified.
-   Print them as ONE block, then STOP:
+   Send them to flow as ONE message, then STOP:
 
-       ===QUESTIONS===
-       {"questions": ["<q1>", "<q2>", "<q3>"]}
+       thurbox-cli message send --to flow --kind questions --task <id> \
+         --body 'Q1 ...
+       Q2 ...
+       Q3 ...'
 
-   End your turn and wait — do NOT plan or write code yet. The flow agent relays
-   your questions to the user and sends the answers back to this session; resume
-   only when they arrive.
+   End your turn and wait — do NOT plan or write code yet. Flow relays your
+   questions to the user and sends the answers back as a new message here;
+   resume only when they arrive.
 
-2. **Plan.** With the answers in hand, build a structured plan. If your CLI has
-   a plan mode (Claude Code: `/plan` / EnterPlanMode), use it; otherwise post the
-   plan as a message. Cover:
-   - **Problem** — restate the problem in 1–2 sentences.
-   - **Acceptance criteria** — the concrete, checkable conditions for "done".
-     Start from the `accept:` line above and make each item testable.
-   - **Approach** — the implementation approach / architecture: the files you'll
-     touch, the design, and any risks or open questions.
+2. **Plan, then wait for approval.** With the answers in hand, write a structured
+   plan and send it to flow for the user to approve — do NOT start coding yet:
 
-3. **Implement** strictly against the plan. If the work would drift outside it,
-   stop and note the change rather than silently expanding scope.
+       thurbox-cli message send --to flow --kind plan --task <id> \
+         --body '## Problem
+       <1–2 sentences>
+       ## Acceptance criteria
+       <concrete, checkable conditions; refine the accept: line above>
+       ## Approach
+       <files you will touch, the design, risks / open questions>'
+
+   Then STOP and wait. Flow relays the plan to the user; resume only when the
+   reply arrives. If the user approves, implement. If they request changes,
+   revise the plan and send an updated `--kind plan` message, then wait again.
+   (Do not use an interactive plan mode / approval modal — nothing drives it in a
+   headless worker; the plan message IS the gate.)
+
+3. **Implement** strictly against the approved plan. If the work would drift
+   outside it, stop and note the change rather than silently expanding scope.
 PLAN_BLOCK
   fi
   if [[ "$WORKER" -eq 1 ]]; then
     cat <<FOOTER
 
-You are working in a dedicated git worktree on branch ${branch}; commit your
-work there and open a PR when the accept criterion is met. When finished: mark
-this task done (thurbox-cli task edit <id> --status done), print a final line
-\`===RESULT===\` followed by one line of JSON:
-{"status":"ok|error","artifact":"...","notes":"...","pr_url":"..."}
-then notify the flow agent so the next task dispatches immediately:
-thurbox-cli session send "\$(thurbox-cli session list | jq -r '.[] | select(.name=="flow") | .id')" "tick"
+You are working in a dedicated git worktree on branch ${branch}; commit
+your work there and open a PR when the accept criterion is met. When finished:
+mark this task done (thurbox-cli task edit <id> --status done), then report the
+result to the flow agent (replace <id> with THIS task's id) — this also wakes
+flow so the next task dispatches immediately:
+
+    thurbox-cli message send --to flow --kind result --task <id> \\
+      --body '{"status":"ok|error","artifact":"...","notes":"...","pr_url":"..."}'
 FOOTER
   fi
 }

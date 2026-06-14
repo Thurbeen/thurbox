@@ -3,6 +3,7 @@ pub mod automation;
 pub mod extension_def;
 pub mod host_def;
 pub mod keybindings;
+pub mod message;
 pub mod settings;
 pub mod task;
 pub mod theme_config;
@@ -17,6 +18,7 @@ pub use extension_def::{
 };
 pub use host_def::{is_ssh_backend, HostDef, HostRegistry, SSH_BACKEND_PREFIX};
 pub use keybindings::{Action, KeyBindings, KeyChord, KeyContext};
+pub use message::SessionMessage;
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 pub use theme_config::{ThemePalette, ThemePreset};
 

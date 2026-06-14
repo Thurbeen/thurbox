@@ -355,7 +355,8 @@ thurbox-cli session list --parent <lead-uuid> | jq  # direct children only
 Subcommands: `session` (create/list/get/delete/restore/restart/
 send/capture), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
-create/list/show/edit/remove/run), `editor`, `config`
+create/list/show/edit/remove/run), `message` (alias `msg`:
+send/inbox/prune — the inter-session mailbox queue; see below), `editor`, `config`
 (validate/show — strict-parses every config file / prints the
 effective resolved config; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
@@ -410,6 +411,40 @@ restarts and syncs across instances via the existing
 `data_version` polling. Storage: nullable `sessions.display_order`
 column (schema v31); `None` = never moved, renders after ordered
 sessions in creation order (new sessions append to their group).
+
+### Inter-session messages (mailbox queue)
+
+A general, agent-neutral **message queue** lets one session hand another a
+**structured payload** without scraping its rendered terminal — the channel
+extensions use for agent↔agent coordination (flow's clarify→plan→build relay is
+the first consumer). A message is addressed **to** a session and carries a
+free-form `kind` tag (any short string — `questions`/`plan`/`result`/… are
+conventions, not an enum), a `body`, and optional provenance (`from_session_id`,
+`from_task_id`).
+
+- **Data**: `session::SessionMessage` (pure data, `session/message.rs`;
+  `validate_kind_body` bounds `kind`≤32 B / `body`≤64 KiB). **Storage**:
+  `session_messages` table (schema **v32**, plain-TEXT uuids, no FK — mirrors
+  `tasks.target_session`), with a partial unread index + a `created_at` index.
+  CRUD in `storage/messages.rs`.
+- **Exactly-once delivery**: `Database::claim_messages` is a single
+  `UPDATE … WHERE read_at IS NULL … RETURNING` — SQLite serializes writers, so
+  the TUI, a cron tick, and a worker's wake nudge can drain concurrently without
+  double-processing or dropping a message. `list_messages` peeks without
+  consuming.
+- **Bounded growth**: `enqueue_message` enforces a per-recipient unread cap
+  (`MAX_UNREAD_PER_RECIPIENT`, backpressure not silent loss) + the body/kind
+  limits; `prune_messages` / `prune_old_messages` (read messages older than
+  `DEFAULT_RETENTION_DAYS`) run at DB open and on every `automation tick`,
+  mirroring audit-log pruning. The mailbox is **not** audited (high-churn).
+- **CLI** (`thurbox-cli message`, alias `msg`): `send --to <uuid|name> --kind
+  <k> [--task <id>] [--from <uuid|name>] --body <text> [--no-wake]` enqueues and,
+  unless `--no-wake`, types a short `inbox` token into the recipient's pane
+  (reusing `agent::tmux::send_prompt_now`) to nudge it to drain now; `inbox --for
+  <uuid|name> [--claim] [--all] [--limit N]` reads it (`--claim` = atomic drain);
+  `prune [--older-than-days N] [--read-only]`. `cli::messages` resolves a session
+  by UUID **or** name via `Database::get_session_by_name`. `PRAGMA data_version`
+  already surfaces writes to the TUI — no sync/`SharedState` change.
 
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on
@@ -572,12 +607,19 @@ sync, but the TUI editor never sets it.)
   become thurbox tasks, dispatchable ones spawn worker sessions (on
   `flow/<slug>` worktree branches, agents `flow-worker` /
   `flow-worker-heavy` mapped in `agents.toml` to any CLI), a dedicated
-  `flow` session monitors them via a `flow-tick` automation, and every
-  reply ends with the single next thing to focus on. Dispatch is
-  **plan-first**: `scripts/create-task.sh` owns the worker prompt and
-  injects a mandatory planning phase (problem → acceptance criteria →
-  approach, seeded from `--accept`) so each worker plans before it codes
-  and stays in scope. The behavior spec
+  `flow` session monitors them, and every reply ends with the single next
+  thing to focus on. Dispatch is **plan-first**: `scripts/create-task.sh`
+  owns the worker prompt and injects a mandatory clarify → plan → build
+  phase (≥3 clarifying questions, then a written plan gated on user
+  approval, then implement; seeded from `--accept`) so each worker plans
+  before it codes and stays in scope. Worker↔flow coordination is
+  **event-driven over the [inter-session message queue](#inter-session-messages-mailbox-queue)**:
+  a worker pushes `message send --to flow --kind questions|plan|result`
+  (which wakes flow); flow drains its inbox (`message inbox --for flow
+  --claim`), surfaces the questions/plan under "Needs you", and relays the
+  user's answer/approval back to the worker with `session send`. The
+  `flow-tick` automation is demoted to a janitor/safety-net (drain missed
+  wakes, reset stale tasks, dispatch). The behavior spec
   is `FLOW.md`, surfaced to whichever CLI runs it via context-file
   symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). Install with
   `thurbox-cli extension install flow` (its `install.sh` is a thin shim

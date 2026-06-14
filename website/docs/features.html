@@ -430,8 +430,19 @@
               Dispatch is eager: capture creates the task and spawns its worker in one atomic call,
               each worker on its own
               <code>flow/&lt;slug&gt;</code>
-              worktree branch; workers report back so the next task dispatches immediately, with a
-              cron tick as the safety net.
+              worktree branch. Every worker runs a
+              <strong>clarify &rarr; plan &rarr; build</strong>
+              contract: ask &ge;3 clarifying questions, then a written plan gated on your approval,
+              then implement.
+            </li>
+            <li>
+              Worker&harr;flow coordination is event-driven over the
+              <a href="#headless-cli">inter-session message queue</a>
+              (
+              <code>message send --kind questions|plan|result</code>
+              ): workers push clean structured payloads that wake flow, flow surfaces them under
+              &ldquo;Needs you,&rdquo; and your answer / approval is relayed back &mdash; no
+              terminal scraping. The cron tick is just a safety net.
             </li>
             <li>
               One-command install:
@@ -929,7 +940,9 @@ mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code><
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session list
 <span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session create <span class="syn-flag">--name</span> reviewer <span class="syn-flag">--repo-path</span> <span class="syn-string">/path/to/repo</span> <span class="syn-flag">--agent</span> codex
 <span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session send <span class="syn-string">&lt;uuid&gt;</span> <span class="syn-string">"run the test suite"</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session capture <span class="syn-string">&lt;uuid&gt;</span> <span class="syn-flag">--lines</span> 500</code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session capture <span class="syn-string">&lt;uuid&gt;</span> <span class="syn-flag">--lines</span> 500
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> message send <span class="syn-flag">--to</span> flow <span class="syn-flag">--kind</span> questions <span class="syn-flag">--task</span> 5 <span class="syn-flag">--body</span> <span class="syn-string">"scope?"</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> message inbox <span class="syn-flag">--for</span> flow <span class="syn-flag">--claim</span></code></pre>
           <ul>
             <li>
               <strong>session</strong>
@@ -977,6 +990,28 @@ mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code><
               <code>tick</code>
               (the headless entry point that fires all due automations &mdash; what the tmux
               heartbeat keeper and any systemd/cron timer call).
+            </li>
+            <li>
+              <strong>message</strong>
+              (alias
+              <code>msg</code>
+              ) &mdash;
+              <code>send</code>
+              /
+              <code>inbox</code>
+              /
+              <code>prune</code>
+              : a general, agent-neutral
+              <strong>inter-session message queue</strong>
+              so one session hands another a structured payload (a free-form
+              <code>--kind</code>
+              , a body, optional task/sender provenance) instead of scraping its terminal.
+              <code>send</code>
+              enqueues and, by default, wakes the recipient;
+              <code>inbox --claim</code>
+              drains it exactly once. The
+              <a href="extension-flow.html">flow extension</a>
+              is its first consumer.
             </li>
             <li>
               <strong>editor</strong>
