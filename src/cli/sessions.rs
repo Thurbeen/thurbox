@@ -131,6 +131,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 agent_session_id: None,
                 host,
                 parent_session_id,
+                task_id: None,
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             let human = format!(

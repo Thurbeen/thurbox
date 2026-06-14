@@ -106,15 +106,34 @@ fn build_agent_invocation(config: &SessionConfig) -> (String, Vec<String>) {
     (command, args)
 }
 
-/// Inject the standard thurbox env hints (`THURBOX_SESSION_ID`,
-/// `THURBOX_METRICS_DIR`) into a session config.
+/// Inject the standard thurbox env hints into a session config so a
+/// `thurbox-cli` call running *inside* the session can prove its own identity
+/// without scraping panes or names:
 ///
-/// Mirrors `App::do_spawn_session` so headless and TUI sessions look
-/// identical to the spawned process.
-fn inject_thurbox_env(config: &mut SessionConfig, agent_session_id: &str) {
+/// - `THURBOX_SESSION` — the thurbox [`SessionId`] (the registry key). Read by
+///   the mailbox CLI to auto-stamp provenance and default the inbox to "me".
+///   Requires `config.session_id` to be set before calling.
+/// - `THURBOX_SESSION_ID` — the *agent's* conversation id (`agent_session_id`),
+///   consumed by the metrics statusline. Distinct from `THURBOX_SESSION`.
+/// - `THURBOX_TASK` — the originating task id, when this session was spawned for
+///   a task (so messages auto-tag `from_task_id`). Headless `task run` only; the
+///   TUI task-spawn path tracks the link in-memory instead.
+/// - `THURBOX_METRICS_DIR` — metrics output dir.
+///
+/// Kept in sync with `App::build_spawn_inputs` so headless and TUI sessions look
+/// identical to the spawned process (modulo `THURBOX_TASK` as noted above).
+fn inject_thurbox_env(config: &mut SessionConfig, agent_session_id: &str, task_id: Option<i64>) {
     config
         .env
         .insert("THURBOX_SESSION_ID".into(), agent_session_id.into());
+    if let Some(id) = config.session_id {
+        config.env.insert("THURBOX_SESSION".into(), id.to_string());
+    }
+    if let Some(task_id) = task_id {
+        config
+            .env
+            .insert("THURBOX_TASK".into(), task_id.to_string());
+    }
     if let Some(dir) = crate::paths::metrics_directory() {
         config
             .env
@@ -125,6 +144,35 @@ fn inject_thurbox_env(config: &mut SessionConfig, agent_session_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionId;
+
+    #[test]
+    fn inject_env_sets_identity_and_task() {
+        let sid = SessionId::default();
+        let mut config = SessionConfig {
+            session_id: Some(sid),
+            ..SessionConfig::default()
+        };
+        inject_thurbox_env(&mut config, "agent-conv-uuid", Some(42));
+        // The thurbox session key and the agent conversation id are distinct.
+        assert_eq!(config.env.get("THURBOX_SESSION"), Some(&sid.to_string()));
+        assert_eq!(
+            config.env.get("THURBOX_SESSION_ID"),
+            Some(&"agent-conv-uuid".to_string())
+        );
+        assert_eq!(config.env.get("THURBOX_TASK"), Some(&"42".to_string()));
+    }
+
+    #[test]
+    fn inject_env_omits_task_when_absent() {
+        let mut config = SessionConfig {
+            session_id: Some(SessionId::default()),
+            ..SessionConfig::default()
+        };
+        inject_thurbox_env(&mut config, "agent-conv-uuid", None);
+        assert!(config.env.contains_key("THURBOX_SESSION"));
+        assert!(!config.env.contains_key("THURBOX_TASK"));
+    }
 
     #[test]
     fn resume_id_is_none_when_no_transcript() {

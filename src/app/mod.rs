@@ -2259,8 +2259,23 @@ impl App {
         if config.agent_session_id.is_none() {
             config.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
         }
+        // Mint the thurbox SessionId up front (unless a respawn supplied one) so
+        // it can be injected as `THURBOX_SESSION` before launch and `Session::spawn`
+        // reuses it. Stable across restarts.
+        if config.session_id.is_none() {
+            config.session_id = Some(SessionId::default());
+        }
 
-        // Inject statusline env vars so the metrics script knows which session this is.
+        // Inject identity + statusline env vars (kept in sync with the headless
+        // `session_ops::inject_thurbox_env`). `THURBOX_SESSION` is the thurbox
+        // session key (read by the mailbox CLI); `THURBOX_SESSION_ID` is the
+        // agent's conversation id (read by the metrics script) — kept distinct.
+        // `THURBOX_TASK` is not set here: TUI task spawns track the task↔session
+        // link in-memory (`task_session_links`); only the headless `task run`
+        // path auto-tags messages with it.
+        if let Some(id) = config.session_id {
+            config.env.insert("THURBOX_SESSION".into(), id.to_string());
+        }
         if let Some(ref sid) = config.agent_session_id {
             config.env.insert("THURBOX_SESSION_ID".into(), sid.clone());
         }
@@ -3556,11 +3571,12 @@ impl App {
         agent_session_id: String,
         worktrees: Vec<WorktreeInfo>,
     ) {
-        if let Err(e) = self.db.soft_delete_session(shared.id) {
-            error!("Failed to soft-delete stale session {}: {e}", shared.id);
-        }
-
+        // Reuse the original SessionId so the session's identity is stable across
+        // restarts: `do_spawn_session` upserts in place (no soft-delete + new-row
+        // churn), and `THURBOX_SESSION` is re-injected with the same id. Any
+        // cached id / queued message addressed to this session stays valid.
         let mut config = SessionConfig {
+            session_id: Some(shared.id),
             resume_session_id: None,
             agent_session_id: Some(agent_session_id.clone()),
             cwd: shared.cwd,

@@ -119,12 +119,15 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
 - **Event-driven relay via a message queue**: workers hand the `flow` session
   clean, structured payloads through the durable `thurbox-cli message` queue —
   `--kind questions`, `--kind plan`, `--kind result` — instead of flow scraping
-  their terminals. Each push also wakes flow, so it surfaces the question or
+  their terminals. Workers pass **no ids**: thurbox injects each session's
+  identity (`THURBOX_SESSION`/`THURBOX_TASK`) at spawn and auto-stamps the
+  sender + task tag. Each push also wakes flow, so it surfaces the question or
   plan under "Needs you" immediately; you type your answer / approval naturally
-  and flow relays it straight back to the waiting worker (`session send`). Flow
-  is a pure pass-through: it never answers, invents, or approves — it just wires
-  the worker to you and back. Several workers can be mid-conversation at once,
-  each tagged by its `#<id>`.
+  and flow relays it back with `message reply <message_id>` — thurbox routes it
+  to that message's sender, so flow never handles a worker's session id. Flow is
+  a pure pass-through: it never answers, invents, or approves — it just wires the
+  worker to you and back. Several workers can be mid-conversation at once, each
+  tagged by its `#<id>`.
 - `status` for a one-screen report; `clean` to groom the backlog.
 - A tick prints the **board** — a quick-glance table of all live
   `flow` / worker (`… · #<id>`) sessions with status, age, and the task they're

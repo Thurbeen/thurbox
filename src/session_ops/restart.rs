@@ -25,12 +25,14 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
         .ok_or_else(|| format!("Cannot restart session {session_id} without agent_session_id"))?;
 
     let mut config = SessionConfig {
+        // Keep the same identity across a restart so `THURBOX_SESSION` is stable.
+        session_id: Some(session_id),
         agent_session_id: Some(agent_session_id.clone()),
         cwd: session.cwd.clone(),
         agent: session.agent.clone(),
         ..SessionConfig::default()
     };
-    super::inject_thurbox_env(&mut config, &agent_session_id);
+    super::inject_thurbox_env(&mut config, &agent_session_id, None);
     let def = super::resolve_agent_def(&config.agent);
     config.resume_session_id = super::resume_trigger_for(&def, &agent_session_id, &config.env);
 

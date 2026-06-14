@@ -605,7 +605,7 @@ mod tests {
         else {
             panic!("expected Message::Inbox");
         };
-        assert_eq!(for_session, "flow");
+        assert_eq!(for_session.as_deref(), Some("flow"));
         assert!(claim);
         assert!(!all);
     }

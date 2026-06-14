@@ -440,14 +440,37 @@ conventions, not an enum), a `body`, and optional provenance (`from_session_id`,
   limits; `prune_messages` / `prune_old_messages` (read messages older than
   `DEFAULT_RETENTION_DAYS`) run at DB open and on every `automation tick`,
   mirroring audit-log pruning. The mailbox is **not** audited (high-churn).
-- **CLI** (`thurbox-cli message`, alias `msg`): `send --to <uuid|name> --kind
-  <k> [--task <id>] [--from <uuid|name>] --body <text> [--no-wake]` enqueues and,
-  unless `--no-wake`, types a short `inbox` token into the recipient's pane
-  (reusing `agent::tmux::send_prompt_now`) to nudge it to drain now; `inbox --for
-  <uuid|name> [--claim] [--all] [--limit N]` reads it (`--claim` = atomic drain);
-  `prune [--older-than-days N] [--read-only]`. `cli::messages` resolves a session
-  by UUID **or** name via `Database::get_session_by_name`. `PRAGMA data_version`
-  already surfaces writes to the TUI — no sync/`SharedState` change.
+- **Identity (the registry key, self-knowable).** A session's thurbox
+  `SessionId` is **stable for life** — `respawn_stale_session` reuses the
+  original id on re-adoption (no soft-delete + new-row churn), so a cached id or
+  queued message addressed to a session never goes stale. At spawn thurbox
+  injects `THURBOX_SESSION` (= the `SessionId`, threaded via
+  `SessionConfig.session_id` so it's known *before* launch and reused on
+  respawn) and, for task-spawned sessions, `THURBOX_TASK` (= the task id). These
+  are distinct from the pre-existing `THURBOX_SESSION_ID` (= `agent_session_id`,
+  read by the metrics statusline). A `thurbox-cli` call running *inside* a
+  session thus proves its own identity without scraping panes or names.
+- **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
+  - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
+    <text> [--no-wake]` enqueues and, unless `--no-wake`, types a short `inbox`
+    token into the recipient's pane (`agent::tmux::send_prompt_now`) to nudge a
+    drain. **Provenance + task tag default to the caller's injected identity**
+    (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
+    `--task` override.
+  - `reply <message_id> --body <text> [--kind k] [--from …] [--no-wake]` —
+    enqueues back to the *original message's sender* (looked up via
+    `get_message`) and wakes them, carrying the original `from_task_id`. The
+    replier handles only the opaque message id — never a peer's session id. This
+    is how flow relays the user's answer without name-scraping.
+  - `inbox [--for <uuid|name>] [--claim] [--all] [--limit N]` reads it (`--claim`
+    = atomic drain); **`--for` defaults to the calling session** so an agent
+    reads its own mail with no id.
+  - `prune [--older-than-days N] [--read-only]`.
+  - `cli::messages` resolves a session by UUID **or** name (`resolve_uuid_or_name`
+    → `Database::get_session_by_name`); a `send`/`reply` with a wake also arms the
+    automation heartbeat (`cli::automations::arm_heartbeat`) so a missed wake is
+    still drained headless. `PRAGMA data_version` already surfaces writes to the
+    TUI — no sync/`SharedState` change.
 
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on
@@ -618,11 +641,16 @@ sync, but the TUI editor never sets it.)
   before it codes and stays in scope. Worker↔flow coordination is
   **event-driven over the [inter-session message queue](#inter-session-messages-mailbox-queue)**:
   a worker pushes `message send --to flow --kind questions|plan|result`
-  (which wakes flow); flow drains its inbox (`message inbox --for flow
-  --claim`), surfaces the questions/plan under "Needs you", and relays the
-  user's answer/approval back to the worker with `session send`. The
-  `flow-tick` automation is demoted to a janitor/safety-net (drain missed
-  wakes, reset stale tasks, dispatch). The behavior spec
+  (which wakes flow) — passing **no ids** (thurbox auto-stamps the sender + task
+  from the injected `THURBOX_SESSION`/`THURBOX_TASK`); flow drains its inbox
+  (`message inbox --claim`, `--for` defaults to itself), surfaces the
+  questions/plan under "Needs you", and relays the user's answer/approval back
+  with `message reply <message_id>` — thurbox routes it to that message's sender,
+  so flow never maps a task to a session id (the old `flow-snapshot.sh`
+  name-parsing is now human-board only). The worker drains its own inbox on the
+  resulting `inbox` wake. The `flow-tick` automation is demoted to a
+  janitor/safety-net (drain missed wakes, reset stale tasks, dispatch). The
+  behavior spec
   is `FLOW.md`, surfaced to whichever CLI runs it via context-file
   symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). Install with
   `thurbox-cli extension install flow` (its `install.sh` is a thin shim

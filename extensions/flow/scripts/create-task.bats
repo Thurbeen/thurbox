@@ -32,6 +32,12 @@ setup() {
   # The old batched phrasing (and its multi-question example body) must be gone.
   [[ "$output" != *"as ONE message"* ]]
   [[ "$output" != *"Q1 ..."* ]]
+  # The worker passes NO ids — thurbox injects identity + task tag. The old
+  # `--task <id>` / `--from` hand-typing must be gone, and the reply arrives in
+  # the worker's own inbox (drained on the `inbox` wake).
+  [[ "$output" != *"--task <id>"* ]]
+  [[ "$output" != *"--from"* ]]
+  [[ "$output" == *"message inbox --claim"* ]]
   [[ "$output" == *"message send --to flow --kind plan"* ]]
   [[ "$output" == *"## Problem"* ]]
   [[ "$output" == *"## Acceptance criteria"* ]]

@@ -331,6 +331,11 @@ impl Session {
         )?;
 
         let mut info = SessionInfo::new(name);
+        // Reuse the caller-supplied id when present (stable identity across a
+        // respawn; matches the `THURBOX_SESSION` env injected before launch).
+        if let Some(id) = config.session_id {
+            info.id = id;
+        }
         info.agent_session_id = config.agent_session_id.clone();
         info.cwd = config.cwd.clone();
         if !config.agent.is_empty() {

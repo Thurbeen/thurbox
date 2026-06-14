@@ -535,6 +535,28 @@ mod tests {
     }
 
     #[test]
+    fn respawn_reuses_id_revives_one_active_row() {
+        // Models `respawn_stale_session`: re-upserting the SAME id after a
+        // soft-delete must revive the single row in place (clear deleted_at), not
+        // leave a tombstone behind — so a session's identity is stable for life.
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("worker");
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.soft_delete_session(sid).unwrap();
+        assert!(db.list_active_sessions().unwrap().is_empty());
+
+        // Respawn: same id, fresh backend_id (as the new tmux pane would have).
+        session.backend_id = "thurbox:@9".to_string();
+        db.upsert_session(&session).unwrap();
+
+        let active = db.list_active_sessions().unwrap();
+        assert_eq!(active.len(), 1, "exactly one active row");
+        assert_eq!(active[0].id, sid, "id is stable across the respawn");
+        assert_eq!(active[0].backend_id, "thurbox:@9");
+    }
+
+    #[test]
     fn restore_session() {
         let db = Database::open_in_memory().unwrap();
         let session = make_session("Session 1");

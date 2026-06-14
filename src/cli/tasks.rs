@@ -297,6 +297,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 agent_session_id: None,
                 host: None,
                 parent_session_id: None,
+                task_id: Some(task.id),
             };
             crate::session_ops::spawn_session_headless(db, req)?;
             crate::agent::tmux::send_prompt_after_delay(&name, &prompt, BOOT_DELAY_SECS)

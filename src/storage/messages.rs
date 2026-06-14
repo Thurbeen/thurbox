@@ -144,6 +144,15 @@ impl Database {
         rows.collect()
     }
 
+    /// Fetch a single message by id (read or unread), if it exists. Used by the
+    /// `reply` path to look up the original sender.
+    pub fn get_message(&self, id: i64) -> rusqlite::Result<Option<SessionMessage>> {
+        let sql = format!("SELECT {COLS} FROM session_messages WHERE id = ?1");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query_map(params![id], map_message)?;
+        rows.next().transpose()
+    }
+
     /// Atomically claim (drain) up to `limit` unread messages for a recipient:
     /// mark the oldest unread read and return exactly those, in a **single**
     /// `UPDATE … RETURNING` statement. SQLite serializes writers, so the

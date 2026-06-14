@@ -37,6 +37,10 @@ pub struct SpawnRequest {
     /// Optional parent session (lead/worker relationship for orchestration).
     /// Must reference an existing active session.
     pub parent_session_id: Option<SessionId>,
+    /// Optional originating task id. When set it is injected as `THURBOX_TASK`
+    /// so the session's outgoing messages auto-tag `from_task_id` without the
+    /// agent passing any id by hand.
+    pub task_id: Option<i64>,
 }
 
 /// Result returned on successful headless spawn.
@@ -69,14 +73,19 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    // Mint the thurbox SessionId up front so it can be injected into the
+    // process env (`THURBOX_SESSION`) before the agent launches.
+    let session_id = SessionId::default();
+
     let mut config = SessionConfig {
+        session_id: Some(session_id),
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(cwd.clone()),
         agent: agent_name.clone(),
         backend: (backend_type != LOCAL_TMUX_BACKEND_TYPE).then(|| backend_type.clone()),
         ..SessionConfig::default()
     };
-    super::inject_thurbox_env(&mut config, &agent_session_id);
+    super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
 
     let (command, args) = super::build_agent_invocation(&config);
 
@@ -99,7 +108,6 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         }
     };
 
-    let session_id = SessionId::default();
     let shared = SharedSession {
         id: session_id,
         name: req.name.clone(),
@@ -245,6 +253,7 @@ mod tests {
             agent_session_id: None,
             host: None,
             parent_session_id: None,
+            task_id: None,
         }
     }
 

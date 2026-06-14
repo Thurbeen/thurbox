@@ -27,8 +27,10 @@ echo
 echo "## sessions (flow / workers)"
 # Worker sessions are named "<title> · #<id>" (current) or "task-<id>[-…]"
 # (legacy) — mirror Task::matches_spawn_session. The derived #<id> is printed
-# first so ANSWER can map a task id straight to the session uuid for
-# `session send`.
+# first purely for the **human board** (it tells you which task a worker is on).
+# Routing no longer relies on it: ANSWER replies by message id
+# (`message reply <id>`), and thurbox resolves the sender — flow never maps a
+# task id to a session uuid.
 if SESSIONS="$(thurbox-cli session list --json 2>/dev/null)"; then
   printf '%s' "$SESSIONS" | jq -r '
     .[]

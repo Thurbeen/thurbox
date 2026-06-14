@@ -34,21 +34,42 @@ pub enum Action {
         /// Message body.
         #[arg(long)]
         body: String,
-        /// Originating task id, when sending on behalf of a thurbox task.
+        /// Originating task id. Defaults to the caller's `THURBOX_TASK` when run
+        /// inside a task-spawned session; pass explicitly to override.
         #[arg(long)]
         task: Option<i64>,
-        /// Sender session (UUID or name), for provenance.
+        /// Sender session (UUID or name), for provenance. Defaults to the caller
+        /// (`THURBOX_SESSION`) when run inside a session; pass to override.
         #[arg(long)]
         from: Option<String>,
         /// Don't type a wake nudge into the recipient's pane (enqueue silently).
         #[arg(long = "no-wake")]
         no_wake: bool,
     },
+    /// Reply to a message: enqueue back to its original sender and wake them.
+    /// The replier only needs the message id (no peer UUID/name handling).
+    Reply {
+        /// The message id being answered (from an `inbox` read).
+        message_id: i64,
+        /// Reply body.
+        #[arg(long)]
+        body: String,
+        /// Reply kind tag (defaults to "reply").
+        #[arg(long, default_value = "reply")]
+        kind: String,
+        /// Sender session (UUID or name); defaults to the caller (`THURBOX_SESSION`).
+        #[arg(long)]
+        from: Option<String>,
+        /// Don't type a wake nudge into the recipient's pane.
+        #[arg(long = "no-wake")]
+        no_wake: bool,
+    },
     /// Read a session's inbox. Peeks unread by default; `--claim` drains them.
     Inbox {
-        /// Recipient session (UUID or name).
+        /// Recipient session (UUID or name). Defaults to the calling session
+        /// (`THURBOX_SESSION`) so an agent reads its own mail with no id.
         #[arg(long = "for")]
-        for_session: String,
+        for_session: Option<String>,
         /// Atomically mark the returned messages read (exactly-once drain).
         #[arg(long)]
         claim: bool,
@@ -81,48 +102,56 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             no_wake,
         } => {
             let recipient = resolve_uuid_or_name(db, &to)?;
+            // Provenance + task tag default to the calling session's injected
+            // identity (`THURBOX_SESSION` / `THURBOX_TASK`), so an agent never has
+            // to know or pass its own ids. Explicit flags override.
             let from_session_id = match from {
                 Some(ref f) => Some(resolve_uuid_or_name(db, f)?.id),
-                None => None,
+                None => calling_session_id(db),
             };
+            let from_task_id = task.or_else(calling_task_id);
             let new = NewMessage {
                 to_session_id: recipient.id,
                 from_session_id,
-                from_task_id: task,
+                from_task_id,
                 kind,
                 body,
             };
-            let id = db
-                .enqueue_message(&new)
-                .map_err(|e| format!("enqueue_message: {e}"))?;
-
-            let mut woke = false;
-            if !no_wake {
-                // Best-effort nudge: a missing/dead window must not fail the send
-                // (the message is already durably queued for the next drain).
-                match crate::agent::tmux::send_prompt_now(&recipient.name, WAKE_TOKEN) {
-                    Ok(()) => woke = true,
-                    Err(e) => tracing::debug!(
-                        "message send: wake nudge to {} failed: {e}",
-                        recipient.name
-                    ),
-                }
-            }
-            let human = format!(
-                "Enqueued message #{id} to '{}'{}.",
-                recipient.name,
-                if woke { " (woke it)" } else { "" }
-            );
-            Ok(CommandOutput::new(
-                json!({
-                    "enqueued": true,
-                    "message_id": id,
-                    "to_session_id": recipient.id.to_string(),
-                    "to_session_name": recipient.name,
-                    "woke": woke,
-                }),
-                human,
-            ))
+            enqueue_and_wake(db, &recipient, new, no_wake)
+        }
+        Action::Reply {
+            message_id,
+            body,
+            kind,
+            from,
+            no_wake,
+        } => {
+            let original = db
+                .get_message(message_id)
+                .map_err(|e| format!("get_message: {e}"))?
+                .ok_or_else(|| format!("Message not found: #{message_id}"))?;
+            let sender_id = original.from_session_id.ok_or_else(|| {
+                format!("Message #{message_id} has no known sender — cannot reply")
+            })?;
+            let recipient = db
+                .get_session_by_id(sender_id)
+                .map_err(|e| format!("get_session_by_id: {e}"))?
+                .ok_or_else(|| {
+                    format!("Sender of message #{message_id} ({sender_id}) no longer exists")
+                })?;
+            let from_session_id = match from {
+                Some(ref f) => Some(resolve_uuid_or_name(db, f)?.id),
+                None => calling_session_id(db),
+            };
+            // Carry the originating task tag through so the reply stays threaded.
+            let new = NewMessage {
+                to_session_id: recipient.id,
+                from_session_id,
+                from_task_id: original.from_task_id,
+                kind,
+                body,
+            };
+            enqueue_and_wake(db, &recipient, new, no_wake)
         }
         Action::Inbox {
             for_session,
@@ -130,7 +159,13 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             all,
             limit,
         } => {
-            let recipient = resolve_uuid_or_name(db, &for_session)?;
+            let recipient = match for_session {
+                Some(ref r) => resolve_uuid_or_name(db, r)?,
+                None => calling_session(db).ok_or_else(|| {
+                    "no --for given and THURBOX_SESSION is unset (not running inside a session)"
+                        .to_string()
+                })?,
+            };
             let messages = if claim {
                 db.claim_messages(recipient.id, limit)
                     .map_err(|e| format!("claim_messages: {e}"))?
@@ -205,6 +240,72 @@ fn first_line(body: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// Enqueue a message + best-effort wake nudge, then build the command output.
+/// Shared by `send` and `reply`. `new.to_session_id` must be `recipient.id`
+/// (the recipient is also needed by name for the wake nudge).
+fn enqueue_and_wake(
+    db: &Database,
+    recipient: &SharedSession,
+    new: NewMessage,
+    no_wake: bool,
+) -> Result<CommandOutput, String> {
+    let id = db
+        .enqueue_message(&new)
+        .map_err(|e| format!("enqueue_message: {e}"))?;
+
+    let mut woke = false;
+    if !no_wake {
+        // Best-effort nudge: a missing/dead window must not fail the send (the
+        // message is already durably queued for the next drain).
+        match crate::agent::tmux::send_prompt_now(&recipient.name, WAKE_TOKEN) {
+            Ok(()) => woke = true,
+            Err(e) => {
+                tracing::debug!("message: wake nudge to {} failed: {e}", recipient.name)
+            }
+        }
+        // Keep the headless janitor ticking so a missed wake is still drained in
+        // bounded time even when the TUI never started (durability is already
+        // guaranteed by the queue; this guarantees timeliness too). Tied to the
+        // wake path so silent (`--no-wake`) enqueues stay tmux-free.
+        crate::cli::automations::arm_heartbeat();
+    }
+
+    let human = format!(
+        "Enqueued message #{id} to '{}'{}.",
+        recipient.name,
+        if woke { " (woke it)" } else { "" }
+    );
+    Ok(CommandOutput::new(
+        json!({
+            "enqueued": true,
+            "message_id": id,
+            "to_session_id": recipient.id.to_string(),
+            "to_session_name": recipient.name,
+            "woke": woke,
+        }),
+        human,
+    ))
+}
+
+/// The calling session, resolved from the `THURBOX_SESSION` env var thurbox
+/// injects at spawn (the registry key). `None` when not running inside a thurbox
+/// session, or the id no longer maps to a live row.
+fn calling_session(db: &Database) -> Option<SharedSession> {
+    let raw = std::env::var("THURBOX_SESSION").ok()?;
+    let id: SessionId = raw.parse().ok()?;
+    db.get_session_by_id(id).ok().flatten()
+}
+
+/// The calling session's id from `THURBOX_SESSION` (used for provenance).
+fn calling_session_id(db: &Database) -> Option<SessionId> {
+    calling_session(db).map(|s| s.id)
+}
+
+/// The calling session's originating task id from the injected `THURBOX_TASK`.
+fn calling_task_id() -> Option<i64> {
+    std::env::var("THURBOX_TASK").ok()?.parse().ok()
 }
 
 /// Resolve a session reference that may be either a UUID or a session name.
@@ -288,7 +389,7 @@ mod tests {
         // Peek (unread) without consuming.
         let peek = run(
             Action::Inbox {
-                for_session: "flow".into(),
+                for_session: Some("flow".into()),
                 claim: false,
                 all: false,
                 limit: None,
@@ -303,7 +404,7 @@ mod tests {
         // Claim drains exactly once.
         let claimed = run(
             Action::Inbox {
-                for_session: "flow".into(),
+                for_session: Some("flow".into()),
                 claim: true,
                 all: false,
                 limit: None,
@@ -314,7 +415,7 @@ mod tests {
         assert_eq!(claimed.as_array().unwrap().len(), 1);
         let empty = run(
             Action::Inbox {
-                for_session: "flow".into(),
+                for_session: Some("flow".into()),
                 claim: true,
                 all: false,
                 limit: None,
@@ -344,7 +445,7 @@ mod tests {
         .unwrap();
         let peek = run(
             Action::Inbox {
-                for_session: "flow".into(),
+                for_session: Some("flow".into()),
                 claim: false,
                 all: false,
                 limit: None,
@@ -356,6 +457,126 @@ mod tests {
             peek[0]["from_session_id"].as_str(),
             Some(worker.to_string().as_str())
         );
+    }
+
+    #[test]
+    fn reply_routes_back_to_original_sender() {
+        let db = db();
+        add_session(&db, "flow");
+        let worker = add_session(&db, "worker");
+        // Worker → flow (provenance recorded via explicit --from, as the env is
+        // unset in tests).
+        let sent = run(
+            Action::Send {
+                to: "flow".into(),
+                kind: "questions".into(),
+                body: "Q1?".into(),
+                task: Some(7),
+                from: Some("worker".into()),
+                no_wake: true,
+            },
+            &db,
+        )
+        .unwrap();
+        let msg_id = sent["message_id"].as_i64().unwrap();
+
+        // Flow replies by message id — no peer id handling.
+        run(
+            Action::Reply {
+                message_id: msg_id,
+                body: "use the new API".into(),
+                kind: "reply".into(),
+                from: Some("flow".into()),
+                no_wake: true,
+            },
+            &db,
+        )
+        .unwrap();
+
+        // The reply lands in the worker's inbox, threaded on the original task.
+        let worker_inbox = run(
+            Action::Inbox {
+                for_session: Some("worker".into()),
+                claim: false,
+                all: false,
+                limit: None,
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(worker_inbox.as_array().unwrap().len(), 1);
+        assert_eq!(worker_inbox[0]["body"], "use the new API");
+        assert_eq!(worker_inbox[0]["from_task_id"], 7);
+        assert_eq!(
+            worker_inbox[0]["to_session_id"].as_str(),
+            Some(worker.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn reply_without_known_sender_errors() {
+        let db = db();
+        add_session(&db, "flow");
+        // A message with no provenance (from_session_id = None).
+        let sent = run(
+            Action::Send {
+                to: "flow".into(),
+                kind: "note".into(),
+                body: "anon".into(),
+                task: None,
+                from: None,
+                no_wake: true,
+            },
+            &db,
+        )
+        .unwrap();
+        let msg_id = sent["message_id"].as_i64().unwrap();
+        let err = run(
+            Action::Reply {
+                message_id: msg_id,
+                body: "hi".into(),
+                kind: "reply".into(),
+                from: None,
+                no_wake: true,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("no known sender"), "got {err}");
+    }
+
+    #[test]
+    fn reply_to_missing_message_errors() {
+        let db = db();
+        let err = run(
+            Action::Reply {
+                message_id: 999,
+                body: "hi".into(),
+                kind: "reply".into(),
+                from: None,
+                no_wake: true,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("Message not found"), "got {err}");
+    }
+
+    #[test]
+    fn inbox_without_for_and_no_env_errors() {
+        let db = db();
+        // No --for and (in tests) THURBOX_SESSION unset → a clear error.
+        let err = run(
+            Action::Inbox {
+                for_session: None,
+                claim: false,
+                all: false,
+                limit: None,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("THURBOX_SESSION"), "got {err}");
     }
 
     #[test]
@@ -380,7 +601,7 @@ mod tests {
         // Claim it (marks read), then send a second unread one.
         run(
             Action::Inbox {
-                for_session: "flow".into(),
+                for_session: Some("flow".into()),
                 claim: true,
                 all: false,
                 limit: None,
@@ -393,7 +614,7 @@ mod tests {
         // Default peek shows only the unread one...
         let unread = run(
             Action::Inbox {
-                for_session: "flow".into(),
+                for_session: Some("flow".into()),
                 claim: false,
                 all: false,
                 limit: None,
@@ -407,7 +628,7 @@ mod tests {
         // ...--all shows both (read + unread).
         let all = run(
             Action::Inbox {
-                for_session: "flow".into(),
+                for_session: Some("flow".into()),
                 claim: false,
                 all: true,
                 limit: None,

@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
 # Tests for the worker-session matching in flow-snapshot.sh / flow-summary.sh.
 # Worker sessions are named "<title> · #<id>" (current) or "task-<id>[-…]"
-# (legacy); both scripts must list them and map them to their task #<id> so the
-# flow agent can resolve a worker's session uuid for `session send`. A stub
-# `thurbox-cli` on PATH feeds canned `session list` / `task list` JSON, so these
-# run anywhere bats + jq are installed.
+# (legacy); both scripts must list them and tag them with their task #<id> for
+# the **human board** (routing now goes through `message reply <id>`, which
+# thurbox resolves — these scripts no longer drive it). A stub `thurbox-cli` on
+# PATH feeds canned `session list` / `task list` JSON, so these run anywhere
+# bats + jq are installed.
 
 setup() {
   SNAPSHOT="${BATS_TEST_DIRNAME}/flow-snapshot.sh"

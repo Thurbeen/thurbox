@@ -527,6 +527,7 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
                         agent_session_id: None,
                         host: None,
                         parent_session_id: None,
+                        task_id: None,
                     },
                 )?;
                 report.sessions_created.push(sess.name.clone());

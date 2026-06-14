@@ -457,6 +457,7 @@ fn fire_headless(
                 agent_session_id: None,
                 host: None,
                 parent_session_id: None,
+                task_id: None,
             };
             match crate::session_ops::spawn_session_headless(db, req) {
                 Ok(result) => {
@@ -559,7 +560,7 @@ fn automation_to_json(a: &Automation) -> Value {
 /// Best-effort: ensure the tmux heartbeat keeper is running so the automation
 /// fires even when no TUI is attached. Failures (e.g. tmux missing) are
 /// non-fatal — the automation still works while the TUI is up.
-fn arm_heartbeat() {
+pub(crate) fn arm_heartbeat() {
     let cli = crate::agent::tmux::resolve_cli_binary();
     if let Err(e) = crate::agent::tmux::ensure_automation_heartbeat(&cli) {
         eprintln!("warning: failed to arm automation heartbeat: {e}");

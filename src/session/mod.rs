@@ -245,6 +245,12 @@ pub struct SessionCommand {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
+    /// Desired thurbox [`SessionId`] for the spawned session. When set, the
+    /// spawn path uses this id instead of minting a fresh one — so the id is
+    /// known *before* launch (to inject it into the process env as
+    /// `THURBOX_SESSION`) and can be reused across a respawn so a session's
+    /// identity is stable for life. `None` mints a new id at spawn.
+    pub session_id: Option<SessionId>,
     /// Resume an existing agent session (process restart of a known session).
     pub resume_session_id: Option<String>,
     /// Pin a session id on a fresh spawn (agents that support it).

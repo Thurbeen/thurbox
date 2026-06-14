@@ -41,8 +41,11 @@ Pattern-match the incoming message:
 **Workers push, you don't scrape.** Each worker reports through the durable
 message queue: it runs `thurbox-cli message send --to flow --kind
 questions|plan|result …`, which enqueues the message **and** types `inbox` into
-your pane to wake you. You read it with `thurbox-cli message inbox --for flow
---claim --json` (DRAIN) — never by capturing the worker's terminal.
+your pane to wake you. You read it with `thurbox-cli message inbox --claim --json`
+(DRAIN) — never by capturing the worker's terminal. (`--for` defaults to *you*,
+the calling session, so you don't pass your own id.) Thurbox stamps each message
+with its sender, so you reply by message id alone — **you never look up or handle
+a worker's session id**.
 
 **ANSWER vs CAPTURE.** When you surfaced a worker's clarifying questions or plan,
 the user's next free-text message is almost always the **answers / approval**,
@@ -183,21 +186,22 @@ first step of every TICK, so a missed wake never strands a worker.
    same one twice):
 
    ```bash
-   thurbox-cli message inbox --for flow --claim --json
+   thurbox-cli message inbox --claim --json
    ```
 
-   Each item is JSON: `{ "kind", "body", "from_task_id", ... }`. (Pass `--json`
-   because you run inside a tmux pane — a TTY — where the CLI otherwise prints a
-   human-readable table.)
+   Each item is JSON: `{ "id", "kind", "body", "from_task_id", ... }`. (Pass
+   `--json` because you run inside a tmux pane — a TTY — where the CLI otherwise
+   prints a human-readable table. `--for` defaults to you.) **Keep each surfaced
+   message's `id`** — it's the handle you reply to in ANSWER.
 2. For each message, by `kind`:
    - **`questions`** → the worker is parked waiting on you with a **single**
      clarifying question (workers ask one at a time, not in a batch). List the
-     `body` **verbatim** under "Needs you", tagged `#<from_task_id> <title>`. The
-     user's answer lets the worker send its next question (another `questions`
-     message) or move on to the plan.
+     `body` **verbatim** under "Needs you", tagged `#<from_task_id> <title>` and
+     noting its message `id`. The user's answer lets the worker send its next
+     question (another `questions` message) or move on to the plan.
    - **`plan`** → the worker wants approval before it codes. Show the `body`
-     **verbatim** under "Needs you", tagged `#<from_task_id> <title>`, and make
-     clear it needs an **approve / change** decision.
+     **verbatim** under "Needs you", tagged `#<from_task_id> <title>` (noting its
+     message `id`), and make clear it needs an **approve / change** decision.
    - **`result`** → the worker finished. Parse the `body` JSON: if
      `"status":"ok"`, mark the task done (`task edit <from_task_id> --status
      done`) and note it; if `"status":"error"`, surface it under "Needs you".
@@ -218,22 +222,22 @@ pass it through.**
 
 When the user replies to a question or a plan you surfaced:
 
-1. Identify the waiting worker. Usually it's the one whose message you most
-   recently surfaced; map its `#<id>` to the session uuid via `flow-snapshot.sh`
-   (its `## sessions` block prints each worker's `#<id>` next to its uuid) or
-   `session list` (session name `… · #<id>`, or legacy `task-<id>-…`). If several
+1. Identify which surfaced message the reply answers — normally the one you most
+   recently surfaced. You need its **message `id`** (kept from DRAIN). If several
    workers are waiting and the reply doesn't make the target obvious, route by
    content — or ask ONE short routing question (`#<id> or #<id>?`).
-2. Relay the reply verbatim into that worker's session:
+2. Relay the reply verbatim with `message reply`, addressing the **message id**
+   (thurbox routes it back to that message's sender and wakes them — you never
+   touch a session id):
 
    ```bash
-   thurbox-cli session send <worker-uuid> "<the user's reply, verbatim>"
+   thurbox-cli message reply <message_id> --body "<the user's reply, verbatim>"
    ```
 
-   The worker resumes from there (plans after answers; builds after approval).
-   Your `send` is what wakes it.
-3. Confirm one line (`relayed → #<id>`) and end with the Output Contract footer.
-   Create no task; an ANSWER is not a brain-dump.
+   The worker drains its inbox on the wake and resumes (plans after answers;
+   builds after approval).
+3. Confirm one line (`relayed → #<from_task_id>`) and end with the Output Contract
+   footer. Create no task; an ANSWER is not a brain-dump.
 
 ## TICK (from the automation — quiet janitor + safety net)
 
