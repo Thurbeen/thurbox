@@ -43,6 +43,15 @@
   margin: 0 0 var(--space-sm) 0;
 }
 
+.docs-sidebar .sidebar-subheading {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 0.35rem 0.75rem 0.1rem;
+}
+
 .docs-sidebar li {
   margin: 0;
 }

@@ -135,6 +135,27 @@
   background: var(--bg-secondary);
 }
 
+.feature-link {
+  display: block;
+  text-decoration: none;
+}
+
+.feature-link .card {
+  height: 100%;
+}
+
+.feature-link .card h3 {
+  color: var(--text-primary);
+}
+
+.feature-link:hover .card {
+  border-color: var(--text-muted);
+}
+
+.feature-link:hover .card h3 {
+  color: var(--cyan);
+}
+
 .features .card-icon {
   display: inline-flex;
   align-items: center;

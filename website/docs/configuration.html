@@ -1,0 +1,539 @@
+---
+layout: docs.njk
+title: 'Configuration — Thurbox Docs'
+description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, settings.toml feature flags, themes.toml, keybindings.json, extension manifests, SQLite-backed state, and environment variables.'
+currentPage: 'configuration'
+breadcrumb: 'Configuration'
+onThisPage:
+  - { id: 'files', label: 'Files at a glance' }
+  - { id: 'agents-toml', label: 'agents.toml' }
+  - { id: 'hosts-toml', label: 'hosts.toml' }
+  - { id: 'settings-toml', label: 'settings.toml' }
+  - { id: 'themes-toml', label: 'themes.toml' }
+  - { id: 'keybindings-json', label: 'keybindings.json' }
+  - { id: 'extensions', label: 'Extensions' }
+  - { id: 'sqlite-settings', label: 'SQLite settings' }
+  - { id: 'environment', label: 'Environment variables' }
+  - { id: 'versioning', label: 'Versioning' }
+---
+<h1>Configuration</h1>
+
+          <p>
+            Every knob Thurbox reads, where it lives, and how it behaves. One file per
+            audience/lifecycle: hand-edited registries are TOML, the machine-written keybindings
+            are JSON, and concurrently-written runtime state lives in SQLite.
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>Dev builds</strong>
+              (version
+              <code>0.0.0-dev</code>
+              ) use
+              <code>thurbox-dev</code>
+              in place of
+              <code>thurbox</code>
+              in every path below, plus a
+              <code>thurbox-dev</code>
+              tmux socket, so a development checkout never touches your real setup. All paths
+              respect
+              <code>$XDG_CONFIG_HOME</code>
+              /
+              <code>$XDG_DATA_HOME</code>
+              .
+            </p>
+          </div>
+
+          <h2 id="files">
+            Files at a glance
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Format</th>
+                <th>Edited by</th>
+                <th>Read</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>~/.config/thurbox/agents.toml</code></td>
+                <td>TOML</td>
+                <td>you</td>
+                <td>live (mtime poll)</td>
+                <td>coding-agent CLI definitions</td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/hosts.toml</code></td>
+                <td>TOML</td>
+                <td>you</td>
+                <td>startup</td>
+                <td>remote SSH hosts</td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/settings.toml</code></td>
+                <td>TOML</td>
+                <td>you</td>
+                <td>startup</td>
+                <td>tuning knobs + feature flags</td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/themes.toml</code></td>
+                <td>TOML</td>
+                <td>you</td>
+                <td>startup</td>
+                <td>custom theme palettes</td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/keybindings.json</code></td>
+                <td>JSON</td>
+                <td>F1 editor (or you)</td>
+                <td>live (mtime poll)</td>
+                <td>key chord overrides</td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/extensions/&lt;name&gt;.toml</code></td>
+                <td>TOML</td>
+                <td><code>extension install</code></td>
+                <td>startup + tick</td>
+                <td>extension manifests (self-healed resources)</td>
+              </tr>
+              <tr>
+                <td><code>~/.local/share/thurbox/thurbox.db</code></td>
+                <td>SQLite</td>
+                <td>thurbox</td>
+                <td>live</td>
+                <td>sessions, automations, tasks, theme, editor command</td>
+              </tr>
+              <tr>
+                <td><code>~/.local/share/thurbox/thurbox.log</code></td>
+                <td>text</td>
+                <td>thurbox</td>
+                <td>&mdash;</td>
+                <td>logs (incl. config warnings)</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            <code>agents.toml</code>
+            and
+            <code>keybindings.json</code>
+            reload
+            <strong>live</strong>
+            : the TUI polls their mtime (~1/s) and applies edits with a confirmation toast &mdash;
+            no restart.
+            <code>hosts.toml</code>
+            ,
+            <code>settings.toml</code>
+            , and
+            <code>themes.toml</code>
+            need a restart.
+          </p>
+          <p>
+            Config problems are
+            <strong>not silent</strong>
+            : parse errors, unknown fields, invalid chords, and chord conflicts surface as a
+            status-bar toast on startup (and in the log file). Unknown TOML keys are tolerated and
+            reported by name, while syntax/type errors fall back to built-ins (agents), zero hosts,
+            or defaults (settings). Check everything from the command line:
+          </p>
+          <pre><code>thurbox-cli config validate   # strict parse of every file; exit 1 on problems
+thurbox-cli config show       # effective config + where each value came from</code></pre>
+
+          <h2 id="agents-toml">
+            agents.toml
+            <a href="#agents-toml" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Declares the launchable coding agents. Seeded with the built-ins (
+            <code>claude</code>
+            ,
+            <code>codex</code>
+            ,
+            <code>gemini</code>
+            ,
+            <code>opencode</code>
+            ,
+            <code>aider</code>
+            ,
+            <code>vibe</code>
+            ) on first run; edit or add
+            <code>[[agents]]</code>
+            entries to support any CLI &mdash; no recompile. A malformed file falls back to the
+            built-ins and shows the error.
+          </p>
+          <pre><code>config_version = 1
+default = "claude"          # agent preselected in the picker / headless spawns
+
+[[agents]]
+name = "claude"             # display + lookup name (unique)
+command = "claude"          # executable
+args = []                   # always passed; bake a model here if you want one
+resume_args = ["--resume", "{id}"]            # emitted when resuming
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]   # emitted on a fresh spawn
+resume_latest = false       # true = id-less "resume last session in cwd"</code></pre>
+          <p>
+            <code>{id}</code>
+            is substituted with the thurbox-generated session UUID. Groups are emitted only when
+            their driving value exists; precedence is fork &gt; resume &gt; new-session.
+          </p>
+
+          <h2 id="hosts-toml">
+            hosts.toml
+            <a href="#hosts-toml" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Declares remote SSH hosts; each
+            <code>[[hosts]]</code>
+            entry registers a session backend named
+            <code>ssh:&lt;name&gt;</code>
+            . Seeded fully commented-out (fresh installs are local-only). A malformed file means
+            zero remote hosts and shows the error.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Required</th>
+                <th>Default</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>name</code></td>
+                <td>yes</td>
+                <td>&mdash;</td>
+                <td>backend id <code>ssh:&lt;name&gt;</code>; what <code>--host</code> expects</td>
+              </tr>
+              <tr>
+                <td><code>destination</code></td>
+                <td>yes</td>
+                <td>&mdash;</td>
+                <td>ssh target (<code>user@host</code> or <code>~/.ssh/config</code> alias)</td>
+              </tr>
+              <tr>
+                <td><code>ssh_opts</code></td>
+                <td>no</td>
+                <td><code>[]</code></td>
+                <td>extra ssh flags, one token per element</td>
+              </tr>
+              <tr>
+                <td><code>socket</code></td>
+                <td>no</td>
+                <td><code>thurbox</code></td>
+                <td>remote <code>tmux -L</code> socket</td>
+              </tr>
+              <tr>
+                <td><code>session</code></td>
+                <td>no</td>
+                <td><code>thurbox</code></td>
+                <td>remote tmux session name</td>
+              </tr>
+              <tr>
+                <td><code>worktrees_dir</code></td>
+                <td>no</td>
+                <td>remote <code>$HOME/.local/share/thurbox/worktrees</code></td>
+                <td>absolute remote worktrees dir</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            Auth comes entirely from your
+            <code>~/.ssh/config</code>
+            ; thurbox never handles credentials. Host changes require a restart.
+          </p>
+
+          <h2 id="settings-toml">
+            settings.toml
+            <a href="#settings-toml" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Scalar tuning knobs plus the
+            <code>[features]</code>
+            switches, seeded fully commented-out (defaults apply when absent). Only knobs a user
+            plausibly wants are exposed; internals stay hardcoded.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Default</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>scrollback_lines</code></td>
+                <td><code>1000</code></td>
+                <td>terminal scrollback kept per session</td>
+              </tr>
+              <tr>
+                <td><code>two_panel_min_cols</code></td>
+                <td><code>80</code></td>
+                <td>width below which only the terminal renders</td>
+              </tr>
+              <tr>
+                <td><code>three_panel_min_cols</code></td>
+                <td><code>120</code></td>
+                <td>width unlocking the optional third column</td>
+              </tr>
+              <tr>
+                <td><code>audit_retention_days</code></td>
+                <td><code>90</code></td>
+                <td>audit-log history kept (pruned on startup)</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3><code>[features]</code> &mdash; whole-feature switches</h3>
+          <p>
+            Turn major TUI features off entirely. All default to
+            <code>true</code>
+            ; like the rest of settings.toml, changes need a restart. A disabled feature's pane
+            never renders, its keybinding shows a status toast instead of acting, and its
+            global-search scope returns no results. Data is never touched, so re-enabling a flag is
+            lossless.
+          </p>
+          <pre><code>[features]
+tasks = true          # F5/Ctrl+W tasks panel
+automations = true    # automations pane, Ctrl+P, schedule firing
+file_viewer = true    # F3/Ctrl+E file viewer
+global_search = true  # Ctrl+A search strip
+info_panel = true     # F2/Ctrl+B info panel
+shell_pane = true     # Ctrl+T per-session shell
+mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code></pre>
+          <p>
+            <code>automations = false</code>
+            is the one flag with teeth beyond the UI: it also stops the TUI from firing due
+            schedules and arming the tmux heartbeat at startup (explicit
+            <code>thurbox-cli automation</code>
+            commands still work).
+            <code>mouse = false</code>
+            skips terminal mouse capture entirely, so the terminal keeps its native mouse behavior.
+          </p>
+
+          <h2 id="themes-toml">
+            themes.toml
+            <a href="#themes-toml" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            User-defined themes, offered in the
+            <code>Ctrl+Y</code>
+            picker alongside the nine built-in presets and persisted by
+            <code>name</code>
+            like any preset. Each
+            <code>[[themes]]</code>
+            entry starts from a built-in
+            <code>base</code>
+            and overrides only the colours it names:
+          </p>
+          <pre><code>[[themes]]
+name = "my-mocha"            # stable id; must not shadow a built-in
+display_name = "My Mocha"    # picker label (default: name)
+base = "catppuccin-mocha"    # starting palette (default: default)
+accent = "#fab387"
+app_bg = "reset"             # keep the terminal's native background</code></pre>
+          <p>
+            Colours accept anything ratatui parses:
+            <code>#rrggbb</code>
+            , ANSI names (
+            <code>red</code>
+            ,
+            <code>lightcyan</code>
+            ), indexed (
+            <code>14</code>
+            ), or
+            <code>reset</code>
+            . Bad colours and built-in name collisions degrade to startup warnings.
+          </p>
+
+          <h2 id="keybindings-json">
+            keybindings.json
+            <a href="#keybindings-json" class="heading-anchor">#</a>
+          </h2>
+          <p>Maps <code>Action</code> names to one or more chord strings:</p>
+          <pre><code>{ "QuitApp": ["ctrl+x"], "OpenThemePicker": ["ctrl+y", "f4"] }</code></pre>
+          <ul>
+            <li>
+              The preferred editing path is the
+              <strong>F1 panel</strong>
+              (live capture, conflict stealing, immediate persistence). Hand-edits are read at
+              startup and live via mtime poll.
+            </li>
+            <li>
+              Chord syntax:
+              <code>[ctrl+][alt+][shift+][cmd+]&lt;key&gt;</code>
+              where
+              <code>&lt;key&gt;</code>
+              is a letter,
+              <code>f1</code>
+              &ndash;
+              <code>f12</code>
+              , or a named key (
+              <code>enter</code>
+              ,
+              <code>esc</code>
+              ,
+              <code>tab</code>
+              , arrows,
+              <code>home</code>
+              ,
+              <code>end</code>
+              ,
+              <code>pageup</code>
+              ,
+              <code>pagedown</code>
+              ,
+              <code>backspace</code>
+              ,
+              <code>delete</code>
+              ,
+              <code>insert</code>
+              ). Case-insensitive.
+              <code>cmd</code>
+              (aliases
+              <code>super</code>
+              ,
+              <code>command</code>
+              ,
+              <code>win</code>
+              ) is the macOS Command key, delivered only by kitty-keyboard-protocol terminals.
+            </li>
+            <li>
+              Unknown action names, invalid chords, and the same chord bound to two actions in
+              overlapping contexts are reported at startup (the file still loads; bad entries fall
+              back to defaults).
+            </li>
+          </ul>
+          <p>
+            See the
+            <a href="keybindings.html">Keybindings</a>
+            page for the full default chord table.
+          </p>
+
+          <h2 id="extensions">
+            Extensions
+            <a href="#extensions" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Each opt-in extension is described by a single
+            <code>extension.toml</code>
+            manifest.
+            <code>thurbox-cli extension install</code>
+            writes the home-resolved copy to
+            <code>~/.config/thurbox/extensions/&lt;name&gt;.toml</code>
+            (thurbox never seeds this dir). The manifest has an
+            <strong>install</strong>
+            spec and a
+            <strong>runtime</strong>
+            spec; see the
+            <a href="extensions.html">Extensions</a>
+            page for the full manifest format, lifecycle commands, and versioning.
+          </p>
+          <pre><code>thurbox-cli extension install flow         # fetch + lay files + agents + activate
+thurbox-cli extension list                 # installed + active/healthy + version/stale
+thurbox-cli extension update --all         # re-fetch every installed extension
+thurbox-cli extension activate &lt;name&gt;      # (re)create resources + mark active
+thurbox-cli extension deactivate &lt;name&gt;    # tear down + stop self-heal
+thurbox-cli extension status [&lt;name&gt;]      # per-resource presence + version/stale</code></pre>
+
+          <h2 id="sqlite-settings">
+            SQLite-backed settings
+            <a href="#sqlite-settings" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Live in the
+            <code>metadata</code>
+            table and apply immediately (no restart):
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Set via</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>active_theme</code></td>
+                <td><code>Ctrl+Y</code> / <code>F4</code> picker</td>
+                <td>TUI palette (nine built-ins)</td>
+              </tr>
+              <tr>
+                <td><code>editor_command</code></td>
+                <td><code>thurbox-cli editor set "&lt;cmd&gt;"</code></td>
+                <td>what <code>Ctrl+O</code> runs</td>
+              </tr>
+              <tr>
+                <td><code>active_extensions</code></td>
+                <td><code>extension activate/deactivate</code></td>
+                <td>JSON array of active extensions to self-heal</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            These are in the DB rather than a file because they are written concurrently by
+            multiple thurbox processes (TUI, CLI, MCP) and picked up live via
+            <code>PRAGMA data_version</code>
+            polling.
+          </p>
+
+          <h2 id="environment">
+            Environment variables
+            <a href="#environment" class="heading-anchor">#</a>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Variable</th>
+                <th>Used for</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>XDG_CONFIG_HOME</code>, <code>XDG_DATA_HOME</code></td>
+                <td>config/data roots</td>
+              </tr>
+              <tr>
+                <td><code>VISUAL</code>, then <code>EDITOR</code></td>
+                <td><code>Ctrl+O</code> editor when <code>editor_command</code> is unset</td>
+              </tr>
+              <tr>
+                <td><code>SHELL</code></td>
+                <td>the <code>Ctrl+T</code> companion shell pane (fallback <code>/bin/sh</code>)</td>
+              </tr>
+              <tr>
+                <td><code>RUST_LOG</code></td>
+                <td>log filter for <code>thurbox.log</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            Editor resolution order: DB
+            <code>editor_command</code>
+            &rarr;
+            <code>$VISUAL</code>
+            &rarr;
+            <code>$EDITOR</code>
+            &rarr; error toast.
+          </p>
+
+          <h2 id="versioning">
+            Versioning
+            <a href="#versioning" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The SQLite schema migrates automatically (
+            <code>schema_version</code>
+            in
+            <code>metadata</code>
+            ). The TOML files carry a
+            <code>config_version = 1</code>
+            marker so a future format change can migrate them too; current files are version 1 and
+            the field is optional.
+          </p>

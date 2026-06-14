@@ -1,15 +1,19 @@
 {%- set sections = [
   { heading: "Getting Started", links: [
-    { slug: "installation", href: "installation.html", label: "Installation" },
-    { slug: "features", href: "features.html", label: "Features" },
-    { slug: "keybindings", href: "keybindings.html", label: "Keybindings" }
+    { slug: "installation", href: "installation.html", label: "Installation" }
   ]},
-  { heading: "Extensions", links: [
+  { heading: "Features", links: [
+    { slug: "features", href: "features.html", label: "Overview" },
+    { subheading: "Extensions" },
     { slug: "extensions", href: "extensions.html", label: "Overview" },
     { slug: "extension-flow", href: "extension-flow.html", label: "Flow" },
     { slug: "extension-forge", href: "extension-forge.html", label: "Forge" },
     { slug: "extension-ci-shepherd", href: "extension-ci-shepherd.html", label: "CI-shepherd" },
     { slug: "extension-renovate", href: "extension-renovate.html", label: "Renovate" }
+  ]},
+  { heading: "Configurations", links: [
+    { slug: "configuration", href: "configuration.html", label: "Configuration" },
+    { slug: "keybindings", href: "keybindings.html", label: "Keybindings" }
   ]},
   { heading: "Reference", links: [
     { slug: "architecture", href: "architecture.html", label: "Architecture" }
@@ -23,6 +27,9 @@
   <h4>{{ section.heading }}</h4>
   <ul>
     {%- for link in section.links %}
+    {%- if link.subheading %}
+    <li class="sidebar-subheading">{{ link.subheading }}</li>
+    {%- else %}
     <li>
       <a
         href="{{ link.href }}"
@@ -30,6 +37,7 @@
         >{{ link.label }}</a
       >
     </li>
+    {%- endif %}
     {%- endfor %}
   </ul>
   {%- endfor %}

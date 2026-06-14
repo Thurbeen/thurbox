@@ -62,129 +62,147 @@ footer: true
           <p>Everything you need to run coding agents at scale</p>
         </div>
         <div class="grid grid-3">
-          <div class="card">
-            <div class="card-icon">&#x1f5a5;</div>
-            <h3>Persistent Sessions</h3>
-            <p>
-              Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. Sessions
-              persist across crashes, restarts, and multiple concurrent Thurbox instances.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f333;</div>
-            <h3>Git Worktrees &amp; Sync</h3>
-            <p>
-              Spawn sessions in isolated git worktrees for branch-level isolation. One-key sync (
-              <code>Ctrl+S</code>
-              ) rebases all worktrees from origin/main, with automatic conflict resolution and
-              worktree cleanup on session close.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f916;</div>
-            <h3>Any Coding Agent</h3>
-            <p>
-              A session runs one agent of your choice &mdash; Claude Code, Codex, Gemini CLI,
-              opencode, aider, Vibe, or any CLI you describe. Each agent runs with its own default
-              config. Mix different agents across the sidebar.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f6e1;</div>
-            <h3>Agent Definitions</h3>
-            <p>
-              Agents are declared as data in
-              <code>~/.config/thurbox/agents.toml</code>
-              , seeded with built-ins on first run. Add or tweak an agent &mdash; command and
-              argument templates &mdash; with no recompile.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x23f0;</div>
-            <h3>Automations</h3>
-            <p>
-              Named, scheduled agent runs &mdash; one-shot or recurring (cron, with
-              <code>daily</code>
-              /
-              <code>weekly</code>
-              presets). On schedule they
-              <strong>send</strong>
-              a prompt to a session or
-              <strong>spawn</strong>
-              a fresh one. Manage them from the always-on
-              <code>Ctrl+P</code>
-              pane (or the
-              <code>thurbox-cli</code>
-              headless binary); they fire even when the TUI is closed.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x2611;</div>
-            <h3>Tasks</h3>
-            <p>
-              A built-in todo list whose items
-              <strong>connect to a coding agent</strong>
-              &mdash;
-              <strong>send</strong>
-              the title to a session or
-              <strong>spawn</strong>
-              a fresh one. Toggle the panel with
-              <code>Ctrl+W</code>
-              ; edit in place, cycle status, and trigger the action with
-              <code>r</code>
-              .
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f9e9;</div>
-            <h3>Extensions</h3>
-            <p>
-              Opt-in,
-              <strong>agent-agnostic</strong>
-              add-ons that compose Thurbox through
-              <code>thurbox-cli</code>
-              &mdash; never the binary. Install each from a declarative manifest in one command (
-              <code>thurbox-cli extension install &lt;name&gt;</code>
-              ), and Thurbox keeps its session and automation
-              <strong>self-healed</strong>
-              . Ships flow, forge, ci-shepherd, and renovate (all experimental) &mdash;
-              <a href="docs/extensions.html">browse the extensions</a>
-              .
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f50d;</div>
-            <h3>Global Search</h3>
-            <p>
-              One key (
-              <code>Ctrl+A</code>
-              ) searches
-              <strong>every scope at once</strong>
-              &mdash; sessions (incl. live terminal content), tasks, automations, and files &mdash;
-              with matches highlighted live in the panels themselves.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f9e9;</div>
-            <h3>Persistent tmux Sessions</h3>
-            <p>
-              Every session runs in a dedicated
-              <code>tmux -L thurbox</code>
-              pane behind a single
-              <code>SessionBackend</code>
-              trait, so sessions survive crashes, restarts, and detaches.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon">&#x1f50c;</div>
-            <h3>Headless CLI</h3>
-            <p>
-              The
-              <code>thurbox-cli</code>
-              binary scripts everything from the terminal: create and drive sessions and schedule
-              commands, all sharing the TUI's SQLite database.
-            </p>
-          </div>
+          <a href="docs/features.html#session-orchestration" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f5a5;</div>
+              <h3>Persistent Sessions</h3>
+              <p>
+                Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. Sessions
+                persist across crashes, restarts, and multiple concurrent Thurbox instances.
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#git-worktrees" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f333;</div>
+              <h3>Git Worktrees &amp; Sync</h3>
+              <p>
+                Spawn sessions in isolated git worktrees for branch-level isolation. One-key sync (
+                <code>Ctrl+S</code>
+                ) rebases all worktrees from origin/main, with automatic conflict resolution and
+                worktree cleanup on session close.
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#session-orchestration" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f916;</div>
+              <h3>Any Coding Agent</h3>
+              <p>
+                A session runs one agent of your choice &mdash; Claude Code, Codex, Gemini CLI,
+                opencode, aider, Vibe, or any CLI you describe. Each agent runs with its own default
+                config. Mix different agents across the sidebar.
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#agent-definitions" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f6e1;</div>
+              <h3>Agent Definitions</h3>
+              <p>
+                Agents are declared as data in
+                <code>~/.config/thurbox/agents.toml</code>
+                , seeded with built-ins on first run. Add or tweak an agent &mdash; command and
+                argument templates &mdash; with no recompile.
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#automations" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x23f0;</div>
+              <h3>Automations</h3>
+              <p>
+                Named, scheduled agent runs &mdash; one-shot or recurring (cron, with
+                <code>daily</code>
+                /
+                <code>weekly</code>
+                presets). On schedule they
+                <strong>send</strong>
+                a prompt to a session or
+                <strong>spawn</strong>
+                a fresh one. Manage them from the always-on
+                <code>Ctrl+P</code>
+                pane (or the
+                <code>thurbox-cli</code>
+                headless binary); they fire even when the TUI is closed.
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#tasks" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x2611;</div>
+              <h3>Tasks</h3>
+              <p>
+                A built-in todo list whose items
+                <strong>connect to a coding agent</strong>
+                &mdash;
+                <strong>send</strong>
+                the title to a session or
+                <strong>spawn</strong>
+                a fresh one. Toggle the panel with
+                <code>Ctrl+W</code>
+                ; edit in place, cycle status, and trigger the action with
+                <code>r</code>
+                .
+              </p>
+            </div>
+          </a>
+          <a href="docs/extensions.html" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f9e9;</div>
+              <h3>Extensions</h3>
+              <p>
+                Opt-in,
+                <strong>agent-agnostic</strong>
+                add-ons that compose Thurbox through
+                <code>thurbox-cli</code>
+                &mdash; never the binary. Install each from a declarative manifest in one command (
+                <code>thurbox-cli extension install &lt;name&gt;</code>
+                ), and Thurbox keeps its session and automation
+                <strong>self-healed</strong>
+                . Ships flow, forge, ci-shepherd, and renovate (all experimental).
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#global-search" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f50d;</div>
+              <h3>Global Search</h3>
+              <p>
+                One key (
+                <code>Ctrl+A</code>
+                ) searches
+                <strong>every scope at once</strong>
+                &mdash; sessions (incl. live terminal content), tasks, automations, and files
+                &mdash; with matches highlighted live in the panels themselves.
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#session-persistence" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f9e9;</div>
+              <h3>Persistent tmux Sessions</h3>
+              <p>
+                Every session runs in a dedicated
+                <code>tmux -L thurbox</code>
+                pane behind a single
+                <code>SessionBackend</code>
+                trait, so sessions survive crashes, restarts, and detaches.
+              </p>
+            </div>
+          </a>
+          <a href="docs/features.html#headless-cli" class="feature-link">
+            <div class="card">
+              <div class="card-icon">&#x1f50c;</div>
+              <h3>Headless CLI</h3>
+              <p>
+                The
+                <code>thurbox-cli</code>
+                binary scripts everything from the terminal: create and drive sessions and schedule
+                commands, all sharing the TUI's SQLite database.
+              </p>
+            </div>
+          </a>
         </div>
       </div>
     </section>

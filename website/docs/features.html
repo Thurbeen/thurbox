@@ -9,7 +9,7 @@ onThisPage:
   - { id: 'agent-definitions', label: 'Agent Definitions' }
   - { id: 'automations', label: 'Automations' }
   - { id: 'tasks', label: 'Tasks' }
-  - { id: 'flow-extension', label: 'Flow Extension' }
+  - { id: 'extensions', label: 'Extensions' }
   - { id: 'git-worktrees', label: 'Git Worktrees' }
   - { id: 'remote-ssh-sessions', label: 'Remote SSH Sessions' }
   - { id: 'worktree-sync', label: 'Worktree Sync' }
@@ -293,74 +293,53 @@ onThisPage:
             </li>
           </ul>
 
-          <h2 id="flow-extension">
-            Flow Extension
-            <a href="#flow-extension" class="heading-anchor">#</a>
+          <h2 id="extensions">
+            Extensions
+            <a href="#extensions" class="heading-anchor">#</a>
           </h2>
           <div class="info-box warning">
             <p>
               <strong>Heads up:</strong>
-              The flow extension is a brand-new,
+              Extensions are
               <strong>experimental</strong>
-              feature under active testing &mdash; expect its behavior, spec, and installer to
+              and under active testing &mdash; expect their behavior, specs, and installers to
               change between releases.
             </p>
           </div>
           <p>
-            An opt-in,
+            Opt-in,
             <strong>agent-agnostic</strong>
-            add-on that composes tasks, sessions, worktrees, and automations into a focus-protecting
-            triage workflow: brain-dump at a dedicated cheap
-            <em>flow session</em>
-            and it captures everything into tasks, dispatches the dispatchable ones to worker
-            sessions, monitors them quietly, grooms the backlog, and ends every reply with the
-            single next thing to focus on.
+            add-ons that compose Thurbox through
+            <code>thurbox-cli</code>
+            &mdash; never the binary. Each ships a declarative manifest and installs in one command (
+            <code>thurbox-cli extension install &lt;name&gt;</code>
+            ); while active, Thurbox keeps the extension's sessions and automations
+            <strong>self-healed</strong>
+            , re-creating any you delete until you deactivate it.
           </p>
           <ul>
             <li>
-              The triager and workers are plain
+              Four extensions ship today (all experimental):
+              <strong>flow</strong>
+              (a focus-protecting triage agent),
+              <strong>forge</strong>
+              (a workflow analyst that proposes automations),
+              <strong>ci-shepherd</strong>
+              (watches change requests and dispatches CI/review fixers), and
+              <strong>renovate</strong>
+              (keeps local repos on up-to-date dependencies).
+            </li>
+            <li>
+              An extension registers its agents in
               <code>agents.toml</code>
-              aliases (
-              <code>flow</code>
-              ,
-              <code>flow-worker</code>
-              ,
-              <code>flow-worker-heavy</code>
-              ) &mdash; map them to claude, codex, gemini, opencode, vibe, or anything else. The
-              behavior is one markdown spec (
-              <code>FLOW.md</code>
-              ) surfaced to whichever CLI you pick via
-              <code>CLAUDE.md</code>
-              /
-              <code>AGENTS.md</code>
-              /
-              <code>GEMINI.md</code>
-              symlinks.
+              and lays down its payload from the manifest &mdash; map its worker agents to claude,
+              codex, gemini, opencode, vibe, or anything else.
             </li>
             <li>
-              Dispatch is eager: capture creates the task and spawns its worker in one atomic call,
-              each worker on its own
-              <code>flow/&lt;slug&gt;</code>
-              worktree branch. Every worker runs a
-              <strong>clarify &rarr; plan &rarr; build</strong>
-              contract: ask &ge;3 clarifying questions, then a written plan gated on your approval,
-              then implement.
-            </li>
-            <li>
-              Worker&harr;flow coordination is event-driven over the
-              <a href="#headless-cli">inter-session message queue</a>
-              (
-              <code>message send --kind questions|plan|result</code>
-              ): workers push clean structured payloads that wake flow, flow surfaces them under
-              &ldquo;Needs you,&rdquo; and your answer / approval is relayed back &mdash; no
-              terminal scraping. The cron tick is just a safety net.
-            </li>
-            <li>
-              One-command install:
-              <code>thurbox-cli extension install flow</code>
-              &mdash; see the
+              See the
               <a href="extensions.html">Extensions</a>
-              page for how install, self-heal, and the manifest work.
+              page for the full lifecycle (install, activate, update, self-heal), the manifest
+              format, and a guide to authoring your own.
             </li>
           </ul>
 
