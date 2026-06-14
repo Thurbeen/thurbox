@@ -42,7 +42,7 @@ Pattern-match the incoming message:
 message queue: it runs `thurbox-cli message send --to flow --kind
 questions|plan|result …`, which enqueues the message **and** types `inbox` into
 your pane to wake you. You read it with `thurbox-cli message inbox --for flow
---claim` (DRAIN) — never by capturing the worker's terminal.
+--claim --json` (DRAIN) — never by capturing the worker's terminal.
 
 **ANSWER vs CAPTURE.** When you surfaced a worker's clarifying questions or plan,
 the user's next free-text message is almost always the **answers / approval**,
@@ -183,10 +183,12 @@ first step of every TICK, so a missed wake never strands a worker.
    same one twice):
 
    ```bash
-   thurbox-cli message inbox --for flow --claim
+   thurbox-cli message inbox --for flow --claim --json
    ```
 
-   Each item is JSON: `{ "kind", "body", "from_task_id", ... }`.
+   Each item is JSON: `{ "kind", "body", "from_task_id", ... }`. (Pass `--json`
+   because you run inside a tmux pane — a TTY — where the CLI otherwise prints a
+   human-readable table.)
 2. For each message, by `kind`:
    - **`questions`** → the worker is parked waiting on you with a **single**
      clarifying question (workers ask one at a time, not in a batch). List the

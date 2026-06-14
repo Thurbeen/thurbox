@@ -348,8 +348,9 @@ thurbox-cli session create --name demo --repo-path /srv/repo \
 # Spawn a worker under a lead session (parent must exist):
 thurbox-cli session create --name worker --repo-path /path \
     --parent <lead-uuid>
-thurbox-cli session list | jq
-thurbox-cli session list --parent <lead-uuid> | jq  # direct children only
+thurbox-cli session list                       # human-readable table
+thurbox-cli session list --json | jq           # machine output for scripts
+thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children only
 ```
 
 Subcommands: `session` (create/list/get/delete/restore/restart/
@@ -360,8 +361,10 @@ send/inbox/prune — the inter-session mailbox queue; see below), `editor`, `con
 (validate/show — strict-parses every config file / prints the
 effective resolved config; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
-deactivate/status — manage opt-in extensions; see below). Pass `--pretty` for
-indented JSON.
+deactivate/status — manage opt-in extensions; see below). Output is
+**human-readable by default** and switches to JSON automatically when stdout is
+piped (so `… | jq` keeps working); force a format with `--json` (compact),
+`--pretty` (indented JSON), or `--text` (human even when piped).
 
 `session delete <uuid>` **soft-deletes** by default — only the DB
 row is marked deleted (the TUI tears down the tmux window/worktree

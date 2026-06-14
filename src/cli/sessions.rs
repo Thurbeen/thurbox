@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::output::{self, CommandOutput};
 use crate::session::SessionId;
 use crate::storage::Database;
 use crate::sync::SharedSession;
@@ -91,24 +92,25 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<Value, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
         Action::List { parent } => {
             let parent_id = parent.as_deref().map(parse_session_id).transpose()?;
-            let sessions = db
+            let sessions: Vec<SharedSession> = db
                 .list_active_sessions()
-                .map_err(|e| format!("list_active_sessions: {e}"))?;
-            Ok(Value::Array(
-                sessions
-                    .iter()
-                    .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
-                    .map(shared_session_to_json)
-                    .collect(),
-            ))
+                .map_err(|e| format!("list_active_sessions: {e}"))?
+                .into_iter()
+                .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
+                .collect();
+            let json = Value::Array(sessions.iter().map(shared_session_to_json).collect());
+            Ok(CommandOutput::new(json, render_session_list(&sessions)))
         }
         Action::Get { uuid } => {
             let session = resolve(db, &uuid)?;
-            Ok(shared_session_to_json(&session))
+            Ok(CommandOutput::new(
+                shared_session_to_json(&session),
+                render_session_detail(&session),
+            ))
         }
         Action::Create {
             name,
@@ -131,28 +133,56 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 parent_session_id,
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
-            Ok(json!({
-                "id": res.session_id.to_string(),
-                "name": res.name,
-                "agent": res.agent,
-                "agent_session_id": res.agent_session_id,
-                "cwd": res.cwd.display().to_string(),
-                "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
-            }))
+            let human = format!(
+                "Created session '{}' ({}) — {}\ncwd: {}",
+                res.name,
+                res.agent,
+                res.session_id,
+                res.cwd.display()
+            );
+            Ok(CommandOutput::new(
+                json!({
+                    "id": res.session_id.to_string(),
+                    "name": res.name,
+                    "agent": res.agent,
+                    "agent_session_id": res.agent_session_id,
+                    "cwd": res.cwd.display().to_string(),
+                    "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
+                }),
+                human,
+            ))
         }
         Action::Delete { uuid, force } => {
             let session = resolve(db, &uuid)?;
             let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
-            Ok(json!({
-                "deleted": true,
-                "id": session.id.to_string(),
-                "name": session.name,
-                "forced": force,
-                "killed_window": report.killed_window,
-                "removed_worktrees": report.removed_worktrees,
-                "worktree_errors": report.worktree_errors,
-                "disabled_automations": report.disabled_automations,
-            }))
+            let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
+            if force {
+                human.push_str(&format!(
+                    "\n  killed window:       {}\n  removed worktrees:   {}\n  disabled automations: {}",
+                    report.killed_window,
+                    report.removed_worktrees.len(),
+                    report.disabled_automations
+                ));
+                if !report.worktree_errors.is_empty() {
+                    human.push_str(&format!(
+                        "\n  worktree errors:     {}",
+                        report.worktree_errors.join("; ")
+                    ));
+                }
+            }
+            Ok(CommandOutput::new(
+                json!({
+                    "deleted": true,
+                    "id": session.id.to_string(),
+                    "name": session.name,
+                    "forced": force,
+                    "killed_window": report.killed_window,
+                    "removed_worktrees": report.removed_worktrees,
+                    "worktree_errors": report.worktree_errors,
+                    "disabled_automations": report.disabled_automations,
+                }),
+                human,
+            ))
         }
         Action::Restore { uuid } => {
             let id: SessionId = uuid
@@ -164,20 +194,26 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
             db.restore_session(deleted.id)
                 .map_err(|e| format!("restore_session: {e}"))?;
-            Ok(json!({
-                "restored": true,
-                "id": deleted.id.to_string(),
-                "name": deleted.name,
-            }))
+            Ok(CommandOutput::new(
+                json!({
+                    "restored": true,
+                    "id": deleted.id.to_string(),
+                    "name": deleted.name,
+                }),
+                format!("Restored session '{}' ({})", deleted.name, deleted.id),
+            ))
         }
         Action::Restart { uuid } => {
             let session = resolve(db, &uuid)?;
             crate::session_ops::restart_session_headless(db, session.id)?;
-            Ok(json!({
-                "restarted": true,
-                "session_id": session.id.to_string(),
-                "session_name": session.name,
-            }))
+            Ok(CommandOutput::new(
+                json!({
+                    "restarted": true,
+                    "session_id": session.id.to_string(),
+                    "session_name": session.name,
+                }),
+                format!("Restarted session '{}' ({})", session.name, session.id),
+            ))
         }
         Action::Send { uuid, text } => {
             let session = resolve(db, &uuid)?;
@@ -186,24 +222,94 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             }
             crate::agent::tmux::send_prompt_now(&session.name, &text)
                 .map_err(|e| format!("send_prompt_now: {e}"))?;
-            Ok(json!({
-                "sent": true,
-                "session_id": session.id.to_string(),
-                "session_name": session.name,
-            }))
+            Ok(CommandOutput::new(
+                json!({
+                    "sent": true,
+                    "session_id": session.id.to_string(),
+                    "session_name": session.name,
+                }),
+                format!("Sent to '{}'.", session.name),
+            ))
         }
         Action::Capture { uuid, lines } => {
             let session = resolve(db, &uuid)?;
             let output = crate::agent::tmux::capture_pane_text(&session.name, lines)
                 .map_err(|e| format!("capture_pane_text: {e}"))?;
-            Ok(json!({
-                "session_id": session.id.to_string(),
-                "session_name": session.name,
-                "lines": lines,
-                "output": output,
-            }))
+            // The pane text itself is the useful human payload.
+            let human = output.clone();
+            Ok(CommandOutput::new(
+                json!({
+                    "session_id": session.id.to_string(),
+                    "session_name": session.name,
+                    "lines": lines,
+                    "output": output,
+                }),
+                human,
+            ))
         }
     }
+}
+
+/// Render the session list as an aligned table (or a friendly empty line).
+fn render_session_list(sessions: &[SharedSession]) -> String {
+    if sessions.is_empty() {
+        return "No active sessions.".to_string();
+    }
+    let rows: Vec<Vec<String>> = sessions
+        .iter()
+        .map(|s| {
+            let branch = s
+                .worktrees
+                .first()
+                .map(|w| w.branch.clone())
+                .unwrap_or_default();
+            vec![
+                s.name.clone(),
+                s.agent.clone(),
+                s.backend_type.clone(),
+                output::dash(if branch.is_empty() {
+                    None
+                } else {
+                    Some(&branch)
+                }),
+                output::dash(s.cwd.as_ref().map(|p| p.display().to_string()).as_deref()),
+                s.id.to_string(),
+            ]
+        })
+        .collect();
+    output::table(&["NAME", "AGENT", "BACKEND", "BRANCH", "CWD", "ID"], &rows)
+}
+
+/// Render a single session as an aligned key/value block.
+fn render_session_detail(s: &SharedSession) -> String {
+    let mut pairs: Vec<(&str, String)> = vec![
+        ("name", s.name.clone()),
+        ("id", s.id.to_string()),
+        ("agent", s.agent.clone()),
+        ("backend", s.backend_type.clone()),
+        (
+            "agent_session_id",
+            output::dash(s.agent_session_id.as_deref()),
+        ),
+        (
+            "cwd",
+            output::dash(s.cwd.as_ref().map(|p| p.display().to_string()).as_deref()),
+        ),
+        (
+            "parent",
+            output::dash(s.parent_session_id.map(|id| id.to_string()).as_deref()),
+        ),
+    ];
+    if !s.worktrees.is_empty() {
+        let wt = s
+            .worktrees
+            .iter()
+            .map(|w| format!("{} @ {}", w.branch, w.worktree_path.display()))
+            .collect::<Vec<_>>()
+            .join("\n              ");
+        pairs.push(("worktrees", wt));
+    }
+    output::kv(&pairs)
 }
 
 fn parse_session_id(uuid: &str) -> Result<SessionId, String> {

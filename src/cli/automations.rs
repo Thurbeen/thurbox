@@ -7,6 +7,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::output::{self, CommandOutput};
 use crate::session::automation::parse_trigger;
 use crate::session::{Automation, AutomationAction, AutomationRun, AutomationRunStatus, SessionId};
 use crate::session_ops::SpawnRequest;
@@ -113,7 +114,7 @@ pub enum Action {
     Tick,
 }
 
-pub fn run(action: Action, db: &Database) -> Result<Value, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
         Action::Create {
             name,
@@ -158,17 +159,28 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 .get_automation(id)
                 .map_err(|e| format!("get_automation: {e}"))?
                 .ok_or("automation vanished after insert")?;
-            Ok(automation_to_json(&auto))
+            let human = format!(
+                "Created automation #{} '{}' ({}){}",
+                auto.id,
+                auto.name,
+                auto.schedule.kind(),
+                if auto.enabled { "" } else { " — disabled" }
+            );
+            Ok(CommandOutput::new(automation_to_json(&auto), human))
         }
         Action::List => {
             let autos = db
                 .list_automations()
                 .map_err(|e| format!("list_automations: {e}"))?;
-            Ok(Value::Array(autos.iter().map(automation_to_json).collect()))
+            let json = Value::Array(autos.iter().map(automation_to_json).collect());
+            Ok(CommandOutput::new(json, render_automation_list(&autos)))
         }
         Action::Show { id } => {
             let auto = load(db, id)?;
-            Ok(automation_to_json(&auto))
+            Ok(CommandOutput::new(
+                automation_to_json(&auto),
+                render_automation_detail(&auto),
+            ))
         }
         Action::Edit {
             id,
@@ -215,15 +227,25 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             if auto.enabled {
                 arm_heartbeat();
             }
-            Ok(automation_to_json(&load(db, id)?))
+            let auto = load(db, id)?;
+            Ok(CommandOutput::new(
+                automation_to_json(&auto),
+                render_automation_detail(&auto),
+            ))
         }
         Action::Remove { id } => match db.delete_automation(id) {
-            Ok(true) => Ok(json!({ "removed": true, "id": id })),
+            Ok(true) => Ok(CommandOutput::new(
+                json!({ "removed": true, "id": id }),
+                format!("Removed automation #{id}."),
+            )),
             Ok(false) => Err(format!("Automation not found: {id}")),
             Err(e) => Err(format!("delete_automation: {e}")),
         },
         Action::Run { id } => match db.trigger_automation_now(id) {
-            Ok(true) => Ok(json!({ "triggered": true, "id": id })),
+            Ok(true) => Ok(CommandOutput::new(
+                json!({ "triggered": true, "id": id }),
+                format!("Triggered automation #{id} (fires on the next tick)."),
+            )),
             Ok(false) => Err(format!("Automation not found: {id}")),
             Err(e) => Err(format!("trigger_automation_now: {e}")),
         },
@@ -231,9 +253,86 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             let runs = db
                 .list_automation_runs(id, limit.unwrap_or(20))
                 .map_err(|e| format!("list_automation_runs: {e}"))?;
-            Ok(Value::Array(runs.iter().map(run_to_json).collect()))
+            let json = Value::Array(runs.iter().map(run_to_json).collect());
+            Ok(CommandOutput::new(json, render_run_history(id, &runs)))
         }
-        Action::Tick => tick(db),
+        Action::Tick => {
+            let json = tick(db)?;
+            let human = render_tick(&json);
+            Ok(CommandOutput::new(json, human))
+        }
+    }
+}
+
+/// Render the automation list as an aligned table (or a friendly empty line).
+fn render_automation_list(autos: &[Automation]) -> String {
+    if autos.is_empty() {
+        return "No automations.".to_string();
+    }
+    let rows: Vec<Vec<String>> = autos
+        .iter()
+        .map(|a| {
+            vec![
+                a.id.to_string(),
+                if a.enabled { "on" } else { "off" }.to_string(),
+                a.name.clone(),
+                a.schedule.kind().to_string(),
+                automation_action_label(&a.action),
+            ]
+        })
+        .collect();
+    output::table(&["ID", "STATE", "NAME", "SCHEDULE", "ACTION"], &rows)
+}
+
+/// Render a single automation as an aligned key/value block.
+fn render_automation_detail(a: &Automation) -> String {
+    let pairs: Vec<(&str, String)> = vec![
+        ("id", a.id.to_string()),
+        ("name", a.name.clone()),
+        ("enabled", a.enabled.to_string()),
+        (
+            "schedule",
+            format!("{} ({})", a.schedule.kind(), a.schedule.spec()),
+        ),
+        ("timezone", output::dash(a.timezone.as_deref())),
+        ("action", automation_action_label(&a.action)),
+        ("prompt", a.prompt.clone()),
+    ];
+    output::kv(&pairs)
+}
+
+/// Render an automation's run history as a table.
+fn render_run_history(id: i64, runs: &[AutomationRun]) -> String {
+    if runs.is_empty() {
+        return format!("No run history for automation #{id}.");
+    }
+    let rows: Vec<Vec<String>> = runs
+        .iter()
+        .map(|r| {
+            vec![
+                r.id.to_string(),
+                r.status.as_str().to_string(),
+                r.detail.clone(),
+            ]
+        })
+        .collect();
+    output::table(&["RUN", "STATUS", "DETAIL"], &rows)
+}
+
+/// One-line human summary of an `automation tick`.
+fn render_tick(v: &Value) -> String {
+    let count = |key: &str| v.get(key).and_then(Value::as_array).map_or(0, Vec::len);
+    let fired = count("fired");
+    let skipped = count("skipped");
+    let healed = count("healed");
+    format!("Tick: {fired} fired, {skipped} skipped, {healed} extension(s) healed.")
+}
+
+/// Human label for an automation's send/spawn action.
+fn automation_action_label(action: &AutomationAction) -> String {
+    match action {
+        AutomationAction::Send { .. } => "send".to_string(),
+        AutomationAction::Spawn { .. } => "spawn".to_string(),
     }
 }
 

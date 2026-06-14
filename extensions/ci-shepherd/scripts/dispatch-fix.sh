@@ -166,7 +166,7 @@ When finished: mark this task done (thurbox-cli task edit <id> --status done),
 print a final line \`===RESULT===\` followed by one line of JSON:
 {"status":"ok|error","url":"...","notes":"...","question":"..."}
 then notify the shepherd so the next request dispatches immediately:
-thurbox-cli session send "\$(thurbox-cli session list | jq -r '.[] | select(.name=="shepherd") | .id')" "tick"
+thurbox-cli session send "\$(thurbox-cli session list --json | jq -r '.[] | select(.name=="shepherd") | .id')" "tick"
 EOF
 )"
 

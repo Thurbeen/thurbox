@@ -11,6 +11,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::output::{self, CommandOutput};
 use crate::storage::Database;
 
 #[derive(Subcommand, Debug)]
@@ -21,10 +22,28 @@ pub enum Action {
     Show,
 }
 
-pub fn run(action: Action, db: &Database) -> Result<Value, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
-        Action::Validate => validate(),
-        Action::Show => show(db),
+        Action::Validate => {
+            let (report, failed) = validate();
+            let human = render_validate(&report, &failed);
+            if failed.is_empty() {
+                Ok(CommandOutput::new(report, human))
+            } else {
+                // Print the full report (human or JSON), then exit non-zero so
+                // this is usable as a dotfiles CI gate.
+                Ok(CommandOutput::failed(
+                    report,
+                    human,
+                    format!("config invalid: {}", failed.join(", ")),
+                ))
+            }
+        }
+        Action::Show => {
+            let report = show(db)?;
+            let human = render_show(&report);
+            Ok(CommandOutput::new(report, human))
+        }
     }
 }
 
@@ -83,7 +102,9 @@ fn validate_keybindings() -> (Value, bool) {
     }
 }
 
-fn validate() -> Result<Value, String> {
+/// Validate every config file. Returns the full report plus the list of files
+/// that failed (empty = all valid).
+fn validate() -> (Value, Vec<String>) {
     let (agents, agents_ok) = validate_toml::<crate::session::AgentRegistry>(
         crate::agent::agent_config::agents_config_path(),
         "agents.toml",
@@ -102,7 +123,7 @@ fn validate() -> Result<Value, String> {
     );
     let (keybindings, kb_ok) = validate_keybindings();
 
-    let failed: Vec<&str> = [
+    let failed: Vec<String> = [
         ("agents.toml", agents_ok),
         ("hosts.toml", hosts_ok),
         ("settings.toml", settings_ok),
@@ -111,7 +132,7 @@ fn validate() -> Result<Value, String> {
     ]
     .iter()
     .filter(|(_, ok)| !ok)
-    .map(|(name, _)| *name)
+    .map(|(name, _)| (*name).to_string())
     .collect();
 
     let report = json!({
@@ -122,18 +143,99 @@ fn validate() -> Result<Value, String> {
         "themes_toml": themes,
         "keybindings_json": keybindings,
     });
-    if failed.is_empty() {
-        Ok(report)
-    } else {
-        // Print the full report on stdout (like the Ok path would), then fail
-        // with a one-line error so the process exits non-zero — usable as a
-        // dotfiles CI gate.
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string())
-        );
-        Err(format!("config invalid: {}", failed.join(", ")))
+    (report, failed)
+}
+
+/// Render `config validate` as a per-file status list.
+fn render_validate(report: &Value, failed: &[String]) -> String {
+    let files = [
+        ("agents.toml", "agents_toml"),
+        ("hosts.toml", "hosts_toml"),
+        ("settings.toml", "settings_toml"),
+        ("themes.toml", "themes_toml"),
+        ("keybindings.json", "keybindings_json"),
+    ];
+    let mut lines = Vec::new();
+    for (label, key) in files {
+        let entry = &report[key];
+        let exists = entry["exists"].as_bool().unwrap_or(false);
+        let valid = entry["valid"].as_bool().unwrap_or(false);
+        let mark = if !exists {
+            "·" // absent files are valid (defaults apply)
+        } else if valid {
+            "✓"
+        } else {
+            "✗"
+        };
+        let status = if !exists {
+            "absent"
+        } else if valid {
+            "ok"
+        } else {
+            "invalid"
+        };
+        lines.push(format!("{mark} {label}  {status}"));
+        if let Some(problems) = entry["problems"].as_array() {
+            for p in problems {
+                if let Some(p) = p.as_str() {
+                    lines.push(format!("    - {p}"));
+                }
+            }
+        }
     }
+    if failed.is_empty() {
+        lines.push("All config files valid.".to_string());
+    } else {
+        lines.push(format!("Invalid: {}", failed.join(", ")));
+    }
+    lines.join("\n")
+}
+
+/// Render `config show` as grouped key/value blocks.
+fn render_show(report: &Value) -> String {
+    let mut sections: Vec<String> = Vec::new();
+
+    if let Some(paths) = report["paths"].as_object() {
+        let pairs: Vec<(&str, String)> = paths
+            .iter()
+            .map(|(k, v)| (k.as_str(), output::dash(v.as_str())))
+            .collect();
+        sections.push(format!("Paths\n{}", output::kv(&pairs)));
+    }
+
+    let agents = &report["agents"];
+    let names = agents["names"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    sections.push(format!(
+        "Agents\n{}",
+        output::kv(&[
+            ("default", output::dash(agents["default"].as_str())),
+            ("names", names),
+        ])
+    ));
+
+    let editor = &report["editor"];
+    sections.push(format!(
+        "Editor\n{}",
+        output::kv(&[
+            ("command", output::dash(editor["command"].as_str())),
+            ("source", output::dash(editor["source"].as_str())),
+        ])
+    ));
+
+    sections.push(format!(
+        "Theme\n{}",
+        output::kv(&[("active", output::dash(report["theme"].as_str()))])
+    ));
+
+    sections.join("\n\n")
 }
 
 fn show(db: &Database) -> Result<Value, String> {
@@ -202,7 +304,8 @@ mod tests {
     fn validate_passes_on_fresh_environment() {
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
-        let v = validate().unwrap();
+        let (v, failed) = validate();
+        assert!(failed.is_empty(), "got failures: {failed:?}");
         assert_eq!(v["valid"], json!(true));
     }
 
@@ -214,8 +317,8 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not toml {{{").unwrap();
 
-        let err = validate().unwrap_err();
-        assert!(err.contains("agents.toml"), "got: {err}");
+        let (_, failed) = validate();
+        assert!(failed.iter().any(|f| f == "agents.toml"), "got: {failed:?}");
     }
 
     #[test]
@@ -227,8 +330,11 @@ mod tests {
         )
         .unwrap();
 
-        let err = validate().unwrap_err();
-        assert!(err.contains("keybindings.json"), "got: {err}");
+        let (_, failed) = validate();
+        assert!(
+            failed.iter().any(|f| f == "keybindings.json"),
+            "got: {failed:?}"
+        );
     }
 
     /// `serde_ignored` reports nested unknown keys, so a typo inside
@@ -241,8 +347,11 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "[features]\nbogus = true\n").unwrap();
 
-        let err = validate().unwrap_err();
-        assert!(err.contains("settings.toml"), "got: {err}");
+        let (_, failed) = validate();
+        assert!(
+            failed.iter().any(|f| f == "settings.toml"),
+            "got: {failed:?}"
+        );
     }
 
     #[test]

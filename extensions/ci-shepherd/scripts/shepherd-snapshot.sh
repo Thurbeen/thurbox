@@ -67,7 +67,7 @@ fi
 
 echo
 echo "## sessions (shepherd / task-*)"
-thurbox-cli session list 2>/dev/null | jq -r '
+thurbox-cli session list --json 2>/dev/null | jq -r '
   .[] | select(.name == "shepherd" or (.name | startswith("task-"))) |
   "  \(.name)  \(.id)  agent=\(.agent)  cwd=\(.cwd)"' 2>/dev/null || true
 

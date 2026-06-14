@@ -81,7 +81,7 @@ When finished: mark this task done (thurbox-cli task edit <id> --status done),
 print a final line \`===RESULT===\` followed by one line of JSON:
 {"status":"ok|error","artifact":"...","notes":"...","pr_url":"..."}
 then notify the renovate monitor so the next repo dispatches immediately:
-thurbox-cli session send "\$(thurbox-cli session list | jq -r '.[] | select(.name=="renovate") | .id')" "tick"
+thurbox-cli session send "\$(thurbox-cli session list --json | jq -r '.[] | select(.name=="renovate") | .id')" "tick"
 EOF
 )"
 

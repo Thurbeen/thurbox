@@ -17,8 +17,8 @@
 
 set -euo pipefail
 
-SESSIONS="$(thurbox-cli session list 2>/dev/null || echo '[]')"
-TASKS="$(thurbox-cli task list 2>/dev/null || echo '[]')"
+SESSIONS="$(thurbox-cli session list --json 2>/dev/null || echo '[]')"
+TASKS="$(thurbox-cli task list --json 2>/dev/null || echo '[]')"
 
 ROWS="$(printf '%s' "$SESSIONS" | jq -r --argjson tasks "$TASKS" '
   # tasks indexed by id (string keys)

@@ -7,6 +7,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::output::{self, CommandOutput};
 use crate::session::{SessionId, SessionMessage};
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
@@ -69,7 +70,7 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<Value, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
         Action::Send {
             to,
@@ -107,13 +108,21 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                     ),
                 }
             }
-            Ok(json!({
-                "enqueued": true,
-                "message_id": id,
-                "to_session_id": recipient.id.to_string(),
-                "to_session_name": recipient.name,
-                "woke": woke,
-            }))
+            let human = format!(
+                "Enqueued message #{id} to '{}'{}.",
+                recipient.name,
+                if woke { " (woke it)" } else { "" }
+            );
+            Ok(CommandOutput::new(
+                json!({
+                    "enqueued": true,
+                    "message_id": id,
+                    "to_session_id": recipient.id.to_string(),
+                    "to_session_name": recipient.name,
+                    "woke": woke,
+                }),
+                human,
+            ))
         }
         Action::Inbox {
             for_session,
@@ -129,7 +138,11 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 db.list_messages(recipient.id, !all, limit)
                     .map_err(|e| format!("list_messages: {e}"))?
             };
-            Ok(Value::Array(messages.iter().map(message_to_json).collect()))
+            let json = Value::Array(messages.iter().map(message_to_json).collect());
+            Ok(CommandOutput::new(
+                json,
+                render_inbox(&recipient.name, &messages, claim),
+            ))
         }
         Action::Prune {
             older_than_days,
@@ -140,8 +153,53 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             let pruned = db
                 .prune_messages(cutoff, read_only)
                 .map_err(|e| format!("prune_messages: {e}"))?;
-            Ok(json!({ "pruned": pruned, "older_than_days": days, "read_only": read_only }))
+            let human = format!(
+                "Pruned {pruned} {}message(s) older than {days} day(s).",
+                if read_only { "read " } else { "" }
+            );
+            Ok(CommandOutput::new(
+                json!({ "pruned": pruned, "older_than_days": days, "read_only": read_only }),
+                human,
+            ))
         }
+    }
+}
+
+/// Render an inbox read as a table of messages (or a friendly empty line).
+fn render_inbox(recipient: &str, messages: &[SessionMessage], claimed: bool) -> String {
+    if messages.is_empty() {
+        return format!(
+            "No {}messages for '{recipient}'.",
+            if claimed { "unread " } else { "" }
+        );
+    }
+    let rows: Vec<Vec<String>> = messages
+        .iter()
+        .map(|m| {
+            vec![
+                m.id.to_string(),
+                m.kind.clone(),
+                output::dash(m.from_task_id.map(|t| t.to_string()).as_deref()),
+                first_line(&m.body),
+            ]
+        })
+        .collect();
+    let verb = if claimed { "Claimed" } else { "Inbox for" };
+    let header = format!("{verb} '{recipient}' — {} message(s):", messages.len());
+    format!(
+        "{header}\n{}",
+        output::table(&["ID", "KIND", "TASK", "BODY"], &rows)
+    )
+}
+
+/// First line of a body, truncated for table display.
+fn first_line(body: &str) -> String {
+    let line = body.lines().next().unwrap_or("");
+    if line.chars().count() > 60 {
+        let truncated: String = line.chars().take(57).collect();
+        format!("{truncated}…")
+    } else {
+        line.to_string()
     }
 }
 

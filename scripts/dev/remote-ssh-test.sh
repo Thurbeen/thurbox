@@ -141,7 +141,7 @@ EOF
   local out
   out="$(cd "$REPO_ROOT" && \
     XDG_CONFIG_HOME="$xdg/config" XDG_DATA_HOME="$xdg/data" \
-    cargo run -q --bin thurbox-cli -- session create \
+    cargo run -q --bin thurbox-cli -- --json session create \
       --name e2e --host podman --repo-path "$REMOTE_REPO" \
       --agent shell --worktree-branch test/e2e --base-branch main 2>/dev/null)"
 
@@ -150,7 +150,7 @@ EOF
     || die "session create failed: $out"
   backend_type="$(cd "$REPO_ROOT" && \
     XDG_CONFIG_HOME="$xdg/config" XDG_DATA_HOME="$xdg/data" \
-    cargo run -q --bin thurbox-cli -- session get "$id" 2>/dev/null \
+    cargo run -q --bin thurbox-cli -- --json session get "$id" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("backend_type",""))')"
 
   # Confirm the artifacts really live on the remote.

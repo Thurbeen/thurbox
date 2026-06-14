@@ -130,7 +130,7 @@ The forge's own value is kept only as a fallback for heads that aren't on
    - Otherwise capture recent output and parse the worker's sentinel:
 
      ```bash
-     thurbox-cli session capture <uuid> --lines 40 | jq -r .output \
+     thurbox-cli session capture <uuid> --lines 40 --json | jq -r .output \
        | ./scripts/parse-result.sh
      ```
 

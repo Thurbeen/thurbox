@@ -85,7 +85,7 @@ finished update awaits review). Then it lists the live `update …` tasks and th
    - Otherwise capture recent output and parse the worker's sentinel:
 
      ```bash
-     thurbox-cli session capture <uuid> --lines 40 | jq -r .output \
+     thurbox-cli session capture <uuid> --lines 40 --json | jq -r .output \
        | ./scripts/parse-result.sh
      ```
 

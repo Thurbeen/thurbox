@@ -1,8 +1,8 @@
 //! Editor command get/set subcommands.
 
 use clap::Subcommand;
-use serde_json::Value;
 
+use crate::cli::output::CommandOutput;
 use crate::storage::Database;
 
 #[derive(Subcommand, Debug)]
@@ -16,20 +16,35 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<Value, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
         Action::Get => {
             let cmd = db
                 .get_editor_command()
                 .map_err(|e| format!("get_editor_command: {e}"))?;
-            Ok(serde_json::json!({ "command": cmd }))
+            let human = match &cmd {
+                Some(c) if !c.is_empty() => format!("Editor: {c}"),
+                _ => "Editor: (not set)".to_string(),
+            };
+            Ok(CommandOutput::new(
+                serde_json::json!({ "command": cmd }),
+                human,
+            ))
         }
         Action::Set { command } => {
             db.set_editor_command(&command)
                 .map_err(|e| format!("set_editor_command: {e}"))?;
-            Ok(serde_json::json!({
-                "command": if command.is_empty() { None } else { Some(command) }
-            }))
+            let human = if command.is_empty() {
+                "Editor cleared.".to_string()
+            } else {
+                format!("Editor set to: {command}")
+            };
+            Ok(CommandOutput::new(
+                serde_json::json!({
+                    "command": if command.is_empty() { None } else { Some(command) }
+                }),
+                human,
+            ))
         }
     }
 }

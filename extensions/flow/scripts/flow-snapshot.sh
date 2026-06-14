@@ -29,7 +29,7 @@ echo "## sessions (flow / workers)"
 # (legacy) — mirror Task::matches_spawn_session. The derived #<id> is printed
 # first so ANSWER can map a task id straight to the session uuid for
 # `session send`.
-if SESSIONS="$(thurbox-cli session list 2>/dev/null)"; then
+if SESSIONS="$(thurbox-cli session list --json 2>/dev/null)"; then
   printf '%s' "$SESSIONS" | jq -r '
     .[]
     # extract <id> from "<title> · #<id>" (current) or "task-<id>[-…]" (legacy);

@@ -9,6 +9,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::output::{self, CommandOutput};
 use crate::session::ExtensionDef;
 use crate::storage::Database;
 
@@ -98,7 +99,7 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<Value, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
         Action::Install {
             target,
@@ -109,11 +110,11 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 crate::session_ops::install_extension(db, &target, home.as_deref(), force)?;
             // Arm the heartbeat so the extension's automations fire headlessly.
             arm_heartbeat();
-            Ok(install_report_to_json(&report))
+            Ok(CommandOutput::from_summary(install_report_to_json(&report)))
         }
         Action::Uninstall { name, purge } => {
             let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
-            Ok(json!({
+            Ok(CommandOutput::from_summary(json!({
                 "ok": true,
                 "summary": format!("Uninstalled extension '{}'", report.name),
                 "uninstalled": report.name,
@@ -122,19 +123,18 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 "agents_removed": report.agents_removed,
                 "manifest_removed": report.manifest_removed,
                 "home_removed": report.home_removed,
-            }))
+            })))
         }
         Action::List => {
             let defs = crate::agent::extension_config::list_manifests();
-            let mut out = Vec::with_capacity(defs.len());
+            let mut healths = Vec::with_capacity(defs.len());
             for def in &defs {
-                out.push(health_to_json(&crate::session_ops::extension_health(
-                    db, def,
-                )?));
+                healths.push(crate::session_ops::extension_health(db, def)?);
             }
-            Ok(Value::Array(out))
+            let json = Value::Array(healths.iter().map(health_to_json).collect());
+            Ok(CommandOutput::new(json, render_extension_list(&healths)))
         }
-        Action::Available { query } => Ok(available_to_json(query.as_deref())),
+        Action::Available { query } => Ok(available_output(query.as_deref())),
         Action::Update { name, all, force } => match name {
             // `--all` alongside a name is contradictory; otherwise a bare name
             // updates one and *no* name updates them all (no flag required).
@@ -143,7 +143,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 let report = crate::session_ops::update_extension(db, &name, force)?;
                 // Arm the heartbeat so the refreshed automations keep firing headlessly.
                 arm_heartbeat();
-                Ok(update_report_to_json(&report))
+                Ok(CommandOutput::from_summary(update_report_to_json(&report)))
             }
             None => {
                 let results = crate::session_ops::update_all_extensions(db, force);
@@ -171,14 +171,16 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 } else {
                     format!("Updated {total} extension(s): {changed} changed, {failed} failed")
                 };
-                Ok(json!({ "ok": failed == 0, "summary": summary, "extensions": out }))
+                Ok(CommandOutput::from_summary(
+                    json!({ "ok": failed == 0, "summary": summary, "extensions": out }),
+                ))
             }
         },
         Action::Reinstall { name, purge } => {
             let report = crate::session_ops::reinstall_extension(db, &name, purge)?;
             arm_heartbeat();
             let version = report.install.version.as_deref().unwrap_or("?");
-            Ok(json!({
+            Ok(CommandOutput::from_summary(json!({
                 "ok": true,
                 "summary": format!(
                     "Reinstalled '{}' {} → {}",
@@ -192,7 +194,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 "agents_added": report.install.agents_added,
                 "sessions_created": report.install.ensure.sessions_created,
                 "automations_created": report.install.ensure.automations_created,
-            }))
+            })))
         }
         Action::Activate { name } => {
             let def = load_manifest(&name)?;
@@ -201,7 +203,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             // heartbeat keeper so the extension works headlessly (TUI closed),
             // matching how `automation create` arms it.
             arm_heartbeat();
-            Ok(json!({
+            Ok(CommandOutput::from_summary(json!({
                 "ok": true,
                 "summary": format!(
                     "Activated '{}' ({} session(s), {} automation(s))",
@@ -213,7 +215,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 "sessions_created": report.sessions_created,
                 "automations_created": report.automations_created,
                 "health": health_to_json(&crate::session_ops::extension_health(db, &def)?),
-            }))
+            })))
         }
         Action::Deactivate { name, force, purge } => {
             // Tear down whatever the manifest declares. If the manifest is gone
@@ -240,7 +242,7 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             } else {
                 format!("'{name}' was not active")
             };
-            Ok(json!({
+            Ok(CommandOutput::from_summary(json!({
                 "ok": true,
                 "summary": summary,
                 "deactivated": name,
@@ -248,18 +250,70 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
                 "sessions_deleted": report.sessions_deleted,
                 "automations_deleted": report.automations_deleted,
                 "manifest_removed": manifest_removed,
-            }))
+            })))
         }
         Action::Status { name } => match name {
             Some(name) => {
                 let def = load_manifest(&name)?;
-                Ok(health_to_json(&crate::session_ops::extension_health(
-                    db, &def,
-                )?))
+                let health = crate::session_ops::extension_health(db, &def)?;
+                Ok(CommandOutput::new(
+                    health_to_json(&health),
+                    render_extension_detail(&health),
+                ))
             }
             None => run(Action::List, db),
         },
     }
+}
+
+/// Render the installed-extension list as an aligned table.
+fn render_extension_list(healths: &[crate::session_ops::ExtensionHealth]) -> String {
+    if healths.is_empty() {
+        return "No extensions installed.".to_string();
+    }
+    let rows: Vec<Vec<String>> = healths
+        .iter()
+        .map(|h| {
+            vec![
+                h.name.clone(),
+                if h.active { "active" } else { "inactive" }.to_string(),
+                if h.is_healthy() { "ok" } else { "degraded" }.to_string(),
+                if h.stale { "yes" } else { "no" }.to_string(),
+                output::dash(h.version.as_deref()),
+            ]
+        })
+        .collect();
+    output::table(&["NAME", "STATE", "HEALTH", "STALE", "VERSION"], &rows)
+}
+
+/// Render a single extension's health as a key/value block + resource lines.
+fn render_extension_detail(h: &crate::session_ops::ExtensionHealth) -> String {
+    let mut pairs: Vec<(&str, String)> = vec![
+        ("name", h.name.clone()),
+        ("status", health_summary(h)),
+        ("active", h.active.to_string()),
+        ("healthy", h.is_healthy().to_string()),
+        ("version", output::dash(h.version.as_deref())),
+        ("stale", h.stale.to_string()),
+    ];
+    if let Some(w) = &h.compat_warning {
+        pairs.push(("compat_warning", w.clone()));
+    }
+    let mut block = output::kv(&pairs);
+    let resources = |label: &str, items: &[(String, bool)]| -> String {
+        if items.is_empty() {
+            return String::new();
+        }
+        let listed = items
+            .iter()
+            .map(|(n, present)| format!("{} {n}", if *present { "✓" } else { "✗" }))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("\n{label}:  {listed}")
+    };
+    block.push_str(&resources("sessions", &h.sessions));
+    block.push_str(&resources("automations", &h.automations));
+    block
 }
 
 /// Load a manifest by name or error with guidance.
@@ -309,6 +363,35 @@ fn available_to_json(query: Option<&str>) -> Value {
         "summary": format!("{} official extension(s) available", out.len()),
         "available": out,
     })
+}
+
+/// `extension available`: the JSON above plus a human table (NAME / INSTALLED /
+/// DESCRIPTION) built from the same `available` entries.
+fn available_output(query: Option<&str>) -> CommandOutput {
+    let json = available_to_json(query);
+    let entries = json.get("available").and_then(Value::as_array);
+    let human = match entries {
+        Some(list) if !list.is_empty() => {
+            let rows: Vec<Vec<String>> = list
+                .iter()
+                .map(|e| {
+                    vec![
+                        e["name"].as_str().unwrap_or("").to_string(),
+                        if e["installed"].as_bool().unwrap_or(false) {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                        .to_string(),
+                        e["description"].as_str().unwrap_or("").to_string(),
+                    ]
+                })
+                .collect();
+            output::table(&["NAME", "INSTALLED", "DESCRIPTION"], &rows)
+        }
+        _ => "No matching extensions.".to_string(),
+    };
+    CommandOutput::new(json, human)
 }
 
 fn health_to_json(h: &crate::session_ops::ExtensionHealth) -> Value {

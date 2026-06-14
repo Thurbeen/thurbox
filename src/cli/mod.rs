@@ -1,6 +1,9 @@
 //! Command-line interface dispatcher for the `thurbox-cli` binary.
 //!
-//! Output is JSON; pass `--pretty` to pretty-print.
+//! Output is human-readable by default and switches to JSON automatically when
+//! stdout is a pipe (so `thurbox-cli … | jq` keeps working). Force a format with
+//! `--json` (compact), `--pretty` (indented JSON), or `--text` (human). See
+//! [`output::Format`].
 //!
 //! The CLI is intentionally thin: it parses arguments, calls into
 //! `storage::Database`, `session_ops`, or the tmux helpers in
@@ -15,16 +18,27 @@ pub mod config;
 pub mod editor;
 pub mod extensions;
 pub mod messages;
+pub mod output;
 pub mod sessions;
 pub mod tasks;
+
+use output::{CommandOutput, Format};
 
 /// Thurbox CLI — manage sessions, scheduled commands, and more.
 #[derive(Parser, Debug)]
 #[command(name = "thurbox-cli", version, about)]
 pub struct Cli {
-    /// Pretty-print JSON output.
+    /// Output JSON instead of the human-readable default.
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    /// Pretty-print JSON output (implies --json).
     #[arg(long, global = true)]
     pub pretty: bool,
+
+    /// Force human-readable output even when piped.
+    #[arg(long, global = true)]
+    pub text: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -73,9 +87,11 @@ pub enum Command {
     },
 }
 
-/// Run a parsed CLI invocation against `db` and write JSON to stdout.
+/// Run a parsed CLI invocation against `db`, rendering the result in the
+/// resolved [`Format`] (human by default, JSON when piped or forced).
 pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
-    let value = match cli.command {
+    let format = Format::resolve(cli.json, cli.text, cli.pretty);
+    let output: CommandOutput = match cli.command {
         Command::Editor { action } => editor::run(action, db),
         Command::Session { action } => sessions::run(action, db),
         Command::Automation { action } => automations::run(action, db),
@@ -85,13 +101,13 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Extension { action } => extensions::run(action, db),
     }?;
 
-    let text = if cli.pretty {
-        serde_json::to_string_pretty(&value).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
-    } else {
-        serde_json::to_string(&value).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
-    };
-    println!("{text}");
-    Ok(())
+    println!("{}", format.render(&output));
+    // A command can render normally yet still request a non-zero exit (e.g.
+    // `config validate` on an invalid file).
+    match output.failure {
+        Some(msg) => Err(msg),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +125,16 @@ mod tests {
                 action: sessions::Action::List { parent: None }
             }
         ));
+    }
+
+    #[test]
+    fn json_and_text_flags_are_global() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "task", "list", "--json"]).unwrap();
+        assert!(cli.json);
+        assert!(!cli.text);
+        let cli = Cli::try_parse_from(["thurbox-cli", "--text", "task", "list"]).unwrap();
+        assert!(cli.text);
+        assert!(!cli.json);
     }
 
     #[test]

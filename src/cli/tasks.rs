@@ -8,6 +8,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::output::{self, CommandOutput};
 use crate::session::{AutomationAction, SessionId, Task, TaskStatus, SOURCE_LOCAL};
 use crate::session_ops::SpawnRequest;
 use crate::storage::tasks::NewTask;
@@ -77,7 +78,7 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<Value, String> {
+pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
     match action {
         Action::Create {
             title,
@@ -106,13 +107,24 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             let id = db
                 .create_task(&new)
                 .map_err(|e| format!("create_task: {e}"))?;
-            Ok(task_to_json(&load(db, id)?))
+            let task = load(db, id)?;
+            Ok(CommandOutput::new(
+                task_to_json(&task),
+                format!("Created task #{}: {}", task.id, task.title),
+            ))
         }
         Action::List => {
             let tasks = db.list_tasks().map_err(|e| format!("list_tasks: {e}"))?;
-            Ok(Value::Array(tasks.iter().map(task_to_json).collect()))
+            let json = Value::Array(tasks.iter().map(task_to_json).collect());
+            Ok(CommandOutput::new(json, render_task_list(&tasks)))
         }
-        Action::Show { id } => Ok(task_to_json(&load(db, id)?)),
+        Action::Show { id } => {
+            let task = load(db, id)?;
+            Ok(CommandOutput::new(
+                task_to_json(&task),
+                render_task_detail(&task),
+            ))
+        }
         Action::Edit {
             id,
             title,
@@ -132,17 +144,100 @@ pub fn run(action: Action, db: &Database) -> Result<Value, String> {
             }
             db.update_task(&task)
                 .map_err(|e| format!("update_task: {e}"))?;
-            Ok(task_to_json(&load(db, id)?))
+            let task = load(db, id)?;
+            Ok(CommandOutput::new(
+                task_to_json(&task),
+                render_task_detail(&task),
+            ))
         }
         Action::Remove { id } => match db.soft_delete_task(id) {
-            Ok(true) => Ok(json!({ "removed": true, "id": id })),
+            Ok(true) => Ok(CommandOutput::new(
+                json!({ "removed": true, "id": id }),
+                format!("Removed task #{id}."),
+            )),
             Ok(false) => Err(format!("Task not found: {id}")),
             Err(e) => Err(format!("soft_delete_task: {e}")),
         },
         Action::Run { id } => {
             let task = load(db, id)?;
-            run_task(db, &task)
+            let json = run_task(db, &task)?;
+            let human = render_task_run(&json);
+            Ok(CommandOutput::new(json, human))
         }
+    }
+}
+
+/// Render the task list as an aligned table (or a friendly empty line).
+fn render_task_list(tasks: &[Task]) -> String {
+    if tasks.is_empty() {
+        return "No tasks.".to_string();
+    }
+    let rows: Vec<Vec<String>> = tasks
+        .iter()
+        .map(|t| {
+            vec![
+                t.id.to_string(),
+                status_glyph(t.status),
+                t.title.clone(),
+                task_action_label(&t.action),
+            ]
+        })
+        .collect();
+    output::table(&["ID", "STATUS", "TITLE", "ACTION"], &rows)
+}
+
+/// Render a single task as a key/value block, with the markdown body trailing.
+fn render_task_detail(t: &Task) -> String {
+    let mut pairs: Vec<(&str, String)> = vec![
+        ("id", t.id.to_string()),
+        ("title", t.title.clone()),
+        ("status", t.status.as_str().to_string()),
+        ("action", task_action_label(&t.action)),
+        ("source", t.source.clone()),
+    ];
+    if let Some(url) = &t.external_url {
+        pairs.push(("url", url.clone()));
+    }
+    let mut block = output::kv(&pairs);
+    if let Some(desc) = &t.description {
+        if !desc.is_empty() {
+            block.push_str("\n\n");
+            block.push_str(desc);
+        }
+    }
+    block
+}
+
+/// One-line human summary of a headless `task run` outcome.
+fn render_task_run(v: &Value) -> String {
+    if let Some(name) = v.get("spawned").and_then(Value::as_str) {
+        format!("Spawned session '{name}' for the task.")
+    } else if let Some(name) = v.get("reused").and_then(Value::as_str) {
+        format!("Re-sent the task to existing session '{name}'.")
+    } else if v.get("sent").and_then(Value::as_bool) == Some(true) {
+        "Sent the task to its session.".to_string()
+    } else if let Some(reason) = v.get("skipped").and_then(Value::as_str) {
+        format!("Skipped: {reason}")
+    } else {
+        v.to_string()
+    }
+}
+
+/// Short status glyph + word for the list table.
+fn status_glyph(status: TaskStatus) -> String {
+    match status {
+        TaskStatus::Todo => "☐ todo".to_string(),
+        TaskStatus::InProgress => "◐ in-progress".to_string(),
+        TaskStatus::Done => "☑ done".to_string(),
+    }
+}
+
+/// Human label for a task's optional agent action.
+fn task_action_label(action: &Option<AutomationAction>) -> String {
+    match action {
+        None => "-".to_string(),
+        Some(AutomationAction::Send { .. }) => "send".to_string(),
+        Some(AutomationAction::Spawn { .. }) => "spawn".to_string(),
     }
 }
 
