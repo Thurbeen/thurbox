@@ -1,0 +1,32 @@
+---
+layout: base.njk
+root: '..'
+extraCss: ['docs.css']
+navScrolled: true
+activeNav: 'docs'
+---
+<div class="docs-page">
+  <div class="docs-layout">
+    {% include "sidebar.njk" %}
+
+    <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+      &#9776;
+    </button>
+
+    <main class="docs-content">
+      <div class="breadcrumbs">
+        <a href="{{ root }}/index.html">Home</a>
+        <span class="separator">/</span>
+        {%- if currentPage == "index" %}
+        <span class="current">Docs</span>
+        {%- else %}
+        <a href="index.html">Docs</a>
+        <span class="separator">/</span>
+        <span class="current">{{ breadcrumb }}</span>
+        {%- endif %}
+      </div>
+
+      {{ content | safe }}
+    </main>
+  </div>
+</div>

@@ -38,6 +38,9 @@ temp/
 
 # Node (website linting tools)
 node_modules/
+
+# Eleventy build output for the website
+_site/
 .claude/scheduled_tasks.lock
 .aider*
 

@@ -30,14 +30,27 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v6.0.0
+        with:
+          node-version: 26
+          cache: npm
+
+      # Demo videos are copied into the Eleventy input (website/assets/) before the
+      # build, so the passthrough-copy step picks them up into the built _site/.
       - name: Copy demo videos into website assets
         run: cp docs/media/*.mp4 website/assets/
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build site with Eleventy
+        run: npm run build:website
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: website
+          path: _site
 
       - id: deploy
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

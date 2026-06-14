@@ -1,0 +1,109 @@
+/* Styles specific to the generated UI/UX review page (docs/ui-review.html). */
+
+.review-meta {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  margin-bottom: var(--space-lg);
+}
+.review-meta span {
+  margin-right: var(--space-lg);
+}
+.sev-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0 var(--space-lg);
+}
+.sev-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.sev-pill .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.review-card {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  margin-bottom: var(--space-2xl);
+}
+.review-card > h3 {
+  margin: 0;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border);
+  font-size: 1.05rem;
+}
+.review-card > h3 .keys {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 400;
+  margin-left: 0.5rem;
+}
+.review-shot {
+  background: #000;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+.review-shot img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+.review-findings {
+  padding: var(--space-sm) var(--space-lg) var(--space-md);
+}
+.finding {
+  display: flex;
+  gap: var(--space-md);
+  align-items: flex-start;
+  padding: var(--space-md) 0;
+  border-top: 1px solid var(--border);
+}
+.finding:first-child {
+  border-top: none;
+}
+.finding .sev {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid;
+  min-width: 70px;
+  text-align: center;
+}
+.finding .body {
+  flex: 1;
+}
+.finding .body .ftitle {
+  font-weight: 600;
+}
+.finding .body .lens {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid;
+  margin-left: 0.5rem;
+}
+.finding .body .fdesc {
+  color: var(--text-secondary);
+  margin: 0.3rem 0;
+  font-size: 0.9rem;
+}
+.finding .body .ffix {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.finding .body .ffix b {
+  color: var(--text-secondary);
+}

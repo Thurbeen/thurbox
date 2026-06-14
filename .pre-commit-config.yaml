@@ -96,19 +96,22 @@ repos:
         pass_filenames: false
 
       # Website linting (pre-commit stage)
+      # Page .html files carry YAML front matter and are partial templates, so
+      # Prettier/HTMLHint run on the CSS/JS sources and on the *built* _site
+      # output rather than the page sources.
       - id: prettier-check
         name: Prettier format check
         entry: npx prettier --check
         language: system
-        files: ^website/.*\.(html|css|js)$
+        files: ^(website/.*\.(css|js)|eleventy\.config\.js)$
         pass_filenames: true
 
       - id: htmlhint
-        name: HTMLHint
-        entry: npx htmlhint
+        name: HTMLHint (built site)
+        entry: sh -c 'npx @11ty/eleventy --quiet && npx htmlhint "_site/**/*.html"' --
         language: system
-        files: ^website/.*\.html$
-        pass_filenames: true
+        files: ^(website/|website/_includes/|eleventy\.config\.js)
+        pass_filenames: false
 
       - id: stylelint
         name: Stylelint

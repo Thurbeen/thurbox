@@ -1,0 +1,44 @@
+{%- set sections = [
+  { heading: "Getting Started", links: [
+    { slug: "installation", href: "installation.html", label: "Installation" },
+    { slug: "features", href: "features.html", label: "Features" },
+    { slug: "keybindings", href: "keybindings.html", label: "Keybindings" }
+  ]},
+  { heading: "Extensions", links: [
+    { slug: "extensions", href: "extensions.html", label: "Overview" },
+    { slug: "extension-flow", href: "extension-flow.html", label: "Flow" },
+    { slug: "extension-forge", href: "extension-forge.html", label: "Forge" },
+    { slug: "extension-ci-shepherd", href: "extension-ci-shepherd.html", label: "CI-shepherd" },
+    { slug: "extension-renovate", href: "extension-renovate.html", label: "Renovate" }
+  ]},
+  { heading: "Reference", links: [
+    { slug: "architecture", href: "architecture.html", label: "Architecture" }
+  ]},
+  { heading: "Developer", links: [
+    { slug: "ui-review", href: "ui-review.html", label: "UI/UX Review" }
+  ]}
+] -%}
+<aside class="docs-sidebar" id="docs-sidebar">
+  {%- for section in sections %}
+  <h4>{{ section.heading }}</h4>
+  <ul>
+    {%- for link in section.links %}
+    <li>
+      <a
+        href="{{ link.href }}"
+        {%- if link.slug == currentPage %} class="current-page"{% endif %}
+        >{{ link.label }}</a
+      >
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endfor %}
+  {%- if onThisPage and onThisPage.length %}
+  <h4>On This Page</h4>
+  <ul>
+    {%- for item in onThisPage %}
+    <li><a href="#{{ item.id }}">{{ item.label }}</a></li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+</aside>

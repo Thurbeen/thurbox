@@ -2,14 +2,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint:html": "htmlhint 'website/**/*.html'",
-    "lint:css": "stylelint 'website/**/*.css'",
-    "lint:js": "eslint 'website/**/*.js'",
-    "lint:format": "prettier --check 'website/**/*.{html,css,js}'",
-    "lint:website": "npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
-    "fmt:website": "prettier --write 'website/**/*.{html,css,js}'"
+    "build:website": "eleventy",
+    "dev:website": "eleventy --serve",
+    "lint:html": "htmlhint '_site/**/*.html'",
+    "lint:css": "stylelint 'website/css/**/*.css'",
+    "lint:js": "eslint 'website/js/**/*.js'",
+    "lint:format": "prettier --check 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
+    "lint:website": "npm run build:website && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
+    "fmt:website": "prettier --write 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'"
   },
   "devDependencies": {
+    "@11ty/eleventy": "^3.0.0",
     "eslint": "^10.0.0",
     "htmlhint": "^1.1.4",
     "prettier": "^3.0.0",
