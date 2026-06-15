@@ -78,13 +78,12 @@ onThisPage:
             <code>--home</code>
             ), registers the agents, and activates the dedicated
             <code>flow</code>
-            session plus a
-            <code>flow-tick</code>
-            automation &mdash; both
+            session &mdash;
             <strong>self-healed</strong>
-            by Thurbox, so deleting them is a no-op until you
+            by Thurbox, so deleting it is a no-op until you
             <code>deactivate</code>
-            .
+            . Flow is event-driven (worker pushes over the mailbox queue wake
+            it); there is no scheduled automation.
           </p>
 
           <h2 id="use">
@@ -131,8 +130,7 @@ onThisPage:
             <li>
               Workers self-report: they mark their task done and send a
               <code>--kind result</code>
-              message, which wakes the flow session so the next task dispatches without waiting for
-              the cron tick.
+              message, which wakes the flow session so the next task dispatches immediately.
             </li>
           </ul>
 
@@ -157,10 +155,12 @@ onThisPage:
             <code>result</code>
             message (which also wakes flow), and flow drains its inbox with
             <code>message inbox --for flow --claim</code>
-            &mdash; clean JSON, never scraped from a rendered terminal. The
-            <code>flow-tick</code>
-            cron automation (default every 5&nbsp;min) is demoted to a safety net: it drains
-            anything a missed wake left queued, catches crashed workers, and grooms stale state.
+            &mdash; clean JSON, never scraped from a rendered terminal. Flow ships
+            <strong>no scheduled automation</strong>
+            &mdash; a manual
+            <code>tick</code>
+            is the safety net you type at the flow session: it drains anything a missed wake left
+            queued, catches crashed workers, and grooms stale state.
           </p>
 
           <h2 id="files">

@@ -648,8 +648,9 @@ sync, but the TUI editor never sets it.)
   with `message reply <message_id>` — thurbox routes it to that message's sender,
   so flow never maps a task to a session id (the old `flow-snapshot.sh`
   name-parsing is now human-board only). The worker drains its own inbox on the
-  resulting `inbox` wake. The `flow-tick` automation is demoted to a
-  janitor/safety-net (drain missed wakes, reset stale tasks, dispatch). The
+  resulting `inbox` wake. Flow ships **no scheduled automation** — it is purely
+  event-driven; a **manual** `tick` is the janitor/safety-net (drain missed
+  wakes, reset stale tasks, dispatch) you type at the flow session. The
   behavior spec
   is `FLOW.md`, surfaced to whichever CLI runs it via context-file
   symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). Install with

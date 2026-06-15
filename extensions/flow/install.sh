@@ -7,7 +7,8 @@
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
 # down ~/flow, registers the flow agents in agents.toml, and activates the flow
-# session + flow-tick automation (which thurbox then self-heals).
+# session (which thurbox then self-heals). Flow is event-driven — worker pushes
+# over the mailbox queue wake it; there is no scheduled automation.
 #
 # Usage:
 #   ./install.sh                  # from a checkout

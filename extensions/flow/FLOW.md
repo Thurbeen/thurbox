@@ -154,8 +154,8 @@ the table, add a row when you learn its path.
 ## DISPATCH (sub-step of CAPTURE and TICK)
 
 Dispatch is **eager**: it runs immediately at capture, on every DRAIN/tick,
-and a worker's `result` message wakes you the moment it finishes — never wait
-for the cron tick to dispatch something that is eligible NOW.
+and a worker's `result` message wakes you the moment it finishes — never defer
+dispatching something that is eligible NOW.
 
 - Eligible: `status=todo` AND has a spawn action AND capacity OK
   (**max 3** running worker (`… · #<id>`) sessions).
@@ -239,13 +239,13 @@ When the user replies to a question or a plan you surfaced:
 3. Confirm one line (`relayed → #<from_task_id>`) and end with the Output Contract
    footer. Create no task; an ANSWER is not a brain-dump.
 
-## TICK (from the automation — quiet janitor + safety net)
+## TICK (manual janitor + safety net)
 
-The interactive loop is driven by worker pushes (DRAIN/ANSWER); the cron tick
-(every 10 min) is the **safety net** — it drains anything a missed wake left
-queued and grooms stale state. It runs **quietly**: a tick that finds nothing to
-report prints a single minimal line and nothing else, so routine ticks never
-interrupt the user. The board appears **only** when something actually needs
+The interactive loop is driven by worker pushes (DRAIN/ANSWER); there is no
+scheduled automation. `tick` is a **manual** safety net you can type at the flow
+session — it drains anything a missed wake left queued and grooms stale state. It
+runs **quietly**: a tick that finds nothing to report prints a single minimal
+line and nothing else. The board appears **only** when something actually needs
 attention.
 
 Do the work first, track whether anything happened, then decide what to print.

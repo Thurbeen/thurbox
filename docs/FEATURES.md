@@ -775,11 +775,12 @@ Nothing in the extension names a vendor:
 ### Dispatch model
 
 Dispatch is **eager**: capture creates the task *and* spawns its
-worker in one atomic helper call (`create-task.sh`); workers send a
-`tick` back to the flow session when they finish so a freed capacity
-slot dispatches the next task immediately; a `flow-tick` cron
-automation (default every 10 min) is only the safety net that catches
-crashed workers and stale state. Workers always get a
+worker in one atomic helper call (`create-task.sh`); workers push a
+`result` message back to the flow session when they finish so a freed
+capacity slot dispatches the next task immediately. Flow is purely
+event-driven — there is no scheduled automation; a manual `tick`
+remains the safety net that catches crashed workers and stale state.
+Workers always get a
 `flow/<task-slug>` worktree branch on git repos, so they never dirty
 the main checkout and parallelize per repo. Completion is detected by
 task status (workers self-mark done) with an orchestrate-style
@@ -791,9 +792,9 @@ task status (workers self-mark done) with an orchestrate-style
 Flow installs with the generic extension installer —
 `thurbox-cli extension install flow` — which reads flow's
 `extension.toml` manifest: it lays down the flow home, registers the
-agents.toml aliases, creates the dedicated `flow` session + `flow-tick`
-automation, and marks the extension active so they **self-heal** if
-deleted. `extension uninstall flow [--purge]` reverses it. The
+agents.toml aliases, creates the dedicated `flow` session, and marks
+the extension active so it **self-heals** if deleted. `extension
+uninstall flow [--purge]` reverses it. The
 `extensions/flow/install.sh` curl one-liner is now a thin shim over the
 CLI. See the generic mechanism (manifest format, lifecycle commands,
 self-heal) in `docs/CONFIG.md` and `extensions/flow/README.md`.

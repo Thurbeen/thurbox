@@ -4,14 +4,14 @@
 # with `thurbox-cli extension install flow` (or point at this directory:
 # `thurbox-cli extension install ./extensions/flow`). thurbox fetches this file,
 # lays down the [[files]] / [[symlinks]] under `home`, registers the [[agents]]
-# in agents.toml, then activates the [[sessions]] + [[automations]] and
-# self-heals them if they're ever deleted. `{home}` is replaced with the
+# in agents.toml, then activates the [[sessions]] and self-heals them if
+# they're ever deleted. `{home}` is replaced with the
 # resolved home dir. Turn flow off with `thurbox-cli extension deactivate flow`.
 
 name = "flow"
 description = "Focus-protecting triage agent"
 config_version = 1
-version = "1.2.0"                 # this extension's own version; bump on changes
+version = "1.3.0"                 # this extension's own version; bump on changes
 min_thurbox_version = "0.120.0"  # needs the `thurbox-cli message` mailbox queue
 home = "~/flow"
 
@@ -89,14 +89,14 @@ link = "GEMINI.md"
 target = "FLOW.md"
 
 # --- runtime resources: ensured on activate, self-healed if deleted -----------
+#
+# Flow is purely event-driven: worker sessions push messages over the
+# inter-session mailbox queue (`message send --to flow`), which wakes the flow
+# session to drain its inbox. There is no scheduled (cron) automation — `tick`
+# remains a manual janitor command you can type at the flow session when you
+# want to force a drain/dispatch/groom pass.
 
 [[sessions]]
 name = "flow"
 agent = "flow"
 repo_path = "{home}"
-
-[[automations]]
-name = "flow-tick"
-trigger = "cron:*/10 * * * *"
-session_ref = "flow"
-prompt = "tick"

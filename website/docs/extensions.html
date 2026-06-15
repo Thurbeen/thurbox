@@ -301,9 +301,11 @@ name = "flow"
 agent = "flow"
 repo_path = "{home}"            # resolved to the absolute home at install
 
+# [[automations]] is an OPTIONAL runtime resource (flow itself ships none —
+# it is purely event-driven). An extension that wants a scheduled tick declares:
 [[automations]]
-name = "flow-tick"
-trigger = "cron:*/5 * * * *"    # same grammar as `automation create --trigger`
+name = "example-tick"
+trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
 session_ref = "flow"            # must match a [[sessions]] name above
 prompt = "tick"</code></pre>
           <table>

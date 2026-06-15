@@ -40,9 +40,9 @@ That single command is the installer — it reads flow's
    triager, opus for workers — edit agents.toml to change the
    CLI/model);
 3. writes the manifest to `~/.config/thurbox/extensions/flow.toml` and
-   activates it, creating the dedicated `flow` session and a `flow-tick`
-   automation (every 10 minutes) that keeps it monitoring workers even
-   while the TUI is closed.
+   activates it, creating the dedicated `flow` session. Flow is event-driven:
+   worker sessions push messages over the mailbox queue to wake it — there is
+   no scheduled automation.
 
 It's idempotent — re-run it any time to pull the latest spec/scripts,
 while leaving your own data (`repos.md`, edited agents) untouched.
@@ -65,11 +65,10 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/fl
 
 ### Self-healing
 
-The flow session and `flow-tick` automation are **managed**: thurbox
-re-creates them automatically if they're ever deleted (on TUI startup and
-on every automation tick), so flow can't be half-removed by accident.
-Deleting the flow session/automation by hand is therefore a no-op — they
-come back. To turn flow off for good, run:
+The flow session is **managed**: thurbox re-creates it automatically if it's
+ever deleted (on TUI startup and on every automation tick), so flow can't be
+half-removed by accident. Deleting the flow session by hand is therefore a
+no-op — it comes back. To turn flow off for good, run:
 
 ```bash
 thurbox-cli extension deactivate flow         # tear down + stop self-heal
@@ -129,37 +128,37 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
   worker to you and back. Several workers can be mid-conversation at once, each
   tagged by its `#<id>`.
 - `status` for a one-screen report; `clean` to groom the backlog.
-- A tick prints the **board** — a quick-glance table of all live
+- Flow is **event-driven**: worker pushes over the mailbox queue
+  (`message send --to flow`) wake the flow session and drive the interactive
+  loop — there is no scheduled (cron) automation.
+- A manual `tick` prints the **board** — a quick-glance table of all live
   `flow` / worker (`… · #<id>`) sessions with status, age, and the task they're
   working (`scripts/flow-summary.sh`) — **only when something needs attention**
   (a surfaced question/plan/result, an error/blocker, a stale reset, an orphan
   session, or a fresh dispatch). A quiet tick prints just one minimal line
-  (`tick: N running, M todo`), so routine ticks don't interrupt you. The
-  `flow-tick` automation is a **safety net** that fires every 10 minutes: worker
-  pushes drive the interactive loop; the cron tick just drains anything a missed
-  wake left queued and grooms stale state.
+  (`tick: N running, M todo`), so a manual groom pass doesn't interrupt you. Type
+  `tick` at the flow session whenever you want to force a drain/dispatch/groom.
 - Workers self-report: they mark their task done and send a `--kind result`
-  message, which wakes flow so the next task dispatches without waiting for the
-  cron tick.
+  message, which wakes flow so the next task dispatches immediately.
 
 ## Files
 
 | Path | Purpose |
 |------|---------|
-| `extension.toml` | Manifest: agents, payload files, symlinks, session + automation (the installer) |
+| `extension.toml` | Manifest: agents, payload files, symlinks, session (the installer) |
 | `FLOW.md` | The agent behavior spec (modes, dispatch rules, output contract) |
 | `claude-settings.json` | Permission template (`{home}`-substituted into `.claude/settings.json`) |
 | `repos.md` | Routing-table seed (installed once, then user-owned) |
 | `scripts/create-task.sh` | Atomic task create + dispatch; composes the plan-first worker prompt (`--dry-run` to preview) |
 | `scripts/flow-snapshot.sh` | One-call backlog + sessions view |
-| `scripts/flow-summary.sh` | At-a-glance board table (printed atop every tick) |
+| `scripts/flow-summary.sh` | At-a-glance board table (printed atop a `tick`) |
 | `scripts/parse-result.sh` | Fallback-only: extract a `===RESULT===` sentinel from a worker that died without sending a `result` message |
 | `install.sh` | Thin shim → `thurbox-cli extension install` (curl\|sh bootstrap) |
 
 ## Uninstall
 
-`uninstall` reverses `install` — it tears down the session + automation,
-removes the `flow*` agents from `agents.toml`, and deletes the manifest:
+`uninstall` reverses `install` — it tears down the session, removes the
+`flow*` agents from `agents.toml`, and deletes the manifest:
 
 ```bash
 thurbox-cli extension uninstall flow            # keeps ~/flow (your repos.md etc.)
@@ -172,6 +171,6 @@ To only switch flow off (keeping it installed for a later `activate`):
 thurbox-cli extension deactivate flow           # stop self-heal, keep files
 ```
 
-> Note: a plain `session delete` / `automation remove` is **not** enough on
-> its own — while flow is active, thurbox self-heals those resources.
-> `deactivate` (or `uninstall`) is what stops the self-heal.
+> Note: a plain `session delete` is **not** enough on its own — while flow is
+> active, thurbox self-heals the session. `deactivate` (or `uninstall`) is what
+> stops the self-heal.
