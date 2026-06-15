@@ -30,6 +30,15 @@ fn session_name_to_branch(name: &str) -> String {
     result.trim_matches('-').to_string()
 }
 
+/// Whether a pressed chord is a bare `Ctrl+<letter>` — the namespace thurbox
+/// shares with readline / shell line-editing chords. Used to gate
+/// [`crate::session::Action::terminal_passthrough`] so the PTY-deferral only
+/// fires for the conflicting chords; a non-`Ctrl+letter` rebind of a
+/// passthrough action keeps working in the terminal.
+fn is_ctrl_letter_chord(code: KeyCode, mods: KeyModifiers) -> bool {
+    mods == KeyModifiers::CONTROL && matches!(code, KeyCode::Char(c) if c.is_ascii_alphabetic())
+}
+
 impl App {
     /// Main key handler dispatcher.
     ///
@@ -85,12 +94,18 @@ impl App {
 
         // Keybinding lookup, scoped to the focused pane: global actions plus
         // any scoped to the current context (file viewer, session list,
-        // terminal). Some actions intentionally yield to the PTY when the
-        // terminal is focused (e.g. Ctrl+R = bash reverse-search) — those are
-        // handled inside `dispatch_action`.
+        // terminal). Some readline/shell chords (Ctrl+A/E/W/U/R/D/…) defer to
+        // the PTY when the terminal is focused so the inner agent CLI's
+        // line editing keeps working — see `Action::terminal_passthrough`.
+        // The deferral is gated on the bound chord still being a bare
+        // `Ctrl+<letter>`, so a rebind to a non-conflicting key keeps the
+        // thurbox command working even in the terminal.
         let context = self.focus_key_context();
         if let Some(action) = self.keybindings.lookup_in(context, code, mods) {
-            if self.dispatch_action(action) {
+            let defer_to_pty = self.focus == InputFocus::Terminal
+                && action.terminal_passthrough()
+                && is_ctrl_letter_chord(code, mods);
+            if !defer_to_pty && self.dispatch_action(action) {
                 return;
             }
         }
@@ -1187,9 +1202,10 @@ impl App {
                 true
             }
             Action::DeleteSession => self.act_delete_session(),
-            // Forward to the PTY in the terminal (shell editor / search chords),
-            // else run the action.
-            Action::OpenInEditor => self.act_unless_terminal(Self::open_active_in_editor),
+            Action::OpenInEditor => {
+                self.open_active_in_editor();
+                true
+            }
             Action::OpenAutomations => {
                 if self.feature_gate(self.features.automations, "Automations") {
                     self.open_automations_list();
@@ -1206,8 +1222,14 @@ impl App {
                 }
                 true
             }
-            Action::ForkSession => self.act_unless_terminal(Self::fork_active_session),
-            Action::RestartSession => self.act_unless_terminal(Self::restart_active_session),
+            Action::ForkSession => {
+                self.fork_active_session();
+                true
+            }
+            Action::RestartSession => {
+                self.restart_active_session();
+                true
+            }
             Action::UndoDelete => {
                 if self.pending_delete.is_some() {
                     self.undo_delete();
@@ -1360,17 +1382,6 @@ impl App {
                 true
             }
         }
-    }
-
-    /// Run `act` unless the terminal is focused (where the chord must forward to
-    /// the PTY — e.g. shell history search). Returns whether the key was
-    /// consumed. Backs the `OpenInEditor`/`ForkSession`/`RestartSession` actions.
-    fn act_unless_terminal(&mut self, act: impl FnOnce(&mut Self)) -> bool {
-        if self.focus == InputFocus::Terminal {
-            return false; // forward to PTY
-        }
-        act(self);
-        true
     }
 
     /// `Ctrl+N`: in the automations context create an automation (mirrors `n`),
@@ -1991,7 +2002,37 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::session_name_to_branch;
+    use super::{is_ctrl_letter_chord, session_name_to_branch};
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    #[test]
+    fn ctrl_letter_chord_detects_readline_namespace() {
+        // Bare Ctrl+letter — the readline-conflicting namespace.
+        assert!(is_ctrl_letter_chord(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(is_ctrl_letter_chord(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL
+        ));
+        // Plain letters, F-keys, and Ctrl+<non-letter> are not in the namespace,
+        // so a passthrough action bound to them keeps working in the terminal.
+        assert!(!is_ctrl_letter_chord(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE
+        ));
+        assert!(!is_ctrl_letter_chord(KeyCode::F(3), KeyModifiers::NONE));
+        assert!(!is_ctrl_letter_chord(
+            KeyCode::Char('1'),
+            KeyModifiers::CONTROL
+        ));
+        // Extra modifiers take it out of the bare-Ctrl namespace.
+        assert!(!is_ctrl_letter_chord(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        ));
+    }
 
     #[test]
     fn basic_conversion() {

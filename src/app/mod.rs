@@ -6224,6 +6224,55 @@ mod tests {
         assert_eq!(app.focus, InputFocus::SessionList);
     }
 
+    /// When the terminal is focused, readline/shell `Ctrl+<letter>` chords
+    /// (here `Ctrl+W` = delete-word) defer to the PTY instead of running their
+    /// thurbox command — but the same chord still works from the session list,
+    /// and the `F`-key alternate works everywhere.
+    #[test]
+    fn terminal_focus_defers_readline_ctrl_chords_to_pty() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(160, 40));
+
+        // From the session list, Ctrl+W (FocusTasks) toggles the tasks panel.
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert!(app.show_tasks_panel, "Ctrl+W toggles tasks from the list");
+
+        // Reset, then focus the terminal: Ctrl+W now forwards to the PTY, so
+        // the tasks panel is left untouched.
+        app.show_tasks_panel = false;
+        app.focus = InputFocus::Terminal;
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert!(
+            !app.show_tasks_panel,
+            "Ctrl+W should defer to the PTY when the terminal is focused"
+        );
+        assert_eq!(app.focus, InputFocus::Terminal);
+
+        // The F5 alternate is not a Ctrl+letter chord, so it still toggles.
+        app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
+        assert!(
+            app.show_tasks_panel,
+            "F5 keeps toggling tasks even in the terminal"
+        );
+    }
+
+    /// Navigation chords are the keyboard escape route, so they keep working in
+    /// the terminal even though `Ctrl+H` collides with readline's backspace.
+    #[test]
+    fn terminal_focus_keeps_navigation_chords_active() {
+        let mut app = app_with_sessions(1);
+        app.update(AppMessage::Resize(160, 40));
+        app.focus = InputFocus::Terminal;
+
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_ne!(
+            app.focus,
+            InputFocus::Terminal,
+            "Ctrl+H (FocusBackward) must still leave the terminal"
+        );
+    }
+
     /// Every `[features]` flag blocks its keybinding with a toast: state stays
     /// untouched and the chord is consumed (never forwarded to the PTY).
     #[test]

@@ -179,6 +179,17 @@ Maps `Action` names to one or more chord strings:
 - Unknown action names, invalid chords, and the same chord bound to two
   actions in overlapping contexts are reported at startup (the file
   still loads; bad entries fall back to defaults).
+- **Terminal passthrough.** When a session **terminal is focused**, the
+  readline / shell line-editing chords (`Ctrl+A` start-of-line, `Ctrl+E`
+  end-of-line, `Ctrl+W` delete-word, `Ctrl+U` kill-line, `Ctrl+R`
+  reverse-search, `Ctrl+D` EOF, plus `Ctrl+B/F/O/P/S`) are **forwarded to the
+  agent CLI** instead of triggering their thurbox command, so your terminal
+  muscle memory works inside a session. Those thurbox commands stay reachable
+  from the **session list** (focus it with `Ctrl+H`) and via their `F`-key
+  alternates (`F2` info panel, `F3` file viewer, `F5` tasks). Rebinding such an
+  action to a key that isn't a bare `Ctrl+<letter>` makes it work in the
+  terminal too. Navigation/quit chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) are
+  **never** forwarded — they're how you leave the terminal.
 - Action names and defaults: see the table in CLAUDE.md / README, or
   `src/session/keybindings.rs`.
 

@@ -1092,6 +1092,25 @@ capture, lookup, and the JSON round-trip agree regardless of how the
 terminal encodes them. **Copy/Paste** are global rebindable actions handled
 early in `handle_priority_key` (so Paste reaches modal text inputs).
 
+**Terminal PTY passthrough.** thurbox's global chords share the
+`Ctrl+<letter>` namespace with readline / shell line editing (`Ctrl+A` =
+start-of-line, `Ctrl+E` = end-of-line, `Ctrl+W` = delete-word, `Ctrl+U` =
+kill-line, `Ctrl+R` = reverse-search, `Ctrl+D` = EOF, …). So when a session
+**terminal is focused**, the actions flagged by `Action::terminal_passthrough`
+(`GlobalSearch`/`ToggleInfoPanel`/`DeleteSession`/`ToggleFileViewer`/
+`ForkSession`/`OpenInEditor`/`OpenAutomations`/`RestartSession`/`StartSync`/
+`OpenRestoreSessions`/`FocusTasks`) **defer to the agent CLI** instead of
+running the thurbox command — `handle_key` skips `dispatch_action` and falls
+through to `handle_terminal_key`, which forwards the bytes to the PTY. The
+thurbox command stays reachable from the **session list** (and via its `F`-key
+alternate where one exists — `F2`/`F3`/`F5`). The deferral is gated on the
+bound chord still being a bare `Ctrl+<letter>` (`is_ctrl_letter_chord`), so
+rebinding a passthrough action to a non-conflicting key keeps it working in the
+terminal. Navigation / app-control chords (`Ctrl+H/J/K/L` focus + session nav,
+`Ctrl+Q` quit, `Ctrl+N` new, …) are **not** deferred — they are the keyboard
+escape route out of the terminal, so they must keep working there even though a
+few collide with readline.
+
 A few stateful keys stay literal (the F1 panel lists them under
 **Fixed (not rebindable)**): modal selectors (j/k/Enter/Esc), the
 automations/tasks panes, the file-viewer **search sub-mode**, and the

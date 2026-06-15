@@ -208,6 +208,42 @@ impl Action {
         }
     }
 
+    /// Whether this action should **defer to the agent CLI** when a session
+    /// terminal is focused, instead of running as a thurbox command.
+    ///
+    /// thurbox's global chords share the `Ctrl+<letter>` namespace with the
+    /// readline / shell line-editing chords users have in muscle memory
+    /// (`Ctrl+A` = start-of-line, `Ctrl+E` = end-of-line, `Ctrl+W` =
+    /// delete-word, `Ctrl+U` = kill-line, `Ctrl+R` = reverse-search, `Ctrl+D`
+    /// = EOF, …). For the actions below we let those keystrokes pass through to
+    /// the PTY while the terminal is focused, so the inner agent CLI behaves
+    /// normally; the thurbox command stays reachable from the session list (and
+    /// via its `F`-key alternate, where one exists). The deferral is gated on
+    /// the *bound chord* still being a bare `Ctrl+<letter>` (applied in
+    /// `App::handle_key`), so rebinding an action to a non-conflicting key keeps
+    /// it working in the terminal.
+    ///
+    /// Navigation / app-control chords (`Ctrl+H/J/K/L` focus + session nav,
+    /// `Ctrl+Q` quit, `Ctrl+N` new, …) are deliberately **not** deferred: they
+    /// are the keyboard escape route out of the terminal, so they must keep
+    /// working there even though some collide with readline.
+    pub fn terminal_passthrough(self) -> bool {
+        matches!(
+            self,
+            Action::GlobalSearch        // Ctrl+A — beginning of line
+                | Action::ToggleInfoPanel   // Ctrl+B — backward char   (F2 alt)
+                | Action::DeleteSession     // Ctrl+D — EOF / delete char
+                | Action::ToggleFileViewer  // Ctrl+E — end of line      (F3 alt)
+                | Action::ForkSession       // Ctrl+F — forward char
+                | Action::OpenInEditor      // Ctrl+O — operate-and-get-next
+                | Action::OpenAutomations   // Ctrl+P — previous history
+                | Action::RestartSession    // Ctrl+R — reverse search
+                | Action::StartSync         // Ctrl+S — forward search / XOFF
+                | Action::OpenRestoreSessions // Ctrl+U — kill line
+                | Action::FocusTasks // Ctrl+W — delete word    (F5 alt)
+        )
+    }
+
     /// Default key chord(s) bound to this action for the platform we were
     /// compiled for. `cfg!(target_os)` is decided at exactly this one
     /// callsite; everything else goes through [`Action::default_chords_for`]
@@ -808,6 +844,50 @@ mod tests {
         assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('q')));
         assert_eq!(kb.chord_for(Action::NewSession), Some(&KeyChord::ctrl('n')));
         assert_eq!(kb.chord_for(Action::ToggleHelp), Some(&KeyChord::ctrl('g')));
+    }
+
+    #[test]
+    fn terminal_passthrough_covers_readline_chords_not_navigation() {
+        // The readline / shell line-editing chords defer to the PTY when the
+        // terminal is focused…
+        for action in [
+            Action::GlobalSearch,        // Ctrl+A
+            Action::ToggleInfoPanel,     // Ctrl+B
+            Action::DeleteSession,       // Ctrl+D
+            Action::ToggleFileViewer,    // Ctrl+E
+            Action::ForkSession,         // Ctrl+F
+            Action::OpenInEditor,        // Ctrl+O
+            Action::OpenAutomations,     // Ctrl+P
+            Action::RestartSession,      // Ctrl+R
+            Action::StartSync,           // Ctrl+S
+            Action::OpenRestoreSessions, // Ctrl+U
+            Action::FocusTasks,          // Ctrl+W
+        ] {
+            assert!(
+                action.terminal_passthrough(),
+                "{action:?} should defer to the PTY in the terminal"
+            );
+        }
+
+        // …but the keyboard escape route (focus / session nav) and quit must
+        // keep working in the terminal, so they never defer.
+        for action in [
+            Action::QuitApp,
+            Action::NewSession,
+            Action::FocusBackward,
+            Action::FocusForward,
+            Action::NextSession,
+            Action::PreviousSession,
+            Action::ToggleShell,
+            Action::UndoDelete,
+            Action::Copy,
+            Action::Paste,
+        ] {
+            assert!(
+                !action.terminal_passthrough(),
+                "{action:?} must stay active in the terminal"
+            );
+        }
     }
 
     #[test]
