@@ -1372,7 +1372,15 @@ confined to the active pane bounds.
   the system clipboard via `arboard`. Trailing whitespace is
   trimmed per line.
 - **`Ctrl+C`** (no selection): Forwarded to the terminal as SIGINT.
-- **`Ctrl+V`**: Pastes from system clipboard into the active PTY.
+- **`Ctrl+V`**: Pastes from the system clipboard. When a modal text
+  input (worktree/session name, repo-picker path or search,
+  automation editor) or an in-pane editor (task/automation) is
+  focused, the text is inserted into that field instead of the PTY
+  (`try_paste_into_modal_input`; single-line inputs strip embedded
+  newlines, the multi-line task description keeps them). While **any**
+  modal is open the paste is swallowed so it can never leak into the
+  terminal in the pane behind the overlay; otherwise it pastes into
+  the active PTY.
 - Any other keypress clears the selection.
 
 Selection is highlighted in the terminal render buffer using

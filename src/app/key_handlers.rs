@@ -1868,7 +1868,7 @@ impl App {
         self.refresh_repo_picker_rows();
     }
 
-    fn update_repo_picker_path_suggestion(&mut self) {
+    pub(super) fn update_repo_picker_path_suggestion(&mut self) {
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };

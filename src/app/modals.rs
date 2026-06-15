@@ -11,6 +11,18 @@ use crate::storage::DeletedSessionInfo;
 
 // ── TextInput Helper ────────────────────────────────────────────────────────
 
+/// Feed pasted `text` to `insert` one char at a time, dropping control
+/// characters. When `keep_newlines` is set, `\n` is preserved (multi-line
+/// fields); every other control char (including `\r`) is always dropped so a
+/// single-line field never gains a line break and `\r\n` collapses to one.
+fn insert_pasted(text: &str, keep_newlines: bool, mut insert: impl FnMut(char)) {
+    for c in text.chars() {
+        if (keep_newlines && c == '\n') || !c.is_control() {
+            insert(c);
+        }
+    }
+}
+
 /// Simple text input state with cursor tracking.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
@@ -27,6 +39,12 @@ impl TextInput {
         let byte_pos = self.byte_offset();
         self.buffer.insert(byte_pos, c);
         self.cursor += 1;
+    }
+
+    /// Insert pasted text at the cursor. Control characters (newlines, tabs, …)
+    /// are dropped so a single-line input never gains a line break from a paste.
+    pub fn insert_str(&mut self, s: &str) {
+        insert_pasted(s, false, |c| self.insert(c));
     }
 
     pub fn backspace(&mut self) {
@@ -115,6 +133,13 @@ impl TextArea {
     /// Insert a line break at the cursor.
     pub fn insert_newline(&mut self) {
         self.insert('\n');
+    }
+
+    /// Insert pasted text at the cursor, preserving newlines (this is a
+    /// multi-line field). `\r` is dropped and other control characters are
+    /// skipped so a pasted `\r\n` collapses to a single line break.
+    pub fn insert_str(&mut self, s: &str) {
+        insert_pasted(s, true, |c| self.insert(c));
     }
 
     pub fn backspace(&mut self) {
@@ -1801,6 +1826,23 @@ mod tests {
         input.move_right();
         input.delete(); // removes the multi-byte 'ñ' at the cursor
         assert_eq!(input.value(), "a");
+    }
+
+    #[test]
+    fn text_input_insert_str_drops_control_chars_and_advances_cursor() {
+        let mut input = TextInput::new();
+        input.set("a");
+        input.insert_str("bc\nd\te"); // newline + tab are dropped
+        assert_eq!(input.value(), "abcde");
+        assert_eq!(input.cursor_pos(), 5);
+    }
+
+    #[test]
+    fn textarea_insert_str_keeps_newlines_drops_carriage_returns() {
+        let mut ta = TextArea::new();
+        ta.insert_str("one\r\ntwo\tthree");
+        // `\r` dropped, `\n` kept, `\t` (control) dropped.
+        assert_eq!(ta.value(), "one\ntwothree");
     }
 
     #[test]

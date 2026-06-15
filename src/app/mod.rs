@@ -2071,12 +2071,81 @@ impl App {
         self.send_paste_to_session(&text);
     }
 
-    /// Route pasted text into the focused modal text input when one is open.
-    /// Returns `true` when consumed, signalling the caller to skip the default
-    /// "send to session" behaviour. New modals with text inputs should add
-    /// their target here so paste works inside them.
-    fn try_paste_into_modal_input(&mut self, _text: &str) -> bool {
-        false
+    /// Route pasted text into the focused text input when one is open — a modal
+    /// field or an in-pane editor. Returns `true` when consumed, signalling the
+    /// caller to skip the default "send to session" behaviour.
+    ///
+    /// While *any* modal is open the paste is consumed regardless of whether a
+    /// text field has focus, so it can never leak through to the terminal in the
+    /// main pane behind the overlay. New modals with text inputs should add
+    /// their target here so paste lands in them.
+    fn try_paste_into_modal_input(&mut self, text: &str) -> bool {
+        use modals::Modal;
+
+        match &mut self.modal {
+            Modal::WorktreeName(wn) => wn.name.insert_str(text),
+            Modal::SessionName(sn) => sn.name.insert_str(text),
+            Modal::RepoPicker(rp) => {
+                match rp.focus {
+                    modals::RepoPickerFocus::Input => rp.path_input.insert_str(text),
+                    modals::RepoPickerFocus::Search => {
+                        rp.search_input.insert_str(text);
+                        rp.recompute_filter();
+                    }
+                    // The list has no text field; swallow so paste doesn't
+                    // reach the terminal behind the overlay.
+                    modals::RepoPickerFocus::List => {}
+                }
+                // Refresh the autocomplete suggestion (no-op unless the path
+                // input is focused). Done after the `rp` borrow ends.
+                self.update_repo_picker_path_suggestion();
+            }
+            Modal::AutomationEditor(m) => {
+                if let Some(field) = m.active_field_mut() {
+                    field.insert_str(text);
+                }
+            }
+            // No modal: route to a focused in-pane editor if any.
+            Modal::None => return self.try_paste_into_pane_editor(text),
+            // Selector-only modals (agent/host/theme/branch pickers, lists, …)
+            // have no text field, but still swallow the paste so it can't fall
+            // through to the terminal beneath them.
+            _ => {}
+        }
+        true
+    }
+
+    /// Route pasted text into a focused in-pane editor (the task or automation
+    /// editor, which are panes rather than modals). Returns `true` when the
+    /// editor pane is focused — inserting into its text field if one is focused,
+    /// otherwise swallowing the paste so it can't leak into the terminal. Called
+    /// only when no modal is open.
+    fn try_paste_into_pane_editor(&mut self, text: &str) -> bool {
+        // Resolve the focused editor's text field (or `None` for a
+        // selector/multi-line field handled inline), then insert once below so
+        // both editor arms share the tail.
+        let field = match self.focus {
+            InputFocus::TaskEditor => {
+                let Some(editor) = self.task_ui.task_editor.as_mut() else {
+                    return true;
+                };
+                // The description is a multi-line `TextArea`, handled here.
+                if editor.field == modals::TaskField::Description {
+                    editor.description.insert_str(text);
+                    return true;
+                }
+                editor.active_field_mut()
+            }
+            InputFocus::AutomationEditor => match self.automation_ui.automation_editor.as_mut() {
+                Some(editor) => editor.active_field_mut(),
+                None => return true,
+            },
+            _ => return false,
+        };
+        if let Some(field) = field {
+            field.insert_str(text);
+        }
+        true
     }
 
     pub(crate) fn spawn_worktree_session(
@@ -9226,6 +9295,91 @@ mod tests {
         let mut app = app_with_sessions(1);
         // Should return early without error for empty text
         app.send_paste_to_session("");
+    }
+
+    /// Value of the focused text field in the current modal (for the
+    /// paste-routing tests). `None` for modals without a text field.
+    fn focused_modal_text(app: &App) -> Option<String> {
+        let text = match &app.modal {
+            modals::Modal::WorktreeName(wn) => wn.name.value(),
+            modals::Modal::SessionName(sn) => sn.name.value(),
+            modals::Modal::RepoPicker(rp) => match rp.focus {
+                modals::RepoPickerFocus::Search => rp.search_input.value(),
+                _ => rp.path_input.value(),
+            },
+            _ => return None,
+        };
+        Some(text.to_string())
+    }
+
+    #[test]
+    fn paste_routes_into_modal_text_inputs() {
+        // (modal, pasted, expected) — single-line fields strip embedded
+        // newlines, so a pasted trailing newline must not survive.
+        let repo_input = modals::Modal::RepoPicker(modals::RepoPickerModal {
+            focus: modals::RepoPickerFocus::Input,
+            ..Default::default()
+        });
+        let cases: Vec<(modals::Modal, &str, &str)> = vec![
+            (
+                modals::Modal::WorktreeName(Default::default()),
+                "feature/x",
+                "feature/x",
+            ),
+            (
+                modals::Modal::SessionName(Default::default()),
+                "my session\n",
+                "my session",
+            ),
+            (repo_input, "/tmp/repo", "/tmp/repo"),
+        ];
+
+        for (modal, pasted, expected) in cases {
+            let mut app = app_with_sessions(1);
+            app.modal = modal;
+            assert!(
+                app.try_paste_into_modal_input(pasted),
+                "paste must be consumed"
+            );
+            assert_eq!(focused_modal_text(&app).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn paste_into_selector_only_modal_is_swallowed_not_sent_to_terminal() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal::default());
+
+        // A theme picker has no text field, but the paste must still be
+        // consumed so it can't leak into the terminal behind the overlay.
+        let consumed = app.try_paste_into_modal_input("oops");
+
+        assert!(consumed);
+    }
+
+    #[test]
+    fn paste_falls_through_to_terminal_when_no_modal() {
+        let mut app = app_with_sessions(1);
+        // No modal, terminal focus: paste is NOT consumed here so the caller
+        // sends it to the session.
+        app.focus = InputFocus::Terminal;
+        assert!(!app.try_paste_into_modal_input("to terminal"));
+    }
+
+    #[test]
+    fn paste_routes_into_in_pane_task_editor_description() {
+        let mut app = app_with_sessions(1);
+        let mut editor = modals::TaskEditorModal::new();
+        editor.field = modals::TaskField::Description;
+        app.task_ui.task_editor = Some(editor);
+        app.focus = InputFocus::TaskEditor;
+
+        // The description is multi-line, so a pasted newline is preserved.
+        let consumed = app.try_paste_into_modal_input("line one\nline two");
+
+        assert!(consumed);
+        let editor = app.task_ui.task_editor.as_ref().unwrap();
+        assert_eq!(editor.description.value(), "line one\nline two");
     }
 
     // --- key_handlers: modal open/close + pane chords driven via handle_key ---
