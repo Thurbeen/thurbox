@@ -101,3 +101,8 @@ strip = true
 inherits = "release"
 debug = true
 strip = false
+
+[dev-dependencies]
+# Snapshot assertions for the TUI acceptance tests (src/app/acceptance.rs).
+# default-features off keeps the dep tree minimal (just `similar`).
+insta = { version = "1.48.0", default-features = false }

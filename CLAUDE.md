@@ -39,6 +39,26 @@ cargo test test_name                 # Run single test via cargo test
 bats scripts/install.bats            # Test install script (requires bats-core)
 ```
 
+### TUI acceptance (e2e) tests
+
+The TUI has two layers of end-to-end coverage:
+
+- **In-process driver + snapshots** (`src/app/acceptance.rs`, a `#[cfg(test)]`
+  module). A `Harness` builds a real `App` on a no-op `StubBackend` +
+  `Database::open_in_memory()` + a `TestPathGuard` tempdir (fully hermetic),
+  feeds `AppMessage::KeyPress` events exactly as `main.rs`'s loop does, and
+  renders to a headless ratatui `TestBackend`. Stable screens (welcome state,
+  F1 help, theme picker) are pinned with **`insta`** snapshots
+  (`src/app/snapshots/`); dynamic flows (navigation, modals, panel toggles,
+  quit) assert on `App` state instead, so live metrics/clock never make them
+  flaky. Runs in the normal `cargo nextest --all` — no tmux/TTY needed. Update
+  snapshots with `INSTA_UPDATE=always cargo test` (or `cargo insta review`).
+- **Black-box smoke test** (`scripts/dev/tui-smoke-test.sh`). Launches the real
+  `thurbox` binary inside a throwaway tmux pane (isolated `HOME`/XDG/
+  `TMUX_TMPDIR`, mirroring `scripts/demo/record.sh`), drives it with
+  `tmux send-keys`, and asserts on captured frames (boot → F1 → theme → quit).
+  Gated behind the `tui-smoke` CI job (needs tmux).
+
 ## Installation Script
 
 **Location:** `scripts/install.sh`

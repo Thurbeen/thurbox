@@ -5177,6 +5177,9 @@ fn session_process_cwd(info: &SessionInfo) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+mod acceptance;
+
+#[cfg(test)]
 mod tests {
     use std::path::Path;
     use std::sync::Arc;

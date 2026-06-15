@@ -1,0 +1,34 @@
+---
+source: src/app/acceptance.rs
+expression: h.render()
+---
+ thurbox  Multi-Session Agent Orchestrator  v0.0.0-dev                                    ◐ Default
+╭ Sessions ─────────────╮┌ No Session ─────────────────────────────────────────────────────────────┐
+│                       ││                                                                         │
+│    No sessions yet    ││                                                                         │
+│Press Ctrl+N to create ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                   ╭ Theme ───────────────────────────────────────────────────╮                   │
+│                   │▸ Default                   Accent      █████ █████       │                   │
+│                   │  Catppuccin Mocha          Status      ● ◆ ○ ✗           │                   │
+│                   │  Tokyo Night               Border      ╭─────╮           │                   │
+│                   │  Gruvbox Dark              Modal bg                      │                   │
+│                   │  Catppuccin Latte (light)                                │                   │
+│                   │  Tokyo Night Day (light)                                 │                   │
+│                   │  Gruvbox Light (light)                                   │                   │
+│                   │  Solarized Light (light)                                 │                   │
+│                   │  Doom                                                    │                   │
+│                   │                                                          │                   │
+│                   │                                                          │                   │
+│                   │  theme id: default                                       │                   │
+│                   │j/k navigate  Enter select  Esc cancel                    │                   │
+│                   ╰──────────────────────────────────────────────────────────╯                   │
+│                       ││                                                                         │
+│                       ││                                                                         │
+╰───────────────────────╯│                                                                         │
+┌ Automations ──────────┐│                                                                         │
+│none                   ││                                                                         │
+└───────────────────────┘└─────────────────────────────────────────────────────────────────────────┘
+ Sessions  0 session(s)  ^H/^L Focus  F1 Help  ^Q Quit
