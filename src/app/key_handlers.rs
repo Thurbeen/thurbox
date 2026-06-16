@@ -274,8 +274,8 @@ impl App {
         match self.modal {
             Modal::RestoreSessions(_) => self.handle_restore_sessions_key(code),
             Modal::BranchSelector(_) => self.handle_branch_selector_key(code),
-            Modal::WorktreeName(_) => self.handle_worktree_name_key(code),
-            Modal::SessionName(_) => self.handle_session_name_key(code),
+            Modal::WorktreeName(_) => self.handle_worktree_name_key(code, mods),
+            Modal::SessionName(_) => self.handle_session_name_key(code, mods),
             Modal::AutomationEditor(_) => self.handle_automation_editor_key(code, mods),
             Modal::AutomationsList(_) => self.handle_automations_list_key(code),
             Modal::AgentPicker(_) => self.handle_agent_picker_key(code),
@@ -912,7 +912,7 @@ impl App {
         }
     }
 
-    fn handle_worktree_name_key(&mut self, code: KeyCode) {
+    fn handle_worktree_name_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let super::modals::Modal::WorktreeName(ref mut wn) = self.modal else {
             return;
         };
@@ -951,18 +951,13 @@ impl App {
                     );
                 }
             }
-            KeyCode::Backspace => wn.name.backspace(),
-            KeyCode::Delete => wn.name.delete(),
-            KeyCode::Left => wn.name.move_left(),
-            KeyCode::Right => wn.name.move_right(),
-            KeyCode::Home => wn.name.home(),
-            KeyCode::End => wn.name.end(),
-            KeyCode::Char(c) => wn.name.insert(c),
-            _ => {}
+            other => {
+                super::modals::apply_text_input_key(Some(&mut wn.name), other, mods);
+            }
         }
     }
 
-    fn handle_session_name_key(&mut self, code: KeyCode) {
+    fn handle_session_name_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let super::modals::Modal::SessionName(ref mut sn) = self.modal else {
             return;
         };
@@ -1009,14 +1004,9 @@ impl App {
                     }
                 }
             }
-            KeyCode::Backspace => sn.name.backspace(),
-            KeyCode::Delete => sn.name.delete(),
-            KeyCode::Left => sn.name.move_left(),
-            KeyCode::Right => sn.name.move_right(),
-            KeyCode::Home => sn.name.home(),
-            KeyCode::End => sn.name.end(),
-            KeyCode::Char(c) => sn.name.insert(c),
-            _ => {}
+            other => {
+                super::modals::apply_text_input_key(Some(&mut sn.name), other, mods);
+            }
         }
     }
 
@@ -1641,8 +1631,10 @@ impl App {
         }
         match rp.focus {
             super::modals::RepoPickerFocus::List => self.handle_repo_picker_list_key(code),
-            super::modals::RepoPickerFocus::Input => self.handle_repo_picker_input_key(code),
-            super::modals::RepoPickerFocus::Search => self.handle_repo_picker_search_key(code),
+            super::modals::RepoPickerFocus::Input => self.handle_repo_picker_input_key(code, mods),
+            super::modals::RepoPickerFocus::Search => {
+                self.handle_repo_picker_search_key(code, mods)
+            }
         }
     }
 
@@ -1763,7 +1755,7 @@ impl App {
         self.recompute_repo_filter();
     }
 
-    fn handle_repo_picker_input_key(&mut self, code: KeyCode) {
+    fn handle_repo_picker_input_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
@@ -1792,14 +1784,11 @@ impl App {
                 self.repo_picker_commit_path_input();
                 return;
             }
-            KeyCode::Backspace => rp.path_input.backspace(),
-            KeyCode::Delete => rp.path_input.delete(),
-            KeyCode::Left => rp.path_input.move_left(),
-            KeyCode::Right => rp.path_input.move_right(),
-            KeyCode::Home => rp.path_input.home(),
-            KeyCode::End => rp.path_input.end(),
-            KeyCode::Char(c) => rp.path_input.insert(c),
-            _ => return,
+            other => {
+                if !super::modals::apply_text_input_key(Some(&mut rp.path_input), other, mods) {
+                    return;
+                }
+            }
         }
         self.update_repo_picker_path_suggestion();
     }
@@ -1892,7 +1881,7 @@ impl App {
         }
     }
 
-    fn handle_repo_picker_search_key(&mut self, code: KeyCode) {
+    fn handle_repo_picker_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
@@ -1904,23 +1893,16 @@ impl App {
             KeyCode::Enter => {
                 rp.focus = super::modals::RepoPickerFocus::List;
             }
-            KeyCode::Backspace => {
-                rp.search_input.backspace();
-                self.recompute_repo_filter();
-            }
-            KeyCode::Delete => {
-                rp.search_input.delete();
-                self.recompute_repo_filter();
-            }
+            // Cursor moves don't change the filter; edits (incl. Ctrl+W/U) do.
             KeyCode::Left => rp.search_input.move_left(),
             KeyCode::Right => rp.search_input.move_right(),
             KeyCode::Home => rp.search_input.home(),
             KeyCode::End => rp.search_input.end(),
-            KeyCode::Char(c) => {
-                rp.search_input.insert(c);
-                self.recompute_repo_filter();
+            other => {
+                if super::modals::apply_text_input_key(Some(&mut rp.search_input), other, mods) {
+                    self.recompute_repo_filter();
+                }
             }
-            _ => {}
         }
     }
 

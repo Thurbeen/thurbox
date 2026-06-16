@@ -5920,6 +5920,63 @@ mod tests {
         );
     }
 
+    /// Inside a modal text input, readline `Ctrl+W` (delete word) and `Ctrl+U`
+    /// (kill to line start) edit the text like a terminal — and never insert a
+    /// literal `w`/`u`, nor fire the global `FocusTasks`/`OpenRestoreSessions`
+    /// chords those keys carry.
+    #[test]
+    fn ctrl_w_and_ctrl_u_edit_modal_text_like_a_terminal() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::SessionName(modals::SessionNameModal::default());
+        if let modals::Modal::SessionName(ref mut sn) = app.modal {
+            sn.name.set("hello world");
+        }
+
+        // Ctrl+W deletes the word before the cursor.
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let modals::Modal::SessionName(ref sn) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(sn.name.value(), "hello ");
+
+        // Ctrl+U clears to the start of the line.
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let modals::Modal::SessionName(ref sn) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(sn.name.value(), "");
+    }
+
+    /// The same readline editing works in the other modal text inputs that
+    /// share `apply_text_input_key` — here the worktree/branch-name field and
+    /// the repo-picker fuzzy-search field.
+    #[test]
+    fn ctrl_w_edits_worktree_name_and_repo_search_fields() {
+        let mut app = app_with_sessions(1);
+
+        app.modal = modals::Modal::WorktreeName(modals::WorktreeNameModal::default());
+        if let modals::Modal::WorktreeName(ref mut wn) = app.modal {
+            wn.name.set("feature branch");
+        }
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let modals::Modal::WorktreeName(ref wn) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(wn.name.value(), "feature ");
+
+        let mut rp = modals::RepoPickerModal {
+            focus: modals::RepoPickerFocus::Search,
+            ..Default::default()
+        };
+        rp.search_input.set("foo bar");
+        app.modal = modals::Modal::RepoPicker(rp);
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("modal must stay open");
+        };
+        assert_eq!(rp.search_input.value(), "foo ");
+    }
+
     #[test]
     fn unbound_super_chord_skips_focus_letter_hotkeys() {
         let mut app = app_with_sessions(1);

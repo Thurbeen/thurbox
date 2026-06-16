@@ -101,11 +101,7 @@ impl TextInput {
 
     /// Convert char-based cursor position to byte offset.
     fn byte_offset(&self) -> usize {
-        self.buffer
-            .char_indices()
-            .nth(self.cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(self.buffer.len())
+        byte_index(&self.buffer, self.cursor)
     }
 }
 
@@ -244,11 +240,7 @@ impl TextArea {
 
     /// Convert the char-based cursor to a byte offset into `buffer`.
     fn byte_offset(&self) -> usize {
-        self.buffer
-            .char_indices()
-            .nth(self.cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(self.buffer.len())
+        byte_index(&self.buffer, self.cursor)
     }
 }
 
@@ -265,11 +257,114 @@ fn cycle_field<F: PartialEq + Copy>(fields: &[F], current: F, delta: isize) -> F
     fields[next]
 }
 
-/// Apply a text-editing key (insert/backspace/delete/cursor move) to the
-/// currently focused field, if any. Returns `true` when `code` was a
-/// text-editing key (whether or not a field was focused), so editor key
-/// handlers can share one implementation across the automation and task forms.
-fn apply_text_input_key(field: Option<&mut TextInput>, code: KeyCode) -> bool {
+/// Byte offset of char index `idx` in `s` (end of string when out of range).
+/// Shared by both text widgets, which index a `char` cursor into a byte buffer.
+fn byte_index(s: &str, idx: usize) -> usize {
+    s.char_indices().nth(idx).map(|(i, _)| i).unwrap_or(s.len())
+}
+
+/// Delete the chars in `[start, cursor)` (char indices) from `buffer` and park
+/// `cursor` at `start`. A no-op when `start >= cursor`. Backs every backward
+/// line-edit (`Ctrl+W` word, `Ctrl+U` line) of both text widgets.
+fn remove_before_cursor(buffer: &mut String, cursor: &mut usize, start: usize) {
+    if start >= *cursor {
+        return;
+    }
+    let (s, e) = (byte_index(buffer, start), byte_index(buffer, *cursor));
+    buffer.replace_range(s..e, "");
+    *cursor = start;
+}
+
+/// Char index of the start of the word ending at `cursor`: skip any trailing
+/// whitespace, then the run of non-whitespace before it. Backs the `Ctrl+W`
+/// handlers of both text widgets (newlines count as whitespace).
+fn word_start_before(chars: &[char], cursor: usize) -> usize {
+    let mut start = cursor;
+    while start > 0 && chars[start - 1].is_whitespace() {
+        start -= 1;
+    }
+    while start > 0 && !chars[start - 1].is_whitespace() {
+        start -= 1;
+    }
+    start
+}
+
+/// Readline-style line editing shared by the single-line [`TextInput`] and the
+/// multi-line [`TextArea`], so the Ctrl-chord dispatch lives in one place.
+trait LineEdit {
+    /// Delete the word before the cursor (readline `Ctrl+W`).
+    fn delete_word_before(&mut self);
+    /// Delete from the cursor to the start of the current line (readline `Ctrl+U`).
+    fn kill_to_line_start(&mut self);
+}
+
+impl LineEdit for TextInput {
+    fn delete_word_before(&mut self) {
+        let chars: Vec<char> = self.buffer.chars().collect();
+        let start = word_start_before(&chars, self.cursor);
+        remove_before_cursor(&mut self.buffer, &mut self.cursor, start);
+    }
+
+    /// For a single-line input this clears everything before the cursor.
+    fn kill_to_line_start(&mut self) {
+        remove_before_cursor(&mut self.buffer, &mut self.cursor, 0);
+    }
+}
+
+impl LineEdit for TextArea {
+    fn delete_word_before(&mut self) {
+        let chars: Vec<char> = self.buffer.chars().collect();
+        let start = word_start_before(&chars, self.cursor);
+        remove_before_cursor(&mut self.buffer, &mut self.cursor, start);
+    }
+
+    fn kill_to_line_start(&mut self) {
+        let (line, _) = self.cursor_line_col();
+        let line_start = self.cursor_at(line, 0);
+        remove_before_cursor(&mut self.buffer, &mut self.cursor, line_start);
+    }
+}
+
+/// Apply a readline `Ctrl`+letter line-edit chord to `field` (`Ctrl+W` delete
+/// word, `Ctrl+U` kill to line start). Returns `true` when `code` is a
+/// `Ctrl`+letter chord — handled (W/U) or swallowed (any other letter) — so the
+/// caller treats it as consumed and never inserts the bare letter as text.
+/// `Ctrl` with a non-letter key (arrows, Home/End) returns `false` so normal
+/// cursor handling still applies, keeping every text field consistent.
+fn apply_ctrl_line_edit(field: &mut impl LineEdit, code: KeyCode, mods: KeyModifiers) -> bool {
+    if !mods.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    match code {
+        KeyCode::Char('w') | KeyCode::Char('W') => field.delete_word_before(),
+        KeyCode::Char('u') | KeyCode::Char('U') => field.kill_to_line_start(),
+        KeyCode::Char(_) => {} // other Ctrl+letter: swallow (never insert)
+        _ => return false,     // Ctrl+<non-letter>: defer to normal handling
+    }
+    true
+}
+
+/// Apply a text-editing key (insert/backspace/delete/cursor move + readline
+/// `Ctrl+W`/`Ctrl+U`) to the currently focused field, if any. Returns `true`
+/// when `code`+`mods` was a text-editing key (whether or not a field was
+/// focused), so editor key handlers can share one implementation across the
+/// automation and task forms. A `Ctrl`+letter chord is consumed here (W/U edit,
+/// the rest swallowed) so no literal control-letter leaks into the field; a
+/// `Ctrl`+<non-letter> chord (arrows, Home/End) falls through to normal handling.
+pub(super) fn apply_text_input_key(
+    field: Option<&mut TextInput>,
+    code: KeyCode,
+    mods: KeyModifiers,
+) -> bool {
+    if mods.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(_) = code {
+            if let Some(f) = field {
+                apply_ctrl_line_edit(f, code, mods);
+            }
+            return true;
+        }
+        // Ctrl+<non-letter> (arrows, Home/End): fall through to normal handling.
+    }
     match code {
         KeyCode::Char(c) => {
             if let Some(f) = field {
@@ -611,7 +706,7 @@ impl AutomationEditorModal {
             KeyCode::Left if adjustable => self.adjust(-1),
             KeyCode::Right | KeyCode::Char(' ') if adjustable => self.adjust(1),
             other => {
-                apply_text_input_key(self.active_field_mut(), other);
+                apply_text_input_key(self.active_field_mut(), other, mods);
             }
         }
         EditorOutcome::Continue
@@ -1102,6 +1197,11 @@ impl TaskEditorModal {
         }
 
         if self.field == TaskField::Description {
+            // Readline Ctrl+W / Ctrl+U editing (and swallow other Ctrl chords so
+            // they never insert a literal letter).
+            if apply_ctrl_line_edit(&mut self.description, code, mods) {
+                return EditorOutcome::Continue;
+            }
             match code {
                 KeyCode::Esc => return EditorOutcome::Cancel,
                 KeyCode::Tab => self.next_field(),
@@ -1130,7 +1230,7 @@ impl TaskEditorModal {
             KeyCode::Left if adjustable => self.adjust(-1),
             KeyCode::Right | KeyCode::Char(' ') if adjustable => self.adjust(1),
             other => {
-                apply_text_input_key(self.active_field_mut(), other);
+                apply_text_input_key(self.active_field_mut(), other, mods);
             }
         }
         EditorOutcome::Continue
@@ -1249,17 +1349,118 @@ mod tests {
 
     #[test]
     fn apply_text_input_key_edits_and_reports_handled() {
+        let none = KeyModifiers::NONE;
         let mut input = TextInput::new();
         input.set("ab");
-        assert!(apply_text_input_key(Some(&mut input), KeyCode::Char('c')));
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('c'),
+            none
+        ));
         assert_eq!(input.value(), "abc");
-        assert!(apply_text_input_key(Some(&mut input), KeyCode::Backspace));
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Backspace,
+            none
+        ));
         assert_eq!(input.value(), "ab");
         // Non-text keys are not handled.
-        assert!(!apply_text_input_key(Some(&mut input), KeyCode::Enter));
-        assert!(!apply_text_input_key(Some(&mut input), KeyCode::Tab));
+        assert!(!apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Enter,
+            none
+        ));
+        assert!(!apply_text_input_key(Some(&mut input), KeyCode::Tab, none));
         // A text key with no focused field is still "handled" (a no-op).
-        assert!(apply_text_input_key(None, KeyCode::Char('x')));
+        assert!(apply_text_input_key(None, KeyCode::Char('x'), none));
+    }
+
+    #[test]
+    fn ctrl_chords_edit_text_and_never_insert_the_letter() {
+        let ctrl = KeyModifiers::CONTROL;
+        let mut input = TextInput::new();
+        input.set("hello world");
+
+        // Ctrl+W deletes the word before the cursor (and is reported handled).
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('w'),
+            ctrl
+        ));
+        assert_eq!(input.value(), "hello ");
+
+        // Ctrl+U kills to the start of the line.
+        input.set("hello world");
+        apply_text_input_key(Some(&mut input), KeyCode::Char('u'), ctrl);
+        assert_eq!(input.value(), "");
+
+        // Any other Ctrl+letter is swallowed — it must never insert the letter.
+        input.set("ab");
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('x'),
+            ctrl
+        ));
+        assert_eq!(input.value(), "ab");
+
+        // A Ctrl+digit is likewise swallowed, never typed as text.
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('1'),
+            ctrl
+        ));
+        assert_eq!(input.value(), "ab");
+    }
+
+    #[test]
+    fn ctrl_non_letter_chords_fall_through_to_cursor_moves() {
+        // Ctrl+<non-letter> (arrows, Home/End) is not a line-edit chord: it
+        // must behave like the unmodified key so every text field is
+        // consistent (a single-line modal moves the cursor just like the
+        // repo-search field does).
+        let ctrl = KeyModifiers::CONTROL;
+        let mut input = TextInput::new();
+        input.set("abc"); // cursor parked at the end
+
+        assert!(apply_text_input_key(Some(&mut input), KeyCode::Left, ctrl));
+        assert_eq!(input.cursor_pos(), 2);
+        assert_eq!(input.value(), "abc", "Ctrl+Left must not delete text");
+
+        assert!(apply_text_input_key(Some(&mut input), KeyCode::Home, ctrl));
+        assert_eq!(input.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn text_input_word_and_line_deletes() {
+        let mut input = TextInput::new();
+        input.set("foo bar baz");
+        input.delete_word_before();
+        assert_eq!(input.value(), "foo bar ");
+        input.delete_word_before();
+        assert_eq!(input.value(), "foo ");
+        input.set("trailing   ");
+        input.delete_word_before(); // skips trailing spaces, then the word
+        assert_eq!(input.value(), "");
+
+        input.set("keep this");
+        input.move_left(); // cursor before the final 's'
+        input.kill_to_line_start();
+        assert_eq!(input.value(), "s");
+    }
+
+    #[test]
+    fn text_area_word_and_line_deletes_respect_lines() {
+        let mut area = TextArea::new();
+        area.set("first\nsecond word");
+        // Ctrl+U deletes only to the start of the current (second) line.
+        area.kill_to_line_start();
+        assert_eq!(area.value(), "first\n");
+        // Ctrl+W at the start of a line treats the newline as whitespace and
+        // deletes back through it plus the previous word (readline behavior).
+        area.set("first\nsecond");
+        area.home(); // start of "second"
+        area.delete_word_before();
+        assert_eq!(area.value(), "second");
     }
 
     #[test]
