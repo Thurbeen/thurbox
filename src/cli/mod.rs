@@ -37,7 +37,13 @@ pub struct Cli {
     pub pretty: bool,
 
     /// Force human-readable output even when piped.
-    #[arg(long, global = true)]
+    ///
+    /// `id = "text_format"` disambiguates from subcommand positional args also
+    /// named `text` (e.g. `sessions::Action::Send`). Without the explicit id,
+    /// clap registers two args with id "text" (this bool flag and the String
+    /// positional), and `get_one::<String>("text")` at parse time panics with
+    /// a TypeId downcast mismatch.
+    #[arg(long, global = true, id = "text_format")]
     pub text: bool,
 
     #[command(subcommand)]
@@ -200,6 +206,52 @@ mod tests {
             parent.as_deref(),
             Some("0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a")
         );
+    }
+
+    #[test]
+    fn parse_session_send_disambiguates_global_text_flag() {
+        // Regression: the global `--text` flag (bool) and the `text: String`
+        // positional in `sessions::Action::Send` both default to clap arg id
+        // "text", which causes a TypeId-mismatch panic at parse time when
+        // constructing Send. The global flag uses `id = "text_format"` to
+        // disambiguate; this test fails-to-compile-or-panics if either side
+        // regresses back to the colliding id.
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "session",
+            "send",
+            "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+            "hello",
+        ])
+        .unwrap();
+        let Command::Session {
+            action: sessions::Action::Send { uuid, text },
+        } = cli.command
+        else {
+            panic!("expected Session::Send");
+        };
+        assert_eq!(uuid, "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a");
+        assert_eq!(text, "hello");
+
+        // Same subcommand, with the global `--text` flag set — the original
+        // collision-triggering invocation. Must still parse and set both.
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "--text",
+            "session",
+            "send",
+            "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+            "hello",
+        ])
+        .unwrap();
+        assert!(cli.text);
+        let Command::Session {
+            action: sessions::Action::Send { text, .. },
+        } = cli.command
+        else {
+            panic!("expected Session::Send");
+        };
+        assert_eq!(text, "hello");
     }
 
     #[test]
