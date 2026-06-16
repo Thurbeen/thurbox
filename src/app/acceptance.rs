@@ -174,6 +174,13 @@ impl Harness {
         self.key(KeyCode::F(n), KeyModifiers::NONE)
     }
 
+    /// A `Shift+<letter>` chord (e.g. session reordering). Terminals deliver
+    /// these as an uppercase char; `KeyChord::normalized` canonicalizes the
+    /// encoding, so the uppercase-char + SHIFT form resolves the same binding.
+    fn shift(&mut self, c: char) -> &mut Self {
+        self.key(KeyCode::Char(c.to_ascii_uppercase()), KeyModifiers::SHIFT)
+    }
+
     /// Draw the current state to the headless backend and return the visible
     /// glyphs as newline-separated rows (one string per terminal line), the
     /// shape both `insta` snapshots and substring assertions read.
@@ -319,4 +326,224 @@ fn session_list_renders_seeded_sessions() {
         frame.contains("session-1"),
         "second session name should render"
     );
+}
+
+// ── Side panels: file viewer, info panel ─────────────────────────────────────
+
+#[test]
+fn file_viewer_toggles_via_f3_and_ctrl_e() {
+    // F3 and Ctrl+E are the two default chords for ToggleFileViewer.
+    let mut h = Harness::standard(1);
+    assert!(!h.app.show_file_viewer);
+
+    h.func(3);
+    assert!(h.app.show_file_viewer, "F3 reveals the file viewer");
+    h.func(3);
+    assert!(!h.app.show_file_viewer, "F3 again hides it");
+
+    h.ctrl('e');
+    assert!(
+        h.app.show_file_viewer,
+        "Ctrl+E also reveals the file viewer"
+    );
+    h.ctrl('e');
+    assert!(!h.app.show_file_viewer, "Ctrl+E again hides it");
+}
+
+#[test]
+fn info_panel_toggles_via_f2_and_ctrl_b() {
+    let mut h = Harness::standard(1);
+    let initial = h.app.show_info_panel;
+
+    h.func(2);
+    assert_ne!(h.app.show_info_panel, initial, "F2 toggles the info panel");
+    h.ctrl('b');
+    assert_eq!(
+        h.app.show_info_panel, initial,
+        "Ctrl+B toggles it back (same action, alternate chord)"
+    );
+}
+
+// ── Modals: automations list, restore deleted sessions ───────────────────────
+
+#[test]
+fn automations_list_modal_empty() {
+    let mut h = Harness::snapshot();
+    h.ctrl('p'); // Ctrl+P → OpenAutomations
+    assert!(
+        matches!(h.app.modal, modals::Modal::AutomationsList(_)),
+        "Ctrl+P opens the automations list modal"
+    );
+    insta::assert_snapshot!(h.render());
+}
+
+#[test]
+fn restore_sessions_modal_empty() {
+    let mut h = Harness::snapshot();
+    h.ctrl('u'); // Ctrl+U → OpenRestoreSessions
+    assert!(
+        matches!(h.app.modal, modals::Modal::RestoreSessions(_)),
+        "Ctrl+U opens the restore-deleted-sessions modal"
+    );
+    insta::assert_snapshot!(h.render());
+}
+
+// ── Delete + undo ────────────────────────────────────────────────────────────
+
+#[test]
+fn ctrl_d_soft_deletes_and_ctrl_z_undoes() {
+    let mut h = Harness::standard(2);
+    assert_eq!(h.app.sessions.len(), 2);
+
+    h.ctrl('d'); // DeleteSession (soft, with a 10s undo window)
+    assert_eq!(
+        h.app.sessions.len(),
+        1,
+        "delete removes the session from the list"
+    );
+    assert!(
+        h.app.pending_delete.is_some(),
+        "a pending delete is held for undo"
+    );
+
+    h.ctrl('z'); // UndoDelete
+    assert_eq!(h.app.sessions.len(), 2, "undo restores the session");
+    assert!(
+        h.app.pending_delete.is_none(),
+        "the undo consumes the pending delete"
+    );
+}
+
+// ── Pane focus cycling ───────────────────────────────────────────────────────
+
+#[test]
+fn focus_cycles_between_session_list_and_terminal() {
+    // With no side panels shown, the session ring is [SessionList, Terminal].
+    let mut h = Harness::standard(1);
+    assert!(
+        matches!(h.app.focus, InputFocus::SessionList),
+        "focus starts on the session list"
+    );
+
+    h.ctrl('l'); // FocusForward
+    assert!(
+        matches!(h.app.focus, InputFocus::Terminal),
+        "Ctrl+L moves to the terminal"
+    );
+    h.ctrl('l');
+    assert!(
+        matches!(h.app.focus, InputFocus::SessionList),
+        "Ctrl+L wraps back to the session list"
+    );
+    h.ctrl('h'); // FocusBackward
+    assert!(
+        matches!(h.app.focus, InputFocus::Terminal),
+        "Ctrl+H steps backward to the terminal"
+    );
+}
+
+#[test]
+fn focus_ring_includes_file_viewer_when_shown() {
+    let mut h = Harness::standard(1);
+    h.func(3); // show the file viewer
+    assert!(h.app.show_file_viewer);
+
+    // Cycling forward from the session list must reach the file viewer.
+    let mut saw_file_viewer = false;
+    for _ in 0..4 {
+        h.ctrl('l');
+        if matches!(h.app.focus, InputFocus::FileViewer) {
+            saw_file_viewer = true;
+            break;
+        }
+    }
+    assert!(
+        saw_file_viewer,
+        "the focus ring visits the file viewer while it is shown"
+    );
+}
+
+// ── Manual session ordering ──────────────────────────────────────────────────
+
+#[test]
+fn shift_j_reorders_sessions() {
+    let mut h = Harness::standard(2);
+    let before = h.app.render_order_indices();
+    assert_eq!(
+        before,
+        vec![0, 1],
+        "initial render order is insertion order"
+    );
+
+    h.shift('j'); // SessionListMoveDown — move the selected (first) row down
+    let after = h.app.render_order_indices();
+    assert_eq!(
+        after,
+        vec![1, 0],
+        "Shift+J swaps the first session past the second"
+    );
+
+    h.shift('k'); // SessionListMoveUp — move it back
+    assert_eq!(
+        h.app.render_order_indices(),
+        vec![0, 1],
+        "Shift+K restores the original order"
+    );
+}
+
+// ── Tasks: panel focus + new-task editor ─────────────────────────────────────
+
+#[test]
+fn tasks_panel_new_task_opens_editor() {
+    let mut h = Harness::standard(0);
+    h.ctrl('w'); // FocusTasks → panel shown and focused
+    assert!(h.app.show_tasks_panel);
+    assert!(matches!(h.app.focus, InputFocus::TaskList));
+
+    h.key(KeyCode::Char('n'), KeyModifiers::NONE); // new task
+    assert!(
+        matches!(h.app.focus, InputFocus::TaskEditor),
+        "'n' opens the central-pane task editor"
+    );
+    assert!(
+        h.app.task_ui.task_editor.is_some(),
+        "a fresh task editor is in flight"
+    );
+}
+
+// ── Fork ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn ctrl_f_fork_opens_session_name_prompt() {
+    // Fork pre-fills the session-name modal with "<name>-fork" before spawning,
+    // so it is observable without a real backend.
+    let mut h = Harness::standard(1);
+    h.ctrl('f'); // ForkSession
+    assert!(
+        matches!(h.app.modal, modals::Modal::SessionName(_)),
+        "Ctrl+F opens the session-name prompt for the fork"
+    );
+}
+
+// ── Help editor: capture mode ────────────────────────────────────────────────
+
+#[test]
+fn help_editor_enters_capture_mode() {
+    let mut h = Harness::standard(0);
+    h.func(1); // F1 → help
+    match h.app.modal {
+        modals::Modal::Help(ref help) => assert!(!help.capturing, "starts in navigation mode"),
+        ref other => panic!("expected help modal, got {other:?}"),
+    }
+
+    h.key(KeyCode::Enter, KeyModifiers::NONE); // begin capturing a new chord
+    match h.app.modal {
+        modals::Modal::Help(ref help) => {
+            assert!(
+                help.capturing,
+                "Enter starts capture mode for the selected action"
+            )
+        }
+        ref other => panic!("expected help modal, got {other:?}"),
+    }
 }

@@ -1,0 +1,34 @@
+---
+source: src/app/acceptance.rs
+expression: h.render()
+---
+ thurbox  Multi-Session Agent Orchestrator  v0.0.0-dev                                    ◐ Default
+╭ Sessions ─────────────╮┌ No Session ─────────────────────────────────────────────────────────────┐
+│                       ││                                                                         │
+│    No sessions yet    ││                                                                         │
+│Press Ctrl+N to create ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│              ╭ Automations ───────────────────────────────────────────────────────╮              │
+│              │               No automations — press n to create one               │              │
+│              │                                                                    │              │
+│              │                                                                    │              │
+│              │n new  Esc close                                                    │              │
+│              ╰────────────────────────────────────────────────────────────────────╯              │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+╰───────────────────────╯│                                                                         │
+┌ Automations ──────────┐│                                                                         │
+│none                   ││                                                                         │
+└───────────────────────┘└─────────────────────────────────────────────────────────────────────────┘
+ Sessions  0 session(s)  ^H/^L Focus  F1 Help  ^Q Quit
