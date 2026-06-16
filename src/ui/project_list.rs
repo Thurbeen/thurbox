@@ -272,61 +272,105 @@ pub fn move_in_order(
     active_input_idx: usize,
     down: bool,
 ) -> Option<Vec<usize>> {
-    let n = ord.order.len();
     let pos = ord.order.iter().position(|&i| i == active_input_idx)?;
-    let depth = ord.depths[pos];
 
-    // End of the block rooted at `start`: first following row at <= its depth.
-    let block_end = |start: usize| {
-        let mut end = start + 1;
-        while end < n && ord.depths[end] > ord.depths[start] {
-            end += 1;
-        }
-        end
-    };
-    // Start of the group containing `p` / end of the group starting at `start`
-    // (group starts are the rows carrying a header label).
-    let group_start = |p: usize| (0..=p).rev().find(|&q| ord.headers[q].is_some());
-    let group_end = |start: usize| {
-        (start + 1..n)
-            .find(|&q| ord.headers[q].is_some())
-            .unwrap_or(n)
+    // The two adjacent ranges to swap: `a` directly precedes `b`. A root block
+    // (depth 0) swaps within / across its repo group; a nested child swaps with
+    // a same-depth sibling only.
+    let (a, b) = if ord.depths[pos] == 0 {
+        move_root_block_range(ord, pos, down)?
+    } else {
+        move_child_block_range(ord, pos, down)?
     };
 
-    let end = block_end(pos);
-    let gs = group_start(pos)?;
-    let ge = group_end(gs);
+    debug_assert_eq!(a.end, b.start);
+    let mut new_order = Vec::with_capacity(ord.order.len());
+    new_order.extend_from_slice(&ord.order[..a.start]);
+    new_order.extend_from_slice(&ord.order[b.start..b.end]);
+    new_order.extend_from_slice(&ord.order[a.start..a.end]);
+    new_order.extend_from_slice(&ord.order[b.end..]);
+    Some(new_order)
+}
 
-    // The two adjacent ranges to swap: `a` directly precedes `b`.
-    let (a, b) = if depth == 0 {
-        if down {
-            if end < ge {
-                // Swap with the next root block in the group.
-                (pos..end, end..block_end(end))
-            } else if ge < n {
-                // Last root block: the whole group swaps with the next group.
-                (gs..ge, ge..group_end(ge))
-            } else {
-                return None; // bottom of the list
-            }
-        } else if pos > gs {
-            // Swap with the previous root block in the group.
-            let prev = (gs..pos).rev().find(|&q| ord.depths[q] == 0)?;
-            (prev..pos, pos..end)
-        } else if gs > 0 {
-            // First root block: the whole group swaps with the previous group.
-            let pgs = group_start(gs - 1)?;
-            (pgs..gs, gs..ge)
+/// End of the block rooted at `start`: the first following row at a depth `<=`
+/// `start`'s (i.e. the row past `start`'s whole rendered subtree).
+fn block_end(ord: &SessionOrder, start: usize) -> usize {
+    let n = ord.order.len();
+    let mut end = start + 1;
+    while end < n && ord.depths[end] > ord.depths[start] {
+        end += 1;
+    }
+    end
+}
+
+/// Start of the group containing `p` (the nearest header row at or above `p`).
+fn group_start(ord: &SessionOrder, p: usize) -> Option<usize> {
+    (0..=p).rev().find(|&q| ord.headers[q].is_some())
+}
+
+/// End of the group starting at `start`: the next header row, or the list end.
+fn group_end(ord: &SessionOrder, start: usize) -> usize {
+    let n = ord.order.len();
+    (start + 1..n)
+        .find(|&q| ord.headers[q].is_some())
+        .unwrap_or(n)
+}
+
+/// Adjacent ranges to swap when moving a **root** block (depth 0): with the
+/// neighbouring root block in the same group, or — at a group edge — the whole
+/// group with its neighbouring group. `None` at the top/bottom of the list.
+fn move_root_block_range(
+    ord: &SessionOrder,
+    pos: usize,
+    down: bool,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let n = ord.order.len();
+    let end = block_end(ord, pos);
+    let gs = group_start(ord, pos)?;
+    let ge = group_end(ord, gs);
+
+    if down {
+        if end < ge {
+            // Swap with the next root block in the group.
+            Some((pos..end, end..block_end(ord, end)))
+        } else if ge < n {
+            // Last root block: the whole group swaps with the next group.
+            Some((gs..ge, ge..group_end(ord, ge)))
         } else {
-            return None; // top of the list
+            None // bottom of the list
         }
-    } else if down {
+    } else if pos > gs {
+        // Swap with the previous root block in the group.
+        let prev = (gs..pos).rev().find(|&q| ord.depths[q] == 0)?;
+        Some((prev..pos, pos..end))
+    } else if gs > 0 {
+        // First root block: the whole group swaps with the previous group.
+        let pgs = group_start(ord, gs - 1)?;
+        Some((pgs..gs, gs..ge))
+    } else {
+        None // top of the list
+    }
+}
+
+/// Adjacent ranges to swap when moving a **nested child**: with the adjacent
+/// same-depth sibling only (never leaving its parent). `None` at the first/last
+/// sibling.
+fn move_child_block_range(
+    ord: &SessionOrder,
+    pos: usize,
+    down: bool,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let n = ord.order.len();
+    let depth = ord.depths[pos];
+    let end = block_end(ord, pos);
+
+    if down {
         // Next sibling starts right after our block, at the same depth; a
         // shallower row there means the parent's subtree (or group) ended.
         if end < n && ord.depths[end] == depth {
-            (pos..end, end..block_end(end))
+            Some((pos..end, end..block_end(ord, end)))
         } else {
-            return None; // last sibling
+            None // last sibling
         }
     } else {
         // Scan back over deeper rows (the previous sibling's subtree); a
@@ -336,19 +380,11 @@ pub fn move_in_order(
             p -= 1;
         }
         if ord.depths[p] == depth {
-            (p..pos, pos..end)
+            Some((p..pos, pos..end))
         } else {
-            return None; // first sibling
+            None // first sibling
         }
-    };
-
-    debug_assert_eq!(a.end, b.start);
-    let mut new_order = Vec::with_capacity(n);
-    new_order.extend_from_slice(&ord.order[..a.start]);
-    new_order.extend_from_slice(&ord.order[b.start..b.end]);
-    new_order.extend_from_slice(&ord.order[a.start..a.end]);
-    new_order.extend_from_slice(&ord.order[b.end..]);
-    Some(new_order)
+    }
 }
 
 /// Display-ordered view of the session list. All fields are parallel arrays

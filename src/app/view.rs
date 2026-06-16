@@ -1032,25 +1032,25 @@ fn editor_preview(m: &super::modals::AutomationEditorModal, now: u64) -> String 
     }
 }
 
-fn render_help_overlay(
-    frame: &mut Frame,
+/// The rebindable section of the F1 help body: the rendered lines, the line
+/// index of the selected action row (for centering the scroll), and the
+/// `(line index, action index)` pairs used to build click hitboxes.
+struct RebindableRows {
+    help_lines: Vec<Line<'static>>,
+    selected_line: usize,
+    action_rows: Vec<(usize, usize)>,
+}
+
+/// Build the editable keybinding section of the help overlay (one section
+/// header + one row per rebindable action), driven by `help_sections()` so the
+/// row index matches `help.selected`.
+fn build_rebindable_rows(
     keybindings: &KeyBindings,
     help: &super::modals::HelpModal,
-) -> crate::ui::SelectorHits {
-    let area = centered_rect(60, 70, frame.area());
-
-    let inner = crate::ui::render_modal_frame(frame, area, "Keybindings");
-
+) -> RebindableRows {
     let mut help_lines: Vec<Line<'static>> = Vec::new();
-
-    // Editable sections — driven by `keybindings::help_sections()`, the same
-    // ordering as `Action::rebindable_in_order()`, so `idx` lines up with
-    // `help.selected` from the interactive editor. EVERY row here is rebindable.
     let mut idx = 0usize;
-    // Line index of the selected action row, so the body can scroll to keep it
-    // visible on short terminals.
     let mut selected_line = 0usize;
-    // (line index, action index) per rebindable row, for click hitboxes.
     let mut action_rows: Vec<(usize, usize)> = Vec::new();
     for (title, actions) in crate::session::keybindings::help_sections() {
         help_lines.push(help_section(title));
@@ -1070,6 +1070,64 @@ fn render_help_overlay(
         }
         help_lines.push(Line::from(""));
     }
+    RebindableRows {
+        help_lines,
+        selected_line,
+        action_rows,
+    }
+}
+
+/// Scroll offset for the help body so the selected action row stays visible
+/// (roughly centered), clamped to the real content range. `0` when everything
+/// fits.
+fn help_body_scroll(total: usize, body_h: usize, selected_line: usize) -> usize {
+    if total <= body_h {
+        return 0;
+    }
+    let max_scroll = total - body_h;
+    selected_line.saturating_sub(body_h / 2).min(max_scroll)
+}
+
+/// Hitboxes for the rebindable action rows currently on screen after scrolling.
+fn help_action_hitboxes(
+    action_rows: &[(usize, usize)],
+    scroll: usize,
+    body_h: usize,
+    body: Rect,
+) -> Vec<crate::ui::RowHitbox> {
+    action_rows
+        .iter()
+        .filter_map(|&(line, idx)| {
+            let on_screen = line.checked_sub(scroll)?;
+            if on_screen >= body_h {
+                return None;
+            }
+            Some(crate::ui::RowHitbox {
+                rect: Rect::new(body.x, body.y + on_screen as u16, body.width, 1),
+                index: idx,
+            })
+        })
+        .collect()
+}
+
+fn render_help_overlay(
+    frame: &mut Frame,
+    keybindings: &KeyBindings,
+    help: &super::modals::HelpModal,
+) -> crate::ui::SelectorHits {
+    let area = centered_rect(60, 70, frame.area());
+
+    let inner = crate::ui::render_modal_frame(frame, area, "Keybindings");
+
+    // Editable sections — driven by `keybindings::help_sections()`, the same
+    // ordering as `Action::rebindable_in_order()`, so the row index lines up
+    // with `help.selected` from the interactive editor. EVERY row here is
+    // rebindable.
+    let RebindableRows {
+        mut help_lines,
+        selected_line,
+        action_rows,
+    } = build_rebindable_rows(keybindings, help);
 
     // Fixed keys that are NOT rebindable: stateful sub-modes (file-viewer
     // search, modal selectors) and terminal pass-through. Shown for reference,
@@ -1142,12 +1200,7 @@ fn render_help_overlay(
     // row stays visible (roughly centered), clamped to the real content range.
     let total = help_lines.len();
     let body_h = body.height as usize;
-    let scroll = if total <= body_h {
-        0
-    } else {
-        let max_scroll = total - body_h;
-        selected_line.saturating_sub(body_h / 2).min(max_scroll)
-    };
+    let scroll = help_body_scroll(total, body_h, selected_line);
 
     frame.render_widget(Paragraph::new(help_lines).scroll((scroll as u16, 0)), body);
     frame.render_widget(
@@ -1161,19 +1214,7 @@ fn render_help_overlay(
     // Hitboxes for the rebindable action rows visible after scrolling;
     // section headers and the fixed-keys reference are not clickable.
     let total_actions = action_rows.len();
-    let hitboxes: Vec<crate::ui::RowHitbox> = action_rows
-        .into_iter()
-        .filter_map(|(line, idx)| {
-            let on_screen = line.checked_sub(scroll)?;
-            if on_screen >= body_h {
-                return None;
-            }
-            Some(crate::ui::RowHitbox {
-                rect: Rect::new(body.x, body.y + on_screen as u16, body.width, 1),
-                index: idx,
-            })
-        })
-        .collect();
+    let hitboxes = help_action_hitboxes(&action_rows, scroll, body_h, body);
 
     // Scrollbar (action-index space, so a drag maps straight to a selection)
     // when the body overflows the modal height.
