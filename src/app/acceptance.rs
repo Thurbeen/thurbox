@@ -8,7 +8,7 @@
 //! tests don't have; nothing under test here depends on it.) No TTY, tmux
 //! server, or agent process is involved:
 //!
-//! * sessions are inert [`Session::stub`]s on a no-op [`StubBackend`],
+//! * sessions are inert [`Session::stub`]s on a no-op [`FakeBackend`],
 //! * the database is `Database::open_in_memory()`,
 //! * every config/data path is redirected to a throwaway tempdir via
 //!   [`crate::paths::TestPathGuard`], so the suite never touches the
@@ -40,15 +40,31 @@ const STD_ROWS: u16 = 40;
 const SNAP_COLS: u16 = 100;
 const SNAP_ROWS: u16 = 30;
 
-/// Inert [`SessionBackend`] for the harness — every method is a no-op or an
-/// error. Sessions rendered on top of it have a real vt100 parser (so the
-/// session list draws) but never spawn or talk to tmux.
-#[derive(Default)]
-struct StubBackend;
+/// Backend stand-in for the harness. Inert by default: `spawn`/`adopt` error,
+/// so a test proves no accidental spawn while the session still has a real
+/// vt100 parser (the session list draws). With `spawnable = true` they succeed,
+/// returning an inert EOF reader + sink writer, so the spawn-dependent App flows
+/// (restart, shell pane) run for real — those wire Tokio I/O tasks, so such
+/// tests must be `#[tokio::test]`.
+struct FakeBackend {
+    spawnable: bool,
+}
 
-impl SessionBackend for StubBackend {
+impl FakeBackend {
+    /// Inert: spawning/adopting fails.
+    fn stub() -> Self {
+        Self { spawnable: false }
+    }
+
+    /// Spawnable: `spawn`/`adopt` succeed with no-op I/O.
+    fn spawnable() -> Self {
+        Self { spawnable: true }
+    }
+}
+
+impl SessionBackend for FakeBackend {
     fn name(&self) -> &str {
-        "stub"
+        "fake"
     }
     fn check_available(&self) -> anyhow::Result<()> {
         Ok(())
@@ -66,7 +82,12 @@ impl SessionBackend for StubBackend {
         _: u16,
         _: u16,
     ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
-        anyhow::bail!("stub backend does not spawn")
+        anyhow::ensure!(self.spawnable, "inert fake backend does not spawn");
+        Ok(crate::agent::backend::SpawnedSession {
+            backend_id: "fake:0".into(),
+            output: Box::new(std::io::empty()),
+            input: Box::new(std::io::sink()),
+        })
     }
     fn adopt(
         &self,
@@ -74,7 +95,11 @@ impl SessionBackend for StubBackend {
         _: u16,
         _: u16,
     ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
-        anyhow::bail!("stub backend does not adopt")
+        anyhow::ensure!(self.spawnable, "inert fake backend does not adopt");
+        Ok(crate::agent::backend::AdoptedSession {
+            output: Box::new(std::io::empty()),
+            input: Box::new(std::io::sink()),
+        })
     }
     fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
         Ok(vec![])
@@ -109,12 +134,22 @@ struct Harness {
 
 impl Harness {
     /// Build an `App` of `cols`×`rows` seeded with `session_count` stub
-    /// sessions, wired to an in-memory DB and a headless `TestBackend`.
+    /// sessions on the inert [`FakeBackend`].
     fn new(cols: u16, rows: u16, session_count: usize) -> Self {
+        Self::with_backend(cols, rows, session_count, Arc::new(FakeBackend::stub()))
+    }
+
+    /// As [`Harness::new`], but on a caller-supplied backend — the seam that
+    /// lets spawn-dependent flows run against a spawnable [`FakeBackend`].
+    fn with_backend(
+        cols: u16,
+        rows: u16,
+        session_count: usize,
+        backend: Arc<dyn SessionBackend>,
+    ) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let guard = crate::paths::TestPathGuard::new(tmp.path());
 
-        let backend: Arc<dyn SessionBackend> = Arc::new(StubBackend);
         let provider: Arc<dyn AgentProvider> = Arc::new(GenericProvider::new(
             crate::agent::agent_config::builtin_registry()
                 .default_agent()
@@ -155,6 +190,23 @@ impl Harness {
     /// Snapshot-sized, sessionless harness for the pinned-screen tests.
     fn snapshot() -> Self {
         Self::new(SNAP_COLS, SNAP_ROWS, 0)
+    }
+
+    /// Wide harness on a spawnable [`FakeBackend`], with each session given a
+    /// resumable `agent_session_id` so spawn-dependent flows (restart) aren't
+    /// no-ops. Must be driven from a `#[tokio::test]`: the spawn path wires up
+    /// Tokio I/O tasks and needs a runtime.
+    fn spawnable(session_count: usize) -> Self {
+        let mut h = Self::with_backend(
+            STD_COLS,
+            STD_ROWS,
+            session_count,
+            Arc::new(FakeBackend::spawnable()),
+        );
+        for (i, session) in h.app.sessions.iter_mut().enumerate() {
+            session.info.agent_session_id = Some(format!("agent-{i}"));
+        }
+        h
     }
 
     /// Feed one key event, exactly as the real event loop converts a crossterm
@@ -546,4 +598,157 @@ fn help_editor_enters_capture_mode() {
         }
         ref other => panic!("expected help modal, got {other:?}"),
     }
+}
+
+// ── Behavioral effects: assert the action actually changed state ──────────────
+
+#[test]
+fn theme_picker_selection_applies_and_persists() {
+    let mut h = Harness::standard(0);
+    let entries = crate::ui::theme::all_theme_entries();
+    let default_name = h.app.active_theme.name.clone();
+
+    h.ctrl('y'); // open the picker (opens on the active theme, index 0)
+    h.key(KeyCode::Char('j'), KeyModifiers::NONE); // move to the next palette
+    h.key(KeyCode::Enter, KeyModifiers::NONE); // confirm
+
+    assert!(!h.app.modal.is_open(), "confirming closes the picker");
+    assert_eq!(
+        h.app.active_theme.name, entries[1].name,
+        "the second palette becomes active"
+    );
+    assert_ne!(
+        h.app.active_theme.name, default_name,
+        "the theme actually changed"
+    );
+    assert_eq!(
+        h.app.db.get_active_theme().ok().flatten().as_deref(),
+        Some(entries[1].name.as_str()),
+        "the choice is persisted to the database"
+    );
+}
+
+#[test]
+fn help_editor_capture_rebinds_the_selected_action() {
+    // The help editor opens with the first rebindable action selected; capturing
+    // a fresh chord must reassign exactly that action.
+    let action = crate::session::Action::rebindable_in_order()[0];
+    let new_chord = crate::session::KeyChord::ctrl('x');
+
+    let mut h = Harness::standard(0);
+    h.func(1); // F1 → help
+    h.key(KeyCode::Enter, KeyModifiers::NONE); // begin capture
+    h.ctrl('x'); // the captured chord
+
+    assert_eq!(
+        h.app.keybindings.chord_for(action),
+        Some(&new_chord),
+        "the selected action is rebound to the captured chord"
+    );
+    match h.app.modal {
+        modals::Modal::Help(ref help) => {
+            assert!(!help.capturing, "capture ends after one chord")
+        }
+        ref other => panic!("expected help modal, got {other:?}"),
+    }
+}
+
+#[test]
+fn task_editor_creates_task_and_space_cycles_status() {
+    let mut h = Harness::standard(0);
+    h.ctrl('w'); // focus the tasks panel
+    h.key(KeyCode::Char('n'), KeyModifiers::NONE); // new-task editor
+
+    for ch in "Demo task".chars() {
+        h.key(KeyCode::Char(ch), KeyModifiers::NONE); // type the title
+    }
+    h.ctrl('s'); // save from any field
+
+    assert!(
+        matches!(h.app.focus, InputFocus::TaskList),
+        "saving returns to the panel"
+    );
+    assert_eq!(h.app.task_ui.cached_tasks.len(), 1, "the task is persisted");
+    let task = &h.app.task_ui.cached_tasks[0];
+    assert_eq!(task.title, "Demo task");
+    assert_eq!(
+        task.status,
+        crate::session::TaskStatus::Todo,
+        "new tasks start as Todo"
+    );
+
+    h.key(KeyCode::Char(' '), KeyModifiers::NONE); // cycle status
+    assert_eq!(
+        h.app.task_ui.cached_tasks[0].status,
+        crate::session::TaskStatus::InProgress,
+        "Space advances Todo → InProgress"
+    );
+}
+
+#[test]
+fn global_search_returns_results_for_a_session_query() {
+    let mut h = Harness::standard(2); // session-0, session-1
+    h.ctrl('a'); // open the search strip
+    for ch in "session-1".chars() {
+        h.key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    assert_eq!(h.app.global_search.query.value(), "session-1");
+    assert!(
+        !h.app.global_search.results.is_empty(),
+        "a matching session name yields at least one result"
+    );
+}
+
+// ── Spawn-dependent flows (fake backend, real Tokio I/O wiring) ───────────────
+
+#[tokio::test]
+async fn ctrl_r_restarts_session_on_spawnable_backend() {
+    // Restart kills + respawns through the backend and rewires I/O; the fake
+    // backend makes that succeed without a real tmux/PTY.
+    let mut h = Harness::spawnable(1);
+    h.ctrl('r'); // RestartSession
+
+    let msg = h
+        .app
+        .status_message
+        .as_ref()
+        .expect("restart reports a status toast");
+    assert!(
+        matches!(msg.level, StatusLevel::Info),
+        "restart succeeds (not an error toast): {:?}",
+        msg.text
+    );
+    assert!(
+        msg.text.contains("restart"),
+        "the toast names the restart: {:?}",
+        msg.text
+    );
+}
+
+#[tokio::test]
+async fn ctrl_t_opens_shell_pane_on_spawnable_backend() {
+    // Ctrl+T lazily spawns a shell pane via the backend and flips the session's
+    // terminal view to the shell.
+    let mut h = Harness::spawnable(1);
+    let id = h.app.sessions[0].info.id;
+
+    h.ctrl('t'); // ToggleShell
+
+    assert!(
+        h.app.status_message.is_none()
+            || !matches!(
+                h.app.status_message.as_ref().unwrap().level,
+                StatusLevel::Error
+            ),
+        "opening the shell pane does not error"
+    );
+    assert!(
+        h.app.sessions[0].shell_pane.is_some(),
+        "a shell pane was spawned for the session"
+    );
+    assert_eq!(
+        h.app.session_terminal_views.get(&id),
+        Some(&TerminalView::Shell),
+        "the active session now shows its shell view"
+    );
 }
