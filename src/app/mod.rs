@@ -3464,43 +3464,7 @@ impl App {
             .filter(|s| s.agent_session_id.is_some())
             .collect();
 
-        // Discover existing windows per backend. Each distinct backend_type is
-        // readied + discovered at most once (a remote backend needs its
-        // control-mode connection up before adopt()).
-        let mut discovered_by_backend: HashMap<
-            String,
-            Vec<crate::agent::backend::DiscoveredSession>,
-        > = HashMap::new();
-        for shared in &resumable {
-            if discovered_by_backend.contains_key(&shared.backend_type) {
-                continue;
-            }
-            // Skip discovery for backends this instance can't manage (unknown
-            // remote hosts); their sessions are left un-adopted rather than
-            // misadopted on local.
-            let Some(backend) = self.resolve_persisted_backend(&shared.backend_type) else {
-                discovered_by_backend.insert(shared.backend_type.clone(), Vec::new());
-                continue;
-            };
-
-            let disc = match backend.ensure_ready() {
-                Ok(()) => backend.discover().unwrap_or_else(|e| {
-                    warn!(
-                        backend = backend.name(),
-                        "Failed to discover sessions from backend: {e}"
-                    );
-                    Vec::new()
-                }),
-                Err(e) => {
-                    warn!(
-                        backend = backend.name(),
-                        "Backend not ready during restore; skipping its sessions: {e}"
-                    );
-                    Vec::new()
-                }
-            };
-            discovered_by_backend.insert(shared.backend_type.clone(), disc);
-        }
+        let discovered_by_backend = self.discover_windows_by_backend(&resumable);
 
         for shared in resumable {
             let discovered = discovered_by_backend
@@ -3512,6 +3476,59 @@ impl App {
 
         // Claim ownership of restored sessions in the shared state
         self.save_state();
+    }
+
+    /// Discover existing backend windows once per distinct `backend_type`.
+    ///
+    /// Each backend is readied + discovered at most once (a remote backend
+    /// needs its control-mode connection up before `adopt()`). Backends this
+    /// instance can't manage (unknown remote hosts) map to an empty list so
+    /// their sessions are left un-adopted rather than misadopted on local.
+    fn discover_windows_by_backend(
+        &self,
+        resumable: &[sync::SharedSession],
+    ) -> HashMap<String, Vec<crate::agent::backend::DiscoveredSession>> {
+        let mut discovered_by_backend: HashMap<
+            String,
+            Vec<crate::agent::backend::DiscoveredSession>,
+        > = HashMap::new();
+        for shared in resumable {
+            if discovered_by_backend.contains_key(&shared.backend_type) {
+                continue;
+            }
+            let disc = self.discover_windows_for_backend(&shared.backend_type);
+            discovered_by_backend.insert(shared.backend_type.clone(), disc);
+        }
+        discovered_by_backend
+    }
+
+    /// Ready + discover a single backend's windows, degrading to an empty list
+    /// when the backend is unknown or not reachable (logged, never fatal).
+    fn discover_windows_for_backend(
+        &self,
+        backend_type: &str,
+    ) -> Vec<crate::agent::backend::DiscoveredSession> {
+        // Skip discovery for backends this instance can't manage (unknown
+        // remote hosts); their sessions are left un-adopted.
+        let Some(backend) = self.resolve_persisted_backend(backend_type) else {
+            return Vec::new();
+        };
+
+        if let Err(e) = backend.ensure_ready() {
+            warn!(
+                backend = backend.name(),
+                "Backend not ready during restore; skipping its sessions: {e}"
+            );
+            return Vec::new();
+        }
+
+        backend.discover().unwrap_or_else(|e| {
+            warn!(
+                backend = backend.name(),
+                "Failed to discover sessions from backend: {e}"
+            );
+            Vec::new()
+        })
     }
 
     /// Restore a single session synchronously (used during startup). The
