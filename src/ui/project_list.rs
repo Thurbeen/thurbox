@@ -425,7 +425,7 @@ pub fn render_left_panel(
     state: &mut LeftPanelState<'_>,
 ) -> Vec<super::RowHitbox> {
     // The session list fills the whole left panel — search lives in the global
-    // `Ctrl+A` strip now, so there's no in-list search bar.
+    // `Ctrl+/` strip now, so there's no in-list search bar.
     render_session_section(
         frame,
         area,

@@ -1,4 +1,4 @@
-//! Global search — a non-modal bottom strip (`Ctrl+A` by default) that
+//! Global search — a non-modal bottom strip (`Ctrl+/` by default) that
 //! searches across every scope at once: session metadata + live buffer
 //! **content**, automation names, task titles, and the active session's file
 //! tree.

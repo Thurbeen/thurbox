@@ -801,9 +801,9 @@ real off-switch. Headless healing requires `[features] automations = true`
 flow installer now delegates its bootstrap to `extension activate flow`
 (with an inline fallback for older thurbox).
 
-## Global search (`Ctrl+A`)
+## Global search (`Ctrl+/`)
 
-A **non-modal bottom strip** (`Ctrl+A`, rebindable) searches **every scope at once**:
+A **non-modal bottom strip** (`Ctrl+/`, rebindable) searches **every scope at once**:
 **sessions** (name/agent/branch + live vt100 **buffer content**), **tasks**
 (title + description, with a description snippet when only the description
 matched), **automations** (name), and **files** (the active session's file
@@ -849,8 +849,11 @@ global_search` in settings.toml; scopes whose feature is disabled
 - **Layout**: `compute_layout`'s `show_global_search` carves a full-width
   `PanelAreas::global_search` strip above the footer (shrinking the content
   area like the side panels). Rendered by `src/ui/global_search.rs`.
-- **Binding**: `Action::GlobalSearch` defaults to `Ctrl+A` ("search All"),
-  which encodes reliably on every terminal and is fully rebindable from the
+- **Binding**: `Action::GlobalSearch` defaults to `Ctrl+/` (the near-universal
+  "search" chord), bound to all three encodings terminals deliver it as
+  (`Ctrl+/` under the kitty protocol; `Ctrl+7`/`Ctrl+_` from the raw 0x1F byte
+  on legacy terminals). It isn't a bare `Ctrl+<letter>`, so it never defers to
+  the PTY — search opens from a focused terminal too. Fully rebindable from the
   F1 editor like any other action (there is no separate hardcoded opener).
   Global search is the **only** search: the per-pane local `/` filters
   (session list, tasks panel) were removed in favour of it. The file
@@ -1046,7 +1049,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | Work items |
-| `Ctrl+A` | Global search (sessions/tasks/automations/files) | search **A**ll |
+| `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
@@ -1117,7 +1120,7 @@ early in `handle_priority_key` (so Paste reaches modal text inputs).
 start-of-line, `Ctrl+E` = end-of-line, `Ctrl+W` = delete-word, `Ctrl+U` =
 kill-line, `Ctrl+R` = reverse-search, `Ctrl+D` = EOF, …). So when a session
 **terminal is focused**, the actions flagged by `Action::terminal_passthrough`
-(`GlobalSearch`/`ToggleInfoPanel`/`DeleteSession`/`ToggleFileViewer`/
+(`ToggleInfoPanel`/`DeleteSession`/`ToggleFileViewer`/
 `ForkSession`/`OpenInEditor`/`OpenAutomations`/`RestartSession`/`StartSync`/
 `OpenRestoreSessions`/`FocusTasks`) **defer to the agent CLI** instead of
 running the thurbox command — `handle_key` skips `dispatch_action` and falls

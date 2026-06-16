@@ -2,7 +2,7 @@
 //! and the file viewer), shown/hidden with F5/`Ctrl+W` like the file viewer.
 //! Renders a checkbox list of task titles (☐/◐/☑), with global-search matches
 //! highlighted; while focused it shows a compact action footer. Filtering is
-//! handled by the global `Ctrl+A` search, not a per-pane box.
+//! handled by the global `Ctrl+/` search, not a per-pane box.
 
 use ratatui::{
     layout::Rect,

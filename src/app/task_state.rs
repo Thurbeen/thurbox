@@ -17,7 +17,7 @@ pub(crate) struct TaskUiState {
     /// Selected row in the tasks panel. Indexes [`Self::filtered_task_indices`].
     pub(crate) task_panel_index: usize,
     /// Indices into [`Self::cached_tasks`] shown in the panel (currently always
-    /// all active tasks — filtering is done by the global `Ctrl+A` search).
+    /// all active tasks — filtering is done by the global `Ctrl+/` search).
     pub(crate) filtered_task_indices: Vec<usize>,
     /// The editor for the task currently scoped in the central pane. While the
     /// tasks panel is focused this mirrors the selected task (a live preview);

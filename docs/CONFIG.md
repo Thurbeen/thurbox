@@ -120,7 +120,7 @@ touched, so re-enabling a flag is lossless.
 | `tasks` | tasks panel (`F5`/`Ctrl+W`) and task search results |
 | `automations` | automations pane, `Ctrl+P`, TUI schedule firing, heartbeat arming |
 | `file_viewer` | file viewer column (`F3`) and file search results |
-| `global_search` | global search strip (`Ctrl+A`) |
+| `global_search` | global search strip (`Ctrl+/`) |
 | `info_panel` | info panel column (`F2`) |
 | `shell_pane` | per-session shell toggle (`Ctrl+T`) |
 | `mouse` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |

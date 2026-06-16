@@ -38,7 +38,7 @@ worktree), and cwd.
 
 ### Fuzzy search
 
-Searching is unified into the **global search** (`Ctrl+A`) — see the
+Searching is unified into the **global search** (`Ctrl+/`) — see the
 *Global Search* section below. There is no separate per-list `/`
 filter; instead the global strip highlights matches live across the
 session list, tasks panel, and automations pane at once. Sessions are
@@ -318,7 +318,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
 | `Ctrl+P` | Global | Automations (scheduled agent runs) | **P**rogram |
 | `Ctrl+W` / `F5` | Global | Toggle tasks panel (todo list) | Work items |
-| `Ctrl+A` | Global | Global search across every scope | search **A**ll |
+| `Ctrl+/` | Global | Global search across every scope | **/** = search |
 | `Ctrl+T` | Global | Toggle shell pane alongside the agent session | **T**erminal |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
@@ -695,7 +695,7 @@ The panel is focusable (`InputFocus::TaskList`). Its title and border use
 the shared focus styling (highlighted title + accent border when focused),
 matching the session list and file viewer. Checkbox glyphs show status
 (☐ todo / ◐ in-progress / ☑ done). Searching/filtering is handled by the
-global `Ctrl+A` search, not a per-panel `/`.
+global `Ctrl+/` search, not a per-panel `/`.
 
 **Editing happens in the central pane, like automations — not a modal.**
 Selecting a task previews its editor in the central pane; `Enter`/`e`
@@ -825,9 +825,9 @@ Two more ship in `extensions/`, both built the same agent-agnostic way
 
 ## Global Search
 
-`Ctrl+A` ("search **A**ll") opens a **non-modal bottom strip** that
-searches every scope at once — a single place to find and jump to
-anything. The opener is fully rebindable from the F1 editor
+`Ctrl+/` (the near-universal "search" chord) opens a **non-modal bottom
+strip** that searches every scope at once — a single place to find and jump
+to anything. The opener is fully rebindable from the F1 editor
 (`Action::GlobalSearch`).
 
 ### Scopes
@@ -893,9 +893,10 @@ last ≤ 500 lines per session) so typing never stalls.
 
 Type to filter; `Up`/`Down` (or `Ctrl+P`/`Ctrl+N`) move the selection so
 plain letters still edit the query; `Enter` jumps; `Esc` closes and
-restores the previous focus. The default chord is `Ctrl+A`
-(`Action::GlobalSearch`), which encodes reliably on every terminal and is
-fully rebindable from the F1 editor like any other action.
+restores the previous focus. The default chord is `Ctrl+/`
+(`Action::GlobalSearch`), bound to every encoding terminals deliver it as
+(`Ctrl+/` under the kitty protocol; `Ctrl+7`/`Ctrl+_` on legacy terminals)
+and fully rebindable from the F1 editor like any other action.
 
 Global search is the **only** list search now: the old per-pane `/`
 filters (session list, tasks panel) were removed in its favour. The file

@@ -428,7 +428,7 @@ pub enum InputFocus {
     /// Editing the scoped task in the central pane (like a session's terminal —
     /// reached with `Enter`/`e` from the tasks panel; `Esc` returns to it).
     TaskEditor,
-    /// The global search strip docked along the bottom (`Ctrl+A` by default).
+    /// The global search strip docked along the bottom (`Ctrl+/` by default).
     /// Captures all input while active; entered/left only via its keybinding /
     /// `Esc`.
     GlobalSearch,
@@ -540,7 +540,7 @@ pub struct App {
     pub(crate) automation_ui: automation_state::AutomationUiState,
     /// Tasks-panel UI state (cached list, selection, editor, links).
     pub(crate) task_ui: task_state::TaskUiState,
-    /// Global search strip (`Ctrl+A`): cross-scope search docked at the bottom.
+    /// Global search strip (`Ctrl+/`): cross-scope search docked at the bottom.
     pub(crate) global_search: search::GlobalSearchState,
     /// Currently active theme preset, cached so the header doesn't hit SQLite
     /// every render. Kept in sync with `db.set_active_theme` writes.
@@ -4210,7 +4210,7 @@ impl App {
 
     /// Rebuild [`Self::filtered_task_indices`] (all active tasks) and clamp the
     /// panel selection into range. The tasks panel shows every task now —
-    /// filtering happens through the global `Ctrl+A` search.
+    /// filtering happens through the global `Ctrl+/` search.
     pub(crate) fn recompute_task_filter(&mut self) {
         self.task_ui.filtered_task_indices = (0..self.task_ui.cached_tasks.len()).collect();
         if self.task_ui.filtered_task_indices.is_empty() {
@@ -4491,7 +4491,7 @@ impl App {
         true
     }
 
-    // ---- Global search (Ctrl+A bottom strip) -----------------------------
+    // ---- Global search (Ctrl+/ bottom strip) -----------------------------
 
     /// Open the global-search strip: snapshot the current UI state (so cancel
     /// can restore it), clear the query, focus the strip, and seed the (cheap)
@@ -6362,7 +6362,7 @@ mod tests {
         assert!(!app.show_info_panel);
         assert!(app.status_message.take().unwrap().text.contains("disabled"));
 
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::CONTROL);
         assert!(!app.global_search.active);
         assert!(app.status_message.take().unwrap().text.contains("disabled"));
 
@@ -7064,7 +7064,7 @@ mod tests {
     fn click_while_global_search_open_is_swallowed() {
         let mut app = app_with_sessions(1);
         app.focus = InputFocus::SessionList;
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::CONTROL);
         assert!(app.global_search.active);
         app.click_targets.push(ClickTarget {
             rect: Rect::new(1, 3, 20, 1),
@@ -7308,36 +7308,37 @@ mod tests {
         assert_eq!(app.focus, InputFocus::TaskEditor);
     }
 
-    // --- Global search (Ctrl+A, fully rebindable) tests ---
+    // --- Global search (Ctrl+/, fully rebindable) tests ---
 
     #[test]
-    fn ctrl_a_opens_global_search() {
-        let mut app = app_with_sessions(1);
-        app.focus = InputFocus::SessionList;
-        // Ctrl+A is the default binding.
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
-        assert!(app.global_search.active);
-        assert_eq!(app.focus, InputFocus::GlobalSearch);
-        // Esc closes and restores the previous focus.
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!app.global_search.active);
-        assert_eq!(app.focus, InputFocus::SessionList);
-    }
-
-    #[test]
-    fn ctrl_slash_no_longer_opens_global_search() {
-        // The hardcoded Ctrl+/ intercept was removed: global search is opened
-        // solely via the (rebindable) `Action::GlobalSearch` chord. The former
-        // Ctrl+/ encodings (`/`, `_`, `7`) must no longer open the strip.
-        for c in ['/', '_', '7'] {
+    fn ctrl_slash_opens_global_search() {
+        // Ctrl+/ is the default binding. Terminals encode it as `Ctrl+/`
+        // (kitty protocol) or as the raw 0x1F byte that crossterm decodes as
+        // `Ctrl+7` / `Ctrl+_` (legacy) — all three open the strip.
+        for c in ['/', '7', '_'] {
             let mut app = app_with_sessions(1);
             app.focus = InputFocus::SessionList;
             app.handle_key(KeyCode::Char(c), KeyModifiers::CONTROL);
-            assert!(
-                !app.global_search.active,
-                "Ctrl+{c} must not open search anymore"
-            );
+            assert!(app.global_search.active, "Ctrl+{c} should open search");
+            assert_eq!(app.focus, InputFocus::GlobalSearch);
+            // Esc closes and restores the previous focus.
+            app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+            assert!(!app.global_search.active);
+            assert_eq!(app.focus, InputFocus::SessionList);
         }
+    }
+
+    #[test]
+    fn ctrl_a_no_longer_opens_global_search() {
+        // Ctrl+A was the old default; it's now free (a readline start-of-line
+        // chord left to the terminal / modal text fields) and opens nothing.
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::SessionList;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(
+            !app.global_search.active,
+            "Ctrl+A must not open search anymore"
+        );
     }
 
     #[test]
@@ -7347,7 +7348,7 @@ mod tests {
         let _g = crate::paths::TestPathGuard::new(&base);
 
         let mut app = app_with_sessions(1);
-        // Rebind global search from Ctrl+A to Ctrl+X via the F1 editor.
+        // Rebind global search from Ctrl+/ to Ctrl+X via the F1 editor.
         app.keybindings.rebind(
             crate::session::Action::GlobalSearch,
             crate::session::KeyChord::ctrl('x'),
@@ -7355,8 +7356,8 @@ mod tests {
 
         // The old chord no longer opens it...
         app.focus = InputFocus::SessionList;
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
-        assert!(!app.global_search.active, "old Ctrl+A must not open search");
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::CONTROL);
+        assert!(!app.global_search.active, "old Ctrl+/ must not open search");
 
         // ...and the new chord does.
         app.handle_key(KeyCode::Char('x'), KeyModifiers::CONTROL);

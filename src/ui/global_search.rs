@@ -1,4 +1,4 @@
-//! Renderer for the global-search strip (`Ctrl+A`) — a non-modal panel docked
+//! Renderer for the global-search strip (`Ctrl+/`) — a non-modal panel docked
 //! full-width along the bottom. Matches also highlight **live in the panels
 //! themselves** (session list, tasks, automations). The strip shows: a query
 //! line, a per-scope match summary, the grouped result list (scrollable, with

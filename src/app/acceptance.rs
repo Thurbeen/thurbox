@@ -340,12 +340,12 @@ fn f5_toggles_tasks_panel_like_ctrl_w() {
 }
 
 #[test]
-fn ctrl_a_opens_global_search_strip() {
+fn ctrl_slash_opens_global_search_strip() {
     let mut h = Harness::standard(2);
     assert!(!h.app.global_search.active);
 
-    h.ctrl('a'); // GlobalSearch
-    assert!(h.app.global_search.active, "Ctrl+A opens the search strip");
+    h.ctrl('/'); // GlobalSearch
+    assert!(h.app.global_search.active, "Ctrl+/ opens the search strip");
 
     // The strip captures typing before global keybindings, so a plain letter
     // edits the query rather than triggering a binding.
@@ -688,7 +688,7 @@ fn task_editor_creates_task_and_space_cycles_status() {
 #[test]
 fn global_search_returns_results_for_a_session_query() {
     let mut h = Harness::standard(2); // session-0, session-1
-    h.ctrl('a'); // open the search strip
+    h.ctrl('/'); // open the search strip
     for ch in "session-1".chars() {
         h.key(KeyCode::Char(ch), KeyModifiers::NONE);
     }

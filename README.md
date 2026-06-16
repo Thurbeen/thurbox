@@ -45,7 +45,7 @@ adds:
 - `Ctrl+R` restart preserves the conversation when the agent
   supports resume; `Ctrl+F` forks a session; `Ctrl+T` toggles a
   shell pane.
-- Global search (`Ctrl+A`), full mouse navigation, clickable URLs,
+- Global search (`Ctrl+/`), full mouse navigation, clickable URLs,
   automations (`Ctrl+P`), soft-delete with undo (`Ctrl+Z`) and
   restore (`Ctrl+U`).
 
@@ -167,7 +167,7 @@ and each extension's README under
 
 ### Global search
 
-- One key (`Ctrl+A`) opens a **non-modal search strip** that
+- One key (`Ctrl+/`) opens a **non-modal search strip** that
   searches **every scope at once** — sessions (name/agent/branch
   **and** live terminal-buffer content), tasks, automations, and
   the active session's file tree.
@@ -279,7 +279,7 @@ flipping a flag back on is lossless.
 tasks = true          # F5/Ctrl+W tasks panel
 automations = true    # automations pane, Ctrl+P, schedule firing
 file_viewer = true    # F3/Ctrl+E file viewer
-global_search = true  # Ctrl+A search strip
+global_search = true  # Ctrl+/ search strip
 info_panel = true     # F2/Ctrl+B info panel
 shell_pane = true     # Ctrl+T per-session shell
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
@@ -454,7 +454,7 @@ command = "codex"
 | `Ctrl+C` | Copy selection / SIGINT (terminal) | **C**opy |
 | `Ctrl+V` | Paste from clipboard | Paste |
 | `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
-| `Ctrl+A` | Global search (sessions/tasks/automations/files) | search **A**ll |
+| `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | **W**ork items |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
@@ -492,7 +492,7 @@ Terminal.app delivers no Cmd chords; everything else works there.
 | `k` / `Up` | Previous item |
 | `Enter` | Select / focus |
 
-Searching is unified into the global search strip (`Ctrl+A`); there
+Searching is unified into the global search strip (`Ctrl+/`); there
 is no separate per-list `/` filter. It matches sessions on name,
 agent, branch, and live terminal-buffer content. (The file viewer's
 own in-file `/` text search is unrelated and still there.)

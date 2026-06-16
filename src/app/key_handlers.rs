@@ -412,7 +412,7 @@ impl App {
             // the editor returns to the tasks panel, never off to a session.
             TaskEditor => vec![TaskList, TaskEditor],
             // The global-search strip is entered/left only via its keybinding
-            // (`Ctrl+A` by default) / `Esc`, so `Ctrl+L`/`Ctrl+H` are no-ops
+            // (`Ctrl+/` by default) / `Esc`, so `Ctrl+L`/`Ctrl+H` are no-ops
             // while it's open.
             GlobalSearch => vec![GlobalSearch],
         }
@@ -647,7 +647,7 @@ impl App {
     /// the selected task in the central pane), `PageUp`/`PageDown` scroll that
     /// preview, `n` create, `e`/`Enter` open the central-pane editor, `Space`
     /// cycles status, `r` opens the trigger-time action picker, `d` deletes,
-    /// `Esc` leaves. Searching is handled by the global `Ctrl+A`.
+    /// `Esc` leaves. Searching is handled by the global `Ctrl+/`.
     pub(crate) fn handle_task_list_key(&mut self, code: KeyCode) {
         // Creating works regardless of whether the panel has entries.
         if matches!(code, KeyCode::Char('n')) {

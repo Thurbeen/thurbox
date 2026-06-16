@@ -56,7 +56,7 @@ pub struct FeatureFlags {
     /// File viewer column (F3) and file search results.
     #[serde(default = "default_true")]
     pub file_viewer: bool,
-    /// Global search strip (Ctrl+A).
+    /// Global search strip (Ctrl+/).
     #[serde(default = "default_true")]
     pub global_search: bool,
     /// Info panel column (F2).

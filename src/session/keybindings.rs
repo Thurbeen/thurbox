@@ -230,8 +230,7 @@ impl Action {
     pub fn terminal_passthrough(self) -> bool {
         matches!(
             self,
-            Action::GlobalSearch        // Ctrl+A — beginning of line
-                | Action::ToggleInfoPanel   // Ctrl+B — backward char   (F2 alt)
+            Action::ToggleInfoPanel         // Ctrl+B — backward char   (F2 alt)
                 | Action::DeleteSession     // Ctrl+D — EOF / delete char
                 | Action::ToggleFileViewer  // Ctrl+E — end of line      (F3 alt)
                 | Action::ForkSession       // Ctrl+F — forward char
@@ -286,9 +285,19 @@ impl Action {
             Action::ToggleInfoPanel => vec![KeyChord::ctrl('b'), KeyChord::function(2)],
             Action::ToggleFileViewer => vec![KeyChord::ctrl('e'), KeyChord::function(3)],
             Action::FocusTasks => vec![KeyChord::ctrl('w'), KeyChord::function(5)],
-            // Ctrl+A ("search All") — encodes identically on every terminal,
-            // so it's a reliable, fully-rebindable opener.
-            Action::GlobalSearch => vec![KeyChord::ctrl('a')],
+            // Ctrl+/ — the near-universal "search" chord. Terminals encode it
+            // inconsistently: kitty-protocol ones deliver `Ctrl+/`, while legacy
+            // ones send the raw 0x1F byte that crossterm decodes as `Ctrl+7` /
+            // `Ctrl+_`, so all three are bound (the first is the displayed
+            // hint). None is a bare Ctrl+<letter>, so it never defers to the PTY
+            // — search opens from the terminal too. Fully rebindable.
+            Action::GlobalSearch => {
+                vec![
+                    KeyChord::ctrl('/'),
+                    KeyChord::ctrl('7'),
+                    KeyChord::ctrl('_'),
+                ]
+            }
             Action::Copy => vec![KeyChord::ctrl('c')],
             Action::Paste => vec![KeyChord::ctrl('v')],
             // Scoped single-letter / arrow nav. These only fire while their
@@ -851,7 +860,6 @@ mod tests {
         // The readline / shell line-editing chords defer to the PTY when the
         // terminal is focused…
         for action in [
-            Action::GlobalSearch,        // Ctrl+A
             Action::ToggleInfoPanel,     // Ctrl+B
             Action::DeleteSession,       // Ctrl+D
             Action::ToggleFileViewer,    // Ctrl+E
@@ -870,7 +878,9 @@ mod tests {
         }
 
         // …but the keyboard escape route (focus / session nav) and quit must
-        // keep working in the terminal, so they never defer.
+        // keep working in the terminal, so they never defer. Global search's
+        // default (Ctrl+/) isn't a readline editing chord, so it doesn't defer
+        // either — it opens from the terminal directly.
         for action in [
             Action::QuitApp,
             Action::NewSession,
@@ -882,6 +892,7 @@ mod tests {
             Action::UndoDelete,
             Action::Copy,
             Action::Paste,
+            Action::GlobalSearch,
         ] {
             assert!(
                 !action.terminal_passthrough(),
