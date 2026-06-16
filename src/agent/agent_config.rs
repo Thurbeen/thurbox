@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::AgentRegistry;
+use crate::session::{AgentDef, AgentRegistry};
 
 /// Built-in agent definitions, also used to seed `agents.toml` on first run.
 ///
@@ -153,22 +153,116 @@ fn seed_agents_toml(path: &std::path::Path) -> (AgentRegistry, Vec<String>) {
     (builtin_registry(), Vec::new())
 }
 
-/// Parse agents.toml contents, falling back to the built-in registry (with a
-/// warning) on parse error or an empty agent list.
+/// Top-level keys read directly by the resilient parser; anything else at the
+/// document root is reported as an unknown field (typo / stale key).
+const KNOWN_TOP_LEVEL_KEYS: [&str; 3] = ["config_version", "default", "agents"];
+
+/// Parse agents.toml contents **resiliently**, entry by entry: one malformed
+/// `[[agents]]` block is skipped (with a warning naming it) instead of
+/// discarding every agent the user defined. We fall back to the built-in
+/// registry only when the document is syntactically broken (unrecoverable) or
+/// yields no usable agents at all.
+///
+/// This is deliberately more forgiving than `thurbox-cli config validate`,
+/// which still strict-parses the whole document — `validate` is the diagnostic
+/// that tells you to fix the file, while the TUI degrades gracefully so a
+/// single typo never strands you on the built-ins.
 fn parse_agents_toml(contents: &str) -> (AgentRegistry, Vec<String>) {
-    match parse_toml_reporting_unknown::<AgentRegistry>(contents, "agents.toml") {
-        Ok((reg, warnings)) if !reg.agents.is_empty() => (reg, warnings),
-        Ok(_) => (
-            builtin_registry(),
-            vec!["agents.toml has no agents; using built-in agents".into()],
-        ),
-        Err(e) => (
-            builtin_registry(),
-            vec![format!(
-                "agents.toml: {}; using built-in agents",
+    // A genuine syntax error can't be recovered per entry — there are no
+    // well-formed entries to keep — so fall back to built-ins as before.
+    let table: toml::Table = match contents.parse() {
+        Ok(table) => table,
+        Err(e) => {
+            return (
+                builtin_registry(),
+                vec![format!(
+                    "agents.toml: {}; using built-in agents",
+                    compact_toml_error(&e.to_string())
+                )],
+            );
+        }
+    };
+
+    let mut warnings = Vec::new();
+    for key in table.keys() {
+        if !KNOWN_TOP_LEVEL_KEYS.contains(&key.as_str()) {
+            warnings.push(format!("agents.toml: unknown field `{key}` (ignored)"));
+        }
+    }
+
+    let config_version = table
+        .get("config_version")
+        .and_then(toml::Value::as_integer)
+        .map(|v| v as u32);
+    let default = table
+        .get("default")
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let mut agents = Vec::new();
+    match table.get("agents") {
+        Some(toml::Value::Array(entries)) => {
+            for (index, entry) in entries.iter().enumerate() {
+                if let Some(agent) = deserialize_agent(entry, index, &mut warnings) {
+                    agents.push(agent);
+                }
+            }
+        }
+        Some(_) => warnings.push("agents.toml: `agents` must be an array of tables".into()),
+        None => {}
+    }
+
+    if agents.is_empty() {
+        warnings.push("agents.toml has no usable agents; using built-in agents".into());
+        return (builtin_registry(), warnings);
+    }
+
+    (
+        AgentRegistry {
+            config_version,
+            default,
+            agents,
+        },
+        warnings,
+    )
+}
+
+/// Deserialize one `[[agents]]` entry, returning `None` (and pushing a warning
+/// that names the entry) when it is malformed so the caller can skip it. Unknown
+/// fields within a valid entry are reported but kept.
+fn deserialize_agent(
+    entry: &toml::Value,
+    index: usize,
+    warnings: &mut Vec<String>,
+) -> Option<AgentDef> {
+    // Label by name when present (the useful identifier), else by position.
+    let label = entry
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .map(|n| format!("\"{n}\""))
+        .unwrap_or_else(|| format!("#{index}"));
+
+    let mut unknowns = Vec::new();
+    let result: Result<AgentDef, _> =
+        serde_ignored::deserialize(entry.clone(), |path| unknowns.push(path.to_string()));
+
+    match result {
+        Ok(agent) => {
+            for field in unknowns {
+                warnings.push(format!(
+                    "agents.toml: agent {label}: unknown field `{field}` (ignored)"
+                ));
+            }
+            Some(agent)
+        }
+        Err(e) => {
+            warnings.push(format!(
+                "agents.toml: skipped agent {label}: {}",
                 compact_toml_error(&e.to_string())
-            )],
-        ),
+            ));
+            None
+        }
     }
 }
 
@@ -310,6 +404,104 @@ mod tests {
             warnings[0].contains("resumeargs"),
             "warning must name the unknown field: {}",
             warnings[0]
+        );
+    }
+
+    #[test]
+    fn one_malformed_entry_is_skipped_and_the_rest_survive() {
+        // The real-world footgun: `args` given a bare string instead of an
+        // array. Previously this failed the whole document and stranded the
+        // user on the six built-ins; now only the bad entry is dropped.
+        let toml = r#"
+default = "claude"
+
+[[agents]]
+name = "claude"
+command = "claude"
+
+[[agents]]
+name = "claude-bypass"
+command = "claude"
+args = "--dangerously-skip-permissions"
+
+[[agents]]
+name = "shepherd"
+command = "claude"
+args = ["--model", "claude-haiku-4-5"]
+"#;
+        let (reg, warnings) = parse_agents_toml(toml);
+
+        // The two valid agents load; the bad one is skipped.
+        assert_eq!(reg.names(), vec!["claude", "shepherd"]);
+        assert!(reg.get("claude-bypass").is_none());
+        // And the warning names the skipped agent so it's actionable.
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(
+            warnings[0].contains("claude-bypass") && warnings[0].contains("skipped"),
+            "warning must name the skipped agent: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn malformed_entry_without_name_is_labeled_by_index() {
+        let toml = r#"
+[[agents]]
+name = "ok"
+command = "ok"
+
+[[agents]]
+command = "missing-name"
+"#;
+        let (reg, warnings) = parse_agents_toml(toml);
+        assert_eq!(reg.names(), vec!["ok"]);
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(
+            warnings[0].contains("#1"),
+            "nameless entry should be labeled by index: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn all_entries_malformed_falls_back_to_builtins() {
+        let toml = "[[agents]]\nargs = \"oops\"\n";
+        let (reg, warnings) = parse_agents_toml(toml);
+        assert_eq!(reg.default, "claude", "should fall back to built-ins");
+        assert!(reg.get("codex").is_some());
+        assert!(
+            warnings.iter().any(|w| w.contains("no usable agents")),
+            "got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn agents_key_of_wrong_type_falls_back_to_builtins() {
+        // `agents` must be an array of tables; a scalar is a type error that
+        // leaves zero usable agents.
+        let (reg, warnings) = parse_agents_toml("agents = 3\n");
+        assert_eq!(reg.default, "claude");
+        assert!(
+            warnings.iter().any(|w| w.contains("array of tables")),
+            "got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn syntax_error_still_falls_back_to_builtins() {
+        let (reg, warnings) = parse_agents_toml("this is not = valid toml {{{");
+        assert_eq!(reg.default, "claude");
+        assert!(warnings.iter().any(|w| w.contains("using built-in agents")));
+    }
+
+    #[test]
+    fn unknown_top_level_key_is_reported_but_agents_survive() {
+        let toml = "stray = true\n[[agents]]\nname = \"mine\"\ncommand = \"x\"\n";
+        let (reg, warnings) = parse_agents_toml(toml);
+        assert_eq!(reg.names(), vec!["mine"]);
+        assert!(
+            warnings.iter().any(|w| w.contains("stray")),
+            "got: {warnings:?}"
         );
     }
 

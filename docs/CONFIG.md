@@ -37,6 +37,12 @@ stale keys from older versions or typos are *reported by name* but
 your file still loads — while syntax/type errors fall back to
 built-ins (agents), zero hosts, or defaults (settings).
 
+`agents.toml` degrades **per entry**: a single malformed `[[agents]]`
+block (e.g. `args` given a string instead of an array) is skipped with
+a toast naming it, and your remaining agents still load — only a
+document-level syntax error (or a file with no usable agents) falls
+back to the built-ins.
+
 Check everything from the command line:
 
 ```bash
@@ -52,7 +58,9 @@ way), making it usable as a dotfiles CI gate.
 Declares the launchable coding agents. Seeded with the built-ins
 (`claude`, `codex`, `gemini`, `opencode`, `aider`, `vibe`) on first
 run; edit or add `[[agents]]` entries to support any CLI — no
-recompile. Malformed file → built-ins are used and the error is shown.
+recompile. A malformed `[[agents]]` entry is skipped (with a toast
+naming it) and the rest still load; only a document-level syntax error
+falls back to the built-ins. Either way the error is shown.
 
 ```toml
 config_version = 1
