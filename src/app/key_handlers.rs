@@ -1195,6 +1195,16 @@ impl App {
         enabled
     }
 
+    /// Run a feature-gated action when its switch is enabled (toasting the
+    /// switch name otherwise), and always consume the key (`true`) so a
+    /// disabled chord never falls through to the PTY.
+    fn gated(&mut self, enabled: bool, what: &str, act: impl FnOnce(&mut Self)) -> bool {
+        if self.feature_gate(enabled, what) {
+            act(self);
+        }
+        true
+    }
+
     fn dispatch_action(&mut self, action: crate::session::Action) -> bool {
         use crate::session::Action;
         match action {
@@ -1211,22 +1221,20 @@ impl App {
                 self.open_active_in_editor();
                 true
             }
-            Action::OpenAutomations => {
-                if self.feature_gate(self.features.automations, "Automations") {
-                    self.open_automations_list();
-                }
-                true
-            }
+            Action::OpenAutomations => self.gated(
+                self.features.automations,
+                "Automations",
+                Self::open_automations_list,
+            ),
             Action::StartSync => {
                 self.start_sync();
                 true
             }
-            Action::ToggleShell => {
-                if self.feature_gate(self.features.shell_pane, "Shell pane") {
-                    self.toggle_shell_view();
-                }
-                true
-            }
+            Action::ToggleShell => self.gated(
+                self.features.shell_pane,
+                "Shell pane",
+                Self::toggle_shell_view,
+            ),
             Action::ForkSession => {
                 self.fork_active_session();
                 true
@@ -1271,31 +1279,23 @@ impl App {
                 self.modal = super::modals::Modal::Help(super::modals::HelpModal::default());
                 true
             }
-            Action::ToggleInfoPanel => {
-                if self.feature_gate(self.features.info_panel, "Info panel") {
-                    self.show_info_panel = !self.show_info_panel;
-                    self.resize_sessions_to_content_area();
-                }
-                true
-            }
+            Action::ToggleInfoPanel => self.gated(self.features.info_panel, "Info panel", |s| {
+                s.show_info_panel = !s.show_info_panel;
+                s.resize_sessions_to_content_area();
+            }),
             Action::FocusTasks => {
-                if self.feature_gate(self.features.tasks, "Tasks panel") {
-                    self.act_toggle_tasks();
-                }
-                true
+                self.gated(self.features.tasks, "Tasks panel", Self::act_toggle_tasks)
             }
-            Action::ToggleFileViewer => {
-                if self.feature_gate(self.features.file_viewer, "File viewer") {
-                    self.act_toggle_file_viewer();
-                }
-                true
-            }
-            Action::GlobalSearch => {
-                if self.feature_gate(self.features.global_search, "Global search") {
-                    self.open_global_search();
-                }
-                true
-            }
+            Action::ToggleFileViewer => self.gated(
+                self.features.file_viewer,
+                "File viewer",
+                Self::act_toggle_file_viewer,
+            ),
+            Action::GlobalSearch => self.gated(
+                self.features.global_search,
+                "Global search",
+                Self::open_global_search,
+            ),
 
             // ── Clipboard (global) ──────────────────────────────────────
             // Copy only consumes the key when there's a selection; otherwise
