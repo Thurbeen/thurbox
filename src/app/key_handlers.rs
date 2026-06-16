@@ -53,21 +53,9 @@ impl App {
         }
 
         // Cmd/Super chords are commands, never text: only the keybinding
-        // lookup may consume them. The handlers below (modal inputs, the
-        // search query, in-pane editors, list hotkeys) predate the kitty
-        // keyboard protocol and match `Char` without checking SUPER, so a
-        // chord like Cmd+J would otherwise type a bare `j`. While a modal or
-        // the search strip owns input the chord is swallowed outright,
-        // mirroring how Ctrl chords are unavailable there. (The terminal
-        // pass-through swallows SUPER on its own — `agent::input::key_to_bytes`.)
+        // lookup may consume them (see `handle_super_chord`).
         if mods.contains(KeyModifiers::SUPER) {
-            if !self.modal.is_open() && !self.global_search.active {
-                self.text_selection = None;
-                let context = self.focus_key_context();
-                if let Some(action) = self.keybindings.lookup_in(context, code, mods) {
-                    self.dispatch_action(action);
-                }
-            }
+            self.handle_super_chord(code, mods);
             return;
         }
 
@@ -110,6 +98,31 @@ impl App {
             }
         }
 
+        self.handle_focused_pane_key(code, mods);
+    }
+
+    /// Cmd/Super chords are commands, never text: only the keybinding lookup
+    /// may consume them. The focus-based handlers (modal inputs, the search
+    /// query, in-pane editors, list hotkeys) predate the kitty keyboard
+    /// protocol and match `Char` without checking SUPER, so a chord like Cmd+J
+    /// would otherwise type a bare `j`. While a modal or the search strip owns
+    /// input the chord is swallowed outright, mirroring how Ctrl chords are
+    /// unavailable there. (The terminal pass-through swallows SUPER on its own —
+    /// `agent::input::key_to_bytes`.)
+    fn handle_super_chord(&mut self, code: KeyCode, mods: KeyModifiers) {
+        if self.modal.is_open() || self.global_search.active {
+            return;
+        }
+        self.text_selection = None;
+        let context = self.focus_key_context();
+        if let Some(action) = self.keybindings.lookup_in(context, code, mods) {
+            self.dispatch_action(action);
+        }
+    }
+
+    /// Route a key (already cleared of priority/modal/global handling) to the
+    /// handler for the currently focused pane.
+    fn handle_focused_pane_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         match self.focus {
             InputFocus::SessionList => self.handle_session_list_key(code),
             InputFocus::Automations => self.handle_automations_pane_key(code),
@@ -455,37 +468,39 @@ impl App {
     /// create is handled globally in `dispatch_action`, so it works here too,
     /// including on an empty pane.)
     pub(crate) fn handle_automations_pane_key(&mut self, code: KeyCode) {
-        // Creating works regardless of whether the pane has entries.
-        if matches!(code, KeyCode::Char('n')) {
-            self.new_automation_in_pane();
-            return;
-        }
         let count = self.automation_ui.cached_automations.len();
-        // `k`/Up at the top row (or empty pane) flows focus back up into the
-        // session list; `j`/Down past the last loops to the top of it — so the
-        // left column behaves as one circular vertical list.
-        if matches!(code, KeyCode::Char('k') | KeyCode::Up) {
-            self.automations_pane_move_up(count);
-            return;
+        match code {
+            // Creating works regardless of whether the pane has entries.
+            KeyCode::Char('n') => self.new_automation_in_pane(),
+            // `k`/Up at the top row (or empty pane) flows focus back up into the
+            // session list; `j`/Down past the last loops to the top of it — so
+            // the left column behaves as one circular vertical list.
+            KeyCode::Char('k') | KeyCode::Up => self.automations_pane_move_up(count),
+            KeyCode::Char('j') | KeyCode::Down => self.automations_pane_move_down(count),
+            // `Enter`/`e` focuses the central-pane editor (like `Enter` on a
+            // session focuses its terminal); on an empty pane it starts a new
+            // automation.
+            KeyCode::Enter | KeyCode::Char('e') => self.enter_automation_editor_in_pane(count),
+            // Remaining nav/actions are no-ops on an empty pane.
+            _ if count > 0 => self.dispatch_automation_pane_action(code, count),
+            _ => {}
         }
-        if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
-            self.automations_pane_move_down(count);
-            return;
-        }
-        // `Enter`/`e` focuses the central-pane editor (like `Enter` on a session
-        // focuses its terminal); on an empty pane it starts a new automation.
-        if matches!(code, KeyCode::Enter | KeyCode::Char('e')) {
-            if count == 0 {
-                self.new_automation_in_pane();
-            } else {
-                self.enter_automation_editor();
-            }
-            self.refresh_selected_automation_runs();
-            return;
-        }
+    }
+
+    /// `Enter`/`e` in the automations pane: open the editor for the selection,
+    /// or start a new automation on an empty pane.
+    fn enter_automation_editor_in_pane(&mut self, count: usize) {
         if count == 0 {
-            return; // empty pane: remaining nav/actions are no-ops
+            self.new_automation_in_pane();
+        } else {
+            self.enter_automation_editor();
         }
+        self.refresh_selected_automation_runs();
+    }
+
+    /// Clamp the selection and run the toggle/run/delete action for the row
+    /// under the cursor (caller guarantees a non-empty pane).
+    fn dispatch_automation_pane_action(&mut self, code: KeyCode, count: usize) {
         if self.automation_ui.automation_panel_index >= count {
             self.automation_ui.automation_panel_index = count - 1;
         }
@@ -1322,56 +1337,54 @@ impl App {
                 true
             }
 
-            // ── File viewer (scoped) ────────────────────────────────────
-            Action::FileViewerDown => {
-                self.file_viewer.move_selection(1);
-                true
-            }
-            Action::FileViewerUp => {
-                self.file_viewer.move_selection(-1);
-                true
-            }
-            Action::FileViewerCollapse => {
-                self.file_viewer.collapse();
-                true
-            }
-            Action::FileViewerExpand => {
-                self.file_viewer_expand();
-                true
-            }
-            Action::FileViewerSearch => {
-                self.file_viewer.start_search();
-                true
-            }
-            Action::FileViewerNextMatch => {
-                self.file_viewer.next_match();
-                true
-            }
-            Action::FileViewerPrevMatch => {
-                self.file_viewer.prev_match();
-                true
-            }
+            // ── File viewer + terminal scroll (scoped) ──────────────────
+            Action::FileViewerDown
+            | Action::FileViewerUp
+            | Action::FileViewerCollapse
+            | Action::FileViewerExpand
+            | Action::FileViewerSearch
+            | Action::FileViewerNextMatch
+            | Action::FileViewerPrevMatch => self.dispatch_file_viewer_action(action),
+            Action::TerminalScrollUp
+            | Action::TerminalScrollDown
+            | Action::TerminalPageUp
+            | Action::TerminalPageDown => self.dispatch_terminal_scroll_action(action),
+        }
+    }
 
-            // ── Terminal scroll (scoped) ────────────────────────────────
-            Action::TerminalScrollUp => {
-                self.scroll_terminal_up(1);
-                true
-            }
-            Action::TerminalScrollDown => {
-                self.scroll_terminal_down(1);
-                true
-            }
+    /// Run a `FileViewer`-scoped action. Always consumes the key (`true`).
+    fn dispatch_file_viewer_action(&mut self, action: crate::session::Action) -> bool {
+        use crate::session::Action;
+        match action {
+            Action::FileViewerDown => self.file_viewer.move_selection(1),
+            Action::FileViewerUp => self.file_viewer.move_selection(-1),
+            Action::FileViewerCollapse => self.file_viewer.collapse(),
+            Action::FileViewerExpand => self.file_viewer_expand(),
+            Action::FileViewerSearch => self.file_viewer.start_search(),
+            Action::FileViewerNextMatch => self.file_viewer.next_match(),
+            Action::FileViewerPrevMatch => self.file_viewer.prev_match(),
+            _ => {}
+        }
+        true
+    }
+
+    /// Run a terminal-scroll action. Always consumes the key (`true`).
+    fn dispatch_terminal_scroll_action(&mut self, action: crate::session::Action) -> bool {
+        use crate::session::Action;
+        match action {
+            Action::TerminalScrollUp => self.scroll_terminal_up(1),
+            Action::TerminalScrollDown => self.scroll_terminal_down(1),
             Action::TerminalPageUp => {
                 let amount = self.page_scroll_amount();
                 self.scroll_terminal_up(amount);
-                true
             }
             Action::TerminalPageDown => {
                 let amount = self.page_scroll_amount();
                 self.scroll_terminal_down(amount);
-                true
             }
+            _ => {}
         }
+        true
     }
 
     /// `Ctrl+N`: in the automations context create an automation (mirrors `n`),
