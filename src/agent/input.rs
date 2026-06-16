@@ -14,28 +14,11 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let modifier_param = xterm_modifier(shift, alt, ctrl);
 
-    // Ctrl+letter → control character (0x01..=0x1A), optionally wrapped with ESC for Alt
-    if let Some(bytes) = ctrl_letter_bytes(code, shift, alt, ctrl) {
+    if let Some(bytes) = ctrl_or_shift_special_bytes(code, shift, alt, ctrl) {
         return Some(bytes);
     }
 
-    // Shift+Enter → ESC [ 13;2u (xterm modifyOtherKeys / kitty protocol)
-    if shift && code == KeyCode::Enter {
-        return Some(b"\x1b[13;2u".to_vec());
-    }
-
-    // BackTab / Shift+Tab → reverse tab (CSI Z)
-    if matches!(code, KeyCode::BackTab) || (shift && code == KeyCode::Tab) {
-        return Some(b"\x1b[Z".to_vec());
-    }
-
-    // Cursor keys & navigation with modifiers: CSI 1;<mod> X
-    if let Some(bytes) = cursor_key_bytes(code, modifier_param) {
-        return Some(bytes);
-    }
-
-    // Extended keys with modifiers: CSI <num>;<mod> ~
-    if let Some(bytes) = extended_key_bytes(code, modifier_param) {
+    if let Some(bytes) = csi_key_bytes(code, modifier_param) {
         return Some(bytes);
     }
 
@@ -57,6 +40,43 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
     }
 
     unmodified_key(code)
+}
+
+/// Ctrl+letter and the Shift-special keys (Shift+Enter, reverse-tab) that have
+/// dedicated encodings handled before the generic CSI/Alt paths.
+fn ctrl_or_shift_special_bytes(
+    code: KeyCode,
+    shift: bool,
+    alt: bool,
+    ctrl: bool,
+) -> Option<Vec<u8>> {
+    // Ctrl+letter → control character (0x01..=0x1A), optionally wrapped with ESC for Alt
+    if let Some(bytes) = ctrl_letter_bytes(code, shift, alt, ctrl) {
+        return Some(bytes);
+    }
+
+    // Shift+Enter → ESC [ 13;2u (xterm modifyOtherKeys / kitty protocol)
+    if shift && code == KeyCode::Enter {
+        return Some(b"\x1b[13;2u".to_vec());
+    }
+
+    // BackTab / Shift+Tab → reverse tab (CSI Z)
+    if matches!(code, KeyCode::BackTab) || (shift && code == KeyCode::Tab) {
+        return Some(b"\x1b[Z".to_vec());
+    }
+
+    None
+}
+
+/// Cursor/navigation and extended keys that share the CSI `1;<mod>` family.
+fn csi_key_bytes(code: KeyCode, modifier_param: u8) -> Option<Vec<u8>> {
+    // Cursor keys & navigation with modifiers: CSI 1;<mod> X
+    if let Some(bytes) = cursor_key_bytes(code, modifier_param) {
+        return Some(bytes);
+    }
+
+    // Extended keys with modifiers: CSI <num>;<mod> ~
+    extended_key_bytes(code, modifier_param)
 }
 
 /// Encode a `char` as its UTF-8 bytes.

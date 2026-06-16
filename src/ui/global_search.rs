@@ -78,34 +78,14 @@ fn render_results(frame: &mut Frame, area: Rect, state: &GlobalSearchView<'_>) {
     let mut last_kind: Option<SearchKind> = None;
     for (i, r) in state.results.iter().enumerate() {
         if last_kind != Some(r.kind) {
-            lines.push(Line::from(Span::styled(
-                format!(" {}", scope_header(r.kind)),
-                Style::default()
-                    .fg(Theme::text_muted())
-                    .add_modifier(Modifier::BOLD),
-            )));
+            lines.push(scope_header_line(r.kind));
             last_kind = Some(r.kind);
         }
         let selected = i == state.selected;
         if selected {
             selected_line = lines.len();
         }
-        let marker = if selected { "▸ " } else { "  " };
-        let row = truncate_ellipsis(&format!("{marker}{}", r.label), width);
-        let style = if selected {
-            Theme::selected_item()
-        } else {
-            Style::default().fg(Theme::text_primary())
-        };
-        lines.push(Line::from(Span::styled(row, style)));
-        if let Some(snippet) = &r.snippet {
-            lines.push(Line::from(Span::styled(
-                truncate_ellipsis(&format!("      {snippet}"), width),
-                Style::default()
-                    .fg(Theme::text_muted())
-                    .add_modifier(Modifier::ITALIC),
-            )));
-        }
+        push_result_row(&mut lines, r, selected, width);
     }
 
     // Scroll so the selected line stays visible within the result area.
@@ -113,6 +93,42 @@ fn render_results(frame: &mut Frame, area: Rect, state: &GlobalSearchView<'_>) {
     let offset = selected_line.saturating_sub(height.saturating_sub(1));
     let visible: Vec<Line> = lines.into_iter().skip(offset).collect();
     frame.render_widget(Paragraph::new(visible), area);
+}
+
+/// A dim, bold scope header line introducing a group of results.
+fn scope_header_line<'a>(kind: SearchKind) -> Line<'a> {
+    Line::from(Span::styled(
+        format!(" {}", scope_header(kind)),
+        Style::default()
+            .fg(Theme::text_muted())
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// Push a single result's row line (plus its optional dim snippet line) into
+/// `lines`, marking and highlighting it when `selected`.
+fn push_result_row<'a>(
+    lines: &mut Vec<Line<'a>>,
+    r: &'a GlobalSearchResult,
+    selected: bool,
+    width: usize,
+) {
+    let marker = if selected { "▸ " } else { "  " };
+    let row = truncate_ellipsis(&format!("{marker}{}", r.label), width);
+    let style = if selected {
+        Theme::selected_item()
+    } else {
+        Style::default().fg(Theme::text_primary())
+    };
+    lines.push(Line::from(Span::styled(row, style)));
+    if let Some(snippet) = &r.snippet {
+        lines.push(Line::from(Span::styled(
+            truncate_ellipsis(&format!("      {snippet}"), width),
+            Style::default()
+                .fg(Theme::text_muted())
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
 }
 
 fn render_query_line(frame: &mut Frame, area: Rect, state: &GlobalSearchView<'_>) {

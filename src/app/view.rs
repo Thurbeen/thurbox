@@ -535,19 +535,28 @@ impl App {
     /// targets; text-input modals report none, so every click on them is
     /// swallowed.
     fn render_modals(&mut self, frame: &mut Frame) {
-        let mut modal_hits: crate::ui::SelectorHits = (Vec::new(), None);
+        // Text-input modals report no hitboxes (every click is swallowed).
+        self.render_text_input_modals(frame);
 
-        // Help overlay (rendered last, on top of everything)
-        if let super::modals::Modal::Help(ref help) = self.modal {
-            modal_hits = render_help_overlay(frame, &self.keybindings, help);
+        // Selector modals report row hitboxes for click routing. Exactly one
+        // modal is active at a time, so the first match wins.
+        let modal_hits = self
+            .render_selector_modal(frame)
+            .unwrap_or((Vec::new(), None));
+
+        let (modal_rows, modal_geom) = modal_hits;
+        for row in modal_rows {
+            self.record_click(row.rect, ClickAction::ModalRow(row.index));
         }
+        // The modal's own scrollbar: grabbable while the modal is open
+        // (pane scrollbars beneath the overlay are not — see
+        // `handle_modal_click`).
+        self.record_scrollbar(modal_geom, ScrollTarget::Modal);
+    }
 
-        // Task trigger-time action picker
-        if let super::modals::Modal::TaskActionPicker(ref p) = self.modal {
-            modal_hits =
-                crate::ui::task_action_picker_modal::render_task_action_picker_modal(frame, p);
-        }
-
+    /// Render the text-input modals (worktree / session name). These report no
+    /// click hitboxes, so they are rendered separately from selector modals.
+    fn render_text_input_modals(&self, frame: &mut Frame) {
         // Worktree name modal
         if let super::modals::Modal::WorktreeName(ref wn) = self.modal {
             let base = self.new_session.base_branch.as_deref().unwrap_or("");
@@ -571,58 +580,60 @@ impl App {
                 },
             );
         }
+    }
+
+    /// Render whichever selector-style modal is active, returning its row
+    /// hitboxes + scrollbar geometry (`None` when no selector modal is open).
+    fn render_selector_modal(&self, frame: &mut Frame) -> Option<crate::ui::SelectorHits> {
+        // Help overlay (rendered last, on top of everything)
+        if let super::modals::Modal::Help(ref help) = self.modal {
+            return Some(render_help_overlay(frame, &self.keybindings, help));
+        }
+
+        // Task trigger-time action picker
+        if let super::modals::Modal::TaskActionPicker(ref p) = self.modal {
+            return Some(
+                crate::ui::task_action_picker_modal::render_task_action_picker_modal(frame, p),
+            );
+        }
 
         // Branch selector modal
         if let super::modals::Modal::BranchSelector(ref bs) = self.modal {
-            modal_hits = branch_selector_modal::render_branch_selector_modal(
+            return Some(branch_selector_modal::render_branch_selector_modal(
                 frame,
                 &branch_selector_modal::BranchSelectorState {
                     branches: &bs.branches,
                     selected_index: bs.index,
                 },
-            );
+            ));
         }
 
         // Agent picker modal
         if let super::modals::Modal::AgentPicker(ref ap) = self.modal {
-            modal_hits = agent_picker_modal::render_agent_picker_modal(frame, ap);
+            return Some(agent_picker_modal::render_agent_picker_modal(frame, ap));
         }
 
         // Host picker modal
         if let super::modals::Modal::HostPicker(ref hp) = self.modal {
-            modal_hits = crate::ui::host_picker_modal::render_host_picker_modal(frame, hp);
+            return Some(crate::ui::host_picker_modal::render_host_picker_modal(
+                frame, hp,
+            ));
         }
 
         // Theme picker modal
         if let super::modals::Modal::ThemePicker(ref tp) = self.modal {
-            modal_hits = theme_picker_modal::render_theme_picker_modal(
+            return Some(theme_picker_modal::render_theme_picker_modal(
                 frame,
                 &theme_picker_modal::ThemePickerState {
                     entries: &crate::ui::theme::all_theme_entries(),
                     selected_index: tp.index,
                 },
-            );
+            ));
         }
 
         // Restore sessions modal
         if let super::modals::Modal::RestoreSessions(ref rsm) = self.modal {
-            let entries: Vec<restore_sessions_modal::DeletedSessionEntry> = rsm
-                .list
-                .iter()
-                .map(|d| restore_sessions_modal::DeletedSessionEntry {
-                    name: d.name.clone(),
-                    agent: d.agent.clone(),
-                    deleted_ago: format_time_ago(d.deleted_at),
-                    has_worktrees: !d.worktrees.is_empty(),
-                })
-                .collect();
-            modal_hits = restore_sessions_modal::render_restore_sessions_modal(
-                frame,
-                &restore_sessions_modal::RestoreSessionsModalState {
-                    entries: &entries,
-                    selected_index: rsm.index,
-                },
-            );
+            return Some(self.render_restore_sessions_modal(frame, rsm));
         }
 
         // Automation editor modal (centered overlay — the Ctrl+P list path).
@@ -635,61 +646,95 @@ impl App {
                 frame,
                 &automation_editor_modal::AutomationEditorState::from_modal(m, &preview, true),
             );
+            return Some((Vec::new(), None));
         }
 
         // Automations list modal
         if let super::modals::Modal::AutomationsList(ref al) = self.modal {
-            let entries: Vec<automations_list_modal::AutomationsListEntry> = al
-                .entries
-                .iter()
-                .map(|e| automations_list_modal::AutomationsListEntry {
-                    name: e.name.clone(),
-                    summary: e.summary.clone(),
-                    enabled: e.enabled,
-                })
-                .collect();
-            modal_hits = automations_list_modal::render_automations_list_modal(
-                frame,
-                &automations_list_modal::AutomationsListState {
-                    entries: &entries,
-                    selected_index: al.index,
-                },
-            );
+            return Some(self.render_automations_list_modal(frame, al));
         }
 
         // Repo picker modal
         if let super::modals::Modal::RepoPicker(ref rp) = self.modal {
-            modal_hits = crate::ui::repo_picker_modal::render_repo_picker_modal(
-                frame,
-                &crate::ui::repo_picker_modal::RepoPickerState {
-                    bookmarks: &rp.bookmarks,
-                    selected: &rp.selected,
-                    worktree: &rp.worktree,
-                    is_header: &rp.is_header,
-                    is_child: &rp.is_child,
-                    collapsed: &rp.collapsed,
-                    list_index: rp.list_index,
-                    path_input: rp.path_input.value(),
-                    path_cursor: rp.path_input.cursor_pos(),
-                    path_suggestion: rp.path_suggestion.as_deref(),
-                    focus: rp.focus,
-                    search_query: rp.search_input.value(),
-                    search_cursor: rp.search_input.cursor_pos(),
-                    search_active: rp.focus == super::modals::RepoPickerFocus::Search
-                        || !rp.search_input.value().is_empty(),
-                    filtered_indices: &rp.filtered_indices,
-                },
-            );
+            return Some(self.render_repo_picker_modal(frame, rp));
         }
 
-        let (modal_rows, modal_geom) = modal_hits;
-        for row in modal_rows {
-            self.record_click(row.rect, ClickAction::ModalRow(row.index));
-        }
-        // The modal's own scrollbar: grabbable while the modal is open
-        // (pane scrollbars beneath the overlay are not — see
-        // `handle_modal_click`).
-        self.record_scrollbar(modal_geom, ScrollTarget::Modal);
+        None
+    }
+
+    fn render_restore_sessions_modal(
+        &self,
+        frame: &mut Frame,
+        rsm: &super::modals::RestoreSessionsModal,
+    ) -> crate::ui::SelectorHits {
+        let entries: Vec<restore_sessions_modal::DeletedSessionEntry> = rsm
+            .list
+            .iter()
+            .map(|d| restore_sessions_modal::DeletedSessionEntry {
+                name: d.name.clone(),
+                agent: d.agent.clone(),
+                deleted_ago: format_time_ago(d.deleted_at),
+                has_worktrees: !d.worktrees.is_empty(),
+            })
+            .collect();
+        restore_sessions_modal::render_restore_sessions_modal(
+            frame,
+            &restore_sessions_modal::RestoreSessionsModalState {
+                entries: &entries,
+                selected_index: rsm.index,
+            },
+        )
+    }
+
+    fn render_automations_list_modal(
+        &self,
+        frame: &mut Frame,
+        al: &super::modals::AutomationsListModal,
+    ) -> crate::ui::SelectorHits {
+        let entries: Vec<automations_list_modal::AutomationsListEntry> = al
+            .entries
+            .iter()
+            .map(|e| automations_list_modal::AutomationsListEntry {
+                name: e.name.clone(),
+                summary: e.summary.clone(),
+                enabled: e.enabled,
+            })
+            .collect();
+        automations_list_modal::render_automations_list_modal(
+            frame,
+            &automations_list_modal::AutomationsListState {
+                entries: &entries,
+                selected_index: al.index,
+            },
+        )
+    }
+
+    fn render_repo_picker_modal(
+        &self,
+        frame: &mut Frame,
+        rp: &super::modals::RepoPickerModal,
+    ) -> crate::ui::SelectorHits {
+        crate::ui::repo_picker_modal::render_repo_picker_modal(
+            frame,
+            &crate::ui::repo_picker_modal::RepoPickerState {
+                bookmarks: &rp.bookmarks,
+                selected: &rp.selected,
+                worktree: &rp.worktree,
+                is_header: &rp.is_header,
+                is_child: &rp.is_child,
+                collapsed: &rp.collapsed,
+                list_index: rp.list_index,
+                path_input: rp.path_input.value(),
+                path_cursor: rp.path_input.cursor_pos(),
+                path_suggestion: rp.path_suggestion.as_deref(),
+                focus: rp.focus,
+                search_query: rp.search_input.value(),
+                search_cursor: rp.search_input.cursor_pos(),
+                search_active: rp.focus == super::modals::RepoPickerFocus::Search
+                    || !rp.search_input.value().is_empty(),
+                filtered_indices: &rp.filtered_indices,
+            },
+        )
     }
 
     /// Repaint cells that fell back to terminal-default colours with the
@@ -708,12 +753,7 @@ impl App {
             for x in area.x..area.x + area.width {
                 let pos = ratatui::layout::Position::new(x, y);
                 if let Some(cell) = buf.cell_mut(pos) {
-                    if cell.bg == ratatui::style::Color::Reset {
-                        cell.bg = app_bg;
-                    }
-                    if cell.fg == ratatui::style::Color::Reset {
-                        cell.fg = text_primary;
-                    }
+                    repaint_reset_cell(cell, app_bg, text_primary);
                 }
             }
         }
@@ -1286,6 +1326,22 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// Replace a cell's terminal-default (`Color::Reset`) background/foreground
+/// with the active theme's `app_bg` / `text_primary`. Cells with an explicit
+/// colour are left untouched.
+fn repaint_reset_cell(
+    cell: &mut ratatui::buffer::Cell,
+    app_bg: ratatui::style::Color,
+    text_primary: ratatui::style::Color,
+) {
+    if cell.bg == ratatui::style::Color::Reset {
+        cell.bg = app_bg;
+    }
+    if cell.fg == ratatui::style::Color::Reset {
+        cell.fg = text_primary;
+    }
 }
 
 /// Format a millisecond timestamp as an absolute local clock time

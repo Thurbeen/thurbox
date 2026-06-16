@@ -432,41 +432,7 @@ pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> 
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
 
     let lines: Vec<&str> = text.lines().collect();
-    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
-    let mut removed = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim_start();
-        if trimmed.starts_with("[[agents]]") {
-            // Collect this block: from the header to just before the next
-            // top-level table header (`[` at the start of a trimmed line) or EOF.
-            let start = i;
-            let mut j = i + 1;
-            while j < lines.len() && !lines[j].trim_start().starts_with('[') {
-                j += 1;
-            }
-            let block = &lines[start..j];
-            let target = block.iter().find_map(|l| parse_agent_name(l));
-            match target {
-                Some(name) if names.iter().any(|n| n == &name) => {
-                    removed.push(name);
-                    // Drop the block and a single trailing blank separator line.
-                    i = j;
-                    if i < lines.len() && lines[i].trim().is_empty() {
-                        i += 1;
-                    }
-                    continue;
-                }
-                _ => {
-                    out.extend_from_slice(block);
-                    i = j;
-                    continue;
-                }
-            }
-        }
-        out.push(lines[i]);
-        i += 1;
-    }
+    let (out, removed) = strip_agent_blocks(&lines, names);
 
     if removed.is_empty() {
         return Ok(Vec::new());
@@ -477,6 +443,65 @@ pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> 
     }
     std::fs::write(&path, new_text).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(removed)
+}
+
+/// Walk `lines`, dropping every `[[agents]]` block whose `name` is in `names`
+/// (with a single trailing blank separator). Returns the kept lines and the
+/// names actually removed.
+fn strip_agent_blocks<'a>(lines: &[&'a str], names: &[String]) -> (Vec<&'a str>, Vec<String>) {
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut removed = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !lines[i].trim_start().starts_with("[[agents]]") {
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+        i = take_agent_block(lines, i, names, &mut out, &mut removed);
+    }
+    (out, removed)
+}
+
+/// Handle a single `[[agents]]` block starting at `start`: either keep it
+/// (append to `out`) or drop it (record the name in `removed`). Returns the
+/// index to resume scanning from.
+fn take_agent_block<'a>(
+    lines: &[&'a str],
+    start: usize,
+    names: &[String],
+    out: &mut Vec<&'a str>,
+    removed: &mut Vec<String>,
+) -> usize {
+    // Collect this block: from the header to just before the next
+    // top-level table header (`[` at the start of a trimmed line) or EOF.
+    let end = agent_block_end(lines, start);
+    let block = &lines[start..end];
+    let target = block
+        .iter()
+        .find_map(|l| parse_agent_name(l))
+        .filter(|name| names.iter().any(|n| n == name));
+    let Some(name) = target else {
+        out.extend_from_slice(block);
+        return end;
+    };
+    removed.push(name);
+    // Drop the block and a single trailing blank separator line.
+    if end < lines.len() && lines[end].trim().is_empty() {
+        end + 1
+    } else {
+        end
+    }
+}
+
+/// Index just past the `[[agents]]` block starting at `start` — the next line
+/// whose trimmed form begins a top-level table header (`[`), or EOF.
+fn agent_block_end(lines: &[&str], start: usize) -> usize {
+    let mut j = start + 1;
+    while j < lines.len() && !lines[j].trim_start().starts_with('[') {
+        j += 1;
+    }
+    j
 }
 
 /// Parse `name = "x"` out of a TOML line, returning the value.

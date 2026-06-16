@@ -204,10 +204,7 @@ fn bookmark_item<'a>(
     list_focused: bool,
 ) -> ListItem<'a> {
     let path = &state.bookmarks[real_idx];
-    let checked = state.selected[real_idx];
-    let is_wt = state.worktree[real_idx];
     let is_header = state.is_header.get(real_idx).copied().unwrap_or(false);
-    let is_child = state.is_child.get(real_idx).copied().unwrap_or(false);
     let is_cursor = visible_index == state.list_index && list_focused;
 
     let style = if is_cursor {
@@ -218,19 +215,38 @@ fn bookmark_item<'a>(
 
     // Parent header row: no checkbox, a collapse glyph + basename + dim marker.
     if is_header {
-        let glyph = if state.collapsed.contains(path) {
-            "▸ "
-        } else {
-            "▾ "
-        };
-        return ListItem::new(Line::from(vec![
-            Span::styled(glyph, style),
-            Span::styled(crate::paths::display_path(path), style),
-            Span::styled(" (parent)", Style::default().fg(Theme::text_muted())),
-        ]));
+        return header_item(state, path, style);
     }
 
-    // Child rows are indented under their parent header.
+    child_item(state, real_idx, style)
+}
+
+/// Build a parent header row: a collapse glyph + basename + dim `(parent)` marker.
+fn header_item<'a>(
+    state: &RepoPickerState<'a>,
+    path: &std::path::Path,
+    style: Style,
+) -> ListItem<'a> {
+    let glyph = if state.collapsed.contains(path) {
+        "▸ "
+    } else {
+        "▾ "
+    };
+    ListItem::new(Line::from(vec![
+        Span::styled(glyph, style),
+        Span::styled(crate::paths::display_path(path), style),
+        Span::styled(" (parent)", Style::default().fg(Theme::text_muted())),
+    ]))
+}
+
+/// Build a (possibly indented) child bookmark row: checkbox + path + optional
+/// `[wt]` marker, with the search query highlighted when present.
+fn child_item<'a>(state: &RepoPickerState<'a>, real_idx: usize, style: Style) -> ListItem<'a> {
+    let path = &state.bookmarks[real_idx];
+    let checked = state.selected[real_idx];
+    let is_wt = state.worktree[real_idx];
+    let is_child = state.is_child.get(real_idx).copied().unwrap_or(false);
+
     let indent = if is_child { "  " } else { "" };
     let check = if checked { "[x] " } else { "[ ] " };
     let display = crate::paths::display_path(path);

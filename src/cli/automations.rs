@@ -129,52 +129,11 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             base,
             agent,
             disabled,
-        } => {
-            if prompt.is_empty() {
-                return Err("prompt must not be empty".into());
-            }
-            let schedule = parse_trigger(&trigger, time.as_deref(), weekday)?;
-            let action = resolve_action(session, repo, worktree, base, agent, db)?;
-            let next_run_at = if disabled {
-                None
-            } else {
-                schedule.next_after(current_time_millis(), timezone.as_deref())
-            };
-            let new = NewAutomation {
-                name,
-                enabled: !disabled,
-                schedule,
-                timezone,
-                action,
-                prompt,
-                next_run_at,
-            };
-            let id = db
-                .create_automation(&new)
-                .map_err(|e| format!("create_automation: {e}"))?;
-            if !disabled {
-                arm_heartbeat();
-            }
-            let auto = db
-                .get_automation(id)
-                .map_err(|e| format!("get_automation: {e}"))?
-                .ok_or("automation vanished after insert")?;
-            let human = format!(
-                "Created automation #{} '{}' ({}){}",
-                auto.id,
-                auto.name,
-                auto.schedule.kind(),
-                if auto.enabled { "" } else { " — disabled" }
-            );
-            Ok(CommandOutput::new(automation_to_json(&auto), human))
-        }
-        Action::List => {
-            let autos = db
-                .list_automations()
-                .map_err(|e| format!("list_automations: {e}"))?;
-            let json = Value::Array(autos.iter().map(automation_to_json).collect());
-            Ok(CommandOutput::new(json, render_automation_list(&autos)))
-        }
+        } => create_automation(
+            db, name, trigger, time, weekday, timezone, prompt, session, repo, worktree, base,
+            agent, disabled,
+        ),
+        Action::List => list_automations(db),
         Action::Show { id } => {
             let auto = load(db, id)?;
             Ok(CommandOutput::new(
@@ -192,63 +151,11 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             prompt,
             enabled,
             disabled,
-        } => {
-            if enabled && disabled {
-                return Err("--enabled and --disabled are mutually exclusive".into());
-            }
-            let mut auto = load(db, id)?;
-            if let Some(n) = name {
-                auto.name = n;
-            }
-            if let Some(p) = prompt {
-                auto.prompt = p;
-            }
-            if let Some(tz) = timezone {
-                auto.timezone = if tz.is_empty() { None } else { Some(tz) };
-            }
-            if let Some(t) = trigger {
-                auto.schedule = parse_trigger(&t, time.as_deref(), weekday)?;
-            }
-            if disabled {
-                auto.enabled = false;
-            }
-            if enabled {
-                auto.enabled = true;
-            }
-            // Recompute next fire after any schedule/timezone/enabled change.
-            auto.next_run_at = if auto.enabled {
-                auto.schedule
-                    .next_after(current_time_millis(), auto.timezone.as_deref())
-            } else {
-                None
-            };
-            db.update_automation(&auto)
-                .map_err(|e| format!("update_automation: {e}"))?;
-            if auto.enabled {
-                arm_heartbeat();
-            }
-            let auto = load(db, id)?;
-            Ok(CommandOutput::new(
-                automation_to_json(&auto),
-                render_automation_detail(&auto),
-            ))
-        }
-        Action::Remove { id } => match db.delete_automation(id) {
-            Ok(true) => Ok(CommandOutput::new(
-                json!({ "removed": true, "id": id }),
-                format!("Removed automation #{id}."),
-            )),
-            Ok(false) => Err(format!("Automation not found: {id}")),
-            Err(e) => Err(format!("delete_automation: {e}")),
-        },
-        Action::Run { id } => match db.trigger_automation_now(id) {
-            Ok(true) => Ok(CommandOutput::new(
-                json!({ "triggered": true, "id": id }),
-                format!("Triggered automation #{id} (fires on the next tick)."),
-            )),
-            Ok(false) => Err(format!("Automation not found: {id}")),
-            Err(e) => Err(format!("trigger_automation_now: {e}")),
-        },
+        } => edit_automation(
+            db, id, name, trigger, time, weekday, timezone, prompt, enabled, disabled,
+        ),
+        Action::Remove { id } => remove_automation(db, id),
+        Action::Run { id } => trigger_automation(db, id),
         Action::Runs { id, limit } => {
             let runs = db
                 .list_automation_runs(id, limit.unwrap_or(20))
@@ -261,6 +168,164 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let human = render_tick(&json);
             Ok(CommandOutput::new(json, human))
         }
+    }
+}
+
+/// Handle `automation create`: validate, persist, and arm the heartbeat.
+#[allow(clippy::too_many_arguments)]
+fn create_automation(
+    db: &Database,
+    name: String,
+    trigger: String,
+    time: Option<String>,
+    weekday: Option<u32>,
+    timezone: Option<String>,
+    prompt: String,
+    session: Option<String>,
+    repo: Option<String>,
+    worktree: Option<String>,
+    base: Option<String>,
+    agent: Option<String>,
+    disabled: bool,
+) -> Result<CommandOutput, String> {
+    if prompt.is_empty() {
+        return Err("prompt must not be empty".into());
+    }
+    let schedule = parse_trigger(&trigger, time.as_deref(), weekday)?;
+    let action = resolve_action(session, repo, worktree, base, agent, db)?;
+    let next_run_at = if disabled {
+        None
+    } else {
+        schedule.next_after(current_time_millis(), timezone.as_deref())
+    };
+    let new = NewAutomation {
+        name,
+        enabled: !disabled,
+        schedule,
+        timezone,
+        action,
+        prompt,
+        next_run_at,
+    };
+    let id = db
+        .create_automation(&new)
+        .map_err(|e| format!("create_automation: {e}"))?;
+    if !disabled {
+        arm_heartbeat();
+    }
+    let auto = db
+        .get_automation(id)
+        .map_err(|e| format!("get_automation: {e}"))?
+        .ok_or("automation vanished after insert")?;
+    let human = format!(
+        "Created automation #{} '{}' ({}){}",
+        auto.id,
+        auto.name,
+        auto.schedule.kind(),
+        if auto.enabled { "" } else { " — disabled" }
+    );
+    Ok(CommandOutput::new(automation_to_json(&auto), human))
+}
+
+/// Handle `automation list`.
+fn list_automations(db: &Database) -> Result<CommandOutput, String> {
+    let autos = db
+        .list_automations()
+        .map_err(|e| format!("list_automations: {e}"))?;
+    let json = Value::Array(autos.iter().map(automation_to_json).collect());
+    Ok(CommandOutput::new(json, render_automation_list(&autos)))
+}
+
+/// Handle `automation edit`: apply the supplied field overrides and persist.
+#[allow(clippy::too_many_arguments)]
+fn edit_automation(
+    db: &Database,
+    id: i64,
+    name: Option<String>,
+    trigger: Option<String>,
+    time: Option<String>,
+    weekday: Option<u32>,
+    timezone: Option<String>,
+    prompt: Option<String>,
+    enabled: bool,
+    disabled: bool,
+) -> Result<CommandOutput, String> {
+    if enabled && disabled {
+        return Err("--enabled and --disabled are mutually exclusive".into());
+    }
+    let mut auto = load(db, id)?;
+    apply_edit_overrides(&mut auto, name, trigger, time, weekday, timezone, prompt)?;
+    if disabled {
+        auto.enabled = false;
+    }
+    if enabled {
+        auto.enabled = true;
+    }
+    // Recompute next fire after any schedule/timezone/enabled change.
+    auto.next_run_at = if auto.enabled {
+        auto.schedule
+            .next_after(current_time_millis(), auto.timezone.as_deref())
+    } else {
+        None
+    };
+    db.update_automation(&auto)
+        .map_err(|e| format!("update_automation: {e}"))?;
+    if auto.enabled {
+        arm_heartbeat();
+    }
+    let auto = load(db, id)?;
+    Ok(CommandOutput::new(
+        automation_to_json(&auto),
+        render_automation_detail(&auto),
+    ))
+}
+
+/// Apply the name/prompt/timezone/schedule overrides supplied to `edit`.
+fn apply_edit_overrides(
+    auto: &mut Automation,
+    name: Option<String>,
+    trigger: Option<String>,
+    time: Option<String>,
+    weekday: Option<u32>,
+    timezone: Option<String>,
+    prompt: Option<String>,
+) -> Result<(), String> {
+    if let Some(n) = name {
+        auto.name = n;
+    }
+    if let Some(p) = prompt {
+        auto.prompt = p;
+    }
+    if let Some(tz) = timezone {
+        auto.timezone = if tz.is_empty() { None } else { Some(tz) };
+    }
+    if let Some(t) = trigger {
+        auto.schedule = parse_trigger(&t, time.as_deref(), weekday)?;
+    }
+    Ok(())
+}
+
+/// Handle `automation remove`.
+fn remove_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
+    match db.delete_automation(id) {
+        Ok(true) => Ok(CommandOutput::new(
+            json!({ "removed": true, "id": id }),
+            format!("Removed automation #{id}."),
+        )),
+        Ok(false) => Err(format!("Automation not found: {id}")),
+        Err(e) => Err(format!("delete_automation: {e}")),
+    }
+}
+
+/// Handle `automation run`: mark the automation due for the next tick.
+fn trigger_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
+    match db.trigger_automation_now(id) {
+        Ok(true) => Ok(CommandOutput::new(
+            json!({ "triggered": true, "id": id }),
+            format!("Triggered automation #{id} (fires on the next tick)."),
+        )),
+        Ok(false) => Err(format!("Automation not found: {id}")),
+        Err(e) => Err(format!("trigger_automation_now: {e}")),
     }
 }
 
@@ -399,89 +464,105 @@ fn fire_headless(
     // to keep the cli module free of an `agent` import — see
     // tests/architecture_rules.rs::cli_module_isolation.
     match &auto.action {
-        AutomationAction::Send { session_id } => {
-            let name = match db.get_session_name(*session_id) {
-                Ok(Some(name)) => name,
-                Ok(None) => {
-                    return (
-                        AutomationRunStatus::Skipped,
-                        "target session not found".into(),
-                        None,
-                    )
-                }
-                Err(e) => {
-                    return (
-                        AutomationRunStatus::Error,
-                        format!("get_session_name: {e}"),
-                        None,
-                    )
-                }
-            };
-            if !crate::agent::tmux::window_exists(&name) {
-                return (
-                    AutomationRunStatus::Skipped,
-                    "target session not running".into(),
-                    None,
-                );
-            }
-            match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
-                Ok(()) => (
-                    AutomationRunStatus::Success,
-                    format!("sent to {session_id}"),
-                    Some(*session_id),
-                ),
-                Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
-            }
-        }
+        AutomationAction::Send { session_id } => fire_send(db, auto, *session_id),
         AutomationAction::Spawn {
             repo_path,
             worktree_branch,
             base_branch,
             agent,
-        } => {
-            let name = format!("auto-{}", auto.id);
-            // Reuse an existing session window (later fires / restored sessions).
-            if crate::agent::tmux::window_exists(&name) {
-                // The reused window's session id has no cheap lookup here.
-                return match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
-                    Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
-                    Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
-                };
-            }
-            let req = SpawnRequest {
-                name: name.clone(),
-                repo_path: repo_path.clone(),
-                worktree_branch: worktree_branch.clone(),
-                base_branch: base_branch.clone(),
-                agent: agent.clone(),
-                agent_session_id: None,
-                host: None,
-                parent_session_id: None,
-                task_id: None,
-            };
-            match crate::session_ops::spawn_session_headless(db, req) {
-                Ok(result) => {
-                    let session_id = Some(result.session_id);
-                    match crate::agent::tmux::send_prompt_after_delay(
-                        &name,
-                        &auto.prompt,
-                        BOOT_DELAY_SECS,
-                    ) {
-                        Ok(()) => (
-                            AutomationRunStatus::Success,
-                            format!("spawned {name}"),
-                            session_id,
-                        ),
-                        Err(e) => (
-                            AutomationRunStatus::Error,
-                            format!("spawned {name} but prompt delivery failed: {e}"),
-                            session_id,
-                        ),
-                    }
-                }
-                Err(e) => (AutomationRunStatus::Error, e, None),
+        } => fire_spawn(db, auto, repo_path, worktree_branch, base_branch, agent),
+    }
+}
+
+/// Execute a `send` automation: type the prompt into the target session's
+/// still-alive tmux window.
+fn fire_send(
+    db: &Database,
+    auto: &Automation,
+    session_id: SessionId,
+) -> (AutomationRunStatus, String, Option<SessionId>) {
+    let name = match db.get_session_name(session_id) {
+        Ok(Some(name)) => name,
+        Ok(None) => {
+            return (
+                AutomationRunStatus::Skipped,
+                "target session not found".into(),
+                None,
+            )
+        }
+        Err(e) => {
+            return (
+                AutomationRunStatus::Error,
+                format!("get_session_name: {e}"),
+                None,
+            )
+        }
+    };
+    if !crate::agent::tmux::window_exists(&name) {
+        return (
+            AutomationRunStatus::Skipped,
+            "target session not running".into(),
+            None,
+        );
+    }
+    match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
+        Ok(()) => (
+            AutomationRunStatus::Success,
+            format!("sent to {session_id}"),
+            Some(session_id),
+        ),
+        Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
+    }
+}
+
+/// Execute a `spawn` automation: reuse an existing window or spawn a new
+/// headless session, then deliver the prompt once the agent boots.
+fn fire_spawn(
+    db: &Database,
+    auto: &Automation,
+    repo_path: &std::path::Path,
+    worktree_branch: &Option<String>,
+    base_branch: &Option<String>,
+    agent: &Option<String>,
+) -> (AutomationRunStatus, String, Option<SessionId>) {
+    let name = format!("auto-{}", auto.id);
+    // Reuse an existing session window (later fires / restored sessions).
+    if crate::agent::tmux::window_exists(&name) {
+        // The reused window's session id has no cheap lookup here.
+        return match crate::agent::tmux::send_prompt_now(&name, &auto.prompt) {
+            Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
+            Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
+        };
+    }
+    let req = SpawnRequest {
+        name: name.clone(),
+        repo_path: repo_path.to_path_buf(),
+        worktree_branch: worktree_branch.clone(),
+        base_branch: base_branch.clone(),
+        agent: agent.clone(),
+        agent_session_id: None,
+        host: None,
+        parent_session_id: None,
+        task_id: None,
+    };
+    match crate::session_ops::spawn_session_headless(db, req) {
+        Ok(result) => {
+            let session_id = Some(result.session_id);
+            match crate::agent::tmux::send_prompt_after_delay(&name, &auto.prompt, BOOT_DELAY_SECS)
+            {
+                Ok(()) => (
+                    AutomationRunStatus::Success,
+                    format!("spawned {name}"),
+                    session_id,
+                ),
+                Err(e) => (
+                    AutomationRunStatus::Error,
+                    format!("spawned {name} but prompt delivery failed: {e}"),
+                    session_id,
+                ),
             }
         }
+        Err(e) => (AutomationRunStatus::Error, e, None),
     }
 }
 

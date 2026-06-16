@@ -157,23 +157,7 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
     ];
     let mut lines = Vec::new();
     for (label, key) in files {
-        let entry = &report[key];
-        let exists = entry["exists"].as_bool().unwrap_or(false);
-        let valid = entry["valid"].as_bool().unwrap_or(false);
-        // Absent files are valid (defaults/seeding apply), so flag them apart.
-        let (mark, status) = match (exists, valid) {
-            (false, _) => ("·", "absent"),
-            (true, true) => ("✓", "ok"),
-            (true, false) => ("✗", "invalid"),
-        };
-        lines.push(format!("{mark} {label}  {status}"));
-        if let Some(problems) = entry["problems"].as_array() {
-            for p in problems {
-                if let Some(p) = p.as_str() {
-                    lines.push(format!("    - {p}"));
-                }
-            }
-        }
+        push_validate_file_lines(&mut lines, label, &report[key]);
     }
     if failed.is_empty() {
         lines.push("All config files valid.".to_string());
@@ -181,6 +165,26 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
         lines.push(format!("Invalid: {}", failed.join(", ")));
     }
     lines.join("\n")
+}
+
+/// Append one config file's status line (and any problem lines) to `lines`.
+fn push_validate_file_lines(lines: &mut Vec<String>, label: &str, entry: &Value) {
+    let exists = entry["exists"].as_bool().unwrap_or(false);
+    let valid = entry["valid"].as_bool().unwrap_or(false);
+    // Absent files are valid (defaults/seeding apply), so flag them apart.
+    let (mark, status) = match (exists, valid) {
+        (false, _) => ("·", "absent"),
+        (true, true) => ("✓", "ok"),
+        (true, false) => ("✗", "invalid"),
+    };
+    lines.push(format!("{mark} {label}  {status}"));
+    if let Some(problems) = entry["problems"].as_array() {
+        for p in problems {
+            if let Some(p) = p.as_str() {
+                lines.push(format!("    - {p}"));
+            }
+        }
+    }
 }
 
 /// Render `config show` as grouped key/value blocks.
@@ -237,31 +241,8 @@ fn show(db: &Database) -> Result<Value, String> {
     let (custom_themes, _) = crate::agent::themes_config::load_or_seed_with_warnings();
 
     // Editor resolution mirrors the TUI's Ctrl+O chain: DB → $VISUAL → $EDITOR.
-    let db_editor = db.get_editor_command().ok().flatten();
-    let (editor, editor_source) = match db_editor {
-        Some(cmd) if !cmd.is_empty() => (Some(cmd), "database (editor_command)"),
-        _ => match std::env::var("VISUAL") {
-            Ok(v) if !v.is_empty() => (Some(v), "$VISUAL"),
-            _ => match std::env::var("EDITOR") {
-                Ok(v) if !v.is_empty() => (Some(v), "$EDITOR"),
-                _ => (None, "unset"),
-            },
-        },
-    };
-
-    let overridden_actions: Vec<String> = match crate::storage::keybindings::load_keybindings_json()
-    {
-        Ok(Some(jsonbody)) => {
-            serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&jsonbody)
-                .map(|m| {
-                    let mut keys: Vec<String> = m.into_keys().collect();
-                    keys.sort();
-                    keys
-                })
-                .unwrap_or_default()
-        }
-        _ => Vec::new(),
-    };
+    let (editor, editor_source) = resolve_editor(db);
+    let overridden_actions = overridden_action_names();
 
     Ok(json!({
         "paths": {
@@ -285,6 +266,43 @@ fn show(db: &Database) -> Result<Value, String> {
         "theme": db.get_active_theme().ok().flatten(),
         "custom_themes": custom_themes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
     }))
+}
+
+/// Resolve the effective editor command + its source, mirroring the TUI's
+/// Ctrl+O chain: DB (editor_command) → $VISUAL → $EDITOR → unset.
+fn resolve_editor(db: &Database) -> (Option<String>, &'static str) {
+    let db_editor = db.get_editor_command().ok().flatten();
+    if let Some(cmd) = db_editor.filter(|c| !c.is_empty()) {
+        return (Some(cmd), "database (editor_command)");
+    }
+    if let Some(v) = nonempty_env("VISUAL") {
+        return (Some(v), "$VISUAL");
+    }
+    if let Some(v) = nonempty_env("EDITOR") {
+        return (Some(v), "$EDITOR");
+    }
+    (None, "unset")
+}
+
+/// A non-empty environment variable value, or `None` when unset/empty.
+fn nonempty_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
+/// The sorted action names overridden in keybindings.json (empty when none).
+fn overridden_action_names() -> Vec<String> {
+    match crate::storage::keybindings::load_keybindings_json() {
+        Ok(Some(jsonbody)) => {
+            serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&jsonbody)
+                .map(|m| {
+                    let mut keys: Vec<String> = m.into_keys().collect();
+                    keys.sort();
+                    keys
+                })
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

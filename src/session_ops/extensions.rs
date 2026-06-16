@@ -138,17 +138,7 @@ pub fn install_extension(
     // Agent-layer helpers are reached fully-qualified (no `use crate::agent`) per
     // the session_ops → agent path-only architecture rule.
     let source = crate::agent::extension_config::resolve_source(target);
-    let (def, warnings) = match crate::agent::extension_config::load_manifest_from_source(&source) {
-        Ok(v) => v,
-        // A bare name that can't be fetched is almost always a typo or an unknown
-        // extension — turn the raw curl/404 into discovery guidance.
-        Err(e) if crate::agent::extension_config::is_bare_name(target) => {
-            return Err(crate::agent::extension_config::unknown_extension_help(
-                target, &e,
-            ));
-        }
-        Err(e) => return Err(e),
-    };
+    let (def, warnings) = load_manifest_for_install(target, &source)?;
     for w in &warnings {
         tracing::warn!("{w}");
     }
@@ -185,59 +175,12 @@ pub fn install_extension(
 
     // 1. Payload files.
     for f in &def.files {
-        // Reject absolute / `..` destinations and sources so a manifest can't
-        // write or read outside the home / source dir (path-traversal guard).
-        let dest = safe_join(&home, &f.path)?;
-        ensure_safe_relative(f.source_path())?;
-        if f.if_absent && dest.exists() && !force {
-            report.files_skipped.push(f.path.clone());
-            continue;
-        }
-        // Don't clobber a `substitute` file (e.g. .claude/settings.json) the
-        // user has edited: we only overwrite ours, identified by the installer
-        // marker we write into it. `--force` overrides.
-        if f.substitute && !force && is_user_modified(&dest) {
-            report.files_skipped.push(f.path.clone());
-            continue;
-        }
-        let mut content = crate::agent::extension_config::fetch_file(&source, f.source_path())?;
-        if f.substitute {
-            content = content.replace(HOME_TOKEN, &home_str);
-        }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {e}", parent.display()))?;
-        }
-        std::fs::write(&dest, content).map_err(|e| format!("write {}: {e}", dest.display()))?;
-        if f.executable {
-            set_executable(&dest)?;
-        }
-        report.files_written.push(f.path.clone());
+        install_payload_file(&source, f, &home, &home_str, force, &mut report)?;
     }
 
     // 2. Symlinks (never clobber a regular file the user owns).
     for s in &def.symlinks {
-        // Validate both ends before touching the filesystem, so a bad target
-        // can't leave a removed symlink behind.
-        let link = safe_join(&home, &s.link)?;
-        ensure_safe_relative(&s.target)?;
-        match std::fs::symlink_metadata(&link) {
-            Ok(m) if m.file_type().is_symlink() => {
-                std::fs::remove_file(&link)
-                    .map_err(|e| format!("replace symlink {}: {e}", link.display()))?;
-            }
-            Ok(_) => {
-                report.symlinks_skipped.push(s.link.clone());
-                continue;
-            }
-            Err(_) => {}
-        }
-        if let Some(parent) = link.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {e}", parent.display()))?;
-        }
-        make_symlink(&s.target, &link)?;
-        report.symlinks_created.push(s.link.clone());
+        install_symlink(s, &home, &mut report)?;
     }
 
     // 3. Agents → agents.toml (idempotent).
@@ -254,6 +197,94 @@ pub fn install_extension(
     report.ensure = activate_extension(db, &resolved)?;
 
     Ok(report)
+}
+
+/// Fetch and parse an extension manifest for [`install_extension`], turning a
+/// failed bare-name fetch (almost always a typo or an unknown extension) into
+/// discovery guidance.
+fn load_manifest_for_install(
+    target: &str,
+    source: &crate::agent::extension_config::ExtensionSource,
+) -> Result<(ExtensionDef, Vec<String>), String> {
+    match crate::agent::extension_config::load_manifest_from_source(source) {
+        Ok(v) => Ok(v),
+        Err(e) if crate::agent::extension_config::is_bare_name(target) => Err(
+            crate::agent::extension_config::unknown_extension_help(target, &e),
+        ),
+        Err(e) => Err(e),
+    }
+}
+
+/// Lay down one payload file under the home dir, honouring `if_absent` /
+/// `substitute` skip rules and the path-traversal guard, recording the outcome
+/// in `report`.
+fn install_payload_file(
+    source: &crate::agent::extension_config::ExtensionSource,
+    f: &crate::session::extension_def::ExtensionFile,
+    home: &Path,
+    home_str: &str,
+    force: bool,
+    report: &mut InstallReport,
+) -> Result<(), String> {
+    // Reject absolute / `..` destinations and sources so a manifest can't
+    // write or read outside the home / source dir (path-traversal guard).
+    let dest = safe_join(home, &f.path)?;
+    ensure_safe_relative(f.source_path())?;
+    if f.if_absent && dest.exists() && !force {
+        report.files_skipped.push(f.path.clone());
+        return Ok(());
+    }
+    // Don't clobber a `substitute` file (e.g. .claude/settings.json) the
+    // user has edited: we only overwrite ours, identified by the installer
+    // marker we write into it. `--force` overrides.
+    if f.substitute && !force && is_user_modified(&dest) {
+        report.files_skipped.push(f.path.clone());
+        return Ok(());
+    }
+    let mut content = crate::agent::extension_config::fetch_file(source, f.source_path())?;
+    if f.substitute {
+        content = content.replace(HOME_TOKEN, home_str);
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&dest, content).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    if f.executable {
+        set_executable(&dest)?;
+    }
+    report.files_written.push(f.path.clone());
+    Ok(())
+}
+
+/// Create one symlink under the home dir, replacing an existing symlink but
+/// never clobbering a regular file the user owns, recording the outcome in
+/// `report`.
+fn install_symlink(
+    s: &crate::session::extension_def::ExtensionSymlink,
+    home: &Path,
+    report: &mut InstallReport,
+) -> Result<(), String> {
+    // Validate both ends before touching the filesystem, so a bad target
+    // can't leave a removed symlink behind.
+    let link = safe_join(home, &s.link)?;
+    ensure_safe_relative(&s.target)?;
+    match std::fs::symlink_metadata(&link) {
+        Ok(m) if m.file_type().is_symlink() => {
+            std::fs::remove_file(&link)
+                .map_err(|e| format!("replace symlink {}: {e}", link.display()))?;
+        }
+        Ok(_) => {
+            report.symlinks_skipped.push(s.link.clone());
+            return Ok(());
+        }
+        Err(_) => {}
+    }
+    if let Some(parent) = link.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    make_symlink(&s.target, &link)?;
+    report.symlinks_created.push(s.link.clone());
+    Ok(())
 }
 
 /// What [`update_extension`] did to one extension.
@@ -669,58 +700,81 @@ pub fn heal_active_extensions(db: &Database) -> Vec<String> {
     let active = db.get_active_extensions().unwrap_or_default();
     let mut messages = Vec::new();
     for name in active {
-        // Fully-qualified agent reference (no `use`) per the session_ops →
-        // agent path-only architecture rule.
-        let Some(def) = crate::agent::extension_config::load_manifest(&name) else {
-            messages.push(format!(
-                "extension '{name}' is active but its manifest is missing; reinstall it \
-                 or run `thurbox-cli extension deactivate {name}`"
-            ));
-            continue;
-        };
-        // Nudge once-per-pass when the binary upgraded since install, or when the
-        // extension wants a newer thurbox than this one. Both clear after the
-        // user acts (`extension update` / a thurbox upgrade), so they don't
-        // persist as noise.
-        let current = crate::agent::extension_config::binary_version();
-        if let Some(w) = def.compat_warning(current) {
-            messages.push(w);
-        } else if def.is_stale(current) {
-            messages.push(format!(
-                "extension '{name}' was installed under thurbox {} but this binary is {current}; \
-                 run `thurbox-cli extension update {name}` to refresh it",
-                def.installed_with.as_deref().unwrap_or("an older version")
-            ));
-        }
-        match ensure_extension(db, &def) {
-            Ok(report) if report.created_anything() => {
-                let mut parts = Vec::new();
-                if !report.sessions_created.is_empty() {
-                    parts.push(format!("session(s) {}", report.sessions_created.join(", ")));
-                }
-                if !report.automations_created.is_empty() {
-                    parts.push(format!(
-                        "automation(s) {}",
-                        report.automations_created.join(", ")
-                    ));
-                }
-                if !report.automations_relinked.is_empty() {
-                    parts.push(format!(
-                        "re-linked automation(s) {}",
-                        report.automations_relinked.join(", ")
-                    ));
-                }
-                messages.push(format!(
-                    "Repaired {} for managed extension '{name}' \
-                     (`thurbox-cli extension deactivate {name}` to turn it off)",
-                    parts.join(" + ")
-                ));
-            }
-            Ok(_) => {}
-            Err(e) => messages.push(format!("extension '{name}' self-heal failed: {e}")),
-        }
+        heal_one_extension(db, &name, &mut messages);
     }
     messages
+}
+
+/// Self-heal a single active extension: surface a missing-manifest error, a
+/// compat/staleness nudge, and re-ensure its declared resources, appending any
+/// user-facing messages to `messages`.
+fn heal_one_extension(db: &Database, name: &str, messages: &mut Vec<String>) {
+    // Fully-qualified agent reference (no `use`) per the session_ops →
+    // agent path-only architecture rule.
+    let Some(def) = crate::agent::extension_config::load_manifest(name) else {
+        messages.push(format!(
+            "extension '{name}' is active but its manifest is missing; reinstall it \
+             or run `thurbox-cli extension deactivate {name}`"
+        ));
+        return;
+    };
+    // Nudge once-per-pass when the binary upgraded since install, or when the
+    // extension wants a newer thurbox than this one. Both clear after the
+    // user acts (`extension update` / a thurbox upgrade), so they don't
+    // persist as noise.
+    let current = crate::agent::extension_config::binary_version();
+    if let Some(w) = heal_compat_message(&def, name, current) {
+        messages.push(w);
+    }
+    match ensure_extension(db, &def) {
+        Ok(report) if report.created_anything() => {
+            messages.push(heal_recreated_message(&report, name));
+        }
+        Ok(_) => {}
+        Err(e) => messages.push(format!("extension '{name}' self-heal failed: {e}")),
+    }
+}
+
+/// A compatibility warning (binary too old) or a staleness nudge (extension
+/// installed under an older binary), or `None` when neither applies.
+fn heal_compat_message(def: &ExtensionDef, name: &str, current: &str) -> Option<String> {
+    if let Some(w) = def.compat_warning(current) {
+        Some(w)
+    } else if def.is_stale(current) {
+        Some(format!(
+            "extension '{name}' was installed under thurbox {} but this binary is {current}; \
+             run `thurbox-cli extension update {name}` to refresh it",
+            def.installed_with.as_deref().unwrap_or("an older version")
+        ))
+    } else {
+        None
+    }
+}
+
+/// Human-readable "Repaired …" message describing what a self-heal pass
+/// re-created or re-linked for an extension.
+fn heal_recreated_message(report: &EnsureReport, name: &str) -> String {
+    let mut parts = Vec::new();
+    if !report.sessions_created.is_empty() {
+        parts.push(format!("session(s) {}", report.sessions_created.join(", ")));
+    }
+    if !report.automations_created.is_empty() {
+        parts.push(format!(
+            "automation(s) {}",
+            report.automations_created.join(", ")
+        ));
+    }
+    if !report.automations_relinked.is_empty() {
+        parts.push(format!(
+            "re-linked automation(s) {}",
+            report.automations_relinked.join(", ")
+        ));
+    }
+    format!(
+        "Repaired {} for managed extension '{name}' \
+         (`thurbox-cli extension deactivate {name}` to turn it off)",
+        parts.join(" + ")
+    )
 }
 
 /// Snapshot which of a manifest's declared resources currently exist and whether

@@ -263,22 +263,9 @@ pub fn parse_duration(s: &str) -> Option<u64> {
     for ch in s.chars() {
         if ch.is_ascii_digit() {
             num.push(ch);
-        } else if ch.is_whitespace() {
-            continue;
-        } else {
-            if num.is_empty() {
-                return None; // unit with no preceding number
-            }
-            let n: u64 = num.parse().ok()?;
+        } else if !ch.is_whitespace() {
+            total = total.checked_add(duration_token_ms(&num, ch)?)?;
             num.clear();
-            let unit_ms: u64 = match ch.to_ascii_lowercase() {
-                's' => 1_000,
-                'm' => 60_000,
-                'h' => 3_600_000,
-                'd' => 86_400_000,
-                _ => return None,
-            };
-            total = total.checked_add(n.checked_mul(unit_ms)?)?;
             any = true;
         }
     }
@@ -287,6 +274,25 @@ pub fn parse_duration(s: &str) -> Option<u64> {
         return None;
     }
     any.then_some(total)
+}
+
+/// Convert one `<digits><unit>` token into milliseconds. `digits` is the number
+/// accumulated so far (must be non-empty) and `unit` the unit char (`s`/`m`/
+/// `h`/`d`, case-insensitive). Returns `None` on a missing number, unknown
+/// unit, or arithmetic overflow.
+fn duration_token_ms(digits: &str, unit: char) -> Option<u64> {
+    if digits.is_empty() {
+        return None; // unit with no preceding number
+    }
+    let n: u64 = digits.parse().ok()?;
+    let unit_ms: u64 = match unit.to_ascii_lowercase() {
+        's' => 1_000,
+        'm' => 60_000,
+        'h' => 3_600_000,
+        'd' => 86_400_000,
+        _ => return None,
+    };
+    n.checked_mul(unit_ms)
 }
 
 /// Parse an `HH:MM` string into `(hour, minute)`. Returns `None` if malformed

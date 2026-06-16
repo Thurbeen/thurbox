@@ -934,11 +934,7 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                self.new_session.base_branch = None;
-                self.new_session.repo_path = None;
-                self.new_session.all_repos = None;
-                self.new_session.normal_repos.clear();
-                self.new_session.session_name = None;
+                self.cancel_worktree_name();
             }
             KeyCode::Enter => {
                 let new_branch = wn.name.value().trim().to_string();
@@ -947,29 +943,39 @@ impl App {
                     return;
                 }
                 self.modal.close();
-                if let Some(base_branch) = self.new_session.base_branch.take() {
-                    // Use all repos for multi-repo projects, single repo otherwise
-                    let repo_paths = if let Some(all_repos) = self.new_session.all_repos.take() {
-                        self.new_session.repo_path = None;
-                        all_repos
-                    } else if let Some(repo_path) = self.new_session.repo_path.take() {
-                        vec![repo_path]
-                    } else {
-                        return;
-                    };
-                    let session_name = self.new_session.session_name.take();
-                    self.spawn_worktree_session(
-                        &repo_paths,
-                        &new_branch,
-                        &base_branch,
-                        session_name,
-                    );
-                }
+                self.confirm_worktree_name(&new_branch);
             }
             other => {
                 super::modals::apply_text_input_key(Some(&mut wn.name), other, mods);
             }
         }
+    }
+
+    /// Clear the worktree-flow pending state when the branch-name modal is cancelled.
+    fn cancel_worktree_name(&mut self) {
+        self.new_session.base_branch = None;
+        self.new_session.repo_path = None;
+        self.new_session.all_repos = None;
+        self.new_session.normal_repos.clear();
+        self.new_session.session_name = None;
+    }
+
+    /// Spawn the worktree session for the confirmed branch name.
+    fn confirm_worktree_name(&mut self, new_branch: &str) {
+        let Some(base_branch) = self.new_session.base_branch.take() else {
+            return;
+        };
+        // Use all repos for multi-repo projects, single repo otherwise
+        let repo_paths = if let Some(all_repos) = self.new_session.all_repos.take() {
+            self.new_session.repo_path = None;
+            all_repos
+        } else if let Some(repo_path) = self.new_session.repo_path.take() {
+            vec![repo_path]
+        } else {
+            return;
+        };
+        let session_name = self.new_session.session_name.take();
+        self.spawn_worktree_session(&repo_paths, new_branch, &base_branch, session_name);
     }
 
     fn handle_session_name_key(&mut self, code: KeyCode, mods: KeyModifiers) {
@@ -979,19 +985,7 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.modal.close();
-                if self.new_session.base_branch.is_some() {
-                    // Worktree flow — clean up worktree-specific pending state.
-                    self.new_session.base_branch = None;
-                    self.new_session.repo_path = None;
-                    self.new_session.all_repos = None;
-                    self.new_session.normal_repos.clear();
-                } else {
-                    // Normal flow — clean up spawn state.
-                    self.new_session.spawn_config = None;
-                    self.new_session.spawn_worktrees.clear();
-                    self.new_session.fork = false;
-                    self.new_session.parent_session_id = None;
-                }
+                self.cancel_session_name();
             }
             KeyCode::Enter => {
                 let name = sn.name.value().trim().to_string();
@@ -1000,27 +994,49 @@ impl App {
                     return;
                 }
                 self.modal.close();
-                if self.new_session.base_branch.is_some() {
-                    // Worktree flow — proceed to branch name input.
-                    let branch = session_name_to_branch(&name);
-                    self.new_session.session_name = Some(name);
-                    let mut modal = super::modals::WorktreeNameModal::default();
-                    modal.name.set(&branch);
-                    self.modal = super::modals::Modal::WorktreeName(modal);
-                } else if let Some(config) = self.new_session.spawn_config.take() {
-                    let worktrees = std::mem::take(&mut self.new_session.spawn_worktrees);
-                    if self.new_session.fork {
-                        // Fork flow — role already set, spawn directly.
-                        self.new_session.fork = false;
-                        self.do_spawn_session_async(name, &config, worktrees);
-                    } else {
-                        // Normal flow — proceed to role selection / spawn.
-                        self.finish_prepare_spawn(name, config, worktrees);
-                    }
-                }
+                self.confirm_session_name(name);
             }
             other => {
                 super::modals::apply_text_input_key(Some(&mut sn.name), other, mods);
+            }
+        }
+    }
+
+    /// Clear pending state when the session-name modal is cancelled.
+    fn cancel_session_name(&mut self) {
+        if self.new_session.base_branch.is_some() {
+            // Worktree flow — clean up worktree-specific pending state.
+            self.new_session.base_branch = None;
+            self.new_session.repo_path = None;
+            self.new_session.all_repos = None;
+            self.new_session.normal_repos.clear();
+        } else {
+            // Normal flow — clean up spawn state.
+            self.new_session.spawn_config = None;
+            self.new_session.spawn_worktrees.clear();
+            self.new_session.fork = false;
+            self.new_session.parent_session_id = None;
+        }
+    }
+
+    /// Advance from the confirmed session name to the next step of the flow.
+    fn confirm_session_name(&mut self, name: String) {
+        if self.new_session.base_branch.is_some() {
+            // Worktree flow — proceed to branch name input.
+            let branch = session_name_to_branch(&name);
+            self.new_session.session_name = Some(name);
+            let mut modal = super::modals::WorktreeNameModal::default();
+            modal.name.set(&branch);
+            self.modal = super::modals::Modal::WorktreeName(modal);
+        } else if let Some(config) = self.new_session.spawn_config.take() {
+            let worktrees = std::mem::take(&mut self.new_session.spawn_worktrees);
+            if self.new_session.fork {
+                // Fork flow — role already set, spawn directly.
+                self.new_session.fork = false;
+                self.do_spawn_session_async(name, &config, worktrees);
+            } else {
+                // Normal flow — proceed to role selection / spawn.
+                self.finish_prepare_spawn(name, config, worktrees);
             }
         }
     }
@@ -1040,26 +1056,35 @@ impl App {
     }
 
     fn handle_automations_list_key(&mut self, code: KeyCode) {
-        if let super::modals::Modal::AutomationsList(ref mut al) = self.modal {
-            match code {
-                KeyCode::Esc => {
-                    self.modal.close();
-                    return;
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if al.index + 1 < al.entries.len() {
-                        al.index += 1;
-                    }
-                    return;
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    al.index = al.index.saturating_sub(1);
-                    return;
-                }
-                _ => {}
-            }
+        if self.handle_automations_list_nav(code) {
+            return;
         }
+        self.handle_automations_list_action(code);
+    }
 
+    /// Close/select navigation for the automations list modal. Returns `true`
+    /// when the key was consumed as navigation.
+    fn handle_automations_list_nav(&mut self, code: KeyCode) -> bool {
+        let super::modals::Modal::AutomationsList(ref mut al) = self.modal else {
+            return false;
+        };
+        match code {
+            KeyCode::Esc => self.modal.close(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if al.index + 1 < al.entries.len() {
+                    al.index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                al.index = al.index.saturating_sub(1);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Action keys (new/edit/toggle/run/delete) for the automations list modal.
+    fn handle_automations_list_action(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('n') => {
                 self.modal.close();
@@ -1942,37 +1967,53 @@ impl App {
         self.modal.close();
 
         if worktree_repos.is_empty() && normal_repos.is_empty() {
-            // No repos selected — spawn with HOME as cwd. For a remote target,
-            // leave cwd unset so the remote session starts in its own default
-            // directory (local $HOME is meaningless there).
-            let mut config = SessionConfig::default();
-            if self.new_session.backend.is_none() {
-                if let Some(home) = std::env::var_os("HOME") {
-                    config.cwd = Some(std::path::PathBuf::from(home));
-                }
-            }
-            self.spawn_session_with_config(&config);
+            self.spawn_repo_picker_no_repos();
         } else if !worktree_repos.is_empty() {
-            // Has worktree repos — go to branch selection.
-            // Store normal repos for inclusion after worktree creation.
-            self.new_session.repo_path = Some(worktree_repos[0].clone());
-            self.new_session.all_repos = if worktree_repos.len() > 1 {
-                Some(worktree_repos)
-            } else {
-                None
-            };
-            self.new_session.normal_repos = normal_repos;
-            self.start_branch_selection();
+            self.spawn_repo_picker_worktrees(worktree_repos, normal_repos);
         } else {
-            // All normal repos — spawn directly (local-tmux), going straight
-            // to the agent picker chain.
-            self.new_session.additional_dirs = normal_repos[1..].to_vec();
-            let config = SessionConfig {
-                cwd: Some(normal_repos[0].clone()),
-                ..SessionConfig::default()
-            };
-            self.spawn_session_with_config(&config);
+            self.spawn_repo_picker_normal(normal_repos);
         }
+    }
+
+    /// No repos selected — spawn with HOME as cwd. For a remote target,
+    /// leave cwd unset so the remote session starts in its own default
+    /// directory (local $HOME is meaningless there).
+    fn spawn_repo_picker_no_repos(&mut self) {
+        let mut config = SessionConfig::default();
+        if self.new_session.backend.is_none() {
+            if let Some(home) = std::env::var_os("HOME") {
+                config.cwd = Some(std::path::PathBuf::from(home));
+            }
+        }
+        self.spawn_session_with_config(&config);
+    }
+
+    /// Has worktree repos — go to branch selection.
+    /// Store normal repos for inclusion after worktree creation.
+    fn spawn_repo_picker_worktrees(
+        &mut self,
+        worktree_repos: Vec<std::path::PathBuf>,
+        normal_repos: Vec<std::path::PathBuf>,
+    ) {
+        self.new_session.repo_path = Some(worktree_repos[0].clone());
+        self.new_session.all_repos = if worktree_repos.len() > 1 {
+            Some(worktree_repos)
+        } else {
+            None
+        };
+        self.new_session.normal_repos = normal_repos;
+        self.start_branch_selection();
+    }
+
+    /// All normal repos — spawn directly (local-tmux), going straight
+    /// to the agent picker chain.
+    fn spawn_repo_picker_normal(&mut self, normal_repos: Vec<std::path::PathBuf>) {
+        self.new_session.additional_dirs = normal_repos[1..].to_vec();
+        let config = SessionConfig {
+            cwd: Some(normal_repos[0].clone()),
+            ..SessionConfig::default()
+        };
+        self.spawn_session_with_config(&config);
     }
 
     /// Split the selected bookmarks into (worktree repos, normal repos).

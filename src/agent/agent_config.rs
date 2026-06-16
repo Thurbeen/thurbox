@@ -120,44 +120,54 @@ pub fn load_or_seed_with_warnings() -> (AgentRegistry, Vec<String>) {
     };
 
     if !path.exists() {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return (
-                    builtin_registry(),
-                    vec![format!("Failed to create config dir for agents.toml: {e}")],
-                );
-            }
-        }
-        if let Err(e) = std::fs::write(&path, BUILTIN_AGENTS_TOML) {
-            return (
-                builtin_registry(),
-                vec![format!("Failed to seed agents.toml: {e}")],
-            );
-        }
-        tracing::info!(path = %path.display(), "Seeded agents.toml with built-in agents");
-        return (builtin_registry(), Vec::new());
+        return seed_agents_toml(&path);
     }
 
     match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            match parse_toml_reporting_unknown::<AgentRegistry>(&contents, "agents.toml") {
-                Ok((reg, warnings)) if !reg.agents.is_empty() => (reg, warnings),
-                Ok(_) => (
-                    builtin_registry(),
-                    vec!["agents.toml has no agents; using built-in agents".into()],
-                ),
-                Err(e) => (
-                    builtin_registry(),
-                    vec![format!(
-                        "agents.toml: {}; using built-in agents",
-                        compact_toml_error(&e.to_string())
-                    )],
-                ),
-            }
-        }
+        Ok(contents) => parse_agents_toml(&contents),
         Err(e) => (
             builtin_registry(),
             vec![format!("Failed to read agents.toml: {e}")],
+        ),
+    }
+}
+
+/// Write the bundled agents.toml on first run, degrading to the built-in
+/// registry (with a warning) if the dir or file can't be created.
+fn seed_agents_toml(path: &std::path::Path) -> (AgentRegistry, Vec<String>) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return (
+                builtin_registry(),
+                vec![format!("Failed to create config dir for agents.toml: {e}")],
+            );
+        }
+    }
+    if let Err(e) = std::fs::write(path, BUILTIN_AGENTS_TOML) {
+        return (
+            builtin_registry(),
+            vec![format!("Failed to seed agents.toml: {e}")],
+        );
+    }
+    tracing::info!(path = %path.display(), "Seeded agents.toml with built-in agents");
+    (builtin_registry(), Vec::new())
+}
+
+/// Parse agents.toml contents, falling back to the built-in registry (with a
+/// warning) on parse error or an empty agent list.
+fn parse_agents_toml(contents: &str) -> (AgentRegistry, Vec<String>) {
+    match parse_toml_reporting_unknown::<AgentRegistry>(contents, "agents.toml") {
+        Ok((reg, warnings)) if !reg.agents.is_empty() => (reg, warnings),
+        Ok(_) => (
+            builtin_registry(),
+            vec!["agents.toml has no agents; using built-in agents".into()],
+        ),
+        Err(e) => (
+            builtin_registry(),
+            vec![format!(
+                "agents.toml: {}; using built-in agents",
+                compact_toml_error(&e.to_string())
+            )],
         ),
     }
 }

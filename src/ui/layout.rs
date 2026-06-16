@@ -54,26 +54,17 @@ fn split_left_column(col: Rect, automation_count: usize) -> (Rect, Option<Rect>)
     (rows[0], Some(rows[1]))
 }
 
-/// Compute panel layout areas based on terminal dimensions and optional
-/// right-side panel visibility.
-///
-/// At width ≥ 120, the layout becomes
-/// `list | info? | terminal | tasks? | file_viewer?` with info (15%), tasks
-/// (20%), and file_viewer (20%) appearing only when requested. The tasks panel
-/// sits between the terminal and the file viewer (both right-side columns). The
-/// left column is further split into a session list and an automations pane
-/// beneath it (whenever the column is tall enough and `show_automations_pane`
-/// is set — false when the `automations` feature flag is off);
-/// `automation_count` only sizes that pane.
-pub fn compute_layout(
-    area: Rect,
-    show_info_panel: bool,
-    show_tasks_panel: bool,
-    show_file_viewer: bool,
-    show_global_search: bool,
-    show_automations_pane: bool,
-    automation_count: usize,
-) -> PanelAreas {
+/// Vertical bands carved from the full area: header, content region, optional
+/// global-search strip, and footer.
+struct VerticalBands {
+    header: Rect,
+    content: Rect,
+    global_search: Option<Rect>,
+    footer: Rect,
+}
+
+/// Split the full area into header / content / global-search / footer bands.
+fn split_vertical(area: Rect, show_global_search: bool) -> VerticalBands {
     // Compact mode: when the terminal is shorter than 20 rows, drop the
     // header line entirely so the content + footer get every row available.
     let header_height = if area.height < 20 { 0 } else { 1 };
@@ -97,113 +88,168 @@ pub fn compute_layout(
         ])
         .split(area);
 
-    let header = vertical[0];
-    let content = vertical[1];
-    let global_search = (search_height > 0).then_some(vertical[2]);
-    let footer = vertical[3];
+    VerticalBands {
+        header: vertical[0],
+        content: vertical[1],
+        global_search: (search_height > 0).then_some(vertical[2]),
+        footer: vertical[3],
+    }
+}
 
-    let settings = crate::session::settings::global();
-    if area.width < settings.two_panel_min_cols {
-        return PanelAreas {
-            header,
-            left_panel: None,
-            automations_panel: None,
-            info_panel: None,
-            tasks_panel: None,
-            file_viewer: None,
-            global_search,
-            terminal: content,
-            footer,
-        };
+/// Split a left-column rect into (session list, automations pane) honouring the
+/// `show_automations_pane` flag.
+fn left_column_split(
+    col: Rect,
+    show_automations_pane: bool,
+    automation_count: usize,
+) -> (Rect, Option<Rect>) {
+    if show_automations_pane {
+        split_left_column(col, automation_count)
+    } else {
+        (col, None)
+    }
+}
+
+/// Build the wide (≥ three_panel_min_cols) layout with optional info / tasks /
+/// file-viewer columns. Column order: list | info? | terminal | tasks? |
+/// file_viewer?.
+fn three_panel_layout(
+    bands: &VerticalBands,
+    content: Rect,
+    show_info_panel: bool,
+    show_tasks_panel: bool,
+    show_file_viewer: bool,
+    show_automations_pane: bool,
+    automation_count: usize,
+) -> PanelAreas {
+    let mut constraints: Vec<Constraint> = vec![Constraint::Percentage(18)]; // list
+    if show_info_panel {
+        constraints.push(Constraint::Percentage(15));
+    }
+    // terminal takes the remainder
+    let terminal_idx = constraints.len();
+    constraints.push(Constraint::Min(0));
+    if show_tasks_panel {
+        constraints.push(Constraint::Percentage(20));
+    }
+    if show_file_viewer {
+        constraints.push(Constraint::Percentage(20));
     }
 
-    // At width ≥ three_panel_min_cols (default 120), support optional info /
-    // tasks / file-viewer columns.
-    // Column order: list | info? | terminal | tasks? | file_viewer?.
-    if area.width >= settings.three_panel_min_cols
-        && (show_info_panel || show_tasks_panel || show_file_viewer)
-    {
-        let mut constraints: Vec<Constraint> = vec![Constraint::Percentage(18)]; // list
-        if show_info_panel {
-            constraints.push(Constraint::Percentage(15));
-        }
-        // terminal takes the remainder
-        let terminal_idx = constraints.len();
-        constraints.push(Constraint::Min(0));
-        if show_tasks_panel {
-            constraints.push(Constraint::Percentage(20));
-        }
-        if show_file_viewer {
-            constraints.push(Constraint::Percentage(20));
-        }
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(content);
 
-        let horizontal = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(content);
+    let info_panel = show_info_panel.then(|| horizontal[1]);
+    let terminal = horizontal[terminal_idx];
+    // Tasks (if shown) immediately follow the terminal; the file viewer
+    // follows tasks (or the terminal when tasks are hidden).
+    let mut next = terminal_idx + 1;
+    let tasks_panel = show_tasks_panel.then(|| {
+        let r = horizontal[next];
+        next += 1;
+        r
+    });
+    let file_viewer = show_file_viewer.then(|| horizontal[next]);
 
-        let info_panel = if show_info_panel {
-            Some(horizontal[1])
-        } else {
-            None
-        };
-        let terminal = horizontal[terminal_idx];
-        // Tasks (if shown) immediately follow the terminal; the file viewer
-        // follows tasks (or the terminal when tasks are hidden).
-        let mut next = terminal_idx + 1;
-        let tasks_panel = if show_tasks_panel {
-            let r = horizontal[next];
-            next += 1;
-            Some(r)
-        } else {
-            None
-        };
-        let file_viewer = if show_file_viewer {
-            Some(horizontal[next])
-        } else {
-            None
-        };
-
-        let (left_panel, automations_panel) = if show_automations_pane {
-            split_left_column(horizontal[0], automation_count)
-        } else {
-            (horizontal[0], None)
-        };
-        return PanelAreas {
-            header,
-            left_panel: Some(left_panel),
-            automations_panel,
-            info_panel,
-            tasks_panel,
-            file_viewer,
-            global_search,
-            terminal,
-            footer,
-        };
+    let (left_panel, automations_panel) =
+        left_column_split(horizontal[0], show_automations_pane, automation_count);
+    PanelAreas {
+        header: bands.header,
+        left_panel: Some(left_panel),
+        automations_panel,
+        info_panel,
+        tasks_panel,
+        file_viewer,
+        global_search: bands.global_search,
+        terminal,
+        footer: bands.footer,
     }
+}
 
-    // 2-panel mode: 25% list | 75% terminal
+/// Build the 2-panel layout: 25% list | 75% terminal.
+fn two_panel_layout(
+    bands: &VerticalBands,
+    content: Rect,
+    show_automations_pane: bool,
+    automation_count: usize,
+) -> PanelAreas {
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(content);
 
-    let (left_panel, automations_panel) = if show_automations_pane {
-        split_left_column(horizontal[0], automation_count)
-    } else {
-        (horizontal[0], None)
-    };
+    let (left_panel, automations_panel) =
+        left_column_split(horizontal[0], show_automations_pane, automation_count);
     PanelAreas {
-        header,
+        header: bands.header,
         left_panel: Some(left_panel),
         automations_panel,
         info_panel: None,
         tasks_panel: None,
         file_viewer: None,
-        global_search,
+        global_search: bands.global_search,
         terminal: horizontal[1],
-        footer,
+        footer: bands.footer,
     }
+}
+
+/// Compute panel layout areas based on terminal dimensions and optional
+/// right-side panel visibility.
+///
+/// At width ≥ 120, the layout becomes
+/// `list | info? | terminal | tasks? | file_viewer?` with info (15%), tasks
+/// (20%), and file_viewer (20%) appearing only when requested. The tasks panel
+/// sits between the terminal and the file viewer (both right-side columns). The
+/// left column is further split into a session list and an automations pane
+/// beneath it (whenever the column is tall enough and `show_automations_pane`
+/// is set — false when the `automations` feature flag is off);
+/// `automation_count` only sizes that pane.
+pub fn compute_layout(
+    area: Rect,
+    show_info_panel: bool,
+    show_tasks_panel: bool,
+    show_file_viewer: bool,
+    show_global_search: bool,
+    show_automations_pane: bool,
+    automation_count: usize,
+) -> PanelAreas {
+    let bands = split_vertical(area, show_global_search);
+    let content = bands.content;
+
+    let settings = crate::session::settings::global();
+    if area.width < settings.two_panel_min_cols {
+        return PanelAreas {
+            header: bands.header,
+            left_panel: None,
+            automations_panel: None,
+            info_panel: None,
+            tasks_panel: None,
+            file_viewer: None,
+            global_search: bands.global_search,
+            terminal: content,
+            footer: bands.footer,
+        };
+    }
+
+    // At width ≥ three_panel_min_cols (default 120), support optional info /
+    // tasks / file-viewer columns.
+    if area.width >= settings.three_panel_min_cols
+        && (show_info_panel || show_tasks_panel || show_file_viewer)
+    {
+        return three_panel_layout(
+            &bands,
+            content,
+            show_info_panel,
+            show_tasks_panel,
+            show_file_viewer,
+            show_automations_pane,
+            automation_count,
+        );
+    }
+
+    two_panel_layout(&bands, content, show_automations_pane, automation_count)
 }
 
 #[cfg(test)]

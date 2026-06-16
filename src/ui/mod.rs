@@ -176,32 +176,42 @@ pub fn editor_field_line_with_cursor<'a>(
     if selector {
         spans.push(Span::styled(format!("‹ {value} ›"), value_style));
     } else if active {
-        // Draw a real block cursor at the caret position so horizontal movement
-        // inside the text is visible. Fall back to a trailing block when no
-        // cursor is supplied (preserves the prior end-of-line affordance).
-        let chars: Vec<char> = value.chars().collect();
-        let caret = cursor.unwrap_or(chars.len()).min(chars.len());
-
-        let before: String = chars[..caret].iter().collect();
-        if !before.is_empty() {
-            spans.push(Span::styled(before, value_style));
-        }
-        let cursor_char = chars
-            .get(caret)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| " ".to_string());
-        spans.push(Span::styled(cursor_char, Theme::cursor()));
-        if caret < chars.len() {
-            let after: String = chars[caret + 1..].iter().collect();
-            if !after.is_empty() {
-                spans.push(Span::styled(after, value_style));
-            }
-        }
+        push_value_with_cursor(&mut spans, &value, cursor, value_style);
     } else {
         spans.push(Span::styled(value, value_style));
     }
 
     Line::from(spans)
+}
+
+/// Append `value` to `spans` with a real block cursor drawn at the caret
+/// position so horizontal movement inside the text is visible. Falls back to a
+/// trailing block when no cursor is supplied (preserves the prior end-of-line
+/// affordance).
+fn push_value_with_cursor<'a>(
+    spans: &mut Vec<Span<'a>>,
+    value: &str,
+    cursor: Option<usize>,
+    value_style: Style,
+) {
+    let chars: Vec<char> = value.chars().collect();
+    let caret = cursor.unwrap_or(chars.len()).min(chars.len());
+
+    let before: String = chars[..caret].iter().collect();
+    if !before.is_empty() {
+        spans.push(Span::styled(before, value_style));
+    }
+    let cursor_char = chars
+        .get(caret)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    spans.push(Span::styled(cursor_char, Theme::cursor()));
+    if caret < chars.len() {
+        let after: String = chars[caret + 1..].iter().collect();
+        if !after.is_empty() {
+            spans.push(Span::styled(after, value_style));
+        }
+    }
 }
 
 /// Build a footer/hint [`Line`] from `(key, description)` pairs, styling keys

@@ -762,17 +762,9 @@ const AGENT_STATUS_MIN_WIDTH: usize = 4;
 /// the status dot and the name. The agent-reported status (see
 /// [`agent_status_text`]) is appended after the name, truncated with `…` to
 /// fit `inner_width`.
-#[allow(clippy::too_many_arguments)]
-fn build_session_line<'a>(
-    info: &'a SessionInfo,
-    session_match: Option<&SessionMatch>,
-    is_active: bool,
-    is_dimmed: bool,
-    depth: u8,
-    cross_group_child: bool,
-    inner_width: usize,
-) -> Line<'a> {
-    let name_style = if is_dimmed {
+/// Style for the session name span.
+fn name_span_style(is_active: bool, is_dimmed: bool) -> Style {
+    if is_dimmed {
         Style::default().fg(Theme::text_muted())
     } else if is_active {
         // The active row is painted with the list's `selection_bg`, so the name
@@ -783,18 +775,18 @@ fn build_session_line<'a>(
             .add_modifier(Modifier::BOLD)
     } else {
         Theme::normal_item()
-    };
-    let status_style = if is_dimmed {
-        Style::default().fg(Theme::text_muted())
-    } else {
-        Style::default().fg(super::status_color(info.status))
-    };
+    }
+}
 
-    let mut spans = vec![Span::styled(
-        format!(" {} ", info.status.icon()),
-        status_style,
-    )];
-
+/// Push the prefix marks that sit between the status dot and the name: the
+/// tree/cross-group child glyph, the remote-host cloud, and the worktree mark.
+fn push_prefix_marks(
+    spans: &mut Vec<Span<'_>>,
+    info: &SessionInfo,
+    is_dimmed: bool,
+    depth: u8,
+    cross_group_child: bool,
+) {
     // Tree prefix for children nested under their parent in the same repo
     // group; `↳` for children whose parent renders elsewhere in the list.
     let tree_style = Style::default().fg(Theme::text_muted());
@@ -808,23 +800,87 @@ fn build_session_line<'a>(
     // Remote (ssh:<host>) sessions get a cloud mark so it's clear at a glance
     // the agent runs on another machine. Sits right after the status dot.
     if info.remote_host.is_some() {
-        let remote_style = if is_dimmed {
-            Style::default().fg(Theme::text_muted())
-        } else {
-            Style::default().fg(Theme::accent())
-        };
-        spans.push(Span::styled("\u{2601} ", remote_style));
+        spans.push(Span::styled(
+            "\u{2601} ",
+            mark_style(is_dimmed, Theme::accent),
+        ));
     }
 
     // Worktree sessions get a dedicated mark, subordinate to the status dot.
     if !info.worktrees.is_empty() {
-        let wt_style = if is_dimmed {
-            Style::default().fg(Theme::text_muted())
-        } else {
-            Style::default().fg(Theme::branch_name())
-        };
-        spans.push(Span::styled("\u{2442} ", wt_style));
+        spans.push(Span::styled(
+            "\u{2442} ",
+            mark_style(is_dimmed, Theme::branch_name),
+        ));
     }
+}
+
+/// Style for a prefix mark: muted when the row is dimmed, otherwise the given
+/// accent color.
+fn mark_style(is_dimmed: bool, color: fn() -> ratatui::style::Color) -> Style {
+    if is_dimmed {
+        Style::default().fg(Theme::text_muted())
+    } else {
+        Style::default().fg(color())
+    }
+}
+
+/// Append the agent-reported status after the name, truncated to fit
+/// `inner_width`. An attention notification keeps the status color (same accent
+/// as the dot) so it stands out; plain activity text is muted so the name stays
+/// the visual anchor.
+fn push_agent_status(
+    spans: &mut Vec<Span<'_>>,
+    info: &SessionInfo,
+    status_style: Style,
+    inner_width: usize,
+) {
+    let Some(status_text) = agent_status_text(info) else {
+        return;
+    };
+    let agent_status_style = if info.status == crate::session::SessionStatus::Attention {
+        status_style
+    } else {
+        Style::default().fg(Theme::text_muted())
+    };
+    let used: usize = spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum::<usize>()
+        + AGENT_STATUS_SEPARATOR.chars().count();
+    let avail = inner_width.saturating_sub(used);
+    if avail >= AGENT_STATUS_MIN_WIDTH {
+        spans.push(Span::raw(AGENT_STATUS_SEPARATOR));
+        spans.push(Span::styled(
+            super::truncate_ellipsis(&status_text, avail),
+            agent_status_style,
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_session_line<'a>(
+    info: &'a SessionInfo,
+    session_match: Option<&SessionMatch>,
+    is_active: bool,
+    is_dimmed: bool,
+    depth: u8,
+    cross_group_child: bool,
+    inner_width: usize,
+) -> Line<'a> {
+    let name_style = name_span_style(is_active, is_dimmed);
+    let status_style = if is_dimmed {
+        Style::default().fg(Theme::text_muted())
+    } else {
+        Style::default().fg(super::status_color(info.status))
+    };
+
+    let mut spans = vec![Span::styled(
+        format!(" {} ", info.status.icon()),
+        status_style,
+    )];
+
+    push_prefix_marks(&mut spans, info, is_dimmed, depth, cross_group_child);
 
     append_name_spans(
         &mut spans,
@@ -833,30 +889,7 @@ fn build_session_line<'a>(
         name_style,
     );
 
-    // Append the agent-reported status after the name, truncated to fit. An
-    // attention notification keeps the status color (same accent as the dot)
-    // so it stands out; plain activity text is muted so the name stays the
-    // visual anchor.
-    if let Some(status_text) = agent_status_text(info) {
-        let agent_status_style = if info.status == crate::session::SessionStatus::Attention {
-            status_style
-        } else {
-            Style::default().fg(Theme::text_muted())
-        };
-        let used: usize = spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum::<usize>()
-            + AGENT_STATUS_SEPARATOR.chars().count();
-        let avail = inner_width.saturating_sub(used);
-        if avail >= AGENT_STATUS_MIN_WIDTH {
-            spans.push(Span::raw(AGENT_STATUS_SEPARATOR));
-            spans.push(Span::styled(
-                super::truncate_ellipsis(&status_text, avail),
-                agent_status_style,
-            ));
-        }
-    }
+    push_agent_status(&mut spans, info, status_style, inner_width);
 
     Line::from(spans)
 }

@@ -90,44 +90,7 @@ pub fn render_run_history(
     let lines: Vec<Line> = runs[start..end]
         .iter()
         .enumerate()
-        .map(|(offset, run)| {
-            let i = start + offset;
-            let (glyph, word, color) = match run.status {
-                AutomationRunStatus::Success => ("✓", "ok", Theme::status_idle()),
-                AutomationRunStatus::Error => ("✗", "error", Theme::status_error()),
-                AutomationRunStatus::Skipped => ("–", "skipped", Theme::status_waiting()),
-            };
-            let is_selected = focused && i == selected;
-            let pointer = if is_selected { "▸" } else { " " };
-            let mut spans = vec![
-                // Status — colour + bold so each outcome stands out.
-                Span::styled(
-                    format!("{pointer}{glyph} {word:<7}"),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                // Absolute clock time, then the relative age.
-                Span::styled(
-                    format!("{:<11} ", run.at),
-                    Style::default().fg(Theme::text_secondary()),
-                ),
-                Span::styled(
-                    format!("{:<9} ", run.when),
-                    Style::default().fg(Theme::text_muted()),
-                ),
-            ];
-            if !run.detail.is_empty() {
-                spans.push(Span::styled(
-                    run.detail.to_string(),
-                    Style::default().fg(Theme::text_primary()),
-                ));
-            }
-            let line = Line::from(spans);
-            if is_selected {
-                line.style(Style::default().bg(Theme::selection_bg()))
-            } else {
-                line
-            }
-        })
+        .map(|(offset, run)| run_line(run, focused && start + offset == selected))
         .collect();
 
     frame.render_widget(Paragraph::new(lines), rows_area);
@@ -147,4 +110,43 @@ pub fn render_run_history(
     }
 
     track.and_then(|track| scrollbar::render_into(frame, track, runs.len(), height, selected))
+}
+
+/// Build one run-history row: a coloured status badge, the absolute clock time,
+/// the relative age, and any free-text detail. Highlighted when `is_selected`.
+fn run_line<'a>(run: &AutomationRunRow<'_>, is_selected: bool) -> Line<'a> {
+    let (glyph, word, color) = match run.status {
+        AutomationRunStatus::Success => ("✓", "ok", Theme::status_idle()),
+        AutomationRunStatus::Error => ("✗", "error", Theme::status_error()),
+        AutomationRunStatus::Skipped => ("–", "skipped", Theme::status_waiting()),
+    };
+    let pointer = if is_selected { "▸" } else { " " };
+    let mut spans = vec![
+        // Status — colour + bold so each outcome stands out.
+        Span::styled(
+            format!("{pointer}{glyph} {word:<7}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        // Absolute clock time, then the relative age.
+        Span::styled(
+            format!("{:<11} ", run.at),
+            Style::default().fg(Theme::text_secondary()),
+        ),
+        Span::styled(
+            format!("{:<9} ", run.when),
+            Style::default().fg(Theme::text_muted()),
+        ),
+    ];
+    if !run.detail.is_empty() {
+        spans.push(Span::styled(
+            run.detail.to_string(),
+            Style::default().fg(Theme::text_primary()),
+        ));
+    }
+    let line = Line::from(spans);
+    if is_selected {
+        line.style(Style::default().bg(Theme::selection_bg()))
+    } else {
+        line
+    }
 }

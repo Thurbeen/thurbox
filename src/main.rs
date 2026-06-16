@@ -77,16 +77,72 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    // Initialize session backends, load every config file, and open the DB.
+    let (backends, agents, hosts, mut config_warnings) = init_backends_and_config()?;
+    let db = open_database();
+    activate_persisted_theme(&db);
+
+    // Self-heal active extensions: re-create any session/automation a managed
+    // extension declares but that has since been deleted. Runs before the
+    // session restore below (so healed sessions are adopted like any other) and
+    // before the TUI takes over the terminal (so tmux spawn output can't corrupt
+    // it). Deleting an active extension's resources is therefore a no-op — they
+    // come back; `thurbox-cli extension deactivate <name>` is the real off-switch.
+    let heal_messages = thurbox::session_ops::heal_active_extensions(&db);
+    for m in &heal_messages {
+        tracing::info!("{m}");
+    }
+    config_warnings.extend(heal_messages);
+
+    let mut terminal = ratatui::init();
+    enable_terminal_features()?;
+    push_keyboard_enhancement();
+    let size = terminal.size()?;
+
+    let mut app = App::new(size.height, size.width, backends, agents, db);
+    app.set_hosts(hosts);
+    // Surface agents.toml/hosts.toml load problems in the status bar — the
+    // tracing::warn above only reaches the log file the TUI hides.
+    app.report_config_warnings(config_warnings);
+
+    // Load session state from DB and restore
+    if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
+        app.restore_sessions(sessions, counter);
+    }
+
+    arm_automation_heartbeat();
+
+    let res = run_loop(&mut terminal, &mut app).await;
+
+    app.shutdown();
+    pop_keyboard_enhancement();
+    execute!(
+        std::io::stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture
+    )?;
+    ratatui::restore();
+
+    res
+}
+
+/// Bring up the session backends and load every config file (settings, hosts,
+/// agents, custom themes), publishing the process-wide state each reader needs.
+/// Returns the backend registry, the agent registry, the host registry, and the
+/// accumulated load warnings (logged here and later surfaced in the status bar).
+#[allow(clippy::type_complexity)]
+fn init_backends_and_config() -> Result<(
+    BackendRegistry,
+    thurbox::session::AgentRegistry,
+    thurbox::session::HostRegistry,
+    Vec<String>,
+)> {
     // Initialize session backends and agent provider.
     let local_tmux: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
     local_tmux.check_available()?;
     local_tmux.ensure_ready()?;
     let mut backends = BackendRegistry::new(local_tmux);
 
-    // Register one SSH backend per configured remote host
-    // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
-    // slow host must not block TUI startup, so check_available()/ensure_ready()
-    // are deferred to first spawn/restore (see App::backend_for).
     // Load (or seed) the settings and publish them process-wide before
     // anything reads them (Database::open prunes the audit log; layout and
     // terminal wiring read breakpoints/scrollback).
@@ -94,6 +150,10 @@ async fn main() -> Result<()> {
         thurbox::agent::settings_config::load_or_seed_with_warnings();
     thurbox::session::settings::init(settings);
 
+    // Register one SSH backend per configured remote host
+    // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
+    // slow host must not block TUI startup, so check_available()/ensure_ready()
+    // are deferred to first spawn/restore (see App::backend_for).
     let (hosts, host_warnings) = thurbox::agent::host_config::load_or_seed_with_warnings();
     config_warnings.extend(host_warnings);
     for host in &hosts.hosts {
@@ -116,7 +176,12 @@ async fn main() -> Result<()> {
         tracing::warn!("{w}");
     }
 
-    // Open SQLite database for persistent state
+    Ok((backends, agents, hosts, config_warnings))
+}
+
+/// Open the SQLite database for persistent state, falling back to the default
+/// XDG location (dev vs. prod build) when the path can't be resolved.
+fn open_database() -> Database {
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
         let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         p.push(if cfg!(dev_build) {
@@ -126,73 +191,41 @@ async fn main() -> Result<()> {
         });
         p
     });
-    let db = Database::open(&db_path).expect("Failed to open database");
+    Database::open(&db_path).expect("Failed to open database")
+}
 
-    // Activate the persisted theme — built-in or custom — falling back to
-    // default when unset/unknown.
+/// Activate the persisted theme — built-in or custom — falling back to the
+/// default when unset or unknown.
+fn activate_persisted_theme(db: &Database) {
     if let Ok(Some(name)) = db.get_active_theme() {
         thurbox::ui::theme::apply_theme_by_name(&name);
     } else {
         thurbox::ui::theme::ensure_initialized();
     }
+}
 
-    // Self-heal active extensions: re-create any session/automation a managed
-    // extension declares but that has since been deleted. Runs before the
-    // session restore below (so healed sessions are adopted like any other) and
-    // before the TUI takes over the terminal (so tmux spawn output can't corrupt
-    // it). Deleting an active extension's resources is therefore a no-op — they
-    // come back; `thurbox-cli extension deactivate <name>` is the real off-switch.
-    let heal_messages = thurbox::session_ops::heal_active_extensions(&db);
-    for m in &heal_messages {
-        tracing::info!("{m}");
-    }
-    config_warnings.extend(heal_messages);
-
-    let mut terminal = ratatui::init();
-    // Mouse capture is opt-out (`[features] mouse = false` in settings.toml):
-    // without it the terminal keeps its native mouse behavior and no mouse
-    // events ever reach the app.
+/// Enable bracketed paste and (opt-in via `[features] mouse`) mouse capture on
+/// the terminal. Without mouse capture the terminal keeps its native mouse
+/// behavior and no mouse events ever reach the app.
+fn enable_terminal_features() -> Result<()> {
     if thurbox::session::settings::global().features.mouse {
         execute!(std::io::stdout(), EnableMouseCapture)?;
     }
     execute!(std::io::stdout(), EnableBracketedPaste)?;
-    push_keyboard_enhancement();
-    let size = terminal.size()?;
+    Ok(())
+}
 
-    let mut app = App::new(size.height, size.width, backends, agents, db);
-    app.set_hosts(hosts);
-    // Surface agents.toml/hosts.toml load problems in the status bar — the
-    // tracing::warn above only reaches the log file the TUI hides.
-    app.report_config_warnings(config_warnings);
-
-    // Load session state from DB and restore
-    if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
-        app.restore_sessions(sessions, counter);
-    }
-
-    // Arm the tmux heartbeat keeper so automations keep firing after the TUI is
-    // closed (best-effort: a missing/old tmux just means TUI-only firing).
-    // Skipped when the `automations` feature flag is off — `thurbox-cli
-    // automation create` still arms it, since that's explicit user intent.
+/// Arm the tmux heartbeat keeper so automations keep firing after the TUI is
+/// closed (best-effort: a missing/old tmux just means TUI-only firing). Skipped
+/// when the `automations` feature flag is off — `thurbox-cli automation create`
+/// still arms it, since that's explicit user intent.
+fn arm_automation_heartbeat() {
     if thurbox::session::settings::global().features.automations {
         let cli = thurbox::agent::tmux::resolve_cli_binary();
         if let Err(e) = thurbox::agent::tmux::ensure_automation_heartbeat(&cli) {
             tracing::warn!("Failed to arm automation heartbeat: {e}");
         }
     }
-
-    let res = run_loop(&mut terminal, &mut app).await;
-
-    app.shutdown();
-    pop_keyboard_enhancement();
-    execute!(
-        std::io::stdout(),
-        DisableBracketedPaste,
-        DisableMouseCapture
-    )?;
-    ratatui::restore();
-
-    res
 }
 
 async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
@@ -200,43 +233,7 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
         terminal.draw(|f| app.view(f))?;
 
         if event::poll(Duration::from_millis(10))? {
-            let msg = match event::read()? {
-                Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    Some(AppMessage::KeyPress(k.code, k.modifiers))
-                }
-                Event::Mouse(m) => match m.kind {
-                    MouseEventKind::ScrollUp => Some(AppMessage::MouseScrollUp {
-                        x: m.column,
-                        y: m.row,
-                    }),
-                    MouseEventKind::ScrollDown => Some(AppMessage::MouseScrollDown {
-                        x: m.column,
-                        y: m.row,
-                    }),
-                    MouseEventKind::Down(MouseButton::Left) => Some(AppMessage::MouseClick {
-                        x: m.column,
-                        y: m.row,
-                        modifiers: m.modifiers,
-                    }),
-                    MouseEventKind::Drag(MouseButton::Left) => Some(AppMessage::MouseDrag {
-                        x: m.column,
-                        y: m.row,
-                    }),
-                    MouseEventKind::Up(MouseButton::Left) => Some(AppMessage::MouseUp {
-                        x: m.column,
-                        y: m.row,
-                    }),
-                    MouseEventKind::Moved => Some(AppMessage::MouseMove {
-                        x: m.column,
-                        y: m.row,
-                    }),
-                    _ => None,
-                },
-                Event::Paste(text) => Some(AppMessage::Paste(text)),
-                Event::Resize(cols, rows) => Some(AppMessage::Resize(cols, rows)),
-                _ => None,
-            };
-            if let Some(msg) = msg {
+            if let Some(msg) = event_to_message(event::read()?) {
                 app.update(msg);
             }
         }
@@ -249,4 +246,51 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
     }
 
     Ok(())
+}
+
+/// Translate a crossterm `Event` into the matching `AppMessage`, or `None` for
+/// events the app ignores (key release/repeat, unhandled mouse kinds, …).
+fn event_to_message(event: Event) -> Option<AppMessage> {
+    match event {
+        Event::Key(k) if k.kind == KeyEventKind::Press => {
+            Some(AppMessage::KeyPress(k.code, k.modifiers))
+        }
+        Event::Mouse(m) => mouse_to_message(m),
+        Event::Paste(text) => Some(AppMessage::Paste(text)),
+        Event::Resize(cols, rows) => Some(AppMessage::Resize(cols, rows)),
+        _ => None,
+    }
+}
+
+/// Translate a crossterm mouse event into the matching `AppMessage`, or `None`
+/// for mouse kinds the app does not handle.
+fn mouse_to_message(m: event::MouseEvent) -> Option<AppMessage> {
+    match m.kind {
+        MouseEventKind::ScrollUp => Some(AppMessage::MouseScrollUp {
+            x: m.column,
+            y: m.row,
+        }),
+        MouseEventKind::ScrollDown => Some(AppMessage::MouseScrollDown {
+            x: m.column,
+            y: m.row,
+        }),
+        MouseEventKind::Down(MouseButton::Left) => Some(AppMessage::MouseClick {
+            x: m.column,
+            y: m.row,
+            modifiers: m.modifiers,
+        }),
+        MouseEventKind::Drag(MouseButton::Left) => Some(AppMessage::MouseDrag {
+            x: m.column,
+            y: m.row,
+        }),
+        MouseEventKind::Up(MouseButton::Left) => Some(AppMessage::MouseUp {
+            x: m.column,
+            y: m.row,
+        }),
+        MouseEventKind::Moved => Some(AppMessage::MouseMove {
+            x: m.column,
+            y: m.row,
+        }),
+        _ => None,
+    }
 }

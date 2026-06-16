@@ -48,6 +48,54 @@ pub fn render_info_panel(
     let mut lines = Vec::new();
 
     // ── Session section (most relevant: "what am I looking at") ──
+    append_session_section(&mut lines, info, parent_name);
+
+    // ── Repos ──
+    append_repos_section(&mut lines, info);
+
+    // ── Git change summary (real git state of the worktree) ──
+    if let Some(ref git) = info.git_stats {
+        append_git_section(&mut lines, git);
+    }
+
+    // ── Session CPU/RAM ──
+    if let Some(m) = metrics {
+        append_session_resources(&mut lines, m, inner_width);
+    }
+
+    // ── Agent section (Claude CLI metrics) ──
+    if let Some(ref metrics) = info.agent_metrics {
+        append_agent_section(&mut lines, metrics, inner_width);
+    }
+
+    // ── Usage / rate-limits (account-level, the `/usage` equivalent) ──
+    if let Some(u) = usage {
+        if !u.is_empty() {
+            append_usage_section(&mut lines, u, inner_width);
+        }
+    }
+
+    // ── System Resources section (global CPU/RAM) ──
+    if let Some(m) = metrics {
+        append_system_section(&mut lines, m, inner_width);
+    }
+
+    // ── Automations section ──
+    append_automations_section(&mut lines, automations, inner_width);
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+/// Append the session header rows: name, status, agent, and the optional
+/// parent / host / activity / signal rows.
+fn append_session_section<'a>(
+    lines: &mut Vec<Line<'a>>,
+    info: &'a SessionInfo,
+    parent_name: Option<&str>,
+) {
     lines.push(Line::from(vec![
         Span::styled("Name: ", Theme::label()),
         Span::styled(&info.name, Style::default().fg(Theme::text_primary())),
@@ -110,147 +158,124 @@ pub fn render_info_panel(
             Span::styled(signal, value_style),
         ]));
     }
-
-    // ── Repos ──
-    append_repos_section(&mut lines, info);
-
-    // ── Git change summary (real git state of the worktree) ──
-    if let Some(ref git) = info.git_stats {
-        append_git_section(&mut lines, git);
-    }
-
-    // ── Session CPU/RAM ──
-    if let Some(m) = metrics {
-        if m.session_cpu_percent > 0.0 || m.session_memory_bytes > 0 {
-            let cpu_gauge = render_gauge_lines("CPU", m.session_cpu_percent, None, inner_width);
-            lines.extend(cpu_gauge);
-
-            lines.push(Line::from(vec![
-                Span::styled("RAM", Style::default().fg(Theme::text_muted())),
-                Span::styled(
-                    format!("  {}", format_bytes(m.session_memory_bytes)),
-                    Style::default().fg(Theme::text_primary()),
-                ),
-            ]));
-        }
-    }
-
-    // ── Agent section (Claude CLI metrics) ──
-    if let Some(ref metrics) = info.agent_metrics {
-        append_agent_section(&mut lines, metrics, inner_width);
-    }
-
-    // ── Usage / rate-limits (account-level, the `/usage` equivalent) ──
-    if let Some(u) = usage {
-        if !u.is_empty() {
-            append_usage_section(&mut lines, u, inner_width);
-        }
-    }
-
-    // ── System Resources section (global CPU/RAM) ──
-    if let Some(m) = metrics {
-        lines.push(separator(inner_width));
-        lines.push(Line::from(Span::styled("System", Theme::section_header())));
-
-        let gauge_lines = render_gauge_lines("CPU", m.cpu_percent, None, inner_width);
-        lines.extend(gauge_lines);
-
-        let ram_lines = render_gauge_lines(
-            "RAM",
-            if m.memory_total > 0 {
-                (m.memory_used as f64 / m.memory_total as f64 * 100.0) as f32
-            } else {
-                0.0
-            },
-            Some(format_bytes_pair(m.memory_used, m.memory_total)),
-            inner_width,
-        );
-        lines.extend(ram_lines);
-    }
-
-    // ── Automations section ──
-    if !automations.is_empty() {
-        lines.push(separator(inner_width));
-        lines.push(Line::from(Span::styled(
-            format!("Automations ({})", automations.len()),
-            Theme::section_header(),
-        )));
-        for entry in automations {
-            lines.push(Line::from(vec![
-                Span::styled(&entry.countdown, Style::default().fg(Theme::accent())),
-                Span::styled("  ", Style::default()),
-                Span::styled(&entry.label, Style::default().fg(Theme::text_secondary())),
-            ]));
-        }
-    }
-
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
 }
 
-/// Append the Agent section showing Claude CLI metrics.
-fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner_width: usize) {
-    lines.push(separator(inner_width));
+/// Append the active session's CPU gauge + RAM line (only when non-zero).
+fn append_session_resources(lines: &mut Vec<Line<'_>>, m: &SystemMetrics, inner_width: usize) {
+    if m.session_cpu_percent > 0.0 || m.session_memory_bytes > 0 {
+        let cpu_gauge = render_gauge_lines("CPU", m.session_cpu_percent, None, inner_width);
+        lines.extend(cpu_gauge);
 
-    let header = match (&metrics.model_display_name, &metrics.cli_version) {
-        (Some(model), Some(ver)) => format!("Agent ({model} v{ver})"),
-        (Some(model), None) => format!("Agent ({model})"),
-        (None, Some(ver)) => format!("Agent (v{ver})"),
-        (None, None) => "Agent".to_string(),
-    };
-    lines.push(Line::from(Span::styled(header, Theme::section_header())));
-
-    // Cost (headline number, only when the agent reports a non-zero spend).
-    if let Some(cost) = metrics.total_cost_usd {
-        if cost > 0.0 {
-            lines.push(Line::from(vec![
-                Span::styled("Cost:    ", Theme::label()),
-                Span::styled(format_cost(cost), Style::default().fg(Theme::accent())),
-            ]));
-        }
-    }
-
-    // Elapsed wall time, with API time as a muted aside when present.
-    if let Some(ms) = metrics.total_duration_ms {
-        let mut spans = vec![
-            Span::styled("Time:    ", Theme::label()),
-            Span::styled(
-                format_duration(ms),
-                Style::default().fg(Theme::text_primary()),
-            ),
-        ];
-        if let Some(api_ms) = metrics.total_api_duration_ms.filter(|&v| v > 0) {
-            spans.push(Span::styled(
-                format!("  (api {})", format_duration(api_ms)),
-                Style::default().fg(Theme::text_muted()),
-            ));
-        }
-        lines.push(Line::from(spans));
-    }
-
-    // Tokens
-    if metrics.total_input_tokens.is_some() || metrics.total_output_tokens.is_some() {
-        let input = metrics
-            .total_input_tokens
-            .map(format_tokens)
-            .unwrap_or_else(|| "-".to_string());
-        let output = metrics
-            .total_output_tokens
-            .map(format_tokens)
-            .unwrap_or_else(|| "-".to_string());
         lines.push(Line::from(vec![
-            Span::styled("Tokens:  ", Theme::label()),
+            Span::styled("RAM", Style::default().fg(Theme::text_muted())),
             Span::styled(
-                format!("{input} in / {output} out"),
+                format!("  {}", format_bytes(m.session_memory_bytes)),
                 Style::default().fg(Theme::text_primary()),
             ),
         ]));
     }
+}
 
-    // Context window gauge. When the window size is known, show the gauge as
-    // used/total tokens rather than a bare percentage.
+/// Append the System Resources section (global CPU/RAM gauges).
+fn append_system_section(lines: &mut Vec<Line<'_>>, m: &SystemMetrics, inner_width: usize) {
+    lines.push(separator(inner_width));
+    lines.push(Line::from(Span::styled("System", Theme::section_header())));
+
+    let gauge_lines = render_gauge_lines("CPU", m.cpu_percent, None, inner_width);
+    lines.extend(gauge_lines);
+
+    let ram_lines = render_gauge_lines(
+        "RAM",
+        if m.memory_total > 0 {
+            (m.memory_used as f64 / m.memory_total as f64 * 100.0) as f32
+        } else {
+            0.0
+        },
+        Some(format_bytes_pair(m.memory_used, m.memory_total)),
+        inner_width,
+    );
+    lines.extend(ram_lines);
+}
+
+/// Append the upcoming-automations section (skipped when there are none).
+fn append_automations_section<'a>(
+    lines: &mut Vec<Line<'a>>,
+    automations: &'a [AutomationEntry],
+    inner_width: usize,
+) {
+    if automations.is_empty() {
+        return;
+    }
+    lines.push(separator(inner_width));
+    lines.push(Line::from(Span::styled(
+        format!("Automations ({})", automations.len()),
+        Theme::section_header(),
+    )));
+    for entry in automations {
+        lines.push(Line::from(vec![
+            Span::styled(&entry.countdown, Style::default().fg(Theme::accent())),
+            Span::styled("  ", Style::default()),
+            Span::styled(&entry.label, Style::default().fg(Theme::text_secondary())),
+        ]));
+    }
+}
+
+/// Build the Agent section header from the model name + CLI version.
+fn agent_section_header(metrics: &AgentMetrics) -> String {
+    match (&metrics.model_display_name, &metrics.cli_version) {
+        (Some(model), Some(ver)) => format!("Agent ({model} v{ver})"),
+        (Some(model), None) => format!("Agent ({model})"),
+        (None, Some(ver)) => format!("Agent (v{ver})"),
+        (None, None) => "Agent".to_string(),
+    }
+}
+
+/// Append the elapsed-time row, with API time as a muted aside when present.
+fn append_agent_time(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics) {
+    let Some(ms) = metrics.total_duration_ms else {
+        return;
+    };
+    let mut spans = vec![
+        Span::styled("Time:    ", Theme::label()),
+        Span::styled(
+            format_duration(ms),
+            Style::default().fg(Theme::text_primary()),
+        ),
+    ];
+    if let Some(api_ms) = metrics.total_api_duration_ms.filter(|&v| v > 0) {
+        spans.push(Span::styled(
+            format!("  (api {})", format_duration(api_ms)),
+            Style::default().fg(Theme::text_muted()),
+        ));
+    }
+    lines.push(Line::from(spans));
+}
+
+/// Append the tokens row (input / output), skipped when neither is reported.
+fn append_agent_tokens(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics) {
+    if metrics.total_input_tokens.is_none() && metrics.total_output_tokens.is_none() {
+        return;
+    }
+    let input = metrics
+        .total_input_tokens
+        .map(format_tokens)
+        .unwrap_or_else(|| "-".to_string());
+    let output = metrics
+        .total_output_tokens
+        .map(format_tokens)
+        .unwrap_or_else(|| "-".to_string());
+    lines.push(Line::from(vec![
+        Span::styled("Tokens:  ", Theme::label()),
+        Span::styled(
+            format!("{input} in / {output} out"),
+            Style::default().fg(Theme::text_primary()),
+        ),
+    ]));
+}
+
+/// Append the context-window gauge. When the window size is known, show the
+/// gauge as used/total tokens rather than a bare percentage.
+fn append_agent_context(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner_width: usize) {
     if let Some(pct) = metrics.used_percentage {
         let suffix = metrics.context_window_size.map(|size| {
             let used = (size as f64 * pct as f64 / 100.0).round() as u64;
@@ -259,26 +284,31 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
         let gauge = render_gauge_lines("Context", pct as f32, suffix, inner_width);
         lines.extend(gauge);
     }
+}
 
-    // Lines changed
-    if metrics.total_lines_added.is_some() || metrics.total_lines_removed.is_some() {
-        let added = metrics.total_lines_added.unwrap_or(0);
-        let removed = metrics.total_lines_removed.unwrap_or(0);
-        lines.push(Line::from(vec![
-            Span::styled("Lines:   ", Theme::label()),
-            Span::styled(
-                format!("+{added}"),
-                Style::default().fg(Theme::status_busy()),
-            ),
-            Span::styled(" / ", Style::default().fg(Theme::text_muted())),
-            Span::styled(
-                format!("-{removed}"),
-                Style::default().fg(Theme::status_error()),
-            ),
-        ]));
+/// Append the lines-changed row, skipped when neither is reported.
+fn append_agent_lines_changed(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics) {
+    if metrics.total_lines_added.is_none() && metrics.total_lines_removed.is_none() {
+        return;
     }
+    let added = metrics.total_lines_added.unwrap_or(0);
+    let removed = metrics.total_lines_removed.unwrap_or(0);
+    lines.push(Line::from(vec![
+        Span::styled("Lines:   ", Theme::label()),
+        Span::styled(
+            format!("+{added}"),
+            Style::default().fg(Theme::status_busy()),
+        ),
+        Span::styled(" / ", Style::default().fg(Theme::text_muted())),
+        Span::styled(
+            format!("-{removed}"),
+            Style::default().fg(Theme::status_error()),
+        ),
+    ]));
+}
 
-    // Cache stats (only when non-zero)
+/// Append the cache-stats row (only when non-zero).
+fn append_agent_cache(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics) {
     let cache_read = metrics.cache_read_input_tokens.unwrap_or(0);
     let cache_create = metrics.cache_creation_input_tokens.unwrap_or(0);
     if cache_read > 0 || cache_create > 0 {
@@ -294,6 +324,31 @@ fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner
             ),
         ]));
     }
+}
+
+/// Append the Agent section showing Claude CLI metrics.
+fn append_agent_section(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics, inner_width: usize) {
+    lines.push(separator(inner_width));
+    lines.push(Line::from(Span::styled(
+        agent_section_header(metrics),
+        Theme::section_header(),
+    )));
+
+    // Cost (headline number, only when the agent reports a non-zero spend).
+    if let Some(cost) = metrics.total_cost_usd {
+        if cost > 0.0 {
+            lines.push(Line::from(vec![
+                Span::styled("Cost:    ", Theme::label()),
+                Span::styled(format_cost(cost), Style::default().fg(Theme::accent())),
+            ]));
+        }
+    }
+
+    append_agent_time(lines, metrics);
+    append_agent_tokens(lines, metrics);
+    append_agent_context(lines, metrics, inner_width);
+    append_agent_lines_changed(lines, metrics);
+    append_agent_cache(lines, metrics);
 }
 
 /// Append the repos section showing all repo paths for a session.

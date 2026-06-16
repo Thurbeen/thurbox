@@ -100,104 +100,141 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             task,
             from,
             no_wake,
-        } => {
-            let recipient = resolve_uuid_or_name(db, &to)?;
-            // Provenance + task tag default to the calling session's injected
-            // identity (`THURBOX_SESSION` / `THURBOX_TASK`), so an agent never has
-            // to know or pass its own ids. Explicit flags override.
-            let from_session_id = match from {
-                Some(ref f) => Some(resolve_uuid_or_name(db, f)?.id),
-                None => calling_session_id(db),
-            };
-            let from_task_id = task.or_else(calling_task_id);
-            let new = NewMessage {
-                to_session_id: recipient.id,
-                from_session_id,
-                from_task_id,
-                kind,
-                body,
-            };
-            enqueue_and_wake(db, &recipient, new, no_wake)
-        }
+        } => send_message(db, to, kind, body, task, from, no_wake),
         Action::Reply {
             message_id,
             body,
             kind,
             from,
             no_wake,
-        } => {
-            let original = db
-                .get_message(message_id)
-                .map_err(|e| format!("get_message: {e}"))?
-                .ok_or_else(|| format!("Message not found: #{message_id}"))?;
-            let sender_id = original.from_session_id.ok_or_else(|| {
-                format!("Message #{message_id} has no known sender — cannot reply")
-            })?;
-            let recipient = db
-                .get_session_by_id(sender_id)
-                .map_err(|e| format!("get_session_by_id: {e}"))?
-                .ok_or_else(|| {
-                    format!("Sender of message #{message_id} ({sender_id}) no longer exists")
-                })?;
-            let from_session_id = match from {
-                Some(ref f) => Some(resolve_uuid_or_name(db, f)?.id),
-                None => calling_session_id(db),
-            };
-            // Carry the originating task tag through so the reply stays threaded.
-            let new = NewMessage {
-                to_session_id: recipient.id,
-                from_session_id,
-                from_task_id: original.from_task_id,
-                kind,
-                body,
-            };
-            enqueue_and_wake(db, &recipient, new, no_wake)
-        }
+        } => reply_message(db, message_id, body, kind, from, no_wake),
         Action::Inbox {
             for_session,
             claim,
             all,
             limit,
-        } => {
-            let recipient = match for_session {
-                Some(ref r) => resolve_uuid_or_name(db, r)?,
-                None => calling_session(db).ok_or_else(|| {
-                    "no --for given and THURBOX_SESSION is unset (not running inside a session)"
-                        .to_string()
-                })?,
-            };
-            let messages = if claim {
-                db.claim_messages(recipient.id, limit)
-                    .map_err(|e| format!("claim_messages: {e}"))?
-            } else {
-                db.list_messages(recipient.id, !all, limit)
-                    .map_err(|e| format!("list_messages: {e}"))?
-            };
-            let json = Value::Array(messages.iter().map(message_to_json).collect());
-            Ok(CommandOutput::new(
-                json,
-                render_inbox(&recipient.name, &messages, claim),
-            ))
-        }
+        } => read_inbox(db, for_session, claim, all, limit),
         Action::Prune {
             older_than_days,
             read_only,
-        } => {
-            let days = older_than_days.unwrap_or(DEFAULT_RETENTION_DAYS);
-            let cutoff = current_time_millis().saturating_sub(days * MS_PER_DAY);
-            let pruned = db
-                .prune_messages(cutoff, read_only)
-                .map_err(|e| format!("prune_messages: {e}"))?;
-            let human = format!(
-                "Pruned {pruned} {}message(s) older than {days} day(s).",
-                if read_only { "read " } else { "" }
-            );
-            Ok(CommandOutput::new(
-                json!({ "pruned": pruned, "older_than_days": days, "read_only": read_only }),
-                human,
-            ))
-        }
+        } => prune_messages(db, older_than_days, read_only),
     }
+}
+
+/// Handle `message send`: enqueue a message addressed to a session.
+fn send_message(
+    db: &Database,
+    to: String,
+    kind: String,
+    body: String,
+    task: Option<i64>,
+    from: Option<String>,
+    no_wake: bool,
+) -> Result<CommandOutput, String> {
+    let recipient = resolve_uuid_or_name(db, &to)?;
+    // Provenance + task tag default to the calling session's injected
+    // identity (`THURBOX_SESSION` / `THURBOX_TASK`), so an agent never has
+    // to know or pass its own ids. Explicit flags override.
+    let from_session_id = resolve_from(db, from.as_deref())?;
+    let from_task_id = task.or_else(calling_task_id);
+    let new = NewMessage {
+        to_session_id: recipient.id,
+        from_session_id,
+        from_task_id,
+        kind,
+        body,
+    };
+    enqueue_and_wake(db, &recipient, new, no_wake)
+}
+
+/// Handle `message reply`: enqueue back to the original message's sender.
+fn reply_message(
+    db: &Database,
+    message_id: i64,
+    body: String,
+    kind: String,
+    from: Option<String>,
+    no_wake: bool,
+) -> Result<CommandOutput, String> {
+    let original = db
+        .get_message(message_id)
+        .map_err(|e| format!("get_message: {e}"))?
+        .ok_or_else(|| format!("Message not found: #{message_id}"))?;
+    let sender_id = original
+        .from_session_id
+        .ok_or_else(|| format!("Message #{message_id} has no known sender — cannot reply"))?;
+    let recipient = db
+        .get_session_by_id(sender_id)
+        .map_err(|e| format!("get_session_by_id: {e}"))?
+        .ok_or_else(|| format!("Sender of message #{message_id} ({sender_id}) no longer exists"))?;
+    let from_session_id = resolve_from(db, from.as_deref())?;
+    // Carry the originating task tag through so the reply stays threaded.
+    let new = NewMessage {
+        to_session_id: recipient.id,
+        from_session_id,
+        from_task_id: original.from_task_id,
+        kind,
+        body,
+    };
+    enqueue_and_wake(db, &recipient, new, no_wake)
+}
+
+/// Resolve the `--from` provenance: an explicit reference, else the calling
+/// session's injected id (`THURBOX_SESSION`).
+fn resolve_from(db: &Database, from: Option<&str>) -> Result<Option<SessionId>, String> {
+    match from {
+        Some(f) => Ok(Some(resolve_uuid_or_name(db, f)?.id)),
+        None => Ok(calling_session_id(db)),
+    }
+}
+
+/// Handle `message inbox`: peek or claim a session's messages.
+fn read_inbox(
+    db: &Database,
+    for_session: Option<String>,
+    claim: bool,
+    all: bool,
+    limit: Option<usize>,
+) -> Result<CommandOutput, String> {
+    let recipient = match for_session {
+        Some(ref r) => resolve_uuid_or_name(db, r)?,
+        None => calling_session(db).ok_or_else(|| {
+            "no --for given and THURBOX_SESSION is unset (not running inside a session)".to_string()
+        })?,
+    };
+    let messages = if claim {
+        db.claim_messages(recipient.id, limit)
+            .map_err(|e| format!("claim_messages: {e}"))?
+    } else {
+        db.list_messages(recipient.id, !all, limit)
+            .map_err(|e| format!("list_messages: {e}"))?
+    };
+    let json = Value::Array(messages.iter().map(message_to_json).collect());
+    Ok(CommandOutput::new(
+        json,
+        render_inbox(&recipient.name, &messages, claim),
+    ))
+}
+
+/// Handle `message prune`: retention sweep of old messages.
+fn prune_messages(
+    db: &Database,
+    older_than_days: Option<u64>,
+    read_only: bool,
+) -> Result<CommandOutput, String> {
+    let days = older_than_days.unwrap_or(DEFAULT_RETENTION_DAYS);
+    let cutoff = current_time_millis().saturating_sub(days * MS_PER_DAY);
+    let pruned = db
+        .prune_messages(cutoff, read_only)
+        .map_err(|e| format!("prune_messages: {e}"))?;
+    let human = format!(
+        "Pruned {pruned} {}message(s) older than {days} day(s).",
+        if read_only { "read " } else { "" }
+    );
+    Ok(CommandOutput::new(
+        json!({ "pruned": pruned, "older_than_days": days, "read_only": read_only }),
+        human,
+    ))
 }
 
 /// Render an inbox read as a table of messages (or a friendly empty line).

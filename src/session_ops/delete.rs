@@ -36,39 +36,59 @@ pub fn delete_session_headless(
     let mut report = ForceDeleteReport::default();
 
     if force {
-        match crate::agent::tmux::kill_window(&session.name) {
-            Ok(()) => report.killed_window = true,
-            Err(e) => tracing::warn!("kill_window({}) failed: {e}", session.name),
-        }
-
-        for wt in &session.worktrees {
-            match crate::git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
-                Ok(()) => report
-                    .removed_worktrees
-                    .push(wt.worktree_path.display().to_string()),
-                Err(e) => report
-                    .worktree_errors
-                    .push(format!("{}: {e}", wt.worktree_path.display())),
-            }
-        }
-
-        // Tear down the multi-repo symlink workspace (if any). Only the symlinks
-        // are removed — the underlying repos are untouched.
-        if let Some(asid) = &session.agent_session_id {
-            if let Err(e) = crate::workspace::remove_workspace(asid) {
-                tracing::warn!("remove_workspace({asid}) failed: {e}");
-            }
-        }
-
-        report.disabled_automations = db
-            .disable_send_automations_for_session(session_id)
-            .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
+        force_teardown(db, session_id, &session, &mut report)?;
     }
 
     db.soft_delete_session(session_id)
         .map_err(|e| format!("soft_delete_session: {e}"))?;
 
     Ok(report)
+}
+
+/// Tear down a session's runtime resources for a force-delete: kill the tmux
+/// window, remove worktrees + the symlink workspace, and disable any pending
+/// `Send` automations. Best-effort cleanup is recorded in `report`; only the
+/// automation-disable failure (a DB error) aborts.
+fn force_teardown(
+    db: &Database,
+    session_id: SessionId,
+    session: &crate::sync::SharedSession,
+    report: &mut ForceDeleteReport,
+) -> Result<(), String> {
+    match crate::agent::tmux::kill_window(&session.name) {
+        Ok(()) => report.killed_window = true,
+        Err(e) => tracing::warn!("kill_window({}) failed: {e}", session.name),
+    }
+
+    for wt in &session.worktrees {
+        remove_worktree_into(wt, report);
+    }
+
+    // Tear down the multi-repo symlink workspace (if any). Only the symlinks
+    // are removed — the underlying repos are untouched.
+    if let Some(asid) = &session.agent_session_id {
+        if let Err(e) = crate::workspace::remove_workspace(asid) {
+            tracing::warn!("remove_workspace({asid}) failed: {e}");
+        }
+    }
+
+    report.disabled_automations = db
+        .disable_send_automations_for_session(session_id)
+        .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
+
+    Ok(())
+}
+
+/// Best-effort worktree removal, recording success/failure into `report`.
+fn remove_worktree_into(wt: &crate::sync::SharedWorktree, report: &mut ForceDeleteReport) {
+    match crate::git::remove_worktree(&wt.repo_path, &wt.worktree_path) {
+        Ok(()) => report
+            .removed_worktrees
+            .push(wt.worktree_path.display().to_string()),
+        Err(e) => report
+            .worktree_errors
+            .push(format!("{}: {e}", wt.worktree_path.display())),
+    }
 }
 
 #[cfg(test)]

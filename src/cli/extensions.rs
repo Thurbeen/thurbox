@@ -105,164 +105,208 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             target,
             home,
             force,
-        } => {
-            let report =
-                crate::session_ops::install_extension(db, &target, home.as_deref(), force)?;
-            // Arm the heartbeat so the extension's automations fire headlessly.
-            arm_heartbeat();
-            Ok(CommandOutput::from_summary(install_report_to_json(&report)))
-        }
-        Action::Uninstall { name, purge } => {
-            let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
-            Ok(CommandOutput::from_summary(json!({
-                "ok": true,
-                "summary": format!("Uninstalled extension '{}'", report.name),
-                "uninstalled": report.name,
-                "sessions_deleted": report.deactivate.sessions_deleted,
-                "automations_deleted": report.deactivate.automations_deleted,
-                "agents_removed": report.agents_removed,
-                "manifest_removed": report.manifest_removed,
-                "home_removed": report.home_removed,
-            })))
-        }
-        Action::List => {
-            let defs = crate::agent::extension_config::list_manifests();
-            let mut healths = Vec::with_capacity(defs.len());
-            for def in &defs {
-                healths.push(crate::session_ops::extension_health(db, def)?);
-            }
-            let json = Value::Array(healths.iter().map(health_to_json).collect());
-            Ok(CommandOutput::new(json, render_extension_list(&healths)))
-        }
+        } => install_extension(db, target, home, force),
+        Action::Uninstall { name, purge } => uninstall_extension(db, name, purge),
+        Action::List => list_extensions(db),
         Action::Available { query } => Ok(available_output(query.as_deref())),
-        Action::Update { name, all, force } => match name {
-            // `--all` alongside a name is contradictory; otherwise a bare name
-            // updates one and *no* name updates them all (no flag required).
-            Some(_) if all => Err("pass either a name or --all, not both".to_string()),
-            Some(name) => {
-                let report = crate::session_ops::update_extension(db, &name, force)?;
-                // Arm the heartbeat so the refreshed automations keep firing headlessly.
-                arm_heartbeat();
-                Ok(CommandOutput::from_summary(update_report_to_json(&report)))
-            }
-            None => {
-                let results = crate::session_ops::update_all_extensions(db, force);
-                arm_heartbeat();
-                let total = results.len();
-                let mut changed = 0;
-                let mut failed = 0;
-                let out: Vec<Value> = results
-                    .into_iter()
-                    .map(|(name, result)| match result {
-                        Ok(report) => {
-                            if report.changed {
-                                changed += 1;
-                            }
-                            update_report_to_json(&report)
-                        }
-                        Err(e) => {
-                            failed += 1;
-                            json!({ "name": name, "ok": false, "error": e })
-                        }
-                    })
-                    .collect();
-                let summary = if total == 0 {
-                    "No extensions installed".to_string()
-                } else {
-                    format!("Updated {total} extension(s): {changed} changed, {failed} failed")
-                };
-                Ok(CommandOutput::from_summary(
-                    json!({ "ok": failed == 0, "summary": summary, "extensions": out }),
-                ))
-            }
-        },
-        Action::Reinstall { name, purge } => {
-            let report = crate::session_ops::reinstall_extension(db, &name, purge)?;
+        Action::Update { name, all, force } => update_extensions(db, name, all, force),
+        Action::Reinstall { name, purge } => reinstall_extension(db, name, purge),
+        Action::Activate { name } => activate_extension(db, name),
+        Action::Deactivate { name, force, purge } => deactivate_extension(db, name, force, purge),
+        Action::Status { name } => status_extension(db, name),
+    }
+}
+
+/// Handle `extension install`.
+fn install_extension(
+    db: &Database,
+    target: String,
+    home: Option<String>,
+    force: bool,
+) -> Result<CommandOutput, String> {
+    let report = crate::session_ops::install_extension(db, &target, home.as_deref(), force)?;
+    // Arm the heartbeat so the extension's automations fire headlessly.
+    arm_heartbeat();
+    Ok(CommandOutput::from_summary(install_report_to_json(&report)))
+}
+
+/// Handle `extension uninstall`.
+fn uninstall_extension(db: &Database, name: String, purge: bool) -> Result<CommandOutput, String> {
+    let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
+    Ok(CommandOutput::from_summary(json!({
+        "ok": true,
+        "summary": format!("Uninstalled extension '{}'", report.name),
+        "uninstalled": report.name,
+        "sessions_deleted": report.deactivate.sessions_deleted,
+        "automations_deleted": report.deactivate.automations_deleted,
+        "agents_removed": report.agents_removed,
+        "manifest_removed": report.manifest_removed,
+        "home_removed": report.home_removed,
+    })))
+}
+
+/// Handle `extension list`.
+fn list_extensions(db: &Database) -> Result<CommandOutput, String> {
+    let defs = crate::agent::extension_config::list_manifests();
+    let mut healths = Vec::with_capacity(defs.len());
+    for def in &defs {
+        healths.push(crate::session_ops::extension_health(db, def)?);
+    }
+    let json = Value::Array(healths.iter().map(health_to_json).collect());
+    Ok(CommandOutput::new(json, render_extension_list(&healths)))
+}
+
+/// Handle `extension update` for a single named extension or all of them.
+fn update_extensions(
+    db: &Database,
+    name: Option<String>,
+    all: bool,
+    force: bool,
+) -> Result<CommandOutput, String> {
+    match name {
+        // `--all` alongside a name is contradictory; otherwise a bare name
+        // updates one and *no* name updates them all (no flag required).
+        Some(_) if all => Err("pass either a name or --all, not both".to_string()),
+        Some(name) => {
+            let report = crate::session_ops::update_extension(db, &name, force)?;
+            // Arm the heartbeat so the refreshed automations keep firing headlessly.
             arm_heartbeat();
-            let version = report.install.version.as_deref().unwrap_or("?");
-            Ok(CommandOutput::from_summary(json!({
-                "ok": true,
-                "summary": format!(
-                    "Reinstalled '{}' {} → {}",
-                    report.name, version, report.install.home
-                ),
-                "reinstalled": report.name,
-                "home_removed": report.uninstall.home_removed,
-                "home": report.install.home,
-                "version": report.install.version,
-                "files_written": report.install.files_written,
-                "agents_added": report.install.agents_added,
-                "sessions_created": report.install.ensure.sessions_created,
-                "automations_created": report.install.ensure.automations_created,
-            })))
+            Ok(CommandOutput::from_summary(update_report_to_json(&report)))
         }
-        Action::Activate { name } => {
-            let def = load_manifest(&name)?;
-            let report = crate::session_ops::activate_extension(db, &def)?;
-            // A `Send` automation only fires while something ticks it. Arm the
-            // heartbeat keeper so the extension works headlessly (TUI closed),
-            // matching how `automation create` arms it.
-            arm_heartbeat();
-            Ok(CommandOutput::from_summary(json!({
-                "ok": true,
-                "summary": format!(
-                    "Activated '{}' ({} session(s), {} automation(s))",
-                    def.name,
-                    report.sessions_created.len(),
-                    report.automations_created.len(),
-                ),
-                "activated": def.name,
-                "sessions_created": report.sessions_created,
-                "automations_created": report.automations_created,
-                "health": health_to_json(&crate::session_ops::extension_health(db, &def)?),
-            })))
-        }
-        Action::Deactivate { name, force, purge } => {
-            // Tear down whatever the manifest declares. If the manifest is gone
-            // we can't know the resources, but still clear the active-set entry.
-            let report = match crate::agent::extension_config::load_manifest(&name) {
-                Some(def) => crate::session_ops::deactivate_extension(db, &def, force)?,
-                None => {
-                    let was_active = db
-                        .remove_active_extension(&name)
-                        .map_err(|e| format!("remove_active_extension: {e}"))?;
-                    crate::session_ops::DeactivateReport {
-                        was_active,
-                        ..Default::default()
-                    }
+        None => Ok(update_all_extensions(db, force)),
+    }
+}
+
+/// `extension update` with no name: refresh every installed extension and
+/// aggregate the per-extension reports.
+fn update_all_extensions(db: &Database, force: bool) -> CommandOutput {
+    let results = crate::session_ops::update_all_extensions(db, force);
+    arm_heartbeat();
+    let total = results.len();
+    let mut changed = 0;
+    let mut failed = 0;
+    let out: Vec<Value> = results
+        .into_iter()
+        .map(|(name, result)| match result {
+            Ok(report) => {
+                if report.changed {
+                    changed += 1;
                 }
-            };
-            let manifest_removed = if purge {
-                crate::agent::extension_config::remove_manifest_file(&name)?
-            } else {
-                false
-            };
-            let summary = if report.was_active {
-                format!("Deactivated '{name}'")
-            } else {
-                format!("'{name}' was not active")
-            };
-            Ok(CommandOutput::from_summary(json!({
-                "ok": true,
-                "summary": summary,
-                "deactivated": name,
-                "was_active": report.was_active,
-                "sessions_deleted": report.sessions_deleted,
-                "automations_deleted": report.automations_deleted,
-                "manifest_removed": manifest_removed,
-            })))
-        }
-        Action::Status { name } => match name {
-            Some(name) => {
-                let def = load_manifest(&name)?;
-                let health = crate::session_ops::extension_health(db, &def)?;
-                Ok(CommandOutput::new(
-                    health_to_json(&health),
-                    render_extension_detail(&health),
-                ))
+                update_report_to_json(&report)
             }
-            None => run(Action::List, db),
-        },
+            Err(e) => {
+                failed += 1;
+                json!({ "name": name, "ok": false, "error": e })
+            }
+        })
+        .collect();
+    let summary = if total == 0 {
+        "No extensions installed".to_string()
+    } else {
+        format!("Updated {total} extension(s): {changed} changed, {failed} failed")
+    };
+    CommandOutput::from_summary(json!({ "ok": failed == 0, "summary": summary, "extensions": out }))
+}
+
+/// Handle `extension reinstall`.
+fn reinstall_extension(db: &Database, name: String, purge: bool) -> Result<CommandOutput, String> {
+    let report = crate::session_ops::reinstall_extension(db, &name, purge)?;
+    arm_heartbeat();
+    let version = report.install.version.as_deref().unwrap_or("?");
+    Ok(CommandOutput::from_summary(json!({
+        "ok": true,
+        "summary": format!(
+            "Reinstalled '{}' {} → {}",
+            report.name, version, report.install.home
+        ),
+        "reinstalled": report.name,
+        "home_removed": report.uninstall.home_removed,
+        "home": report.install.home,
+        "version": report.install.version,
+        "files_written": report.install.files_written,
+        "agents_added": report.install.agents_added,
+        "sessions_created": report.install.ensure.sessions_created,
+        "automations_created": report.install.ensure.automations_created,
+    })))
+}
+
+/// Handle `extension activate`.
+fn activate_extension(db: &Database, name: String) -> Result<CommandOutput, String> {
+    let def = load_manifest(&name)?;
+    let report = crate::session_ops::activate_extension(db, &def)?;
+    // A `Send` automation only fires while something ticks it. Arm the
+    // heartbeat keeper so the extension works headlessly (TUI closed),
+    // matching how `automation create` arms it.
+    arm_heartbeat();
+    Ok(CommandOutput::from_summary(json!({
+        "ok": true,
+        "summary": format!(
+            "Activated '{}' ({} session(s), {} automation(s))",
+            def.name,
+            report.sessions_created.len(),
+            report.automations_created.len(),
+        ),
+        "activated": def.name,
+        "sessions_created": report.sessions_created,
+        "automations_created": report.automations_created,
+        "health": health_to_json(&crate::session_ops::extension_health(db, &def)?),
+    })))
+}
+
+/// Handle `extension deactivate`.
+fn deactivate_extension(
+    db: &Database,
+    name: String,
+    force: bool,
+    purge: bool,
+) -> Result<CommandOutput, String> {
+    // Tear down whatever the manifest declares. If the manifest is gone
+    // we can't know the resources, but still clear the active-set entry.
+    let report = match crate::agent::extension_config::load_manifest(&name) {
+        Some(def) => crate::session_ops::deactivate_extension(db, &def, force)?,
+        None => {
+            let was_active = db
+                .remove_active_extension(&name)
+                .map_err(|e| format!("remove_active_extension: {e}"))?;
+            crate::session_ops::DeactivateReport {
+                was_active,
+                ..Default::default()
+            }
+        }
+    };
+    let manifest_removed = if purge {
+        crate::agent::extension_config::remove_manifest_file(&name)?
+    } else {
+        false
+    };
+    let summary = if report.was_active {
+        format!("Deactivated '{name}'")
+    } else {
+        format!("'{name}' was not active")
+    };
+    Ok(CommandOutput::from_summary(json!({
+        "ok": true,
+        "summary": summary,
+        "deactivated": name,
+        "was_active": report.was_active,
+        "sessions_deleted": report.sessions_deleted,
+        "automations_deleted": report.automations_deleted,
+        "manifest_removed": manifest_removed,
+    })))
+}
+
+/// Handle `extension status` (one extension, or all when no name is given).
+fn status_extension(db: &Database, name: Option<String>) -> Result<CommandOutput, String> {
+    match name {
+        Some(name) => {
+            let def = load_manifest(&name)?;
+            let health = crate::session_ops::extension_health(db, &def)?;
+            Ok(CommandOutput::new(
+                health_to_json(&health),
+                render_extension_detail(&health),
+            ))
+        }
+        None => run(Action::List, db),
     }
 }
 

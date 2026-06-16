@@ -118,35 +118,63 @@ fn description_lines<'a>(state: &TaskEditorState<'a>, active: bool) -> Vec<Line<
         return lines;
     }
 
-    let (cur_line, cur_col) = state.description_cursor;
-    for (li, text) in state.description.split('\n').enumerate() {
-        let chars: Vec<char> = text.chars().collect();
-        let mut spans = vec![Span::raw("    ")];
-        if active && li == cur_line {
-            let caret = cur_col.min(chars.len());
-            let before: String = chars[..caret].iter().collect();
-            if !before.is_empty() {
-                spans.push(Span::styled(before, text_style));
-            }
-            let cursor_char = chars
-                .get(caret)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            spans.push(Span::styled(cursor_char, Theme::cursor()));
-            let after: String = chars
-                .get(caret + 1..)
-                .map(|s| s.iter().collect())
-                .unwrap_or_default();
-            if !after.is_empty() {
-                spans.push(Span::styled(after, text_style));
-            }
-        } else if !chars.is_empty() {
-            spans.push(Span::styled(text.to_string(), text_style));
-        }
-        lines.push(Line::from(spans));
-    }
-
+    lines.extend(description_text_rows(state, active, text_style));
     lines
+}
+
+/// Build the indented text rows of the description, drawing a block cursor on
+/// the cursor's row when `active`.
+fn description_text_rows<'a>(
+    state: &TaskEditorState<'a>,
+    active: bool,
+    text_style: Style,
+) -> Vec<Line<'a>> {
+    let (cur_line, cur_col) = state.description_cursor;
+    state
+        .description
+        .split('\n')
+        .enumerate()
+        .map(|(li, text)| {
+            if active && li == cur_line {
+                description_cursor_line(text, cur_col, text_style)
+            } else {
+                description_plain_line(text, text_style)
+            }
+        })
+        .collect()
+}
+
+/// Render one description row with a block cursor drawn at `cur_col`.
+fn description_cursor_line<'a>(text: &str, cur_col: usize, text_style: Style) -> Line<'a> {
+    let chars: Vec<char> = text.chars().collect();
+    let caret = cur_col.min(chars.len());
+    let mut spans = vec![Span::raw("    ")];
+    let before: String = chars[..caret].iter().collect();
+    if !before.is_empty() {
+        spans.push(Span::styled(before, text_style));
+    }
+    let cursor_char = chars
+        .get(caret)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    spans.push(Span::styled(cursor_char, Theme::cursor()));
+    let after: String = chars
+        .get(caret + 1..)
+        .map(|s| s.iter().collect())
+        .unwrap_or_default();
+    if !after.is_empty() {
+        spans.push(Span::styled(after, text_style));
+    }
+    Line::from(spans)
+}
+
+/// Render one description row without a cursor (indented plain text).
+fn description_plain_line<'a>(text: &str, text_style: Style) -> Line<'a> {
+    let mut spans = vec![Span::raw("    ")];
+    if !text.is_empty() {
+        spans.push(Span::styled(text.to_string(), text_style));
+    }
+    Line::from(spans)
 }
 
 fn field_line<'a>(

@@ -709,60 +709,72 @@ impl App {
     /// time, so they don't re-toast here.
     fn poll_config_reload(&mut self) {
         if config_reload::agents_mtime() != self.config_reload.agents_mtime {
-            let (registry, warnings) = crate::agent::agent_config::load_or_seed_with_warnings();
-            self.agents = registry;
-            // Re-stat after the load: a missing file gets re-seeded by it.
-            self.config_reload.agents_mtime = config_reload::agents_mtime();
-            if warnings.is_empty() {
-                self.set_status(StatusLevel::Info, "agents.toml reloaded");
-            } else {
-                self.set_status(
-                    StatusLevel::Error,
-                    format!("Config: {}", warnings.join(" · ")),
-                );
-            }
-            for w in &warnings {
-                warn!("{w}");
-            }
+            self.reload_agents_config();
         }
 
         let kb_mtime = config_reload::keybindings_mtime();
         if kb_mtime != self.config_reload.keybindings_mtime {
             self.config_reload.keybindings_mtime = kb_mtime;
-            let (bindings, warnings) = match crate::storage::keybindings::load_keybindings_json() {
-                Ok(Some(json)) => {
-                    match crate::session::KeyBindings::from_json_with_warnings(&json) {
-                        Ok((bindings, warnings)) => (
-                            bindings,
-                            warnings
-                                .into_iter()
-                                .map(|w| format!("keybindings.json: {w}"))
-                                .collect(),
-                        ),
-                        Err(e) => (
-                            crate::session::KeyBindings::default(),
-                            vec![format!("keybindings.json: {e}; using default keybindings")],
-                        ),
-                    }
-                }
-                Ok(None) => (crate::session::KeyBindings::default(), Vec::new()),
+            self.reload_keybindings_config();
+        }
+    }
+
+    /// Reload `agents.toml` and toast the result. Caller has already detected an
+    /// mtime change; this re-stats afterwards so a re-seeded file is recorded.
+    fn reload_agents_config(&mut self) {
+        let (registry, warnings) = crate::agent::agent_config::load_or_seed_with_warnings();
+        self.agents = registry;
+        // Re-stat after the load: a missing file gets re-seeded by it.
+        self.config_reload.agents_mtime = config_reload::agents_mtime();
+        self.toast_config_reload("agents.toml reloaded", &warnings);
+    }
+
+    /// Reload `keybindings.json` and toast the result. Caller has already
+    /// recorded the new mtime.
+    fn reload_keybindings_config(&mut self) {
+        let (bindings, warnings) = Self::load_keybindings_with_warnings();
+        self.keybindings = bindings;
+        self.toast_config_reload("keybindings.json reloaded", &warnings);
+    }
+
+    /// Load the on-disk keybindings, falling back to defaults (with a warning)
+    /// on any read/parse error.
+    fn load_keybindings_with_warnings() -> (crate::session::KeyBindings, Vec<String>) {
+        match crate::storage::keybindings::load_keybindings_json() {
+            Ok(Some(json)) => match crate::session::KeyBindings::from_json_with_warnings(&json) {
+                Ok((bindings, warnings)) => (
+                    bindings,
+                    warnings
+                        .into_iter()
+                        .map(|w| format!("keybindings.json: {w}"))
+                        .collect(),
+                ),
                 Err(e) => (
                     crate::session::KeyBindings::default(),
                     vec![format!("keybindings.json: {e}; using default keybindings")],
                 ),
-            };
-            self.keybindings = bindings;
-            if warnings.is_empty() {
-                self.set_status(StatusLevel::Info, "keybindings.json reloaded");
-            } else {
-                self.set_status(
-                    StatusLevel::Error,
-                    format!("Config: {}", warnings.join(" · ")),
-                );
-            }
-            for w in &warnings {
-                warn!("{w}");
-            }
+            },
+            Ok(None) => (crate::session::KeyBindings::default(), Vec::new()),
+            Err(e) => (
+                crate::session::KeyBindings::default(),
+                vec![format!("keybindings.json: {e}; using default keybindings")],
+            ),
+        }
+    }
+
+    /// Toast the outcome of a live config reload: an info `ok` line when clean,
+    /// otherwise the joined warnings (also logged).
+    fn toast_config_reload(&mut self, ok: &str, warnings: &[String]) {
+        if warnings.is_empty() {
+            self.set_status(StatusLevel::Info, ok);
+        } else {
+            self.set_status(
+                StatusLevel::Error,
+                format!("Config: {}", warnings.join(" · ")),
+            );
+        }
+        for w in warnings {
+            warn!("{w}");
         }
     }
 
@@ -1893,8 +1905,14 @@ impl App {
             return;
         }
 
+        self.scroll_pane(self.pane_at(x, y), up);
+    }
+
+    /// Apply a wheel tick (`up`) to a specific scrollable pane (the terminal
+    /// when `pane` is `None`/`Terminal`).
+    fn scroll_pane(&mut self, pane: Option<ScrollPane>, up: bool) {
         let step: i32 = if up { -1 } else { 1 };
-        match self.pane_at(x, y) {
+        match pane {
             Some(ScrollPane::Terminal) | None => {
                 if up {
                     self.scroll_terminal_up(MOUSE_SCROLL_LINES);
@@ -2697,22 +2715,7 @@ impl App {
     pub fn tick(&mut self) {
         self.metrics.tick_count = self.metrics.tick_count.wrapping_add(1);
 
-        // Run the debounced global-search content scan once the query has been
-        // settled for the debounce window (Instant-based, since tick cadence is
-        // event-load-dependent).
-        if self.global_search.active && self.global_search.content_dirty {
-            let settled = self
-                .global_search
-                .query_changed_at
-                .map(|t| {
-                    t.elapsed() >= std::time::Duration::from_millis(search::CONTENT_DEBOUNCE_MS)
-                })
-                .unwrap_or(false);
-            if settled {
-                self.recompute_global_search_content();
-                self.global_search.content_dirty = false;
-            }
-        }
+        self.tick_global_search_content();
 
         self.refresh_session_statuses();
 
@@ -2727,19 +2730,7 @@ impl App {
         // Send deferred inputs whose delay has elapsed
         self.drain_deferred_inputs();
 
-        // Finalize pending delete after undo timeout
-        if let Some(ref pending) = self.pending_delete {
-            if pending.created_at.elapsed() >= UNDO_TIMEOUT {
-                self.finalize_pending_delete();
-            }
-        }
-
-        // Auto-expire status messages so default project/session counts reappear
-        if let Some(ref msg) = self.status_message {
-            if msg.created_at.elapsed() >= STATUS_MESSAGE_TIMEOUT {
-                self.status_message = None;
-            }
-        }
+        self.tick_expire_timers();
 
         self.poll_external_changes();
 
@@ -2755,10 +2746,50 @@ impl App {
             self.refresh_tasks();
         }
 
-        // Apply completed background metric/git-stat refreshes, then kick off
-        // the next one on its cadence. Both run off the UI thread (sysinfo +
-        // statusline file reads / `git` shell-outs) so a slow read never stalls
-        // rendering — mirrors the worktree-sync poll above.
+        self.tick_background_refreshes();
+    }
+
+    /// Run the debounced global-search content scan once the query has been
+    /// settled for the debounce window (Instant-based, since tick cadence is
+    /// event-load-dependent).
+    fn tick_global_search_content(&mut self) {
+        if !(self.global_search.active && self.global_search.content_dirty) {
+            return;
+        }
+        let settled = self
+            .global_search
+            .query_changed_at
+            .map(|t| t.elapsed() >= std::time::Duration::from_millis(search::CONTENT_DEBOUNCE_MS))
+            .unwrap_or(false);
+        if settled {
+            self.recompute_global_search_content();
+            self.global_search.content_dirty = false;
+        }
+    }
+
+    /// Expire the undo window for a pending delete and auto-clear stale status
+    /// messages so default project/session counts reappear.
+    fn tick_expire_timers(&mut self) {
+        // Finalize pending delete after undo timeout
+        if let Some(ref pending) = self.pending_delete {
+            if pending.created_at.elapsed() >= UNDO_TIMEOUT {
+                self.finalize_pending_delete();
+            }
+        }
+
+        // Auto-expire status messages so default project/session counts reappear
+        if let Some(ref msg) = self.status_message {
+            if msg.created_at.elapsed() >= STATUS_MESSAGE_TIMEOUT {
+                self.status_message = None;
+            }
+        }
+    }
+
+    /// Apply completed background metric/git-stat/usage refreshes and kick off
+    /// the next ones on their cadences. All run off the UI thread (sysinfo +
+    /// statusline file reads / `git` shell-outs) so a slow read never stalls
+    /// rendering — mirrors the worktree-sync poll.
+    fn tick_background_refreshes(&mut self) {
         self.poll_metrics_refresh();
         self.poll_git_stats();
 
@@ -4139,31 +4170,8 @@ impl App {
 
         let timezone = m.timezone();
 
-        let action = match m.action {
-            modals::AutomationActionKind::Send => {
-                let Some(session_id) = m.selected_target().map(|(id, _)| *id) else {
-                    self.set_error("No target session — start a session first");
-                    return false;
-                };
-                AutomationAction::Send { session_id }
-            }
-            modals::AutomationActionKind::Spawn => {
-                let repo = m.repo.value().trim();
-                if repo.is_empty() {
-                    self.set_error("Repo path required for spawn action");
-                    return false;
-                }
-                let worktree = m.worktree.value().trim();
-                let agent = m.agent.value().trim();
-                AutomationAction::Spawn {
-                    // Expand `~` so the stored path is absolute (git and the
-                    // session cwd don't expand it themselves).
-                    repo_path: crate::paths::expand_tilde(repo),
-                    worktree_branch: (!worktree.is_empty()).then(|| worktree.to_string()),
-                    base_branch: None,
-                    agent: (!agent.is_empty()).then(|| agent.to_string()),
-                }
-            }
+        let Some(action) = self.build_automation_action(m) else {
+            return false;
         };
 
         let next_run_at = m
@@ -4171,36 +4179,17 @@ impl App {
             .then(|| schedule.next_after(now, timezone.as_deref()))
             .flatten();
 
-        let result = match m.editing_id {
-            Some(id) => match self.db.get_automation(id) {
-                Ok(Some(mut auto)) => {
-                    auto.name = name;
-                    auto.prompt = prompt;
-                    auto.schedule = schedule;
-                    auto.timezone = timezone;
-                    auto.action = action;
-                    auto.enabled = m.enabled;
-                    auto.next_run_at = next_run_at;
-                    self.db.update_automation(&auto)
-                }
-                Ok(None) => {
-                    self.set_error("Automation no longer exists");
-                    return false;
-                }
-                Err(e) => Err(e),
-            },
-            None => {
-                let new = crate::storage::automations::NewAutomation {
-                    name,
-                    enabled: m.enabled,
-                    schedule,
-                    timezone,
-                    action,
-                    prompt,
-                    next_run_at,
-                };
-                self.db.create_automation(&new).map(|_| ())
-            }
+        let new = crate::storage::automations::NewAutomation {
+            name,
+            enabled: m.enabled,
+            schedule,
+            timezone,
+            action,
+            prompt,
+            next_run_at,
+        };
+        let Some(result) = self.persist_automation(m.editing_id, new) else {
+            return false;
         };
 
         if let Err(e) = result {
@@ -4211,6 +4200,70 @@ impl App {
         self.refresh_automations();
         self.set_status(StatusLevel::Success, "Automation saved");
         true
+    }
+
+    /// Build the [`AutomationAction`] from the editor's action fields. Returns
+    /// `None` (after setting an error status) when a required field is missing.
+    fn build_automation_action(
+        &mut self,
+        m: &modals::AutomationEditorModal,
+    ) -> Option<AutomationAction> {
+        match m.action {
+            modals::AutomationActionKind::Send => {
+                let Some(session_id) = m.selected_target().map(|(id, _)| *id) else {
+                    self.set_error("No target session — start a session first");
+                    return None;
+                };
+                Some(AutomationAction::Send { session_id })
+            }
+            modals::AutomationActionKind::Spawn => {
+                let repo = m.repo.value().trim();
+                if repo.is_empty() {
+                    self.set_error("Repo path required for spawn action");
+                    return None;
+                }
+                let worktree = m.worktree.value().trim();
+                let agent = m.agent.value().trim();
+                Some(AutomationAction::Spawn {
+                    // Expand `~` so the stored path is absolute (git and the
+                    // session cwd don't expand it themselves).
+                    repo_path: crate::paths::expand_tilde(repo),
+                    worktree_branch: (!worktree.is_empty()).then(|| worktree.to_string()),
+                    base_branch: None,
+                    agent: (!agent.is_empty()).then(|| agent.to_string()),
+                })
+            }
+        }
+    }
+
+    /// Persist the automation: update the existing row (`editing_id`) or create
+    /// a new one. Returns the DB result, or `None` (after an error status) when
+    /// editing a row that no longer exists.
+    fn persist_automation(
+        &mut self,
+        editing_id: Option<i64>,
+        new: crate::storage::automations::NewAutomation,
+    ) -> Option<rusqlite::Result<()>> {
+        match editing_id {
+            Some(id) => match self.db.get_automation(id) {
+                Ok(Some(mut auto)) => {
+                    auto.name = new.name;
+                    auto.prompt = new.prompt;
+                    auto.schedule = new.schedule;
+                    auto.timezone = new.timezone;
+                    auto.action = new.action;
+                    auto.enabled = new.enabled;
+                    auto.next_run_at = new.next_run_at;
+                    Some(self.db.update_automation(&auto))
+                }
+                Ok(None) => {
+                    self.set_error("Automation no longer exists");
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            None => Some(self.db.create_automation(&new).map(|_| ())),
+        }
     }
 
     // ---- Tasks (right-side panel) ----------------------------------------

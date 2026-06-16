@@ -258,35 +258,20 @@ impl FileViewerState {
             let Ok(rel) = target.strip_prefix(&root_path) else {
                 continue;
             };
-            // Walk the components, expanding each directory level.
-            let mut node = &mut self.roots[root_idx];
-            let mut current = root_path.clone();
-            node.expanded = true;
-            for comp in rel.components() {
-                current.push(comp);
-                if node.children.is_none() {
-                    node.children = Some(read_dir_sorted(&node.path));
-                }
-                let Some(children) = node.children.as_mut() else {
-                    break;
-                };
-                let Some(pos) = children.iter().position(|c| c.path == current) else {
-                    break;
-                };
-                node = &mut children[pos];
-                if node.is_dir {
-                    node.expanded = true;
-                }
-            }
-            // Now locate the target in the flattened view and select it.
-            if let Some(row) = self.flatten().iter().position(|r| {
-                self.path_for_index(&r.index_path)
-                    .map(|p| p == target)
-                    .unwrap_or(false)
-            }) {
-                self.selected = row;
-            }
+            expand_ancestors(&mut self.roots[root_idx], &root_path, rel);
+            self.select_target(target);
             return;
+        }
+    }
+
+    /// Locate `target` in the flattened view and move the selection onto it.
+    fn select_target(&mut self, target: &Path) {
+        if let Some(row) = self.flatten().iter().position(|r| {
+            self.path_for_index(&r.index_path)
+                .map(|p| p == target)
+                .unwrap_or(false)
+        }) {
+            self.selected = row;
         }
     }
 
@@ -465,6 +450,31 @@ fn traverse_mut<'a>(roots: &'a mut [FileNode], index_path: &[usize]) -> Option<&
     Some(node)
 }
 
+/// Expand `root` and every directory along `rel` (the target's path relative to
+/// `root_path`), reading child directories on demand. Stops early if a level is
+/// missing. Used by [`FileViewerState::reveal_path`].
+fn expand_ancestors(root: &mut FileNode, root_path: &Path, rel: &Path) {
+    let mut node = root;
+    let mut current = root_path.to_path_buf();
+    node.expanded = true;
+    for comp in rel.components() {
+        current.push(comp);
+        if node.children.is_none() {
+            node.children = Some(read_dir_sorted(&node.path));
+        }
+        let Some(children) = node.children.as_mut() else {
+            break;
+        };
+        let Some(pos) = children.iter().position(|c| c.path == current) else {
+            break;
+        };
+        node = &mut children[pos];
+        if node.is_dir {
+            node.expanded = true;
+        }
+    }
+}
+
 /// Recursively walk `node` and auto-expand directories that contain any
 /// descendant whose name matches `q_lc`. Returns true if a match was found at
 /// or below `node`. Reads child directories on demand.
@@ -480,11 +490,7 @@ fn expand_matches(node: &mut FileNode, q_lc: &str, depth: usize, budget: &mut us
         .map(|n| n.to_string_lossy().to_lowercase().contains(q_lc))
         .unwrap_or(false);
 
-    if !node.is_dir {
-        return self_matches;
-    }
-
-    if depth >= SEARCH_DEPTH_LIMIT {
+    if !node.is_dir || depth >= SEARCH_DEPTH_LIMIT {
         return self_matches;
     }
 
@@ -493,22 +499,34 @@ fn expand_matches(node: &mut FileNode, q_lc: &str, depth: usize, budget: &mut us
         node.children = Some(read_dir_sorted(&node.path));
     }
 
-    let mut child_match = false;
-    if let Some(children) = node.children.as_mut() {
-        for child in children.iter_mut() {
-            if expand_matches(child, q_lc, depth + 1, budget) {
-                child_match = true;
-            }
-            if *budget == 0 {
-                break;
-            }
-        }
-    }
-
+    let child_match = expand_matching_children(node, q_lc, depth, budget);
     if child_match {
         node.expanded = true;
     }
     self_matches || child_match
+}
+
+/// Recurse into `node`'s loaded children, returning true if any descendant
+/// matches `q_lc`. Honors the shared `budget`. Split out of [`expand_matches`].
+fn expand_matching_children(
+    node: &mut FileNode,
+    q_lc: &str,
+    depth: usize,
+    budget: &mut usize,
+) -> bool {
+    let Some(children) = node.children.as_mut() else {
+        return false;
+    };
+    let mut child_match = false;
+    for child in children.iter_mut() {
+        if expand_matches(child, q_lc, depth + 1, budget) {
+            child_match = true;
+        }
+        if *budget == 0 {
+            break;
+        }
+    }
+    child_match
 }
 
 fn short_root_label(path: &Path) -> String {
@@ -601,6 +619,32 @@ pub fn render_file_viewer(
     state: &FileViewerState,
     focus: FocusLevel,
 ) -> (Option<ScrollbarGeom>, Vec<super::RowHitbox>) {
+    let inner = render_chrome(frame, area, state, focus);
+
+    if inner.height == 0 || inner.width == 0 {
+        return (None, Vec::new());
+    }
+
+    if state.roots.is_empty() {
+        let p = Paragraph::new(Line::from(Span::styled(
+            "No folders",
+            Style::default().fg(Theme::text_muted()),
+        )));
+        frame.render_widget(p, inner);
+        return (None, Vec::new());
+    }
+
+    render_tree(frame, inner, state)
+}
+
+/// Lay out the viewer chrome — the bordered `Files` block plus the optional
+/// search bar below it — and return the inner list area.
+fn render_chrome(
+    frame: &mut Frame,
+    area: Rect,
+    state: &FileViewerState,
+    focus: FocusLevel,
+) -> Rect {
     use ratatui::layout::{Constraint, Direction, Layout};
 
     let search_visible = state.search_active || !state.search_query.is_empty();
@@ -614,20 +658,15 @@ pub fn render_file_viewer(
         .constraints(constraints)
         .split(area);
     let list_outer = chunks[0];
-    let search_outer = if search_visible {
-        Some(chunks[1])
-    } else {
-        None
-    };
 
     let block = focus_block(" Files ", focus);
     let inner = block.inner(list_outer);
     frame.render_widget(block, list_outer);
 
-    if let Some(sa) = search_outer {
+    if search_visible {
         render_search_bar(
             frame,
-            sa,
+            chunks[1],
             &state.search_query,
             state.search_active,
             state.search_cursor,
@@ -636,21 +675,16 @@ pub fn render_file_viewer(
         );
     }
 
-    if inner.height == 0 || inner.width == 0 {
-        return (None, Vec::new());
-    }
+    inner
+}
 
-    let list_area = inner;
-
-    if state.roots.is_empty() {
-        let p = Paragraph::new(Line::from(Span::styled(
-            "No folders",
-            Style::default().fg(Theme::text_muted()),
-        )));
-        frame.render_widget(p, list_area);
-        return (None, Vec::new());
-    }
-
+/// Render the flattened tree rows into `list_area` (with a scrollbar when they
+/// overflow). Returns the scrollbar geometry and one hitbox per visible row.
+fn render_tree(
+    frame: &mut Frame,
+    list_area: Rect,
+    state: &FileViewerState,
+) -> (Option<ScrollbarGeom>, Vec<super::RowHitbox>) {
     let rows = state.flatten();
     let height = list_area.height as usize;
     if height == 0 {

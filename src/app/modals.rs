@@ -451,45 +451,43 @@ pub(super) fn apply_text_input_key(
         }
         // Ctrl+<non-letter> (arrows, Home/End): fall through to normal handling.
     }
-    match code {
-        KeyCode::Char(c) => {
-            if let Some(f) = field {
-                f.insert(c);
-            }
-        }
-        KeyCode::Backspace => {
-            if let Some(f) = field {
-                f.backspace();
-            }
-        }
-        KeyCode::Delete => {
-            if let Some(f) = field {
-                f.delete();
-            }
-        }
-        KeyCode::Left => {
-            if let Some(f) = field {
-                f.move_left();
-            }
-        }
-        KeyCode::Right => {
-            if let Some(f) = field {
-                f.move_right();
-            }
-        }
-        KeyCode::Home => {
-            if let Some(f) = field {
-                f.home();
-            }
-        }
-        KeyCode::End => {
-            if let Some(f) = field {
-                f.end();
-            }
-        }
-        _ => return false,
+    if !is_text_input_key(code) {
+        return false;
+    }
+    if let Some(f) = field {
+        apply_text_edit_op(f, code);
     }
     true
+}
+
+/// Whether `code` is a text-editing key handled by [`apply_text_input_key`]
+/// (insert/backspace/delete/cursor move).
+fn is_text_input_key(code: KeyCode) -> bool {
+    matches!(
+        code,
+        KeyCode::Char(_)
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+    )
+}
+
+/// Apply a single text-editing key to a focused field. `code` must be a key for
+/// which [`is_text_input_key`] returns `true`; anything else is a no-op.
+fn apply_text_edit_op(f: &mut TextInput, code: KeyCode) {
+    match code {
+        KeyCode::Char(c) => f.insert(c),
+        KeyCode::Backspace => f.backspace(),
+        KeyCode::Delete => f.delete(),
+        KeyCode::Left => f.move_left(),
+        KeyCode::Right => f.move_right(),
+        KeyCode::Home => f.home(),
+        KeyCode::End => f.end(),
+        _ => {}
+    }
 }
 
 // ── Modal State Structs ────────────────────────────────────────────────────
