@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use crate::session::automation::parse_trigger;
 use crate::session::extension_def::HOME_TOKEN;
-use crate::session::{AutomationAction, ExtensionDef, SessionId};
+use crate::session::{AutomationAction, ExtensionAutomation, ExtensionDef, SessionId};
 use crate::storage::automations::NewAutomation;
 use crate::storage::Database;
 use crate::sync::current_time_millis;
@@ -38,12 +38,17 @@ pub struct EnsureReport {
     pub sessions_created: Vec<String>,
     /// Names of automations newly created this pass.
     pub automations_created: Vec<String>,
+    /// Names of existing `Send` automations whose target session id was stale
+    /// and got re-linked to the session's current id this pass.
+    pub automations_relinked: Vec<String>,
 }
 
 impl EnsureReport {
-    /// Whether anything was (re)created.
+    /// Whether anything was (re)created or repaired.
     pub fn created_anything(&self) -> bool {
-        !self.sessions_created.is_empty() || !self.automations_created.is_empty()
+        !self.sessions_created.is_empty()
+            || !self.automations_created.is_empty()
+            || !self.automations_relinked.is_empty()
     }
 }
 
@@ -502,7 +507,10 @@ fn make_symlink(_target: &str, _link: &Path) -> Result<(), String> {
 
 /// Idempotently ensure every resource a manifest declares exists. Existing
 /// sessions/automations are matched by name and reused; only the missing ones
-/// are created. Safe to call repeatedly (this is the self-heal primitive).
+/// are created. An existing `Send` automation whose stored target id no longer
+/// matches its session's current id is re-linked (a recreated session would
+/// otherwise orphan it). Safe to call repeatedly (this is the self-heal
+/// primitive).
 pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureReport, String> {
     let mut report = EnsureReport::default();
     let mut session_ids: HashMap<String, SessionId> = HashMap::new();
@@ -538,37 +546,57 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
     }
 
     for auto in &def.automations {
-        let exists = db
-            .list_automations()
-            .map_err(|e| format!("list_automations: {e}"))?
-            .iter()
-            .any(|row| row.name == auto.name);
-        if exists {
-            continue;
-        }
         let target = *session_ids.get(&auto.session_ref).ok_or_else(|| {
             format!(
                 "automation '{}' references unknown session '{}'",
                 auto.name, auto.session_ref
             )
         })?;
-        let schedule = parse_trigger(&auto.trigger, None, None)?;
-        let next_run_at = schedule.next_after(current_time_millis(), None);
-        let new = NewAutomation {
-            name: auto.name.clone(),
-            enabled: true,
-            schedule,
-            timezone: None,
-            action: AutomationAction::Send { session_id: target },
-            prompt: auto.prompt.clone(),
-            next_run_at,
-        };
-        db.create_automation(&new)
-            .map_err(|e| format!("create_automation: {e}"))?;
-        report.automations_created.push(auto.name.clone());
+        ensure_automation(db, auto, target, &mut report)?;
     }
 
     Ok(report)
+}
+
+/// Ensure a single declared automation exists and points at `target` (its
+/// session's current id). Matched by name: a missing one is created; an
+/// existing one with a stale `Send` target is re-linked (see [`ensure_extension`]
+/// for why a recreated session orphans the old id).
+fn ensure_automation(
+    db: &Database,
+    auto: &ExtensionAutomation,
+    target: SessionId,
+    report: &mut EnsureReport,
+) -> Result<(), String> {
+    let existing = db
+        .list_automations()
+        .map_err(|e| format!("list_automations: {e}"))?
+        .into_iter()
+        .find(|row| row.name == auto.name);
+    if let Some(mut row) = existing {
+        if matches!(&row.action, AutomationAction::Send { session_id } if *session_id != target) {
+            row.action = AutomationAction::Send { session_id: target };
+            db.update_automation(&row)
+                .map_err(|e| format!("update_automation: {e}"))?;
+            report.automations_relinked.push(auto.name.clone());
+        }
+        return Ok(());
+    }
+    let schedule = parse_trigger(&auto.trigger, None, None)?;
+    let next_run_at = schedule.next_after(current_time_millis(), None);
+    let new = NewAutomation {
+        name: auto.name.clone(),
+        enabled: true,
+        schedule,
+        timezone: None,
+        action: AutomationAction::Send { session_id: target },
+        prompt: auto.prompt.clone(),
+        next_run_at,
+    };
+    db.create_automation(&new)
+        .map_err(|e| format!("create_automation: {e}"))?;
+    report.automations_created.push(auto.name.clone());
+    Ok(())
 }
 
 /// Activate an extension: ensure its resources exist, then record it in the
@@ -676,8 +704,14 @@ pub fn heal_active_extensions(db: &Database) -> Vec<String> {
                         report.automations_created.join(", ")
                     ));
                 }
+                if !report.automations_relinked.is_empty() {
+                    parts.push(format!(
+                        "re-linked automation(s) {}",
+                        report.automations_relinked.join(", ")
+                    ));
+                }
                 messages.push(format!(
-                    "Recreated {} for managed extension '{name}' \
+                    "Repaired {} for managed extension '{name}' \
                      (`thurbox-cli extension deactivate {name}` to turn it off)",
                     parts.join(" + ")
                 ));
@@ -815,6 +849,38 @@ mod tests {
         let second = ensure_extension(&db, &def).unwrap();
         assert!(!second.created_anything(), "second pass creates nothing");
         assert_eq!(db.list_automations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ensure_relinks_stale_send_target_after_session_recreated() {
+        let db = Database::open_in_memory().unwrap();
+        let old_id = insert_session(&db, "flow");
+        let def = flow_def();
+
+        // First pass binds the automation to the original session id.
+        ensure_extension(&db, &def).unwrap();
+        let auto = &db.list_automations().unwrap()[0];
+        assert_eq!(auto.action, AutomationAction::Send { session_id: old_id });
+
+        // The session is recreated under the same name with a fresh id (the
+        // shape that orphaned the automation: soft-delete + new row).
+        db.soft_delete_session(old_id).unwrap();
+        let new_id = insert_session(&db, "flow");
+        assert_ne!(old_id, new_id);
+
+        // Self-heal re-links the existing automation to the live id rather than
+        // leaving it pointing at the dead one.
+        let report = ensure_extension(&db, &def).unwrap();
+        assert!(report.automations_created.is_empty(), "no new automation");
+        assert_eq!(report.automations_relinked, ["flow-tick"]);
+        assert!(report.created_anything(), "a relink counts as repair");
+
+        let auto = &db.list_automations().unwrap()[0];
+        assert_eq!(auto.action, AutomationAction::Send { session_id: new_id });
+
+        // A subsequent pass is a no-op now that the link is correct.
+        let again = ensure_extension(&db, &def).unwrap();
+        assert!(!again.created_anything(), "relink is idempotent");
     }
 
     #[test]
