@@ -275,6 +275,17 @@ fn remove_before_cursor(buffer: &mut String, cursor: &mut usize, start: usize) {
     *cursor = start;
 }
 
+/// Delete the chars in `[cursor, end)` (char indices) from `buffer`, leaving
+/// `cursor` in place. A no-op when `end <= cursor`. Backs the forward line-edit
+/// (`Ctrl+K` kill to line end) of both text widgets.
+fn remove_after_cursor(buffer: &mut String, cursor: usize, end: usize) {
+    if end <= cursor {
+        return;
+    }
+    let (s, e) = (byte_index(buffer, cursor), byte_index(buffer, end));
+    buffer.replace_range(s..e, "");
+}
+
 /// Char index of the start of the word ending at `cursor`: skip any trailing
 /// whitespace, then the run of non-whitespace before it. Backs the `Ctrl+W`
 /// handlers of both text widgets (newlines count as whitespace).
@@ -290,56 +301,131 @@ fn word_start_before(chars: &[char], cursor: usize) -> usize {
 }
 
 /// Readline-style line editing shared by the single-line [`TextInput`] and the
-/// multi-line [`TextArea`], so the Ctrl-chord dispatch lives in one place.
+/// multi-line [`TextArea`], so the Ctrl-chord dispatch lives in one place. The
+/// cursor-move and single-char delete chords delegate to each widget's existing
+/// inherent methods; only the word/line kills carry their own logic.
 trait LineEdit {
     /// Delete the word before the cursor (readline `Ctrl+W`).
     fn delete_word_before(&mut self);
     /// Delete from the cursor to the start of the current line (readline `Ctrl+U`).
     fn kill_to_line_start(&mut self);
+    /// Delete from the cursor to the end of the current line (readline `Ctrl+K`).
+    fn kill_to_line_end(&mut self);
+    /// Move the cursor to the start of the current line (readline `Ctrl+A`).
+    fn line_start(&mut self);
+    /// Move the cursor to the end of the current line (readline `Ctrl+E`).
+    fn line_end(&mut self);
+    /// Move the cursor one char left (readline `Ctrl+B`).
+    fn cursor_left(&mut self);
+    /// Move the cursor one char right (readline `Ctrl+F`).
+    fn cursor_right(&mut self);
+    /// Delete the char under the cursor (readline `Ctrl+D`).
+    fn delete_forward(&mut self);
+    /// Delete the char before the cursor (readline `Ctrl+H`, like Backspace).
+    fn delete_backward(&mut self);
+}
+
+/// The `LineEdit` methods identical for both text widgets: the word kill plus
+/// the cursor-move / single-char deletes that delegate to each widget's
+/// inherent methods. Defined once here so the single-line and multi-line impls
+/// share one copy (the line kills, which differ per widget, stay inline). Both
+/// widgets expose the `buffer`/`cursor` fields and inherent methods this needs.
+macro_rules! line_edit_shared {
+    () => {
+        fn delete_word_before(&mut self) {
+            let chars: Vec<char> = self.buffer.chars().collect();
+            let start = word_start_before(&chars, self.cursor);
+            remove_before_cursor(&mut self.buffer, &mut self.cursor, start);
+        }
+        fn line_start(&mut self) {
+            self.home();
+        }
+        fn line_end(&mut self) {
+            self.end();
+        }
+        fn cursor_left(&mut self) {
+            self.move_left();
+        }
+        fn cursor_right(&mut self) {
+            self.move_right();
+        }
+        fn delete_forward(&mut self) {
+            self.delete();
+        }
+        fn delete_backward(&mut self) {
+            self.backspace();
+        }
+    };
 }
 
 impl LineEdit for TextInput {
-    fn delete_word_before(&mut self) {
-        let chars: Vec<char> = self.buffer.chars().collect();
-        let start = word_start_before(&chars, self.cursor);
-        remove_before_cursor(&mut self.buffer, &mut self.cursor, start);
-    }
+    line_edit_shared!();
 
     /// For a single-line input this clears everything before the cursor.
     fn kill_to_line_start(&mut self) {
         remove_before_cursor(&mut self.buffer, &mut self.cursor, 0);
     }
+
+    /// For a single-line input this clears everything from the cursor onward.
+    fn kill_to_line_end(&mut self) {
+        let end = self.buffer.chars().count();
+        remove_after_cursor(&mut self.buffer, self.cursor, end);
+    }
 }
 
 impl LineEdit for TextArea {
-    fn delete_word_before(&mut self) {
-        let chars: Vec<char> = self.buffer.chars().collect();
-        let start = word_start_before(&chars, self.cursor);
-        remove_before_cursor(&mut self.buffer, &mut self.cursor, start);
-    }
+    line_edit_shared!();
 
     fn kill_to_line_start(&mut self) {
         let (line, _) = self.cursor_line_col();
         let line_start = self.cursor_at(line, 0);
         remove_before_cursor(&mut self.buffer, &mut self.cursor, line_start);
     }
+
+    /// Kill to the end of the current line; at the line end (with text below)
+    /// this consumes the trailing newline, joining the next line — matching
+    /// readline/emacs `Ctrl+K`.
+    fn kill_to_line_end(&mut self) {
+        let (line, _) = self.cursor_line_col();
+        let mut end = self.cursor_at(line, usize::MAX);
+        if end == self.cursor && self.cursor < self.char_count() {
+            end = self.cursor + 1;
+        }
+        remove_after_cursor(&mut self.buffer, self.cursor, end);
+    }
 }
 
-/// Apply a readline `Ctrl`+letter line-edit chord to `field` (`Ctrl+W` delete
-/// word, `Ctrl+U` kill to line start). Returns `true` when `code` is a
-/// `Ctrl`+letter chord — handled (W/U) or swallowed (any other letter) — so the
-/// caller treats it as consumed and never inserts the bare letter as text.
-/// `Ctrl` with a non-letter key (arrows, Home/End) returns `false` so normal
-/// cursor handling still applies, keeping every text field consistent.
+/// Apply a readline `Ctrl`+letter line-edit chord to `field`, giving modal text
+/// fields the same emacs-style editing as a terminal:
+///
+/// - `Ctrl+A` / `Ctrl+E` — move to line start / end
+/// - `Ctrl+B` / `Ctrl+F` — move one char left / right
+/// - `Ctrl+H` / `Ctrl+D` — delete the char before / under the cursor
+/// - `Ctrl+W` — delete the word before the cursor
+/// - `Ctrl+U` / `Ctrl+K` — kill to line start / end
+///
+/// Returns `true` when `code` is a `Ctrl`+letter chord — handled or swallowed
+/// (any unmapped letter) — so the caller treats it as consumed and never
+/// inserts the bare letter as text. `Ctrl` with a non-letter key (arrows,
+/// Home/End) returns `false` so normal cursor handling still applies.
 fn apply_ctrl_line_edit(field: &mut impl LineEdit, code: KeyCode, mods: KeyModifiers) -> bool {
     if !mods.contains(KeyModifiers::CONTROL) {
         return false;
     }
-    match code {
-        KeyCode::Char('w') | KeyCode::Char('W') => field.delete_word_before(),
-        KeyCode::Char('u') | KeyCode::Char('U') => field.kill_to_line_start(),
-        KeyCode::Char(_) => {} // other Ctrl+letter: swallow (never insert)
-        _ => return false,     // Ctrl+<non-letter>: defer to normal handling
+    let KeyCode::Char(c) = code else {
+        return false; // Ctrl+<non-letter>: defer to normal handling
+    };
+    match c.to_ascii_lowercase() {
+        'a' => field.line_start(),
+        'e' => field.line_end(),
+        'b' => field.cursor_left(),
+        'f' => field.cursor_right(),
+        'h' => field.delete_backward(),
+        'd' => field.delete_forward(),
+        'w' => field.delete_word_before(),
+        'u' => field.kill_to_line_start(),
+        'k' => field.kill_to_line_end(),
+        _ => {} // other Ctrl+letter: swallow (never insert)
     }
     true
 }
@@ -1461,6 +1547,102 @@ mod tests {
         area.home(); // start of "second"
         area.delete_word_before();
         assert_eq!(area.value(), "second");
+    }
+
+    #[test]
+    fn ctrl_chords_move_cursor_like_a_terminal() {
+        // Ctrl+A/E to line ends, Ctrl+B/F by one char — emacs/readline moves
+        // that must edit the cursor without ever inserting the bare letter.
+        let ctrl = KeyModifiers::CONTROL;
+        let mut input = TextInput::new();
+        input.set("abcd"); // cursor at end (4)
+
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('a'),
+            ctrl
+        ));
+        assert_eq!(input.cursor_pos(), 0);
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('e'),
+            ctrl
+        ));
+        assert_eq!(input.cursor_pos(), 4);
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('b'),
+            ctrl
+        ));
+        assert_eq!(input.cursor_pos(), 3);
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('f'),
+            ctrl
+        ));
+        assert_eq!(input.cursor_pos(), 4);
+        // Uppercase (Shift+Ctrl) maps the same way.
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('A'),
+            ctrl
+        ));
+        assert_eq!(input.cursor_pos(), 0);
+        assert_eq!(input.value(), "abcd", "cursor chords must not change text");
+    }
+
+    #[test]
+    fn ctrl_chords_delete_chars_and_kill_to_line_end() {
+        let ctrl = KeyModifiers::CONTROL;
+        let mut input = TextInput::new();
+
+        // Ctrl+H deletes the char before the cursor (like Backspace).
+        input.set("abc"); // cursor at end
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('h'),
+            ctrl
+        ));
+        assert_eq!(input.value(), "ab");
+
+        // Ctrl+D deletes the char under the cursor.
+        input.set("abc");
+        input.home(); // cursor before 'a'
+        assert!(apply_text_input_key(
+            Some(&mut input),
+            KeyCode::Char('d'),
+            ctrl
+        ));
+        assert_eq!(input.value(), "bc");
+
+        // Ctrl+K kills from the cursor to the end of the line.
+        input.set("hello world");
+        input.home();
+        input.move_right(); // after 'h'
+        input.kill_to_line_end();
+        assert_eq!(input.value(), "h");
+    }
+
+    #[test]
+    fn text_area_kill_to_line_end_respects_lines() {
+        let mut area = TextArea::new();
+        // Ctrl+K mid-line kills only the rest of the current line.
+        area.set("first line\nsecond");
+        area.home(); // start of line 1 ("second")
+        area.move_up(); // start of line 0 ("first line")
+        for _ in 0..5 {
+            area.move_right(); // park after "first"
+        }
+        area.kill_to_line_end();
+        assert_eq!(area.value(), "first\nsecond");
+
+        // At the end of a line (text below), Ctrl+K joins the next line.
+        area.set("first\nsecond");
+        area.home(); // start of line 1 ("second")
+        area.move_up(); // line 0
+        area.end(); // end of "first", before the newline
+        area.kill_to_line_end();
+        assert_eq!(area.value(), "firstsecond");
     }
 
     #[test]

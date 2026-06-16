@@ -1134,6 +1134,18 @@ terminal. Navigation / app-control chords (`Ctrl+H/J/K/L` focus + session nav,
 escape route out of the terminal, so they must keep working there even though a
 few collide with readline.
 
+**Readline editing in modal text fields.** thurbox's own text inputs (session /
+branch name, repo-picker path & search, automation editor, task title /
+description) accept the standard emacs/readline line-editing chords, so the same
+muscle memory works there as in a terminal: `Ctrl+A`/`Ctrl+E` line start/end,
+`Ctrl+B`/`Ctrl+F` move by char, `Ctrl+H`/`Ctrl+D` delete the char before/under
+the cursor, `Ctrl+W` delete word, `Ctrl+U`/`Ctrl+K` kill to line start/end. The
+dispatch lives in one place — `modals::apply_ctrl_line_edit` over the `LineEdit`
+trait (implemented by both `TextInput` and `TextArea`) — and **every**
+`Ctrl`+letter is consumed (mapped or swallowed) so a bare control letter never
+leaks into the field. A `Ctrl` chord with a non-letter key (arrows, Home/End)
+falls through to normal cursor handling.
+
 A few stateful keys stay literal (the F1 panel lists them under
 **Fixed (not rebindable)**): modal selectors (j/k/Enter/Esc), the
 automations/tasks panes, the file-viewer **search sub-mode**, and the
