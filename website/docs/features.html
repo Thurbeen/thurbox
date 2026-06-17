@@ -81,6 +81,17 @@ breadcrumb: 'Features'
               <code>Ctrl+T</code>
             </li>
             <li>
+              Reorder the list by hand: with the session list focused,
+              <code>Shift+J</code>
+              /
+              <code>Shift+K</code>
+              move the selected session (and its nested children) down/up, and
+              <code>Shift+S</code>
+              sorts sessions alphabetically by name within each repo group. Manual order wins
+              &mdash; a status change only recolors the dot, never moves a row &mdash; and it
+              survives restarts.
+            </li>
+            <li>
               Recover sessions externally at any time with
               <code>tmux -L thurbox attach</code>
             </li>
@@ -434,6 +445,98 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             row.
           </p>
 
+          <h2 id="parent-sessions">
+            Parent Sessions (Lead / Worker)
+            <a href="#parent-sessions" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Every session carries an optional
+            <strong>parent</strong>
+            , so orchestration scripts can model a
+            <em>lead</em>
+            session that spawns
+            <em>workers</em>
+            . A
+            <code>Ctrl+F</code>
+            fork records its source as the parent automatically; headless,
+            <code>thurbox-cli session create --parent &lt;uuid&gt;</code>
+            sets it explicitly, and
+            <code>session list --parent &lt;uuid&gt;</code>
+            lists a lead's direct children.
+          </p>
+          <ul>
+            <li>
+              In the session list, children nest under their parent
+              <strong>within the same repo group</strong>
+              (muted
+              <code>&boxur;</code>
+              tree prefix; a child whose parent lives in another group keeps its place with a
+              <code>&rdsh;</code>
+              mark instead).
+              <code>Ctrl+J</code>
+              /
+              <code>Ctrl+K</code>
+              navigation walks the tree exactly as rendered.
+            </li>
+            <li>
+              The link is
+              <strong>informational only</strong>
+              &mdash; deleting a lead never deletes or orphans its workers (they routinely outlive
+              the lead). A dangling parent just renders the child as a top-level session again.
+            </li>
+          </ul>
+
+          <h2 id="inter-session-messages">
+            Inter-Session Messages
+            <a href="#inter-session-messages" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            A general, agent-neutral
+            <strong>message queue</strong>
+            lets one session hand another a structured payload &mdash; addressed to a session, with
+            a free-form
+            <code>--kind</code>
+            tag, a
+            <code>--body</code>
+            , and optional sender/task provenance &mdash; instead of scraping its rendered
+            terminal. It is the channel extensions use for agent&harr;agent coordination (the
+            <a href="extension-flow.html">flow extension</a>
+            's clarify&rarr;plan&rarr;build relay is the first consumer).
+          </p>
+          <ul>
+            <li>
+              <strong>Push, not poll.</strong>
+              A worker pushes a clean payload with
+              <code>thurbox-cli message send</code>
+              ; a wake nudge types a short
+              <code>inbox</code>
+              token into the recipient's pane so it drains immediately. The payload always travels
+              through the durable database, never the pane.
+            </li>
+            <li>
+              <strong>Exactly-once drain.</strong>
+              <code>message inbox --claim</code>
+              is a single atomic
+              <code>UPDATE &hellip; RETURNING</code>
+              , so the TUI, a cron tick, and a wake nudge can drain the same inbox concurrently
+              without ever double-processing or dropping a message.
+            </li>
+            <li>
+              <strong>Self-knowable identity.</strong>
+              Thurbox injects a stable
+              <code>THURBOX_SESSION</code>
+              (and, for task-spawned sessions,
+              <code>THURBOX_TASK</code>
+              ) into each agent, so a CLI call
+              <em>inside</em>
+              a session proves its own identity: an agent sends and reads its own mail passing no
+              ids, and
+              <code>message reply &lt;id&gt;</code>
+              routes back to a message's original sender without ever mapping a peer to a session
+              id.
+            </li>
+          </ul>
+
           <h2 id="global-search">
             Global Search
             <a href="#global-search" class="heading-anchor">#</a>
@@ -616,6 +719,53 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             </figcaption>
           </figure>
 
+          <h2 id="os-notifications">
+            OS Notifications
+            <a href="#os-notifications" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            When a session crosses into a
+            <strong>needs-you</strong>
+            state &mdash; the agent rang the terminal bell or emitted an OSC 9 / OSC 777
+            notification (usually because it is waiting on an answer or has finished a task)
+            &mdash; Thurbox fires an OS desktop notification, so you can react without watching
+            the TUI. The notification body is the agent's last OSC message, or
+            <code>Waiting for input</code>
+            otherwise.
+          </p>
+          <ul>
+            <li>
+              <strong>Linux</strong>
+              dispatches over dbus and supports
+              <strong>click-to-focus</strong>
+              : clicking the banner switches the TUI to that session on its next tick.
+              <strong>macOS</strong>
+              shows the banner but ignores clicks (the modern notification API requires a signed
+              app bundle, which Thurbox is not).
+            </li>
+            <li>
+              It fires
+              <strong>only while the TUI is open</strong>
+              &mdash; the terminal parser that watches for the bell does not run headless &mdash;
+              and is deduplicated per session, with the session you are currently viewing skipped
+              by default.
+            </li>
+            <li>
+              Tune it in the
+              <code>[notifications]</code>
+              block of
+              <code>settings.toml</code>
+              (
+              <a href="configuration.html#notifications">see Configuration</a>
+              ): opt into the timing-only
+              <code>Busy &rarr; Waiting</code>
+              edge for agents that never ring a bell, toggle the sound, or change the dedup floor.
+              Turn the whole feature off with
+              <code>[features] notifications = false</code>
+              .
+            </li>
+          </ul>
+
           <h2 id="mouse-navigation">
             Mouse Navigation
             <a href="#mouse-navigation" class="heading-anchor">#</a>
@@ -666,7 +816,10 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <code>[features]</code>
             (seeded commented-out; everything defaults to
             <code>true</code>
-            ). A disabled feature hides its pane and turns its keybinding into an explanatory toast,
+            except
+            <code>version_check</code>
+            , which is opt-in because it makes a network call). A disabled feature hides its pane
+            and turns its keybinding into an explanatory toast,
             but its data and the
             <code>thurbox-cli</code>
             surface keep working &mdash; so flipping a flag back on is lossless.
@@ -678,7 +831,9 @@ file_viewer = true    # F3/Ctrl+E file viewer
 global_search = true  # Ctrl+/ search strip
 info_panel = true     # F2/Ctrl+B info panel
 shell_pane = true     # Ctrl+T per-session shell
-mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code></pre>
+mouse = true          # mouse capture: clicks, wheel, drag-select, hover
+notifications = true  # OS desktop alerts when a session needs attention
+version_check = false # opt-in GitHub update check (makes a network call)</code></pre>
           <p>
             <code>automations = false</code>
             is the one flag with teeth beyond the UI: it also stops the TUI from firing due
@@ -837,6 +992,60 @@ mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code><
               is its first consumer.
             </li>
             <li>
+              <strong>task</strong>
+              (alias
+              <code>todo</code>
+              ) &mdash;
+              <code>create</code>
+              /
+              <code>list</code>
+              /
+              <code>show</code>
+              /
+              <code>edit</code>
+              /
+              <code>remove</code>
+              /
+              <code>run</code>
+              the
+              <a href="#tasks">todo list</a>
+              :
+              <code>create</code>
+              with neither
+              <code>--session</code>
+              nor
+              <code>--repo</code>
+              is a plain local todo, and
+              <code>run</code>
+              triggers its Send/Spawn agent action headlessly.
+            </li>
+            <li>
+              <strong>extension</strong>
+              (alias
+              <code>ext</code>
+              ) &mdash;
+              <code>install</code>
+              /
+              <code>uninstall</code>
+              /
+              <code>reinstall</code>
+              /
+              <code>list</code>
+              /
+              <code>available</code>
+              /
+              <code>update</code>
+              /
+              <code>activate</code>
+              /
+              <code>deactivate</code>
+              /
+              <code>status</code>
+              manage the
+              <a href="extensions.html">opt-in extensions</a>
+              .
+            </li>
+            <li>
               <strong>editor</strong>
               &mdash;
               <code>get</code>
@@ -845,6 +1054,16 @@ mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code><
               the command
               <code>Ctrl+O</code>
               runs (the worktree path is appended as the final argument).
+            </li>
+            <li>
+              <strong>config</strong>
+              &mdash;
+              <code>validate</code>
+              strict-parses every config file (exit
+              <code>1</code>
+              on a problem &mdash; handy in dotfiles CI), and
+              <code>show</code>
+              prints the effective resolved configuration.
             </li>
           </ul>
 

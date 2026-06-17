@@ -1336,6 +1336,53 @@ restore, worktree sync, and theme changes.
 
 ---
 
+## OS Notifications
+
+Status messages are in-app and transient; OS notifications are the
+out-of-app analog for the one event a user must not miss — a session
+that **needs them**. When a session transitions to
+`SessionStatus::Attention` (the agent rang the terminal bell or
+emitted an OSC 9 / OSC 777 notification), thurbox fires an OS desktop
+notification whose body is the agent's last OSC message, or `Waiting
+for input` otherwise. An opt-in `also_on_waiting` extends the trigger
+to the timing-only `Busy → Waiting` edge for agents that never ring a
+bell (chattier — it fires each time the agent goes idle after
+activity).
+
+### Why the transition is observed in one place
+
+The edge is detected once per tick in `refresh_session_statuses` — the
+**same** place `SessionStatus` is computed — so the notification rule
+can never drift from the status dot shown in the list. It is
+deduplicated per session by `min_interval_secs`, and the session you
+are currently viewing is skipped by default (`suppress_for_active`),
+since you don't need an alert for the pane you're already watching.
+
+### Click-to-focus (Linux), passive banner (macOS)
+
+On Linux the dbus action callback writes a session id to the SQLite
+`metadata` row; the TUI's external-state poll reads and **deletes it
+atomically** (a single `DELETE … RETURNING`) on its next tick and
+switches to that session. macOS shows the banner but ignores clicks —
+the modern `UNUserNotificationCenter` actions require a signed app
+bundle, which thurbox is not. **Terminal window-raising is
+deliberately not implemented**: thurbox runs inside an arbitrary
+terminal emulator it doesn't own, and per-emulator window control is
+fragile (especially on Wayland), so the session is merely pre-selected
+and the user alt-tabs back themselves.
+
+### TUI-only lifecycle and gating
+
+The PTY parser that observes the bell only runs while the TUI is
+alive, so notifications never fire from a headless `automation tick`.
+The dispatcher thread (`crate::notifications::start`) starts only when
+`[features] notifications = true`, so the feature is zero-overhead when
+disabled. Knobs live in the `[notifications]` block of `settings.toml`
+(`also_on_waiting` / `suppress_for_active` / `sound` /
+`min_interval_secs`) — see [CONFIG.md](CONFIG.md).
+
+---
+
 ## Empty Terminal State
 
 When the active session has no terminal content yet, the terminal

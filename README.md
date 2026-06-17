@@ -45,6 +45,14 @@ adds:
 - `Ctrl+R` restart preserves the conversation when the agent
   supports resume; `Ctrl+F` forks a session; `Ctrl+T` toggles a
   shell pane.
+- Order the list by hand with `Shift+J`/`Shift+K` (move the
+  selected session and its children), or `Shift+S` to sort
+  alphabetically within each repo group. Manual order wins over
+  status and survives restarts.
+- Sessions can carry a **parent** (lead/worker): `Ctrl+F` records
+  one automatically, and `thurbox-cli session create --parent
+  <uuid>` sets it headlessly. The link is informational only —
+  deleting a lead never cascades to its workers.
 - Global search (`Ctrl+/`), full mouse navigation, clickable URLs,
   automations (`Ctrl+P`), soft-delete with undo (`Ctrl+Z`) and
   restore (`Ctrl+U`).
@@ -108,6 +116,24 @@ list:
 > evolving in upcoming releases.
 
 ![Tasks demo](./docs/media/tasks-demo.gif)
+
+### Inter-session messages
+
+- A general, agent-neutral **message queue** lets one session hand
+  another a **structured payload** — addressed to a session, with a
+  free-form `kind` tag, a body, and optional sender/task provenance —
+  instead of scraping its rendered terminal. It is the channel
+  extensions use for agent↔agent coordination.
+- A worker **pushes** a clean payload with `thurbox-cli message send`;
+  a wake nudge types a short `inbox` token into the recipient's pane
+  so it drains immediately. `message inbox --claim` is an atomic,
+  exactly-once drain, so the TUI, a cron tick, and a wake nudge can
+  read the same inbox concurrently without double-processing.
+- Thurbox injects a stable `THURBOX_SESSION` (and `THURBOX_TASK` for
+  task-spawned sessions) into each agent, so a CLI call *inside* a
+  session sends and reads its own mail passing no ids, and `message
+  reply <id>` routes back to a message's original sender. See
+  [Headless CLI](#headless-cli-thurbox-cli).
 
 ### Extensions
 
@@ -265,11 +291,27 @@ The whole TUI is clickable (enabled by default; see
 Set `mouse = false` in `settings.toml` to skip mouse capture
 entirely and keep your terminal's native selection / URL handling.
 
+### OS notifications
+
+- When a session crosses into a **needs-you** state — the agent rang
+  the terminal bell or emitted an OSC 9 / OSC 777 notification — thurbox
+  fires an OS desktop notification so you can react without watching the
+  TUI. The body is the agent's last OSC message, or `Waiting for input`.
+- On **Linux** the banner is **click-to-focus** (clicking it switches
+  the TUI to that session); **macOS** shows the banner but ignores
+  clicks. It fires only while the TUI is open, is deduplicated per
+  session, and skips the session you are currently viewing by default.
+- Tune it in the `[notifications]` block of `settings.toml`
+  (`also_on_waiting` / `suppress_for_active` / `sound` /
+  `min_interval_secs`), or turn it off with `notifications = false` —
+  see [docs/CONFIG.md](docs/CONFIG.md).
+
 ### Feature flags
 
 Whole TUI features can be switched off in
 `~/.config/thurbox/settings.toml` under `[features]` (seeded
-commented-out; everything defaults to `true`). A disabled feature
+commented-out; everything defaults to `true` except `version_check`,
+which is opt-in because it makes a network call). A disabled feature
 hides its pane and turns its keybinding into an explanatory toast,
 but its data and the `thurbox-cli` surface keep working — so
 flipping a flag back on is lossless.
@@ -283,6 +325,8 @@ global_search = true  # Ctrl+/ search strip
 info_panel = true     # F2/Ctrl+B info panel
 shell_pane = true     # Ctrl+T per-session shell
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
+notifications = true  # OS desktop alerts when a session needs attention
+version_check = false # opt-in GitHub update check (makes a network call)
 ```
 
 `automations = false` is the one flag with teeth beyond the UI: it
@@ -462,6 +506,7 @@ command = "codex"
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
 | `Ctrl+L` | Focus next pane (cycle forward) | Vim: **l** = right |
 | `Shift+J` / `Shift+K` | Move selected session down/up (manual order) | reorder |
+| `Shift+S` | Sort sessions alphabetically within each repo group | **S**ort |
 | `Ctrl+D` | Delete session | Vim: **d** = delete |
 | `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
@@ -475,8 +520,8 @@ command = "codex"
 | `Ctrl+E` / `F3` | Toggle file viewer | **E**xplorer |
 
 Every chord above is rebindable from the `F1` editor (or by editing
-`~/.config/thurbox/keybindings.json`). `Shift+J`/`Shift+K` reorder the
-session list only while it is focused.
+`~/.config/thurbox/keybindings.json`). `Shift+J`/`Shift+K`/`Shift+S`
+reorder or sort the session list only while it is focused.
 
 **macOS:** in kitty-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
 Ghostty) the Command key works as a modifier — `Cmd+J`/`Cmd+Shift+J`
@@ -606,6 +651,39 @@ thurbox-cli automation tick              # fire all due automations now
 headless entry point the tmux heartbeat keeper and any
 systemd/cron timer call to fire due automations without a TUI.
 
+### Tasks (alias `todo`)
+
+The built-in todo list (see [Tasks](#tasks) for the model).
+
+```bash
+thurbox-cli task create --title "audit deps" --description "markdown notes"
+thurbox-cli task list
+thurbox-cli task show <id>
+thurbox-cli task edit <id> --status done   # --description "" clears notes
+thurbox-cli task remove <id>
+thurbox-cli task run <id>                   # trigger its Send/Spawn action
+```
+
+`create` with neither `--session` nor `--repo` is a plain local todo;
+adding either (with optional `--worktree`/`--base`/`--agent`) connects
+it to a coding agent like an automation.
+
+### Messages (alias `msg`)
+
+The [inter-session message queue](#inter-session-messages).
+
+```bash
+thurbox-cli message send --to flow --kind questions --body "scope?"
+thurbox-cli message reply <message_id> --body "go ahead"
+thurbox-cli message inbox --for flow --claim   # atomic, exactly-once drain
+thurbox-cli message prune --older-than-days 14
+```
+
+Run *inside* a session, `send`/`reply`/`inbox` default their sender,
+task, and recipient to the caller's injected identity
+(`THURBOX_SESSION` / `THURBOX_TASK`), so an agent passes no ids. `send`
+and `reply` wake the recipient by default (`--no-wake` to suppress).
+
 ### Extensions (alias `ext`)
 
 Manage opt-in add-ons (see [Extensions](#extensions) for the model).
@@ -639,6 +717,16 @@ thurbox-cli editor set "code --wait"     # set (empty string clears)
 
 This is the command `Ctrl+O` runs in the TUI; the worktree path is
 appended as the final argument.
+
+### Config
+
+```bash
+thurbox-cli config validate              # strict-parse every config file (exit 1 on a problem)
+thurbox-cli config show                  # print the effective resolved config
+```
+
+`validate` is handy in dotfiles CI; see
+[docs/CONFIG.md](docs/CONFIG.md) for every config file in one place.
 
 ## Architecture
 

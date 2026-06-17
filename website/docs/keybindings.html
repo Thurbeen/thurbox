@@ -225,8 +225,12 @@ onThisPage:
                 </td>
               </tr>
               <tr>
-                <td><code>F1</code></td>
-                <td>Toggle keybindings help</td>
+                <td>
+                  <code>F1</code>
+                  /
+                  <code>Ctrl+G</code>
+                </td>
+                <td>Keybindings help + interactive editor</td>
                 <td>Universal</td>
               </tr>
               <tr>
@@ -241,6 +245,57 @@ onThisPage:
               </tr>
             </tbody>
           </table>
+
+          <div class="info-box">
+            <p>
+              <strong>Everything here is rebindable.</strong>
+              Press
+              <code>F1</code>
+              and pick an action to capture a new chord live, or hand-edit
+              <code>~/.config/thurbox/keybindings.json</code>
+              (an action name &rarr; one or more chord strings); changes reload without a restart.
+              See
+              <a href="configuration.html#keybindings-json">Configuration &rarr; keybindings.json</a>
+              for the format.
+            </p>
+            <p>
+              <strong>Terminal passthrough:</strong>
+              a handful of
+              <code>Ctrl+&lt;letter&gt;</code>
+              commands (
+              <code>Ctrl+D</code>
+              /
+              <code>Ctrl+O</code>
+              /
+              <code>Ctrl+R</code>
+              /
+              <code>Ctrl+F</code>
+              /
+              <code>Ctrl+S</code>
+              and the panel toggles) collide with readline. When a session terminal is focused they
+              defer to the agent CLI; reach them from the session list, or via their
+              <code>F</code>
+              -key alternate (
+              <code>F2</code>
+              /
+              <code>F3</code>
+              /
+              <code>F5</code>
+              ). Navigation and app-control chords (
+              <code>Ctrl+H</code>
+              /
+              <code>J</code>
+              /
+              <code>K</code>
+              /
+              <code>L</code>
+              ,
+              <code>Ctrl+Q</code>
+              ,
+              <code>Ctrl+N</code>
+              ) always work, even in the terminal.
+            </p>
+          </div>
 
           <div class="info-box">
             <p>
@@ -299,8 +354,27 @@ onThisPage:
                 <td><code>Enter</code></td>
                 <td>Select / focus</td>
               </tr>
+              <tr>
+                <td>
+                  <code>Shift+J</code>
+                  /
+                  <code>Shift+K</code>
+                </td>
+                <td>
+                  Move the selected session (and its nested children) down / up. Manual order wins
+                  over status &mdash; whole repo groups swap past a group edge.
+                </td>
+              </tr>
+              <tr>
+                <td><code>Shift+S</code></td>
+                <td>Sort sessions alphabetically by name within each repo group</td>
+              </tr>
             </tbody>
           </table>
+          <p>
+            Manual ordering and the alphabetical sort are persisted, so they survive restarts and
+            sync across concurrent instances.
+          </p>
 
           <h2 id="search">
             Search
