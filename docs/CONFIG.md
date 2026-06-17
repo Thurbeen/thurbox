@@ -30,6 +30,26 @@ restart. `hosts.toml` (SSH backends register at startup),
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 
+### Which file do I edit?
+
+A task-to-file map so you don't have to scan every section to find
+the right knob:
+
+| I want to… | Edit | Section |
+|------------|------|---------|
+| Add a coding agent, pin a model, change resume/fork flags | `agents.toml` | [agents.toml](#agentstoml) |
+| Run sessions on a remote machine over SSH | `hosts.toml` | [hosts.toml](#hoststoml) |
+| Turn a whole TUI feature on/off (tasks, mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
+| Tune scrollback, panel breakpoints, audit retention | `settings.toml` | [settings.toml](#settingstoml) |
+| Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
+| Add or recolour a TUI theme | `themes.toml` | [themes.toml](#themestoml) |
+| Rebind a key | `keybindings.json` (or the F1 editor) | [keybindings.json](#keybindingsjson) |
+| Set the `Ctrl+O` editor, pick a theme | (runtime — SQLite) | [SQLite-backed settings](#sqlite-backed-settings) |
+
+None of these files need to exist on a fresh install — every one is
+seeded (commented-out where applicable) on first run, and absent files
+fall back to built-in defaults.
+
 Config problems are **not silent**: parse errors, unknown fields,
 invalid chords, and chord conflicts surface as a status-bar toast on
 startup (and in the log file). Unknown TOML keys are tolerated —
@@ -124,6 +144,36 @@ all commented so defaults still apply out of the box.
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit-log history kept (pruned on startup) |
 
+A complete `settings.toml` showing every knob at its default — copy
+this, uncomment what you want to change, and restart:
+
+```toml
+config_version = 1
+
+# Scalar tuning knobs (top level)
+scrollback_lines      = 1000   # terminal scrollback kept per session
+two_panel_min_cols    = 80     # width below which only the terminal renders
+three_panel_min_cols  = 120    # width unlocking the optional third column
+audit_retention_days  = 90     # audit-log history kept (pruned on startup)
+
+[features]
+tasks         = true
+automations   = true
+file_viewer   = true
+global_search = true
+info_panel    = true
+shell_pane    = true
+mouse         = true
+notifications = true
+version_check = false          # opt-in: makes a network call
+
+[notifications]
+also_on_waiting     = false    # also fire on Busy → Waiting (no bell)
+suppress_for_active = true     # skip the session you're currently viewing
+sound               = true     # play the OS default notification sound
+min_interval_secs   = 5        # per-session floor between notifications
+```
+
 ### `[features]` — whole-feature switches
 
 Turn major TUI features off entirely. All default to `true` **except
@@ -160,6 +210,19 @@ URL handling, etc.) and no click/wheel/hover handling runs in the TUI.
 ever starting (zero overhead) and silently no-ops every transition;
 the session status display itself is unaffected.
 
+`version_check = true` enables the update check (default `false`, since
+it makes a network call). On launch the TUI reads a cached result
+(`~/.local/share/thurbox/version-check.json`) and, if it is older than
+24 h, fires a single best-effort background fetch of GitHub's latest
+release (`api.github.com/repos/Thurbeen/thurbox/releases/latest`, via
+`curl`/`wget` — no new dependency); a newer release shows a `⬆ vX.Y.Z
+available` badge next to the version in the header. The fetch never runs
+on the render path and never blocks startup; failures are silent. Dev
+builds (`0.0.0-dev`) never show the badge. The same flag enables
+`thurbox-cli version --check`, which fetches fresh on demand and reports
+current vs. latest (`thurbox-cli version` with no flag always prints the
+current version, regardless of the flag).
+
 ### `[notifications]` — OS notification settings
 
 Surfaces an OS notification when a session crosses into a state that
@@ -187,18 +250,6 @@ respects the terminal bell / OSC 9 / OSC 777 conventions (Claude Code
 out of the box, for example). For agents that only go quiet without
 ringing a bell, set `also_on_waiting = true` — note this fires once each
 time the agent goes idle after activity, so it can be chatty.
-
-`version_check = true` enables the update check. On launch the TUI
-reads a cached result (`~/.local/share/thurbox/version-check.json`) and,
-if it is older than 24 h, fires a single best-effort background fetch of
-GitHub's latest release (`api.github.com/repos/Thurbeen/thurbox/releases/latest`,
-via `curl`/`wget` — no new dependency); a newer release shows a `⬆ vX.Y.Z
-available` badge next to the version in the header. The fetch never runs
-on the render path and never blocks startup; failures are silent. Dev
-builds (`0.0.0-dev`) never show the badge. The same flag enables
-`thurbox-cli version --check`, which fetches fresh on demand and reports
-current vs. latest (`thurbox-cli version` with no flag always prints the
-current version, regardless of the flag).
 
 ## themes.toml
 

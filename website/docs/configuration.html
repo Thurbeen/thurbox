@@ -6,9 +6,11 @@ currentPage: 'configuration'
 breadcrumb: 'Configuration'
 onThisPage:
   - { id: 'files', label: 'Files at a glance' }
+  - { id: 'which-file', label: 'Which file do I edit?' }
   - { id: 'agents-toml', label: 'agents.toml' }
   - { id: 'hosts-toml', label: 'hosts.toml' }
   - { id: 'settings-toml', label: 'settings.toml' }
+  - { id: 'notifications', label: 'Notifications' }
   - { id: 'themes-toml', label: 'themes.toml' }
   - { id: 'keybindings-json', label: 'keybindings.json' }
   - { id: 'extensions', label: 'Extensions' }
@@ -141,6 +143,56 @@ onThisPage:
           </p>
           <pre><code>thurbox-cli config validate   # strict parse of every file; exit 1 on problems
 thurbox-cli config show       # effective config + where each value came from</code></pre>
+
+          <h3 id="which-file">Which file do I edit?</h3>
+          <p>
+            A task-to-file map so you don't have to scan every section to find the right knob. None
+            of these files need to exist on a fresh install &mdash; every one is seeded
+            (commented-out where applicable) on first run, and absent files fall back to built-in
+            defaults.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>I want to&hellip;</th>
+                <th>Edit</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Add a coding agent, pin a model, change resume/fork flags</td>
+                <td><a href="#agents-toml"><code>agents.toml</code></a></td>
+              </tr>
+              <tr>
+                <td>Run sessions on a remote machine over SSH</td>
+                <td><a href="#hosts-toml"><code>hosts.toml</code></a></td>
+              </tr>
+              <tr>
+                <td>Turn a whole TUI feature on/off (tasks, mouse, notifications&hellip;)</td>
+                <td><a href="#settings-toml"><code>settings.toml</code> <code>[features]</code></a></td>
+              </tr>
+              <tr>
+                <td>Tune scrollback, panel breakpoints, audit retention</td>
+                <td><a href="#settings-toml"><code>settings.toml</code></a></td>
+              </tr>
+              <tr>
+                <td>Change when/how OS notifications fire</td>
+                <td><a href="#notifications"><code>settings.toml</code> <code>[notifications]</code></a></td>
+              </tr>
+              <tr>
+                <td>Add or recolour a TUI theme</td>
+                <td><a href="#themes-toml"><code>themes.toml</code></a></td>
+              </tr>
+              <tr>
+                <td>Rebind a key</td>
+                <td><a href="#keybindings-json"><code>keybindings.json</code> (or the F1 editor)</a></td>
+              </tr>
+              <tr>
+                <td>Set the <code>Ctrl+O</code> editor, pick a theme</td>
+                <td><a href="#sqlite-settings">runtime &mdash; SQLite</a></td>
+              </tr>
+            </tbody>
+          </table>
 
           <h2 id="agents-toml">
             agents.toml
@@ -288,24 +340,104 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
               </tr>
             </tbody>
           </table>
+          <p>
+            A complete <code>settings.toml</code> showing every knob at its default &mdash; copy
+            this, uncomment what you want to change, and restart:
+          </p>
+          <pre><code>config_version = 1
+
+# Scalar tuning knobs (top level)
+scrollback_lines      = 1000   # terminal scrollback kept per session
+two_panel_min_cols    = 80     # width below which only the terminal renders
+three_panel_min_cols  = 120    # width unlocking the optional third column
+audit_retention_days  = 90     # audit-log history kept (pruned on startup)
+
+[features]
+tasks         = true
+automations   = true
+file_viewer   = true
+global_search = true
+info_panel    = true
+shell_pane    = true
+mouse         = true
+notifications = true
+version_check = false          # opt-in: makes a network call
+
+[notifications]
+also_on_waiting     = false    # also fire on Busy &rarr; Waiting (no bell)
+suppress_for_active = true     # skip the session you're currently viewing
+sound               = true     # play the OS default notification sound
+min_interval_secs   = 5        # per-session floor between notifications</code></pre>
 
           <h3><code>[features]</code> &mdash; whole-feature switches</h3>
           <p>
             Turn major TUI features off entirely. All default to
             <code>true</code>
-            ; like the rest of settings.toml, changes need a restart. A disabled feature's pane
-            never renders, its keybinding shows a status toast instead of acting, and its
-            global-search scope returns no results. Data is never touched, so re-enabling a flag is
-            lossless.
+            <strong>except <code>version_check</code>, which defaults to <code>false</code></strong>
+            (it makes a network call, so it is opt-in). Like the rest of settings.toml, changes need
+            a restart. A disabled feature's pane never renders, its keybinding shows a status toast
+            instead of acting, and its global-search scope returns no results. Data is never
+            touched, so re-enabling a flag is lossless.
           </p>
-          <pre><code>[features]
-tasks = true          # F5/Ctrl+W tasks panel
-automations = true    # automations pane, Ctrl+P, schedule firing
-file_viewer = true    # F3/Ctrl+E file viewer
-global_search = true  # Ctrl+/ search strip
-info_panel = true     # F2/Ctrl+B info panel
-shell_pane = true     # Ctrl+T per-session shell
-mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code></pre>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Default</th>
+                <th>Controls</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>tasks</code></td>
+                <td><code>true</code></td>
+                <td>tasks panel (<code>F5</code>/<code>Ctrl+W</code>) and task search results</td>
+              </tr>
+              <tr>
+                <td><code>automations</code></td>
+                <td><code>true</code></td>
+                <td>automations pane, <code>Ctrl+P</code>, TUI schedule firing, heartbeat arming</td>
+              </tr>
+              <tr>
+                <td><code>file_viewer</code></td>
+                <td><code>true</code></td>
+                <td>file viewer column (<code>F3</code>) and file search results</td>
+              </tr>
+              <tr>
+                <td><code>global_search</code></td>
+                <td><code>true</code></td>
+                <td>global search strip (<code>Ctrl+/</code>)</td>
+              </tr>
+              <tr>
+                <td><code>info_panel</code></td>
+                <td><code>true</code></td>
+                <td>info panel column (<code>F2</code>)</td>
+              </tr>
+              <tr>
+                <td><code>shell_pane</code></td>
+                <td><code>true</code></td>
+                <td>per-session shell toggle (<code>Ctrl+T</code>)</td>
+              </tr>
+              <tr>
+                <td><code>mouse</code></td>
+                <td><code>true</code></td>
+                <td>mouse capture: clicks, wheel, drag-select, hover, scrollbars</td>
+              </tr>
+              <tr>
+                <td><code>notifications</code></td>
+                <td><code>true</code></td>
+                <td>OS desktop notifications when a session needs attention</td>
+              </tr>
+              <tr>
+                <td><code>version_check</code></td>
+                <td><code>false</code></td>
+                <td>
+                  GitHub update check: TUI header &ldquo;update available&rdquo; badge +
+                  <code>thurbox-cli version --check</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
           <p>
             <code>automations = false</code>
             is the one flag with teeth beyond the UI: it also stops the TUI from firing due
@@ -314,6 +446,75 @@ mouse = true          # mouse capture: clicks, wheel, drag-select, hover</code><
             commands still work).
             <code>mouse = false</code>
             skips terminal mouse capture entirely, so the terminal keeps its native mouse behavior.
+            <code>notifications = false</code>
+            keeps the background dispatcher thread from ever starting (zero overhead) and silently
+            no-ops every transition; the session status display itself is unaffected.
+          </p>
+          <p>
+            <code>version_check = true</code>
+            enables the update check. On launch the TUI reads a cached result
+            (<code>~/.local/share/thurbox/version-check.json</code>) and, if it is older than 24&nbsp;h,
+            fires a single best-effort background fetch of GitHub's latest release (via
+            <code>curl</code>/<code>wget</code>); a newer release shows a
+            <code>&uarr; vX.Y.Z available</code>
+            badge next to the version in the header. The fetch never blocks startup and failures are
+            silent. Dev builds (<code>0.0.0-dev</code>) never show the badge. The same flag enables
+            <code>thurbox-cli version --check</code>
+            (<code>thurbox-cli version</code> with no flag always prints the current version).
+          </p>
+
+          <h3 id="notifications"><code>[notifications]</code> &mdash; OS notification settings</h3>
+          <p>
+            Surfaces an OS notification when a session crosses into a state that needs the user's
+            attention (the agent rang the terminal bell or emitted an OSC&nbsp;9 / OSC&nbsp;777
+            message &mdash; usually because it's waiting on an answer or has finished a task). Linux
+            dispatches via dbus and supports
+            <strong>click-to-focus</strong>: clicking the banner writes a focus request that the
+            running TUI reads on its next tick and switches to that session. macOS shows the banner
+            but ignores clicks (the modern <code>UNUserNotificationCenter</code> API requires a
+            signed app bundle, which thurbox is not). The notification body is the agent's last OSC
+            message when present, otherwise <code>Waiting for input</code>.
+            <strong>Only fires while the TUI is open</strong>
+            &mdash; the agent terminal parser is what sees the bell, and it doesn't run when thurbox
+            isn't. Gated by the <code>notifications</code> feature flag above.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Default</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>also_on_waiting</code></td>
+                <td><code>false</code></td>
+                <td>also fire on <code>Busy &rarr; Waiting</code> (no explicit bell from the agent)</td>
+              </tr>
+              <tr>
+                <td><code>suppress_for_active</code></td>
+                <td><code>true</code></td>
+                <td>skip the notification for the session you're currently viewing</td>
+              </tr>
+              <tr>
+                <td><code>sound</code></td>
+                <td><code>true</code></td>
+                <td>play the OS default notification sound</td>
+              </tr>
+              <tr>
+                <td><code>min_interval_secs</code></td>
+                <td><code>5</code></td>
+                <td>per-session floor between two notifications (dedup)</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The default-on <code>Attention</code> trigger is the right knob for any agent that
+            respects the terminal bell / OSC&nbsp;9 / OSC&nbsp;777 conventions (Claude Code out of
+            the box, for example). For agents that only go quiet without ringing a bell, set
+            <code>also_on_waiting = true</code> &mdash; note this fires once each time the agent goes
+            idle after activity, so it can be chatty.
           </p>
 
           <h2 id="themes-toml">
