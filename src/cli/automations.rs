@@ -470,7 +470,16 @@ fn fire_headless(
             worktree_branch,
             base_branch,
             agent,
-        } => fire_spawn(db, auto, repo_path, worktree_branch, base_branch, agent),
+            extra_repos,
+        } => fire_spawn(
+            db,
+            auto,
+            repo_path,
+            worktree_branch,
+            base_branch,
+            agent,
+            extra_repos,
+        ),
     }
 }
 
@@ -517,6 +526,7 @@ fn fire_send(
 
 /// Execute a `spawn` automation: reuse an existing window or spawn a new
 /// headless session, then deliver the prompt once the agent boots.
+#[allow(clippy::too_many_arguments)]
 fn fire_spawn(
     db: &Database,
     auto: &Automation,
@@ -524,6 +534,7 @@ fn fire_spawn(
     worktree_branch: &Option<String>,
     base_branch: &Option<String>,
     agent: &Option<String>,
+    extra_repos: &[crate::session::ExtraRepo],
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
     // Reuse an existing session window (later fires / restored sessions).
@@ -544,6 +555,7 @@ fn fire_spawn(
         host: None,
         parent_session_id: None,
         task_id: None,
+        extra_repos: extra_repos.to_vec(),
     };
     match crate::session_ops::spawn_session_headless(db, req) {
         Ok(result) => {
@@ -600,6 +612,7 @@ fn resolve_action(
             worktree_branch: worktree,
             base_branch: base,
             agent,
+            extra_repos: Vec::new(),
         }),
     }
 }
@@ -615,12 +628,14 @@ fn automation_to_json(a: &Automation) -> Value {
             worktree_branch,
             base_branch,
             agent,
+            extra_repos,
         } => json!({
             "kind": "spawn",
             "repo_path": repo_path.to_string_lossy(),
             "worktree_branch": worktree_branch,
             "base_branch": base_branch,
             "agent": agent,
+            "extra_repos": serde_json::to_value(extra_repos).unwrap_or(Value::Null),
         }),
     };
     json!({
@@ -703,6 +718,7 @@ mod tests {
                 worktree_branch: None,
                 base_branch: None,
                 agent: None,
+                extra_repos: Vec::new(),
             }),
             "spawn"
         );

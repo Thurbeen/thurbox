@@ -48,14 +48,15 @@ impl Database {
     /// Insert a new task, returning its row id.
     pub fn create_task(&self, new: &NewTask) -> rusqlite::Result<i64> {
         let now = current_time_millis() as i64;
-        let (action_kind, target_session, repo_path, worktree_branch, base_branch, agent) =
+        let (action_kind, target_session, repo_path, worktree_branch, base_branch, agent, extra) =
             action_columns(new.action.as_ref());
         self.conn.execute(
             "INSERT INTO tasks
                 (title, status, action_kind, target_session, repo_path,
                  worktree_branch, base_branch, agent, source, external_id,
-                 external_url, created_at, updated_at, deleted_at, description)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, NULL, ?13)",
+                 external_url, created_at, updated_at, deleted_at, description,
+                 action_extra_repos)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, NULL, ?13, ?14)",
             params![
                 new.title,
                 new.status.as_str(),
@@ -70,6 +71,7 @@ impl Database {
                 new.external_url,
                 now,
                 new.description,
+                extra,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -106,7 +108,7 @@ impl Database {
 
     /// Replace a task's definition (everything except id/created_at/deleted_at).
     pub fn update_task(&self, task: &Task) -> rusqlite::Result<()> {
-        let (action_kind, target_session, repo_path, worktree_branch, base_branch, agent) =
+        let (action_kind, target_session, repo_path, worktree_branch, base_branch, agent, extra) =
             action_columns(task.action.as_ref());
         let now = current_time_millis() as i64;
         self.conn.execute(
@@ -114,7 +116,7 @@ impl Database {
                 title = ?2, status = ?3, action_kind = ?4, target_session = ?5,
                 repo_path = ?6, worktree_branch = ?7, base_branch = ?8, agent = ?9,
                 source = ?10, external_id = ?11, external_url = ?12, updated_at = ?13,
-                description = ?14
+                description = ?14, action_extra_repos = ?15
              WHERE id = ?1",
             params![
                 task.id,
@@ -131,6 +133,7 @@ impl Database {
                 task.external_url,
                 now,
                 task.description,
+                extra,
             ],
         )?;
         self.log_audit(
@@ -188,10 +191,11 @@ impl Database {
 /// Column list for task SELECTs (keep in sync with [`map_task`]).
 const COLS: &str = "id, title, status, action_kind, target_session, repo_path, \
     worktree_branch, base_branch, agent, source, external_id, external_url, \
-    created_at, updated_at, deleted_at, description";
+    created_at, updated_at, deleted_at, description, action_extra_repos";
 
 /// Decompose an optional action into its persisted columns. All `None` when the
-/// task is unconnected (`action_kind` is then NULL).
+/// task is unconnected (`action_kind` is then NULL). The final element is the
+/// JSON-encoded extra-repo list (`None` for single-repo spawns / non-spawns).
 type ActionColumns = (
     Option<String>, // action_kind
     Option<String>, // target_session
@@ -199,14 +203,16 @@ type ActionColumns = (
     Option<String>, // worktree_branch
     Option<String>, // base_branch
     Option<String>, // agent
+    Option<String>, // action_extra_repos (JSON)
 );
 
 fn action_columns(action: Option<&AutomationAction>) -> ActionColumns {
     match action {
-        None => (None, None, None, None, None, None),
+        None => (None, None, None, None, None, None, None),
         Some(AutomationAction::Send { session_id }) => (
             Some("send".to_string()),
             Some(session_id.to_string()),
+            None,
             None,
             None,
             None,
@@ -217,6 +223,7 @@ fn action_columns(action: Option<&AutomationAction>) -> ActionColumns {
             worktree_branch,
             base_branch,
             agent,
+            extra_repos,
         }) => (
             Some("spawn".to_string()),
             None,
@@ -224,6 +231,7 @@ fn action_columns(action: Option<&AutomationAction>) -> ActionColumns {
             worktree_branch.clone(),
             base_branch.clone(),
             agent.clone(),
+            super::extra_repos_to_json(extra_repos),
         ),
     }
 }
@@ -235,6 +243,7 @@ fn map_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
     let worktree_branch: Option<String> = row.get(6)?;
     let base_branch: Option<String> = row.get(7)?;
     let agent: Option<String> = row.get(8)?;
+    let extra_repos_json: Option<String> = row.get(16)?;
 
     let action = match action_kind.as_deref() {
         Some("send") => Some(AutomationAction::Send {
@@ -248,6 +257,7 @@ fn map_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
             worktree_branch,
             base_branch,
             agent,
+            extra_repos: super::extra_repos_from_json(extra_repos_json),
         }),
         _ => None,
     };
@@ -312,6 +322,7 @@ mod tests {
                 worktree_branch: Some("feat/task".into()),
                 base_branch: Some("main".into()),
                 agent: Some("codex".into()),
+                extra_repos: Vec::new(),
             }),
             ..NewTask::local("Refactor")
         };
@@ -323,11 +334,53 @@ mod tests {
                 worktree_branch,
                 base_branch,
                 agent,
+                extra_repos,
             }) => {
                 assert_eq!(repo_path, PathBuf::from("/tmp/repo"));
                 assert_eq!(worktree_branch.as_deref(), Some("feat/task"));
                 assert_eq!(base_branch.as_deref(), Some("main"));
                 assert_eq!(agent.as_deref(), Some("codex"));
+                assert!(extra_repos.is_empty());
+            }
+            other => panic!("expected spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_action_multi_repo_round_trip() {
+        use crate::session::ExtraRepo;
+        let db = Database::open_in_memory().unwrap();
+        let new = NewTask {
+            action: Some(AutomationAction::Spawn {
+                repo_path: PathBuf::from("/tmp/primary"),
+                worktree_branch: Some("flow/multi".into()),
+                base_branch: Some("main".into()),
+                agent: Some("flow-worker".into()),
+                extra_repos: vec![
+                    ExtraRepo {
+                        repo_path: PathBuf::from("/tmp/extra-wt"),
+                        worktree: true,
+                        base_branch: Some("master".into()),
+                    },
+                    ExtraRepo {
+                        repo_path: PathBuf::from("/tmp/extra-dir"),
+                        worktree: false,
+                        base_branch: None,
+                    },
+                ],
+            }),
+            ..NewTask::local("Multi-repo")
+        };
+        let id = db.create_task(&new).unwrap();
+        let got = db.get_task(id).unwrap().unwrap();
+        match got.action {
+            Some(AutomationAction::Spawn { extra_repos, .. }) => {
+                assert_eq!(extra_repos.len(), 2);
+                assert_eq!(extra_repos[0].repo_path, PathBuf::from("/tmp/extra-wt"));
+                assert!(extra_repos[0].worktree);
+                assert_eq!(extra_repos[0].base_branch.as_deref(), Some("master"));
+                assert!(!extra_repos[1].worktree);
+                assert_eq!(extra_repos[1].base_branch, None);
             }
             other => panic!("expected spawn, got {other:?}"),
         }

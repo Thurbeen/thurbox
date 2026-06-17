@@ -84,3 +84,41 @@ setup() {
   run "$SCRIPT" --description "no title" --dry-run
   [ "$status" -eq 2 ]
 }
+
+@test "multi-repo dispatch lists extra repos and uses the per-repo PR footer" {
+  run "$SCRIPT" --title "Cross-repo refactor" \
+    --description "share the X helper" \
+    --repo /tmp/primary --agent flow-worker-heavy \
+    --accept "both repos build" \
+    --worktree flow/cross-repo-refactor --base origin/main \
+    --add-repo /tmp/other@origin/master --add-dir /tmp/reference --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repo: /tmp/primary"* ]]
+  # Extra repos surface in the header, distinguishing worktree vs attached-as-is.
+  [[ "$output" == *"repo (extra, worktree): /tmp/other@origin/master"* ]]
+  [[ "$output" == *"repo (extra, attached as-is): /tmp/reference"* ]]
+  # The multi-repo footer asks for a PR per changed repo and a pr_urls list.
+  [[ "$output" == *"multi-repo"* ]]
+  [[ "$output" == *"open a separate PR per"* ]]
+  [[ "$output" == *'"pr_urls"'* ]]
+  # ...and NOT the single-repo footer wording.
+  [[ "$output" != *"open a PR when the accept criterion is met"* ]]
+}
+
+@test "--add-repo without --worktree is rejected (needs the shared branch)" {
+  run "$SCRIPT" --title "Cross-repo" --description "x" \
+    --repo /tmp/primary --agent flow-worker --accept "ok" \
+    --add-repo /tmp/other
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"requires --worktree"* ]]
+}
+
+@test "single-repo dispatch keeps the original single-PR footer" {
+  run "$SCRIPT" --title "Add rate limiting" --description "Throttle." \
+    --repo /tmp/repo --agent flow-worker --accept "429s" \
+    --worktree flow/add-rate-limiting --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"open a PR when the accept criterion is met"* ]]
+  [[ "$output" == *'"pr_url"'* ]]
+  [[ "$output" != *"open a separate PR per"* ]]
+}

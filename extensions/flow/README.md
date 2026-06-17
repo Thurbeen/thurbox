@@ -104,6 +104,12 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
 - Dispatchable items spawn a worker immediately (a session named after the
   task title, `<title> · #<id>`, on a `flow/<slug>` worktree branch whenever
   the repo is git).
+- **Multi-repo tasks**: a dump spanning several `repos.md` repos becomes one
+  task across them all. Flow passes the central repo as `--repo` and each other
+  as `--add-repo <path>@origin/<base>` (or `--add-dir` for a read-only
+  reference). Every repo gets its own isolated `flow/<slug>` worktree, the
+  worker sees them as sub-directories of one workspace, and it opens a
+  **separate PR per repo it changes** (its `result` carries a `pr_urls` list).
 - **Plan-first dispatch**: every worker prompt carries a mandatory
   planning phase — clarify, then plan, then build. Before writing any code
   the worker (1) asks clarifying questions **one at a time** — a single question,

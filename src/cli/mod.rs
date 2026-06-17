@@ -96,6 +96,41 @@ pub enum Command {
     Version(version::VersionArgs),
 }
 
+/// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
+/// `--add-repo`/`--add-dir` flags shared by `session create` and `task create`.
+///
+/// Each `--add-repo` token is `PATH` or `PATH@BASE` — the repo gets its own
+/// isolated worktree on the spawn's shared `--worktree`/`--worktree-branch`,
+/// off `BASE` (falling back to the primary's base when omitted). Each
+/// `--add-dir` token is attached as-is (no worktree). The base is split on the
+/// last `@`, so paths without `@` (the norm) are taken verbatim.
+pub(crate) fn parse_extra_repos(
+    add_repo: &[String],
+    add_dir: &[String],
+) -> Vec<crate::session::ExtraRepo> {
+    use crate::session::ExtraRepo;
+    let mut extra: Vec<ExtraRepo> = Vec::new();
+    for tok in add_repo {
+        let (path, base) = match tok.rsplit_once('@') {
+            Some((p, b)) if !p.is_empty() && !b.is_empty() => (p.to_string(), Some(b.to_string())),
+            _ => (tok.clone(), None),
+        };
+        extra.push(ExtraRepo {
+            repo_path: std::path::PathBuf::from(path),
+            worktree: true,
+            base_branch: base,
+        });
+    }
+    for dir in add_dir {
+        extra.push(ExtraRepo {
+            repo_path: std::path::PathBuf::from(dir),
+            worktree: false,
+            base_branch: None,
+        });
+    }
+    extra
+}
+
 /// Run a parsed CLI invocation against `db`, rendering the result in the
 /// resolved [`Format`] (human by default, JSON when piped or forced).
 pub fn run(cli: Cli, db: &Database) -> Result<(), String> {

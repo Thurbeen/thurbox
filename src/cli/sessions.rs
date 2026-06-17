@@ -49,6 +49,15 @@ pub enum Action {
         /// Must reference an existing active session.
         #[arg(long)]
         parent: Option<String>,
+        /// Additional repo to span (repeatable). `PATH` or `PATH@BASE` — each
+        /// gets its own isolated worktree on `--worktree-branch` off `BASE`
+        /// (default: the primary's `--base-branch`). Makes a multi-repo session.
+        #[arg(long = "add-repo")]
+        add_repo: Vec<String>,
+        /// Additional directory to span (repeatable), attached as-is (no
+        /// worktree / branch). Makes a multi-repo session.
+        #[arg(long = "add-dir")]
+        add_dir: Vec<String>,
     },
     /// Soft-delete a session.
     ///
@@ -120,8 +129,11 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             base_branch,
             host,
             parent,
+            add_repo,
+            add_dir,
         } => {
             let parent_session_id = parent.as_deref().map(parse_session_id).transpose()?;
+            let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
             let req = crate::session_ops::SpawnRequest {
                 name,
                 repo_path,
@@ -132,6 +144,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 host,
                 parent_session_id,
                 task_id: None,
+                extra_repos,
             };
             let res = crate::session_ops::spawn_session_headless(db, req)?;
             let human = format!(

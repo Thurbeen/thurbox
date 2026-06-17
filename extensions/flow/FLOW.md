@@ -109,7 +109,32 @@ the table, add a row when you learn its path.
    for non-git directories. **The worktree base is always the REMOTE
    default branch** — `origin/<base>` with the base column from
    `./repos.md` (e.g. `origin/main`), never a local branch; the helper
-   fetches origin first so the base is current. If the repo is not
+   fetches origin first so the base is current.
+
+   **Multi-repo tasks.** When a dump clearly spans **more than one repo**
+   (matches several `./repos.md` rows, or says "across X and Y", "share code
+   between …", "the API and its client"), dispatch ONE task that spans them
+   all rather than splitting it: pick the most-central repo as `--repo` and
+   add each other repo with a repeated `--add-repo
+   <abs-path>@origin/<base-from-repos.md>` (the base after `@` is per-repo;
+   omit `@base` to inherit the primary's `--base`). Every repo gets its **own
+   isolated `flow/<task-slug>` worktree**, and the worker sees them all as
+   sub-directories of one workspace, opening a **separate PR per repo it
+   changes** (the helper composes the per-repo-PR footer; its `result`
+   carries `pr_urls`). Use `--add-dir <abs-path>` instead of `--add-repo`
+   for a repo the worker only needs to **read** (attached as-is, no branch /
+   PR). Keep multi-repo for genuinely cross-repo work — a task touching one
+   repo stays single-`--repo`.
+
+   ```bash
+   ./scripts/create-task.sh --title "<title>" --description "<user words>" \
+     --accept "<criterion>" --priority <p> \
+     --repo <abs-primary> --agent flow-worker-heavy \
+     --worktree flow/<task-slug> --base origin/<base> \
+     --add-repo <abs-other>@origin/<base> --add-repo <abs-third>@origin/<base>
+   ```
+
+   Multi-repo work is usually `flow-worker-heavy` (it's larger by nature). If the repo is not
    confident → omit `--repo`/`--agent`/`--accept` (plain todo: the
    `--description` is then used verbatim, with no planning block); triage
    later or ask ONE question. Over capacity → add `--no-dispatch`. For a
@@ -204,8 +229,9 @@ first step of every TICK, so a missed wake never strands a worker.
      message `id`), and make clear it needs an **approve / change** decision.
    - **`result`** → the worker finished. Parse the `body` JSON: if
      `"status":"ok"`, mark the task done (`task edit <from_task_id> --status
-     done`) and note it; if `"status":"error"`, surface it under "Needs you".
-     Then run DISPATCH (a slot just freed).
+     done`) and note it (a multi-repo worker reports a `pr_urls` array — list
+     each PR; a single-repo worker reports one `pr_url`); if `"status":"error"`,
+     surface it under "Needs you". Then run DISPATCH (a slot just freed).
 3. End with the Output Contract footer. A DRAIN is not a brain-dump — create no
    task.
 

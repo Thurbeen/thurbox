@@ -1973,6 +1973,7 @@ mod tests {
                 worktree_branch: Some("feat/x".into()),
                 base_branch: None,
                 agent: Some("codex".into()),
+                extra_repos: Vec::new(),
             },
             prompt: "triage".into(),
             created_at: 0,

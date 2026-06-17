@@ -4,10 +4,11 @@ use rusqlite::Connection;
 ///
 /// v29 is reserved by the in-flight `improve-agent-thurbox-cli` branch
 /// (`session_labels` + `session_spawn_config`); v30 added
-/// `parent_session_id`, v31 added `display_order`, v32 adds
-/// `session_messages` (the inter-session mailbox).
+/// `parent_session_id`, v31 added `display_order`, v32 added
+/// `session_messages` (the inter-session mailbox), v33 adds
+/// `action_extra_repos` to `tasks` + `automations` (multi-repo spawns).
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 32;
+pub const SCHEMA_VERSION: u32 = 33;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -94,7 +95,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             created_at      INTEGER NOT NULL,
             updated_at      INTEGER NOT NULL,
             last_run_at     INTEGER,
-            next_run_at     INTEGER
+            next_run_at     INTEGER,
+            action_extra_repos TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_automations_due
             ON automations(next_run_at)
@@ -135,7 +137,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             created_at      INTEGER NOT NULL,
             updated_at      INTEGER NOT NULL,
             deleted_at      INTEGER,
-            description     TEXT
+            description     TEXT,
+            action_extra_repos TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status
             ON tasks(status) WHERE deleted_at IS NULL;
@@ -216,6 +219,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (30, migrate_v30_parent_session_id),
         (31, migrate_v31_display_order),
         (32, migrate_v32_session_messages),
+        (33, migrate_v33_action_extra_repos),
     ];
 
     for &(target, step) in steps {
@@ -765,7 +769,8 @@ fn migrate_v24_automations(conn: &Connection) -> rusqlite::Result<()> {
             created_at      INTEGER NOT NULL,
             updated_at      INTEGER NOT NULL,
             last_run_at     INTEGER,
-            next_run_at     INTEGER
+            next_run_at     INTEGER,
+            action_extra_repos TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_automations_due
             ON automations(next_run_at)
@@ -913,6 +918,23 @@ fn migrate_v32_session_messages(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_session_messages_created
             ON session_messages(created_at);",
     )?;
+    Ok(())
+}
+
+/// v32 → v33: add a nullable `action_extra_repos` column to `tasks` and
+/// `automations`, storing the JSON list of additional repos a multi-repo
+/// `Spawn` action spans. `NULL`/empty = a single-repo spawn (the common case),
+/// so existing rows decode byte-identically to the pre-multi-repo behavior.
+///
+/// Fresh v33 databases already have the columns from `initialize` and skip this
+/// step; existing databases get them via the ALTERs. `let _` swallows the
+/// "duplicate column" error so a re-run is a no-op.
+fn migrate_v33_action_extra_repos(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN action_extra_repos TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE automations ADD COLUMN action_extra_repos TEXT",
+        [],
+    );
     Ok(())
 }
 

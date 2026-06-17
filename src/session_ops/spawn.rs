@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::{HostDef, SessionConfig, SessionId, DEFAULT_AGENT_NAME};
+use crate::session::{ExtraRepo, HostDef, SessionConfig, SessionId, DEFAULT_AGENT_NAME};
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
 
@@ -41,6 +41,12 @@ pub struct SpawnRequest {
     /// so the session's outgoing messages auto-tag `from_task_id` without the
     /// agent passing any id by hand.
     pub task_id: Option<i64>,
+    /// Additional repositories this session spans (empty = single-repo, the
+    /// unchanged common case). Each either gets its own isolated worktree on
+    /// the shared `worktree_branch` (off its own `base_branch`) or is attached
+    /// as-is as an additional directory. When any extra is non-empty the agent
+    /// launches in a per-session symlink workspace gathering every member.
+    pub extra_repos: Vec<ExtraRepo>,
 }
 
 /// Result returned on successful headless spawn.
@@ -66,12 +72,24 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     // Resolve the optional remote host. `backend_type` is `local-tmux` or
     // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
     let (backend_type, host) = resolve_host(req.host.as_deref())?;
-    let (cwd, worktrees) = resolve_cwd(&req, host.as_ref())?;
+    let (primary_cwd, worktrees, additional_dirs) = resolve_dirs(&req, host.as_ref())?;
 
     let agent_session_id = req
         .agent_session_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // For a multi-repo session, launch the agent in a per-session symlink
+    // workspace gathering every member dir (so each repo is a visible subdir,
+    // agent-neutral). `info.cwd` keeps the *primary* repo. Single-repo sessions
+    // launch directly in the primary cwd, unchanged. Mirrors the TUI's
+    // `App::resolve_process_cwd`.
+    let launch_cwd = resolve_launch_cwd(
+        &agent_session_id,
+        &primary_cwd,
+        &worktrees,
+        &additional_dirs,
+    );
 
     // Mint the thurbox SessionId up front so it can be injected into the
     // process env (`THURBOX_SESSION`) before the agent launches.
@@ -80,7 +98,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     let mut config = SessionConfig {
         session_id: Some(session_id),
         agent_session_id: Some(agent_session_id.clone()),
-        cwd: Some(cwd.clone()),
+        cwd: Some(launch_cwd.clone()),
         agent: agent_name.clone(),
         backend: (backend_type != LOCAL_TMUX_BACKEND_TYPE).then(|| backend_type.clone()),
         ..SessionConfig::default()
@@ -97,13 +115,19 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
             &req.name,
             &command,
             &args,
-            Some(&cwd),
+            Some(&launch_cwd),
             &config.env,
         )
         .map_err(|e| format!("Failed to spawn remote tmux window: {e:#}"))?,
         None => {
-            crate::agent::tmux::spawn_window(&req.name, &command, &args, Some(&cwd), &config.env)
-                .map_err(|e| format!("Failed to spawn tmux window: {e}"))?;
+            crate::agent::tmux::spawn_window(
+                &req.name,
+                &command,
+                &args,
+                Some(&launch_cwd),
+                &config.env,
+            )
+            .map_err(|e| format!("Failed to spawn tmux window: {e}"))?;
             String::new()
         }
     };
@@ -115,8 +139,10 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         backend_id: backend_id.clone(),
         backend_type,
         agent_session_id: Some(agent_session_id.clone()),
-        cwd: Some(cwd.clone()),
-        additional_dirs: Vec::new(),
+        // `cwd` is the *primary* repo (for display / git context); the workspace
+        // is a spawn-time launch detail, re-derived idempotently on every launch.
+        cwd: Some(primary_cwd.clone()),
+        additional_dirs: additional_dirs.clone(),
         worktrees: worktrees.clone(),
         shell_backend_id: None,
         parent_session_id: req.parent_session_id,
@@ -152,7 +178,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         name: req.name,
         agent: agent_name,
         agent_session_id,
-        cwd,
+        cwd: primary_cwd,
         worktrees,
         parent_session_id: req.parent_session_id,
     })
@@ -191,27 +217,120 @@ fn resolve_agent_name(requested: Option<&str>) -> String {
     }
 }
 
-/// Resolve the working directory and worktree records.
+/// Resolve the primary working directory, all worktree records, and the
+/// non-worktree additional directories for a (possibly multi-repo) spawn.
 ///
-/// Returns the bare repo path when no worktree branch is given; otherwise
-/// creates the worktree and returns its path plus a single
-/// [`SharedWorktree`] entry.
-fn resolve_cwd(
+/// Single-repo (no `extra_repos`): returns the bare repo path when no worktree
+/// branch is given, otherwise the primary worktree path plus one
+/// [`SharedWorktree`] — byte-identical to the pre-multi-repo behavior.
+///
+/// Multi-repo: the primary is resolved as above; each [`ExtraRepo`] either gets
+/// its own worktree on the **shared** `worktree_branch` (off its own
+/// `base_branch`, falling back to the primary's base) appended to `worktrees`,
+/// or — when `worktree == false` — is attached as-is in `additional_dirs`. The
+/// member set (worktrees + additional dirs) is what the symlink workspace
+/// gathers; see [`crate::workspace::ensure_workspace`].
+fn resolve_dirs(
     req: &SpawnRequest,
     host: Option<&HostDef>,
-) -> Result<(PathBuf, Vec<SharedWorktree>), String> {
-    let Some(branch) = req.worktree_branch.as_deref() else {
-        return Ok((req.repo_path.clone(), Vec::new()));
+) -> Result<(PathBuf, Vec<SharedWorktree>, Vec<PathBuf>), String> {
+    let mut worktrees: Vec<SharedWorktree> = Vec::new();
+    let mut additional_dirs: Vec<PathBuf> = Vec::new();
+
+    // Primary repo: worktree when a branch is set, otherwise the repo root.
+    let primary_cwd = match req.worktree_branch.as_deref() {
+        None => req.repo_path.clone(),
+        Some(branch) => {
+            let base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
+            let path = create_worktree(host, &req.repo_path, branch, base)?;
+            worktrees.push(SharedWorktree {
+                repo_path: req.repo_path.clone(),
+                worktree_path: path.clone(),
+                branch: branch.to_string(),
+            });
+            path
+        }
     };
-    let base_branch = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
-    let path = crate::git::create_worktree_on(host, &req.repo_path, branch, base_branch)
-        .map_err(|e| format!("Failed to create worktree {branch} off {base_branch}: {e}"))?;
-    let wt = SharedWorktree {
-        repo_path: req.repo_path.clone(),
-        worktree_path: path.clone(),
-        branch: branch.to_string(),
-    };
-    Ok((path, vec![wt]))
+
+    // Extra repos: each its own isolated worktree on the shared branch, or a
+    // plain additional directory.
+    for extra in &req.extra_repos {
+        if extra.worktree {
+            let branch = req.worktree_branch.as_deref().ok_or_else(|| {
+                "a worktree extra-repo requires --worktree-branch (the shared branch)".to_string()
+            })?;
+            let base = extra
+                .base_branch
+                .as_deref()
+                .or(req.base_branch.as_deref())
+                .unwrap_or(DEFAULT_BASE_BRANCH);
+            let path = create_worktree(host, &extra.repo_path, branch, base)?;
+            worktrees.push(SharedWorktree {
+                repo_path: extra.repo_path.clone(),
+                worktree_path: path.clone(),
+                branch: branch.to_string(),
+            });
+        } else {
+            additional_dirs.push(extra.repo_path.clone());
+        }
+    }
+
+    Ok((primary_cwd, worktrees, additional_dirs))
+}
+
+/// Create a worktree, wrapping the error with the branch/base for context.
+fn create_worktree(
+    host: Option<&HostDef>,
+    repo: &std::path::Path,
+    branch: &str,
+    base: &str,
+) -> Result<PathBuf, String> {
+    crate::git::create_worktree_on(host, repo, branch, base)
+        .map_err(|e| format!("Failed to create worktree {branch} off {base} in {repo:?}: {e}"))
+}
+
+/// The directory the agent process should launch in: a per-session symlink
+/// workspace for a multi-repo session (≥2 members), else the primary cwd.
+///
+/// Mirrors the TUI's `App::resolve_process_cwd`: members are the worktree repos
+/// (labeled by their original repo name) followed by the non-worktree
+/// additional dirs; a workspace build failure falls back to the primary cwd.
+fn resolve_launch_cwd(
+    agent_session_id: &str,
+    primary_cwd: &std::path::Path,
+    worktrees: &[SharedWorktree],
+    additional_dirs: &[PathBuf],
+) -> PathBuf {
+    let mut members: Vec<(String, PathBuf)> = Vec::new();
+    if worktrees.is_empty() {
+        members.push((dir_label(primary_cwd), primary_cwd.to_path_buf()));
+    } else {
+        for wt in worktrees {
+            members.push((dir_label(&wt.repo_path), wt.worktree_path.clone()));
+        }
+    }
+    for dir in additional_dirs {
+        members.push((dir_label(dir), dir.clone()));
+    }
+
+    if members.len() < 2 {
+        return primary_cwd.to_path_buf();
+    }
+    match crate::workspace::ensure_workspace(agent_session_id, &members) {
+        Ok(ws) => ws,
+        Err(e) => {
+            tracing::error!("Failed to build multi-repo workspace: {e}");
+            primary_cwd.to_path_buf()
+        }
+    }
+}
+
+/// A human-friendly label for a member directory in the symlink workspace:
+/// the git repo display name, falling back to the final path component.
+fn dir_label(path: &std::path::Path) -> String {
+    crate::git::repo_display_name(path)
+        .or_else(|| path.file_name().and_then(|s| s.to_str()).map(String::from))
+        .unwrap_or_else(|| "repo".to_string())
 }
 
 /// Resolve `--host` to `(backend_type, host)`.
@@ -254,6 +373,7 @@ mod tests {
             host: None,
             parent_session_id: None,
             task_id: None,
+            extra_repos: Vec::new(),
         }
     }
 
@@ -350,5 +470,78 @@ mod tests {
         let (backend_type, host) = resolve_host(Some("devbox")).unwrap();
         assert_eq!(backend_type, "ssh:devbox");
         assert_eq!(host.unwrap().destination, "me@devbox");
+    }
+
+    #[test]
+    fn resolve_dirs_single_repo_no_worktree_is_unchanged() {
+        let mut r = req("s");
+        r.repo_path = PathBuf::from("/tmp/primary");
+        let (cwd, worktrees, additional) = resolve_dirs(&r, None).unwrap();
+        assert_eq!(cwd, PathBuf::from("/tmp/primary"));
+        assert!(worktrees.is_empty());
+        assert!(additional.is_empty());
+    }
+
+    #[test]
+    fn resolve_dirs_attaches_dir_extras_without_git() {
+        // dir-only extras (worktree == false) never touch git, so this is
+        // hermetic. The primary has no worktree branch either.
+        let mut r = req("s");
+        r.repo_path = PathBuf::from("/tmp/primary");
+        r.extra_repos = vec![
+            ExtraRepo {
+                repo_path: PathBuf::from("/tmp/extra-a"),
+                worktree: false,
+                base_branch: None,
+            },
+            ExtraRepo {
+                repo_path: PathBuf::from("/tmp/extra-b"),
+                worktree: false,
+                base_branch: None,
+            },
+        ];
+        let (cwd, worktrees, additional) = resolve_dirs(&r, None).unwrap();
+        assert_eq!(cwd, PathBuf::from("/tmp/primary"));
+        assert!(worktrees.is_empty());
+        assert_eq!(
+            additional,
+            vec![PathBuf::from("/tmp/extra-a"), PathBuf::from("/tmp/extra-b")]
+        );
+    }
+
+    #[test]
+    fn resolve_dirs_worktree_extra_without_shared_branch_errors() {
+        let mut r = req("s");
+        r.repo_path = PathBuf::from("/tmp/primary");
+        // No worktree_branch on the primary, but an extra wants a worktree.
+        r.extra_repos = vec![ExtraRepo {
+            repo_path: PathBuf::from("/tmp/extra"),
+            worktree: true,
+            base_branch: None,
+        }];
+        let err = resolve_dirs(&r, None).unwrap_err();
+        assert!(err.contains("worktree-branch"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_launch_cwd_single_member_is_primary() {
+        let primary = PathBuf::from("/tmp/primary");
+        // No worktrees, no extra dirs → 1 member → primary cwd, no workspace.
+        let got = resolve_launch_cwd("sid-1", &primary, &[], &[]);
+        assert_eq!(got, primary);
+    }
+
+    #[test]
+    fn resolve_launch_cwd_multi_member_builds_workspace() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let primary = temp.path().join("primary");
+        std::fs::create_dir_all(&primary).unwrap();
+        let extra = temp.path().join("extra");
+        std::fs::create_dir_all(&extra).unwrap();
+        let got = resolve_launch_cwd("sid-multi", &primary, &[], &[extra]);
+        // Two members → a symlink workspace, not the primary itself.
+        assert_ne!(got, primary);
+        assert!(got.join("primary").exists() || got.exists());
     }
 }

@@ -4056,12 +4056,14 @@ impl App {
                 worktree_branch,
                 base_branch,
                 agent,
+                extra_repos,
             } => match self.spawn_for_automation(
                 auto,
                 repo_path,
                 worktree_branch.as_deref(),
                 base_branch.as_deref(),
                 agent.as_deref(),
+                extra_repos,
             ) {
                 Ok(session_id) => (
                     AutomationRunStatus::Success,
@@ -4121,6 +4123,7 @@ impl App {
         worktree_branch: Option<&str>,
         base_branch: Option<&str>,
         agent: Option<&str>,
+        extra_repos: &[crate::session::ExtraRepo],
     ) -> Result<SessionId, String> {
         self.spawn_and_prompt(
             format!("auto-{}", auto.id),
@@ -4128,6 +4131,7 @@ impl App {
             worktree_branch,
             base_branch,
             agent,
+            extra_repos,
             &auto.prompt,
         )
     }
@@ -4137,6 +4141,7 @@ impl App {
     /// reuses that session on later invocations (and after a TUI restart, where
     /// it is restored from the database by name). Shared by automations
     /// (`auto-<id>`) and tasks (`<title> · #<id>`).
+    #[allow(clippy::too_many_arguments)]
     fn spawn_and_prompt(
         &mut self,
         name: String,
@@ -4144,6 +4149,7 @@ impl App {
         worktree_branch: Option<&str>,
         base_branch: Option<&str>,
         agent: Option<&str>,
+        extra_repos: &[crate::session::ExtraRepo],
         prompt: &str,
     ) -> Result<SessionId, String> {
         // Reuse an existing session (this run or restored after restart).
@@ -4158,20 +4164,45 @@ impl App {
         let repo_path = crate::paths::expand_tilde(&repo_path.to_string_lossy());
         let repo_path = repo_path.as_path();
 
-        let worktrees = if let Some(branch) = worktree_branch {
+        let mut worktrees: Vec<WorktreeInfo> = Vec::new();
+        if let Some(branch) = worktree_branch {
             let base = base_branch.unwrap_or("main");
             // Idempotent: a recurring caller reuses the worktree it made on the
             // first invocation instead of failing because the branch exists.
             let path = git::create_or_attach_worktree(repo_path, branch, base)
                 .map_err(|e| format!("create worktree {branch} off {base}: {e}"))?;
-            vec![WorktreeInfo {
+            worktrees.push(WorktreeInfo {
                 repo_path: repo_path.to_path_buf(),
                 worktree_path: path,
                 branch: branch.to_string(),
-            }]
-        } else {
-            Vec::new()
-        };
+            });
+        }
+
+        // Multi-repo: each extra repo gets its own worktree on the shared branch
+        // (off its own base, falling back to the primary's) or is attached as-is.
+        let mut additional_dirs: Vec<PathBuf> = Vec::new();
+        for extra in extra_repos {
+            let extra_path = crate::paths::expand_tilde(&extra.repo_path.to_string_lossy());
+            if extra.worktree {
+                let branch = worktree_branch.ok_or_else(|| {
+                    "a worktree extra-repo requires a worktree branch".to_string()
+                })?;
+                let base = extra
+                    .base_branch
+                    .as_deref()
+                    .or(base_branch)
+                    .unwrap_or("main");
+                let path = git::create_or_attach_worktree(&extra_path, branch, base)
+                    .map_err(|e| format!("create worktree {branch} off {base}: {e}"))?;
+                worktrees.push(WorktreeInfo {
+                    repo_path: extra_path.clone(),
+                    worktree_path: path,
+                    branch: branch.to_string(),
+                });
+            } else {
+                additional_dirs.push(extra_path);
+            }
+        }
 
         let cwd = worktrees
             .first()
@@ -4185,6 +4216,7 @@ impl App {
             config.agent = a.to_string();
         }
 
+        self.new_session.additional_dirs = additional_dirs;
         self.do_spawn_session(name.clone(), &config, worktrees);
         let session = self
             .sessions
@@ -4456,6 +4488,9 @@ impl App {
                     worktree_branch: (!worktree.is_empty()).then(|| worktree.to_string()),
                     base_branch: None,
                     agent: (!agent.is_empty()).then(|| agent.to_string()),
+                    // The TUI automation editor is single-repo; multi-repo spawns
+                    // are authored via the CLI (`--add-repo`/`--add-dir`).
+                    extra_repos: Vec::new(),
                 })
             }
         }
@@ -8231,6 +8266,7 @@ mod tests {
                 worktree_branch: None,
                 base_branch: None,
                 agent: None,
+                extra_repos: Vec::new(),
             },
             prompt: "do stuff".to_string(),
             next_run_at: None,

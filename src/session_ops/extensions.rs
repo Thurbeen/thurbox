@@ -567,6 +567,7 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
                         host: None,
                         parent_session_id: None,
                         task_id: None,
+                        extra_repos: Vec::new(),
                     },
                 )?;
                 report.sessions_created.push(sess.name.clone());

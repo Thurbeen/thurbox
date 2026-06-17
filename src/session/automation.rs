@@ -12,8 +12,32 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono::{TimeZone, Utc};
+use serde::{Deserialize, Serialize};
 
 use super::SessionId;
+
+/// An additional repository attached to a multi-repo `Spawn`, beyond the
+/// primary `repo_path`.
+///
+/// Each extra repo either gets its **own isolated worktree** — on the session's
+/// shared `worktree_branch`, off its own `base_branch` — so its changes stay
+/// isolated and PR-able per repo (the flow default), or is attached **as-is** as
+/// an additional directory in the multi-repo symlink workspace (no new branch).
+/// The whole list is persisted as JSON in the `action_extra_repos` column, so an
+/// empty list (the common single-repo case) stores `NULL` and is byte-identical
+/// to the pre-multi-repo behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtraRepo {
+    /// Absolute path to the repository (worktree mode) or directory (dir mode).
+    pub repo_path: PathBuf,
+    /// `true` = create a worktree on the session's shared branch off
+    /// `base_branch`; `false` = attach the directory as-is (no branch).
+    pub worktree: bool,
+    /// Base branch for the worktree when `worktree` is `true`. `None` falls back
+    /// to the primary repo's base (`base_branch` on the `Spawn`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+}
 
 /// A persisted automation definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +130,10 @@ pub enum AutomationAction {
     /// Paste the prompt into an existing running session.
     Send { session_id: SessionId },
     /// Spawn a new session (optionally on a fresh worktree) and prompt it.
+    ///
+    /// A single-repo spawn leaves `extra_repos` empty (the common case). When it
+    /// is non-empty the session spans multiple repos: the primary plus each
+    /// extra, launched in a per-session symlink workspace. See [`ExtraRepo`].
     Spawn {
         repo_path: PathBuf,
         /// `None` = run in the repo root; `Some` = create/use a worktree branch.
@@ -114,6 +142,8 @@ pub enum AutomationAction {
         base_branch: Option<String>,
         /// Agent name; `None` = registry default.
         agent: Option<String>,
+        /// Additional repositories spanned by this session (empty = single-repo).
+        extra_repos: Vec<ExtraRepo>,
     },
 }
 

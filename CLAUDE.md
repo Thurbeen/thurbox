@@ -270,7 +270,8 @@ per-session model/permission/prompt/tool knobs.
 ### Multi-repo sessions (symlink workspace)
 
 A session can span several repositories (the repo picker allows
-multiple). Because agent CLIs differ wildly in how — or whether —
+multiple; headless callers pass `--add-repo`/`--add-dir`, below). Because agent
+CLIs differ wildly in how — or whether —
 they accept extra directories, thurbox does **not** pass per-agent
 `--add-dir`-style flags. Instead, when a session has more than one
 member directory it is launched in a per-session **symlink
@@ -288,6 +289,20 @@ never stored. `workspace::ensure_workspace` / `remove_workspace`
 single `App::session_member_dirs` list that also feeds the rendered
 repo names, and `App::resolve_process_cwd` picks workspace-vs-primary.
 Single-repo sessions are unchanged (`cwd` = the repo directly).
+
+**Headless multi-repo.** The same multi-repo shape is reachable without the
+TUI: `SpawnRequest.extra_repos: Vec<ExtraRepo>` (`session/automation.rs`) carries
+each additional repo, where `ExtraRepo { repo_path, worktree: bool, base_branch }`
+either gets its **own isolated worktree** on the spawn's shared `worktree_branch`
+(off its own base — the per-repo-PR model flow uses) or is attached **as-is** as
+an additional dir. `session_ops::spawn::resolve_dirs` builds the worktrees +
+additional dirs and `resolve_launch_cwd` mirrors the TUI's `resolve_process_cwd`
+(symlink workspace when ≥2 members). The CLI exposes it on `session create` and
+`task create` via repeatable `--add-repo PATH[@BASE]` (worktree) and `--add-dir
+PATH` (as-is); `AutomationAction::Spawn` persists the list as JSON in the
+`action_extra_repos` column (schema v33, on both `tasks` and `automations`;
+`NULL`/empty = single-repo, so old rows are byte-identical). The flow extension's
+`create-task.sh` forwards these flags (see `extensions/flow/FLOW.md`).
 
 ## Remote SSH Sessions
 
@@ -368,6 +383,12 @@ thurbox-cli session create --name demo --repo-path /srv/repo \
 # Spawn a worker under a lead session (parent must exist):
 thurbox-cli session create --name worker --repo-path /path \
     --parent <lead-uuid>
+# Multi-repo: each --add-repo gets its own worktree on --worktree-branch;
+# --add-dir attaches a repo as-is (no branch). The agent launches in a
+# symlink workspace gathering every repo. Works on `task create` too.
+thurbox-cli session create --name demo --repo-path /a \
+    --agent claude --worktree-branch feat/x \
+    --add-repo /b@main --add-repo /c@master --add-dir /reference
 thurbox-cli session list                       # human-readable table
 thurbox-cli session list --json | jq           # machine output for scripts
 thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children only
@@ -668,7 +689,12 @@ sync, but the TUI editor never sets it.)
   owns the worker prompt and injects a mandatory clarify → plan → build
   phase (≥3 clarifying questions, then a written plan gated on user
   approval, then implement; seeded from `--accept`) so each worker plans
-  before it codes and stays in scope. Worker↔flow coordination is
+  before it codes and stays in scope. A dump spanning several `repos.md`
+  repos becomes one **multi-repo** task: `create-task.sh` forwards
+  `--add-repo PATH@origin/<base>` (own isolated `flow/<slug>` worktree per
+  repo) / `--add-dir PATH` (attached as-is) to `task create`, and the worker
+  opens a **separate PR per repo it changes** (its `result` carries
+  `pr_urls`). Worker↔flow coordination is
   **event-driven over the [inter-session message queue](#inter-session-messages-mailbox-queue)**:
   a worker pushes `message send --to flow --kind questions|plan|result`
   (which wakes flow) — passing **no ids** (thurbox auto-stamps the sender + task

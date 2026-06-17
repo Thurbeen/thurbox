@@ -46,6 +46,15 @@ pub enum Action {
         /// Agent name (spawn action; default registry agent).
         #[arg(long)]
         agent: Option<String>,
+        /// Spawn action: additional repo to span (repeatable). `PATH` or
+        /// `PATH@BASE` — each gets its own isolated worktree on `--worktree`
+        /// off `BASE` (default `--base`). Makes a multi-repo task session.
+        #[arg(long = "add-repo")]
+        add_repo: Vec<String>,
+        /// Spawn action: additional directory to span (repeatable), attached
+        /// as-is (no worktree / branch). Makes a multi-repo task session.
+        #[arg(long = "add-dir")]
+        add_dir: Vec<String>,
     },
     /// List all active tasks.
     List,
@@ -89,12 +98,15 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             worktree,
             base,
             agent,
+            add_repo,
+            add_dir,
         } => {
             if title.is_empty() {
                 return Err("title must not be empty".into());
             }
             let status = parse_status(status.as_deref())?;
-            let action = resolve_action(session, repo, worktree, base, agent, db)?;
+            let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
+            let action = resolve_action(session, repo, worktree, base, agent, extra_repos, db)?;
             let new = NewTask {
                 title,
                 description: normalize_description(description),
@@ -271,6 +283,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             worktree_branch,
             base_branch,
             agent,
+            extra_repos,
         }) => {
             let name = task.spawn_session_name();
             // Reuse an existing session window (re-trigger / restored session).
@@ -298,6 +311,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 host: None,
                 parent_session_id: None,
                 task_id: Some(task.id),
+                extra_repos: extra_repos.clone(),
             };
             crate::session_ops::spawn_session_headless(db, req)?;
             crate::agent::tmux::send_prompt_after_delay(&name, &prompt, BOOT_DELAY_SECS)
@@ -349,19 +363,29 @@ fn parse_status(s: Option<&str>) -> Result<TaskStatus, String> {
 
 /// Resolve the optional action from the send/spawn flags. Neither flag → a plain
 /// local todo (`None`), unlike automations where an action is required.
+#[allow(clippy::too_many_arguments)]
 fn resolve_action(
     session: Option<String>,
     repo: Option<String>,
     worktree: Option<String>,
     base: Option<String>,
     agent: Option<String>,
+    extra_repos: Vec<crate::session::ExtraRepo>,
     db: &Database,
 ) -> Result<Option<AutomationAction>, String> {
     match (session, repo) {
         (Some(_), Some(_)) => {
             Err("specify either --session (send) or --repo (spawn), not both".into())
         }
-        (None, None) => Ok(None),
+        (None, None) => {
+            if !extra_repos.is_empty() {
+                return Err("--add-repo/--add-dir require --repo (a spawn action)".into());
+            }
+            Ok(None)
+        }
+        (Some(_), None) if !extra_repos.is_empty() => {
+            Err("--add-repo/--add-dir apply to --repo (spawn), not --session (send)".into())
+        }
         (Some(s), None) => {
             let session_id: SessionId = s
                 .parse()
@@ -376,6 +400,7 @@ fn resolve_action(
             worktree_branch: worktree,
             base_branch: base,
             agent,
+            extra_repos,
         })),
     }
 }
@@ -392,12 +417,14 @@ fn task_to_json(t: &Task) -> Value {
             worktree_branch,
             base_branch,
             agent,
+            extra_repos,
         }) => json!({
             "kind": "spawn",
             "repo_path": repo_path.to_string_lossy(),
             "worktree_branch": worktree_branch,
             "base_branch": base_branch,
             "agent": agent,
+            "extra_repos": serde_json::to_value(extra_repos).unwrap_or(Value::Null),
         }),
     };
     json!({
@@ -457,6 +484,7 @@ mod tests {
                 worktree_branch: None,
                 base_branch: None,
                 agent: None,
+                extra_repos: Vec::new(),
             })),
             "spawn"
         );

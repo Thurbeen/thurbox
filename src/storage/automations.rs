@@ -31,15 +31,15 @@ impl Database {
     /// Insert a new automation, returning its row id.
     pub fn create_automation(&self, new: &NewAutomation) -> rusqlite::Result<i64> {
         let now = current_time_millis() as i64;
-        let (target_session, repo_path, worktree_branch, base_branch, agent) =
+        let (target_session, repo_path, worktree_branch, base_branch, agent, extra) =
             action_columns(&new.action);
         self.conn.execute(
             "INSERT INTO automations
                 (name, enabled, schedule_kind, schedule_spec, timezone,
                  action_kind, target_session, repo_path, worktree_branch,
                  base_branch, agent, prompt, created_at, updated_at,
-                 last_run_at, next_run_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL, ?14)",
+                 last_run_at, next_run_at, action_extra_repos)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL, ?14, ?15)",
             params![
                 new.name,
                 new.enabled as i64,
@@ -55,6 +55,7 @@ impl Database {
                 new.prompt,
                 now,
                 new.next_run_at.map(|v| v as i64),
+                extra,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -93,7 +94,7 @@ impl Database {
 
     /// Replace an automation's definition (everything except id/created_at).
     pub fn update_automation(&self, auto: &Automation) -> rusqlite::Result<()> {
-        let (target_session, repo_path, worktree_branch, base_branch, agent) =
+        let (target_session, repo_path, worktree_branch, base_branch, agent, extra) =
             action_columns(&auto.action);
         let now = current_time_millis() as i64;
         self.conn.execute(
@@ -101,7 +102,8 @@ impl Database {
                 name = ?2, enabled = ?3, schedule_kind = ?4, schedule_spec = ?5,
                 timezone = ?6, action_kind = ?7, target_session = ?8, repo_path = ?9,
                 worktree_branch = ?10, base_branch = ?11, agent = ?12, prompt = ?13,
-                updated_at = ?14, last_run_at = ?15, next_run_at = ?16
+                updated_at = ?14, last_run_at = ?15, next_run_at = ?16,
+                action_extra_repos = ?17
              WHERE id = ?1",
             params![
                 auto.id,
@@ -120,6 +122,7 @@ impl Database {
                 now,
                 auto.last_run_at.map(|v| v as i64),
                 auto.next_run_at.map(|v| v as i64),
+                extra,
             ],
         )?;
         Ok(())
@@ -294,33 +297,37 @@ impl Database {
 /// Column list for automation SELECTs (keep in sync with [`map_automation`]).
 const COLS: &str = "id, name, enabled, schedule_kind, schedule_spec, timezone, \
     action_kind, target_session, repo_path, worktree_branch, base_branch, agent, \
-    prompt, created_at, updated_at, last_run_at, next_run_at";
+    prompt, created_at, updated_at, last_run_at, next_run_at, action_extra_repos";
 
-/// Decompose an action into its persisted columns.
+/// Decompose an action into its persisted columns. The final element is the
+/// JSON-encoded extra-repo list (`None` for single-repo spawns / `Send`).
 type ActionColumns = (
     Option<String>, // target_session
     Option<String>, // repo_path
     Option<String>, // worktree_branch
     Option<String>, // base_branch
     Option<String>, // agent
+    Option<String>, // action_extra_repos (JSON)
 );
 
 fn action_columns(action: &AutomationAction) -> ActionColumns {
     match action {
         AutomationAction::Send { session_id } => {
-            (Some(session_id.to_string()), None, None, None, None)
+            (Some(session_id.to_string()), None, None, None, None, None)
         }
         AutomationAction::Spawn {
             repo_path,
             worktree_branch,
             base_branch,
             agent,
+            extra_repos,
         } => (
             None,
             Some(repo_path.to_string_lossy().into_owned()),
             worktree_branch.clone(),
             base_branch.clone(),
             agent.clone(),
+            super::extra_repos_to_json(extra_repos),
         ),
     }
 }
@@ -335,6 +342,7 @@ fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
     let worktree_branch: Option<String> = row.get(9)?;
     let base_branch: Option<String> = row.get(10)?;
     let agent: Option<String> = row.get(11)?;
+    let extra_repos_json: Option<String> = row.get(17)?;
 
     let schedule =
         AutomationSchedule::from_parts(&schedule_kind, &schedule_spec).ok_or_else(|| {
@@ -357,6 +365,7 @@ fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
             worktree_branch,
             base_branch,
             agent,
+            extra_repos: super::extra_repos_from_json(extra_repos_json),
         },
     };
 
@@ -427,6 +436,7 @@ mod tests {
                 worktree_branch: Some("feat/auto".into()),
                 base_branch: Some("main".into()),
                 agent: Some("codex".into()),
+                extra_repos: Vec::new(),
             },
             prompt: "triage issues".into(),
             next_run_at: Some(999),
@@ -441,11 +451,13 @@ mod tests {
                 worktree_branch,
                 base_branch,
                 agent,
+                extra_repos,
             } => {
                 assert_eq!(repo_path, PathBuf::from("/tmp/repo"));
                 assert_eq!(worktree_branch.as_deref(), Some("feat/auto"));
                 assert_eq!(base_branch.as_deref(), Some("main"));
                 assert_eq!(agent.as_deref(), Some("codex"));
+                assert!(extra_repos.is_empty());
             }
             _ => panic!("expected spawn"),
         }

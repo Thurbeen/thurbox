@@ -28,6 +28,26 @@ use std::path::Path;
 use rusqlite::Connection;
 use uuid::Uuid;
 
+/// Serialize a `Spawn` action's extra-repo list for the `action_extra_repos`
+/// column. An empty list (the single-repo common case) stores `NULL`, so old
+/// and new single-repo rows are byte-identical. Shared by the `tasks` and
+/// `automations` storage layers.
+pub(super) fn extra_repos_to_json(extra_repos: &[crate::session::ExtraRepo]) -> Option<String> {
+    if extra_repos.is_empty() {
+        return None;
+    }
+    // Serialization of a plain struct list cannot fail; fall back to `None`.
+    serde_json::to_string(extra_repos).ok()
+}
+
+/// Decode the `action_extra_repos` column back into an extra-repo list.
+/// `NULL`/empty/malformed → an empty list (a single-repo spawn), never an error.
+pub(super) fn extra_repos_from_json(raw: Option<String>) -> Vec<crate::session::ExtraRepo> {
+    raw.filter(|s| !s.is_empty())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 /// SQLite-backed database for application state.
 pub struct Database {
     conn: Connection,
