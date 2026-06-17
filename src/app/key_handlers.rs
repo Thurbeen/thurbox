@@ -296,9 +296,29 @@ impl App {
             Modal::ThemePicker(_) => self.handle_theme_picker_key(code),
             Modal::RepoPicker(_) => self.handle_repo_picker_key(code, mods),
             Modal::TaskActionPicker(_) => self.handle_task_action_picker_key(code),
+            Modal::ConfirmDelete(_) => self.handle_confirm_delete_key(code),
             _ => return false,
         }
         true
+    }
+
+    /// Drive the hard-delete confirmation prompt: `Enter`/`y` tears the session
+    /// down, `Esc`/`n` cancels.
+    fn handle_confirm_delete_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::ConfirmDelete(ref cd) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let session_id = cd.session_id;
+                self.modal.close();
+                self.confirm_hard_delete_session(session_id);
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.modal.close();
+            }
+            _ => {}
+        }
     }
 
     /// Drive the trigger-time task action picker: `j`/`k` (or arrows) select,

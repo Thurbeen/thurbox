@@ -419,6 +419,15 @@ when no TUI is running. Teardown is best-effort (failures land in
 the JSON report); the row is always soft-deleted last, so even a
 forced delete stays restorable.
 
+The **TUI** `Ctrl+D` soft-deletes by default too (with a `Ctrl+Z` undo
+window). The `[features] soft_delete` flag (settings.toml, default
+`true`) governs only this TUI path: set it `false` and `Ctrl+D` becomes
+a hard delete — the same `delete_session_headless(.., force=true)`
+teardown — gated behind a confirmation modal
+(`Modal::ConfirmDeleteSession`, rendered by `ui::confirm_delete_modal`),
+since there is no `Ctrl+Z` for it. The flag never changes
+`thurbox-cli session delete`, which stays soft unless `--force`.
+
 ### Parent sessions (lead/worker)
 
 Sessions carry an optional **`parent_session_id`** so orchestration

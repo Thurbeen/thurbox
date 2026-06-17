@@ -1229,6 +1229,17 @@ impl App {
 
         let session_id = session.info.id;
 
+        // When soft-delete is disabled, a TUI delete is a destructive hard
+        // delete (kills the tmux window, removes worktrees) with no Ctrl+Z
+        // undo — confirm before tearing anything down.
+        if !self.features.soft_delete {
+            self.modal = modals::Modal::ConfirmDelete(modals::ConfirmDeleteModal {
+                session_id,
+                session_name: session.info.name.clone(),
+            });
+            return;
+        }
+
         // Soft-delete in DB
         if let Err(e) = self.db.soft_delete_session(session_id) {
             error!("Failed to soft-delete session in DB: {e}");
@@ -1258,6 +1269,45 @@ impl App {
         );
 
         // Sync to shared state for other instances
+        self.save_state();
+    }
+
+    /// Hard-delete a session after the confirmation prompt (soft_delete off):
+    /// tear down the tmux window, worktrees, symlink workspace, and pending
+    /// send automations, then drop the live session. There is no Ctrl+Z undo
+    /// (the row stays restorable via Ctrl+U, which re-spawns fresh) — the
+    /// confirmation modal is the safety net instead.
+    fn confirm_hard_delete_session(&mut self, session_id: SessionId) {
+        let Some(idx) = self.sessions.iter().position(|s| s.info.id == session_id) else {
+            return;
+        };
+
+        // Reuse the headless teardown so the destructive logic stays in one
+        // place. Best-effort: failures are logged, never abort the delete.
+        if let Err(e) =
+            crate::session_ops::delete::delete_session_headless(&self.db, session_id, true)
+        {
+            error!("Hard-delete of session {session_id} failed: {e}");
+        }
+
+        let removed_session = self.sessions.remove(idx);
+        let session_name = removed_session.info.name.clone();
+        self.session_terminal_views.remove(&session_id);
+
+        if self.active_index >= self.sessions.len() {
+            self.active_index = self.sessions.len().saturating_sub(1);
+        }
+        self.sync_active_session_to_project();
+
+        // Drop the live PTY connection (the tmux window was already killed by
+        // the teardown above).
+        removed_session.kill();
+
+        self.set_status(
+            StatusLevel::Info,
+            format!("Permanently deleted '{session_name}'"),
+        );
+
         self.save_state();
     }
 
@@ -6751,6 +6801,7 @@ mod tests {
             shell_pane: false,
             mouse: true,
             notifications: false,
+            soft_delete: true,
             version_check: false,
         };
 

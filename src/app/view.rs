@@ -584,6 +584,16 @@ impl App {
                 },
             );
         }
+
+        // Hard-delete confirmation prompt (soft_delete feature off)
+        if let super::modals::Modal::ConfirmDelete(ref cd) = self.modal {
+            crate::ui::confirm_delete_modal::render_confirm_delete_modal(
+                frame,
+                &crate::ui::confirm_delete_modal::ConfirmDeleteState {
+                    session_name: &cd.session_name,
+                },
+            );
+        }
     }
 
     /// Render whichever selector-style modal is active, returning its row

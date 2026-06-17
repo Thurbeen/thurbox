@@ -466,6 +466,57 @@ fn ctrl_d_soft_deletes_and_ctrl_z_undoes() {
     );
 }
 
+#[test]
+fn ctrl_d_hard_delete_confirms_when_soft_delete_disabled() {
+    let mut h = Harness::standard(2);
+    h.app.features.soft_delete = false;
+
+    // Ctrl+D now opens a confirmation prompt instead of deleting immediately.
+    h.ctrl('d');
+    assert!(
+        matches!(h.app.modal, modals::Modal::ConfirmDelete(_)),
+        "Ctrl+D opens the hard-delete confirmation when soft_delete is off"
+    );
+    assert_eq!(
+        h.app.sessions.len(),
+        2,
+        "nothing is deleted before confirmation"
+    );
+
+    // Esc cancels, leaving the session untouched.
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "Esc closes the confirmation");
+    assert_eq!(h.app.sessions.len(), 2, "cancel leaves the session intact");
+
+    // Re-open and confirm with Enter → the session is torn down, no undo.
+    h.ctrl('d');
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "confirm closes the confirmation");
+    assert_eq!(h.app.sessions.len(), 1, "confirm removes the session");
+    assert!(
+        h.app.pending_delete.is_none(),
+        "a hard delete offers no Ctrl+Z undo"
+    );
+}
+
+#[test]
+fn hard_delete_confirmation_accepts_y_and_n_keys() {
+    let mut h = Harness::standard(2);
+    h.app.features.soft_delete = false;
+
+    // 'n' cancels, like Esc.
+    h.ctrl('d');
+    h.key(KeyCode::Char('n'), KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "'n' closes the confirmation");
+    assert_eq!(h.app.sessions.len(), 2, "'n' cancels the delete");
+
+    // 'y' confirms, like Enter.
+    h.ctrl('d');
+    h.key(KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "'y' closes the confirmation");
+    assert_eq!(h.app.sessions.len(), 1, "'y' confirms the delete");
+}
+
 // ── Pane focus cycling ───────────────────────────────────────────────────────
 
 #[test]

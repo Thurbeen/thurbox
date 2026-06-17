@@ -513,6 +513,15 @@ pub struct ThemePickerModal {
     pub index: usize,
 }
 
+/// Confirmation prompt for a destructive (hard) session delete, shown only when
+/// the `soft_delete` feature flag is off. Carries the target session so the
+/// confirm handler can tear it down without re-resolving the active index.
+#[derive(Debug, Clone)]
+pub struct ConfirmDeleteModal {
+    pub session_id: crate::session::SessionId,
+    pub session_name: String,
+}
+
 // ── RestoreSessionsModal ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -1361,6 +1370,7 @@ pub enum Modal {
     SessionName(SessionNameModal),
     ThemePicker(ThemePickerModal),
     TaskActionPicker(TaskActionPickerModal),
+    ConfirmDelete(ConfirmDeleteModal),
 }
 
 impl Modal {

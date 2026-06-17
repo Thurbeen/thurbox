@@ -193,6 +193,7 @@ no results. Data is never touched, so re-enabling a flag is lossless.
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
+| `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
 | `version_check` | `false` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 
 `automations = false` is a full stop on the TUI side: the pane
@@ -209,6 +210,17 @@ URL handling, etc.) and no click/wheel/hover handling runs in the TUI.
 `notifications = false` keeps the background dispatcher thread from
 ever starting (zero overhead) and silently no-ops every transition;
 the session status display itself is unaffected.
+
+`soft_delete = false` turns the TUI's `Ctrl+D` into a destructive
+**hard delete**: instead of marking the row deleted with a `Ctrl+Z`
+undo window, it kills the session's tmux window, removes its worktrees
+and symlink workspace, and disables any pending `Send` automations —
+after a confirmation prompt (`Enter`/`y` to delete, `Esc`/`n` to
+cancel), since the teardown is irreversible. The soft-deleted row is
+still written last, so the session remains restorable via `Ctrl+U`
+(which re-spawns it fresh). This flag governs the TUI only:
+`thurbox-cli session delete` always soft-deletes unless you pass
+`--force`, regardless of the setting.
 
 `version_check = true` enables the update check (default `false`, since
 it makes a network call). On launch the TUI reads a cached result

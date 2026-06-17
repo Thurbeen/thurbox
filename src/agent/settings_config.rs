@@ -48,6 +48,7 @@ config_version = 1
 # shell_pane = true       # Ctrl+T per-session shell
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
 # notifications = true    # OS desktop notifications when a session needs attention
+# soft_delete = true      # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard delete after a prompt
 #
 # `version_check` is the one flag that defaults to FALSE: it makes a network
 # call to GitHub to learn the latest release. Enable it for the TUI header
