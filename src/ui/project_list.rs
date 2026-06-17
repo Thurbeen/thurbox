@@ -281,71 +281,18 @@ pub fn sort_alphabetically_within_groups(sessions: &[&SessionInfo]) -> Vec<usize
 
 /// Sort one group's members alphabetically while preserving the parent/child
 /// nesting `compute_session_order` would render: children stay under their
-/// parent and sort among their siblings, recursively. Mirrors the
-/// `nest_group_members` DFS, swapping its index-stable comparator for a
-/// case-insensitive name comparator (with input index as a stable tiebreak).
+/// parent and sort among their siblings, recursively. Pre-sorts members by
+/// case-insensitive name (with input index as a stable tiebreak) and reuses
+/// the existing [`nest_group_members`] DFS — its root/child partitioning and
+/// cycle-fallback walk both honor the input order, so the alphabetical
+/// pre-sort flows through to roots, children, and leftovers alike.
 fn sort_group_alphabetically(sessions: &[&SessionInfo], members: &[usize]) -> Vec<usize> {
-    use std::collections::{HashMap, HashSet};
-
-    let id_to_member: HashMap<crate::session::SessionId, usize> =
-        members.iter().map(|&i| (sessions[i].id, i)).collect();
-
-    let mut roots: Vec<usize> = Vec::new();
-    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
-    for &i in members {
-        let parent = sessions[i]
-            .parent_session_id
-            .and_then(|p| id_to_member.get(&p))
-            .copied()
-            .filter(|&p| p != i);
-        match parent {
-            Some(p) => children.entry(p).or_default().push(i),
-            None => roots.push(i),
-        }
-    }
-
-    let sort_key = |i: &usize| (sessions[*i].name.to_lowercase(), *i);
-    roots.sort_by_key(sort_key);
-    for kids in children.values_mut() {
-        kids.sort_by_key(sort_key);
-    }
-
-    fn emit(
-        i: usize,
-        children: &HashMap<usize, Vec<usize>>,
-        visited: &mut HashSet<usize>,
-        out: &mut Vec<usize>,
-    ) {
-        if !visited.insert(i) {
-            return;
-        }
-        out.push(i);
-        if let Some(kids) = children.get(&i) {
-            for &k in kids {
-                emit(k, children, visited, out);
-            }
-        }
-    }
-
-    let mut out = Vec::with_capacity(members.len());
-    let mut visited = HashSet::new();
-    for &r in &roots {
-        emit(r, &children, &mut visited, &mut out);
-    }
-    // Members unreachable from any root (a parent cycle): emit flat in their
-    // own alphabetical order, matching `nest_group_members`'s fallback.
-    let mut leftovers: Vec<usize> = members
-        .iter()
-        .copied()
-        .filter(|i| !visited.contains(i))
-        .collect();
-    leftovers.sort_by_key(|i| sort_key(i));
-    for i in leftovers {
-        if visited.insert(i) {
-            out.push(i);
-        }
-    }
-    out
+    let mut sorted: Vec<usize> = members.to_vec();
+    sorted.sort_by_key(|&i| (sessions[i].name.to_lowercase(), i));
+    nest_group_members(sessions, &sorted)
+        .into_iter()
+        .map(|(i, _depth)| i)
+        .collect()
 }
 
 /// Move the session `active_input_idx` one step up or down in the rendered
