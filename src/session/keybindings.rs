@@ -62,6 +62,9 @@ pub enum Action {
     SessionListMoveDown,
     /// Move the selected session one row up (manual reordering).
     SessionListMoveUp,
+    /// Sort sessions alphabetically by name within each repo group, preserving
+    /// group order and parent/child nesting (children sort among siblings).
+    SessionListSortAlphabetically,
     // ── File viewer (scoped) ────────────────────────────────────────────
     FileViewerDown,
     FileViewerUp,
@@ -121,6 +124,7 @@ impl Action {
             Action::SessionListOpen,
             Action::SessionListMoveDown,
             Action::SessionListMoveUp,
+            Action::SessionListSortAlphabetically,
             Action::FileViewerDown,
             Action::FileViewerUp,
             Action::FileViewerCollapse,
@@ -166,6 +170,7 @@ impl Action {
             Action::SessionListOpen => "Focus terminal",
             Action::SessionListMoveDown => "Move session down",
             Action::SessionListMoveUp => "Move session up",
+            Action::SessionListSortAlphabetically => "Sort sessions A→Z",
             Action::FileViewerDown => "Move down",
             Action::FileViewerUp => "Move up",
             Action::FileViewerCollapse => "Collapse / parent",
@@ -191,7 +196,8 @@ impl Action {
             | Action::SessionListPrev
             | Action::SessionListOpen
             | Action::SessionListMoveDown
-            | Action::SessionListMoveUp => KeyContext::SessionList,
+            | Action::SessionListMoveUp
+            | Action::SessionListSortAlphabetically => KeyContext::SessionList,
             Action::FileViewerDown
             | Action::FileViewerUp
             | Action::FileViewerCollapse
@@ -312,6 +318,10 @@ impl Action {
             Action::SessionListMoveUp => {
                 vec![KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('K'))]
             }
+            // Shift+S — normalized like SessionListMoveDown/Up's Shift+J/K.
+            Action::SessionListSortAlphabetically => {
+                vec![KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('S'))]
+            }
             Action::FileViewerDown => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
             Action::FileViewerUp => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
             Action::FileViewerCollapse => vec![KeyChord::plain('h'), KeyChord::key(KeyCode::Left)],
@@ -418,6 +428,7 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
                 SessionListOpen,
                 SessionListMoveDown,
                 SessionListMoveUp,
+                SessionListSortAlphabetically,
             ],
         ),
         (
@@ -1069,6 +1080,7 @@ mod tests {
                 Action::SessionListOpen => 0,
                 Action::SessionListMoveDown => 0,
                 Action::SessionListMoveUp => 0,
+                Action::SessionListSortAlphabetically => 0,
                 Action::FileViewerDown => 0,
                 Action::FileViewerUp => 0,
                 Action::FileViewerCollapse => 0,
@@ -1082,9 +1094,9 @@ mod tests {
                 Action::TerminalPageDown => 0,
             }
         }
-        // 39 listed variants must equal Action::all().len(). If you add
+        // 40 listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 39;
+        const EXPECTED: usize = 40;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

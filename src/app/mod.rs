@@ -6,6 +6,7 @@ mod key_handlers;
 mod metrics_state;
 pub(crate) mod modals;
 mod new_session_state;
+mod notify_state;
 pub(crate) mod search;
 mod state;
 mod sync_state;
@@ -29,12 +30,14 @@ use crate::session::{
     AgentDef, AgentRegistry, Automation, AutomationAction, AutomationRunStatus, AutomationSchedule,
     SessionConfig, SessionId, SessionInfo, SessionStatus, WorktreeInfo, DEFAULT_AGENT_NAME,
 };
+
 use crate::storage::Database;
 use crate::storage::DeletedSessionInfo;
 use crate::sync::{self, SharedWorktree, StateDelta, SyncState};
 use crate::ui::layout;
 use crate::ui::scrollbar::ScrollbarGeom;
 use crate::ui::selection::{PaneBounds, Selection, TermPos};
+use notify_state::NotificationState;
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -565,10 +568,28 @@ pub struct App {
     /// Last-seen mtimes of the live-reloadable config files (see
     /// [`Self::poll_config_reload`]).
     config_reload: config_reload::ConfigReloadState,
+    /// OS notification dispatcher — `None` when the feature is disabled
+    /// (`[features] notifications = false`) so the background thread never
+    /// starts. The wrapper tracks per-session prior status + last-fired-at so
+    /// dedup and "only on transition" logic live next to the sender.
+    notification_state: Option<NotificationState>,
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
     "No editor configured — set `editor_command` via MCP or export $EDITOR/$VISUAL";
+
+/// Spin up the OS notification dispatcher when the feature is enabled,
+/// returning `None` otherwise so the background thread never starts.
+/// Reads the process-wide settings directly — they're already published by
+/// `main` before `App::new` runs.
+fn build_notification_state() -> Option<NotificationState> {
+    let settings = crate::session::settings::global();
+    if !settings.features.notifications {
+        return None;
+    }
+    let sender = crate::notifications::start();
+    Some(NotificationState::new(sender, settings.notifications))
+}
 
 impl App {
     pub fn new(
@@ -685,6 +706,7 @@ impl App {
                 agents_mtime: config_reload::agents_mtime(),
                 keybindings_mtime: config_reload::keybindings_mtime(),
             },
+            notification_state: build_notification_state(),
         };
         app.report_config_warnings(config_warnings);
         app
@@ -2624,6 +2646,25 @@ impl App {
         self.save_state();
     }
 
+    /// Sort sessions alphabetically by name within each repo group
+    /// (`Shift+S` in the session list). Group order is unchanged; parent/child
+    /// nesting is preserved (children sort among their siblings). Renumbers
+    /// every session's `display_order` densely along the new order so the
+    /// arrangement survives restarts and reaches other instances via the DB
+    /// poll. No-op on an empty list.
+    pub(crate) fn sort_sessions_alphabetically(&mut self) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let infos: Vec<&crate::session::SessionInfo> =
+            self.sessions.iter().map(|s| &s.info).collect();
+        let new_order = crate::ui::project_list::sort_alphabetically_within_groups(&infos);
+        for (pos, &idx) in new_order.iter().enumerate() {
+            self.sessions[idx].info.display_order = Some(pos as i64);
+        }
+        self.save_state();
+    }
+
     /// Whether the active session is the first row in render order (top of the
     /// left column). Treats an empty list as "first" so `k` is a no-op there.
     pub(crate) fn active_is_first_in_order(&self) -> bool {
@@ -2843,20 +2884,77 @@ impl App {
             // while the session is in the attention state.
             session.info.notification = session.notification();
         }
+
+        self.dispatch_status_notifications();
+    }
+
+    /// Fire OS notifications for any session that just crossed into a
+    /// needs-attention state this tick. No-op when the feature is disabled.
+    fn dispatch_status_notifications(&mut self) {
+        let Some(state) = self.notification_state.as_mut() else {
+            return;
+        };
+        let active_index = self.active_index;
+        let now = std::time::Instant::now();
+        for (idx, session) in self.sessions.iter().enumerate() {
+            let id = session.info.id;
+            let status = session.info.status;
+            let is_active = idx == active_index;
+            if state.observe(id, status, is_active, now) != notify_state::TransitionDecision::Fire {
+                continue;
+            }
+            let n = NotificationState::build_notification(
+                id,
+                &session.info.name,
+                &session.info.agent,
+                session.info.notification.as_deref(),
+                state.sound_enabled(),
+            );
+            state.send(n);
+        }
+        // Cheap: bounds the bookkeeping after deletions / restarts.
+        let live: Vec<SessionId> = self.sessions.iter().map(|s| s.info.id).collect();
+        state.prune_to(&live);
     }
 
     /// Poll for external state changes from other thurbox instances (DB-based)
     /// and apply any theme change / session delta they produced.
     fn poll_external_changes(&mut self) {
         let Ok(Some(result)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) else {
+            // Even with no broader DB change, a notification click may have
+            // landed: it writes a single row and the sync layer doesn't
+            // distinguish, so we always check.
+            self.apply_pending_focus_request();
             return;
         };
         if result.db_changed {
             self.apply_external_theme_change();
+            self.apply_pending_focus_request();
         }
         if !result.delta.is_empty() {
             self.handle_external_state_change(result.delta);
         }
+    }
+
+    /// Drain the OS-notification click handler's "focus this session" request
+    /// (written from another thread/process) and switch the active session.
+    /// Silently no-ops when the session has since been deleted or the
+    /// stored value isn't a valid UUID.
+    fn apply_pending_focus_request(&mut self) {
+        let Ok(Some(raw)) = self.db.take_pending_focus_session_id() else {
+            return;
+        };
+        let Ok(id) = raw.parse::<SessionId>() else {
+            debug!("ignoring malformed pending_focus_session_id: {raw}");
+            return;
+        };
+        let Some(idx) = self.sessions.iter().position(|s| s.info.id == id) else {
+            debug!("focus request for unknown session {id}; ignoring");
+            return;
+        };
+        self.active_index = idx;
+        self.focus = InputFocus::Terminal;
+        info!("focused session {id} from notification click");
     }
 
     /// Pick up theme changes made by other thurbox processes (e.g. an MCP
@@ -5403,6 +5501,79 @@ mod tests {
         assert!(app.status_message.is_none());
     }
 
+    /// A notification click handler writes `pending_focus_session_id` to the
+    /// shared SQLite metadata; the TUI's poll picks it up and switches the
+    /// active session + focus.
+    #[test]
+    fn apply_pending_focus_request_switches_active_session() {
+        let mut app = app_with_sessions(3);
+        let target_id = app.sessions[2].info.id;
+        app.active_index = 0;
+        app.focus = InputFocus::SessionList;
+
+        // Simulate the click-handler write.
+        app.db
+            .conn_ref()
+            .execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+                rusqlite::params![
+                    crate::session::PENDING_FOCUS_SESSION_ID_KEY,
+                    target_id.to_string()
+                ],
+            )
+            .unwrap();
+
+        app.apply_pending_focus_request();
+        assert_eq!(app.active_index, 2);
+        assert_eq!(app.focus, InputFocus::Terminal);
+        // The row is consumed atomically, so a second call is a no-op.
+        let prev_active = app.active_index;
+        app.apply_pending_focus_request();
+        assert_eq!(app.active_index, prev_active);
+    }
+
+    /// A focus request that doesn't match any current session is dropped
+    /// (the session may have been deleted before the click landed).
+    #[test]
+    fn apply_pending_focus_request_ignores_unknown_session() {
+        let mut app = app_with_sessions(2);
+        app.active_index = 0;
+        app.focus = InputFocus::SessionList;
+        let bogus = crate::session::SessionId::default();
+        app.db
+            .conn_ref()
+            .execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+                rusqlite::params![
+                    crate::session::PENDING_FOCUS_SESSION_ID_KEY,
+                    bogus.to_string()
+                ],
+            )
+            .unwrap();
+
+        app.apply_pending_focus_request();
+        assert_eq!(app.active_index, 0, "no match → leave selection alone");
+        assert_eq!(app.focus, InputFocus::SessionList);
+        // But the row is still consumed so a stale id doesn't sit forever.
+        assert_eq!(app.db.take_pending_focus_session_id().unwrap(), None);
+    }
+
+    /// Garbage in the metadata key is ignored gracefully and the row consumed.
+    #[test]
+    fn apply_pending_focus_request_tolerates_garbage() {
+        let mut app = app_with_sessions(2);
+        app.db
+            .conn_ref()
+            .execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+                rusqlite::params![crate::session::PENDING_FOCUS_SESSION_ID_KEY, "not-a-uuid"],
+            )
+            .unwrap();
+        app.apply_pending_focus_request();
+        assert_eq!(app.active_index, 0);
+        assert_eq!(app.db.take_pending_focus_session_id().unwrap(), None);
+    }
+
     #[test]
     fn apply_removed_sessions_detaches_pane_io() {
         let detached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6417,6 +6588,7 @@ mod tests {
             info_panel: false,
             shell_pane: false,
             mouse: true,
+            notifications: false,
         };
 
         app.handle_key(KeyCode::F(5), KeyModifiers::NONE);
@@ -8499,6 +8671,47 @@ mod tests {
         app.move_active_session(false); // already at the top
         assert_eq!(app.render_order_indices(), vec![0, 1]);
         assert!(app.sessions.iter().all(|s| s.info.display_order.is_none()));
+    }
+
+    #[test]
+    fn sort_sessions_alphabetically_renumbers_and_persists() {
+        let mut app = app_with_sessions(3);
+        // Names in deliberately non-alphabetical order: c, a, b.
+        app.sessions[0].info.name = "c".to_string();
+        app.sessions[1].info.name = "a".to_string();
+        app.sessions[2].info.name = "b".to_string();
+        app.active_index = 0;
+
+        app.sort_sessions_alphabetically();
+
+        // Render order is now [a, b, c], densely renumbered 0..n.
+        assert_eq!(app.render_order_indices(), vec![1, 2, 0]);
+        assert_eq!(app.sessions[1].info.display_order, Some(0));
+        assert_eq!(app.sessions[2].info.display_order, Some(1));
+        assert_eq!(app.sessions[0].info.display_order, Some(2));
+
+        // Persisted: the DB lists sessions in the new order.
+        let names: Vec<String> = app
+            .db
+            .list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn sort_sessions_alphabetically_empty_is_noop() {
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(stub_backend_arc()),
+            stub_agents(),
+            test_db(),
+        );
+        app.sort_sessions_alphabetically(); // must not panic
+        assert!(app.sessions.is_empty());
     }
 
     #[test]

@@ -1361,6 +1361,10 @@ impl App {
                 self.move_active_session(false);
                 true
             }
+            Action::SessionListSortAlphabetically => {
+                self.sort_sessions_alphabetically();
+                true
+            }
 
             // ── File viewer + terminal scroll (scoped) ──────────────────
             Action::FileViewerDown

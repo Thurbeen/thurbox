@@ -434,6 +434,14 @@ restarts and syncs across instances via the existing
 `data_version` polling. Storage: nullable `sessions.display_order`
 column (schema v31); `None` = never moved, renders after ordered
 sessions in creation order (new sessions append to their group).
+**`Shift+S`** (rebindable `SessionListSortAlphabetically`) sorts
+sessions alphabetically by name **within each repo group** in one
+shot: group order is preserved (still by lowest `display_order`),
+and parent/child nesting is preserved (children sort among their
+siblings). It reuses the same dense-renumber-and-persist path, so
+the alphabetised order survives restarts just like a manual move
+(pure helper: `ui::project_list::sort_alphabetically_within_groups`;
+`App::sort_sessions_alphabetically` applies it).
 
 ### Inter-session messages (mailbox queue)
 
@@ -858,6 +866,51 @@ global_search` in settings.toml; scopes whose feature is disabled
   Global search is the **only** search: the per-pane local `/` filters
   (session list, tasks panel) were removed in favour of it. The file
   viewer's `/` (in-file text search) is unrelated and stays.
+
+## OS notifications
+
+When a session crosses into a "needs you" state — the agent rang the
+terminal bell or emitted an OSC 9 / OSC 777 notification (i.e. it
+transitions to `SessionStatus::Attention`) — thurbox fires an OS
+desktop notification so the user can react without watching the TUI.
+The trigger is the explicit signal by default; an opt-in
+`also_on_waiting` extends it to the timing-only `Busy → Waiting` edge
+for agents that don't ring a bell. The transition is observed once per
+tick in `App::refresh_session_statuses` (the *same* place
+`SessionStatus` is computed, so the rule never drifts from the icon
+in the list), dedup'd per session by `min_interval_secs`, and skipped
+when the target session is the one in focus (`suppress_for_active`).
+
+- **Click-to-focus** (Linux only). The dbus action callback writes a
+  session UUID to the SQLite `metadata` row keyed by
+  [`PENDING_FOCUS_SESSION_ID_KEY`](src/session/mod.rs) (= the single
+  source of truth shared by writer and reader). The TUI's
+  external-state poll (`App::poll_external_changes` →
+  `apply_pending_focus_request`) reads + deletes the row atomically
+  (`Database::take_pending_focus_session_id`, a single
+  `DELETE … RETURNING` statement) and switches `active_index` +
+  `InputFocus::Terminal`. macOS shows the banner but ignores clicks —
+  modern `UNUserNotificationCenter` actions require a signed app
+  bundle, which thurbox is not. **Terminal window-raising is
+  deliberately not implemented**: thurbox runs inside an arbitrary
+  terminal emulator it doesn't own, and per-emulator window control is
+  fragile (especially on Wayland). The session is pre-selected; the
+  user alt-tabs back themselves.
+- **TUI-only lifecycle**. The PTY parser that observes the bell only
+  runs while the TUI is alive, so notifications don't fire from
+  headless `automation tick`. The dispatcher thread itself
+  (`crate::notifications::start`) only starts when `[features]
+  notifications = true` — zero overhead when disabled.
+- **Gated by `[features] notifications`** (default on); knobs in
+  `[notifications]` (also_on_waiting / suppress_for_active / sound /
+  min_interval_secs). Settings live in `session::settings`; loader in
+  `agent::settings_config`; full doc in `docs/CONFIG.md`.
+- **Code shape**. `src/notifications.rs` is the leaf side-effect layer
+  (only knows `session` + `paths`) — a single background thread reads a
+  per-process mpsc channel and shells out to `notify-rust`. The
+  per-session bookkeeping (prior status, dedup timestamps) lives in
+  `src/app/notify_state.rs` as a pure unit-testable struct, owned by
+  `App` and constructed only when the feature is enabled.
 
 ## Demo Video
 
