@@ -381,7 +381,9 @@ send/inbox/prune — the inter-session mailbox queue; see below), `editor`, `con
 (validate/show — strict-parses every config file / prints the
 effective resolved config; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
-deactivate/status — manage opt-in extensions; see below). Output is
+deactivate/status — manage opt-in extensions; see below), `version`
+(prints the running version; `--check` queries GitHub's latest release —
+gated on `[features] version_check`, off by default). Output is
 **human-readable by default** and switches to JSON automatically when stdout is
 piped (so `… | jq` keeps working); force a format with `--json` (compact),
 `--pretty` (indented JSON), or `--text` (human even when piped).

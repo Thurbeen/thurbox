@@ -495,6 +495,15 @@ pub struct App {
     metrics_refresh: background::BackgroundTask<MetricsRefresh>,
     /// Background active-session git-stats refresh, polled each tick.
     git_stats: background::BackgroundTask<(SessionId, Option<crate::session::GitStats>)>,
+    /// Cached update-check result, rendered as the header "update available"
+    /// badge. `Some` only when `[features] version_check` is on and a newer
+    /// release is known (from the on-disk cache). Read off the network — see
+    /// [`crate::agent::version_check`].
+    update_status: Option<crate::agent::version_check::UpdateStatus>,
+    /// One-shot background GitHub update check (network), polled each tick. Fires
+    /// once on startup when the cache is stale; on success the cache is rewritten
+    /// and `update_status` re-read from it.
+    version_check_task: background::BackgroundTask<Result<(), String>>,
     /// Background worktree-creation (`git worktree add`) for the new-session
     /// wizard, polled each tick; in-flight state guards against re-entry and
     /// clobbering the pending continuation.
@@ -678,6 +687,14 @@ impl App {
             metrics: metrics_state::MetricsState::new(),
             metrics_refresh: background::BackgroundTask::default(),
             git_stats: background::BackgroundTask::default(),
+            // Seed the badge from the cache (no network); refreshed on first
+            // tick if the flag is on and the cache is stale.
+            update_status: if crate::session::settings::global().features.version_check {
+                crate::agent::version_check::read_cached_status()
+            } else {
+                None
+            },
+            version_check_task: background::BackgroundTask::default(),
             worktree_create: background::BackgroundTask::default(),
             pending_worktree_create: None,
             session_spawn: background::BackgroundTask::default(),
@@ -2869,6 +2886,35 @@ impl App {
         }
 
         self.tick_background_refreshes();
+
+        self.tick_version_check();
+    }
+
+    /// Drive the opt-in GitHub update check. Off the render path: on the first
+    /// tick (when the flag is on and the on-disk cache is stale) it fires a
+    /// single background network refresh; the result only ever lands by
+    /// re-reading the cache, so rendering never makes a network call.
+    fn tick_version_check(&mut self) {
+        if !self.features.version_check {
+            return;
+        }
+
+        // One attempt per launch: fire on the first tick if the cache is stale.
+        if self.metrics.tick_count == 1
+            && !self.version_check_task.in_progress()
+            && crate::agent::version_check::cache_is_stale()
+        {
+            let tx = self.version_check_task.start();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(crate::agent::version_check::refresh_cache().map(|_| ()));
+            });
+        }
+
+        // Apply a completed refresh by re-reading the cache (single source of
+        // truth). A failed/ dead refresh leaves the prior badge untouched.
+        if let background::TaskPoll::Done(Ok(())) = self.version_check_task.poll() {
+            self.update_status = crate::agent::version_check::read_cached_status();
+        }
     }
 
     /// Run the debounced global-search content scan once the query has been
@@ -6670,6 +6716,7 @@ mod tests {
             shell_pane: false,
             mouse: true,
             notifications: false,
+            version_check: false,
         };
 
         app.handle_key(KeyCode::F(5), KeyModifiers::NONE);

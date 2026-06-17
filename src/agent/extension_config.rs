@@ -326,7 +326,7 @@ pub fn fetch_file(source: &ExtensionSource, rel: &str) -> Result<String, String>
 ///
 /// Note: the body is decoded as UTF-8 (lossy); extension payloads are expected
 /// to be text files (specs, scripts, JSON), not binaries.
-fn http_get(url: &str) -> Result<String, String> {
+pub(crate) fn http_get(url: &str) -> Result<String, String> {
     let attempts: [(&str, Vec<&str>); 2] = [
         ("curl", vec!["-fsSL", "--max-time", "30", url]),
         ("wget", vec!["--timeout=30", "-O", "-", url]),

@@ -21,7 +21,7 @@ pub fn render_header(frame: &mut Frame, area: Rect, badge: Option<HeaderBadge<'_
     if area.height == 0 {
         return;
     }
-    let header = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(" thurbox", brand_style()),
         Span::styled(
             "  Multi-Session Agent Orchestrator",
@@ -31,8 +31,16 @@ pub fn render_header(frame: &mut Frame, area: Rect, badge: Option<HeaderBadge<'_
             concat!("  v", env!("THURBOX_VERSION")),
             Style::default().fg(Theme::text_muted()),
         ),
-    ]));
-    frame.render_widget(header, area);
+    ];
+    if let Some(latest) = badge.as_ref().and_then(|b| b.update_latest) {
+        spans.push(Span::styled(
+            format!("  ⬆ v{latest} available"),
+            Style::default()
+                .fg(Theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 
     if let Some(badge) = badge {
         let mut spans: Vec<Span<'_>> = Vec::new();
@@ -52,10 +60,14 @@ pub fn render_header(frame: &mut Frame, area: Rect, badge: Option<HeaderBadge<'_
     }
 }
 
-/// Right-aligned overlay rendered on top of the header.
+/// Right-aligned overlay rendered on top of the header, plus the optional
+/// left-aligned "update available" version badge.
 pub struct HeaderBadge<'a> {
     pub active_session: Option<&'a str>,
     pub theme_label: &'a str,
+    /// When `Some`, the latest available release version (no leading `v`),
+    /// rendered as a left-aligned "⬆ vX.Y.Z available" badge after the version.
+    pub update_latest: Option<&'a str>,
 }
 
 /// State needed to render the footer bar.

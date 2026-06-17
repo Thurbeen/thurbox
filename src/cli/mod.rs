@@ -21,6 +21,7 @@ pub mod messages;
 pub mod output;
 pub mod sessions;
 pub mod tasks;
+pub mod version;
 
 use output::{CommandOutput, Format};
 
@@ -91,6 +92,8 @@ pub enum Command {
         #[command(subcommand)]
         action: extensions::Action,
     },
+    /// Print the version; `--check` queries GitHub for a newer release.
+    Version(version::VersionArgs),
 }
 
 /// Run a parsed CLI invocation against `db`, rendering the result in the
@@ -105,6 +108,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Message { action } => messages::run(action, db),
         Command::Config { action } => config::run(action, db),
         Command::Extension { action } => extensions::run(action, db),
+        Command::Version(args) => Ok(version::run(args)),
     }?;
 
     println!("{}", format.render(&output));
@@ -675,6 +679,21 @@ mod tests {
             panic!("expected Message::Prune via msg alias");
         };
         assert_eq!(older_than_days, Some(30));
+    }
+
+    #[test]
+    fn parse_version_with_and_without_check() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "version"]).unwrap();
+        let Command::Version(args) = cli.command else {
+            panic!("expected Version");
+        };
+        assert!(!args.check);
+
+        let cli = Cli::try_parse_from(["thurbox-cli", "version", "--check"]).unwrap();
+        let Command::Version(args) = cli.command else {
+            panic!("expected Version");
+        };
+        assert!(args.check);
     }
 
     #[test]

@@ -111,12 +111,18 @@ impl App {
             .get(self.active_index)
             .map(|s| s.info.name.as_str());
         let theme_label = self.active_theme.display_name.as_str();
+        let update_latest = self
+            .update_status
+            .as_ref()
+            .filter(|s| s.update_available)
+            .map(|s| s.latest.as_str());
         status_bar::render_header(
             frame,
             header,
             Some(status_bar::HeaderBadge {
                 active_session: active_name,
                 theme_label,
+                update_latest,
             }),
         );
     }

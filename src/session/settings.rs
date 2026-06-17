@@ -82,6 +82,12 @@ pub struct FeatureFlags {
     /// passive banner only (the modern API requires a signed app bundle).
     #[serde(default = "default_true")]
     pub notifications: bool,
+    /// Version-update check: the TUI header "update available" badge and the
+    /// `thurbox-cli version --check` command. **Off by default** — unlike the
+    /// other flags, this one is opt-in because it makes a network call to
+    /// GitHub. Enable it to learn when a newer release is available.
+    #[serde(default = "default_false")]
+    pub version_check: bool,
 }
 
 /// Knobs for the OS notification feature (`[notifications]` table). All
@@ -128,6 +134,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
@@ -139,6 +149,7 @@ impl Default for FeatureFlags {
             shell_pane: true,
             mouse: true,
             notifications: true,
+            version_check: false,
         }
     }
 }
@@ -276,6 +287,18 @@ mod tests {
     fn notifications_type_mismatch_is_rejected() {
         let err = toml::from_str::<Settings>("[notifications]\nsound = \"loud\"").unwrap_err();
         assert!(err.to_string().contains("sound"));
+    }
+
+    #[test]
+    fn version_check_flag_defaults_off_and_parses() {
+        // Unlike the other flags, version_check is opt-in (network call).
+        let s: Settings = toml::from_str("[features]").unwrap();
+        assert!(!s.features.version_check, "version_check defaults off");
+        assert!(s.features.tasks, "other flags still default on");
+
+        let s: Settings = toml::from_str("[features]\nversion_check = true").unwrap();
+        assert!(s.features.version_check);
+        assert!(s.features.mouse, "untouched flags stay at their default");
     }
 
     #[test]

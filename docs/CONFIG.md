@@ -117,22 +117,24 @@ wants are exposed; internals stay hardcoded.
 
 ### `[features]` — whole-feature switches
 
-Turn major TUI features off entirely. All default to `true`; like the
-rest of settings.toml, changes need a restart. A disabled feature's
-pane never renders, its keybinding shows a status toast instead of
-acting, and its global-search scope returns no results. Data is never
-touched, so re-enabling a flag is lossless.
+Turn major TUI features off entirely. All default to `true` **except
+`version_check`, which defaults to `false`** (it makes a network call,
+so it is opt-in). Like the rest of settings.toml, changes need a
+restart. A disabled feature's pane never renders, its keybinding shows
+a status toast instead of acting, and its global-search scope returns
+no results. Data is never touched, so re-enabling a flag is lossless.
 
-| Key | Disables |
-|-----|----------|
-| `tasks` | tasks panel (`F5`/`Ctrl+W`) and task search results |
-| `automations` | automations pane, `Ctrl+P`, TUI schedule firing, heartbeat arming |
-| `file_viewer` | file viewer column (`F3`) and file search results |
-| `global_search` | global search strip (`Ctrl+/`) |
-| `info_panel` | info panel column (`F2`) |
-| `shell_pane` | per-session shell toggle (`Ctrl+T`) |
-| `mouse` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
-| `notifications` | OS desktop notifications when a session needs attention |
+| Key | Default | Controls |
+|-----|---------|----------|
+| `tasks` | `true` | tasks panel (`F5`/`Ctrl+W`) and task search results |
+| `automations` | `true` | automations pane, `Ctrl+P`, TUI schedule firing, heartbeat arming |
+| `file_viewer` | `true` | file viewer column (`F3`) and file search results |
+| `global_search` | `true` | global search strip (`Ctrl+/`) |
+| `info_panel` | `true` | info panel column (`F2`) |
+| `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
+| `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
+| `notifications` | `true` | OS desktop notifications when a session needs attention |
+| `version_check` | `false` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
@@ -176,6 +178,18 @@ respects the terminal bell / OSC 9 / OSC 777 conventions (Claude Code
 out of the box, for example). For agents that only go quiet without
 ringing a bell, set `also_on_waiting = true` — note this fires once each
 time the agent goes idle after activity, so it can be chatty.
+
+`version_check = true` enables the update check. On launch the TUI
+reads a cached result (`~/.local/share/thurbox/version-check.json`) and,
+if it is older than 24 h, fires a single best-effort background fetch of
+GitHub's latest release (`api.github.com/repos/Thurbeen/thurbox/releases/latest`,
+via `curl`/`wget` — no new dependency); a newer release shows a `⬆ vX.Y.Z
+available` badge next to the version in the header. The fetch never runs
+on the render path and never blocks startup; failures are silent. Dev
+builds (`0.0.0-dev`) never show the badge. The same flag enables
+`thurbox-cli version --check`, which fetches fresh on demand and reports
+current vs. latest (`thurbox-cli version` with no flag always prints the
+current version, regardless of the flag).
 
 ## themes.toml
 

@@ -11,6 +11,7 @@ pub mod settings_config;
 pub mod themes_config;
 pub mod tmux;
 pub mod transport;
+pub mod version_check;
 
 pub use backend::{Session, SessionBackend, SessionParser, TermSignals};
 pub use generic::GenericProvider;

@@ -48,6 +48,11 @@ config_version = 1
 # shell_pane = true       # Ctrl+T per-session shell
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
 # notifications = true    # OS desktop notifications when a session needs attention
+#
+# `version_check` is the one flag that defaults to FALSE: it makes a network
+# call to GitHub to learn the latest release. Enable it for the TUI header
+# "update available" badge and the `thurbox-cli version --check` command.
+# version_check = false   # GitHub update check (TUI badge + `version --check`)
 
 # OS desktop notifications. Linux gets click-to-focus (clicking the banner
 # selects the session in the running TUI); macOS shows a passive banner only.
