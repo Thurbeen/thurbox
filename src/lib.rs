@@ -5,6 +5,7 @@ pub mod app;
 pub mod cli;
 pub(crate) mod fuzzy;
 pub mod git;
+pub mod notifications;
 pub mod paths;
 pub mod session;
 pub mod session_ops;

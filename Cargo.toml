@@ -72,6 +72,12 @@ chrono-tz = "0.10"
 cron = "0.16"
 serde_ignored = "0.1.14"
 
+# OS notifications (Linux/macOS). On Linux: dbus with action callbacks
+# (click-to-focus works). On macOS: passive banner only — clicking does
+# nothing (the action API requires a signed app bundle). The notifications
+# module degrades gracefully on either platform if dispatch fails.
+notify-rust = "4"
+
 [[bin]]
 name = "thurbox-cli"
 path = "src/bin/thurbox-cli.rs"

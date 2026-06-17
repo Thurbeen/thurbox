@@ -124,6 +124,7 @@ touched, so re-enabling a flag is lossless.
 | `info_panel` | info panel column (`F2`) |
 | `shell_pane` | per-session shell toggle (`Ctrl+T`) |
 | `mouse` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
+| `notifications` | OS desktop notifications when a session needs attention |
 
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
@@ -136,6 +137,37 @@ heartbeat, so an already-armed keeper window (or an OS timer from
 processes. `mouse = false` skips terminal mouse capture entirely, so
 the terminal keeps its native mouse behavior (its own text selection,
 URL handling, etc.) and no click/wheel/hover handling runs in the TUI.
+`notifications = false` keeps the background dispatcher thread from
+ever starting (zero overhead) and silently no-ops every transition;
+the session status display itself is unaffected.
+
+### `[notifications]` — OS notification settings
+
+Surfaces an OS notification when a session crosses into a state that
+needs the user's attention (the agent rang the terminal bell or emitted
+an OSC 9 / OSC 777 message — usually because it's waiting on an answer
+or has finished a task). Linux dispatches via dbus and supports
+**click-to-focus**: clicking the banner writes a focus request that the
+running TUI reads on its next tick and switches to that session. macOS
+shows the notification banner but ignores clicks (the modern
+`UNUserNotificationCenter` API requires a signed app bundle, which
+thurbox is not). On both platforms the notification body is the agent's
+last OSC message when present, otherwise `Waiting for input`. **Only
+fires while the TUI is open** — the agent terminal parser is what sees
+the bell, and it doesn't run when thurbox isn't.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `also_on_waiting` | `false` | also fire on `Busy → Waiting` (no explicit bell from the agent) |
+| `suppress_for_active` | `true` | skip the notification for the session you're currently viewing |
+| `sound` | `true` | play the OS default notification sound |
+| `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
+
+The default-on `Attention` trigger is the right knob for any agent that
+respects the terminal bell / OSC 9 / OSC 777 conventions (Claude Code
+out of the box, for example). For agents that only go quiet without
+ringing a bell, set `also_on_waiting = true` — note this fires once each
+time the agent goes idle after activity, so it can be chatty.
 
 ## themes.toml
 

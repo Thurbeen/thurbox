@@ -38,6 +38,11 @@ pub struct Settings {
     /// enabled.
     #[serde(default)]
     pub features: FeatureFlags,
+    /// Desktop-notification settings (`[notifications]` table). Absent table =
+    /// defaults (fire on `Attention`, skip the currently-focused session, 5s
+    /// per-session dedup).
+    #[serde(default)]
+    pub notifications: NotificationSettings,
 }
 
 /// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
@@ -71,6 +76,52 @@ pub struct FeatureFlags {
     /// (e.g. its own text selection).
     #[serde(default = "default_true")]
     pub mouse: bool,
+    /// OS desktop notifications when a session needs the user's attention.
+    /// Disabled = no notifications fire and the dispatcher thread never
+    /// starts (zero overhead). Linux gets click-to-focus; macOS shows a
+    /// passive banner only (the modern API requires a signed app bundle).
+    #[serde(default = "default_true")]
+    pub notifications: bool,
+}
+
+/// Knobs for the OS notification feature (`[notifications]` table). All
+/// fields have defaults so an empty / absent table behaves like the seeded
+/// configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    /// Also notify when a session goes `Busy → Waiting` (timing-only quiet
+    /// state, no explicit OSC bell from the agent). Off by default —
+    /// agents that respect `terminal_bell`/OSC 9 already drive the
+    /// `Attention` transition, which always fires.
+    #[serde(default)]
+    pub also_on_waiting: bool,
+    /// Skip notifications for the session currently in focus (you're already
+    /// looking at it). Defaults on; flip off if you run thurbox in a
+    /// background window and want every transition surfaced.
+    #[serde(default = "default_true")]
+    pub suppress_for_active: bool,
+    /// Play the OS default notification sound.
+    #[serde(default = "default_true")]
+    pub sound: bool,
+    /// Per-session floor between two notifications, in seconds. Prevents an
+    /// agent that flips Attention → Busy → Attention from spamming.
+    #[serde(default = "default_notification_min_interval_secs")]
+    pub min_interval_secs: u64,
+}
+
+fn default_notification_min_interval_secs() -> u64 {
+    5
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            also_on_waiting: false,
+            suppress_for_active: true,
+            sound: true,
+            min_interval_secs: default_notification_min_interval_secs(),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -87,6 +138,7 @@ impl Default for FeatureFlags {
             info_panel: true,
             shell_pane: true,
             mouse: true,
+            notifications: true,
         }
     }
 }
@@ -113,6 +165,7 @@ impl Default for Settings {
             three_panel_min_cols: default_three_panel_min_cols(),
             audit_retention_days: default_audit_retention_days(),
             features: FeatureFlags::default(),
+            notifications: NotificationSettings::default(),
         }
     }
 }
@@ -188,6 +241,41 @@ mod tests {
         let s: Settings = toml::from_str("[features]\nmouse = false").unwrap();
         assert!(!s.features.mouse);
         assert!(s.features.tasks, "untouched flags stay enabled");
+    }
+
+    #[test]
+    fn notifications_feature_flag_parses() {
+        let s: Settings = toml::from_str("[features]\nnotifications = false").unwrap();
+        assert!(!s.features.notifications);
+        assert!(s.features.tasks, "untouched flags stay enabled");
+    }
+
+    #[test]
+    fn notifications_table_defaults() {
+        let s: Settings = toml::from_str("").unwrap();
+        assert_eq!(s.notifications, NotificationSettings::default());
+        assert!(!s.notifications.also_on_waiting);
+        assert!(s.notifications.suppress_for_active);
+        assert!(s.notifications.sound);
+        assert_eq!(s.notifications.min_interval_secs, 5);
+    }
+
+    #[test]
+    fn notifications_table_partial_override() {
+        let s: Settings =
+            toml::from_str("[notifications]\nalso_on_waiting = true\nmin_interval_secs = 30\n")
+                .unwrap();
+        assert!(s.notifications.also_on_waiting);
+        assert_eq!(s.notifications.min_interval_secs, 30);
+        // Untouched fields stay on defaults.
+        assert!(s.notifications.suppress_for_active);
+        assert!(s.notifications.sound);
+    }
+
+    #[test]
+    fn notifications_type_mismatch_is_rejected() {
+        let err = toml::from_str::<Settings>("[notifications]\nsound = \"loud\"").unwrap_err();
+        assert!(err.to_string().contains("sound"));
     }
 
     #[test]

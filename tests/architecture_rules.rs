@@ -106,6 +106,15 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["paths"],
         allowed_path_only: &[],
     },
+    // Leaf side-effect module: OS desktop notifications. Knows about
+    // `session` (for `SessionId`) and `paths` (for the DB path the click
+    // callback writes to); never reaches into agent / ui / app / storage
+    // beyond a single SQL statement on its own short-lived connection.
+    ModuleRules {
+        name: "notifications",
+        allowed: &["session", "paths"],
+        allowed_path_only: &[],
+    },
 ];
 
 /// Modules exempt from the allowlist: `app` is the coordinator (imports
@@ -519,6 +528,11 @@ fn util_modules_are_leaves() {
     for name in ["fuzzy", "paths", "shell", "workspace"] {
         assert_module_clean(name);
     }
+}
+
+#[test]
+fn notifications_module_isolation() {
+    assert_module_clean("notifications");
 }
 
 /// Every module under `src/` must be governed: either a MODULE_RULES entry
