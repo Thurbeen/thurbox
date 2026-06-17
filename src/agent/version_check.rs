@@ -4,16 +4,15 @@
 //! (gated behind `[features] version_check`, off by default — see
 //! [`crate::session::settings::FeatureFlags`]). It surfaces two ways:
 //!
-//! - **TUI** — a small "update available → vX.Y.Z" badge in the header. The
-//!   draw loop only ever reads a cached result ([`read_cached_status`]); the
-//!   network refresh ([`refresh_cache`]) runs off the render path.
+//! - **TUI** — a small "⬆ vX.Y.Z available" badge in the header. The draw loop
+//!   only ever reads a cached result ([`read_cached_status`]); the network
+//!   refresh ([`refresh_cache`]) runs off the render path.
 //! - **CLI** — `thurbox-cli version --check` fetches fresh and reports.
 //!
 //! The pure decision ([`decide_update`]) is built on the existing
-//! [`crate::session::extension_def::compare_versions`] /
-//! [`is_dev_version`](crate::session::extension_def::is_dev_version) helpers, so
-//! dev builds (`0.0.0-dev`) never report an update. The GitHub fetch shells out
-//! to `curl`/`wget` (no new crate dependency — same dependency-free approach as
+//! [`compare_versions`] / [`is_dev_version`] helpers, so dev builds
+//! (`0.0.0-dev`) never report an update. The GitHub fetch shells out to
+//! `curl`/`wget` (no new crate dependency — same dependency-free approach as
 //! `scripts/install.sh` and the extension installer).
 
 use std::path::PathBuf;
@@ -32,15 +31,18 @@ const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Thurbeen/thurbox/
 /// launch never hits the network.
 const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
-/// The outcome of comparing the running binary against the latest release.
+/// A confirmed available update: `latest` is strictly newer than `current`.
+///
+/// The *existence* of this value is itself the "update available" signal —
+/// [`decide_update`] only ever returns `Some` when a newer release exists, so
+/// there is no redundant boolean flag to keep in sync.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateStatus {
     /// The running binary's version (e.g. `0.113.0`).
     pub current: String,
-    /// The latest published release (e.g. `0.114.0`, "v" stripped).
+    /// The latest published release (e.g. `0.114.0`, "v" stripped), newer than
+    /// `current`.
     pub latest: String,
-    /// Whether `latest` is strictly newer than `current`.
-    pub update_available: bool,
 }
 
 /// On-disk cache of the last successful check.
@@ -75,14 +77,15 @@ pub fn decide_update(current: &str, latest: &str) -> Option<UpdateStatus> {
         Some(UpdateStatus {
             current: current.to_string(),
             latest: latest.to_string(),
-            update_available: true,
         })
     } else {
         None
     }
 }
 
-/// The running binary's version (re-exported from the shared helper).
+/// The running binary's version (thin wrapper over the shared
+/// [`binary_version`](crate::agent::extension_config::binary_version) helper, so
+/// callers in this feature have a single import).
 pub fn current_version() -> &'static str {
     crate::agent::extension_config::binary_version()
 }
@@ -121,7 +124,8 @@ fn write_cache(latest: &str) {
     }
 }
 
-/// Whether the cache is missing or older than [`CACHE_TTL_SECS`].
+/// Whether the cache is missing or older than the freshness window
+/// (`CACHE_TTL_SECS`, 24 h).
 pub fn cache_is_stale() -> bool {
     match read_cache() {
         Some(c) => now_secs().saturating_sub(c.checked_at) >= CACHE_TTL_SECS,
@@ -179,7 +183,6 @@ mod tests {
         let s = decide_update("0.113.0", "0.114.0").expect("update");
         assert_eq!(s.current, "0.113.0");
         assert_eq!(s.latest, "0.114.0");
-        assert!(s.update_available);
     }
 
     #[test]
@@ -236,5 +239,22 @@ mod tests {
         assert!(!cache_is_stale(), "just-written cache is fresh");
         let cached = read_cache().expect("cache present");
         assert_eq!(cached.latest, "9.9.9", "leading v stripped on write");
+    }
+
+    #[test]
+    fn cache_older_than_ttl_is_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+
+        // Write a cache stamped at the epoch — far older than the TTL window.
+        let path = cache_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let entry = CachedCheck {
+            latest: "9.9.9".into(),
+            checked_at: 0,
+        };
+        std::fs::write(&path, serde_json::to_string(&entry).unwrap()).unwrap();
+
+        assert!(cache_is_stale(), "an epoch-stamped cache is past the TTL");
     }
 }

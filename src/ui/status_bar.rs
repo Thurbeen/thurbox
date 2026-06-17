@@ -188,3 +188,52 @@ fn push_spinner_badge<'a>(spans: &mut Vec<Span<'a>>, tick_count: u64, label: &'a
             .bg(Theme::accent()),
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// Render the header into a 120×1 buffer (a realistic three-panel width,
+    /// wide enough that the right-aligned theme overlay doesn't paint over the
+    /// left badge) and return its single line.
+    fn header_line(update_latest: Option<&str>) -> String {
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_header(
+                    f,
+                    Rect::new(0, 0, 120, 1),
+                    Some(HeaderBadge {
+                        active_session: None,
+                        theme_label: "Default",
+                        update_latest,
+                    }),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn update_badge_renders_when_a_newer_release_is_available() {
+        let line = header_line(Some("0.114.0"));
+        assert!(
+            line.contains("⬆ v0.114.0 available"),
+            "badge missing from header: {line:?}"
+        );
+    }
+
+    #[test]
+    fn no_update_badge_without_a_newer_release() {
+        let line = header_line(None);
+        assert!(
+            !line.contains("available"),
+            "unexpected badge in header: {line:?}"
+        );
+    }
+}

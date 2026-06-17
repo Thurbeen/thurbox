@@ -2911,7 +2911,7 @@ impl App {
         }
 
         // Apply a completed refresh by re-reading the cache (single source of
-        // truth). A failed/ dead refresh leaves the prior badge untouched.
+        // truth). A failed/dead refresh leaves the prior badge untouched.
         if let background::TaskPoll::Done(Ok(())) = self.version_check_task.poll() {
             self.update_status = crate::agent::version_check::read_cached_status();
         }

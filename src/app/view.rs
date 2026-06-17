@@ -111,11 +111,9 @@ impl App {
             .get(self.active_index)
             .map(|s| s.info.name.as_str());
         let theme_label = self.active_theme.display_name.as_str();
-        let update_latest = self
-            .update_status
-            .as_ref()
-            .filter(|s| s.update_available)
-            .map(|s| s.latest.as_str());
+        // `update_status` is `Some` only when a newer release exists, so its
+        // presence alone drives the badge.
+        let update_latest = self.update_status.as_ref().map(|s| s.latest.as_str());
         status_bar::render_header(
             frame,
             header,

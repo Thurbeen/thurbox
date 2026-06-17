@@ -47,7 +47,7 @@ pub fn run(args: VersionArgs) -> CommandOutput {
     match crate::agent::version_check::refresh_cache() {
         Ok((_, Some(status))) => {
             let human = kv(&[
-                ("current", status.current.clone()),
+                ("current", current.to_string()),
                 ("latest", status.latest.clone()),
                 ("update", "available".to_string()),
                 (
@@ -58,11 +58,11 @@ pub fn run(args: VersionArgs) -> CommandOutput {
             ]);
             CommandOutput::new(
                 json!({
-                    "version": status.current,
+                    "version": current,
                     "latest": status.latest,
                     "update_available": true,
                     "check_enabled": true,
-                    "summary": format!("Update available: {} → {}", status.current, status.latest),
+                    "summary": format!("Update available: {current} → {}", status.latest),
                 }),
                 human,
             )
@@ -89,5 +89,32 @@ pub fn run(args: VersionArgs) -> CommandOutput {
             format!("thurbox {current}\nUpdate check failed: {e}"),
             format!("update check failed: {e}"),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_without_check_prints_current_version() {
+        let out = run(VersionArgs { check: false });
+        assert!(out["version"].is_string(), "version field present");
+        assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
+        assert!(out.failure.is_none(), "plain version never fails");
+    }
+
+    #[test]
+    fn version_check_when_flag_disabled_prints_enable_hint() {
+        // `settings::init` is only ever called by the binaries, so in the test
+        // process `settings::global()` is the all-default config — version_check
+        // is off — and `--check` degrades to the enable hint with no network.
+        let out = run(VersionArgs { check: true });
+        assert_eq!(out["check_enabled"], false);
+        assert!(out.human.contains("disabled"), "got: {}", out.human);
+        assert!(
+            out.failure.is_none(),
+            "the hint is informational, not an error"
+        );
     }
 }
