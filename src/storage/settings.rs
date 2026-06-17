@@ -4,6 +4,8 @@ use rusqlite::{params, OptionalExtension};
 
 use super::Database;
 
+use crate::session::PENDING_FOCUS_SESSION_ID_KEY;
+
 const EDITOR_COMMAND_KEY: &str = "editor_command";
 const THEME_KEY: &str = "active_theme";
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
@@ -124,6 +126,22 @@ impl Database {
         self.set_active_extensions(&names)?;
         Ok(true)
     }
+
+    /// Atomically read + clear the pending "focus this session" request that
+    /// the notifications click handler writes. Returns the raw UUID string the
+    /// click handler stored, or `None` when no click is pending. Done under
+    /// SQLite's writer serialization so a concurrent click can't be lost:
+    /// the `RETURNING value` clause yields the value being deleted in the
+    /// same statement.
+    pub fn take_pending_focus_session_id(&self) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "DELETE FROM metadata WHERE key = ?1 RETURNING value",
+                params![PENDING_FOCUS_SESSION_ID_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +204,32 @@ mod tests {
         assert_eq!(db.get_active_extensions().unwrap(), ["other"]);
         assert!(db.remove_active_extension("other").unwrap());
         assert!(db.get_active_extensions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pending_focus_session_id_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        // Nothing pending initially.
+        assert_eq!(db.take_pending_focus_session_id().unwrap(), None);
+
+        // The notifications module writes via raw SQL using the same key
+        // (`FOCUS_REQUEST_KEY`); this mirrors what the click handler does.
+        db.conn
+            .execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+                params![
+                    PENDING_FOCUS_SESSION_ID_KEY,
+                    "deadbeef-0000-0000-0000-000000000000"
+                ],
+            )
+            .unwrap();
+
+        // First take returns + clears it; second returns None.
+        assert_eq!(
+            db.take_pending_focus_session_id().unwrap().as_deref(),
+            Some("deadbeef-0000-0000-0000-000000000000")
+        );
+        assert_eq!(db.take_pending_focus_session_id().unwrap(), None);
     }
 
     #[test]

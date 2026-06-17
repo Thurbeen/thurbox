@@ -47,6 +47,16 @@ config_version = 1
 # info_panel = true       # F2 info panel
 # shell_pane = true       # Ctrl+T per-session shell
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
+# notifications = true    # OS desktop notifications when a session needs attention
+
+# OS desktop notifications. Linux gets click-to-focus (clicking the banner
+# selects the session in the running TUI); macOS shows a passive banner only.
+# The dispatcher only starts when [features] notifications = true.
+# [notifications]
+# also_on_waiting = false       # also fire on Busy → Waiting (no explicit OSC bell)
+# suppress_for_active = true    # don't notify if you're already viewing that session
+# sound = true                  # play the OS default notification sound
+# min_interval_secs = 5         # per-session dedup floor (seconds)
 "#;
 
 /// Path to the settings file: `~/.config/thurbox/settings.toml`.
@@ -143,6 +153,12 @@ mod tests {
             "global_search",
             "info_panel",
             "shell_pane",
+            "notifications",
+            "[notifications]",
+            "also_on_waiting",
+            "suppress_for_active",
+            "sound",
+            "min_interval_secs",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
