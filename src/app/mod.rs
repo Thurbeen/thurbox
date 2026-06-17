@@ -1927,15 +1927,24 @@ impl App {
             return;
         }
 
-        self.scroll_pane(self.pane_at(x, y), up);
+        self.scroll_pane(self.pane_at(x, y), up, x, y);
     }
 
     /// Apply a wheel tick (`up`) to a specific scrollable pane (the terminal
-    /// when `pane` is `None`/`Terminal`).
-    fn scroll_pane(&mut self, pane: Option<ScrollPane>, up: bool) {
+    /// when `pane` is `None`/`Terminal`). `(x, y)` is the cursor position in
+    /// screen cells, used to forward mouse coordinates to the inner PTY when
+    /// the agent has mouse tracking enabled (Claude Code, vim, htop, …).
+    fn scroll_pane(&mut self, pane: Option<ScrollPane>, up: bool, x: u16, y: u16) {
         let step: i32 = if up { -1 } else { 1 };
         match pane {
             Some(ScrollPane::Terminal) | None => {
+                // Modern TUIs on the alternate screen (Claude Code, vim, htop,
+                // …) enable mouse tracking and handle wheel scrolling
+                // themselves; vt100's scrollback is empty on the alt screen so
+                // the local fallback would be a silent no-op. Forward instead.
+                if self.try_forward_wheel_to_pty(x, y, up) {
+                    return;
+                }
                 if up {
                     self.scroll_terminal_up(MOUSE_SCROLL_LINES);
                 } else {
@@ -2032,6 +2041,78 @@ impl App {
             });
         }
         None
+    }
+
+    /// Forward a wheel tick to the active session's PTY when the inner agent
+    /// has enabled xterm mouse tracking — the convention modern TUIs (Claude
+    /// Code, vim, htop, btop, …) use to subscribe to wheel events. Returns
+    /// `true` when the event was forwarded so the caller skips the local
+    /// scrollback fallback (which is a no-op on the alternate screen anyway).
+    ///
+    /// Only the SGR encoding (DECSET 1006) is supported: the legacy 1005/utf8
+    /// and default encodings cap row/col at 223 and aren't used by anything
+    /// that ships in 2024+. Falling back to vt100 scrollback for them is fine.
+    fn try_forward_wheel_to_pty(&self, x: u16, y: u16, up: bool) -> bool {
+        let Some(session) = self.sessions.get(self.active_index) else {
+            return false;
+        };
+
+        let view = self.active_terminal_view();
+        let parser_arc = if view == TerminalView::Shell {
+            session.shell_pane.as_ref().map(|sp| &sp.parser)
+        } else {
+            None
+        }
+        .unwrap_or(&session.parser);
+
+        let (mode, encoding) = {
+            let Ok(parser) = parser_arc.lock() else {
+                return false;
+            };
+            let screen = parser.screen();
+            (
+                screen.mouse_protocol_mode(),
+                screen.mouse_protocol_encoding(),
+            )
+        };
+
+        if mode == vt100::MouseProtocolMode::None || encoding != vt100::MouseProtocolEncoding::Sgr {
+            return false;
+        }
+
+        // Map the screen-cell click to 1-based PTY cell coordinates. A wheel
+        // tick outside the terminal pane (the cursor is hovering another panel)
+        // is left to the local fallback.
+        let inner = Block::default()
+            .borders(Borders::ALL)
+            .inner(self.screen_layout().terminal);
+        if !inner.contains(Position::new(x, y)) {
+            return false;
+        }
+        let col = u32::from(x - inner.x) + 1;
+        let row = u32::from(y - inner.y) + 1;
+
+        // Xterm wheel buttons: 64 = wheel up, 65 = wheel down. SGR encoding:
+        // CSI < Cb ; Cx ; Cy M (press; release would be `m`).
+        let button: u32 = if up { 64 } else { 65 };
+        let bytes = format!("\x1b[<{button};{col};{row}M").into_bytes();
+
+        let result = if view == TerminalView::Shell {
+            // The branch above only set `view = Shell` when the pane exists;
+            // unwrap is fine, but keep it defensive.
+            session
+                .shell_pane
+                .as_ref()
+                .map(|sp| sp.send_input(bytes))
+                .unwrap_or(Ok(()))
+        } else {
+            session.send_input(bytes)
+        };
+        if let Err(e) = result {
+            tracing::warn!("Failed to forward wheel event to PTY: {e}");
+            return false;
+        }
+        true
     }
 
     fn copy_selection_to_clipboard(&mut self) {
@@ -7505,6 +7586,118 @@ mod tests {
         };
         assert!(h.capturing, "capture must survive a wheel tick");
         assert_eq!(h.selected, 3);
+    }
+
+    // --- Wheel-to-PTY forwarding ---
+    //
+    // Modern alt-screen TUIs (Claude Code, vim, htop, btop, …) subscribe to
+    // wheel events via xterm mouse tracking. Without forwarding, vt100's
+    // scrollback no-ops on the alternate screen and the user sees a "dead"
+    // wheel.
+
+    /// Build a 1-session app that keeps the session's input-channel receiver so
+    /// the test can inspect bytes the app writes to the PTY.
+    fn app_with_input_rx() -> (App, tokio::sync::mpsc::Receiver<Vec<u8>>) {
+        let backend_arc = stub_backend_arc();
+        let provider = stub_provider();
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(Arc::clone(&backend_arc)),
+            stub_agents(),
+            test_db(),
+        );
+        let (session, rx) = Session::stub_with_input_rx("test", &backend_arc, &provider);
+        app.sessions.push(session);
+        app.active_index = 0;
+        (app, rx)
+    }
+
+    /// Drive the active session's vt100 parser with `bytes` (e.g. an alt-screen
+    /// enter + mouse-mode DECSET sequence) so subsequent tests see the same
+    /// state the agent would have produced.
+    fn feed_parser(app: &App, bytes: &[u8]) {
+        let session = &app.sessions[app.active_index];
+        let mut parser = session.parser.lock().unwrap();
+        parser.process(bytes);
+    }
+
+    /// Centre-of-terminal hit point in screen-cell coordinates plus the
+    /// expected 1-based (col, row) the PTY should see.
+    fn click_in_terminal(app: &App) -> ((u16, u16), (u32, u32)) {
+        let term = app.screen_layout().terminal;
+        let inner = Block::default().borders(Borders::ALL).inner(term);
+        let x = inner.x + 5;
+        let y = inner.y + 2;
+        ((x, y), (6, 3))
+    }
+
+    /// With SGR mouse tracking on (`\e[?1000h` + `\e[?1006h`), wheel up is sent
+    /// as `\e[<64;col;rowM` — the encoding Claude Code subscribes to. Vt100
+    /// scrollback is left alone so the inner app owns the scroll.
+    #[test]
+    fn wheel_forwards_sgr_mouse_when_inner_app_subscribes() {
+        let (mut app, mut rx) = app_with_input_rx();
+        // Switch to the alternate screen and enable 1000+1006 mouse tracking,
+        // the exact sequence Claude Code emits at startup.
+        feed_parser(&app, b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+
+        let ((x, y), (col, row)) = click_in_terminal(&app);
+        let before = app.sessions[0].parser.lock().unwrap().screen().scrollback();
+
+        app.handle_mouse_scroll(x, y, true);
+
+        let expected = format!("\x1b[<64;{col};{row}M").into_bytes();
+        assert_eq!(rx.try_recv().ok(), Some(expected));
+        let after = app.sessions[0].parser.lock().unwrap().screen().scrollback();
+        assert_eq!(before, after, "vt100 scrollback must not move");
+    }
+
+    /// Wheel down uses xterm button 65 — the only thing that changes vs.
+    /// wheel up.
+    #[test]
+    fn wheel_down_uses_button_65() {
+        let (mut app, mut rx) = app_with_input_rx();
+        feed_parser(&app, b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+        let ((x, y), (col, row)) = click_in_terminal(&app);
+
+        app.handle_mouse_scroll(x, y, false);
+
+        let expected = format!("\x1b[<65;{col};{row}M").into_bytes();
+        assert_eq!(rx.try_recv().ok(), Some(expected));
+    }
+
+    /// No mouse tracking enabled → wheel still scrolls vt100's scrollback
+    /// locally, the long-standing behavior for non-TUI shells. We don't assert
+    /// the scrollback advances here (the stub parser is built with `0` history
+    /// for hermeticity); the invariant we care about is the negative one — the
+    /// PTY never sees the wheel.
+    #[test]
+    fn wheel_without_mouse_mode_does_not_forward() {
+        let (mut app, mut rx) = app_with_input_rx();
+
+        let ((x, y), _) = click_in_terminal(&app);
+        app.handle_mouse_scroll(x, y, true);
+        app.handle_mouse_scroll(x, y, false);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "no mouse mode → nothing forwarded to PTY"
+        );
+    }
+
+    /// Mouse mode on but with the legacy encoding (no `?1006h`): we don't
+    /// support the 223-cell-capped encoding, so we fall back to the local
+    /// scrollback. The PTY sees nothing.
+    #[test]
+    fn wheel_with_legacy_encoding_does_not_forward() {
+        let (mut app, mut rx) = app_with_input_rx();
+        feed_parser(&app, b"\x1b[?1049h\x1b[?1000h");
+
+        let ((x, y), _) = click_in_terminal(&app);
+        app.handle_mouse_scroll(x, y, true);
+
+        assert!(rx.try_recv().is_err(), "legacy encoding must not forward");
     }
 
     /// The hovered clickable row is underlined in the rendered frame.

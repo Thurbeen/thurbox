@@ -749,8 +749,20 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
         provider: &Arc<dyn AgentProvider>,
     ) -> Self {
-        let (input_tx, _input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-        Self {
+        Self::stub_with_input_rx(name, backend, provider).0
+    }
+
+    /// Like [`Self::stub`], but also returns the input-channel receiver so a
+    /// test can inspect bytes the app sends to the PTY. The caller must keep
+    /// the receiver alive for `send_input` to succeed.
+    #[cfg(test)]
+    pub fn stub_with_input_rx(
+        name: &str,
+        backend: &Arc<dyn SessionBackend>,
+        provider: &Arc<dyn AgentProvider>,
+    ) -> (Self, mpsc::Receiver<Vec<u8>>) {
+        let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+        let session = Self {
             info: SessionInfo::new(name.to_string()),
             parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
                 24,
@@ -770,7 +782,8 @@ impl Session {
             attention_ack_at: 0,
             shell_pane: None,
             env: HashMap::new(),
-        }
+        };
+        (session, input_rx)
     }
 }
 
