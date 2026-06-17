@@ -62,6 +62,34 @@ config_version = 1
 # suppress_for_active = true    # don't notify if you're already viewing that session
 # sound = true                  # play the OS default notification sound
 # min_interval_secs = 5         # per-session dedup floor (seconds)
+
+# ──────────────────────────────────────────────────────────────────────────
+# Common recipes (uncomment the lines under the recipe you want)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Keep more terminal history (e.g. long build logs):
+# scrollback_lines = 10000
+#
+# Minimal / focused TUI — turn off panels you don't use (frees key chords too):
+# [features]
+# tasks = false
+# automations = false
+# file_viewer = false
+# global_search = false
+#
+# Get notified the moment a session needs you, even on quiet agents, and never
+# for the one you're already watching:
+# [features]
+# notifications = true
+# [notifications]
+# also_on_waiting = true        # also fire on the timing-only Busy → Waiting edge
+# suppress_for_active = false   # also notify the focused session
+# min_interval_secs = 30        # at most one notification / 30 s per session
+#
+# Show an "update available" badge in the TUI header (makes a network call to
+# GitHub on startup):
+# [features]
+# version_check = true
 "#;
 
 /// Path to the settings file: `~/.config/thurbox/settings.toml`.
@@ -168,6 +196,22 @@ mod tests {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
                 "settings.toml seed must document '{field}'"
+            );
+        }
+    }
+
+    /// The seed carries a "common recipes" block of copy-pasteable settings,
+    /// kept commented so `seed_toml_parses_to_defaults` still holds.
+    #[test]
+    fn seed_documents_common_recipes() {
+        for marker in [
+            "Common recipes",
+            "scrollback_lines = 10000",
+            "version_check = true",
+        ] {
+            assert!(
+                SEED_SETTINGS_TOML.contains(marker),
+                "settings.toml seed must include recipe '{marker}'"
             );
         }
     }

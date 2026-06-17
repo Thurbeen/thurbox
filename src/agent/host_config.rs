@@ -62,7 +62,20 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox remote SSH hosts  —  ~/.config/
 #
 config_version = 1
 
-# Example (uncomment and edit):
+# ──────────────────────────────────────────────────────────────────────────
+# Minimal host — the two required fields are enough (uncomment and edit)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Relies on your ~/.ssh/config for auth and connection tuning. Registers the
+# "ssh:laptop" backend, selectable in the host picker / with --host laptop.
+#
+# [[hosts]]
+# name = "laptop"               # → backend "ssh:laptop", value for --host
+# destination = "me@laptop"     # "user@host" or a ~/.ssh/config Host alias
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Fully annotated host — every optional field, shown with its default
+# ──────────────────────────────────────────────────────────────────────────
 #
 # [[hosts]]
 # name = "devbox"
@@ -70,12 +83,13 @@ config_version = 1
 #
 # # ControlMaster reuses one SSH connection so reconnects are instant;
 # # ControlPersist keeps it warm; ServerAliveInterval drops half-open links.
+# # One token per array element; thurbox does NOT expand `~` (use abs paths).
 # ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]
 #
 # # Optional overrides, shown with their defaults:
-# # socket = "thurbox"
-# # session = "thurbox"
-# # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
+# # socket = "thurbox"          # remote `tmux -L` socket; change to avoid a clash
+# # session = "thurbox"         # remote tmux session grouping thurbox windows
+# # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"  # abs remote path
 "#;
 
 /// Path to the remote-host config file: `~/.config/thurbox/hosts.toml`
@@ -157,6 +171,18 @@ mod tests {
     fn seed_toml_parses_to_empty_registry() {
         let reg: HostRegistry = toml::from_str(SEED_HOSTS_TOML).unwrap();
         assert!(reg.is_empty());
+    }
+
+    /// Seed ships both a minimal and a fully-annotated example, kept commented
+    /// (the empty-registry test above proves they don't register).
+    #[test]
+    fn seed_toml_documents_minimal_and_full_examples() {
+        for marker in ["Minimal host", "Fully annotated host"] {
+            assert!(
+                SEED_HOSTS_TOML.contains(marker),
+                "hosts.toml seed must include the '{marker}' example"
+            );
+        }
     }
 
     /// The seeded `hosts.toml` is the primary documentation users see, so it

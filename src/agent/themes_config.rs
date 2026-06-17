@@ -35,7 +35,12 @@ pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/t
 
 config_version = 1
 
-# Example (uncomment and edit):
+# ──────────────────────────────────────────────────────────────────────────
+# Minimal tweak — restyle a built-in by overriding one colour (uncomment)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Inherits everything from catppuccin-mocha; only the accent changes. Setting
+# app_bg = "reset" keeps your terminal's own background (nice for transparency).
 #
 # [[themes]]
 # name = "my-mocha"
@@ -43,6 +48,25 @@ config_version = 1
 # base = "catppuccin-mocha"
 # accent = "#fab387"
 # app_bg = "reset"
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Fuller theme — light base + several overrides + nerd-font glyphs
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Mix hex, ANSI names, and indexed colours freely. `light = true` tunes a few
+# contrast-sensitive defaults; `nerd_font = true` opts into nerd-font icons.
+#
+# [[themes]]
+# name = "solar-soft"
+# display_name = "Solar Soft"
+# base = "solarized-light"
+# light = true
+# nerd_font = true
+# accent = "#268bd2"
+# accent_bright = "#2aa198"
+# status_busy = "yellow"
+# status_error = "#dc322f"
+# selection_bg = "14"
 "##;
 
 /// Path to the custom-themes file: `~/.config/thurbox/themes.toml`.
@@ -135,6 +159,18 @@ mod tests {
         let file: ThemesFile = toml::from_str(SEED_THEMES_TOML).unwrap();
         assert!(file.themes.is_empty());
         assert_eq!(file.config_version, Some(1));
+    }
+
+    /// Seed ships a minimal one-override example plus a fuller multi-override
+    /// one, both commented (the no-themes test above proves they don't load).
+    #[test]
+    fn seed_toml_documents_minimal_and_full_examples() {
+        for marker in ["Minimal tweak", "Fuller theme", "my-mocha", "solar-soft"] {
+            assert!(
+                SEED_THEMES_TOML.contains(marker),
+                "themes.toml seed must include the '{marker}' example"
+            );
+        }
     }
 
     /// The seeded `themes.toml` is the primary documentation users see, so it

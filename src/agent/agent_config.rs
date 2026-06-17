@@ -78,6 +78,47 @@ resume_latest = true
 [[agents]]
 name = "vibe"
 command = "vibe"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Add your own agent (uncomment and edit)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Any CLI works — thurbox only needs `command` plus the optional `*_args`
+# groups below. The agent uses its OWN default config; thurbox never passes a
+# model or permissions of its own.
+#
+# [[agents]]
+# name = "my-agent"             # shown in the new-session agent picker
+# command = "my-agent-cli"      # the executable on your PATH
+# args = []                     # ALWAYS passed (see "Pin a model" below)
+# resume_args = []              # appended on restart/resume, with {id} substituted
+# fork_args = []                # appended on Ctrl+F fork, with {id} substituted
+# new_session_args = []         # appended on a fresh spawn, with {id} substituted
+# resume_latest = false         # true ⇒ resume "the last session in this dir"
+#                               #   (id-less flags); leave false to pin by {id}
+#
+# {id} is a thurbox-generated UUID. Only agents that accept it at creation
+# (like claude's `--session-id {id}`) can resume/fork by that exact id; for
+# everything else use `resume_latest = true` with id-less, cwd-scoped flags
+# (e.g. `["resume", "--last"]`). Omit every resume group to start fresh on
+# restart.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Pin a model (or any flag) — put it in `args`, which is always passed
+# ──────────────────────────────────────────────────────────────────────────
+#
+# thurbox is model-neutral; to force a model, bake the flag into `args`. E.g.
+# a claude variant pinned to Opus, kept alongside the default `claude` entry:
+#
+# [[agents]]
+# name = "claude-opus"
+# command = "claude"
+# args = ["--model", "opus"]    # always-on flag
+# resume_args = ["--resume", "{id}"]
+# fork_args = ["--resume", "{id}", "--fork-session"]
+# new_session_args = ["--session-id", "{id}"]
+#
+# Set `default = "claude-opus"` at the top of this file to make it the default.
 "#;
 
 /// Path to the agent-definition config file:
@@ -349,6 +390,32 @@ mod tests {
                 "{name} must use id-less resume/fork flags"
             );
         }
+    }
+
+    /// The seed must carry copy-pasteable examples (add-your-own-agent +
+    /// pin-a-model) but keep them commented, so parsing still yields exactly
+    /// the six built-ins — a fresh install boots on pure defaults.
+    #[test]
+    fn seed_documents_examples_yet_stays_builtin_only() {
+        for marker in [
+            "Add your own agent",
+            "Pin a model",
+            "claude-opus",
+            "[\"--model\", \"opus\"]",
+        ] {
+            assert!(
+                BUILTIN_AGENTS_TOML.contains(marker),
+                "agents.toml seed must document example '{marker}'"
+            );
+        }
+        // Examples are commented, so the seed parses to just the built-ins.
+        let reg = builtin_registry();
+        assert_eq!(reg.default, "claude");
+        assert_eq!(reg.agents.len(), 6, "examples must stay commented out");
+        assert!(
+            reg.get("claude-opus").is_none(),
+            "example must not register"
+        );
     }
 
     #[test]

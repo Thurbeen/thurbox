@@ -82,6 +82,12 @@ fork > resume > new-session. See the seeded file's comments and
 CLAUDE.md's *Agent Definitions* section for the `resume_latest`
 semantics.
 
+The seeded file also ships two commented, copy-pasteable templates
+below the built-ins — **Add your own agent** (every field annotated)
+and **Pin a model** (a `claude-opus` variant baking `--model opus`
+into `args`). Both stay commented, so a fresh install still resolves
+to exactly the six built-ins.
+
 ## hosts.toml
 
 Declares remote SSH hosts; each `[[hosts]]` entry registers a session
@@ -106,7 +112,10 @@ lifetime).
 
 Scalar tuning knobs plus the `[features]` switches, seeded fully
 commented-out (defaults apply when absent). Only knobs a user plausibly
-wants are exposed; internals stay hardcoded.
+wants are exposed; internals stay hardcoded. The seed closes with a
+**Common recipes** block — copy-pasteable groupings (bigger scrollback,
+a minimal/focused TUI, notification tuning, enabling the update badge),
+all commented so defaults still apply out of the box.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
