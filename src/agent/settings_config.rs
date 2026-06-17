@@ -163,6 +163,90 @@ pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
     }
 }
 
+/// Set a boolean key on a `toml_edit` table.
+fn set_table_bool(table: &mut toml_edit::Table, key: &str, v: bool) {
+    table[key] = toml_edit::value(v);
+}
+
+/// Write `settings` back to `settings.toml`, **preserving comments and
+/// layout**.
+///
+/// The existing file (or, when absent, the documented [`SEED_SETTINGS_TOML`])
+/// is parsed into a `toml_edit::DocumentMut` and each value is set in place, so
+/// the surrounding documentation survives a round-trip. A malformed file falls
+/// back to the seed text rather than blocking the save.
+///
+/// Note: the seed ships every knob as a *commented* `# key = …` line, which
+/// `toml_edit` cannot see. The first save therefore **adds real, uncommented
+/// keys** (below the documentation comments, which remain as reference); from
+/// then on those keys are edited in place.
+pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
+    use toml_edit::{value, DocumentMut};
+
+    let Some(path) = settings_config_path() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "could not resolve settings.toml path",
+        ));
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => SEED_SETTINGS_TOML.to_string(),
+        Err(e) => return Err(e),
+    };
+
+    // A malformed file shouldn't block saving from the panel: fall back to the
+    // seed document (its comments are still useful) rather than erroring out.
+    let mut doc = contents
+        .parse::<DocumentMut>()
+        .or_else(|_| SEED_SETTINGS_TOML.parse::<DocumentMut>())
+        .unwrap_or_default();
+
+    // Top-level scalars (cast to i64 — TOML's only integer type).
+    doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
+    doc["scrollback_lines"] = value(settings.scrollback_lines as i64);
+    doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));
+    doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
+    doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
+
+    // [features] table — create if missing.
+    if !doc.contains_key("features") {
+        doc["features"] = toml_edit::table();
+    }
+    if let Some(features) = doc["features"].as_table_mut() {
+        let f = &settings.features;
+        set_table_bool(features, "tasks", f.tasks);
+        set_table_bool(features, "automations", f.automations);
+        set_table_bool(features, "file_viewer", f.file_viewer);
+        set_table_bool(features, "global_search", f.global_search);
+        set_table_bool(features, "info_panel", f.info_panel);
+        set_table_bool(features, "shell_pane", f.shell_pane);
+        set_table_bool(features, "mouse", f.mouse);
+        set_table_bool(features, "notifications", f.notifications);
+        set_table_bool(features, "soft_delete", f.soft_delete);
+        set_table_bool(features, "version_check", f.version_check);
+        set_table_bool(features, "auto_update", f.auto_update);
+    }
+
+    // [notifications] table — create if missing.
+    if !doc.contains_key("notifications") {
+        doc["notifications"] = toml_edit::table();
+    }
+    if let Some(notifications) = doc["notifications"].as_table_mut() {
+        let n = &settings.notifications;
+        set_table_bool(notifications, "also_on_waiting", n.also_on_waiting);
+        set_table_bool(notifications, "suppress_for_active", n.suppress_for_active);
+        set_table_bool(notifications, "sound", n.sound);
+        notifications["min_interval_secs"] = value(n.min_interval_secs as i64);
+    }
+
+    std::fs::write(&path, doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +354,95 @@ mod tests {
         assert_eq!(s.scrollback_lines, 4000);
         assert_eq!(s.audit_retention_days, 7);
         assert_eq!(s.two_panel_min_cols, 80);
+    }
+
+    #[test]
+    fn save_settings_round_trips() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        // Seed the documented file first, then save mutated settings.
+        let (mut s, _) = load_or_seed_with_warnings();
+        s.scrollback_lines = 4000;
+        s.audit_retention_days = 7;
+        s.features.tasks = false;
+        s.features.version_check = true;
+        s.features.auto_update = true;
+        s.notifications.min_interval_secs = 30;
+        s.notifications.suppress_for_active = false;
+
+        save_settings(&s).unwrap();
+
+        let (reloaded, warnings) = load_or_seed_with_warnings();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+        // save_settings always stamps config_version = 1 (a migration marker);
+        // every other field must round-trip exactly.
+        assert_eq!(reloaded.config_version, Some(1));
+        assert_eq!(
+            Settings {
+                config_version: None,
+                ..reloaded
+            },
+            Settings {
+                config_version: None,
+                ..s
+            }
+        );
+    }
+
+    #[test]
+    fn save_settings_preserves_comments() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let (s, _) = load_or_seed_with_warnings();
+
+        save_settings(&s).unwrap();
+
+        let raw = std::fs::read_to_string(settings_config_path().unwrap()).unwrap();
+        assert!(raw.contains("# Thurbox settings"));
+        assert!(raw.contains("Common recipes"));
+    }
+
+    #[test]
+    fn save_settings_writes_when_file_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = settings_config_path().unwrap();
+        assert!(!path.exists());
+
+        save_settings(&Settings::default()).unwrap();
+
+        assert!(path.exists());
+        let (reloaded, warnings) = load_or_seed_with_warnings();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+        assert_eq!(
+            Settings {
+                config_version: None,
+                ..reloaded
+            },
+            Settings::default()
+        );
+    }
+
+    #[test]
+    fn save_settings_recovers_from_malformed_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "garbage = ").unwrap();
+
+        save_settings(&Settings::default()).unwrap();
+
+        // The file must now parse back cleanly.
+        let (reloaded, warnings) = load_or_seed_with_warnings();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+        assert_eq!(
+            Settings {
+                config_version: None,
+                ..reloaded
+            },
+            Settings::default()
+        );
     }
 
     #[test]

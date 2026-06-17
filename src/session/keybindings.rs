@@ -49,6 +49,8 @@ pub enum Action {
     ToggleFileViewer,
     FocusTasks,
     GlobalSearch,
+    /// Open the Settings panel (view/edit settings.toml in the TUI).
+    OpenSettings,
     /// Copy the active mouse selection (falls through to terminal SIGINT when
     /// there is no selection).
     Copy,
@@ -117,6 +119,7 @@ impl Action {
             Action::ToggleFileViewer,
             Action::FocusTasks,
             Action::GlobalSearch,
+            Action::OpenSettings,
             Action::Copy,
             Action::Paste,
             Action::SessionListNext,
@@ -163,6 +166,7 @@ impl Action {
             Action::ToggleFileViewer => "Toggle file viewer",
             Action::FocusTasks => "Tasks",
             Action::GlobalSearch => "Global search",
+            Action::OpenSettings => "Settings",
             Action::Copy => "Copy selection",
             Action::Paste => "Paste",
             Action::SessionListNext => "Next item",
@@ -304,6 +308,11 @@ impl Action {
                     KeyChord::ctrl('_'),
                 ]
             }
+            // Ctrl+, — the near-universal "preferences/settings" chord. Not a
+            // bare Ctrl+<letter>, so it never defers to the PTY (the panel opens
+            // from a focused terminal too). F6 is a discoverable alternate
+            // (F1–F5 are already bound). Fully rebindable.
+            Action::OpenSettings => vec![KeyChord::ctrl(','), KeyChord::function(6)],
             Action::Copy => vec![KeyChord::ctrl('c')],
             Action::Paste => vec![KeyChord::ctrl('v')],
             // Scoped single-letter / arrow nav. These only fire while their
@@ -416,6 +425,7 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
                 ToggleInfoPanel,
                 ToggleFileViewer,
                 OpenThemePicker,
+                OpenSettings,
                 GlobalSearch,
             ],
         ),
@@ -963,6 +973,20 @@ mod tests {
     }
 
     #[test]
+    fn settings_panel_has_dual_chord() {
+        let kb = KeyBindings::default();
+        assert_eq!(
+            kb.lookup(KeyCode::Char(','), KeyModifiers::CONTROL),
+            Some(Action::OpenSettings)
+        );
+        assert_eq!(
+            kb.lookup(KeyCode::F(6), KeyModifiers::NONE),
+            Some(Action::OpenSettings)
+        );
+        assert_eq!(Action::OpenSettings.context(), KeyContext::Global);
+    }
+
+    #[test]
     fn json_round_trip() {
         let kb = KeyBindings::default();
         let json = kb.to_json().unwrap();
@@ -1073,6 +1097,7 @@ mod tests {
                 Action::ToggleFileViewer => 0,
                 Action::FocusTasks => 0,
                 Action::GlobalSearch => 0,
+                Action::OpenSettings => 0,
                 Action::Copy => 0,
                 Action::Paste => 0,
                 Action::SessionListNext => 0,
@@ -1094,9 +1119,9 @@ mod tests {
                 Action::TerminalPageDown => 0,
             }
         }
-        // 40 listed variants must equal Action::all().len(). If you add
+        // The listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 40;
+        const EXPECTED: usize = 41;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

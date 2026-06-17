@@ -1352,6 +1352,306 @@ pub struct HelpModal {
 
 // ── Main Modal Enum ────────────────────────────────────────────────────────
 
+/// One editable row in the [`SettingsModal`]. Section headers are render-only,
+/// so this enum lists only the focusable fields, in display order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsField {
+    // ── [features] ──────────────────────────────────────────────────────
+    FeatTasks,
+    FeatAutomations,
+    FeatFileViewer,
+    FeatGlobalSearch,
+    FeatInfoPanel,
+    FeatShellPane,
+    FeatMouse,
+    FeatNotifications,
+    FeatSoftDelete,
+    FeatVersionCheck,
+    FeatAutoUpdate,
+    // ── [notifications] ─────────────────────────────────────────────────
+    NotifAlsoOnWaiting,
+    NotifSuppressForActive,
+    NotifSound,
+    NotifMinInterval,
+    // ── top-level scalars ───────────────────────────────────────────────
+    ScrollbackLines,
+    TwoPanelMinCols,
+    ThreePanelMinCols,
+    AuditRetentionDays,
+}
+
+impl SettingsField {
+    /// Field nav order — also the render order (headers are interleaved by the
+    /// renderer). Used by [`cycle_field`] and the scroll-windowing logic.
+    pub const ORDER: [SettingsField; 19] = [
+        SettingsField::FeatTasks,
+        SettingsField::FeatAutomations,
+        SettingsField::FeatFileViewer,
+        SettingsField::FeatGlobalSearch,
+        SettingsField::FeatInfoPanel,
+        SettingsField::FeatShellPane,
+        SettingsField::FeatMouse,
+        SettingsField::FeatNotifications,
+        SettingsField::FeatSoftDelete,
+        SettingsField::FeatVersionCheck,
+        SettingsField::FeatAutoUpdate,
+        SettingsField::NotifAlsoOnWaiting,
+        SettingsField::NotifSuppressForActive,
+        SettingsField::NotifSound,
+        SettingsField::NotifMinInterval,
+        SettingsField::ScrollbackLines,
+        SettingsField::TwoPanelMinCols,
+        SettingsField::ThreePanelMinCols,
+        SettingsField::AuditRetentionDays,
+    ];
+
+    /// The field's `settings.toml` key and one-line help, in a single table so
+    /// the two parallel lookups never drift (and stay one match, not two).
+    /// The help avoids naming key chords — those are user-configurable, so a
+    /// hard-coded hint would drift from the actual binding.
+    fn meta(self) -> (&'static str, &'static str) {
+        use SettingsField::*;
+        match self {
+            FeatTasks => ("tasks", "Tasks panel and task search"),
+            FeatAutomations => ("automations", "Automations pane and schedule firing"),
+            FeatFileViewer => ("file_viewer", "File viewer column"),
+            FeatGlobalSearch => ("global_search", "Global search strip"),
+            FeatInfoPanel => ("info_panel", "Info panel column"),
+            FeatShellPane => ("shell_pane", "Per-session shell pane"),
+            FeatMouse => ("mouse", "Mouse: clicks, wheel, drag-select, hover"),
+            FeatNotifications => ("notifications", "OS desktop notifications on attention"),
+            FeatSoftDelete => ("soft_delete", "Soft-delete sessions with an undo window"),
+            FeatVersionCheck => ("version_check", "Check GitHub for updates (network call)"),
+            FeatAutoUpdate => (
+                "auto_update",
+                "Silently self-update on launch (network call)",
+            ),
+            NotifAlsoOnWaiting => ("also_on_waiting", "Also notify on the Busy → Waiting edge"),
+            NotifSuppressForActive => (
+                "suppress_for_active",
+                "Skip the session you're already viewing",
+            ),
+            NotifSound => ("sound", "Play the OS notification sound"),
+            NotifMinInterval => (
+                "min_interval_secs",
+                "Min seconds between notifications per session",
+            ),
+            ScrollbackLines => (
+                "scrollback_lines",
+                "Terminal history lines kept per session",
+            ),
+            TwoPanelMinCols => (
+                "two_panel_min_cols",
+                "Min width (cols) to show the 2nd panel",
+            ),
+            ThreePanelMinCols => (
+                "three_panel_min_cols",
+                "Min width (cols) to show the 3rd panel",
+            ),
+            AuditRetentionDays => ("audit_retention_days", "Days of audit-log history kept"),
+        }
+    }
+
+    /// The field's `settings.toml` key (e.g. `tasks`).
+    pub fn label(self) -> &'static str {
+        self.meta().0
+    }
+
+    /// One-line help shown for the selected field in the panel footer.
+    pub fn description(self) -> &'static str {
+        self.meta().1
+    }
+
+    /// Whether the field holds a boolean (toggled with Space/Enter) vs. a
+    /// numeric scalar (stepped with ←/→).
+    pub fn is_scalar(self) -> bool {
+        use SettingsField::*;
+        matches!(
+            self,
+            NotifMinInterval
+                | ScrollbackLines
+                | TwoPanelMinCols
+                | ThreePanelMinCols
+                | AuditRetentionDays
+        )
+    }
+
+    /// Whether changing this field takes effect only after a restart. Feature
+    /// flags that gate UI panels (read from `App.features` every frame) apply
+    /// live; everything else is read once at startup from `settings::global()`,
+    /// which is a write-once value that can't be re-applied in-process.
+    pub fn restart_required(self) -> bool {
+        use SettingsField::*;
+        !matches!(
+            self,
+            FeatTasks
+                | FeatFileViewer
+                | FeatGlobalSearch
+                | FeatInfoPanel
+                | FeatShellPane
+                | FeatSoftDelete
+        )
+    }
+}
+
+/// Settings panel: a centered modal that edits a working copy of [`Settings`]
+/// (`draft`) and writes it back to `settings.toml` on save. Feature flags that
+/// gate UI panels apply live; the rest take effect after a restart. No live
+/// preview — edits apply only on save, so `Esc` is a clean discard.
+#[derive(Debug, Clone)]
+pub struct SettingsModal {
+    pub draft: crate::session::settings::Settings,
+    pub original: crate::session::settings::Settings,
+    pub field: SettingsField,
+}
+
+impl SettingsModal {
+    pub fn new(draft: crate::session::settings::Settings) -> Self {
+        Self {
+            original: draft.clone(),
+            draft,
+            field: SettingsField::FeatTasks,
+        }
+    }
+
+    pub fn next_field(&mut self) {
+        self.field = cycle_field(&SettingsField::ORDER, self.field, 1);
+    }
+
+    pub fn prev_field(&mut self) {
+        self.field = cycle_field(&SettingsField::ORDER, self.field, -1);
+    }
+
+    /// Toggle the boolean the current field maps to (no-op on scalar fields).
+    pub fn toggle(&mut self) {
+        use SettingsField::*;
+        let f = &mut self.draft.features;
+        let n = &mut self.draft.notifications;
+        match self.field {
+            FeatTasks => f.tasks = !f.tasks,
+            FeatAutomations => f.automations = !f.automations,
+            FeatFileViewer => f.file_viewer = !f.file_viewer,
+            FeatGlobalSearch => f.global_search = !f.global_search,
+            FeatInfoPanel => f.info_panel = !f.info_panel,
+            FeatShellPane => f.shell_pane = !f.shell_pane,
+            FeatMouse => f.mouse = !f.mouse,
+            FeatNotifications => f.notifications = !f.notifications,
+            FeatSoftDelete => f.soft_delete = !f.soft_delete,
+            FeatVersionCheck => f.version_check = !f.version_check,
+            FeatAutoUpdate => f.auto_update = !f.auto_update,
+            NotifAlsoOnWaiting => n.also_on_waiting = !n.also_on_waiting,
+            NotifSuppressForActive => n.suppress_for_active = !n.suppress_for_active,
+            NotifSound => n.sound = !n.sound,
+            NotifMinInterval | ScrollbackLines | TwoPanelMinCols | ThreePanelMinCols
+            | AuditRetentionDays => {}
+        }
+    }
+
+    /// Step a scalar field by `delta` (±1), with field-specific step sizes and
+    /// clamping (no-op on boolean fields).
+    pub fn adjust(&mut self, delta: i32) {
+        use SettingsField::*;
+        let d = &mut self.draft;
+        match self.field {
+            ScrollbackLines => {
+                d.scrollback_lines =
+                    step_clamp(d.scrollback_lines as i64, delta, 500, 100, 200_000) as usize;
+            }
+            TwoPanelMinCols => {
+                d.two_panel_min_cols =
+                    step_clamp(i64::from(d.two_panel_min_cols), delta, 5, 40, 400) as u16;
+            }
+            ThreePanelMinCols => {
+                d.three_panel_min_cols =
+                    step_clamp(i64::from(d.three_panel_min_cols), delta, 5, 40, 400) as u16;
+            }
+            AuditRetentionDays => {
+                d.audit_retention_days =
+                    step_clamp(d.audit_retention_days as i64, delta, 5, 1, 3650) as u64;
+            }
+            NotifMinInterval => {
+                d.notifications.min_interval_secs =
+                    step_clamp(d.notifications.min_interval_secs as i64, delta, 5, 0, 3600) as u64;
+            }
+            _ => {}
+        }
+    }
+
+    /// String value rendered for the current field.
+    pub fn value_string(&self, field: SettingsField) -> String {
+        use SettingsField::*;
+        let f = &self.draft.features;
+        let n = &self.draft.notifications;
+        let on = |b: bool| if b { "on" } else { "off" }.to_string();
+        match field {
+            FeatTasks => on(f.tasks),
+            FeatAutomations => on(f.automations),
+            FeatFileViewer => on(f.file_viewer),
+            FeatGlobalSearch => on(f.global_search),
+            FeatInfoPanel => on(f.info_panel),
+            FeatShellPane => on(f.shell_pane),
+            FeatMouse => on(f.mouse),
+            FeatNotifications => on(f.notifications),
+            FeatSoftDelete => on(f.soft_delete),
+            FeatVersionCheck => on(f.version_check),
+            FeatAutoUpdate => on(f.auto_update),
+            NotifAlsoOnWaiting => on(n.also_on_waiting),
+            NotifSuppressForActive => on(n.suppress_for_active),
+            NotifSound => on(n.sound),
+            NotifMinInterval => n.min_interval_secs.to_string(),
+            ScrollbackLines => self.draft.scrollback_lines.to_string(),
+            TwoPanelMinCols => self.draft.two_panel_min_cols.to_string(),
+            ThreePanelMinCols => self.draft.three_panel_min_cols.to_string(),
+            AuditRetentionDays => self.draft.audit_retention_days.to_string(),
+        }
+    }
+
+    /// True once any restart-required field differs from the opened state.
+    /// Drives the "some changes apply after restart" toast and indicator.
+    pub fn restart_required_changed(&self) -> bool {
+        self.draft.restart_only_differs(&self.original)
+    }
+
+    pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> EditorOutcome {
+        let scalar = self.field.is_scalar();
+        match code {
+            KeyCode::Esc => EditorOutcome::Cancel,
+            // Explicit save only (Ctrl+S) — keeps Enter free to toggle a bool.
+            KeyCode::Char('s') if mods.contains(KeyModifiers::CONTROL) => EditorOutcome::Save,
+            KeyCode::Tab | KeyCode::Down => {
+                self.next_field();
+                EditorOutcome::Continue
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.prev_field();
+                EditorOutcome::Continue
+            }
+            KeyCode::Left if scalar => {
+                self.adjust(-1);
+                EditorOutcome::Continue
+            }
+            KeyCode::Right if scalar => {
+                self.adjust(1);
+                EditorOutcome::Continue
+            }
+            KeyCode::Char(' ') if scalar => {
+                self.adjust(1);
+                EditorOutcome::Continue
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                self.toggle();
+                EditorOutcome::Continue
+            }
+            _ => EditorOutcome::Continue,
+        }
+    }
+}
+
+/// Step `current` by `delta * step`, clamped to `[min, max]`.
+fn step_clamp(current: i64, delta: i32, step: i64, min: i64, max: i64) -> i64 {
+    (current + i64::from(delta) * step).clamp(min, max)
+}
+
 /// Single, discriminated union replacing boolean flags for modal state.
 /// Only one modal can be active at a time, making invalid states unrepresentable.
 #[derive(Debug, Clone, Default)]
@@ -1371,6 +1671,7 @@ pub enum Modal {
     ThemePicker(ThemePickerModal),
     TaskActionPicker(TaskActionPickerModal),
     ConfirmDelete(ConfirmDeleteModal),
+    Settings(SettingsModal),
 }
 
 impl Modal {
@@ -2470,5 +2771,118 @@ mod tests {
         assert_eq!(m.description.cursor_line_col(), (0, 1));
         m.handle_key(KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(m.description.cursor_line_col(), (1, 1));
+    }
+
+    #[test]
+    fn settings_order_lists_every_field_once() {
+        assert_eq!(SettingsField::ORDER.len(), 19);
+        for f in SettingsField::ORDER {
+            assert_eq!(
+                SettingsField::ORDER.iter().filter(|x| **x == f).count(),
+                1,
+                "{f:?} duplicated"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_space_toggles_bool_and_enter_does_too() {
+        let mut m = SettingsModal::new(crate::session::settings::Settings::default());
+        assert!(m.draft.features.tasks);
+        m.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(!m.draft.features.tasks);
+        m.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(m.draft.features.tasks);
+    }
+
+    #[test]
+    fn settings_scalar_steps_and_clamps() {
+        let mut m = SettingsModal::new(crate::session::settings::Settings::default());
+        m.field = SettingsField::ScrollbackLines;
+        m.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(m.draft.scrollback_lines, 1500);
+        m.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(m.draft.scrollback_lines, 1000);
+        // Space adjusts scalars (does not toggle).
+        m.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(m.draft.scrollback_lines, 1500);
+        // Clamp at the floor.
+        m.field = SettingsField::TwoPanelMinCols;
+        for _ in 0..100 {
+            m.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        }
+        assert_eq!(m.draft.two_panel_min_cols, 40);
+    }
+
+    #[test]
+    fn settings_save_and_cancel_outcomes() {
+        let mut m = SettingsModal::new(crate::session::settings::Settings::default());
+        assert_eq!(
+            m.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            EditorOutcome::Save
+        );
+        assert_eq!(
+            m.handle_key(KeyCode::Esc, KeyModifiers::NONE),
+            EditorOutcome::Cancel
+        );
+    }
+
+    #[test]
+    fn settings_restart_required_tracks_only_restart_fields() {
+        let mut m = SettingsModal::new(crate::session::settings::Settings::default());
+        // A live flag changing does not arm the restart note.
+        m.field = SettingsField::FeatTasks;
+        m.toggle();
+        assert!(!m.restart_required_changed());
+        // A restart-required flag does.
+        m.field = SettingsField::FeatMouse;
+        m.toggle();
+        assert!(m.restart_required_changed());
+    }
+
+    #[test]
+    fn settings_restart_required_classification() {
+        use SettingsField::*;
+        for f in [
+            FeatTasks,
+            FeatFileViewer,
+            FeatGlobalSearch,
+            FeatInfoPanel,
+            FeatShellPane,
+            FeatSoftDelete,
+        ] {
+            assert!(!f.restart_required(), "{f:?} should be live");
+        }
+        for f in [
+            FeatMouse,
+            FeatNotifications,
+            FeatAutomations,
+            ScrollbackLines,
+        ] {
+            assert!(f.restart_required(), "{f:?} should need restart");
+        }
+    }
+
+    /// The per-field `restart_required` flag (UI marker) and
+    /// `Settings::restart_only_differs` (the comparison driving the toast) are
+    /// two encodings of the same live/restart split — toggling any
+    /// restart-required field must register as a restart-only difference, and a
+    /// live field must not.
+    #[test]
+    fn settings_restart_classifications_agree() {
+        for field in SettingsField::ORDER {
+            let mut m = SettingsModal::new(crate::session::settings::Settings::default());
+            m.field = field;
+            if field.is_scalar() {
+                m.adjust(1);
+            } else {
+                m.toggle();
+            }
+            assert_eq!(
+                m.draft.restart_only_differs(&m.original),
+                field.restart_required(),
+                "{field:?}: restart_required and restart_only_differs disagree",
+            );
+        }
     }
 }

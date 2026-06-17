@@ -44,6 +44,7 @@ tracing-appender = "0.2"
 # Configuration
 serde = { version = "1", features = ["derive"] }
 toml = "1.0"
+toml_edit = "0.25"
 
 # Storage
 rusqlite = { version = "0.40", features = ["bundled"] }

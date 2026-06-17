@@ -19,6 +19,7 @@ pub mod restore_sessions_modal;
 pub mod scrollbar;
 pub mod selection;
 pub mod session_name_modal;
+pub mod settings_modal;
 pub mod status_bar;
 pub mod task_action_picker_modal;
 pub mod task_detail;

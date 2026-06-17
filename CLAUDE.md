@@ -1157,6 +1157,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
+| `Ctrl+,` / `F6` | Settings panel (edit settings.toml) | **,** = preferences |
 | `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
 | `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
 | `F3` | Toggle file viewer | Next to F2 |
@@ -1293,6 +1294,45 @@ which avoids terminals that intercept Ctrl+Y as DSUSP); the choice
 is persisted in SQLite under `metadata.active_theme` and survives
 restarts. Other thurbox processes pick up theme changes within one
 tick via `PRAGMA data_version` polling.
+
+## Settings panel
+
+`Ctrl+,` (rebindable `Action::OpenSettings`; `F6` alternate) opens a
+centered **Settings modal** (`Modal::Settings(SettingsModal)`) that views
+and edits **all of settings.toml** — the `[features]` toggles, 4
+`[notifications]` knobs, and 4 scalars — without hand-editing the file.
+Persistence stays in `settings.toml`: `agent::settings_config::save_settings`
+writes it back through a `toml_edit::DocumentMut` so the seed's
+documentation comments survive (the first save adds real uncommented keys
+below the commented examples). The modal edits a working-copy `draft` and
+applies **only on `Ctrl+S`** (`Esc` discards — there is no live preview).
+
+Feature flags that gate UI panels (`tasks`, `file_viewer`, `info_panel`,
+`global_search`, `shell_pane`, `soft_delete`) are read from `App.features`
+every frame, so `submit_settings_panel` copies the draft's flags into
+`self.features` (via `App::apply_live_settings`) and they take effect
+immediately. Everything else is read once at startup from the write-once
+`settings::global()` `OnceLock` (which can't be re-applied in-process):
+those rows are marked `⟳`, and a save that changes one toasts "some changes
+apply after restart".
+
+`settings.toml` is **live-reloaded** like `agents.toml`/`keybindings.json`:
+`App::poll_config_reload` watches its mtime and, on any external change (a
+hand-edit, the panel in another instance), re-applies the live feature flags
+via the same `apply_live_settings` and toasts (noting a restart when
+`Settings::restart_only_differs` vs the global). The panel's own write calls
+`mark_settings_saved` so the poll doesn't re-toast it.
+
+`SettingsField` (in `app/modals.rs`) owns the field order, labels,
+descriptions (which avoid naming key chords, since those are rebindable),
+scalar-vs-bool/step logic (`adjust` with per-field clamping), and the
+per-row live/restart marker (`restart_required`); the canonical
+live/restart comparison is `Settings::restart_only_differs`
+(`session/settings.rs`), reused by both the panel toast and the reload path.
+The renderer is `ui::settings_modal::render_settings_modal` (modeled on
+`automation_editor_modal`, with blank separators between the Features /
+Notifications / Scalars sections, an aligned value column, and
+scroll-windowing for short terminals).
 
 ## Design Documentation
 

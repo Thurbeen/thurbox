@@ -645,6 +645,18 @@ impl App {
             ));
         }
 
+        // Settings panel (centered overlay).
+        if let super::modals::Modal::Settings(ref m) = self.modal {
+            crate::ui::settings_modal::render_settings_modal(
+                frame,
+                &crate::ui::settings_modal::SettingsModalState {
+                    modal: m,
+                    restart_pending: m.restart_required_changed(),
+                },
+            );
+            return Some((Vec::new(), None));
+        }
+
         // Restore sessions modal
         if let super::modals::Modal::RestoreSessions(ref rsm) = self.modal {
             return Some(self.render_restore_sessions_modal(frame, rsm));

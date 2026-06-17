@@ -184,6 +184,30 @@ fn default_audit_retention_days() -> u64 {
     90
 }
 
+impl Settings {
+    /// Whether any **restart-only** setting differs between `self` and `other`.
+    ///
+    /// These are the values read once at startup (the scalars, every
+    /// `[notifications]` knob, and the feature flags whose effect is wired at
+    /// launch — `automations`, `mouse`, `notifications`, `version_check`). The
+    /// remaining feature flags gate UI panels read from `App.features` every
+    /// frame, so they apply live and are intentionally excluded here. Drives the
+    /// "some changes apply after restart" hint shown by the settings panel and
+    /// the live-reload toast.
+    pub fn restart_only_differs(&self, other: &Settings) -> bool {
+        self.scrollback_lines != other.scrollback_lines
+            || self.two_panel_min_cols != other.two_panel_min_cols
+            || self.three_panel_min_cols != other.three_panel_min_cols
+            || self.audit_retention_days != other.audit_retention_days
+            || self.notifications != other.notifications
+            || self.features.automations != other.features.automations
+            || self.features.mouse != other.features.mouse
+            || self.features.notifications != other.features.notifications
+            || self.features.version_check != other.features.version_check
+            || self.features.auto_update != other.features.auto_update
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -342,6 +366,32 @@ mod tests {
     fn feature_flag_type_mismatch_is_rejected() {
         let err = toml::from_str::<Settings>("[features]\ntasks = \"no\"").unwrap_err();
         assert!(err.to_string().contains("tasks"));
+    }
+
+    #[test]
+    fn restart_only_differs_ignores_live_flags_but_catches_restart_ones() {
+        let base = Settings::default();
+
+        // A live UI-panel flag is not a restart-only difference.
+        let mut live = base.clone();
+        live.features.tasks = !live.features.tasks;
+        assert!(!base.restart_only_differs(&live));
+
+        // A restart-only feature flag, a scalar, and a notification knob all are.
+        let mut mouse = base.clone();
+        mouse.features.mouse = !mouse.features.mouse;
+        assert!(base.restart_only_differs(&mouse));
+
+        let mut scrollback = base.clone();
+        scrollback.scrollback_lines += 1;
+        assert!(base.restart_only_differs(&scrollback));
+
+        let mut notif = base.clone();
+        notif.notifications.sound = !notif.notifications.sound;
+        assert!(base.restart_only_differs(&notif));
+
+        // Identical settings never differ.
+        assert!(!base.restart_only_differs(&base.clone()));
     }
 
     #[test]

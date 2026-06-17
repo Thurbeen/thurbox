@@ -358,6 +358,62 @@ fn ctrl_slash_opens_global_search_strip() {
 }
 
 #[test]
+fn settings_panel_opens_and_closes() {
+    let mut h = Harness::standard(1);
+    h.ctrl(','); // OpenSettings
+    assert!(
+        matches!(h.app.modal, modals::Modal::Settings(_)),
+        "Ctrl+, should open the settings panel"
+    );
+
+    // The panel shows section headers, the selected field's description, and
+    // the restart marker on restart-required rows.
+    let screen = h.render();
+    assert!(screen.contains("FEATURES"), "section header renders");
+    assert!(
+        screen.contains("Tasks panel"),
+        "selected field's description renders in the footer"
+    );
+    assert!(screen.contains('⟳'), "restart marker renders");
+
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "Esc closes the settings panel");
+}
+
+#[test]
+fn settings_panel_live_toggle_applies_on_save() {
+    let mut h = Harness::standard(1);
+    assert!(h.app.features.tasks, "tasks default on");
+
+    h.ctrl(','); // OpenSettings — starts on the `tasks` field
+    h.key(KeyCode::Char(' '), KeyModifiers::NONE); // toggle tasks off in the draft
+                                                   // Not applied until save.
+    assert!(h.app.features.tasks, "draft edits don't apply until save");
+
+    h.ctrl('s'); // Save
+    assert!(!h.app.modal.is_open(), "save closes the panel");
+    assert!(
+        !h.app.features.tasks,
+        "a live feature flag applies immediately on save"
+    );
+}
+
+#[test]
+fn settings_panel_esc_discards() {
+    let mut h = Harness::standard(1);
+    assert!(h.app.features.tasks);
+
+    h.ctrl(','); // OpenSettings
+    h.key(KeyCode::Char(' '), KeyModifiers::NONE); // toggle in the draft
+    h.key(KeyCode::Esc, KeyModifiers::NONE); // discard
+
+    assert!(
+        h.app.features.tasks,
+        "Esc discards the draft — no live preview applied"
+    );
+}
+
+#[test]
 fn ctrl_q_requests_quit() {
     let mut h = Harness::standard(1);
     assert!(!h.app.should_quit());

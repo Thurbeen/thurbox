@@ -297,9 +297,23 @@ impl App {
             Modal::RepoPicker(_) => self.handle_repo_picker_key(code, mods),
             Modal::TaskActionPicker(_) => self.handle_task_action_picker_key(code),
             Modal::ConfirmDelete(_) => self.handle_confirm_delete_key(code),
+            Modal::Settings(_) => self.handle_settings_key(code, mods),
             _ => return false,
         }
         true
+    }
+
+    /// Drive the Settings panel: edits a working copy, persists on `Ctrl+S`,
+    /// discards on `Esc` (no live preview to revert).
+    fn handle_settings_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let super::modals::Modal::Settings(ref mut m) = self.modal else {
+            return;
+        };
+        match m.handle_key(code, mods) {
+            super::modals::EditorOutcome::Continue => {}
+            super::modals::EditorOutcome::Save => self.submit_settings_panel(),
+            super::modals::EditorOutcome::Cancel => self.modal.close(),
+        }
     }
 
     /// Drive the hard-delete confirmation prompt: `Enter`/`y` tears the session
@@ -1341,6 +1355,10 @@ impl App {
                 "Global search",
                 Self::open_global_search,
             ),
+            Action::OpenSettings => {
+                self.open_settings_panel();
+                true
+            }
 
             // ── Clipboard (global) ──────────────────────────────────────
             // Copy only consumes the key when there's a selection; otherwise

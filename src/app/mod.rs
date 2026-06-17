@@ -722,6 +722,7 @@ impl App {
             config_reload: config_reload::ConfigReloadState {
                 agents_mtime: config_reload::agents_mtime(),
                 keybindings_mtime: config_reload::keybindings_mtime(),
+                settings_mtime: config_reload::settings_mtime(),
             },
             notification_state: build_notification_state(),
         };
@@ -756,6 +757,10 @@ impl App {
             self.config_reload.keybindings_mtime = kb_mtime;
             self.reload_keybindings_config();
         }
+
+        if config_reload::settings_mtime() != self.config_reload.settings_mtime {
+            self.reload_settings_config();
+        }
     }
 
     /// Reload `agents.toml` and toast the result. Caller has already detected an
@@ -774,6 +779,36 @@ impl App {
         let (bindings, warnings) = Self::load_keybindings_with_warnings();
         self.keybindings = bindings;
         self.toast_config_reload("keybindings.json reloaded", &warnings);
+    }
+
+    /// Reload `settings.toml` when it changes on disk (a hand-edit, the in-TUI
+    /// panel, or another instance). Re-applies the live feature flags in place;
+    /// restart-only values stay frozen in the global, so the toast flags when a
+    /// restart is needed. Caller has already detected the mtime change; this
+    /// re-stats afterwards so a re-seeded file is recorded.
+    fn reload_settings_config(&mut self) {
+        let (settings, mut warnings) = crate::agent::settings_config::load_or_seed_with_warnings();
+        if settings.restart_only_differs(crate::session::settings::global()) {
+            warnings.push("restart to apply some changes".into());
+        }
+        self.apply_live_settings(&settings);
+        self.config_reload.settings_mtime = config_reload::settings_mtime();
+        self.toast_config_reload("settings.toml reloaded", &warnings);
+    }
+
+    /// Apply the **live** portion of `settings` (the UI-panel feature flags read
+    /// from `App.features` each frame) and resize panes to match. The
+    /// restart-only values are intentionally left to the next launch. Shared by
+    /// the settings panel's save path and the live-reload poll.
+    pub(crate) fn apply_live_settings(&mut self, settings: &crate::session::settings::Settings) {
+        self.features = settings.features;
+        self.resize_sessions_to_content_area();
+    }
+
+    /// Record the current `settings.toml` mtime so the next reload poll doesn't
+    /// treat the settings panel's own write as an external edit.
+    pub(crate) fn mark_settings_saved(&mut self) {
+        self.config_reload.settings_mtime = config_reload::settings_mtime();
     }
 
     /// Load the on-disk keybindings, falling back to defaults (with a warning)
@@ -1386,6 +1421,46 @@ impl App {
             .and_then(|name| entries.iter().position(|e| e.name == name))
             .unwrap_or(0);
         self.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index });
+    }
+
+    /// Open the Settings panel. The draft reflects the live source of truth:
+    /// `self.features` for the feature flags (so in-session changes show), and
+    /// `settings::global()` for the scalars + notifications (read once at
+    /// startup, never mutated in-process).
+    pub(crate) fn open_settings_panel(&mut self) {
+        let draft = crate::session::settings::Settings {
+            features: self.features,
+            ..crate::session::settings::global().clone()
+        };
+        self.modal = modals::Modal::Settings(modals::SettingsModal::new(draft));
+    }
+
+    /// Persist the Settings panel draft to `settings.toml`, apply the live
+    /// feature flags immediately, and toast the result. Keeps the modal open on
+    /// a write error so edits aren't lost.
+    pub(crate) fn submit_settings_panel(&mut self) {
+        let (draft, restart) = match self.modal {
+            modals::Modal::Settings(ref m) => (m.draft.clone(), m.restart_required_changed()),
+            _ => return,
+        };
+        if let Err(e) = crate::agent::settings_config::save_settings(&draft) {
+            self.set_error(format!("Failed to save settings: {e}"));
+            return;
+        }
+        // Live-apply the feature flags that gate UI panels; restart-required
+        // settings only take effect from the on-disk file on next launch.
+        self.apply_live_settings(&draft);
+        // Record our own write so the live-reload poll doesn't re-toast it.
+        self.mark_settings_saved();
+        self.modal.close();
+        if restart {
+            self.set_status(
+                StatusLevel::Info,
+                "Settings saved — some changes apply after restart",
+            );
+        } else {
+            self.set_status(StatusLevel::Success, "Settings saved");
+        }
     }
 
     fn open_restore_sessions_modal(&mut self) {
@@ -5711,6 +5786,48 @@ mod tests {
         app.mark_keybindings_saved();
         app.poll_config_reload();
         assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn poll_config_reload_applies_settings_live_feature_flags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+        app.status_message = None;
+        assert!(app.features.tasks);
+
+        // An external edit disabling a live flag applies on the next poll.
+        let path = crate::agent::settings_config::settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[features]\ntasks = false\n").unwrap();
+
+        app.poll_config_reload();
+        assert!(!app.features.tasks, "live feature flag reloaded from disk");
+        assert!(app.status_message.is_some(), "reload toasts");
+
+        // Stable afterwards: no repeated toasts.
+        app.status_message = None;
+        app.poll_config_reload();
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn mark_settings_saved_suppresses_self_write_toast() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = crate::paths::TestPathGuard::new(tmp.path());
+        let mut app = app_with_sessions(0);
+        app.status_message = None;
+
+        let path = crate::agent::settings_config::settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[features]\nfile_viewer = false\n").unwrap();
+        app.mark_settings_saved();
+
+        app.poll_config_reload();
+        assert!(
+            app.status_message.is_none(),
+            "a recorded self-write doesn't re-toast"
+        );
     }
 
     /// A notification click handler writes `pending_focus_session_id` to the

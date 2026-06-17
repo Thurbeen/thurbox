@@ -16,17 +16,30 @@ development checkout never touches your real setup.
 |------|--------|-----------|------|---------|
 | `~/.config/thurbox/agents.toml` | TOML | you | **live** (mtime poll) | coding-agent CLI definitions |
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts |
-| `~/.config/thurbox/settings.toml` | TOML | you | startup | tuning knobs + feature flags |
+| `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | **live** (mtime poll) | key chord overrides |
 | `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings) |
 
-`agents.toml` and `keybindings.json` reload **live**: the TUI polls
-their mtime (~1/s) and applies edits with a confirmation toast — no
-restart. `hosts.toml` (SSH backends register at startup),
-`settings.toml`, and `themes.toml` need a restart.
+`agents.toml`, `keybindings.json`, and `settings.toml` reload **live**:
+the TUI polls their mtime (~1/s) and applies edits with a confirmation
+toast — no restart. For `settings.toml` only the **feature flags that
+gate UI panels** (`tasks`, `file_viewer`, `info_panel`, `global_search`,
+`shell_pane`, `soft_delete`) apply live; the restart-only values stay
+published through a write-once global (so they can't drift mid-frame),
+and the reload toast says when a restart is needed. `hosts.toml` (SSH
+backends register at startup) and `themes.toml` need a restart.
+
+`settings.toml` can also be edited from the TUI: **`Ctrl+,`** (alt `F6`)
+opens a **Settings panel** listing every knob. It writes the file back
+**preserving its comments**, and feature flags that gate UI panels apply
+**live** on save; the rest (`mouse`, `notifications`, `automations`,
+`version_check`, the `[notifications]` knobs, and the scalars) take
+effect on the next launch — the panel marks those rows with `⟳` and
+toasts a restart note. Hand-editing the file (or the panel in another
+instance) is picked up the same way, via the live mtime poll.
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 
