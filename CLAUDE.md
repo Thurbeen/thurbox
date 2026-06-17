@@ -434,6 +434,14 @@ restarts and syncs across instances via the existing
 `data_version` polling. Storage: nullable `sessions.display_order`
 column (schema v31); `None` = never moved, renders after ordered
 sessions in creation order (new sessions append to their group).
+**`Shift+S`** (rebindable `SessionListSortAlphabetically`) sorts
+sessions alphabetically by name **within each repo group** in one
+shot: group order is preserved (still by lowest `display_order`),
+and parent/child nesting is preserved (children sort among their
+siblings). It reuses the same dense-renumber-and-persist path, so
+the alphabetised order survives restarts just like a manual move
+(pure helper: `ui::project_list::sort_alphabetically_within_groups`;
+`App::sort_sessions_alphabetically` applies it).
 
 ### Inter-session messages (mailbox queue)
 

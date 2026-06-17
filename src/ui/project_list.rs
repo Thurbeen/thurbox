@@ -251,6 +251,103 @@ fn nest_group_members(sessions: &[&SessionInfo], members: &[usize]) -> Vec<(usiz
     out
 }
 
+/// Return a new flat order of **input indices** with each repo group's members
+/// sorted alphabetically (case-insensitively) by `name`. Group order is
+/// **unchanged** — groups stay in the order [`compute_session_order`] picked
+/// them, only their inner ordering changes. Within a group, children sort
+/// among their siblings under each parent (recursive DFS, parent first), so
+/// the existing parent/child nesting is preserved.
+///
+/// The caller is expected to renumber `display_order` densely (`0..n`) along
+/// the returned order; [`compute_session_order`] then reproduces it exactly.
+/// On an empty input returns an empty `Vec`, so a no-op `Shift+S` is safe.
+pub fn sort_alphabetically_within_groups(sessions: &[&SessionInfo]) -> Vec<usize> {
+    let ord = compute_session_order(sessions);
+    let mut out: Vec<usize> = Vec::with_capacity(sessions.len());
+    let mut group_start = 0usize;
+    for i in 1..=ord.order.len() {
+        // Flush at every group boundary (a header on the next row) and at the
+        // end of the order. `headers[group_start]` is always `Some`, so the
+        // first iteration's check is gated on `i > group_start`.
+        let at_boundary = i == ord.order.len() || ord.headers[i].is_some();
+        if at_boundary {
+            let group: Vec<usize> = ord.order[group_start..i].to_vec();
+            out.extend(sort_group_alphabetically(sessions, &group));
+            group_start = i;
+        }
+    }
+    out
+}
+
+/// Sort one group's members alphabetically while preserving the parent/child
+/// nesting `compute_session_order` would render: children stay under their
+/// parent and sort among their siblings, recursively. Mirrors the
+/// `nest_group_members` DFS, swapping its index-stable comparator for a
+/// case-insensitive name comparator (with input index as a stable tiebreak).
+fn sort_group_alphabetically(sessions: &[&SessionInfo], members: &[usize]) -> Vec<usize> {
+    use std::collections::{HashMap, HashSet};
+
+    let id_to_member: HashMap<crate::session::SessionId, usize> =
+        members.iter().map(|&i| (sessions[i].id, i)).collect();
+
+    let mut roots: Vec<usize> = Vec::new();
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &i in members {
+        let parent = sessions[i]
+            .parent_session_id
+            .and_then(|p| id_to_member.get(&p))
+            .copied()
+            .filter(|&p| p != i);
+        match parent {
+            Some(p) => children.entry(p).or_default().push(i),
+            None => roots.push(i),
+        }
+    }
+
+    let sort_key = |i: &usize| (sessions[*i].name.to_lowercase(), *i);
+    roots.sort_by_key(sort_key);
+    for kids in children.values_mut() {
+        kids.sort_by_key(sort_key);
+    }
+
+    fn emit(
+        i: usize,
+        children: &HashMap<usize, Vec<usize>>,
+        visited: &mut HashSet<usize>,
+        out: &mut Vec<usize>,
+    ) {
+        if !visited.insert(i) {
+            return;
+        }
+        out.push(i);
+        if let Some(kids) = children.get(&i) {
+            for &k in kids {
+                emit(k, children, visited, out);
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(members.len());
+    let mut visited = HashSet::new();
+    for &r in &roots {
+        emit(r, &children, &mut visited, &mut out);
+    }
+    // Members unreachable from any root (a parent cycle): emit flat in their
+    // own alphabetical order, matching `nest_group_members`'s fallback.
+    let mut leftovers: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|i| !visited.contains(i))
+        .collect();
+    leftovers.sort_by_key(|i| sort_key(i));
+    for i in leftovers {
+        if visited.insert(i) {
+            out.push(i);
+        }
+    }
+    out
+}
+
 /// Move the session `active_input_idx` one step up or down in the rendered
 /// order, returning the new flat order of **input indices** — or `None` when
 /// the move is a no-op (active session missing, or already at an edge it
@@ -1610,6 +1707,86 @@ mod tests {
         }
         let sessions: Vec<&SessionInfo> = sessions_owned.iter().collect();
         assert_eq!(order_names(&sessions), vec!["lead", "w1", "i1", "i2"]);
+    }
+
+    // --- sort_alphabetically_within_groups ---
+
+    /// Apply `sort_alphabetically_within_groups` and return the resulting names.
+    fn sort_names<'a>(sessions: &[&'a SessionInfo]) -> Vec<&'a str> {
+        sort_alphabetically_within_groups(sessions)
+            .into_iter()
+            .map(|i| sessions[i].name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn sort_orders_members_alphabetically_within_a_group() {
+        let c = info_repo("c", "webapp", SessionStatus::Idle);
+        let a = info_repo("a", "webapp", SessionStatus::Idle);
+        let b = info_repo("b", "webapp", SessionStatus::Idle);
+        let sessions = vec![&c, &a, &b];
+        assert_eq!(sort_names(&sessions), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn sort_is_case_insensitive() {
+        let z = info_repo("Zeta", "webapp", SessionStatus::Idle);
+        let a = info_repo("apple", "webapp", SessionStatus::Idle);
+        let b = info_repo("Banana", "webapp", SessionStatus::Idle);
+        let sessions = vec![&z, &a, &b];
+        assert_eq!(sort_names(&sessions), vec!["apple", "Banana", "Zeta"]);
+    }
+
+    #[test]
+    fn sort_preserves_group_order() {
+        // "webapp" holds the lowest display_order, so its group renders first.
+        // Sorting within groups must NOT bubble the alphabetically-earlier
+        // "infra" group above it.
+        let mut w_b = info_repo("w-b", "webapp", SessionStatus::Idle);
+        let mut w_a = info_repo("w-a", "webapp", SessionStatus::Idle);
+        let mut i_c = info_repo("i-c", "infra", SessionStatus::Idle);
+        w_b.display_order = Some(0);
+        w_a.display_order = Some(1);
+        i_c.display_order = Some(2);
+        let sessions = vec![&i_c, &w_b, &w_a];
+        // webapp group stays first, but its members are sorted A→Z.
+        assert_eq!(sort_names(&sessions), vec!["w-a", "w-b", "i-c"]);
+    }
+
+    #[test]
+    fn sort_keeps_children_under_their_parent_sorted_among_siblings() {
+        let lead = info_repo("lead", "webapp", SessionStatus::Idle);
+        // Insert children in non-alphabetical order to prove they're resorted.
+        let w_b = info_child("w-b", "webapp", SessionStatus::Idle, &lead);
+        let w_a = info_child("w-a", "webapp", SessionStatus::Idle, &lead);
+        let sessions = vec![&w_b, &lead, &w_a];
+        // Parent first (sorted among roots), children sorted A→Z under it.
+        assert_eq!(sort_names(&sessions), vec!["lead", "w-a", "w-b"]);
+    }
+
+    #[test]
+    fn sort_renumbers_reproduce_alphabetical_order() {
+        // After densely renumbering display_order along the sorted order,
+        // compute_session_order must reproduce that exact order — the
+        // round-trip the App relies on for persistence.
+        let mut owned = [
+            info_repo("c", "webapp", SessionStatus::Idle),
+            info_repo("a", "webapp", SessionStatus::Idle),
+            info_repo("b", "webapp", SessionStatus::Idle),
+        ];
+        let sessions: Vec<&SessionInfo> = owned.iter().collect();
+        let new_order = sort_alphabetically_within_groups(&sessions);
+        for (pos, &idx) in new_order.iter().enumerate() {
+            owned[idx].display_order = Some(pos as i64);
+        }
+        let sessions: Vec<&SessionInfo> = owned.iter().collect();
+        assert_eq!(order_names(&sessions), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn sort_empty_input_returns_empty() {
+        let sessions: Vec<&SessionInfo> = vec![];
+        assert!(sort_alphabetically_within_groups(&sessions).is_empty());
     }
 
     // --- compute_session_order (parent/child nesting) ---

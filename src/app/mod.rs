@@ -2624,6 +2624,25 @@ impl App {
         self.save_state();
     }
 
+    /// Sort sessions alphabetically by name within each repo group
+    /// (`Shift+S` in the session list). Group order is unchanged; parent/child
+    /// nesting is preserved (children sort among their siblings). Renumbers
+    /// every session's `display_order` densely along the new order so the
+    /// arrangement survives restarts and reaches other instances via the DB
+    /// poll. No-op on an empty list.
+    pub(crate) fn sort_sessions_alphabetically(&mut self) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let infos: Vec<&crate::session::SessionInfo> =
+            self.sessions.iter().map(|s| &s.info).collect();
+        let new_order = crate::ui::project_list::sort_alphabetically_within_groups(&infos);
+        for (pos, &idx) in new_order.iter().enumerate() {
+            self.sessions[idx].info.display_order = Some(pos as i64);
+        }
+        self.save_state();
+    }
+
     /// Whether the active session is the first row in render order (top of the
     /// left column). Treats an empty list as "first" so `k` is a no-op there.
     pub(crate) fn active_is_first_in_order(&self) -> bool {
@@ -8499,6 +8518,47 @@ mod tests {
         app.move_active_session(false); // already at the top
         assert_eq!(app.render_order_indices(), vec![0, 1]);
         assert!(app.sessions.iter().all(|s| s.info.display_order.is_none()));
+    }
+
+    #[test]
+    fn sort_sessions_alphabetically_renumbers_and_persists() {
+        let mut app = app_with_sessions(3);
+        // Names in deliberately non-alphabetical order: c, a, b.
+        app.sessions[0].info.name = "c".to_string();
+        app.sessions[1].info.name = "a".to_string();
+        app.sessions[2].info.name = "b".to_string();
+        app.active_index = 0;
+
+        app.sort_sessions_alphabetically();
+
+        // Render order is now [a, b, c], densely renumbered 0..n.
+        assert_eq!(app.render_order_indices(), vec![1, 2, 0]);
+        assert_eq!(app.sessions[1].info.display_order, Some(0));
+        assert_eq!(app.sessions[2].info.display_order, Some(1));
+        assert_eq!(app.sessions[0].info.display_order, Some(2));
+
+        // Persisted: the DB lists sessions in the new order.
+        let names: Vec<String> = app
+            .db
+            .list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn sort_sessions_alphabetically_empty_is_noop() {
+        let mut app = App::new(
+            24,
+            120,
+            BackendRegistry::new(stub_backend_arc()),
+            stub_agents(),
+            test_db(),
+        );
+        app.sort_sessions_alphabetically(); // must not panic
+        assert!(app.sessions.is_empty());
     }
 
     #[test]
