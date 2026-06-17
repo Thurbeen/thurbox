@@ -1,30 +1,87 @@
 //! OS desktop notifications for the "agent needs you" event.
 //!
 //! Sends a notification when a session transitions into an attention-needing
-//! state (`Attention` always, plus `Waiting` when opted in). Click handling is
-//! Linux-only: the dbus action callback writes a `pending_focus_session_id`
-//! into the SQLite `metadata` table, which the running TUI picks up next tick
-//! via its normal external-state poll. On macOS the notification is purely
-//! informational — clicking it does nothing (the modern `UNUserNotificationCenter`
-//! API requires a signed app bundle, which thurbox is not).
+//! state (`Attention` always, plus `Waiting` when opted in). Delivery picks a
+//! **backend** at startup ([`detect_backend`]):
 //!
-//! Notify-rust on Linux blocks on dbus; dispatch therefore runs on a dedicated
-//! background thread fed by an mpsc channel, so the UI tick is never stalled
-//! by a slow/missing notification daemon.
+//! - **dbus** (`org.freedesktop.Notifications`) on a normal Linux desktop.
+//!   Click-to-focus works: the dbus action callback writes a
+//!   `pending_focus_session_id` into the SQLite `metadata` table, which the
+//!   running TUI picks up next tick via its normal external-state poll.
+//! - **Windows toast** under WSL when no dbus notification daemon is reachable.
+//!   We shell out to `powershell.exe` and raise a WinRT toast, so notifications
+//!   appear in the Windows Action Center. Click-to-focus is *not* supported on
+//!   this path (a Windows toast can't call back into the WSL process), so the
+//!   banner is informational — the user alt-tabs back themselves.
+//! - **macOS** native banner (informational; the modern
+//!   `UNUserNotificationCenter` click API needs a signed app bundle, which
+//!   thurbox is not).
 //!
-//! Architecture: leaf module. Depends only on `session` (the `SessionId`
-//! type) and `paths` (for the DB path the click callback writes to). Never
-//! reaches into `app` / `agent` / `ui`.
+//! A previous silent-failure bug motivated this: under WSL the dbus path errors
+//! on connect, but the only signal was a `warn!` to the logfile — the user saw
+//! nothing. We now (a) auto-detect the working backend, (b) record the last
+//! delivery error so `thurbox-cli notify` can surface it, and (c) treat "no
+//! backend at all" as a reported condition rather than a silent drop.
+//!
+//! Notify-rust on Linux blocks on dbus, and `powershell.exe` is slow to spawn;
+//! dispatch therefore runs on a dedicated background thread fed by an mpsc
+//! channel, so the UI tick is never stalled by a slow/missing notification
+//! daemon.
+//!
+//! Architecture: leaf module. Depends only on `session` (the `SessionId` /
+//! `NotificationBackend` types) and `paths` (for the DB path the click callback
+//! writes to). Never reaches into `app` / `agent` / `ui`.
 
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use tracing::{debug, warn};
 
+use crate::session::settings::NotificationBackend;
 use crate::session::{SessionId, PENDING_FOCUS_SESSION_ID_KEY};
+
+/// The resolved delivery mechanism, decided once at startup from the
+/// configured [`NotificationBackend`] plus host probing. This is the concrete
+/// transport, with no `Auto` ambiguity left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryBackend {
+    /// freedesktop dbus (`notify-rust` → `org.freedesktop.Notifications`).
+    Dbus,
+    /// WSL → Windows toast via `powershell.exe`.
+    WindowsToast,
+    /// macOS native banner.
+    Macos,
+    /// No working delivery path (e.g. `backend = "off"`, or WSL without
+    /// `powershell.exe`, or an unsupported OS). Notifications are dropped, but
+    /// the reason is reported via [`last_error`].
+    None,
+}
+
+impl DeliveryBackend {
+    /// Short, user-facing label for the diagnostic output.
+    pub fn label(self) -> &'static str {
+        match self {
+            DeliveryBackend::Dbus => "dbus (org.freedesktop.Notifications)",
+            DeliveryBackend::WindowsToast => "windows-toast (powershell.exe)",
+            DeliveryBackend::Macos => "macos (native banner)",
+            DeliveryBackend::None => "none (delivery disabled)",
+        }
+    }
+
+    /// Whether the backend can actually deliver a notification.
+    pub fn is_deliverable(self) -> bool {
+        !matches!(self, DeliveryBackend::None)
+    }
+
+    /// Whether clicking the notification focuses the session in the TUI.
+    /// Only the dbus path wires this up.
+    pub fn supports_click_to_focus(self) -> bool {
+        matches!(self, DeliveryBackend::Dbus)
+    }
+}
 
 /// One notification to fire. Cheap to clone/move across the channel.
 #[derive(Debug, Clone)]
@@ -67,37 +124,88 @@ impl NotificationSender {
     }
 }
 
-/// Start the background dispatcher thread. Returns a sender for the UI tick
-/// to push notifications into. The thread reads its DB path lazily on each
-/// click (we only write a single row, no persistent connection needed) so it
-/// is safe to spawn before the database file exists.
+/// Process-wide record of the last delivery failure, so the diagnostic
+/// (`thurbox-cli notify`) and a future TUI warning can surface what would
+/// otherwise be a silent drop. `None` = no failure recorded yet.
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn record_error(msg: impl Into<String>) {
+    let msg = msg.into();
+    warn!("notification dispatch failed: {msg}");
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        *slot = Some(msg);
+    }
+}
+
+/// The most recent delivery error, if any. Used by the CLI diagnostic.
+pub fn last_error() -> Option<String> {
+    LAST_ERROR.lock().ok().and_then(|s| s.clone())
+}
+
+/// Start the background dispatcher thread for the given backend. Returns a
+/// sender for the UI tick to push notifications into. The thread reads its DB
+/// path lazily on each click (we only write a single row, no persistent
+/// connection needed) so it is safe to spawn before the database file exists.
 ///
-/// Only one dispatcher per process: re-entry returns the same sender.
-pub fn start() -> NotificationSender {
+/// Only one dispatcher per process: re-entry returns the same sender and the
+/// backend chosen on the first call wins.
+pub fn start(backend: DeliveryBackend) -> NotificationSender {
     static SHARED: OnceLock<NotificationSender> = OnceLock::new();
     SHARED
         .get_or_init(|| {
             let (tx, rx) = mpsc::channel::<Notification>();
             thread::Builder::new()
                 .name("thurbox-notifications".into())
-                .spawn(move || dispatch_loop(rx))
+                .spawn(move || dispatch_loop(rx, backend))
                 .expect("spawn notification dispatcher thread");
             NotificationSender { tx }
         })
         .clone()
 }
 
-fn dispatch_loop(rx: Receiver<Notification>) {
+fn dispatch_loop(rx: Receiver<Notification>, backend: DeliveryBackend) {
     while let Ok(n) = rx.recv() {
-        if let Err(e) = dispatch_one(n) {
-            warn!("notification dispatch failed: {e}");
+        if let Err(e) = dispatch_one(&n, backend) {
+            record_error(e.to_string());
         }
     }
     debug!("notification dispatcher exiting (all senders dropped)");
 }
 
+/// Synchronously deliver a single notification over `backend`, blocking until
+/// the OS call returns. Used by the `thurbox-cli notify --test` diagnostic,
+/// which is a short-lived process with no dispatcher thread — it must complete
+/// the delivery before exiting. Returns an error string on failure (the dbus
+/// path's click-wait thread is still spawned but the process may exit before a
+/// click; that's fine for a one-shot test).
+pub fn send_blocking(n: &Notification, backend: DeliveryBackend) -> Result<(), String> {
+    if !backend.is_deliverable() {
+        return Err(format!("no deliverable backend ({})", backend.label()));
+    }
+    dispatch_one(n, backend).map_err(|e| e.to_string())
+}
+
+/// Dispatch one notification over the resolved backend.
+fn dispatch_one(
+    n: &Notification,
+    backend: DeliveryBackend,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match backend {
+        #[cfg(target_os = "linux")]
+        DeliveryBackend::Dbus => dispatch_dbus(n),
+        DeliveryBackend::WindowsToast => dispatch_windows_toast(n),
+        #[cfg(target_os = "macos")]
+        DeliveryBackend::Macos => dispatch_macos(n),
+        DeliveryBackend::None => Ok(()),
+        // A backend that isn't compiled for this target (e.g. Dbus on macOS):
+        // nothing to do. detect_backend never returns these combinations.
+        #[allow(unreachable_patterns)]
+        _ => Ok(()),
+    }
+}
+
 #[cfg(target_os = "linux")]
-fn dispatch_one(n: Notification) -> Result<(), Box<dyn std::error::Error>> {
+fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
     use notify_rust::{Hint, Notification as NotifRust};
 
     let mut notif = NotifRust::new();
@@ -136,7 +244,7 @@ fn dispatch_one(n: Notification) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "macos")]
-fn dispatch_one(n: Notification) -> Result<(), Box<dyn std::error::Error>> {
+fn dispatch_macos(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
     use notify_rust::Notification as NotifRust;
 
     // macOS path: no action callbacks (UNUserNotificationCenter requires a
@@ -151,9 +259,214 @@ fn dispatch_one(n: Notification) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn dispatch_one(_n: Notification) -> Result<(), Box<dyn std::error::Error>> {
+/// Deliver a Windows toast from WSL by invoking `powershell.exe` with a small
+/// WinRT script. This is the only path that crosses the WSL → Windows
+/// boundary; it needs WSL interop enabled (the default) and `powershell.exe`
+/// on `PATH` (also the default). Click-to-focus is not wired up here.
+fn dispatch_windows_toast(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    let script = build_powershell_toast_script(&n.title, &n.body, n.sound);
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| format!("could not run powershell.exe (WSL interop?): {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "powershell.exe toast failed ({}): {}",
+            output.status,
+            stderr.trim()
+        )
+        .into());
+    }
     Ok(())
+}
+
+/// Single-quote a string for safe interpolation into a PowerShell literal.
+/// PowerShell escapes a literal single quote by doubling it (`''`). We also
+/// strip control characters that could break the one-liner; the body has
+/// already been length-bounded upstream.
+pub(crate) fn powershell_escape(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect::<String>()
+        .replace('\'', "''")
+}
+
+/// Build the PowerShell script that raises a WinRT toast. Title/body are
+/// single-quote-escaped and embedded as XML text nodes (the WinRT API takes
+/// raw text, so XML-special characters are passed as-is by `CreateTextNode`).
+pub(crate) fn build_powershell_toast_script(title: &str, body: &str, sound: bool) -> String {
+    let title = powershell_escape(title);
+    let body = powershell_escape(body);
+    // ToastText02 = one bold heading line + one wrapped body line.
+    // A generic AppUserModelID ("Windows Terminal") lets the toast show
+    // without registering a Start-menu shortcut.
+    let audio = if sound {
+        String::new()
+    } else {
+        // Suppress the default toast sound by appending a silent <audio> node.
+        "$audio = $template.CreateElement('audio'); \
+         $audio.SetAttribute('silent','true'); \
+         $template.DocumentElement.AppendChild($audio) | Out-Null; "
+            .to_string()
+    };
+    format!(
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
+         $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+         $texts = $template.GetElementsByTagName('text'); \
+         $texts.Item(0).AppendChild($template.CreateTextNode('{title}')) | Out-Null; \
+         $texts.Item(1).AppendChild($template.CreateTextNode('{body}')) | Out-Null; \
+         {audio}\
+         $toast = [Windows.UI.Notifications.ToastNotification]::new($template); \
+         $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Windows Terminal'); \
+         $notifier.Show($toast)"
+    )
+}
+
+/// Decide the concrete delivery backend for this host from the configured
+/// preference. `Auto` probes the environment; the explicit variants force a
+/// path (or disable). Probing is delegated to [`probe_host`] so the decision
+/// table is pure and unit-testable.
+pub fn detect_backend(configured: NotificationBackend) -> DeliveryBackend {
+    resolve_backend(configured, probe_host())
+}
+
+/// Observable facts about the host that drive backend selection. Kept as a
+/// plain struct so `resolve_backend` is a pure function of (config, facts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostProbe {
+    /// Compiled for `target_os = "linux"`.
+    pub is_linux: bool,
+    /// Compiled for `target_os = "macos"`.
+    pub is_macos: bool,
+    /// Running under WSL (Microsoft kernel marker in `/proc/version`).
+    pub is_wsl: bool,
+    /// A reachable freedesktop notification service on the session bus.
+    pub has_dbus_service: bool,
+    /// `powershell.exe` resolves on `PATH` (WSL interop available).
+    pub has_powershell: bool,
+}
+
+/// Pure backend-selection table. Separated from probing so every branch is
+/// testable without a real host.
+pub fn resolve_backend(configured: NotificationBackend, probe: HostProbe) -> DeliveryBackend {
+    match configured {
+        NotificationBackend::Off => DeliveryBackend::None,
+        NotificationBackend::Dbus => {
+            if probe.is_linux {
+                DeliveryBackend::Dbus
+            } else {
+                DeliveryBackend::None
+            }
+        }
+        NotificationBackend::Windows => {
+            if probe.has_powershell {
+                DeliveryBackend::WindowsToast
+            } else {
+                DeliveryBackend::None
+            }
+        }
+        NotificationBackend::Auto => {
+            if probe.is_macos {
+                DeliveryBackend::Macos
+            } else if probe.is_linux {
+                // Prefer dbus when a real notification daemon answers. The
+                // common WSL case has no daemon, so fall back to a Windows
+                // toast whenever interop (`powershell.exe`) is available —
+                // this also covers the unusual non-WSL Linux host with
+                // powershell on PATH, still better than dropping silently.
+                // Without either we have nothing (reported via `last_error`).
+                if probe.has_dbus_service {
+                    DeliveryBackend::Dbus
+                } else if probe.has_powershell {
+                    DeliveryBackend::WindowsToast
+                } else {
+                    DeliveryBackend::None
+                }
+            } else {
+                DeliveryBackend::None
+            }
+        }
+    }
+}
+
+/// Gather host facts for [`detect_backend`]. The `cfg!` flags are
+/// compile-time; the dynamic probes (WSL marker, dbus service, powershell)
+/// are best-effort and never panic.
+pub fn probe_host() -> HostProbe {
+    HostProbe {
+        is_linux: cfg!(target_os = "linux"),
+        is_macos: cfg!(target_os = "macos"),
+        is_wsl: detect_wsl(),
+        has_dbus_service: detect_dbus_service(),
+        has_powershell: detect_powershell(),
+    }
+}
+
+/// WSL is detected by the Microsoft marker the WSL kernel writes into
+/// `/proc/version` (e.g. "...microsoft-standard-WSL2..."). Pure check exposed
+/// for tests via [`proc_version_is_wsl`].
+fn detect_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| proc_version_is_wsl(&v))
+        .unwrap_or(false)
+}
+
+/// Pure WSL test over a `/proc/version` string.
+pub(crate) fn proc_version_is_wsl(proc_version: &str) -> bool {
+    let lower = proc_version.to_ascii_lowercase();
+    lower.contains("microsoft") || lower.contains("wsl")
+}
+
+/// Probe for a working freedesktop notification service. We deliberately do a
+/// cheap socket-existence check rather than a full dbus round-trip: the common
+/// failure (WSL) is that `DBUS_SESSION_BUS_ADDRESS` points at a socket path
+/// that does not exist, so even opening the bus fails. A present socket is a
+/// good-enough signal to attempt the dbus path (a misbehaving daemon then
+/// surfaces via `last_error`, no longer silent).
+#[cfg(target_os = "linux")]
+fn detect_dbus_service() -> bool {
+    // Honour an explicit address first.
+    if let Ok(addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+        if let Some(path) = addr
+            .split(',')
+            .find_map(|kv| kv.strip_prefix("unix:path="))
+            .or_else(|| addr.strip_prefix("unix:path="))
+        {
+            return std::path::Path::new(path).exists();
+        }
+        // Non-unix transport (tcp, etc.) — assume reachable; let dbus try.
+        if !addr.is_empty() {
+            return true;
+        }
+    }
+    // Fall back to the conventional per-user bus socket location.
+    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+        return std::path::Path::new(&runtime).join("bus").exists();
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_dbus_service() -> bool {
+    false
+}
+
+/// `powershell.exe` on `PATH` (WSL interop). Cheap PATH scan; no process spawn.
+fn detect_powershell() -> bool {
+    which_on_path("powershell.exe")
+}
+
+/// Minimal `PATH` lookup (avoids pulling in a `which` crate for one probe).
+fn which_on_path(exe: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(exe).exists())
 }
 
 /// SQLite `metadata` key the click handler writes to. The TUI's
@@ -191,6 +504,22 @@ fn write_focus_request(session_id: SessionId) -> Result<(), Box<dyn std::error::
 mod tests {
     use super::*;
 
+    fn probe(
+        is_linux: bool,
+        is_macos: bool,
+        is_wsl: bool,
+        has_dbus: bool,
+        has_ps: bool,
+    ) -> HostProbe {
+        HostProbe {
+            is_linux,
+            is_macos,
+            is_wsl,
+            has_dbus_service: has_dbus,
+            has_powershell: has_ps,
+        }
+    }
+
     #[test]
     fn sender_send_does_not_panic_when_receiver_dropped() {
         let (tx, rx) = mpsc::channel::<Notification>();
@@ -211,5 +540,148 @@ mod tests {
         // cross-process protocol with the TUI poll loop. Changing it is a
         // breaking change for any in-flight clicks across an upgrade.
         assert_eq!(FOCUS_REQUEST_KEY, "pending_focus_session_id");
+    }
+
+    #[test]
+    fn proc_version_wsl_marker() {
+        assert!(proc_version_is_wsl(
+            "Linux version 6.6.0-microsoft-standard-WSL2 (gcc ...)"
+        ));
+        assert!(proc_version_is_wsl("... WSL ..."));
+        assert!(!proc_version_is_wsl(
+            "Linux version 6.6.0-arch1-1 (linux@archlinux) ..."
+        ));
+    }
+
+    #[test]
+    fn auto_picks_dbus_on_normal_linux_desktop() {
+        let p = probe(true, false, false, true, false);
+        assert_eq!(
+            resolve_backend(NotificationBackend::Auto, p),
+            DeliveryBackend::Dbus
+        );
+    }
+
+    #[test]
+    fn auto_falls_back_to_windows_toast_under_wsl_without_dbus() {
+        // The exact WSL failure case: linux + WSL marker + no dbus service,
+        // but powershell.exe is reachable.
+        let p = probe(true, false, true, false, true);
+        assert_eq!(
+            resolve_backend(NotificationBackend::Auto, p),
+            DeliveryBackend::WindowsToast
+        );
+    }
+
+    #[test]
+    fn auto_under_wsl_without_powershell_reports_none() {
+        let p = probe(true, false, true, false, false);
+        assert_eq!(
+            resolve_backend(NotificationBackend::Auto, p),
+            DeliveryBackend::None
+        );
+    }
+
+    #[test]
+    fn auto_prefers_dbus_even_under_wsl_if_a_daemon_answers() {
+        // A WSL setup that *does* run a notification daemon should still use it.
+        let p = probe(true, false, true, true, true);
+        assert_eq!(
+            resolve_backend(NotificationBackend::Auto, p),
+            DeliveryBackend::Dbus
+        );
+    }
+
+    #[test]
+    fn auto_picks_macos_banner() {
+        let p = probe(false, true, false, false, false);
+        assert_eq!(
+            resolve_backend(NotificationBackend::Auto, p),
+            DeliveryBackend::Macos
+        );
+    }
+
+    #[test]
+    fn off_always_disables() {
+        let p = probe(true, false, false, true, true);
+        assert_eq!(
+            resolve_backend(NotificationBackend::Off, p),
+            DeliveryBackend::None
+        );
+    }
+
+    #[test]
+    fn forced_dbus_requires_linux() {
+        assert_eq!(
+            resolve_backend(
+                NotificationBackend::Dbus,
+                probe(true, false, false, false, false)
+            ),
+            DeliveryBackend::Dbus
+        );
+        assert_eq!(
+            resolve_backend(
+                NotificationBackend::Dbus,
+                probe(false, true, false, false, false)
+            ),
+            DeliveryBackend::None
+        );
+    }
+
+    #[test]
+    fn forced_windows_requires_powershell() {
+        assert_eq!(
+            resolve_backend(
+                NotificationBackend::Windows,
+                probe(true, false, true, false, true)
+            ),
+            DeliveryBackend::WindowsToast
+        );
+        assert_eq!(
+            resolve_backend(
+                NotificationBackend::Windows,
+                probe(true, false, true, false, false)
+            ),
+            DeliveryBackend::None
+        );
+    }
+
+    #[test]
+    fn backend_capability_helpers() {
+        assert!(DeliveryBackend::Dbus.supports_click_to_focus());
+        assert!(!DeliveryBackend::WindowsToast.supports_click_to_focus());
+        assert!(DeliveryBackend::WindowsToast.is_deliverable());
+        assert!(!DeliveryBackend::None.is_deliverable());
+    }
+
+    #[test]
+    fn powershell_escape_doubles_single_quotes_and_strips_controls() {
+        assert_eq!(powershell_escape("it's fine"), "it''s fine");
+        // Newlines collapse to spaces; other control chars are dropped.
+        assert_eq!(powershell_escape("a\nb\tc"), "a bc");
+        assert_eq!(powershell_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn toast_script_embeds_escaped_title_and_body() {
+        let script = build_powershell_toast_script("my-feat · claude", "can't proceed", true);
+        assert!(script.contains("my-feat · claude"));
+        // The single quote in the body is doubled for PowerShell.
+        assert!(script.contains("can''t proceed"));
+        assert!(script.contains("ToastNotificationManager"));
+        // Sound on → no silent audio node.
+        assert!(!script.contains("silent"));
+    }
+
+    #[test]
+    fn toast_script_suppresses_sound_when_off() {
+        let script = build_powershell_toast_script("t", "b", false);
+        assert!(script.contains("silent"));
+    }
+
+    #[test]
+    fn last_error_round_trips() {
+        record_error("boom");
+        assert_eq!(last_error().as_deref(), Some("boom"));
     }
 }

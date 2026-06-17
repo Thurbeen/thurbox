@@ -10,6 +10,23 @@ use crate::notifications::{Notification, NotificationSender};
 use crate::session::settings::NotificationSettings;
 use crate::session::{SessionId, SessionStatus};
 
+/// Maximum notification body length (characters). Agent OSC messages are
+/// usually short, but a misbehaving agent can push a huge string; OS
+/// notification surfaces truncate or misbehave on very long bodies, so we cap
+/// it ourselves and append an ellipsis.
+const MAX_BODY_CHARS: usize = 200;
+
+/// Truncate an over-long body on a char boundary, appending `…`. Short bodies
+/// pass through unchanged.
+fn truncate_body(s: &str) -> String {
+    if s.chars().count() <= MAX_BODY_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(MAX_BODY_CHARS).collect();
+    out.push('…');
+    out
+}
+
 /// State the notification path keeps across ticks. Owned by `App` and only
 /// constructed when the feature is enabled.
 pub struct NotificationState {
@@ -104,7 +121,9 @@ impl NotificationState {
     }
 
     /// Build the notification body from the session's last OSC message, or a
-    /// generic fallback when the agent only rang a bell (no message text).
+    /// generic fallback when the agent only rang a bell (no message text). A
+    /// long OSC message is truncated so the banner/toast stays readable and
+    /// never overflows the OS notification surface.
     pub fn build_notification(
         id: SessionId,
         name: &str,
@@ -114,8 +133,9 @@ impl NotificationState {
     ) -> Notification {
         let title = format!("{name} · {agent}");
         let body = notification_text
-            .map(str::to_string)
-            .filter(|s| !s.trim().is_empty())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(truncate_body)
             .unwrap_or_else(|| "Waiting for input".into());
         Notification {
             session_id: id,
@@ -165,6 +185,7 @@ mod tests {
                 suppress_for_active: suppress_active,
                 sound: true,
                 min_interval_secs: interval,
+                ..NotificationSettings::default()
             },
         )
     }
@@ -330,5 +351,33 @@ mod tests {
             NotificationState::build_notification(id, "demo", "claude", Some("approved?"), true);
         assert_eq!(n.body, "approved?");
         assert_eq!(n.title, "demo · claude");
+    }
+
+    #[test]
+    fn body_is_truncated_when_too_long() {
+        let id = SessionId::default();
+        let long = "x".repeat(500);
+        let n = NotificationState::build_notification(id, "demo", "claude", Some(&long), true);
+        // 200 chars + the ellipsis.
+        assert_eq!(n.body.chars().count(), MAX_BODY_CHARS + 1);
+        assert!(n.body.ends_with('…'));
+    }
+
+    #[test]
+    fn body_at_limit_is_not_truncated() {
+        let id = SessionId::default();
+        let exact = "y".repeat(MAX_BODY_CHARS);
+        let n = NotificationState::build_notification(id, "demo", "claude", Some(&exact), true);
+        assert_eq!(n.body, exact);
+        assert!(!n.body.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_respects_char_boundaries() {
+        // Multi-byte chars must not be split mid-codepoint.
+        let s = "é".repeat(500);
+        let out = truncate_body(&s);
+        assert_eq!(out.chars().count(), MAX_BODY_CHARS + 1);
+        assert!(out.is_char_boundary(out.len() - '…'.len_utf8()));
     }
 }

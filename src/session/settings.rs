@@ -105,6 +105,27 @@ pub struct FeatureFlags {
     pub auto_update: bool,
 }
 
+/// Which OS-notification delivery backend to use (`[notifications] backend`).
+/// `Auto` (the default) detects the right one at startup: dbus on a normal
+/// Linux desktop, a Windows toast (via `powershell.exe`) under WSL when no
+/// dbus notification daemon is reachable, the native banner on macOS. The
+/// other variants force a specific path, and `Off` disables delivery entirely
+/// without touching the `[features] notifications` switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationBackend {
+    /// Detect the best backend for the host at startup.
+    #[default]
+    Auto,
+    /// Force the freedesktop dbus path (`org.freedesktop.Notifications`).
+    Dbus,
+    /// Force the WSL → Windows toast path (`powershell.exe`).
+    Windows,
+    /// Disable delivery (the dispatcher still starts but drops every
+    /// notification — a soft off-switch distinct from `[features]`).
+    Off,
+}
+
 /// Knobs for the OS notification feature (`[notifications]` table). All
 /// fields have defaults so an empty / absent table behaves like the seeded
 /// configuration.
@@ -128,6 +149,10 @@ pub struct NotificationSettings {
     /// agent that flips Attention → Busy → Attention from spamming.
     #[serde(default = "default_notification_min_interval_secs")]
     pub min_interval_secs: u64,
+    /// Delivery backend. `auto` (default) detects dbus vs. Windows-toast vs.
+    /// macOS at startup; `dbus`/`windows` force one; `off` disables delivery.
+    #[serde(default)]
+    pub backend: NotificationBackend,
 }
 
 fn default_notification_min_interval_secs() -> u64 {
@@ -141,6 +166,7 @@ impl Default for NotificationSettings {
             suppress_for_active: true,
             sound: true,
             min_interval_secs: default_notification_min_interval_secs(),
+            backend: NotificationBackend::Auto,
         }
     }
 }
@@ -318,6 +344,28 @@ mod tests {
         assert!(s.notifications.suppress_for_active);
         assert!(s.notifications.sound);
         assert_eq!(s.notifications.min_interval_secs, 5);
+        assert_eq!(s.notifications.backend, NotificationBackend::Auto);
+    }
+
+    #[test]
+    fn notifications_backend_parses_each_variant() {
+        for (raw, want) in [
+            ("auto", NotificationBackend::Auto),
+            ("dbus", NotificationBackend::Dbus),
+            ("windows", NotificationBackend::Windows),
+            ("off", NotificationBackend::Off),
+        ] {
+            let s: Settings =
+                toml::from_str(&format!("[notifications]\nbackend = \"{raw}\"\n")).unwrap();
+            assert_eq!(s.notifications.backend, want, "backend = {raw}");
+        }
+    }
+
+    #[test]
+    fn notifications_backend_rejects_unknown_value() {
+        let err =
+            toml::from_str::<Settings>("[notifications]\nbackend = \"telepathy\"").unwrap_err();
+        assert!(err.to_string().contains("backend") || err.to_string().contains("variant"));
     }
 
     #[test]

@@ -596,7 +596,20 @@ fn build_notification_state() -> Option<NotificationState> {
     if !settings.features.notifications {
         return None;
     }
-    let sender = crate::notifications::start();
+    // Resolve the delivery backend (dbus / Windows-toast / macOS / none) from
+    // the configured preference plus host probing, then start the dispatcher
+    // for it. A `none` backend (e.g. WSL without powershell, or backend="off")
+    // still starts the thread but drops every notification — the reason is
+    // recorded for the `thurbox-cli notify` diagnostic rather than silently
+    // lost as before.
+    let backend = crate::notifications::detect_backend(settings.notifications.backend);
+    if !backend.is_deliverable() {
+        debug!(
+            "notifications enabled but no deliverable backend: {}",
+            backend.label()
+        );
+    }
+    let sender = crate::notifications::start(backend);
     Some(NotificationState::new(sender, settings.notifications))
 }
 

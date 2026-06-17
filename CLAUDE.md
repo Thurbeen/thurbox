@@ -408,7 +408,10 @@ gated on `[features] version_check`, off by default), `update`
 (downloads, verifies, and replaces the installed binaries with the latest
 release — `--force` bypasses the up-to-date/dev-build guards; gated on
 `[features] auto_update`, off by default; the TUI also runs this silently on
-startup when the flag is on). Output is
+startup when the flag is on), `notify`
+(diagnose OS desktop notifications: prints the detected delivery backend
+and last error; `--test` fires a sample — see OS notifications below).
+Output is
 **human-readable by default** and switches to JSON automatically when stdout is
 piped (so `… | jq` keeps working); force a format with `--json` (compact),
 `--pretty` (indented JSON), or `--text` (human even when piped).
@@ -922,7 +925,26 @@ tick in `App::refresh_session_statuses` (the *same* place
 in the list), dedup'd per session by `min_interval_secs`, and skipped
 when the target session is the one in focus (`suppress_for_active`).
 
-- **Click-to-focus** (Linux only). The dbus action callback writes a
+- **Delivery backend** (auto-detected). `notifications::detect_backend`
+  resolves the configured `[notifications] backend` (`auto` by default)
+  plus host probing (`probe_host`) into a concrete `DeliveryBackend`
+  (`Dbus` / `WindowsToast` / `Macos` / `None`) via the pure, table-driven
+  `resolve_backend`. `auto` picks **dbus** on a normal Linux desktop
+  (a session-bus `org.freedesktop.Notifications` socket is reachable),
+  the **Windows toast** path under WSL when no dbus daemon answers
+  (`/proc/version` carries the Microsoft marker and `powershell.exe` is on
+  PATH — we shell out a WinRT toast script, `build_powershell_toast_script`,
+  single-quote-escaped), and the **macOS** native banner. This fixed a
+  silent-failure bug: under WSL the dbus path errored on connect but only
+  logged a `warn!`, so the user saw nothing. Delivery errors are now
+  recorded in a process-wide `LAST_ERROR` slot (`notifications::last_error`)
+  and surfaced by the diagnostic.
+- **Diagnostic**: `thurbox-cli notify` (`cli/notify.rs`) prints the
+  detected backend, whether it can deliver, click-to-focus support, and
+  the last delivery error; `--test` fires a sample notification
+  *synchronously* (`notifications::send_blocking`, since the short-lived
+  CLI has no dispatcher thread) so the user can confirm end-to-end.
+- **Click-to-focus** (dbus path only). The dbus action callback writes a
   session UUID to the SQLite `metadata` row keyed by
   [`PENDING_FOCUS_SESSION_ID_KEY`](src/session/mod.rs) (= the single
   source of truth shared by writer and reader). The TUI's
@@ -930,9 +952,10 @@ when the target session is the one in focus (`suppress_for_active`).
   `apply_pending_focus_request`) reads + deletes the row atomically
   (`Database::take_pending_focus_session_id`, a single
   `DELETE … RETURNING` statement) and switches `active_index` +
-  `InputFocus::Terminal`. macOS shows the banner but ignores clicks —
-  modern `UNUserNotificationCenter` actions require a signed app
-  bundle, which thurbox is not. **Terminal window-raising is
+  `InputFocus::Terminal`. The Windows-toast and macOS paths show the
+  banner but ignore clicks (a Windows toast can't call back into WSL;
+  modern macOS `UNUserNotificationCenter` actions need a signed app
+  bundle, which thurbox is not). **Terminal window-raising is
   deliberately not implemented**: thurbox runs inside an arbitrary
   terminal emulator it doesn't own, and per-emulator window control is
   fragile (especially on Wayland). The session is pre-selected; the
@@ -944,14 +967,23 @@ when the target session is the one in focus (`suppress_for_active`).
   notifications = true` — zero overhead when disabled.
 - **Gated by `[features] notifications`** (default on); knobs in
   `[notifications]` (also_on_waiting / suppress_for_active / sound /
-  min_interval_secs). Settings live in `session::settings`; loader in
-  `agent::settings_config`; full doc in `docs/CONFIG.md`.
+  min_interval_secs / backend). `backend = "off"` is a soft delivery
+  switch distinct from the `[features]` flag (the dispatcher still runs
+  but drops everything). Settings live in `session::settings`
+  (`NotificationBackend` enum); loader in `agent::settings_config`; full
+  doc in `docs/CONFIG.md`.
 - **Code shape**. `src/notifications.rs` is the leaf side-effect layer
   (only knows `session` + `paths`) — a single background thread reads a
-  per-process mpsc channel and shells out to `notify-rust`. The
-  per-session bookkeeping (prior status, dedup timestamps) lives in
+  per-process mpsc channel and dispatches over the resolved backend
+  (`notify-rust` for dbus/macOS, `powershell.exe` for the WSL toast). The
+  notification body is bounded to 200 chars (`notify_state::truncate_body`)
+  so a huge OSC message can't overflow the banner. The per-session
+  bookkeeping (prior status, dedup timestamps) lives in
   `src/app/notify_state.rs` as a pure unit-testable struct, owned by
-  `App` and constructed only when the feature is enabled.
+  `App` and constructed only when the feature is enabled. Backend
+  selection (`resolve_backend`), the WSL marker check, powershell
+  escaping, and body truncation are all pure functions with table-driven
+  tests.
 
 ## Demo Video
 

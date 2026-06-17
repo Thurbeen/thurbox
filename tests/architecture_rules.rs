@@ -82,7 +82,14 @@ const MODULE_RULES: &[ModuleRules] = &[
     // Thin headless dispatch — must not depend on TUI or the live backend.
     ModuleRules {
         name: "cli",
-        allowed: &["session", "storage", "session_ops", "sync", "paths"],
+        allowed: &[
+            "session",
+            "storage",
+            "session_ops",
+            "sync",
+            "paths",
+            "notifications",
+        ],
         allowed_path_only: &["agent"],
     },
     // Leaf utilities.

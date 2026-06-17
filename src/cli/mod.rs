@@ -18,6 +18,7 @@ pub mod config;
 pub mod editor;
 pub mod extensions;
 pub mod messages;
+pub mod notify;
 pub mod output;
 pub mod sessions;
 pub mod tasks;
@@ -97,6 +98,8 @@ pub enum Command {
     Version(version::VersionArgs),
     /// Download, verify, and replace the installed binaries with the latest release.
     Update(update::UpdateArgs),
+    /// Diagnose OS desktop notifications; `--test` fires a sample.
+    Notify(notify::NotifyArgs),
 }
 
 /// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
@@ -148,6 +151,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Extension { action } => extensions::run(action, db),
         Command::Version(args) => Ok(version::run(args)),
         Command::Update(args) => Ok(update::run(args)),
+        Command::Notify(args) => Ok(notify::run(args)),
     }?;
 
     println!("{}", format.render(&output));
@@ -748,6 +752,21 @@ mod tests {
             panic!("expected Update");
         };
         assert!(args.force);
+    }
+
+    #[test]
+    fn parse_notify_with_and_without_test() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "notify"]).unwrap();
+        let Command::Notify(args) = cli.command else {
+            panic!("expected Notify");
+        };
+        assert!(!args.test);
+
+        let cli = Cli::try_parse_from(["thurbox-cli", "notify", "--test"]).unwrap();
+        let Command::Notify(args) = cli.command else {
+            panic!("expected Notify");
+        };
+        assert!(args.test);
     }
 
     #[test]

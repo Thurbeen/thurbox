@@ -275,15 +275,34 @@ and `auto_update` are independent — enable either or both.
 Surfaces an OS notification when a session crosses into a state that
 needs the user's attention (the agent rang the terminal bell or emitted
 an OSC 9 / OSC 777 message — usually because it's waiting on an answer
-or has finished a task). Linux dispatches via dbus and supports
-**click-to-focus**: clicking the banner writes a focus request that the
-running TUI reads on its next tick and switches to that session. macOS
-shows the notification banner but ignores clicks (the modern
-`UNUserNotificationCenter` API requires a signed app bundle, which
-thurbox is not). On both platforms the notification body is the agent's
-last OSC message when present, otherwise `Waiting for input`. **Only
-fires while the TUI is open** — the agent terminal parser is what sees
-the bell, and it doesn't run when thurbox isn't.
+or has finished a task). The notification body is the agent's last OSC
+message when present (truncated to 200 chars), otherwise `Waiting for
+input`. **Only fires while the TUI is open** — the agent terminal parser
+is what sees the bell, and it doesn't run when thurbox isn't.
+
+**Delivery backend** (`backend`, default `auto`) is detected at startup:
+
+| Backend | When | Click-to-focus |
+|---------|------|----------------|
+| `dbus` | normal Linux desktop with a running notification daemon (`org.freedesktop.Notifications`) | **yes** — clicking the banner writes a focus request the running TUI reads next tick and switches to that session |
+| `windows` (toast) | **WSL** (or any Linux with no dbus daemon) — delivers a Windows toast via `powershell.exe` (needs WSL interop, on by default) | no (a Windows toast can't call back into the WSL process) |
+| `macos` | macOS native banner — informational only (the modern `UNUserNotificationCenter` click API needs a signed app bundle, which thurbox is not) | no |
+
+`auto` prefers `dbus` whenever a daemon answers, and only falls back to
+the Windows toast when no dbus service is reachable. Force a specific
+path or disable delivery with `backend = "dbus" | "windows" | "off"`
+(`off` is a soft switch distinct from `[features] notifications`, which
+stops the dispatcher thread entirely).
+
+This auto-detection fixes a previously **silent failure** on WSL: the
+dbus path errored on connect, but the only signal was a line in the
+logfile, so the user saw nothing. Delivery errors are now recorded and
+surfaced by the diagnostic:
+
+```bash
+thurbox-cli notify          # show the detected backend + last delivery error
+thurbox-cli notify --test   # fire a sample notification to confirm it works
+```
 
 | Key | Default | Purpose |
 |-----|---------|---------|
@@ -291,6 +310,7 @@ the bell, and it doesn't run when thurbox isn't.
 | `suppress_for_active` | `true` | skip the notification for the session you're currently viewing |
 | `sound` | `true` | play the OS default notification sound |
 | `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
+| `backend` | `auto` | delivery backend: `auto` \| `dbus` \| `windows` \| `off` |
 
 The default-on `Attention` trigger is the right knob for any agent that
 respects the terminal bell / OSC 9 / OSC 777 conventions (Claude Code

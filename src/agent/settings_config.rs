@@ -61,12 +61,16 @@ config_version = 1
 
 # OS desktop notifications. Linux gets click-to-focus (clicking the banner
 # selects the session in the running TUI); macOS shows a passive banner only.
-# The dispatcher only starts when [features] notifications = true.
+# Under WSL (no dbus notification daemon) the `auto` backend delivers a Windows
+# toast via powershell.exe instead — click-to-focus is unavailable on that path.
+# Run `thurbox-cli notify` to see the detected backend, or `--test` to fire a
+# sample. The dispatcher only starts when [features] notifications = true.
 # [notifications]
 # also_on_waiting = false       # also fire on Busy → Waiting (no explicit OSC bell)
 # suppress_for_active = true    # don't notify if you're already viewing that session
 # sound = true                  # play the OS default notification sound
 # min_interval_secs = 5         # per-session dedup floor (seconds)
+# backend = "auto"              # delivery backend: auto | dbus | windows | off
 
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
@@ -286,6 +290,7 @@ mod tests {
             "suppress_for_active",
             "sound",
             "min_interval_secs",
+            "backend",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
