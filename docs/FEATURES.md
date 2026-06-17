@@ -908,7 +908,11 @@ viewer's `/` is an unrelated in-file text search and is unchanged.
 
 Whole features can be switched off declaratively: `tasks`,
 `automations`, `file_viewer`, `global_search`, `info_panel`,
-`shell_pane`, `mouse` — all default `true` (see `docs/CONFIG.md`).
+`shell_pane`, `mouse`, `notifications` — all default `true`. Two flags
+are the opposite — opt-in (default `false`, because they reach the
+network): `version_check` (the "update available" badge +
+`thurbox-cli version --check`) and `auto_update` (silent self-update on
+startup + `thurbox-cli update`). See `docs/CONFIG.md`.
 
 **Decision: flags are UI-level gates, not data switches.** A disabled
 feature hides its pane, consumes its keybinding with an explanatory

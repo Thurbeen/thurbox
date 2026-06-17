@@ -318,25 +318,16 @@ pub fn fetch_file(source: &ExtensionSource, rel: &str) -> Result<String, String>
     }
 }
 
-/// HTTP GET to stdout via `curl` (falling back to `wget`) — same dependency-free
-/// approach as the shell installer. Both run with a timeout. On failure the
-/// real cause is surfaced: a missing tool is distinguished from a tool that ran
-/// but failed (e.g. HTTP 404 for a misspelled extension name), whose stderr is
-/// included so the user sees the actual status.
-///
-/// Note: the body is decoded as UTF-8 (lossy); extension payloads are expected
-/// to be text files (specs, scripts, JSON), not binaries.
-pub(crate) fn http_get(url: &str) -> Result<String, String> {
-    let attempts: [(&str, Vec<&str>); 2] = [
-        ("curl", vec!["-fsSL", "--max-time", "30", url]),
-        ("wget", vec!["--timeout=30", "-O", "-", url]),
-    ];
+/// Run the first of `attempts` (a `(binary, args)` list) that succeeds,
+/// returning its raw stdout. On failure the aggregated cause is surfaced: a
+/// missing tool is distinguished from a tool that ran but failed (e.g. HTTP 404
+/// for a misspelled name), whose last stderr line is included. Shared by the
+/// `curl`-then-`wget` downloaders below; the caller adds the URL context.
+fn run_first_ok(attempts: &[(&str, Vec<&str>)]) -> Result<Vec<u8>, String> {
     let mut errors = Vec::new();
     for (bin, args) in attempts {
-        match Command::new(bin).args(&args).output() {
-            Ok(out) if out.status.success() => {
-                return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
-            }
+        match Command::new(bin).args(args).output() {
+            Ok(out) if out.status.success() => return Ok(out.stdout),
             Ok(out) => {
                 // The tool ran but failed (404, DNS, refused…) — keep its stderr.
                 let stderr = String::from_utf8_lossy(&out.stderr);
@@ -351,7 +342,42 @@ pub(crate) fn http_get(url: &str) -> Result<String, String> {
             Err(_) => errors.push(format!("{bin}: not found")),
         }
     }
-    Err(format!("failed to fetch {url} ({})", errors.join("; ")))
+    Err(errors.join("; "))
+}
+
+/// HTTP GET to stdout via `curl` (falling back to `wget`) — same dependency-free
+/// approach as the shell installer, both run with a timeout.
+///
+/// Note: the body is decoded as UTF-8 (lossy); extension payloads are expected
+/// to be text files (specs, scripts, JSON), not binaries.
+pub(crate) fn http_get(url: &str) -> Result<String, String> {
+    let attempts: [(&str, Vec<&str>); 2] = [
+        ("curl", vec!["-fsSL", "--max-time", "30", url]),
+        ("wget", vec!["--timeout=30", "-O", "-", url]),
+    ];
+    run_first_ok(&attempts)
+        .map(|stdout| String::from_utf8_lossy(&stdout).into_owned())
+        .map_err(|e| format!("failed to fetch {url} ({e})"))
+}
+
+/// Download a URL's raw bytes to `dest` via `curl` (falling back to `wget`) —
+/// the bytes sibling of [`http_get`], for binary artifacts (release tarballs)
+/// that must not be UTF-8-decoded. Same approach, but a longer timeout (a
+/// tarball is larger than a text file).
+pub(crate) fn http_get_to_file(url: &str, dest: &std::path::Path) -> Result<(), String> {
+    let dest_str = dest
+        .to_str()
+        .ok_or_else(|| format!("non-UTF-8 destination path: {}", dest.display()))?;
+    let attempts: [(&str, Vec<&str>); 2] = [
+        (
+            "curl",
+            vec!["-fsSL", "--max-time", "120", "-o", dest_str, url],
+        ),
+        ("wget", vec!["--timeout=120", "-O", dest_str, url]),
+    ];
+    run_first_ok(&attempts)
+        .map(|_| ())
+        .map_err(|e| format!("failed to download {url} ({e})"))
 }
 
 /// Fetch + parse the `extension.toml` manifest from a source.

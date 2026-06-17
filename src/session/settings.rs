@@ -96,6 +96,13 @@ pub struct FeatureFlags {
     /// GitHub. Enable it to learn when a newer release is available.
     #[serde(default = "default_false")]
     pub version_check: bool,
+    /// Silent auto-update: the TUI silently downloads, verifies, and replaces
+    /// the installed binaries on startup when a newer release exists, and the
+    /// `thurbox-cli update` command does the same on demand. **Off by default**
+    /// — opt-in because it makes a network call and replaces files on disk. The
+    /// new version applies on the next launch.
+    #[serde(default = "default_false")]
+    pub auto_update: bool,
 }
 
 /// Knobs for the OS notification feature (`[notifications]` table). All
@@ -159,6 +166,7 @@ impl Default for FeatureFlags {
             notifications: true,
             soft_delete: true,
             version_check: false,
+            auto_update: false,
         }
     }
 }
@@ -315,6 +323,18 @@ mod tests {
 
         let s: Settings = toml::from_str("[features]\nversion_check = true").unwrap();
         assert!(s.features.version_check);
+        assert!(s.features.mouse, "untouched flags stay at their default");
+    }
+
+    #[test]
+    fn auto_update_flag_defaults_off_and_parses() {
+        // Like version_check, auto_update is opt-in (network call + writes to disk).
+        let s: Settings = toml::from_str("[features]").unwrap();
+        assert!(!s.features.auto_update, "auto_update defaults off");
+        assert!(s.features.tasks, "other flags still default on");
+
+        let s: Settings = toml::from_str("[features]\nauto_update = true").unwrap();
+        assert!(s.features.auto_update);
         assert!(s.features.mouse, "untouched flags stay at their default");
     }
 

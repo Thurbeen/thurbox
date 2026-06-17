@@ -21,6 +21,7 @@ pub mod messages;
 pub mod output;
 pub mod sessions;
 pub mod tasks;
+pub mod update;
 pub mod version;
 
 use output::{CommandOutput, Format};
@@ -94,6 +95,8 @@ pub enum Command {
     },
     /// Print the version; `--check` queries GitHub for a newer release.
     Version(version::VersionArgs),
+    /// Download, verify, and replace the installed binaries with the latest release.
+    Update(update::UpdateArgs),
 }
 
 /// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
@@ -144,6 +147,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<(), String> {
         Command::Config { action } => config::run(action, db),
         Command::Extension { action } => extensions::run(action, db),
         Command::Version(args) => Ok(version::run(args)),
+        Command::Update(args) => Ok(update::run(args)),
     }?;
 
     println!("{}", format.render(&output));
@@ -729,6 +733,21 @@ mod tests {
             panic!("expected Version");
         };
         assert!(args.check);
+    }
+
+    #[test]
+    fn parse_update_with_and_without_force() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "update"]).unwrap();
+        let Command::Update(args) = cli.command else {
+            panic!("expected Update");
+        };
+        assert!(!args.force);
+
+        let cli = Cli::try_parse_from(["thurbox-cli", "update", "--force"]).unwrap();
+        let Command::Update(args) = cli.command else {
+            panic!("expected Update");
+        };
+        assert!(args.force);
     }
 
     #[test]

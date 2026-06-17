@@ -310,8 +310,9 @@ entirely and keep your terminal's native selection / URL handling.
 
 Whole TUI features can be switched off in
 `~/.config/thurbox/settings.toml` under `[features]` (seeded
-commented-out; everything defaults to `true` except `version_check`,
-which is opt-in because it makes a network call). A disabled feature
+commented-out; everything defaults to `true` except `version_check`
+and `auto_update`, which are opt-in because they reach the network). A
+disabled feature
 hides its pane and turns its keybinding into an explanatory toast,
 but its data and the `thurbox-cli` surface keep working — so
 flipping a flag back on is lossless.
@@ -327,6 +328,7 @@ shell_pane = true     # Ctrl+T per-session shell
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
 version_check = false # opt-in GitHub update check (makes a network call)
+auto_update = false   # opt-in: silently download+verify+replace binaries on startup
 ```
 
 `automations = false` is the one flag with teeth beyond the UI: it

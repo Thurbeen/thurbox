@@ -50,10 +50,14 @@ config_version = 1
 # notifications = true    # OS desktop notifications when a session needs attention
 # soft_delete = true      # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard delete after a prompt
 #
-# `version_check` is the one flag that defaults to FALSE: it makes a network
-# call to GitHub to learn the latest release. Enable it for the TUI header
-# "update available" badge and the `thurbox-cli version --check` command.
+# `version_check` and `auto_update` are the two flags that default to FALSE:
+# both reach the network (GitHub) on startup. `version_check` only *notifies*
+# (TUI header "update available" badge + `thurbox-cli version --check`);
+# `auto_update` goes further and silently downloads, verifies, and replaces the
+# installed binaries when a newer release exists (the new version applies on the
+# next launch). `thurbox-cli update` does the same on demand.
 # version_check = false   # GitHub update check (TUI badge + `version --check`)
+# auto_update = false     # silently download+verify+replace binaries on startup
 
 # OS desktop notifications. Linux gets click-to-focus (clicking the banner
 # selects the session in the running TUI); macOS shows a passive banner only.
@@ -91,6 +95,11 @@ config_version = 1
 # GitHub on startup):
 # [features]
 # version_check = true
+#
+# Keep thurbox up to date automatically — silently download+verify+replace the
+# binaries on startup when a newer release exists (restart to apply):
+# [features]
+# auto_update = true
 "#;
 
 /// Path to the settings file: `~/.config/thurbox/settings.toml`.
@@ -209,6 +218,7 @@ mod tests {
             "Common recipes",
             "scrollback_lines = 10000",
             "version_check = true",
+            "auto_update = true",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(marker),

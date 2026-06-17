@@ -6803,6 +6803,7 @@ mod tests {
             notifications: false,
             soft_delete: true,
             version_check: false,
+            auto_update: false,
         };
 
         app.handle_key(KeyCode::F(5), KeyModifiers::NONE);

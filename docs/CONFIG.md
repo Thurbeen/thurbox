@@ -166,6 +166,7 @@ shell_pane    = true
 mouse         = true
 notifications = true
 version_check = false          # opt-in: makes a network call
+auto_update   = false          # opt-in: downloads + replaces binaries
 
 [notifications]
 also_on_waiting     = false    # also fire on Busy → Waiting (no bell)
@@ -177,8 +178,9 @@ min_interval_secs   = 5        # per-session floor between notifications
 ### `[features]` — whole-feature switches
 
 Turn major TUI features off entirely. All default to `true` **except
-`version_check`, which defaults to `false`** (it makes a network call,
-so it is opt-in). Like the rest of settings.toml, changes need a
+`version_check` and `auto_update`, which default to `false`** (both
+reach the network, so they are opt-in). Like the rest of settings.toml,
+changes need a
 restart. A disabled feature's pane never renders, its keybinding shows
 a status toast instead of acting, and its global-search scope returns
 no results. Data is never touched, so re-enabling a flag is lossless.
@@ -195,6 +197,7 @@ no results. Data is never touched, so re-enabling a flag is lossless.
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
 | `version_check` | `false` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
+| `auto_update` | `false` | Silent self-update: download + verify + replace the binaries on startup + `thurbox-cli update` |
 
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
@@ -234,6 +237,25 @@ builds (`0.0.0-dev`) never show the badge. The same flag enables
 `thurbox-cli version --check`, which fetches fresh on demand and reports
 current vs. latest (`thurbox-cli version` with no flag always prints the
 current version, regardless of the flag).
+
+`auto_update = true` goes a step further than `version_check`: instead of
+just showing a badge, the TUI **silently updates itself** on startup. After
+the same 24 h cache check, if a newer release exists it downloads that
+release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
+dependency), verifies the SHA256 (`sha256sum`/`shasum`), extracts it
+(`tar`), and atomically replaces the installed `thurbox`/`thurbox-cli`
+binaries in place — mirroring `scripts/install.sh`. The download is verified
+**before** any installed file is touched, so a failed/corrupt download leaves
+the current binaries untouched; the whole step runs before the TUI takes the
+terminal and is best-effort (any failure is logged and startup continues on
+the current version). The replaced binary takes effect on the **next launch**
+(the running process keeps its open file), so the TUI shows an "Updated to
+vX.Y.Z — restart to apply" status line. `thurbox-cli update` performs the
+same update on demand (with `--force` to bypass the up-to-date and dev-build
+guards); dev builds (`0.0.0-dev`) never auto-update. The default install
+location (`~/.local/bin`) is user-writable; a system-wide install in a
+root-owned directory will fail the replace (logged, non-fatal). `version_check`
+and `auto_update` are independent — enable either or both.
 
 ### `[notifications]` — OS notification settings
 

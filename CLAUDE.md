@@ -404,7 +404,11 @@ effective resolved config; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
 deactivate/status — manage opt-in extensions; see below), `version`
 (prints the running version; `--check` queries GitHub's latest release —
-gated on `[features] version_check`, off by default). Output is
+gated on `[features] version_check`, off by default), `update`
+(downloads, verifies, and replaces the installed binaries with the latest
+release — `--force` bypasses the up-to-date/dev-build guards; gated on
+`[features] auto_update`, off by default; the TUI also runs this silently on
+startup when the flag is on). Output is
 **human-readable by default** and switches to JSON automatically when stdout is
 piped (so `… | jq` keeps working); force a format with `--json` (compact),
 `--pretty` (indented JSON), or `--text` (human even when piped).

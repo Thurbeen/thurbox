@@ -818,7 +818,9 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <code>true</code>
             except
             <code>version_check</code>
-            , which is opt-in because it makes a network call). A disabled feature hides its pane
+            and
+            <code>auto_update</code>
+            , which are opt-in because they reach the network). A disabled feature hides its pane
             and turns its keybinding into an explanatory toast,
             but its data and the
             <code>thurbox-cli</code>
@@ -833,7 +835,8 @@ info_panel = true     # F2/Ctrl+B info panel
 shell_pane = true     # Ctrl+T per-session shell
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
-version_check = false # opt-in GitHub update check (makes a network call)</code></pre>
+version_check = false # opt-in GitHub update check (makes a network call)
+auto_update = false   # opt-in: silently download+verify+replace binaries on startup</code></pre>
           <p>
             <code>automations = false</code>
             is the one flag with teeth beyond the UI: it also stops the TUI from firing due

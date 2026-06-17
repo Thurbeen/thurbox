@@ -94,6 +94,15 @@ async fn main() -> Result<()> {
     }
     config_warnings.extend(heal_messages);
 
+    // Silent auto-update (opt-in via [features] auto_update). Runs here — after
+    // config load, before the TUI takes the terminal — so download output can't
+    // corrupt the alternate screen and the self-replace can't race the render.
+    if let Some(msg) = maybe_auto_update() {
+        tracing::info!("{msg}");
+        eprintln!("{msg}");
+        config_warnings.push(msg);
+    }
+
     let mut terminal = ratatui::init();
     enable_terminal_features()?;
     push_keyboard_enhancement();
@@ -224,6 +233,43 @@ fn arm_automation_heartbeat() {
         let cli = thurbox::agent::tmux::resolve_cli_binary();
         if let Err(e) = thurbox::agent::tmux::ensure_automation_heartbeat(&cli) {
             tracing::warn!("Failed to arm automation heartbeat: {e}");
+        }
+    }
+}
+
+/// Silently auto-update the installed binaries when `[features] auto_update` is
+/// on, this is not a dev build, and the version-check cache is stale (so a normal
+/// relaunch within the 24h window does zero network IO, matching the version
+/// badge's "a normal launch never hits the network" contract). Best-effort: any
+/// failure is logged and startup continues on the current binary. Returns a
+/// one-line "updated" message to surface in the status bar, or `None`.
+fn maybe_auto_update() -> Option<String> {
+    let features = &thurbox::session::settings::global().features;
+    if !features.auto_update {
+        return None;
+    }
+    if thurbox::agent::extension_config::is_dev_build() {
+        return None;
+    }
+    if !thurbox::agent::version_check::cache_is_stale() {
+        return None;
+    }
+    match thurbox::agent::self_update::perform_update(false) {
+        Ok(outcome) => {
+            // Either way the check ran, so freshen the version-check cache: the
+            // badge stays accurate and the 24h throttle resets (no immediate
+            // re-attempt next launch).
+            let _ = thurbox::agent::version_check::refresh_cache();
+            match outcome {
+                thurbox::agent::self_update::UpdateOutcome::Updated { to, .. } => {
+                    Some(format!("Updated to v{to} — restart thurbox to apply."))
+                }
+                _ => None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!("auto-update failed: {e}");
+            None
         }
     }
 }

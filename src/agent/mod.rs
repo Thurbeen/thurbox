@@ -7,6 +7,7 @@ pub mod host_config;
 pub mod input;
 pub mod provider;
 pub mod registry;
+pub mod self_update;
 pub mod settings_config;
 pub mod themes_config;
 pub mod tmux;
