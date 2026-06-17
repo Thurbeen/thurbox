@@ -34,6 +34,14 @@ use uuid::Uuid;
 /// [`AgentRegistry`].
 pub const DEFAULT_AGENT_NAME: &str = "claude";
 
+/// SQLite `metadata` key used to signal "focus this session" between
+/// processes. The `notifications` module writes it from the OS notification
+/// click handler; the running TUI reads + clears it on each tick via
+/// [`crate::storage::Database::take_pending_focus_session_id`]. Defined here
+/// in the pure-data layer so both sides reference one source of truth
+/// without crossing module boundaries.
+pub const PENDING_FOCUS_SESSION_ID_KEY: &str = "pending_focus_session_id";
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub repo_path: PathBuf,
