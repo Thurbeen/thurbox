@@ -238,11 +238,17 @@ fn arm_automation_heartbeat() {
 }
 
 /// Silently auto-update the installed binaries when `[features] auto_update` is
-/// on, this is not a dev build, and the version-check cache is stale (so a normal
-/// relaunch within the 24h window does zero network IO, matching the version
-/// badge's "a normal launch never hits the network" contract). Best-effort: any
-/// failure is logged and startup continues on the current binary. Returns a
-/// one-line "updated" message to surface in the status bar, or `None`.
+/// on and this is not a dev build. Best-effort: any failure is logged and
+/// startup continues on the current binary. Returns a one-line "updated" message
+/// to surface in the status bar, or `None`.
+///
+/// Deliberately **not** gated on the version-check cache staleness: that cache is
+/// shared with the `version_check` badge, which rewrites it (resetting the 24h
+/// window) on every launch it refreshes. Gating auto-update on it let the badge
+/// starve the updater — the cache was almost always "fresh", so `perform_update`
+/// never ran. Instead we fetch on every launch (one cheap network call when the
+/// feature is opted into); `perform_update(false)` short-circuits to `UpToDate`
+/// after that single fetch when already current.
 fn maybe_auto_update() -> Option<String> {
     let features = &thurbox::session::settings::global().features;
     if !features.auto_update {
@@ -251,14 +257,10 @@ fn maybe_auto_update() -> Option<String> {
     if thurbox::agent::extension_config::is_dev_build() {
         return None;
     }
-    if !thurbox::agent::version_check::cache_is_stale() {
-        return None;
-    }
     match thurbox::agent::self_update::perform_update(false) {
         Ok(outcome) => {
-            // Either way the check ran, so freshen the version-check cache: the
-            // badge stays accurate and the 24h throttle resets (no immediate
-            // re-attempt next launch).
+            // The update ran, so freshen the version-check cache too — the badge
+            // stays accurate and reflects the newest release on the next launch.
             let _ = thurbox::agent::version_check::refresh_cache();
             match outcome {
                 thurbox::agent::self_update::UpdateOutcome::Updated { to, .. } => {

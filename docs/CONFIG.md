@@ -252,8 +252,10 @@ current vs. latest (`thurbox-cli version` with no flag always prints the
 current version, regardless of the flag).
 
 `auto_update = true` goes a step further than `version_check`: instead of
-just showing a badge, the TUI **silently updates itself** on startup. After
-the same 24 h cache check, if a newer release exists it downloads that
+just showing a badge, the TUI **silently updates itself** on startup. On every
+launch (it does **not** reuse the `version_check` badge's 24 h cache — sharing
+that gate let the badge keep the cache "fresh" and starve the updater) it
+fetches the latest release tag; if a newer release exists it downloads that
 release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
 dependency), verifies the SHA256 (`sha256sum`/`shasum`), extracts it
 (`tar`), and atomically replaces the installed `thurbox`/`thurbox-cli`
