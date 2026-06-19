@@ -323,6 +323,22 @@ breadcrumb: 'Features'
             .
           </p>
 
+          <h3>Multi-repo sessions</h3>
+          <p>
+            A session can span several repositories. The repo picker lets you select more than one,
+            and headless callers pass
+            <code>--add-repo PATH[@BASE]</code>
+            (each gets its own isolated worktree on the session's branch) or
+            <code>--add-dir PATH</code>
+            (attached as-is, no branch). Because agent CLIs differ wildly in how they accept extra
+            directories, Thurbox launches a multi-repo session in a per-session
+            <strong>symlink workspace</strong>
+            (
+            <code>~/.local/share/thurbox/workspaces/&lt;id&gt;/</code>
+            , one symlink per repo) and starts the agent there, so every agent sees each repo as a
+            subdirectory &mdash; fully agent-neutral. Single-repo sessions are unchanged.
+          </p>
+
           <h2 id="remote-ssh-sessions">
             Remote SSH Sessions
             <a href="#remote-ssh-sessions" class="heading-anchor">#</a>
@@ -835,6 +851,7 @@ info_panel = true     # F2/Ctrl+B info panel
 shell_pane = true     # Ctrl+T per-session shell
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
+soft_delete = true    # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete behind a confirm
 version_check = false # opt-in GitHub update check (makes a network call)
 auto_update = false   # opt-in: silently download+verify+replace binaries on startup</code></pre>
           <p>
@@ -843,6 +860,26 @@ auto_update = false   # opt-in: silently download+verify+replace binaries on sta
             schedules and arming the tmux heartbeat at startup (explicit
             <code>thurbox-cli automation</code>
             commands still work).
+          </p>
+          <p>
+            You don't have to hand-edit the file: press
+            <code>Ctrl+,</code>
+            (or
+            <code>F6</code>
+            ) to open the
+            <strong>Settings panel</strong>
+            &mdash; a modal that views and edits all of
+            <code>settings.toml</code>
+            (the
+            <code>[features]</code>
+            toggles, the
+            <code>[notifications]</code>
+            knobs, and the scalars). Edits apply on
+            <code>Ctrl+S</code>
+            (
+            <code>Esc</code>
+            discards); the file is also live-reloaded, so feature flags and notification knobs take
+            effect immediately.
           </p>
 
           <h2 id="session-persistence">
@@ -913,10 +950,17 @@ auto_update = false   # opt-in: silently download+verify+replace binaries on sta
             binary drives the same sessions, automations, and editor settings without the TUI
             &mdash; ideal for scripting. It shares the TUI's SQLite database and
             <code>tmux -L thurbox</code>
-            server, so changes made by either show up live in the other. Every command prints JSON;
-            pass the global
+            server, so changes made by either show up live in the other. Output is
+            <strong>human-readable by default</strong>
+            and switches to JSON automatically when stdout is piped (so
+            <code>&hellip; | jq</code>
+            keeps working); force a format with
+            <code>--json</code>
+            (compact),
             <code>--pretty</code>
-            flag for indented output.
+            (indented), or
+            <code>--text</code>
+            (human even when piped).
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session list
 <span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session create <span class="syn-flag">--name</span> reviewer <span class="syn-flag">--repo-path</span> <span class="syn-string">/path/to/repo</span> <span class="syn-flag">--agent</span> codex
@@ -1067,6 +1111,30 @@ auto_update = false   # opt-in: silently download+verify+replace binaries on sta
               on a problem &mdash; handy in dotfiles CI), and
               <code>show</code>
               prints the effective resolved configuration.
+            </li>
+            <li>
+              <strong>version</strong>
+              &mdash; prints the running version;
+              <code>--check</code>
+              queries GitHub's latest release (gated on the
+              <code>version_check</code>
+              feature).
+            </li>
+            <li>
+              <strong>update</strong>
+              &mdash; downloads, verifies, and replaces the installed binaries with the latest
+              release (
+              <code>--force</code>
+              bypasses the up-to-date / dev-build guards; gated on the
+              <code>auto_update</code>
+              feature).
+            </li>
+            <li>
+              <strong>notify</strong>
+              &mdash; diagnoses OS desktop notifications: prints the detected delivery backend and
+              last error;
+              <code>--test</code>
+              fires a sample.
             </li>
           </ul>
 

@@ -77,8 +77,8 @@ onThisPage:
               <tr>
                 <td><code>~/.config/thurbox/settings.toml</code></td>
                 <td>TOML</td>
-                <td>you</td>
-                <td>startup</td>
+                <td>you / Settings panel</td>
+                <td>live (mtime poll)</td>
                 <td>tuning knobs + feature flags</td>
               </tr>
               <tr>
@@ -120,16 +120,24 @@ onThisPage:
           </table>
           <p>
             <code>agents.toml</code>
-            and
+            ,
             <code>keybindings.json</code>
+            , and
+            <code>settings.toml</code>
             reload
             <strong>live</strong>
             : the TUI polls their mtime (~1/s) and applies edits with a confirmation toast &mdash;
-            no restart.
-            <code>hosts.toml</code>
-            ,
+            no restart. For
             <code>settings.toml</code>
-            , and
+            the feature flags and
+            <code>[notifications]</code>
+            knobs apply immediately; the write-once scalars (plus
+            <code>version_check</code>
+            /
+            <code>auto_update</code>
+            ) take effect on the next launch and the toast says so.
+            <code>hosts.toml</code>
+            and
             <code>themes.toml</code>
             need a restart.
           </p>
@@ -307,8 +315,39 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
             Scalar tuning knobs plus the
             <code>[features]</code>
             switches, seeded fully commented-out (defaults apply when absent). Only knobs a user
-            plausibly wants are exposed; internals stay hardcoded.
+            plausibly wants are exposed; internals stay hardcoded. The file is
+            <strong>live-reloaded</strong>
+            via mtime poll: the feature flags and
+            <code>[notifications]</code>
+            knobs apply immediately, while the write-once scalars (plus
+            <code>version_check</code>
+            /
+            <code>auto_update</code>
+            ) take effect on the next launch.
           </p>
+          <div class="info-box">
+            <p>
+              <strong>Settings panel.</strong>
+              You don't have to hand-edit the file: the TUI has a
+              <strong>Settings modal</strong>
+              opened with
+              <code>Ctrl+,</code>
+              (or
+              <code>F6</code>
+              ) that views and edits all of
+              <code>settings.toml</code>
+              &mdash; the
+              <code>[features]</code>
+              toggles,
+              <code>[notifications]</code>
+              knobs, and scalars. It edits a working copy and applies
+              <strong>only on
+              <code>Ctrl+S</code>
+              </strong>
+              (<code>Esc</code> discards); the panel writes back through the same file, preserving
+              its documentation comments.
+            </p>
+          </div>
           <table>
             <thead>
               <tr>
@@ -342,7 +381,9 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
           </table>
           <p>
             A complete <code>settings.toml</code> showing every knob at its default &mdash; copy
-            this, uncomment what you want to change, and restart:
+            this and uncomment what you want to change (feature flags and
+            <code>[notifications]</code> apply live; the write-once scalars take effect on the next
+            launch):
           </p>
           <pre><code>config_version = 1
 
@@ -361,10 +402,12 @@ info_panel    = true
 shell_pane    = true
 mouse         = true
 notifications = true
+soft_delete   = true           # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete
 version_check = false          # opt-in: makes a network call
 auto_update   = false          # opt-in: downloads + replaces binaries
 
 [notifications]
+backend             = "auto"   # auto / dbus / windows / off
 also_on_waiting     = false    # also fire on Busy &rarr; Waiting (no bell)
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
@@ -375,9 +418,11 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             Turn major TUI features off entirely. All default to
             <code>true</code>
             <strong>except <code>version_check</code> and <code>auto_update</code>, which default to <code>false</code></strong>
-            (both reach the network, so they are opt-in). Like the rest of settings.toml, changes need
-            a restart. A disabled feature's pane never renders, its keybinding shows a status toast
-            instead of acting, and its global-search scope returns no results. Data is never
+            (both reach the network, so they are opt-in). Feature-flag changes are
+            <strong>live-reloaded</strong> &mdash; they take effect immediately, no restart (only the
+            write-once scalars and <code>version_check</code>/<code>auto_update</code> wait for the
+            next launch). A disabled feature's pane never renders, its keybinding shows a status
+            toast instead of acting, and its global-search scope returns no results. Data is never
             touched, so re-enabling a flag is lossless.
           </p>
           <table>
@@ -428,6 +473,15 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
                 <td><code>notifications</code></td>
                 <td><code>true</code></td>
                 <td>OS desktop notifications when a session needs attention</td>
+              </tr>
+              <tr>
+                <td><code>soft_delete</code></td>
+                <td><code>true</code></td>
+                <td>
+                  TUI <code>Ctrl+D</code> soft-deletes (with a <code>Ctrl+Z</code> undo window);
+                  <code>false</code> makes it a hard delete behind a confirmation modal. Never affects
+                  <code>thurbox-cli session delete</code> (soft unless <code>--force</code>).
+                </td>
               </tr>
               <tr>
                 <td><code>version_check</code></td>
@@ -515,6 +569,16 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               </tr>
             </thead>
             <tbody>
+              <tr>
+                <td><code>backend</code></td>
+                <td><code>auto</code></td>
+                <td>
+                  delivery backend (<code>auto</code> / <code>dbus</code> / <code>windows</code> /
+                  <code>off</code>): <code>auto</code> picks dbus on a Linux desktop, the WSL
+                  Windows-toast fallback, or the macOS native banner; <code>off</code> drops every
+                  notification (a soft switch distinct from the feature flag)
+                </td>
+              </tr>
               <tr>
                 <td><code>also_on_waiting</code></td>
                 <td><code>false</code></td>

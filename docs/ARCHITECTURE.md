@@ -182,8 +182,8 @@ specifically for `perf` / `flamegraph` workflows.
 
 ## ADR-8: State storage — SQLite
 
-**Choice**: All persistent state (sessions, worktrees, VMs,
-containers, automations) is stored in a single SQLite
+**Choice**: All persistent state (sessions, worktrees,
+automations) is stored in a single SQLite
 database at `~/.local/share/thurbox/thurbox.db` (respects
 `$XDG_DATA_HOME`). WAL mode enables concurrent multi-instance
 access. Agent definitions are the one exception: they live in a
@@ -462,7 +462,7 @@ stalls. Worth the most manual testing.
 ## ADR-7b: Multi-Instance Sync — SQLite with PRAGMA data_version
 
 **Choice**: Multiple thurbox instances synchronize all state
-(sessions, worktrees, VMs, containers, automations)
+(sessions, worktrees, automations)
 via a shared SQLite database
 (`~/.local/share/thurbox/thurbox.db`). Each instance polls
 `PRAGMA data_version` to detect external changes. SQLite's WAL mode
@@ -535,16 +535,18 @@ I/O coordination.
 
 ---
 
-## ADR-13: Headless CLI as Separate Binary
+## ADR-15: Headless CLI as Separate Binary
 
 **Choice**: Headless automation lives in a separate binary
 (`thurbox-cli`) that shares the same SQLite database as the TUI.
-It exposes session, VM, container, scheduled-command, and
-editor-command management as subcommands, printing JSON results.
+It exposes `session`, `automation`, `task`, `message`, `editor`,
+`config`, `extension`, `version`, `update`, and `notify` management
+as subcommands, printing JSON results.
 
 **Why**: A separate binary keeps scripting/automation out of the
 TUI's event loop. The TUI already polls `PRAGMA data_version`
-every 250ms (ADR-7b), so changes made by `thurbox-cli` appear
+on every tick (~10 ms event-loop cadence) (ADR-7b), so changes
+made by `thurbox-cli` appear
 automatically — no new synchronization mechanism is needed. The
 `cli` module imports `storage`, `session`, `session_ops`, `sync`,
 and `agent::tmux`, but never `app` or `ui`, so it can operate

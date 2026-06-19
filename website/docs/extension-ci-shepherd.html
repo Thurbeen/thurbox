@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'ci-shepherd extension — Thurbox Docs'
-description: 'The ci-shepherd extension: watches your open change requests (GitHub PRs, GitLab MRs, Bitbucket PRs, and any git forge) and dispatches a worker to fix failing CI or a changes-requested review.'
+description: 'The ci-shepherd extension: watches your open change requests (GitHub PRs, GitLab MRs, Bitbucket PRs, and any git forge) and dispatches a worker to fix failing CI, a changes-requested review, or a branch that is behind its target (needs rebase).'
 currentPage: 'extension-ci-shepherd'
 breadcrumb: 'ci-shepherd'
 onThisPage:
@@ -19,12 +19,14 @@ onThisPage:
             <strong>change requests</strong>
             &mdash; GitHub PRs, GitLab MRs, Bitbucket PRs &mdash; and whenever one picks up
             <strong>failing CI</strong>
-            or a
+            , a
             <strong>changes-requested review</strong>
+            , or a branch that has fallen
+            <strong>behind its target (needs rebase)</strong>
             , dispatches a worker session to address it: the worker checks out the request branch,
-            fixes the feedback, pushes to the same branch (so the request updates), and leaves a
-            comment &mdash; then pings the shepherd so the next one dispatches. It turns review
-            round-trips into background work.
+            fixes the feedback (or rebases onto the base and force-pushes), pushes to the same
+            branch (so the request updates), and leaves a comment &mdash; then pings the shepherd so
+            the next one dispatches. It turns review round-trips into background work.
           </p>
           <div class="info-box warning">
             <p>
@@ -56,6 +58,20 @@ onThisPage:
             ,
             <code>shepherd-worker</code>
             ), so each can be any CLI.
+          </p>
+          <p>
+            A fixer is dispatched for any of three signals on a watched request: failing CI, a
+            changes-requested review, or a branch that is
+            <strong>behind its target</strong>
+            and needs a rebase &mdash; the normalized
+            <code>rebase</code>
+            signal surfaced as the
+            <code>REBASE</code>
+            action flag by
+            <code>scripts/classify.sh</code>
+            .
+            <code>dispatch-fix.sh --rebase</code>
+            makes the worker rebase onto the base and force-push before fixing.
           </p>
 
           <h2 id="forges">

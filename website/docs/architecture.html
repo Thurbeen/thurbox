@@ -53,7 +53,7 @@ onThisPage:
               <span class="terminal-title">main.rs</span>
             </div>
             <div class="terminal-body">
-              <pre><code><span class="syn-keyword">tokio::main</span> <span class="syn-flag">&rarr;</span> init backend (<span class="syn-string">LocalTmuxBackend</span>)
+              <pre><code><span class="syn-keyword">tokio::main</span> <span class="syn-flag">&rarr;</span> init backend (<span class="syn-string">TmuxBackend</span>)
   <span class="syn-flag">&rarr;</span> open SQLite DB
   <span class="syn-flag">&rarr;</span> init terminal
   <span class="syn-flag">&rarr;</span> spawn/restore sessions
@@ -129,10 +129,16 @@ onThisPage:
                   wraps
                   <code>SessionBackend</code>
                   , backed by
-                  <code>LocalTmuxBackend</code>
-                  (
+                  <code>TmuxBackend</code>
+                  over a
+                  <code>TmuxTransport</code>
+                  (local
                   <code>tmux -L thurbox</code>
-                  ).
+                  , or
+                  <code>ssh &lt;dest&gt; tmux</code>
+                  for
+                  <code>ssh:&lt;host&gt;</code>
+                  backends).
                 </td>
               </tr>
               <tr>
@@ -182,7 +188,9 @@ onThisPage:
             A
             <code>SessionBackend</code>
             trait abstracts session lifecycle. The default is
-            <code>LocalTmuxBackend</code>
+            <code>TmuxBackend</code>
+            over a local
+            <code>TmuxTransport</code>
             (
             <code>tmux -L thurbox</code>
             ).
@@ -253,11 +261,28 @@ onThisPage:
           <p>
             Session lifecycle (spawn, adopt, resize, kill, detach, discover) is abstracted behind a
             <code>SessionBackend</code>
-            trait. The only implementation is
-            <code>LocalTmuxBackend</code>
+            trait. The implementation is
+            <code>TmuxBackend</code>
             , which runs every session in a dedicated
             <code>tmux -L thurbox</code>
             server. The trait boundary keeps the app layer transport-agnostic.
+          </p>
+          <p>
+            <code>TmuxBackend</code>
+            is itself transport-neutral via a
+            <code>TmuxTransport</code>
+            : sessions can run on a
+            <strong>remote host over SSH</strong>
+            while the TUI runs locally. The local backend launches
+            <code>tmux -L thurbox</code>
+            ; a remote one launches
+            <code>ssh &lt;dest&gt; tmux -L thurbox</code>
+            &mdash; the tmux control-mode protocol is byte-identical over either transport. Each host
+            declared in
+            <code>hosts.toml</code>
+            registers a backend named
+            <code>ssh:&lt;host&gt;</code>
+            .
           </p>
 
           <h2 id="async">

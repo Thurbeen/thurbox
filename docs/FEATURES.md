@@ -71,25 +71,30 @@ used for the window title):
   escape (**OSC 9**, **OSC 777**) means the agent finished or is
   waiting for input. This latches a distinct `Needs attention` status
   (`▲`, accent colour) that shows the notification's message text when
-  present, and **floats the session to the top** so blocked or finished
-  agents surface first (see *Smart ordering* below). It clears
-  automatically once you select the session (you're now looking at it).
+  present, marking the row so blocked or finished agents stand out
+  (the dot recolors in place — the manual order is never disturbed; see
+  *Smart ordering* below). It clears automatically once you select the
+  session (you're now looking at it).
 
 ### Smart ordering & repo groups
 
-The list is ordered by **activity and status**, then **grouped by
-repository** under subtle headers (`── webapp ─────`):
+The list is **grouped by repository** under subtle headers
+(`── webapp ─────`), and within a group sessions follow their **manual
+order** (`display_order`, see *Manual ordering* below). Manual order is
+authoritative: once a row has been placed, a status change only
+**recolors its dot**, it never moves the row. Sessions that were never
+moved fall back to creation order:
 
-- Within a group, sessions sort by status rank
-  (`Attention → running → Idle → Error`), tie-broken by stable insertion
-  order. `Busy` and `Waiting` deliberately **share one "running" rank**: a
-  live agent flickers across the ~1s output boundary every tick, so ranking
-  them apart (or sorting by live recency) would make active sessions churn up
-  and down the list endlessly. Ordering is a pure function of *status* and
-  *stable order*, never of live timing — so the list only re-sorts on a real
-  transition (a session needs attention, or exits).
-- Groups are ordered by their **most-urgent member**, then by name, so a repo
-  holding an `Attention` session bubbles above a merely-running one.
+- Sessions with no manual order render after ordered ones in stable
+  insertion order. `Busy` and `Waiting` deliberately **share one
+  "running" status**: a live agent flickers across the ~1s output
+  boundary every tick, so they share a single dot colour rather than
+  jittering between two. Ordering is a pure function of *manual order*
+  and *stable order*, never of live timing — so the list never re-sorts
+  itself, even when a session needs attention or exits.
+- Groups are ordered by their **lowest member `display_order`**, then by name
+  for determinism — so moving a session to the top of its group can pull the
+  whole group up, but a status change never reshuffles the groups.
 - The group key is the **set of repos a session spans** (order-independent), so
   a multi-repo session forms its own group with a combined header
   (`webapp + infra`) rather than being filed arbitrarily under one repo;
@@ -98,11 +103,11 @@ repository** under subtle headers (`── webapp ─────`):
 
 **Why group by repo?** With several parallel agents the dominant question
 is "which project is this?" — clustering same-repo sessions answers it at a
-glance while urgency still wins globally (an `Attention` session never hides
-below a quiet repo). A single comparator
-(`ui::project_list::compute_session_order`) drives both rendering and
-`Ctrl+J`/`Ctrl+K` navigation, so the keyboard always steps through the exact
-order shown.
+glance, and a stable manual order means a row stays where you put it (a
+blinking status dot still flags urgency without yanking the row around). A
+single comparator (`ui::project_list::compute_session_order`) drives both
+rendering and `Ctrl+J`/`Ctrl+K` navigation, so the keyboard always steps
+through the exact order shown.
 
 **Why signals instead of guessing?** Pure output-timing can only say
 "quiet for >1s"; it can't tell a thinking pause from "done" or "needs
@@ -114,6 +119,32 @@ notification for Ghostty/Kitty/iTerm2, so inside thurbox's tmux pane
 set `claude config set --global preferredNotifChannel terminal_bell`
 to get the bell we can detect. We capture bell + OSC 9 + OSC 777,
 whichever the agent produces.
+
+### Manual ordering & alphabetical sort
+
+The list is manually orderable. With the session list focused,
+`Shift+J`/`Shift+K` move the selected session one row down/up
+(rebindable `SessionListMoveDown`/`SessionListMoveUp`). A move swaps two
+adjacent **blocks** — a row plus its nested children, so a parent drags
+its whole subtree: root rows swap within their repo group, the **whole
+group** swaps past a group edge, and nested children move among their
+siblings only. `Shift+S` (rebindable `SessionListSortAlphabetically`)
+sorts every group's sessions alphabetically by name in one shot,
+preserving group order and parent/child nesting.
+
+Both paths densely renumber every session's `display_order` `0..n` and
+persist it, so the order survives restarts and syncs across instances
+via the existing `data_version` polling. The pure helpers
+(`ui::project_list::move_in_order` / `sort_alphabetically_within_groups`)
+back `App::move_active_session` / `sort_sessions_alphabetically`; storage
+is the nullable `sessions.display_order` column (schema v31, `None` =
+never moved).
+
+**Why manual order wins over status.** Earlier the list re-sorted itself
+by status, which meant a row jumped around under your cursor every time
+an agent finished or started thinking. Letting the user pin the order —
+and only recoloring the status dot in place — keeps the list a stable
+spatial map you can build muscle memory against.
 
 ---
 
@@ -164,6 +195,16 @@ no `agents.toml` changes. The workspace is only symlinks, rebuilt
 idempotently on each launch and removed (without touching the repos)
 when the session is deleted. Single-repo sessions launch directly in
 the repo as before.
+
+**Headless multi-repo.** The same shape is reachable without the TUI.
+`thurbox-cli session create` (and `task create`) take repeatable
+`--add-repo PATH[@BASE]` — each gets its **own isolated worktree** on
+the spawn's shared `--worktree-branch`, off its own base — and `--add-dir
+PATH`, which attaches a repo **as-is** (no branch). A spawn with two or
+more members lands in the same symlink workspace the TUI builds, so every
+agent sees each repo as a subdirectory. The extra-repo list is persisted
+as JSON (schema v33) so a restored session rebuilds the identical
+workspace.
 
 **Why per-session agent?** Different tasks suit different agents.
 Choosing the agent at creation time keeps each session
@@ -332,9 +373,13 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+Z` | Global | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Global | Restore deleted sessions list | **U**ndelete |
 | `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |
+| `Ctrl+,` / `F6` | Global | Settings panel (edit settings.toml) | **,** = preferences |
 | `F1` / `Ctrl+G` | Global | Keybindings help + interactive editor | Universal help |
-| `F2` | Global | Toggle info panel | Next to F1 |
-| `F3` | Global | Toggle file viewer | Next to F2 |
+| `Ctrl+B` / `F2` | Global | Toggle info panel | **B**rowse info |
+| `Ctrl+E` / `F3` | Global | Toggle file viewer | **E**xplore files |
+| `Shift+J` | Session list | Move selected session down | Reorder |
+| `Shift+K` | Session list | Move selected session up | Reorder |
+| `Shift+S` | Session list | Sort sessions alphabetically within repo groups | **S**ort |
 | `j` / `k` | F1 editor | Select action to rebind | |
 | `Enter` / `r` | F1 editor | Capture a new chord for the selected action | **R**ebind |
 | `d` | F1 editor | Reset selected action to its default chord(s) | **D**efault |
@@ -387,6 +432,17 @@ actions whose scopes overlap. A handful of stateful keys stay fixed (shown in
 the F1 panel under *Fixed (not rebindable)*): modal selectors
 (`j`/`k`/`Enter`/`Esc`), the automations/tasks panes, the file-viewer search
 sub-mode, and the terminal's catch-all PTY forwarding.
+
+**Readline editing in modal text fields.** Thurbox's own text inputs
+(session / branch name, repo-picker path & search, automation editor,
+task title / description) accept the standard emacs/readline
+line-editing chords, so the muscle memory that works in a terminal works
+there too: `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+B`/`Ctrl+F` (move
+by char), `Ctrl+H`/`Ctrl+D` (delete before/under the cursor),
+`Ctrl+W` (delete word), `Ctrl+U`/`Ctrl+K` (kill to line start/end). The
+dispatch lives in one place (`modals::apply_ctrl_line_edit` over the
+`LineEdit` trait), and **every** `Ctrl`+letter is consumed (mapped or
+swallowed) so a bare control letter never leaks into the field.
 
 ### macOS
 
@@ -908,9 +964,13 @@ viewer's `/` is an unrelated in-file text search and is unchanged.
 
 Whole features can be switched off declaratively: `tasks`,
 `automations`, `file_viewer`, `global_search`, `info_panel`,
-`shell_pane`, `mouse`, `notifications` — all default `true`. Two flags
-are the opposite — opt-in (default `false`, because they reach the
-network): `version_check` (the "update available" badge +
+`shell_pane`, `mouse`, `notifications`, `soft_delete` — all default
+`true`. `soft_delete` is the odd one out: it is not a pane gate but a
+behaviour switch for the TUI `Ctrl+D` delete (soft-delete with a
+`Ctrl+Z` undo window when on; a confirmation-gated hard delete when
+off — see *Explicit close vs quit*). Two flags are the opposite —
+opt-in (default `false`, because they reach the network):
+`version_check` (the "update available" badge +
 `thurbox-cli version --check`) and `auto_update` (silent self-update on
 startup + `thurbox-cli update`). See `docs/CONFIG.md`.
 
@@ -933,6 +993,55 @@ The F1 help panel intentionally keeps disabled actions listed: hiding
 rows would break the selection-index contract with
 `Action::rebindable_in_order()`, and the toast already explains why a
 chord did nothing.
+
+---
+
+## Settings Panel (`Ctrl+,` / `F6`)
+
+`Ctrl+,` (rebindable `Action::OpenSettings`; `F6` alternate) opens a
+centered Settings modal that views and edits **all of settings.toml** —
+the `[features]` toggles, the `[notifications]` knobs, and the scalars —
+without hand-editing the file.
+
+**Why apply-on-save, not live preview.** The modal edits a working-copy
+`draft` and writes it back only on `Ctrl+S` (`Esc` discards). Persistence
+stays in `settings.toml`, written through a `toml_edit::DocumentMut` so
+the seed's documentation comments survive the round-trip.
+
+**Why some rows take effect immediately and others need a restart.** The
+feature flags that gate UI panels are read every frame, so a save copies
+them into the live `App.features` and they apply at once. Everything else
+is read once at startup from a write-once `OnceLock` that can't be
+re-applied in-process; those rows are marked `⟳`, and a save that touches
+one toasts "some changes apply after restart". The canonical comparison
+(`Settings::restart_only_differs`) is shared by the toast and the reload
+path so the two never disagree.
+
+**Why live-reload the file too.** `settings.toml` is watched by mtime
+(like `agents.toml` / `keybindings.json`): an external edit — a
+hand-edit, or the panel in another instance — re-applies the live feature
+flags and toasts (noting a restart when only restart-only fields
+differ). The panel's own write marks the file saved so the poll doesn't
+re-toast it.
+
+---
+
+## Update Notifications & Auto-Update
+
+Two opt-in `[features]` flags (default `false`, because they reach the
+network — see *Feature Flags*) cover staying current:
+
+- **`version_check`** adds an "update available" badge in the TUI header
+  and the `thurbox-cli version --check` query. The latest release is
+  fetched from GitHub and cached for 24 h, so it costs at most one
+  request a day.
+- **`auto_update`** adds a silent self-update on TUI startup and the
+  `thurbox-cli update` command, which downloads, checksum-verifies, and
+  replaces the installed binaries with the latest release. `--force`
+  bypasses the up-to-date and dev-build guards.
+
+Both are off by default so a fresh install makes **no** network calls and
+never mutates its own binary unless the user asks.
 
 ---
 
@@ -1143,7 +1252,12 @@ branch name) is saved in the database and reconstructed on restore.
   is killed and its worktree (if any) is removed. The database
   row is retained with `deleted_at` set so the deletion can be
   undone with `Ctrl+Z` (most recent) or restored from the
-  `Ctrl+U` list.
+  `Ctrl+U` list. This is governed by `[features] soft_delete`
+  (default `true`): set it `false` and `Ctrl+D` becomes a **hard
+  delete** — the full teardown with no `Ctrl+Z` undo, so it is gated
+  behind a confirmation modal (`Modal::ConfirmDeleteSession`) instead.
+  The flag never affects `thurbox-cli session delete`, which stays soft
+  unless `--force`.
 
 ### Multi-instance support
 
@@ -1200,6 +1314,19 @@ payload** — addressed to a session, with a free-form `kind` tag, a `body`,
 and optional `from_session_id`/`from_task_id` provenance. It is the channel
 extensions use for agent↔agent coordination; flow's clarify→plan→build
 relay is the first consumer.
+
+### Identity-aware, no ids to pass
+
+At spawn thurbox injects each session's own identity into its environment
+(`THURBOX_SESSION` = the stable `SessionId`, and `THURBOX_TASK` for
+task-spawned sessions), so a `thurbox-cli` call running *inside* a session
+knows who it is. `message send`/`inbox` therefore default the
+sender + task provenance (and `--for`) to the caller's own identity — an
+agent sends and reads its own mail with **no ids**. Replies never need a
+peer's id either: `message reply <message_id> --body …` looks the original
+message up and routes back to *its* sender, carrying the original task tag.
+This is how flow relays a user's answer back to a worker without ever
+mapping a task to a session id.
 
 ### Why push, not pane-scraping
 
@@ -1362,14 +1489,29 @@ deduplicated per session by `min_interval_secs`, and the session you
 are currently viewing is skipped by default (`suppress_for_active`),
 since you don't need an alert for the pane you're already watching.
 
-### Click-to-focus (Linux), passive banner (macOS)
+### Delivery backend (auto-detected)
+
+The concrete backend is resolved by `detect_backend` from the configured
+`[notifications] backend` (default `auto`) plus host probing. `auto`
+picks **dbus** on a normal Linux desktop (a session-bus
+`org.freedesktop.Notifications` socket answers), the native **macOS**
+banner, and — the case the doc previously omitted — a **Windows toast**
+under WSL when no dbus daemon answers (`/proc/version` carries the
+Microsoft marker and `powershell.exe` is on PATH; we shell out a WinRT
+toast script). The WSL path fixed a silent-failure bug: the dbus path
+used to error on connect there but only log a `warn!`, so the user saw
+nothing. Delivery errors now land in a process-wide slot surfaced by
+`thurbox-cli notify`.
+
+### Click-to-focus (Linux), passive banner (macOS / WSL)
 
 On Linux the dbus action callback writes a session id to the SQLite
 `metadata` row; the TUI's external-state poll reads and **deletes it
 atomically** (a single `DELETE … RETURNING`) on its next tick and
-switches to that session. macOS shows the banner but ignores clicks —
-the modern `UNUserNotificationCenter` actions require a signed app
-bundle, which thurbox is not. **Terminal window-raising is
+switches to that session. macOS and the WSL Windows toast show the banner
+but ignore clicks — modern `UNUserNotificationCenter` actions require a
+signed app bundle (which thurbox is not), and a Windows toast can't call
+back into WSL. **Terminal window-raising is
 deliberately not implemented**: thurbox runs inside an arbitrary
 terminal emulator it doesn't own, and per-emulator window control is
 fragile (especially on Wayland), so the session is merely pre-selected
@@ -1383,7 +1525,10 @@ The dispatcher thread (`crate::notifications::start`) starts only when
 `[features] notifications = true`, so the feature is zero-overhead when
 disabled. Knobs live in the `[notifications]` block of `settings.toml`
 (`also_on_waiting` / `suppress_for_active` / `sound` /
-`min_interval_secs`) — see [CONFIG.md](CONFIG.md).
+`min_interval_secs` / `backend`) — see [CONFIG.md](CONFIG.md). `backend`
+forces the delivery path (`auto` / `dbus` / `windows` / `macos`) or
+silently drops everything (`off`, a soft switch distinct from the
+`[features]` flag, which stops the dispatcher thread entirely).
 
 ---
 

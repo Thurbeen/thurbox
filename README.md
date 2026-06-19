@@ -517,6 +517,7 @@ command = "codex"
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
+| `Ctrl+,` / `F6` | Settings panel (edit settings.toml) | **,** = preferences |
 | `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
 | `Ctrl+B` / `F2` | Toggle info panel | **B**rief |
 | `Ctrl+E` / `F3` | Toggle file viewer | **E**xplorer |
@@ -562,8 +563,10 @@ for scripting and automation. It shares the same SQLite database
 and `tmux -L thurbox` server as the TUI, so changes made by either
 appear live in the other (the TUI polls `PRAGMA data_version`).
 
-Every command prints a JSON result to stdout; pass the global
-`--pretty` flag for indented output. The binary is intentionally
+Output is human-readable by default and switches to JSON
+automatically when stdout is piped (so `… | jq` keeps working);
+force a format with `--json` (compact), `--pretty` (indented JSON),
+or `--text` (human even when piped). The binary is intentionally
 thin — it parses arguments, calls into the database / tmux helpers,
 and prints the result. There is no TUI and no event loop.
 

@@ -36,10 +36,14 @@ backends register at startup) and `themes.toml` need a restart.
 opens a **Settings panel** listing every knob. It writes the file back
 **preserving its comments**, and feature flags that gate UI panels apply
 **live** on save; the rest (`mouse`, `notifications`, `automations`,
-`version_check`, the `[notifications]` knobs, and the scalars) take
-effect on the next launch — the panel marks those rows with `⟳` and
-toasts a restart note. Hand-editing the file (or the panel in another
-instance) is picked up the same way, via the live mtime poll.
+`version_check`, the four editable `[notifications]` knobs, and the
+scalars) take effect on the next launch — the panel marks those rows
+with `⟳` and toasts a restart note. The panel exposes only the four
+editable notification knobs (`also_on_waiting`, `suppress_for_active`,
+`sound`, `min_interval_secs`); `[notifications] backend` is **not** in
+the panel — set it only by hand-editing `settings.toml`. Hand-editing
+the file (or the panel in another instance) is picked up the same way,
+via the live mtime poll.
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 
@@ -518,12 +522,32 @@ up live via `PRAGMA data_version` polling.
 
 ## Environment variables
 
+User-set (read by thurbox):
+
 | Variable | Used for |
 |----------|----------|
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | config/data roots |
 | `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `editor_command` is unset |
 | `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`) |
 | `RUST_LOG` | log filter for `thurbox.log` |
+
+Set **by** thurbox into every spawned agent process (not user-set;
+`session_ops::inject_thurbox_env` / `App::build_spawn_inputs`). An
+agent — or a `thurbox-cli` call running inside the session — reads
+these to prove its own identity without scraping panes or names:
+
+| Variable | Set into agent process |
+|----------|------------------------|
+| `THURBOX_SESSION` | the stable thurbox `SessionId` (the registry key); read back by `thurbox-cli message`/`inbox` for self-identity |
+| `THURBOX_SESSION_ID` | the agent's own conversation id (`agent_session_id`); consumed by the metrics statusline. Distinct from `THURBOX_SESSION` |
+| `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
+| `THURBOX_METRICS_DIR` | metrics output dir |
+
+Set **at build time** (not runtime):
+
+| Variable | Used for |
+|----------|----------|
+| `THURBOX_RELEASE_VERSION` | read by `build.rs` to inject the binary version at build (CI release workflow sets it, e.g. `v0.7.0`); absent → falls back to `CARGO_PKG_VERSION` |
 
 Editor resolution order: DB `editor_command` → `$VISUAL` → `$EDITOR` →
 error toast.
