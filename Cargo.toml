@@ -113,3 +113,8 @@ strip = false
 # Snapshot assertions for the TUI acceptance tests (src/app/acceptance.rs).
 # default-features off keeps the dep tree minimal (just `similar`).
 insta = { version = "1.48.0", default-features = false }
+
+# Property/fuzz testing — proves thurbox's terminal pipeline is byte- and
+# render-transparent (control_mode transport + terminal_view rendering). Runs in
+# the normal `cargo nextest --all`.
+proptest = "1"

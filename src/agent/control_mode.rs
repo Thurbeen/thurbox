@@ -612,3 +612,161 @@ mod tests {
     // Compile-time check: channel capacity must be large enough to buffer heavy output.
     const _: () = assert!(PANE_CHANNEL_CAPACITY >= 1024);
 }
+
+/// Property/fuzz tests proving the tmux control-mode **transport** is byte
+/// transparent: whatever the agent writes is exactly what comes out of
+/// [`decode_octal`] + [`ControlModeReader`], regardless of how tmux escapes it
+/// or how the byte stream is chunked. If these stay green, thurbox's transport
+/// layer cannot be the source of glitched/stray characters in the rendered pane.
+#[cfg(test)]
+mod transport_proptests {
+    use std::fmt::Write as _;
+    use std::io::Read;
+    use std::sync::mpsc::channel;
+
+    use proptest::prelude::*;
+
+    use super::{
+        decode_octal, format_send_keys, parse_notification, ControlModeReader, Notification,
+    };
+
+    /// Reference encoder mirroring tmux's control-mode `%output` escaping:
+    /// printable ASCII passes through, backslash becomes `\134`, and every other
+    /// byte is emitted as a 3-digit `\ooo` octal escape. Because backslash is
+    /// always escaped, a bare `\` never appears in the payload except as the
+    /// start of a complete octal escape — exactly the input shape `decode_octal`
+    /// is meant to invert.
+    fn tmux_octal_encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len());
+        for &b in bytes {
+            if b == b'\\' {
+                out.push_str("\\134");
+            } else if (0x20..=0x7e).contains(&b) {
+                out.push(b as char);
+            } else {
+                write!(out, "\\{b:03o}").unwrap();
+            }
+        }
+        out
+    }
+
+    /// Split `bytes` into contiguous, non-empty chunks at the given (wrapped)
+    /// offsets — models tmux emitting output across several `%output` lines.
+    fn chunk_bytes(bytes: &[u8], split_points: &[usize]) -> Vec<Vec<u8>> {
+        if bytes.is_empty() {
+            return Vec::new();
+        }
+        let mut points: Vec<usize> = split_points
+            .iter()
+            .map(|&p| p % (bytes.len() + 1))
+            .collect();
+        points.push(0);
+        points.push(bytes.len());
+        points.sort_unstable();
+        points.dedup();
+        points
+            .windows(2)
+            .map(|w| bytes[w[0]..w[1]].to_vec())
+            .filter(|c| !c.is_empty())
+            .collect()
+    }
+
+    /// Read a `ControlModeReader` to EOF using a cycling sequence of buffer
+    /// sizes, so reassembly is exercised across arbitrary read boundaries.
+    fn drain_reader(reader: &mut ControlModeReader, buf_sizes: &[usize]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        loop {
+            let sz = buf_sizes[i % buf_sizes.len()].max(1);
+            let mut buf = vec![0u8; sz];
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Parse our own `send-keys -t %1 -H XX XX …` command back into the bytes it
+    /// encodes, to confirm the *input* (typed/pasted) path is lossless too.
+    fn parse_send_keys_hex(cmd: &str) -> Vec<u8> {
+        let cmd = cmd.strip_suffix('\n').expect("trailing newline");
+        let rest = cmd
+            .strip_prefix("send-keys -t %1 -H")
+            .expect("send-keys prefix");
+        rest.split_whitespace()
+            .map(|h| u8::from_str_radix(h, 16).expect("hex byte"))
+            .collect()
+    }
+
+    proptest! {
+        /// `decode_octal` is the exact inverse of tmux's octal escaping for any
+        /// byte sequence (all 256 values, escapes, and digit runs that merely
+        /// look like octal).
+        #[test]
+        fn decode_octal_inverts_tmux_encoding(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+            let encoded = tmux_octal_encode(&bytes);
+            prop_assert_eq!(decode_octal(&encoded), bytes);
+        }
+
+        /// `ControlModeReader` reassembles a chunked byte stream identically,
+        /// regardless of how the stream is chunked or what read buffer sizes the
+        /// consumer uses.
+        #[test]
+        fn control_mode_reader_reassembles_losslessly(
+            chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..64), 0..32),
+            buf_sizes in prop::collection::vec(1usize..40, 1..16),
+        ) {
+            let expected: Vec<u8> = chunks.iter().flatten().copied().collect();
+            let (tx, rx) = channel();
+            for c in &chunks {
+                tx.send(c.clone()).unwrap();
+            }
+            drop(tx);
+            let mut reader = ControlModeReader::new(rx);
+            let got = drain_reader(&mut reader, &buf_sizes);
+            prop_assert_eq!(got, expected);
+        }
+
+        /// The full transport — agent bytes → tmux octal `%output` lines →
+        /// `parse_notification` → `decode_octal` → mpsc channel →
+        /// `ControlModeReader` — is the identity function on the byte stream,
+        /// for arbitrary bytes split across arbitrary `%output` boundaries and
+        /// drained with arbitrary read sizes.
+        #[test]
+        fn full_transport_is_byte_identity(
+            bytes in prop::collection::vec(any::<u8>(), 0..512),
+            split_points in prop::collection::vec(any::<usize>(), 0..16),
+            buf_sizes in prop::collection::vec(1usize..40, 1..16),
+        ) {
+            let chunks = chunk_bytes(&bytes, &split_points);
+            let (tx, rx) = channel();
+            for chunk in &chunks {
+                let line = format!("%output %1 {}", tmux_octal_encode(chunk));
+                match parse_notification(&line) {
+                    Notification::Output { pane_id, data } => {
+                        prop_assert_eq!(pane_id, "%1");
+                        if !data.is_empty() {
+                            tx.send(data).unwrap();
+                        }
+                    }
+                    other => prop_assert!(false, "expected Output, got {:?}", other),
+                }
+            }
+            drop(tx);
+            let mut reader = ControlModeReader::new(rx);
+            let got = drain_reader(&mut reader, &buf_sizes);
+            prop_assert_eq!(got, bytes);
+        }
+
+        /// `format_send_keys` (the `send-keys -H` hex encoding used for every
+        /// typed/pasted byte) round-trips losslessly.
+        #[test]
+        fn format_send_keys_round_trips(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
+            let cmd = format_send_keys("%1", &bytes);
+            prop_assert_eq!(parse_send_keys_hex(&cmd), bytes);
+        }
+    }
+}

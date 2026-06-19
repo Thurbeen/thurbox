@@ -21,6 +21,44 @@ pub(crate) fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// Length of the prefix of `buf` that is safe to feed to the vt100 parser
+/// without splitting a UTF-8 character. Returns `buf.len()` unless `buf` ends
+/// with the start of a multi-byte character whose continuation bytes have not
+/// all arrived yet, in which case it returns the offset of that incomplete
+/// lead byte (so the caller can carry the tail to the next read).
+///
+/// Only a *plausibly-complete-able* truncated tail is held back: a lead byte
+/// missing some of its continuations. A malformed tail (continuation bytes with
+/// no lead, or a fully-present sequence) is passed through as-is, so garbage is
+/// never buffered unboundedly — the carry is at most 3 bytes (a 4-byte char
+/// missing its last byte).
+fn utf8_ready_prefix_len(buf: &[u8]) -> usize {
+    let len = buf.len();
+    // A truncated tail is at most 3 bytes, so only the last 3 can matter.
+    let start = len.saturating_sub(3);
+    let mut i = len;
+    while i > start {
+        i -= 1;
+        let b = buf[i];
+        // Anything that is not a UTF-8 continuation byte (0x80..=0xbf) starts a
+        // character — ASCII or a multi-byte lead.
+        if !(0x80..=0xbf).contains(&b) {
+            // A lead byte (or ASCII). Determine the sequence's expected length;
+            // if not all of it is present yet, cut before it.
+            let expected = match b {
+                0x00..=0x7f => 1,
+                0xc0..=0xdf => 2,
+                0xe0..=0xef => 3,
+                _ => 4,
+            };
+            return if len - i < expected { i } else { len };
+        }
+        // Continuation byte (0x80..=0xbf): keep scanning back for its lead.
+    }
+    // No lead byte within the last 3 bytes — malformed tail; don't hold it back.
+    len
+}
+
 /// Captures terminal signals the agent emits into shared cells read by the app
 /// layer (mirrors the `last_output_at` side channel). The parser fires these
 /// callbacks while processing the PTY byte stream:
@@ -484,6 +522,14 @@ impl Session {
         last_output_at: Arc<AtomicU64>,
     ) {
         let mut buf = [0u8; 4096];
+        // Bytes of a trailing, not-yet-complete UTF-8 character held back from
+        // the previous read. The agent's output is a single byte stream, but
+        // the OS read boundary (and tmux's `%output` framing) can fall in the
+        // middle of a multi-byte character. vt100 is NOT robust to a `process()`
+        // chunk that ends mid-codepoint — it can swallow a following control
+        // byte (e.g. a newline), misplacing later output — so we never hand it a
+        // truncated tail. `carry` is at most 3 bytes (a 4-byte char missing one).
+        let mut carry: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
@@ -491,16 +537,28 @@ impl Session {
                     break;
                 }
                 Ok(n) => {
-                    let data = &buf[..n];
                     last_output_at.store(now_millis(), Ordering::Relaxed);
-                    if let Ok(mut p) = parser.lock() {
-                        p.process(data);
+                    let mut data = std::mem::take(&mut carry);
+                    data.extend_from_slice(&buf[..n]);
+                    let ready = utf8_ready_prefix_len(&data);
+                    carry = data.split_off(ready);
+                    if !data.is_empty() {
+                        if let Ok(mut p) = parser.lock() {
+                            p.process(&data);
+                        }
                     }
                 }
                 Err(e) => {
                     debug!("Session reader error: {e}");
                     break;
                 }
+            }
+        }
+        // Stream ended (EOF or error): flush any leftover partial UTF-8 sequence,
+        // since no more bytes are coming to complete it.
+        if !carry.is_empty() {
+            if let Ok(mut p) = parser.lock() {
+                p.process(&carry);
             }
         }
         exited.store(true, Ordering::SeqCst);
@@ -814,6 +872,156 @@ mod tests {
         let ms = now_millis();
         // Should be after 2024-01-01 (1704067200000 ms since epoch).
         assert!(ms > 1_704_067_200_000);
+    }
+
+    #[test]
+    fn utf8_ready_prefix_passes_complete_input() {
+        assert_eq!(utf8_ready_prefix_len(b""), 0);
+        assert_eq!(utf8_ready_prefix_len(b"hello"), 5);
+        // "é" = c3 a9, complete.
+        assert_eq!(utf8_ready_prefix_len(&[b'a', 0xc3, 0xa9]), 3);
+        // "你好" complete (two 3-byte chars).
+        assert_eq!(utf8_ready_prefix_len("你好".as_bytes()), 6);
+    }
+
+    #[test]
+    fn utf8_ready_prefix_holds_back_truncated_tail() {
+        // Lone 2-byte lead → hold all of it.
+        assert_eq!(utf8_ready_prefix_len(&[b'a', 0xc3]), 1);
+        // 3-byte lead with one continuation, missing one → hold the two.
+        assert_eq!(utf8_ready_prefix_len(&[b'x', 0xe4, 0xbd]), 1);
+        // 4-byte lead alone, and with 1 and 2 continuations → all held.
+        assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0]), 1);
+        assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f]), 1);
+        assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f, 0x8e]), 1);
+        // Same 4-byte char, fully present → nothing held.
+        assert_eq!(utf8_ready_prefix_len(&[b'x', 0xf0, 0x9f, 0x8e, 0x89]), 5);
+        // The realistic read-boundary case: a complete "é" (c3 a9) followed by
+        // the lead byte of the next char → hold only that fresh lead.
+        assert_eq!(utf8_ready_prefix_len(&[0xc3, 0xa9, 0xe6]), 2);
+    }
+
+    #[test]
+    fn utf8_ready_prefix_does_not_buffer_garbage() {
+        // Continuation bytes with no lead in the last 3 → pass through (no
+        // unbounded carry).
+        assert_eq!(utf8_ready_prefix_len(&[0x80, 0x80, 0x80, 0x80]), 4);
+    }
+
+    /// Property/regression tests for the reader-loop UTF-8 carry: feeding the
+    /// vt100 parser through `utf8_ready_prefix_len`-bounded chunks must render
+    /// identically to feeding the whole stream, for any chunking — proving
+    /// thurbox's read boundaries can never glitch valid agent output. vt100 on
+    /// its own does NOT have this property (it can swallow a newline that
+    /// follows a mid-codepoint chunk boundary); the carry is what restores it.
+    mod utf8_chunking {
+        use proptest::prelude::*;
+
+        use super::utf8_ready_prefix_len;
+
+        /// vt100 screen as normalized, right-trimmed visible rows.
+        fn rows(p: &vt100::Parser) -> Vec<String> {
+            let s = p.screen();
+            let (r, c) = s.size();
+            (0..r)
+                .map(|y| {
+                    let mut t = String::new();
+                    for x in 0..c {
+                        let sym = s.cell(y, x).map(|cl| cl.contents()).unwrap_or_default();
+                        t.push_str(if sym.is_empty() { " " } else { sym });
+                    }
+                    t.trim_end().to_string()
+                })
+                .collect()
+        }
+
+        fn whole(bytes: &[u8]) -> Vec<String> {
+            let mut p = vt100::Parser::new(10, 38, 0);
+            p.process(bytes);
+            rows(&p)
+        }
+
+        /// Replays the reader-loop carry logic over `bytes` cut into `sizes`.
+        fn carry_chunked(bytes: &[u8], sizes: &[usize]) -> Vec<String> {
+            let mut p = vt100::Parser::new(10, 38, 0);
+            let mut carry: Vec<u8> = Vec::new();
+            let (mut pos, mut i) = (0usize, 0usize);
+            while pos < bytes.len() {
+                let sz = sizes.get(i % sizes.len()).copied().unwrap_or(1).max(1);
+                let end = (pos + sz).min(bytes.len());
+                let mut data = std::mem::take(&mut carry);
+                data.extend_from_slice(&bytes[pos..end]);
+                let ready = utf8_ready_prefix_len(&data);
+                carry = data.split_off(ready);
+                assert!(carry.len() <= 3, "carry must stay bounded");
+                if !data.is_empty() {
+                    p.process(&data);
+                }
+                pos = end;
+                i += 1;
+            }
+            if !carry.is_empty() {
+                p.process(&carry);
+            }
+            rows(&p)
+        }
+
+        /// The exact minimal case that exposed the vt100 mid-codepoint bug:
+        /// "f" + lead of "é" delivered in one read, then "é"-tail + "\n日本語"
+        /// in the next. Without the carry the newline is swallowed and 日本語
+        /// lands on the wrong row.
+        #[test]
+        fn regression_midcodepoint_newline_widechars() {
+            // f é \n 日本語. Chunked [2, 100] so the first read ends on "f" plus
+            // the lead byte of "é" and the rest arrives next.
+            let bytes = b"f\xc3\xa9\n\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e";
+            assert_eq!(carry_chunked(bytes, &[2, 100]), whole(bytes));
+        }
+
+        /// Strategy producing valid-UTF-8 agent output: text, CSI/OSC escapes,
+        /// wide/combining chars, newlines.
+        fn valid_utf8_output() -> impl Strategy<Value = Vec<u8>> {
+            let token = prop_oneof![
+                proptest::string::string_regex("[ -~]{0,8}")
+                    .unwrap()
+                    .prop_map(String::into_bytes),
+                (
+                    proptest::string::string_regex("[0-9;]{0,6}").unwrap(),
+                    prop::sample::select(vec![b'm', b'H', b'J', b'K', b'A', b'B']),
+                )
+                    .prop_map(|(params, fin)| {
+                        let mut v = vec![0x1b, b'['];
+                        v.extend(params.bytes());
+                        v.push(fin);
+                        v
+                    }),
+                proptest::string::string_regex("[ -~]{0,8}")
+                    .unwrap()
+                    .prop_map(|s| {
+                        let mut v = vec![0x1b, b']'];
+                        v.extend(s.bytes());
+                        v.push(0x07);
+                        v
+                    }),
+                prop::sample::select(vec!["你好", "🎉", "café", "日本語", "→★", "a\u{0301}"])
+                    .prop_map(|s| s.as_bytes().to_vec()),
+                prop::sample::select(vec![b'\n', b'\r', b'\t', 0x08]).prop_map(|b| vec![b]),
+            ];
+            prop::collection::vec(token, 0..40).prop_map(|tokens| tokens.concat())
+        }
+
+        proptest! {
+            /// For valid UTF-8, the carry makes vt100 rendering independent of how
+            /// the byte stream is chunked across reads — the core guarantee that
+            /// thurbox's transport/read boundaries never corrupt agent output.
+            #[test]
+            fn carry_makes_chunking_invariant(
+                bytes in valid_utf8_output(),
+                sizes in prop::collection::vec(1usize..40, 1..16),
+            ) {
+                prop_assert_eq!(carry_chunked(&bytes, &sizes), whole(&bytes));
+            }
+        }
     }
 
     #[test]
