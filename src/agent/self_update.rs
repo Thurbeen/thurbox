@@ -5,9 +5,11 @@
 //! [`crate::session::settings::FeatureFlags`]). It surfaces two ways, both
 //! calling [`perform_update`]:
 //!
-//! - **TUI** — a silent check on startup (`main.rs`), before the TUI takes the
-//!   terminal. A newer release is downloaded + installed in place; the new
-//!   version applies on the next launch.
+//! - **TUI** — a silent check on startup (`main::spawn_auto_update`), run on a
+//!   background thread so a slow download never blocks the first frame. A newer
+//!   release is downloaded + installed in place (atomic renames against the
+//!   install dir — the running process is untouched); the new version applies on
+//!   the next launch, and the result is surfaced as a status toast.
 //! - **CLI** — `thurbox-cli update` does the same on demand (`--force` bypasses
 //!   the up-to-date / dev-build guards).
 //!

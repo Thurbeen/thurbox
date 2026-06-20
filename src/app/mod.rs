@@ -583,6 +583,13 @@ pub struct App {
     /// agents.toml/hosts.toml reported by main), shown joined in one status
     /// toast via [`Self::report_config_warnings`].
     config_warnings: Vec<String>,
+    /// Receives the result of the silent startup auto-update, which runs on a
+    /// background thread so a slow download never blocks the TUI from starting
+    /// (`[features] auto_update`; see `main::spawn_auto_update`). `None` when the
+    /// feature is off / this is a dev build (no thread spawned). Drained each
+    /// tick by [`Self::poll_auto_update`]; sends one "Updated …" message only
+    /// when binaries were actually replaced.
+    auto_update_rx: Option<mpsc::Receiver<String>>,
     /// Last-seen mtimes of the live-reloadable config files (see
     /// [`Self::poll_config_reload`]).
     config_reload: config_reload::ConfigReloadState,
@@ -758,6 +765,7 @@ impl App {
             usage_tx,
             usage_rx,
             config_warnings: Vec::new(),
+            auto_update_rx: None,
             config_reload: config_reload::ConfigReloadState {
                 agents_mtime: config_reload::agents_mtime(),
                 keybindings_mtime: config_reload::keybindings_mtime(),
@@ -784,6 +792,34 @@ impl App {
         self.config_warnings.extend(warnings);
         let text = format!("Config: {}", self.config_warnings.join(" · "));
         self.set_status(StatusLevel::Error, text);
+    }
+
+    /// Attach the receiver for the background startup auto-update (see
+    /// `main::spawn_auto_update`). The update runs off-thread so its download
+    /// never delays the first frame; the result is drained in [`Self::tick`].
+    pub fn set_auto_update_receiver(&mut self, rx: mpsc::Receiver<String>) {
+        self.auto_update_rx = Some(rx);
+    }
+
+    /// Drain the background auto-update result. The thread sends at most one
+    /// message — only when binaries were actually replaced — so we surface it as
+    /// an info toast and drop the receiver. A disconnected channel (the thread
+    /// finished with nothing to report, or failed) also drops the receiver so we
+    /// stop polling.
+    fn poll_auto_update(&mut self) {
+        let Some(rx) = &self.auto_update_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(msg) => {
+                self.set_status(StatusLevel::Info, msg);
+                self.auto_update_rx = None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.auto_update_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
     }
 
     /// Reload `agents.toml` / `keybindings.json` in place when their mtime
@@ -3061,6 +3097,8 @@ impl App {
         self.tick_background_refreshes();
 
         self.tick_version_check();
+
+        self.poll_auto_update();
     }
 
     /// Snapshot of the deterministic render/tick performance counters. Used by
@@ -10051,6 +10089,60 @@ mod tests {
         assert!(app.worktree_sync.in_progress);
         assert!(app.worktree_sync.rx.is_some());
         assert_eq!(app.worktree_sync.completed.len(), 1);
+    }
+
+    #[test]
+    fn poll_auto_update_surfaces_message_and_drops_receiver() {
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        let (tx, rx) = mpsc::channel();
+        tx.send("Updated to v9.9.9 — restart thurbox to apply.".to_string())
+            .unwrap();
+        app.set_auto_update_receiver(rx);
+
+        app.poll_auto_update();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, StatusLevel::Info);
+        assert!(msg.text.contains("v9.9.9"), "got: {}", msg.text);
+        // One-shot: the receiver is dropped so we stop polling.
+        assert!(app.auto_update_rx.is_none());
+    }
+
+    #[test]
+    fn poll_auto_update_disconnected_drops_receiver() {
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        let (tx, rx) = mpsc::channel::<String>();
+        drop(tx); // worker finished with nothing to report (up-to-date / failed)
+        app.set_auto_update_receiver(rx);
+
+        app.poll_auto_update();
+
+        // No toast, and the dead channel is dropped so we stop polling it.
+        assert!(app.status_message.is_none());
+        assert!(app.auto_update_rx.is_none());
+    }
+
+    #[test]
+    fn poll_auto_update_empty_keeps_receiver() {
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        let (tx, rx) = mpsc::channel::<String>();
+        app.set_auto_update_receiver(rx);
+
+        app.poll_auto_update();
+
+        // Worker still running (sender alive, nothing sent yet): keep polling.
+        assert!(app.status_message.is_none());
+        assert!(app.auto_update_rx.is_some());
+        drop(tx);
+    }
+
+    #[test]
+    fn poll_auto_update_without_receiver_is_noop() {
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        // Feature off / dev build: no thread spawned, so no receiver attached.
+        assert!(app.auto_update_rx.is_none());
+        app.poll_auto_update();
+        assert!(app.status_message.is_none());
     }
 
     #[test]

@@ -99,14 +99,13 @@ async fn main() -> Result<()> {
     }
     config_warnings.extend(heal_messages);
 
-    // Silent auto-update (opt-in via [features] auto_update). Runs here — after
-    // config load, before the TUI takes the terminal — so download output can't
-    // corrupt the alternate screen and the self-replace can't race the render.
-    if let Some(msg) = maybe_auto_update() {
-        tracing::info!("{msg}");
-        eprintln!("{msg}");
-        config_warnings.push(msg);
-    }
+    // Silent auto-update (opt-in via [features] auto_update). Kicked off on a
+    // background thread *before* the TUI starts so a slow download never blocks
+    // the first frame — the result is surfaced as a status toast once it lands
+    // (App::poll_auto_update). The self-replace only swaps the on-disk binaries
+    // (atomic renames); the running process is untouched, so it never races the
+    // render, and the new version applies on the next launch.
+    let auto_update_rx = spawn_auto_update();
 
     let mut terminal = ratatui::init();
     enable_terminal_features()?;
@@ -115,6 +114,9 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(size.height, size.width, backends, agents, db);
     app.set_hosts(hosts);
+    if let Some(rx) = auto_update_rx {
+        app.set_auto_update_receiver(rx);
+    }
     // Surface agents.toml/hosts.toml load problems in the status bar — the
     // tracing::warn above only reaches the log file the TUI hides.
     app.report_config_warnings(config_warnings);
@@ -262,9 +264,16 @@ fn arm_automation_heartbeat() {
 }
 
 /// Silently auto-update the installed binaries when `[features] auto_update` is
-/// on and this is not a dev build. Best-effort: any failure is logged and
-/// startup continues on the current binary. Returns a one-line "updated" message
-/// to surface in the status bar, or `None`.
+/// on and this is not a dev build, **on a background thread** so the network
+/// fetch + download never delays TUI startup. Returns the receiving end of a
+/// one-shot channel that yields a "Updated …" message when binaries were
+/// actually replaced (drained by `App::poll_auto_update`), or `None` when no
+/// thread was spawned (feature off / dev build). Best-effort: any failure is
+/// logged and the TUI keeps running on the current binary.
+///
+/// The on-disk swap is atomic renames against the install dir; the running
+/// process keeps its already-loaded image, so doing this concurrently with the
+/// render loop is safe — the new version applies on the next launch.
 ///
 /// Deliberately **not** gated on the version-check cache staleness: that cache is
 /// shared with the `version_check` badge, which rewrites it (resetting the 24h
@@ -273,7 +282,7 @@ fn arm_automation_heartbeat() {
 /// never ran. Instead we fetch on every launch (one cheap network call when the
 /// feature is opted into); `perform_update(false)` short-circuits to `UpToDate`
 /// after that single fetch when already current.
-fn maybe_auto_update() -> Option<String> {
+fn spawn_auto_update() -> Option<std::sync::mpsc::Receiver<String>> {
     let features = &thurbox::session::settings::global().features;
     if !features.auto_update {
         return None;
@@ -281,22 +290,29 @@ fn maybe_auto_update() -> Option<String> {
     if thurbox::agent::extension_config::is_dev_build() {
         return None;
     }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || run_auto_update(&tx));
+    Some(rx)
+}
+
+/// The background auto-update worker: download + install the latest release,
+/// freshen the version-check cache, and report an "Updated …" message over `tx`
+/// only when binaries were actually replaced. Best-effort — failures are logged
+/// and swallowed. A send error means the TUI already exited, so there is nothing
+/// to surface; it is ignored.
+fn run_auto_update(tx: &std::sync::mpsc::Sender<String>) {
     match thurbox::agent::self_update::perform_update(false) {
         Ok(outcome) => {
             // The update ran, so freshen the version-check cache too — the badge
             // stays accurate and reflects the newest release on the next launch.
             let _ = thurbox::agent::version_check::refresh_cache();
-            match outcome {
-                thurbox::agent::self_update::UpdateOutcome::Updated { to, .. } => {
-                    Some(format!("Updated to v{to} — restart thurbox to apply."))
-                }
-                _ => None,
+            if let thurbox::agent::self_update::UpdateOutcome::Updated { to, .. } = outcome {
+                let msg = format!("Updated to v{to} — restart thurbox to apply.");
+                tracing::info!("{msg}");
+                let _ = tx.send(msg);
             }
         }
-        Err(e) => {
-            tracing::warn!("auto-update failed: {e}");
-            None
-        }
+        Err(e) => tracing::warn!("auto-update failed: {e}"),
     }
 }
 
