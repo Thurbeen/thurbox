@@ -9012,7 +9012,10 @@ mod tests {
         assert_eq!(autos.len(), 1, "automation should have been created");
         match &autos[0].action {
             AutomationAction::Spawn { repo_path, .. } => {
-                let home = std::env::var("HOME").expect("HOME set in tests");
+                // `~` expands via the platform home dir: `$HOME` on Unix,
+                // `%USERPROFILE%` on Windows (see `paths::expand_tilde`).
+                let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+                let home = std::env::var(home_var).expect("home var set in tests");
                 assert_eq!(
                     repo_path,
                     &std::path::PathBuf::from(home).join("Repositories/thurbox"),

@@ -1386,6 +1386,13 @@ prompt = "tick"
     }
 
     #[test]
+    // Real-spawns a session (ensure_extension → spawn), so it needs a live
+    // multiplexer. The GH windows-latest runner has no psmux installed; this
+    // real-spawn path is covered by the dockur VM suite instead.
+    #[cfg_attr(
+        windows,
+        ignore = "needs a multiplexer; not installed on the GH windows runner"
+    )]
     fn reinstall_tears_down_then_installs_fresh() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
