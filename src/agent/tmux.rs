@@ -1460,6 +1460,27 @@ pub fn kill_window(session_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the agent window `tb-<session_name>` and return the OS pid of its
+/// pane's foreground process (`#{pane_pid}`), or `None` when the window is gone
+/// or the pid can't be read.
+///
+/// One-shot on the local socket. Used by the force-teardown path to reap a live
+/// pane process **before** removing its cwd on Windows, where a directory that
+/// is a live process's cwd cannot be removed (`os error 32`); Unix permits it,
+/// so callers only need the returned pid on Windows.
+pub fn window_pane_pid(session_name: &str) -> Result<Option<u32>> {
+    let target = window_target(session_name);
+    let output = local_mux_command(&["display-message", "-p", "-t", &target, "#{pane_pid}"])
+        .output()
+        .context("Failed to run tmux display-message for pane pid")?;
+    if !output.status.success() {
+        // No such window (already torn down) — not an error for the caller.
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.trim().parse::<u32>().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Read;
