@@ -49,6 +49,15 @@ const STATUS_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// If no output for this many milliseconds, consider session "Waiting".
 const ACTIVITY_TIMEOUT_MS: u64 = 1000;
 
+/// Upper bound between forced repaints when nothing else marked the UI dirty.
+/// The render loop only paints when state changed (a key, agent output, a
+/// background poll landing) — this floor guarantees time-driven UI that nothing
+/// explicitly flags (the live clock/metrics, cursor blink, a session going
+/// quiet `Busy → Waiting`, an expiring status toast) still refreshes promptly.
+/// 250 ms ≈ 4 fps when idle, vs. the old unconditional ~100 fps. See
+/// `docs/PERFORMANCE.md`.
+const FORCE_REDRAW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Prompt sent to Claude sessions when a worktree rebase has conflicts.
 const SYNC_CONFLICT_PROMPT: &str = "Please sync this worktree with main. Run: git fetch origin && git rebase origin/main -- if there are conflicts, resolve them and continue the rebase with git rebase --continue.";
 
@@ -582,6 +591,23 @@ pub struct App {
     /// starts. The wrapper tracks per-session prior status + last-fired-at so
     /// dedup and "only on transition" logic live next to the sender.
     notification_state: Option<NotificationState>,
+    /// Redraw-throttling dirty flag. The render loop paints only when this is
+    /// set (or `FORCE_REDRAW_INTERVAL` elapsed). Starts `true` so the first
+    /// frame always paints. Set by [`Self::request_redraw`] from `update`,
+    /// state-changing tick steps, and the agent-output detector.
+    needs_redraw: bool,
+    /// When the last frame was painted, for the forced-redraw floor.
+    last_draw_at: std::time::Instant,
+    /// Cheap rolling signature of agent output across all sessions (sum of each
+    /// session's monotonic `last_output_at`). A change means new output arrived
+    /// — detected without locking any vt100 parser. See
+    /// [`Self::detect_output_redraw`].
+    last_output_gen: u64,
+    /// Cached session-list ordering (`(content-signature, order)`). The order
+    /// depends only on the session set's grouping/nesting inputs, so it is
+    /// reused across frames until [`Self::session_order_signature`] changes,
+    /// skipping the per-frame grouping/sort/nest work. See `render_left_panel`.
+    cached_session_order: Option<(u64, crate::ui::project_list::SessionOrder)>,
 }
 
 const EDITOR_NOT_CONFIGURED: &str =
@@ -738,6 +764,10 @@ impl App {
                 settings_mtime: config_reload::settings_mtime(),
             },
             notification_state: build_notification_state(),
+            needs_redraw: true,
+            last_draw_at: std::time::Instant::now(),
+            last_output_gen: 0,
+            cached_session_order: None,
         };
         app.report_config_warnings(config_warnings);
         app
@@ -1561,6 +1591,11 @@ impl App {
     }
 
     pub fn update(&mut self, msg: AppMessage) {
+        // Any input event is a potential visual change (a key, a mouse move
+        // that re-highlights a row, a paste). Mark the UI dirty so the render
+        // loop paints this iteration — keypress-to-screen stays immediate.
+        self.request_redraw();
+
         // `[features] mouse = false`: capture is never enabled, so mouse
         // events shouldn't arrive — drop any that do (defense in depth, and
         // it makes the flag authoritative in tests).
@@ -3028,6 +3063,76 @@ impl App {
         self.tick_version_check();
     }
 
+    /// Snapshot of the deterministic render/tick performance counters. Used by
+    /// the perf regression tests. See [`metrics_state::PerfCounters`].
+    #[cfg(test)]
+    pub(crate) fn perf_counters(&self) -> metrics_state::PerfCounters {
+        self.metrics.perf
+    }
+
+    /// Mark the UI dirty so the render loop paints on its next iteration.
+    /// Cheap and idempotent; over-marking only costs an extra (correct) frame.
+    /// Internal-only — the loop in `main` drives painting via [`Self::should_redraw`].
+    pub(crate) fn request_redraw(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    /// Whether the render loop should paint a frame this iteration: either state
+    /// changed since the last paint, or the `FORCE_REDRAW_INTERVAL` floor
+    /// elapsed (so time-driven UI — clock, metrics, cursor blink, quiet-session
+    /// status transitions — still refreshes without an explicit dirty flag).
+    pub fn should_redraw(&self) -> bool {
+        self.needs_redraw || self.last_draw_at.elapsed() >= FORCE_REDRAW_INTERVAL
+    }
+
+    /// Record that a frame was just painted: clear the dirty flag, reset the
+    /// forced-redraw timer, and count the requested redraw.
+    pub fn mark_redrawn(&mut self) {
+        self.needs_redraw = false;
+        self.last_draw_at = std::time::Instant::now();
+        self.metrics.bump(|p| &mut p.redraws_requested);
+    }
+
+    /// Record that a loop iteration skipped the paint because nothing changed.
+    pub fn note_redraw_skipped(&mut self) {
+        self.metrics.bump(|p| &mut p.redraws_skipped);
+    }
+
+    /// Detect new agent output since the last check and mark the UI dirty if so.
+    /// Reads each session's monotonic `last_output_at` atomic (no parser lock),
+    /// summing them into a rolling signature — a change means at least one
+    /// session produced output, so the terminal needs repainting.
+    pub fn detect_output_redraw(&mut self) {
+        let output_gen = self
+            .sessions
+            .iter()
+            .fold(0u64, |acc, s| acc.wrapping_add(s.last_output_at()));
+        if output_gen != self.last_output_gen {
+            self.last_output_gen = output_gen;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Content signature of the inputs that determine the session-list ordering.
+    /// [`crate::ui::project_list::compute_session_order`] is a pure function of
+    /// exactly these per-session fields (grouping by `repo_display_names`,
+    /// sorting by `display_order`, nesting by `id`/`parent_session_id`) plus the
+    /// session count/order — never status — so an unchanged signature means the
+    /// cached order is still valid. Cheaper than recomputing the order
+    /// (no grouping HashMap, sorts, nest recursion, or label allocations).
+    fn session_order_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.sessions.len().hash(&mut h);
+        for s in &self.sessions {
+            s.info.id.hash(&mut h);
+            s.info.display_order.hash(&mut h);
+            s.info.parent_session_id.hash(&mut h);
+            s.info.repo_display_names.hash(&mut h);
+        }
+        h.finish()
+    }
+
     /// Drive the opt-in GitHub update check. Off the render path: on the first
     /// tick (when the flag is on and the on-disk cache is stale) it fires a
     /// single background network refresh; the result only ever lands by
@@ -3121,7 +3226,12 @@ impl App {
 
     /// Recompute each session's status/activity/notification for this tick.
     fn refresh_session_statuses(&mut self) {
+        self.metrics.bump(|p| &mut p.status_refreshes);
         let active_index = self.active_index;
+        // Track whether any visible field changed so a quiet `Busy → Waiting`
+        // transition (no new output, so the output detector won't catch it)
+        // still repaints promptly instead of waiting for the forced-redraw floor.
+        let mut changed = false;
         for (idx, session) in self.sessions.iter_mut().enumerate() {
             // The active session is being watched, so acknowledge any pending
             // attention signal (keeps it from flagging itself while focused).
@@ -3130,7 +3240,7 @@ impl App {
             }
             let needs_attention = session.needs_attention();
 
-            session.info.status = if session.has_exited() {
+            let new_status = if session.has_exited() {
                 SessionStatus::Idle
             } else if session.millis_since_last_output() <= ACTIVITY_TIMEOUT_MS {
                 // Actively producing output → working, regardless of past signals.
@@ -3143,13 +3253,26 @@ impl App {
             };
 
             // Live activity text from the agent-emitted OSC terminal title.
-            session.info.agent_activity = session.agent_title();
+            let new_activity = session.agent_title();
             // Retain the agent's latest pushed notification (OSC 9/777) so the
             // info panel can show it as a persistent "last signal", not only
             // while the session is in the attention state.
-            session.info.notification = session.notification();
+            let new_notification = session.notification();
+
+            if session.info.status != new_status
+                || session.info.agent_activity != new_activity
+                || session.info.notification != new_notification
+            {
+                changed = true;
+            }
+            session.info.status = new_status;
+            session.info.agent_activity = new_activity;
+            session.info.notification = new_notification;
         }
 
+        if changed {
+            self.request_redraw();
+        }
         self.dispatch_status_notifications();
     }
 

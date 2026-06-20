@@ -26,6 +26,7 @@ use crate::ui::scrollbar::ScrollbarGeom;
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
+        self.metrics.bump(|p| &mut p.frames_rendered);
         // Rebuilt fresh each frame: every scrollbar and clickable row drawn
         // below records its geometry + target here for the mouse handlers to
         // hit-test.
@@ -130,6 +131,25 @@ impl App {
         let Some(left_area) = left_area else {
             return;
         };
+
+        // Rebuild the cached ordering only when its inputs changed (content
+        // signature). The order is status-independent, so most frames — including
+        // every frame while an agent streams output — reuse it and skip the
+        // grouping/sort/nest work. The signature borrows all of `self`, so
+        // compute it (and refresh the cache) before taking the field borrows
+        // below.
+        let sig = self.session_order_signature();
+        let stale = self
+            .cached_session_order
+            .as_ref()
+            .map_or(true, |(cached, _)| *cached != sig);
+        if stale {
+            self.metrics.bump(|p| &mut p.ordered_sessions_rebuilds);
+            let infos: Vec<&SessionInfo> = self.sessions.iter().map(|s| &s.info).collect();
+            let order = project_list::compute_session_order(&infos);
+            self.cached_session_order = Some((sig, order));
+        }
+
         // Build flat session list: all sessions, with tag names from projects
         let all_sessions: Vec<&SessionInfo> = self.sessions.iter().map(|s| &s.info).collect();
 
@@ -147,11 +167,17 @@ impl App {
             None => Vec::new(),
         };
 
-        // Order the list by repo group + activity. The parallel arrays
-        // (match_positions) and active_index are remapped so they stay
-        // aligned with the rendered order.
-        let ordered = project_list::OrderedSessions::new(
+        // Remap the cached order onto the current refs / match positions /
+        // active_index (these vary independently of the order, so the remap
+        // always runs — but it's a cheap O(n) index map, no grouping work).
+        let order = &self
+            .cached_session_order
+            .as_ref()
+            .expect("cache populated above")
+            .1;
+        let ordered = project_list::OrderedSessions::from_order(
             &all_sessions,
+            order,
             &global_match_positions,
             self.active_index,
         );
@@ -209,6 +235,7 @@ impl App {
             return;
         };
         let now = crate::sync::current_time_millis();
+        self.metrics.bump(|p| &mut p.automation_entries_built);
         let search = self.global_search_query();
         let entries: Vec<automations_panel::AutomationPaneEntry> = self
             .automation_ui
@@ -467,6 +494,7 @@ impl App {
 
         // Scope the immutable `session` borrow so it ends before the
         // `&mut self` record_scrollbar call below.
+        let mut locked_parser = false;
         let geom = {
             let Some(session) = self.sessions.get(self.active_index) else {
                 terminal_view::render_empty_terminal(frame, terminal);
@@ -479,6 +507,7 @@ impl App {
             }
             .unwrap_or(&session.parser);
             if let Ok(mut parser) = parser_arc.lock() {
+                locked_parser = true;
                 terminal_view::render_terminal(
                     frame,
                     terminal,
@@ -491,6 +520,11 @@ impl App {
                 None
             }
         };
+        if locked_parser {
+            // One parser lock per terminal render (the O(1) scrollback read
+            // rides along). Redraw throttling, not caching, bounds the rate.
+            self.metrics.bump(|p| &mut p.parser_locks_render);
+        }
         self.record_scrollbar(geom, ScrollTarget::Terminal);
     }
 

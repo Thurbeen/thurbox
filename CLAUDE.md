@@ -58,6 +58,27 @@ The TUI has two layers of end-to-end coverage:
   `TMUX_TMPDIR`, mirroring `scripts/demo/record.sh`), drives it with
   `tmux send-keys`, and asserts on captured frames (boot → F1 → theme → quit).
   Gated behind the `tui-smoke` CI job (needs tmux).
+- **Performance counter tests** (`perf_*` in `src/app/acceptance.rs`). Assert on
+  `App::perf_counters()` — wall-clock-free `u64` counters bumped at the
+  render/tick hot paths (`MetricsState::perf`) — to gate the perf optimizations
+  without flaky timing: e.g. idle iterations skip the paint, the session order
+  is rebuilt only when its inputs change. Run with `cargo nextest run -E
+  'test(perf_)'`. See `docs/PERFORMANCE.md`.
+
+## Performance (render loop)
+
+The render loop is **demand-driven** (`run_loop` in `src/main.rs`): it paints a
+frame only when the UI is dirty (`App::needs_redraw`) or a 250 ms forced-redraw
+floor (`FORCE_REDRAW_INTERVAL`) elapsed — not on every ~10 ms iteration like
+before. `App::update` marks dirty on any input; `App::detect_output_redraw`
+marks dirty on new agent output (lock-free, via each session's `last_output_at`
+atomic); `refresh_session_statuses` marks dirty on a status change; the floor
+covers time-driven UI (clock/metrics/cursor blink). Idle paints drop ~100 fps →
+~4 fps with input/output latency unchanged. The session-list ordering is cached
+keyed by a content signature (`App::session_order_signature`), rebuilt only when
+its grouping/nesting inputs change. Launch with `THURBOX_PERF_LOG=1` to log one
+`first_frame_ms` startup line to `thurbox.log`. Full rationale +
+intentionally-skipped optimizations: `docs/PERFORMANCE.md`.
 
 ## Installation Script
 
@@ -1374,6 +1395,8 @@ For rationale behind decisions, see `docs/`:
 - `docs/ARCHITECTURE.md` — Architectural decisions with rationale
 - `docs/FEATURES.md` — Feature-level design choices
 - `docs/CONFIG.md` — Every config file/env var/DB setting in one place
+- `docs/PERFORMANCE.md` — Render/tick performance: demand-driven redraw,
+  perf counters, the session-order cache, and how to measure
 
 **Rule**: If a code change invalidates or extends a documented
 decision, update the relevant doc in the same PR.

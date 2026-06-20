@@ -859,3 +859,177 @@ async fn ctrl_t_opens_shell_pane_on_spawnable_backend() {
         "the active session now shows its shell view"
     );
 }
+
+// ── Performance counters: deterministic render-path proxies ───────────────────
+//
+// These assert on `App::perf_counters()` — wall-clock-free counts — so they
+// gate the redraw-throttling and per-frame caching optimizations without timing
+// flakiness. The acceptance harness drives `view()` directly (it skips
+// `tick()`), so only the render-path counters are exercised here; the
+// tick-driven counters (`status_refreshes`) and the redraw-skip accounting live
+// in the `#[tokio::test]` units in `super::tests`.
+
+#[test]
+fn perf_render_counter_tracks_painted_frames() {
+    let mut h = Harness::standard(2);
+    assert_eq!(h.app.perf_counters().frames_rendered, 0);
+    h.render();
+    h.render();
+    h.render();
+    assert_eq!(
+        h.app.perf_counters().frames_rendered,
+        3,
+        "each view() paint bumps frames_rendered exactly once"
+    );
+}
+
+#[test]
+fn perf_terminal_render_locks_parser_once_per_frame() {
+    // With an active session, the central pane locks its vt100 parser once per
+    // painted frame (the O(1) scrollback read rides along, so it is not tracked
+    // separately). Redraw throttling, not caching, bounds how often this runs.
+    let mut h = Harness::standard(1);
+    h.render();
+    h.render();
+    assert_eq!(
+        h.app.perf_counters().parser_locks_render,
+        2,
+        "one parser lock per terminal frame"
+    );
+}
+
+#[test]
+fn perf_session_order_cached_across_idle_frames() {
+    // The session-list ordering is status-independent, so once built it is
+    // reused across frames whose grouping/nesting inputs didn't change. Three
+    // paints with no session mutation must rebuild the order exactly once.
+    let mut h = Harness::standard(3);
+    h.render();
+    h.render();
+    h.render();
+    assert_eq!(
+        h.app.perf_counters().ordered_sessions_rebuilds,
+        1,
+        "the session order is cached: only the first frame rebuilds it"
+    );
+}
+
+#[test]
+fn perf_session_order_rebuilds_when_sessions_change() {
+    // Adding a session changes the order signature, so the cache is invalidated
+    // and the order rebuilt — exactly once for the change.
+    let mut h = Harness::standard(2);
+    h.render(); // builds the order (rebuild #1)
+    h.render(); // cache hit, no rebuild
+    assert_eq!(h.app.perf_counters().ordered_sessions_rebuilds, 1);
+
+    // Mutate the session set, then repaint.
+    let backend: Arc<dyn SessionBackend> = Arc::new(FakeBackend::stub());
+    let provider: Arc<dyn AgentProvider> = Arc::new(GenericProvider::new(
+        crate::agent::agent_config::builtin_registry()
+            .default_agent()
+            .unwrap()
+            .clone(),
+    ));
+    h.app
+        .sessions
+        .push(Session::stub("session-new", &backend, &provider));
+    h.render(); // signature changed → rebuild #2
+    h.render(); // cache hit again
+    assert_eq!(
+        h.app.perf_counters().ordered_sessions_rebuilds,
+        2,
+        "a session-set change invalidates the cache exactly once"
+    );
+}
+
+#[test]
+fn perf_status_change_keeps_order_cache() {
+    // The order is status-independent (ADR-P3): a session changing status must
+    // NOT invalidate the cache — only grouping/ordering/nesting inputs do. This
+    // pins the signature's field set; adding `status` to it would fail here.
+    let mut h = Harness::standard(2);
+    h.render(); // rebuild #1
+    h.render(); // cache hit
+    assert_eq!(h.app.perf_counters().ordered_sessions_rebuilds, 1);
+
+    h.app.sessions[0].info.status = SessionStatus::Attention;
+    h.render(); // status changed, but order inputs did not → still a cache hit
+    assert_eq!(
+        h.app.perf_counters().ordered_sessions_rebuilds,
+        1,
+        "a status change must not rebuild the (status-independent) order"
+    );
+}
+
+// ── Redraw throttling: the dirty-flag decision the render loop gates on ───────
+
+#[test]
+fn perf_first_frame_is_always_dirty() {
+    // `needs_redraw` starts true so the very first loop iteration paints (the
+    // smoke test and a real launch both rely on this).
+    let h = Harness::standard(1);
+    assert!(h.app.should_redraw(), "a freshly built App must paint once");
+}
+
+#[test]
+fn perf_clean_state_skips_redraw() {
+    // After a paint with nothing changed, the loop skips the (expensive) draw.
+    let mut h = Harness::standard(1);
+    h.app.mark_redrawn();
+    assert!(
+        !h.app.should_redraw(),
+        "no input/output/forced-floor → no redraw"
+    );
+}
+
+#[test]
+fn perf_input_requests_redraw() {
+    // Any key event re-dirties the UI so keypress-to-screen stays immediate.
+    let mut h = Harness::standard(1);
+    h.app.mark_redrawn();
+    assert!(!h.app.should_redraw());
+    h.ctrl('j'); // NextSession — goes through update()
+    assert!(
+        h.app.should_redraw(),
+        "input must mark the UI dirty for the next frame"
+    );
+}
+
+#[test]
+fn perf_no_new_output_does_not_request_redraw() {
+    // The lock-free output detector must not false-positive: with no reader
+    // thread producing output, a second poll sees an unchanged signature and
+    // leaves the UI clean.
+    let mut h = Harness::standard(2);
+    h.app.detect_output_redraw(); // prime the output-generation baseline
+    h.app.mark_redrawn(); // clear any dirty from the first observation
+    h.app.detect_output_redraw(); // no new output
+    assert!(
+        !h.app.should_redraw(),
+        "unchanged output signature must not trigger a redraw"
+    );
+}
+
+#[test]
+fn perf_idle_iterations_skip_the_paint() {
+    // Mimic the render loop's gate over several idle iterations (well within the
+    // forced-redraw floor): the first paints, the rest are skipped.
+    let mut h = Harness::standard(2);
+    h.app.detect_output_redraw(); // prime output baseline
+    let mut requested = 0u64;
+    let mut skipped = 0u64;
+    for _ in 0..5 {
+        if h.app.should_redraw() {
+            h.app.mark_redrawn();
+            requested += 1;
+        } else {
+            h.app.note_redraw_skipped();
+            skipped += 1;
+        }
+        h.app.detect_output_redraw(); // no new output between iterations
+    }
+    assert_eq!(requested, 1, "only the initial dirty frame paints");
+    assert_eq!(skipped, 4, "idle iterations skip the expensive draw");
+    assert_eq!(h.app.perf_counters().redraws_skipped, 4);
+}

@@ -188,6 +188,42 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+  # Informational only — tracks the release binary size so growth is visible in
+  # the PR. Deliberately NOT in `all-checks.needs`, so it never blocks a merge.
+  # See docs/PERFORMANCE.md (memory / binary size).
+  binary-size:
+    name: Binary Size
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build release binaries
+        run: cargo build --release --bins
+      - name: Record binary sizes
+        run: |
+          {
+            echo "### Release binary sizes"
+            echo ""
+            echo "| Binary | Size |"
+            echo "| ------ | ---- |"
+            for bin in thurbox thurbox-cli; do
+              path="target/release/$bin"
+              [ -f "$path" ] || continue
+              size=$(du -h "$path" | cut -f1)
+              bytes=$(stat -c%s "$path")
+              echo "| \`$bin\` | $size ($bytes bytes) |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload binaries as artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-binaries
+          path: |
+            target/release/thurbox
+            target/release/thurbox-cli
+          if-no-files-found: warn
+
   all-checks:
     name: All Checks
     if: always()

@@ -609,6 +609,15 @@ impl Session {
         now_millis().saturating_sub(self.last_output_at.load(Ordering::Relaxed))
     }
 
+    /// Raw monotonic timestamp (epoch millis) of the session's last output.
+    /// Monotonic non-decreasing — the reader thread only ever stores `now`.
+    /// Used by the render loop's cheap output-change detector
+    /// ([`crate::app::App::detect_output_redraw`]) so it can spot new output
+    /// without locking the vt100 parser.
+    pub fn last_output_at(&self) -> u64 {
+        self.last_output_at.load(Ordering::Relaxed)
+    }
+
     /// Latest OSC window title the agent emitted, if any (live activity text).
     pub fn agent_title(&self) -> Option<String> {
         self.last_title.lock().ok().and_then(|t| t.clone())

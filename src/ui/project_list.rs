@@ -453,25 +453,42 @@ impl<'a> OrderedSessions<'a> {
         match_positions: &[Option<SessionMatch>],
         active_index: usize,
     ) -> Self {
-        let SessionOrder {
-            order,
-            headers,
-            depths,
-        } = compute_session_order(sessions);
+        let order = compute_session_order(sessions);
+        Self::from_order(sessions, &order, match_positions, active_index)
+    }
 
-        let ordered_sessions = order.iter().map(|&i| sessions[i]).collect();
+    /// As [`Self::new`], but reuses a previously computed [`SessionOrder`]
+    /// instead of recomputing it. The order is a pure function of the session
+    /// set's grouping/nesting inputs (`repo_display_names`, `display_order`,
+    /// `id`, `parent_session_id`) — never status — so the caller can cache it
+    /// keyed by a content signature and skip the grouping/sort/nest work on
+    /// frames where none of those changed (see `App::render_left_panel`). The
+    /// per-frame remap of refs / match positions / `active_index` still runs,
+    /// since those vary independently of the order.
+    pub fn from_order(
+        sessions: &[&'a SessionInfo],
+        order: &SessionOrder,
+        match_positions: &[Option<SessionMatch>],
+        active_index: usize,
+    ) -> Self {
+        let ordered_sessions = order.order.iter().map(|&i| sessions[i]).collect();
         let ordered_matches = order
+            .order
             .iter()
             .map(|&i| match_positions.get(i).cloned().flatten())
             .collect();
-        let new_active = order.iter().position(|&i| i == active_index).unwrap_or(0);
+        let new_active = order
+            .order
+            .iter()
+            .position(|&i| i == active_index)
+            .unwrap_or(0);
 
         Self {
             sessions: ordered_sessions,
             match_positions: ordered_matches,
             active_index: new_active,
-            headers,
-            depths,
+            headers: order.headers.clone(),
+            depths: order.depths.clone(),
         }
     }
 }

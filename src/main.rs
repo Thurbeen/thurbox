@@ -51,6 +51,11 @@ fn pop_keyboard_enhancement() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Process start, for the opt-in time-to-first-frame measurement (logged
+    // once by `run_loop` when `THURBOX_PERF_LOG` is set). Captured first so it
+    // covers config load, DB open, and session restore.
+    let process_start = std::time::Instant::now();
+
     // Set up panic hook that restores terminal before printing the panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -121,7 +126,7 @@ async fn main() -> Result<()> {
 
     arm_automation_heartbeat();
 
-    let res = run_loop(&mut terminal, &mut app).await;
+    let res = run_loop(&mut terminal, &mut app, process_start).await;
 
     app.shutdown();
     pop_keyboard_enhancement();
@@ -276,15 +281,43 @@ fn maybe_auto_update() -> Option<String> {
     }
 }
 
-async fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
+async fn run_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    process_start: std::time::Instant,
+) -> Result<()> {
+    // Opt-in (THURBOX_PERF_LOG) time-to-first-frame measurement: logged once,
+    // right after the first paint, so it never affects normal runs or the smoke
+    // test. Read `~/.local/share/thurbox/thurbox.log` for the `first_frame_ms`
+    // line. See docs/PERFORMANCE.md.
+    let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
+    let mut first_frame_logged = false;
+
     loop {
-        terminal.draw(|f| app.view(f))?;
+        // Redraw throttling: paint only when state changed since the last frame
+        // or the forced-redraw floor elapsed. The loop still spins every ≤10ms
+        // (cheap: poll + output check + tick), but the expensive layout/vt100
+        // render is skipped when idle — see App::should_redraw / docs/PERFORMANCE.md.
+        if app.should_redraw() {
+            terminal.draw(|f| app.view(f))?;
+            app.mark_redrawn();
+
+            if perf_log && !first_frame_logged {
+                tracing::info!(first_frame_ms = process_start.elapsed().as_millis() as u64);
+                first_frame_logged = true;
+            }
+        } else {
+            app.note_redraw_skipped();
+        }
 
         if event::poll(Duration::from_millis(10))? {
             if let Some(msg) = event_to_message(event::read()?) {
-                app.update(msg);
+                app.update(msg); // marks the UI dirty
             }
         }
+
+        // Cheap, lock-free check for new agent output (marks dirty on change).
+        app.detect_output_redraw();
 
         app.tick();
 

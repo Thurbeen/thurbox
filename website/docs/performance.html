@@ -1,0 +1,157 @@
+---
+layout: docs.njk
+title: 'Performance — Thurbox Docs'
+description: 'Thurbox performance: demand-driven rendering, deterministic perf counters, caching, and measuring startup time, CPU, and binary size.'
+currentPage: 'performance'
+breadcrumb: 'Performance'
+onThisPage:
+  - { id: 'rendering', label: 'Demand-Driven Rendering' }
+  - { id: 'counters', label: 'Perf Counters' }
+  - { id: 'caching', label: 'Session-Order Cache' }
+  - { id: 'not-optimized', label: 'Deliberately Not Optimized' }
+  - { id: 'measuring', label: 'Measuring Performance' }
+---
+<h1>Performance</h1>
+<p>
+  How thurbox stays responsive and light, across four dimensions: input latency, runtime CPU /
+  render cost, startup time, and memory / binary size. The guiding principle is
+  <strong>measure first</strong> &mdash; every optimization is backed by a deterministic counter or
+  a concrete code fact, and proven by a test that fails if it regresses. Full rationale lives in
+  <code>docs/PERFORMANCE.md</code>.
+</p>
+
+<h2 id="rendering">
+  Demand-Driven Rendering
+  <a href="#rendering" class="heading-anchor">#</a>
+</h2>
+<p>
+  The render loop paints a frame only when the UI is <em>dirty</em> or a forced-redraw floor
+  elapsed &mdash; not on every iteration. The previous loop called
+  <code>terminal.draw</code> unconditionally at ~100 fps even on a completely idle screen, the
+  single largest idle-CPU cost in a long-lived TUI. State now drives the paint:
+</p>
+<ul>
+  <li><strong>Input</strong> marks the UI dirty, so a keypress paints on the next iteration (latency unchanged).</li>
+  <li>
+    <strong>Agent output</strong> marks it dirty via a lock-free rolling signature over each
+    session's <code>last_output_at</code> atomic &mdash; no vt100 lock needed to notice new output.
+  </li>
+  <li><strong>Status transitions</strong> (a quiet <code>Busy &rarr; Waiting</code> produces no output) request a redraw explicitly.</li>
+  <li>
+    <strong>Everything time-driven</strong> &mdash; the live clock/metrics, cursor blink, an
+    expiring toast &mdash; is covered by a 250&nbsp;ms forced-redraw floor.
+  </li>
+</ul>
+<p>
+  The loop still spins every &le;10&nbsp;ms (poll input, check output, tick), but the expensive work
+  &mdash; layout, the vt100 render, panel rebuilds &mdash; is skipped when idle. Idle paints drop
+  from ~100 fps to ~4 fps while input and output repaints stay immediate: responsiveness is
+  unchanged and idle CPU drops by roughly 25&times;.
+</p>
+
+<h2 id="counters">
+  Perf Counters
+  <a href="#counters" class="heading-anchor">#</a>
+</h2>
+<p>
+  Performance regressions are caught by <strong>counting</strong>, not timing. Wall-clock benchmarks
+  are flaky on shared CI runners; a counter assertion is exact and reproducible, and proves the
+  <em>mechanism</em> (work was skipped) rather than a wobbly proxy (it was fast today). The
+  in-process acceptance harness asserts on these wall-clock-free counters, gating the normal
+  <code>cargo nextest run --all</code>.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Counter</th>
+      <th>Meaning</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>frames_rendered</code></td>
+      <td>a frame painted</td>
+    </tr>
+    <tr>
+      <td><code>redraws_requested</code> / <code>redraws_skipped</code></td>
+      <td>loop iterations that painted vs. skipped</td>
+    </tr>
+    <tr>
+      <td><code>ordered_sessions_rebuilds</code></td>
+      <td>session-list order rebuilt vs. served from cache</td>
+    </tr>
+    <tr>
+      <td><code>parser_locks_render</code></td>
+      <td>central pane locked a vt100 parser to render</td>
+    </tr>
+    <tr>
+      <td><code>status_refreshes</code> / <code>automation_entries_built</code></td>
+      <td>per-tick status pass, automations-pane builds</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="caching">
+  Session-Order Cache
+  <a href="#caching" class="heading-anchor">#</a>
+</h2>
+<p>
+  The session-list ordering (grouping, sorting, parent/child nesting) is a pure function of four
+  per-session fields &mdash; repo names, manual order, id, and parent &mdash; and
+  <strong>never</strong> of status. It is cached, keyed by a content signature (a hash of exactly
+  those fields). On a frame where the signature is unchanged, the order is reused, skipping the
+  grouping HashMap, two sort passes, nest recursion, and label allocations; only the cheap O(n)
+  remap of refs and selection runs each frame.
+</p>
+<p>
+  Being content-derived, the cache is <strong>self-invalidating</strong>: any change that alters the
+  order alters the hash, so there is no manual &ldquo;mark dirty&rdquo; call site to forget. This
+  matters most while an agent streams output and the screen repaints every frame.
+</p>
+
+<h2 id="not-optimized">
+  Deliberately Not Optimized
+  <a href="#not-optimized" class="heading-anchor">#</a>
+</h2>
+<p>Measuring first also means not adding complexity where the data says it won't pay off:</p>
+<ul>
+  <li>
+    <strong>Scrollback round-trip</strong> &mdash; vt100's <code>set_scrollback</code> /
+    <code>scrollback</code> are O(1), and demand-driven rendering already bounds how often it runs.
+    Caching it would add borrow complexity for no measurable gain.
+  </li>
+  <li>
+    <strong>Automations-pane entries</strong> &mdash; the only repeated parse is the cron
+    humanizer, the countdown must stay live, and automations are typically a handful. Left as-is.
+  </li>
+  <li>
+    <strong>vt100 parser lock contention</strong> &mdash; demand-driven rendering collapses
+    idle-frame UI locks to near zero, shrinking the contention window for free. Cloning the (large)
+    vt100 screen for lock-free rendering would cost more than the brief lock it removes.
+  </li>
+</ul>
+
+<h2 id="measuring">
+  Measuring Performance
+  <a href="#measuring" class="heading-anchor">#</a>
+</h2>
+<p>
+  The gating automated tests are the counter assertions above. Heavier measurement is opt-in and
+  local, so the PR gate stays fast and free of flaky timing or extra dependencies:
+</p>
+<ul>
+  <li>
+    <strong>Startup</strong> &mdash; launch with <code>THURBOX_PERF_LOG=1</code>; one
+    <code>first_frame_ms</code> line is logged to <code>thurbox.log</code>.
+  </li>
+  <li>
+    <strong>Binary size</strong> &mdash; a non-gating CI job records the release
+    <code>thurbox</code> / <code>thurbox-cli</code> sizes to the job summary and an artifact, so
+    growth is visible without blocking merges. The release profile is already LTO-tuned and stripped.
+  </li>
+  <li>
+    <strong>CPU / size attribution</strong> &mdash; run <code>cargo flamegraph</code> (with the
+    <code>release-with-debug</code> profile) and <code>cargo bloat --release --crates</code> ad hoc;
+    neither is a project dependency.
+  </li>
+</ul>
