@@ -411,6 +411,12 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert!(err.contains("missing"), "got: {err}");
     }
 
+    // Unix-only: `verify_sha256` shells out to `sha256sum`/`shasum` (like
+    // `install.sh`). On a native Windows runner those Unix coreutils behave
+    // inconsistently (a Git-for-Windows `sha256sum` mis-hashes a Windows path),
+    // so this exercises a Unix-tool path. Windows self-update is opt-in and
+    // shells the same Unix tooling — covered by the dockur VM, not this CI job.
+    #[cfg(unix)]
     #[test]
     fn verify_sha256_matches_and_detects_mismatch() {
         let dir = tempfile::TempDir::new().unwrap();

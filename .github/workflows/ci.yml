@@ -69,7 +69,9 @@ jobs:
       # suite from a cross-built nextest archive; this job is the automated mirror.
       - run: cargo check --all --all-targets
       - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo nextest run --all --profile ci
+      # --no-fail-fast: surface every native-Windows test failure in one run
+      # (the `ci` profile is fail-fast); easier to triage runner-specific issues.
+      - run: cargo nextest run --all --profile ci --no-fail-fast
 
   architecture:
     name: Architecture Rules
