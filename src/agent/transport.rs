@@ -68,7 +68,7 @@ impl TmuxTransport {
     /// login shell, so each token is shell-escaped to survive intact. Simple
     /// tokens (the binary name, `-L`, the socket name) pass through unquoted.
     ///
-    /// Nesting env vars are stripped (see [`strip_mux_nesting_env`]) so the
+    /// Nesting env vars are stripped (see `strip_mux_nesting_env`) so the
     /// command targets thurbox's own server even when thurbox runs inside a pane.
     pub fn tmux_command(&self, socket: &str, args: &[&str]) -> Command {
         let mut cmd = match self {
