@@ -14,6 +14,66 @@ worktrees are first-class citizens.
 
 ![Thurbox Demo](./docs/media/thurbox-demo.gif)
 
+## Installation
+
+**One-liner (recommended):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
+Installs the latest release to `~/.local/bin` with checksum
+verification and platform auto-detection.
+
+**Options:**
+
+```bash
+# Custom directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+
+# Pin a version
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+```
+
+**Homebrew (macOS / Linux):**
+
+```bash
+brew install thurbeen/thurbox/thurbox
+```
+
+Installs the prebuilt release binaries (`thurbox` + `thurbox-cli`)
+from the [tap](https://github.com/Thurbeen/homebrew-thurbox), with
+`tmux` and `git` pulled in as dependencies. Supports macOS arm64
+(Apple Silicon) and Linux x86_64.
+
+**Arch Linux (AUR):**
+
+Thurbox is on the AUR as
+[`thurbox`](https://aur.archlinux.org/packages/thurbox) (builds
+from source) and
+[`thurbox-bin`](https://aur.archlinux.org/packages/thurbox-bin)
+(prebuilt release binary). Install with your AUR helper:
+
+```bash
+paru -S thurbox-bin   # prebuilt binary (fastest)
+paru -S thurbox       # build from source
+```
+
+`tmux` is pulled in as a dependency. (Swap `paru` for `yay` or
+your preferred helper.)
+
+**From source:**
+
+```bash
+sudo pacman -S --needed git tmux rust   # Arch deps; use your distro's equivalent
+git clone https://github.com/Thurbeen/thurbox.git
+cd thurbox
+cargo build --release
+# binary at target/release/thurbox
+```
+
+See [Prerequisites](#prerequisites) for required tooling.
+
 ## Why Thurbox
 
 Running a coding agent in several terminals gets you far — until
@@ -346,64 +406,6 @@ still work). The same `settings.toml` holds scalar knobs
   gemini, opencode, or aider (whichever agents you plan to run)
 - **git** (required for worktree features)
 - **Rust 1.75+** (only to build from source)
-
-## Installation
-
-**One-liner (recommended):**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-```
-
-Installs the latest release to `~/.local/bin` with checksum
-verification and platform auto-detection.
-
-**Options:**
-
-```bash
-# Custom directory
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-
-# Pin a version
-VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-```
-
-**Homebrew (macOS / Linux):**
-
-```bash
-brew install thurbeen/thurbox/thurbox
-```
-
-Installs the prebuilt release binaries (`thurbox` + `thurbox-cli`)
-from the [tap](https://github.com/Thurbeen/homebrew-thurbox), with
-`tmux` and `git` pulled in as dependencies. Supports macOS arm64
-(Apple Silicon) and Linux x86_64.
-
-**Arch Linux (AUR):**
-
-Thurbox is on the AUR as
-[`thurbox`](https://aur.archlinux.org/packages/thurbox) (builds
-from source) and
-[`thurbox-bin`](https://aur.archlinux.org/packages/thurbox-bin)
-(prebuilt release binary). Install with your AUR helper:
-
-```bash
-paru -S thurbox-bin   # prebuilt binary (fastest)
-paru -S thurbox       # build from source
-```
-
-`tmux` is pulled in as a dependency. (Swap `paru` for `yay` or
-your preferred helper.)
-
-**From source:**
-
-```bash
-sudo pacman -S --needed git tmux rust   # Arch deps; use your distro's equivalent
-git clone https://github.com/Thurbeen/thurbox.git
-cd thurbox
-cargo build --release
-# binary at target/release/thurbox
-```
 
 ## Uninstall
 
