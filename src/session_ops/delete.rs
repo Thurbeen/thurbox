@@ -55,9 +55,31 @@ fn force_teardown(
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) -> Result<(), String> {
+    // Capture the pane's OS pid *before* the kill so we can reap the pane's child
+    // process below. Windows refuses to remove a directory that is a live
+    // process's cwd, and a session's agent runs with cwd = its worktree /
+    // extension home; Unix has no such restriction, so this is Windows-only.
+    #[cfg(windows)]
+    let pane_pid = crate::agent::tmux::window_pane_pid(&session.name)
+        .ok()
+        .flatten();
+
     match crate::agent::tmux::kill_window(&session.name) {
         Ok(()) => report.killed_window = true,
         Err(e) => tracing::warn!("kill_window({}) failed: {e}", session.name),
+    }
+
+    // `kill-window` returns before the OS reaps the pane's child process; wait
+    // for it (force-terminating as a backstop) before the rmdir steps below.
+    // NOTE: this only handles a handle held by the *pane child*. psmux ALSO holds
+    // a server-level handle to each pane's `-c` cwd that only `kill-server`
+    // releases (verified in the Windows VM) — which we can't do per-session on
+    // the shared server. So removing a just-deleted session's own working dir can
+    // still fail on Windows; that is a documented psmux limitation, not covered
+    // here.
+    #[cfg(windows)]
+    if let Some(pid) = pane_pid {
+        reap_pane_process(pid);
     }
 
     for wt in &session.worktrees {
@@ -77,6 +99,35 @@ fn force_teardown(
         .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
 
     Ok(())
+}
+
+/// Wait (≈5s) for a killed pane's child process to exit, force-terminating it as
+/// a backstop if it outlives the grace period. Windows-only: a live process's
+/// cwd is unremovable on Windows, and a session's agent runs in its worktree.
+/// This reaps the *pane child* only — psmux's own server-level handle on the
+/// pane's `-c` cwd is a separate, un-fixable-per-session issue (see callsite).
+#[cfg(windows)]
+fn reap_pane_process(pid: u32) {
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut sys = sysinfo::System::new();
+    let kind = sysinfo::ProcessRefreshKind::nothing();
+    let mut terminated = false;
+    for tick in 0..50 {
+        // `remove_dead_processes = true` drops exited pids, so `process(pid)`
+        // going `None` means the process is truly gone.
+        sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[pid]), true, kind);
+        match sys.process(pid) {
+            None => return,
+            Some(proc) => {
+                // Give it ~2s to exit on its own, then force the kill.
+                if !terminated && tick >= 20 {
+                    proc.kill();
+                    terminated = true;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Best-effort worktree removal, recording success/failure into `report`.
