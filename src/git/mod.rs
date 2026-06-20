@@ -90,7 +90,12 @@ fn worktree_path_for(host: Option<&HostDef>, repo_path: &Path, branch: &str) -> 
                 Some(dir) => dir.clone(),
                 None => format!("{}/.local/share/thurbox/worktrees", remote_home(h)?),
             };
-            Ok(worktree_subpath(PathBuf::from(base), repo_path, branch))
+            // The host is remote (always POSIX), so the path must be `/`-joined
+            // even when thurbox itself runs on Windows — `PathBuf::join` would
+            // otherwise insert `\` and produce a path the remote shell rejects.
+            Ok(PathBuf::from(worktree_subpath_posix(
+                &base, repo_path, branch,
+            )))
         }
     }
 }
@@ -438,6 +443,18 @@ fn worktree_subpath(base: PathBuf, repo_path: &Path, branch: &str) -> PathBuf {
     let repo_hash = format!("{:016x}", hasher.finish());
     let sanitized = branch.replace('/', "-");
     base.join(repo_hash).join(sanitized)
+}
+
+/// The same `<base>/<repo-hash>/<sanitized-branch>` layout as [`worktree_subpath`],
+/// but rendered as a POSIX (`/`-joined) string for a **remote** host. This is
+/// separate from the `PathBuf` form because on Windows `PathBuf::join` inserts
+/// `\`, which the remote login shell would not accept.
+fn worktree_subpath_posix(base: &str, repo_path: &Path, branch: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    repo_path.display().to_string().hash(&mut hasher);
+    let repo_hash = format!("{:016x}", hasher.finish());
+    let sanitized = branch.replace('/', "-");
+    format!("{}/{repo_hash}/{sanitized}", base.trim_end_matches('/'))
 }
 
 /// Result of attempting to sync a worktree with origin/main.
@@ -1112,6 +1129,7 @@ mod tests {
             session: None,
             ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
             worktrees_dir: wt_dir.map(|s| s.to_string()),
+            multiplexer: None,
         }
     }
 

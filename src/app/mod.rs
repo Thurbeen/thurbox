@@ -6111,6 +6111,7 @@ mod tests {
                 session: None,
                 ssh_opts: vec![],
                 worktrees_dir: None,
+                multiplexer: None,
             }],
         });
         app.start_new_session();
@@ -6137,6 +6138,7 @@ mod tests {
                 session: None,
                 ssh_opts: vec![],
                 worktrees_dir: None,
+                multiplexer: None,
             }],
         });
         assert!(app.host_for_backend(None).is_none());

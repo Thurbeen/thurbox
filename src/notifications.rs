@@ -343,6 +343,8 @@ pub struct HostProbe {
     pub is_linux: bool,
     /// Compiled for `target_os = "macos"`.
     pub is_macos: bool,
+    /// Compiled for `target_os = "windows"` (native Windows, not WSL).
+    pub is_windows: bool,
     /// Running under WSL (Microsoft kernel marker in `/proc/version`).
     pub is_wsl: bool,
     /// A reachable freedesktop notification service on the session bus.
@@ -373,6 +375,15 @@ pub fn resolve_backend(configured: NotificationBackend, probe: HostProbe) -> Del
         NotificationBackend::Auto => {
             if probe.is_macos {
                 DeliveryBackend::Macos
+            } else if probe.is_windows {
+                // Native Windows: `powershell.exe` ships with the OS, so the
+                // WinRT toast path is always available. (Click-to-focus is not
+                // wired on Windows — the banner shows but is non-interactive.)
+                if probe.has_powershell {
+                    DeliveryBackend::WindowsToast
+                } else {
+                    DeliveryBackend::None
+                }
             } else if probe.is_linux {
                 // Prefer dbus when a real notification daemon answers. The
                 // common WSL case has no daemon, so fall back to a Windows
@@ -401,6 +412,7 @@ pub fn probe_host() -> HostProbe {
     HostProbe {
         is_linux: cfg!(target_os = "linux"),
         is_macos: cfg!(target_os = "macos"),
+        is_windows: cfg!(target_os = "windows"),
         is_wsl: detect_wsl(),
         has_dbus_service: detect_dbus_service(),
         has_powershell: detect_powershell(),
@@ -514,10 +526,41 @@ mod tests {
         HostProbe {
             is_linux,
             is_macos,
+            is_windows: false,
             is_wsl,
             has_dbus_service: has_dbus,
             has_powershell: has_ps,
         }
+    }
+
+    /// A native-Windows host facts struct (no WSL, no dbus, powershell present).
+    fn probe_windows() -> HostProbe {
+        HostProbe {
+            is_linux: false,
+            is_macos: false,
+            is_windows: true,
+            is_wsl: false,
+            has_dbus_service: false,
+            has_powershell: true,
+        }
+    }
+
+    #[test]
+    fn auto_on_native_windows_uses_toast() {
+        assert_eq!(
+            resolve_backend(NotificationBackend::Auto, probe_windows()),
+            DeliveryBackend::WindowsToast
+        );
+    }
+
+    #[test]
+    fn auto_on_windows_without_powershell_is_none() {
+        let mut p = probe_windows();
+        p.has_powershell = false;
+        assert_eq!(
+            resolve_backend(NotificationBackend::Auto, p),
+            DeliveryBackend::None
+        );
     }
 
     #[test]

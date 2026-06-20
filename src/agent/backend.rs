@@ -210,8 +210,18 @@ pub trait SessionBackend: Send + Sync {
     fn detach(&self, backend_id: &str) -> Result<()>;
 
     /// Default shell command for companion shell panes.
+    ///
+    /// Unix uses `$SHELL` (falling back to `/bin/sh`); Windows uses `%COMSPEC%`
+    /// (falling back to `cmd.exe`), since `$SHELL`/`/bin/sh` don't exist there.
     fn default_shell(&self) -> String {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        #[cfg(windows)]
+        {
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        }
     }
 
     /// Return the PID of the process running in a backend pane.
@@ -1042,6 +1052,7 @@ mod tests {
             session: None,
             ssh_opts: vec![],
             worktrees_dir: None,
+            multiplexer: None,
         };
         let ssh: Arc<dyn SessionBackend> =
             Arc::new(crate::agent::tmux::TmuxBackend::from_host(&host));

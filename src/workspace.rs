@@ -89,10 +89,44 @@ fn remove_dir_under_root(dir: &Path) -> io::Result<()> {
     }
 }
 
-/// Create a symlink at `link` pointing to `target` (Unix; thurbox targets
-/// Linux + macOS only).
+/// Create a directory link at `link` pointing to `target`.
+///
+/// Workspace members are always directories (a worktree checkout or a plain
+/// repo dir), so the Unix path uses a plain symlink and the Windows path uses a
+/// directory symlink.
+#[cfg(not(windows))]
 fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
+}
+
+/// Windows directory link. A directory symlink is preferred, but it requires
+/// privilege (Developer Mode or admin) on Windows; when that fails we fall back
+/// to an NTFS **junction** (`mklink /J`), which needs no special privilege and
+/// also links directories across volumes.
+#[cfg(windows)]
+fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+    match std::os::windows::fs::symlink_dir(target, link) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // `mklink` is a cmd.exe builtin; `/J` makes a directory junction.
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "mklink /J failed for {} -> {}",
+                    link.display(),
+                    target.display()
+                )))
+            }
+        }
+    }
 }
 
 /// Reduce a repo display name to a safe single path segment for a link name.

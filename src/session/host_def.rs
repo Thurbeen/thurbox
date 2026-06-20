@@ -42,12 +42,23 @@ pub struct HostDef {
     /// is resolved at spawn time.
     #[serde(default)]
     pub worktrees_dir: Option<String>,
+    /// Optional remote multiplexer binary. Defaults to `tmux`; set to `psmux`
+    /// for a Windows host (psmux speaks the same control-mode wire protocol).
+    #[serde(default)]
+    pub multiplexer: Option<String>,
 }
 
 impl HostDef {
     /// The backend name this host registers under: `ssh:<name>`.
     pub fn backend_name(&self) -> String {
         format!("{SSH_BACKEND_PREFIX}{}", self.name)
+    }
+
+    /// The remote multiplexer binary for this host (`tmux` unless overridden).
+    pub fn mux(&self) -> String {
+        self.multiplexer
+            .clone()
+            .unwrap_or_else(|| "tmux".to_string())
     }
 }
 
@@ -100,6 +111,7 @@ mod tests {
             session: None,
             ssh_opts: vec![],
             worktrees_dir: None,
+            multiplexer: None,
         };
         assert_eq!(h.backend_name(), "ssh:devbox");
     }
@@ -115,6 +127,7 @@ mod tests {
                 session: None,
                 ssh_opts: vec![],
                 worktrees_dir: None,
+                multiplexer: None,
             }],
         };
         assert_eq!(reg.get("devbox").unwrap().destination, "me@devbox");

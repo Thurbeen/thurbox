@@ -60,6 +60,10 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox remote SSH hosts  —  ~/.config/
 #       unset, thurbox uses $HOME/.local/share/thurbox/worktrees on the remote
 #       (the remote $HOME is resolved over ssh on first use).
 #
+#   multiplexer    (string, optional, default: "tmux")
+#       Remote multiplexer binary. Set to "psmux" when the remote host is a
+#       Windows machine (psmux speaks the same control-mode wire protocol).
+#
 config_version = 1
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -90,6 +94,7 @@ config_version = 1
 # # socket = "thurbox"          # remote `tmux -L` socket; change to avoid a clash
 # # session = "thurbox"         # remote tmux session grouping thurbox windows
 # # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"  # abs remote path
+# # multiplexer = "tmux"        # set to "psmux" for a Windows remote host
 "#;
 
 /// Path to the remote-host config file: `~/.config/thurbox/hosts.toml`
@@ -197,6 +202,7 @@ mod tests {
             "socket",
             "session",
             "worktrees_dir",
+            "multiplexer",
         ] {
             assert!(
                 SEED_HOSTS_TOML.contains(field),

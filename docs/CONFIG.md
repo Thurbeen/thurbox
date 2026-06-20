@@ -139,6 +139,7 @@ are local-only). Malformed file → zero remote hosts, error shown.
 | `socket` | no | `thurbox` | remote `tmux -L` socket |
 | `session` | no | `thurbox` | remote tmux session name |
 | `worktrees_dir` | no | remote `$HOME/.local/share/thurbox/worktrees` | absolute remote worktrees dir |
+| `multiplexer` | no | `tmux` | remote multiplexer binary; set to `psmux` for a Windows host |
 
 Auth comes entirely from your `~/.ssh/config`; thurbox never handles
 credentials. Host changes require a restart (the registry is read once
@@ -291,7 +292,7 @@ is what sees the bell, and it doesn't run when thurbox isn't.
 | Backend | When | Click-to-focus |
 |---------|------|----------------|
 | `dbus` | normal Linux desktop with a running notification daemon (`org.freedesktop.Notifications`) | **yes** — clicking the banner writes a focus request the running TUI reads next tick and switches to that session |
-| `windows` (toast) | **WSL** (or any Linux with no dbus daemon) — delivers a Windows toast via `powershell.exe` (needs WSL interop, on by default) | no (a Windows toast can't call back into the WSL process) |
+| `windows` (toast) | **native Windows**, or **WSL** / any Linux with no dbus daemon — delivers a Windows toast via `powershell.exe` (WSL needs interop, on by default) | no (a Windows toast can't call back into the thurbox process) |
 | `macos` | macOS native banner — informational only (the modern `UNUserNotificationCenter` click API needs a signed app bundle, which thurbox is not) | no |
 
 `auto` prefers `dbus` whenever a daemon answers, and only falls back to

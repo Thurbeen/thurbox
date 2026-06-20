@@ -35,6 +35,18 @@ INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen
 VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+```
+
+Installs the latest `x86_64-pc-windows-msvc` release to
+`%LOCALAPPDATA%\Programs\thurbox` (added to your user `PATH`) with checksum
+verification. Pin a version or directory with the `THURBOX_VERSION` /
+`THURBOX_INSTALL_DIR` env vars. Needs [psmux](https://github.com/psmux/psmux)
+as the multiplexer.
+
 **Homebrew (macOS / Linux):**
 
 ```bash
@@ -400,7 +412,8 @@ still work). The same `settings.toml` holds scalar knobs
 
 ## Prerequisites
 
-- **tmux >= 3.2**
+- **tmux >= 3.2** (Linux / macOS), or **[psmux](https://github.com/psmux/psmux)**
+  on native Windows — a drop-in tmux clone thurbox drives identically
 - **A coding-agent CLI** — e.g.
   [claude](https://github.com/anthropics/claude-code), codex,
   gemini, opencode, or aider (whichever agents you plan to run)

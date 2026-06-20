@@ -286,7 +286,15 @@ pub fn resolve_source(target: &str) -> ExtensionSource {
         };
         return ExtensionSource::Remote(format!("{scheme}{}", rest.trim_end_matches('/')));
     }
-    if t.contains('/') || t.starts_with('.') || t.starts_with('~') {
+    // Looks like a path (not a bare extension name)? Detect `/` and `.`/`~`
+    // prefixes, plus Windows forms: a `\` separator or an absolute drive path
+    // (`C:\…`), which carry neither a `/` nor a leading `.`.
+    let looks_local = t.contains('/')
+        || t.contains('\\')
+        || t.starts_with('.')
+        || t.starts_with('~')
+        || std::path::Path::new(t).is_absolute();
+    if looks_local {
         return ExtensionSource::Local(expand_tilde(t));
     }
     ExtensionSource::Remote(format!("{}/{t}", official_base()))
@@ -295,12 +303,14 @@ pub fn resolve_source(target: &str) -> ExtensionSource {
 /// Expand a leading `~/` (or bare `~`) to the user's home directory. Shared by
 /// the source resolver and the installer so both agree on home expansion.
 pub fn expand_tilde(path: &str) -> PathBuf {
+    // `$HOME` on Unix, `%USERPROFILE%` on Windows (matches `paths::home_dir`).
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = std::env::var_os(home_var) {
             return PathBuf::from(home).join(rest);
         }
     } else if path == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = std::env::var_os(home_var) {
             return PathBuf::from(home);
         }
     }

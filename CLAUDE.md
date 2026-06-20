@@ -80,46 +80,94 @@ its grouping/nesting inputs change. Launch with `THURBOX_PERF_LOG=1` to log one
 `first_frame_ms` startup line to `thurbox.log`. Full rationale +
 intentionally-skipped optimizations: `docs/PERFORMANCE.md`.
 
+### Windows test environment (VM)
+
+`scripts/dev/windows-test.sh` provisions a throwaway **Windows VM** to exercise
+thurbox's Windows support, where the session backend is
+[psmux](https://github.com/psmux/psmux) (a native-Windows tmux clone — same
+command language, `-L` sockets, and `-C`/`-CC` control mode that `TmuxBackend`
+drives, so it installs a `tmux.exe`). Mirroring `remote-ssh-test.sh`, it runs a
+real KVM-accelerated Windows VM inside a single Podman container via
+[`dockur/windows`](https://github.com/dockur/windows), with an unattended
+first-boot `/oem` payload that installs psmux + OpenSSH + `cargo-nextest.exe` so
+the harness drives the VM **headlessly over SSH**. Default edition is **Windows
+11** (`VERSION=11`); dockur has no "tiny" edition token, so override
+`THURBOX_WIN_VERSION` only with values dockur recognizes (`11`, `10`, `2025`, …).
+
+```bash
+scripts/dev/windows-test.sh up         # build /oem payload + boot the VM (first run installs Windows, ~10-20 min)
+scripts/dev/windows-test.sh wait       # block until the VM's SSH is reachable
+scripts/dev/windows-test.sh test       # headless smoke test (psmux/tmux + a -L control session round-trip)
+scripts/dev/windows-test.sh test-suite # run the FULL nextest suite inside the VM (see below)
+scripts/dev/windows-test.sh deploy     # cross-build thurbox for x86_64-pc-windows-gnu + copy the .exe in
+scripts/dev/windows-test.sh ssh        # PowerShell shell in the VM; `web`/`rdp` for eyes-on; `down`/`clean` to tear down
+```
+
+`test-suite` runs the **entire `cargo nextest` suite** inside the VM. The VM has
+**no Rust toolchain**, so the host cross-builds a self-contained **nextest
+archive** (`cargo nextest archive --target x86_64-pc-windows-gnu`), ships it plus
+a tarball of the working tree (uncommitted changes included — needed so insta
+snapshots / fixtures resolve), and runs it with `cargo-nextest.exe
+--archive-file … --workspace-remap …`. CI runs the same suite natively in the
+`windows` job (`.github/workflows/ci.yml`, `windows-latest` + `cargo nextest
+run`); the VM is the local/offline mirror. Tests that genuinely assume Unix are
+`#[cfg(unix)]`-gated; the rest are written to source the home dir from the
+platform var (`USERPROFILE`/`HOME`) and use `tempfile`/`std::env::temp_dir()`
+rather than hardcoded `/tmp`.
+
+All state lives under `target/windows-test/` (gitignored): the throwaway SSH
+keypair, the cached psmux + nextest zips, the generated `/oem` payload, the
+cross-built test archive, and the VM disk image. Needs `/dev/kvm` +
+`/dev/net/tun`. **Gotcha:** dockur forwards only `3389` to a Windows guest by
+default, so the script sets `USER_PORTS=22` to push the published SSH port
+through qemu's host-forward into the VM.
+
 ## Installation Script
 
-**Location:** `scripts/install.sh`
-
-One-liner installation for end users:
+**Linux / macOS** — `scripts/install.sh`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 ```
 
-**Features:**
+**Windows** — `scripts/install.ps1` (PowerShell):
 
-- Thurbox ASCII-art banner (doom font) + colorized output (auto-disabled
-  when stderr is not a TTY, `NO_COLOR` is set, or `TERM=dumb`)
-- Platform detection (Linux/macOS, x86_64/aarch64)
-- Automatic version fetching with API rate limit fallback (scrapes releases page)
-- SHA256 checksum verification
-- Creates `~/.local/bin` if needed
-- Post-install instructions
-- Graceful error handling with helpful messages
+```powershell
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+```
 
-**Environment variables:**
+Both installers share the same shape: ASCII banner, platform detection, version
+resolution (GitHub API → releases-page scrape fallback), SHA256 checksum
+verification, extract, post-install hints. They download from the same release:
+`install.sh` pulls the `.tar.gz` for `x86_64-unknown-linux-musl` /
+`aarch64-unknown-linux-gnu` / `*-apple-darwin`; `install.ps1` pulls the
+**`thurbox-<ver>-x86_64-pc-windows-msvc.zip`** (the Windows artifact built by
+`cd.yml`) and extracts it with the built-in `Expand-Archive` (no tar needed).
+ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 
-- `VERSION=v0.1.0` - Install specific version (default: latest from GitHub API)
-- `INSTALL_DIR=/path` - Custom install directory (default: `~/.local/bin`)
+**`install.sh` (POSIX `sh`) specifics:**
 
-**Testing:**
+- Colorized output (auto-disabled when stderr is not a TTY, `NO_COLOR` is set,
+  or `TERM=dumb`); platforms Linux/macOS × x86_64/aarch64
+- No external deps beyond standard tools (curl/wget, tar, sha256sum/shasum)
+- Env vars: `VERSION=v0.1.0`, `INSTALL_DIR=/path` (default `~/.local/bin`)
+- Non-interactive (safe pipe-to-shell), cleanup via `trap`
+- Tested by `scripts/install.bats` (bats-core, ~28 tests; CI `install-script` job)
 
-- Comprehensive test suite in `scripts/install.bats` using bats-core framework
-- 28 tests covering platform detection, checksum verification, binary extraction,
-  error handling, the ASCII banner, and `NO_COLOR` handling
-- Run tests locally: `bats scripts/install.bats`
-- CI runs tests automatically on every commit
+**`install.ps1` (PowerShell 5.1+) specifics:**
 
-**Implementation notes:**
-
-- POSIX shell (`#!/usr/bin/env sh`) for maximum compatibility
-- No external dependencies beyond standard tools (curl/wget, tar, sha256sum/shasum)
-- Non-interactive for safe pipe-to-shell execution
-- Proper error handling and cleanup via trap
+- Parameters `-Version` / `-InstallDir` / `-Repo`, or the matching
+  `THURBOX_VERSION` / `THURBOX_INSTALL_DIR` / `THURBOX_REPO` env vars (env vars
+  are the reliable path for the `irm | iex` form, which can't pass parameters);
+  default install dir `%LOCALAPPDATA%\Programs\thurbox`
+- Adds the install dir to the **user** `PATH` (`[Environment]::SetEnvironmentVariable(... 'User')`)
+  when missing; reflects it into the current session
+- ASCII-only source (no BOM needed; survives `irm | iex` decoding on Windows
+  PowerShell 5.1); `Write-Host` for UI is intentional (`Write-Output` would leak
+  into the `iex` pipeline)
+- Pure helpers (`Get-Target`, `Get-ExpectedChecksum`) are guarded by
+  `$env:THURBOX_PS_TEST` so the file can be dot-sourced for testing without
+  running the installer
 
 ## Linting & Formatting
 
@@ -344,6 +392,7 @@ session = "thurbox"           # optional (default "thurbox") — remote tmux ses
 worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
                               # optional — abs remote worktrees dir
                               # (default $HOME/.local/share/thurbox/worktrees, resolved over ssh)
+multiplexer = "tmux"          # optional (default "tmux") — set "psmux" for a Windows host
 ```
 
 | Field | Req | Default | Purpose |
@@ -354,12 +403,18 @@ worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
 | `socket` | no | `thurbox` | remote `tmux -L` socket name |
 | `session` | no | `thurbox` | remote tmux session name |
 | `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | abs remote worktrees dir |
+| `multiplexer` | no | `tmux` | remote multiplexer binary; `psmux` for a Windows host |
 
 How it works: `TmuxBackend` is transport-neutral
 (`agent::transport::TmuxTransport`). The local backend launches
-`tmux -L thurbox …`; a remote backend launches
-`ssh <dest> tmux -L thurbox …`. The tmux **control-mode** protocol
-(`control_mode.rs`) is byte-identical over either transport — only
+`<mux> -L thurbox …`; a remote backend launches
+`ssh <dest> <mux> -L thurbox …`. The multiplexer binary (`agent::transport::DEFAULT_MUX`)
+is **`tmux` on Linux/macOS and `psmux` on Windows** — psmux is a native-Windows,
+drop-in tmux clone (ConPTY, no WSL) speaking the **same control-mode wire
+protocol** and pane-id (`%N`) / `-L` socket model, so the whole backend is
+parameterized by binary name rather than forked (a remote host can also pin
+`multiplexer = "psmux"`). The **control-mode** protocol
+(`control_mode.rs`) is byte-identical over either transport/binary — only
 the one-time process launch differs. Each host registers a backend
 named `ssh:<name>` (`TmuxBackend::from_host`, registered lazily in
 `main.rs`: a down host must not block startup, so
@@ -952,10 +1007,11 @@ when the target session is the one in focus (`suppress_for_active`).
   (`Dbus` / `WindowsToast` / `Macos` / `None`) via the pure, table-driven
   `resolve_backend`. `auto` picks **dbus** on a normal Linux desktop
   (a session-bus `org.freedesktop.Notifications` socket is reachable),
-  the **Windows toast** path under WSL when no dbus daemon answers
-  (`/proc/version` carries the Microsoft marker and `powershell.exe` is on
-  PATH — we shell out a WinRT toast script, `build_powershell_toast_script`,
-  single-quote-escaped), and the **macOS** native banner. This fixed a
+  the **Windows toast** path on **native Windows** (`HostProbe.is_windows`)
+  and under WSL when no dbus daemon answers (`/proc/version` carries the
+  Microsoft marker and `powershell.exe` is on PATH — we shell out a WinRT toast
+  script, `build_powershell_toast_script`, single-quote-escaped), and the
+  **macOS** native banner. This fixed a
   silent-failure bug: under WSL the dbus path errored on connect but only
   logged a `warn!`, so the user saw nothing. Delivery errors are now
   recorded in a process-wide `LAST_ERROR` slot (`notifications::last_error`)

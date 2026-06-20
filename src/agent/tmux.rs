@@ -14,7 +14,7 @@ use crate::agent::control_mode::{
     self, shell_escape, CommandResponse, ControlModeReader, ControlModeWriter, Notification,
     PaneSendersMapShared, PANE_CHANNEL_CAPACITY,
 };
-use crate::agent::transport::TmuxTransport;
+use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
 
 /// Dedicated tmux socket name — isolates thurbox sessions from the user's tmux.
 /// Dev builds use "thurbox-dev" to avoid interfering with an installed release binary.
@@ -31,6 +31,20 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
 } else {
     "thurbox"
 };
+
+/// Build a [`Command`] for the local multiplexer on the thurbox socket:
+/// `<DEFAULT_MUX> -L <TMUX_SOCKET> <args…>`. The headless one-shot helpers below
+/// (send/capture/spawn/kill/heartbeat) bypass the [`TmuxTransport`] seam — they
+/// are local-only — so this centralizes the binary name (`tmux`, or `psmux` on
+/// Windows) and socket instead of hardcoding `tmux` at each call site.
+fn local_mux_command(args: &[&str]) -> Command {
+    let mut cmd = Command::new(DEFAULT_MUX);
+    cmd.arg("-L").arg(TMUX_SOCKET).args(args);
+    // Strip nesting env so these one-shots target thurbox's own socket even when
+    // thurbox is launched inside a tmux/psmux pane (see `strip_mux_nesting_env`).
+    crate::agent::transport::strip_mux_nesting_env(&mut cmd);
+    cmd
+}
 
 /// Window-name prefix for thurbox-managed tmux windows. Combined with the
 /// sanitized session name (`{prefix}{sanitized_name}`) to form the tmux
@@ -114,6 +128,27 @@ fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
     ))?;
 
     Ok((major, minor))
+}
+
+/// Enforce the minimum-version gate against a multiplexer's `-V` output.
+///
+/// The `>= 3.2` floor only applies to **real tmux** (a `tmux …` banner). A
+/// drop-in clone like psmux numbers itself independently and may print a
+/// different banner, so once it has answered `-V` it is accepted as-is — it
+/// implements the control-mode feature set regardless of its own number.
+fn check_min_version(version_output: &str) -> Result<()> {
+    let trimmed = version_output.trim();
+    if let Some(rest) = trimmed.strip_prefix("tmux ") {
+        let (major, minor) = parse_tmux_version(rest)?;
+        if (major, minor) < MIN_TMUX_VERSION {
+            bail!(
+                "tmux {major}.{minor} is too old; thurbox requires >= {}.{}",
+                MIN_TMUX_VERSION.0,
+                MIN_TMUX_VERSION.1
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Timeout for waiting for a control mode command response.
@@ -506,6 +541,7 @@ impl TmuxBackend {
             TmuxTransport::Ssh {
                 destination: host.destination.clone(),
                 ssh_opts: host.ssh_opts.clone(),
+                mux: host.mux(),
             },
             socket,
             session,
@@ -559,8 +595,16 @@ impl TmuxBackend {
         // doesn't clobber PATH additions from ~/.zshenv (e.g. cargo, asdf).
         // For a remote backend the local `$SHELL` path may not exist on the
         // remote host, so fall back to a POSIX shell there.
-        let shell = self.config_shell();
-        self.tmux_run(&["set-option", "-s", "default-command", &shell])?;
+        //
+        // On Windows (psmux) we deliberately do NOT pin `default-command`: the
+        // local `$SHELL`/`/bin/sh` don't exist, and forcing a Windows shell here
+        // would have to match psmux's own command-execution model. Letting psmux
+        // use its native ConPTY default shell is the safe choice.
+        #[cfg(not(windows))]
+        {
+            let shell = self.config_shell();
+            self.tmux_run(&["set-option", "-s", "default-command", &shell])?;
+        }
 
         // Server-wide options
         let server_opts = [
@@ -603,13 +647,39 @@ impl TmuxBackend {
                 "24",
             ])
             .context("Failed to create tmux session")?;
+            // Cheap defensiveness on Windows: poll until the freshly-created
+            // session answers `has-session` before applying options. (The
+            // `no server running on 'thurbox__thurbox'` failure that originally
+            // motivated this was actually psmux session *nesting*, now fixed at
+            // the root by `strip_mux_nesting_env`; this poll is a harmless belt
+            // against any genuinely-async `new-session -d` and a no-op when the
+            // first probe succeeds — which it does on the normal path.)
+            #[cfg(windows)]
+            self.wait_for_session_ready();
         }
         self.apply_session_config()
     }
 
+    /// Poll (up to 5s) until the freshly-created session answers `has-session`.
+    /// Defensive belt against an async `new-session -d`; normally a no-op (the
+    /// first probe succeeds). See
+    /// [`ensure_session_configured`](Self::ensure_session_configured).
+    #[cfg(windows)]
+    fn wait_for_session_ready(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if self.session_exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     /// The shell tmux should use for `default-command`. Local uses the user's
     /// `$SHELL`; a remote backend uses a POSIX shell that is guaranteed to exist
-    /// on the remote host.
+    /// on the remote host. Not used on Windows (psmux keeps its native default
+    /// shell — see [`apply_session_config`](Self::apply_session_config)).
+    #[cfg(not(windows))]
     fn config_shell(&self) -> String {
         if self.transport.is_remote() {
             "/bin/sh".to_string()
@@ -828,17 +898,8 @@ impl SessionBackend for TmuxBackend {
         }
 
         let version_str = String::from_utf8_lossy(&output.stdout);
-        let (major, minor) = parse_tmux_version(version_str.trim())?;
-
-        if (major, minor) < MIN_TMUX_VERSION {
-            bail!(
-                "tmux {major}.{minor} is too old; thurbox requires >= {}.{}",
-                MIN_TMUX_VERSION.0,
-                MIN_TMUX_VERSION.1
-            );
-        }
-
-        debug!("tmux version: {}", version_str.trim());
+        check_min_version(&version_str)?;
+        debug!("multiplexer version: {}", version_str.trim());
         Ok(())
     }
 
@@ -1050,16 +1111,7 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
     let target = window_target(session_name);
     let payload = bracketed_paste(text);
 
-    let status = Command::new("tmux")
-        .args([
-            "-L",
-            TMUX_SOCKET,
-            "send-keys",
-            "-t",
-            &target,
-            "-l",
-            &payload,
-        ])
+    let status = local_mux_command(&["send-keys", "-t", &target, "-l", &payload])
         .status()
         .context("Failed to run tmux send-keys for prompt text")?;
     if !status.success() {
@@ -1068,8 +1120,7 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
 
     std::thread::sleep(SEND_KEYS_ENTER_DELAY);
 
-    let status = Command::new("tmux")
-        .args(["-L", TMUX_SOCKET, "send-keys", "-t", &target, "Enter"])
+    let status = local_mux_command(&["send-keys", "-t", &target, "Enter"])
         .status()
         .context("Failed to run tmux send-keys for Enter")?;
     if !status.success() {
@@ -1080,26 +1131,19 @@ pub fn send_prompt_now(session_name: &str, text: &str) -> Result<()> {
 
 /// Window name for the headless automation heartbeat keeper. Deliberately NOT
 /// `tb-` prefixed so [`LocalTmuxBackend::discover`] ignores it — it is
-/// infrastructure, not a session.
+/// infrastructure, not a session. (Windows has no keeper window in v1.)
+#[cfg(not(windows))]
 const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
 
 /// How often the heartbeat keeper invokes `automation tick`.
+#[cfg(not(windows))]
 const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 
 /// List the window names in the thurbox tmux session (empty if the server is
 /// not running).
 fn list_window_names() -> Vec<String> {
-    let Ok(out) = Command::new("tmux")
-        .args([
-            "-L",
-            TMUX_SOCKET,
-            "list-windows",
-            "-t",
-            TMUX_SESSION,
-            "-F",
-            "#{window_name}",
-        ])
-        .output()
+    let Ok(out) =
+        local_mux_command(&["list-windows", "-t", TMUX_SESSION, "-F", "#{window_name}"]).output()
     else {
         return Vec::new();
     };
@@ -1128,32 +1172,53 @@ pub fn window_exists(session_name: &str) -> bool {
 /// prompt once the freshly launched agent CLI has had time to boot — offline
 /// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
 pub fn send_prompt_after_delay(session_name: &str, text: &str, delay_secs: u64) -> Result<()> {
-    let escaped_target = shell_escape(&window_target(session_name));
-    // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
-    // submit early; `-l` makes tmux deliver the bytes literally.
-    let escaped_text = shell_escape(&bracketed_paste(text));
-    // run-shell executes the script via the server's shell; escape accordingly.
-    let script = format!(
-        "tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} -l {escaped_text}; \
-         sleep 0.2; \
-         tmux -L {TMUX_SOCKET} send-keys -t {escaped_target} Enter"
-    );
-    let status = Command::new("tmux")
-        .args([
-            "-L",
-            TMUX_SOCKET,
-            "run-shell",
-            "-b",
-            "-d",
-            &delay_secs.to_string(),
-            &script,
-        ])
+    let target = window_target(session_name);
+    let script = deferred_prompt_script(&target, text);
+    let status = local_mux_command(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
         .status()
         .context("Failed to schedule tmux run-shell for deferred prompt")?;
     if !status.success() {
         bail!("tmux run-shell (deferred prompt) exited with status {status}");
     }
     Ok(())
+}
+
+/// Build the `run-shell` script that pastes the prompt, waits a beat so the
+/// bracketed paste is consumed, then presses Enter. `run-shell` executes the
+/// script via the multiplexer server's shell, so the syntax is platform-specific.
+///
+/// POSIX path (`tmux` on Linux/macOS): a plain `sh` one-liner.
+#[cfg(not(windows))]
+fn deferred_prompt_script(target: &str, text: &str) -> String {
+    let escaped_target = shell_escape(target);
+    // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
+    // submit early; `-l` makes the multiplexer deliver the bytes literally.
+    let escaped_text = shell_escape(&bracketed_paste(text));
+    format!(
+        "{DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {escaped_target} -l {escaped_text}; \
+         sleep 0.2; \
+         {DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {escaped_target} Enter"
+    )
+}
+
+/// Windows path (`psmux`): psmux's `run-shell` is not a POSIX shell, so drive the
+/// sequence through PowerShell explicitly (`Start-Sleep` for the sub-second beat).
+/// PowerShell single-quoted literals escape an embedded `'` by doubling it.
+#[cfg(windows)]
+fn deferred_prompt_script(target: &str, text: &str) -> String {
+    let t = ps_single_quote(target);
+    let body = ps_single_quote(&bracketed_paste(text));
+    format!(
+        "powershell -NoProfile -Command \"{DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {t} -l {body}; \
+         Start-Sleep -Milliseconds 200; \
+         {DEFAULT_MUX} -L {TMUX_SOCKET} send-keys -t {t} Enter\""
+    )
+}
+
+/// Wrap `s` in a PowerShell single-quoted literal, doubling embedded quotes.
+#[cfg(windows)]
+fn ps_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 /// Ensure the automation heartbeat keeper window is running.
@@ -1163,6 +1228,11 @@ pub fn send_prompt_after_delay(session_name: &str, text: &str, delay_secs: u64) 
 /// attached. The live window also keeps the tmux server alive, so spawn-only
 /// automations work with no other sessions. Idempotent — a no-op when the
 /// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
+///
+/// On Windows this is currently a no-op: the keeper's loop relies on a POSIX
+/// shell that psmux's `run-shell` does not provide, so headless automation
+/// firing degrades to TUI-only on Windows in v1 (see the Windows parity notes).
+#[cfg(not(windows))]
 pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     TmuxBackend::local().ensure_session_configured()?;
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
@@ -1173,20 +1243,17 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     let loop_cmd = format!(
         "while true; do {cli} automation tick >/dev/null 2>&1; sleep {HEARTBEAT_INTERVAL_SECS}; done"
     );
-    let status = Command::new("tmux")
-        .args([
-            "-L",
-            TMUX_SOCKET,
-            "new-window",
-            "-d",
-            "-t",
-            TMUX_SESSION,
-            "-n",
-            HEARTBEAT_WINDOW,
-            &loop_cmd,
-        ])
-        .status()
-        .context("Failed to create automation heartbeat window")?;
+    let status = local_mux_command(&[
+        "new-window",
+        "-d",
+        "-t",
+        TMUX_SESSION,
+        "-n",
+        HEARTBEAT_WINDOW,
+        &loop_cmd,
+    ])
+    .status()
+    .context("Failed to create automation heartbeat window")?;
     if !status.success() {
         bail!("tmux new-window (heartbeat) exited with status {status}");
     }
@@ -1194,22 +1261,36 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Windows: the headless heartbeat keeper is not available in v1 (no POSIX
+/// shell for the keeper loop under psmux). Automations still fire from the TUI;
+/// this is a no-op so callers don't treat the absence as an error.
+#[cfg(windows)]
+pub fn ensure_automation_heartbeat(_cli_path: &Path) -> Result<()> {
+    debug!("Automation heartbeat keeper is not supported on Windows (TUI-only firing)");
+    Ok(())
+}
+
 /// Resolve the path to the `thurbox-cli` binary that sits next to the currently
 /// running executable (TUI or CLI), falling back to a bare `thurbox-cli` on
 /// `PATH` when resolution fails.
+///
+/// The platform executable suffix (`.exe` on Windows, empty elsewhere) is
+/// applied via [`std::env::consts::EXE_SUFFIX`], so the self/sibling match works
+/// for `thurbox-cli.exe` too.
 pub fn resolve_cli_binary() -> std::path::PathBuf {
+    let cli_name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe() {
-        if exe.file_name().and_then(|n| n.to_str()) == Some("thurbox-cli") {
+        if exe.file_name().and_then(|n| n.to_str()) == Some(cli_name.as_str()) {
             return exe;
         }
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join("thurbox-cli");
+            let sibling = dir.join(&cli_name);
             if sibling.exists() {
                 return sibling;
             }
         }
     }
-    std::path::PathBuf::from("thurbox-cli")
+    std::path::PathBuf::from(cli_name)
 }
 
 /// Capture the rendered contents of a session's pane.
@@ -1221,18 +1302,7 @@ pub fn capture_pane_text(session_name: &str, lines: u32) -> Result<String> {
     let lines = lines.min(MAX_CAPTURE_LINES);
     let start = format!("-{lines}");
 
-    let output = Command::new("tmux")
-        .args([
-            "-L",
-            TMUX_SOCKET,
-            "capture-pane",
-            "-p",
-            "-J",
-            "-t",
-            &target,
-            "-S",
-            &start,
-        ])
+    let output = local_mux_command(&["capture-pane", "-p", "-J", "-t", &target, "-S", &start])
         .output()
         .context("Failed to run tmux capture-pane")?;
     if !output.status.success() {
@@ -1294,10 +1364,7 @@ pub fn spawn_window(
     TmuxBackend::local().ensure_session_configured()?;
 
     let window_name = agent_window_name(session_name);
-    let mut tmux = Command::new("tmux");
-    tmux.args([
-        "-L",
-        TMUX_SOCKET,
+    let mut tmux = local_mux_command(&[
         "new-window",
         "-d",
         "-t",
@@ -1374,8 +1441,7 @@ pub fn kill_pane_remote(host: &crate::session::HostDef, backend_id: &str) -> Res
 /// Kill the tmux window `tb-<session_name>` if it exists.
 pub fn kill_window(session_name: &str) -> Result<()> {
     let target = window_target(session_name);
-    let output = Command::new("tmux")
-        .args(["-L", TMUX_SOCKET, "kill-window", "-t", &target])
+    let output = local_mux_command(&["kill-window", "-t", &target])
         .output()
         .context("Failed to run tmux kill-window")?;
     if !output.status.success() {
@@ -1460,6 +1526,35 @@ mod tests {
     #[test]
     fn parse_tmux_version_rejects_garbage() {
         assert!(parse_tmux_version("not a version").is_err());
+    }
+
+    // --- check_min_version (multiplexer version gate) ---
+
+    #[test]
+    fn min_version_accepts_recent_tmux() {
+        assert!(check_min_version("tmux 3.4").is_ok());
+        assert!(check_min_version("tmux 3.2").is_ok());
+    }
+
+    #[test]
+    fn min_version_rejects_old_tmux() {
+        assert!(check_min_version("tmux 2.8").is_err());
+    }
+
+    #[test]
+    fn min_version_accepts_non_tmux_clone() {
+        // psmux numbers itself independently and may not print a `tmux ` banner;
+        // once it answers `-V` it is accepted regardless of its own version.
+        assert!(check_min_version("psmux 0.3.1").is_ok());
+        assert!(check_min_version("psmux 1.0").is_ok());
+        assert!(check_min_version("pmux 0.1").is_ok());
+    }
+
+    #[test]
+    fn resolve_cli_binary_uses_platform_exe_suffix() {
+        let p = resolve_cli_binary();
+        let name = p.file_name().unwrap().to_string_lossy();
+        assert_eq!(name, format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX));
     }
 
     // --- build_shell_command tests ---
@@ -1769,6 +1864,7 @@ mod tests {
             session: None,
             ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
             worktrees_dir: None,
+            multiplexer: None,
         };
         let backend = TmuxBackend::from_host(&host);
         assert_eq!(backend.name(), "ssh:devbox");
@@ -1787,6 +1883,7 @@ mod tests {
             session: Some("sess-vm".into()),
             ssh_opts: vec![],
             worktrees_dir: None,
+            multiplexer: None,
         };
         let backend = TmuxBackend::from_host(&host);
         assert_eq!(backend.socket, "tb-vm");

@@ -97,6 +97,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
             use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
 
     steps:
       - name: Checkout code at tag
@@ -114,6 +117,7 @@ jobs:
         run: cargo install cross --locked
 
       - name: Build release binary
+        shell: bash
         env:
           THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.version }}
         run: |
@@ -123,7 +127,9 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
-      - name: Create archive
+      # Unix archive: .tar.gz with the bare binaries + LICENSE.
+      - name: Create archive (Unix)
+        if: runner.os != 'Windows'
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
           TARGET="${{ matrix.target }}"
@@ -136,11 +142,26 @@ jobs:
           # Also package LICENSE
           tar --append -zf "$ARCHIVE_NAME" LICENSE || true
 
+      # Windows archive: .zip with the .exe binaries + LICENSE. install.ps1
+      # extracts this with the built-in Expand-Archive (no tar dependency).
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ needs.check-release.outputs.version }}"
+          $target = "${{ matrix.target }}"
+          $archive = "thurbox-$version-$target.zip"
+          $rel = "target/$target/release"
+          Compress-Archive -Force -DestinationPath $archive -Path `
+            "$rel/thurbox.exe", "$rel/thurbox-cli.exe", "LICENSE"
+
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binary-${{ matrix.target }}
-          path: thurbox-*.tar.gz
+          path: |
+            thurbox-*.tar.gz
+            thurbox-*.zip
           if-no-files-found: error
 
   # Generate checksums for all binaries
@@ -159,11 +180,11 @@ jobs:
           VERSION="${{ needs.check-release.outputs.version }}"
           cd artifacts
 
-          # Flatten directory structure
-          find . -name "*.tar.gz" -exec mv {} . \;
+          # Flatten directory structure (tar.gz for Unix, zip for Windows)
+          find . \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} . \;
 
-          # Generate checksums
-          sha256sum thurbox-*.tar.gz > "thurbox-${VERSION}-checksums.txt"
+          # Generate checksums over every release archive
+          sha256sum thurbox-*.tar.gz thurbox-*.zip > "thurbox-${VERSION}-checksums.txt"
 
           cat "thurbox-${VERSION}-checksums.txt"
 
@@ -210,7 +231,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
-          find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
           find artifacts -type f -name "*checksums.txt" -exec cp {} release-assets/ \;
           ls -lh release-assets/
 

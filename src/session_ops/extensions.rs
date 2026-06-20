@@ -432,7 +432,7 @@ pub fn uninstall_extension(
             let path = crate::agent::extension_config::expand_tilde(home);
             guard_removable_dir(&path)?;
             if path.is_dir() {
-                std::fs::remove_dir_all(&path)
+                remove_dir_all_resilient(&path)
                     .map_err(|e| format!("remove {}: {e}", path.display()))?;
                 report.home_removed = Some(path.to_string_lossy().into_owned());
             }
@@ -448,6 +448,35 @@ pub fn uninstall_extension(
 /// Refuse to recursively delete obviously-dangerous paths (root, `$HOME`
 /// itself, or a shallow path) — a guard before `remove_dir_all` on a
 /// manifest-supplied home.
+/// Remove a directory tree. On Windows a just-written payload file can be held
+/// transiently by the search indexer / antivirus, so `remove_dir_all` fails with
+/// `ERROR_SHARING_VIOLATION` (os error 32); retry with a short backoff until the
+/// handle is released. Unix removes in one shot.
+fn remove_dir_all_resilient(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut last: std::io::Result<()> = Ok(());
+        // A just-written payload file can be briefly held by the search indexer
+        // / antivirus (ERROR_SHARING_VIOLATION); retry over ~1.4s to ride that
+        // out. (A directory that is still a live session process's working dir
+        // is a different problem — that is reaped in session teardown.)
+        for attempt in 0..5u64 {
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last = Err(e);
+                    std::thread::sleep(std::time::Duration::from_millis(100 * (attempt + 1)));
+                }
+            }
+        }
+        last
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::remove_dir_all(path)
+    }
+}
+
 fn guard_removable_dir(path: &Path) -> Result<(), String> {
     let depth = path
         .components()
@@ -459,9 +488,10 @@ fn guard_removable_dir(path: &Path) -> Result<(), String> {
             path.display()
         ));
     }
-    if let Some(home) = std::env::var_os("HOME") {
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    if let Some(home) = std::env::var_os(home_var) {
         if path == Path::new(&home) {
-            return Err("refusing to remove $HOME".into());
+            return Err("refusing to remove the user's home directory".into());
         }
     }
     Ok(())
@@ -531,9 +561,48 @@ fn make_symlink(target: &str, link: &Path) -> Result<(), String> {
         .map_err(|e| format!("symlink {} -> {target}: {e}", link.display()))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn make_symlink(target: &str, link: &Path) -> Result<(), String> {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+    // `target` is relative to the link's parent; resolve it to choose the right
+    // symlink flavour (Windows distinguishes file vs directory symlinks).
+    let resolved = link
+        .parent()
+        .map(|p| p.join(target))
+        .unwrap_or_else(|| std::path::PathBuf::from(target));
+    let is_dir = resolved.is_dir();
+    let primary = if is_dir {
+        symlink_dir(target, link)
+    } else {
+        symlink_file(target, link)
+    };
+    if let Err(err) = primary {
+        // Symlink creation needs privilege (admin or Developer Mode). Fall back
+        // to a privilege-free equivalent that keeps the payload reachable at
+        // `link`: an NTFS junction for directories, a hard link for files.
+        let recovered = if is_dir {
+            std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(&resolved)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        } else {
+            std::fs::hard_link(&resolved, link).is_ok()
+        };
+        if !recovered {
+            return Err(format!("symlink {} -> {target}: {err}", link.display()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn make_symlink(_target: &str, _link: &Path) -> Result<(), String> {
-    Err("symlinks are only supported on unix".into())
+    Err("symlinks are not supported on this platform".into())
 }
 
 /// Idempotently ensure every resource a manifest declares exists. Existing
@@ -1000,7 +1069,7 @@ mod tests {
             src.path().join("extension.toml"),
             format!(
                 r#"name = "flow"
-home = "{}"
+home = '{}'
 
 [[agents]]
 name = "flow"
@@ -1122,7 +1191,7 @@ prompt = "tick"
         std::fs::write(
             src.path().join("extension.toml"),
             format!(
-                "name = \"evil\"\nhome = \"{}\"\n[[files]]\npath = \"../../pwned\"\n",
+                "name = \"evil\"\nhome = '{}'\n[[files]]\npath = \"../../pwned\"\n",
                 temp.path().join("h").display()
             ),
         )
@@ -1146,7 +1215,7 @@ prompt = "tick"
         std::fs::write(
             src.path().join("extension.toml"),
             format!(
-                "name = \"flow\"\nhome = \"{}\"\n[[files]]\npath = \"settings.json\"\nsubstitute = true\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
+                "name = \"flow\"\nhome = '{}'\n[[files]]\npath = \"settings.json\"\nsubstitute = true\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
                 home.display()
             ),
         )
@@ -1190,7 +1259,7 @@ prompt = "tick"
             src.path().join("extension.toml"),
             format!(
                 r#"name = "flow"
-home = "{}"
+home = '{}'
 [[agents]]
 name = "flow"
 command = "claude"
@@ -1253,7 +1322,7 @@ prompt = "tick"
         let home = temp.path().join("flowhome");
         let manifest = |version: &str| {
             format!(
-                "name = \"flow\"\nversion = \"{version}\"\nhome = \"{}\"\n[[files]]\npath = \"FLOW.md\"\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
+                "name = \"flow\"\nversion = \"{version}\"\nhome = '{}'\n[[files]]\npath = \"FLOW.md\"\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
                 home.display()
             )
         };
@@ -1318,7 +1387,7 @@ prompt = "tick"
         std::fs::write(
             src.path().join("extension.toml"),
             format!(
-                "name = \"flow\"\nversion = \"1.0.0\"\nhome = \"{}\"\n[[files]]\npath = \"seed.md\"\nif_absent = true\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
+                "name = \"flow\"\nversion = \"1.0.0\"\nhome = '{}'\n[[files]]\npath = \"seed.md\"\nif_absent = true\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
                 home.display()
             ),
         )

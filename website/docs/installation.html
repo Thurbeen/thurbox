@@ -99,6 +99,33 @@ onThisPage:
             </div>
           </div>
 
+          <h3>Windows (PowerShell)</h3>
+          <p>
+            On native Windows the install script is PowerShell. It installs to
+            <code>%LOCALAPPDATA%\Programs\thurbox</code>
+            (added to your user
+            <code>PATH</code>) and uses
+            <a href="https://github.com/psmux/psmux">psmux</a>
+            as the multiplexer.
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">powershell</span>
+            </div>
+            <div class="terminal-body">
+              <button
+                class="copy-btn"
+                data-code="irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"
+              >
+                Copy
+              </button>
+              <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">irm</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1</span> | <span class="syn-cmd">iex</span></code></pre>
+            </div>
+          </div>
+
           <h3>Available platforms</h3>
           <table>
             <thead>
@@ -123,6 +150,11 @@ onThisPage:
                 <td>macOS</td>
                 <td>Apple Silicon</td>
                 <td><code>thurbox-v{ver}-aarch64-apple-darwin.tar.gz</code></td>
+              </tr>
+              <tr>
+                <td>Windows</td>
+                <td>x86_64</td>
+                <td><code>thurbox-v{ver}-x86_64-pc-windows-msvc.zip</code></td>
               </tr>
             </tbody>
           </table>
@@ -245,7 +277,7 @@ cargo build --release"
             </thead>
             <tbody>
               <tr>
-                <td><strong>tmux >= 3.2</strong></td>
+                <td><strong>tmux >= 3.2</strong> (or <strong>psmux</strong> on Windows)</td>
                 <td>Yes</td>
                 <td>Session backend</td>
               </tr>

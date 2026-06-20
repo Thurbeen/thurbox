@@ -197,13 +197,32 @@ fn init_backends_and_config() -> Result<(
 /// XDG location (dev vs. prod build) when the path can't be resolved.
 fn open_database() -> Database {
     let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
-        let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        p.push(if cfg!(dev_build) {
-            ".local/share/thurbox-dev/thurbox.db"
+        // Degenerate fallback: even the platform data dir couldn't be resolved
+        // (no XDG/HOME on Unix, no LOCALAPPDATA/USERPROFILE on Windows). Anchor
+        // under the user's home with the platform-native data layout.
+        let app = if cfg!(dev_build) {
+            "thurbox-dev"
         } else {
-            ".local/share/thurbox/thurbox.db"
-        });
-        p
+            "thurbox"
+        };
+        #[cfg(windows)]
+        {
+            let mut p =
+                std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
+            p.push("AppData");
+            p.push("Local");
+            p.push(app);
+            p.push("thurbox.db");
+            p
+        }
+        #[cfg(not(windows))]
+        {
+            let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            p.push(".local/share");
+            p.push(app);
+            p.push("thurbox.db");
+            p
+        }
     });
     Database::open(&db_path).expect("Failed to open database")
 }

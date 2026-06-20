@@ -41,24 +41,55 @@ fn app_dir_name() -> &'static str {
     }
 }
 
-/// `$XDG_CONFIG_HOME/<app>/<filename>`, falling back to
-/// `$HOME/.config/<app>/<filename>` when `XDG_CONFIG_HOME` is unset.
-fn xdg_config_subpath(filename: &str) -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join(app_dir_name()).join(filename))
+/// The user's home directory: `$HOME` on Unix, `%USERPROFILE%` on Windows.
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).map(PathBuf::from)
 }
 
-/// `$XDG_DATA_HOME/<app>/<segments...>`, falling back to
-/// `$HOME/.local/share/<app>/<segments...>` when `XDG_DATA_HOME` is unset.
+/// Base directory for config files. `$XDG_CONFIG_HOME` wins on every platform
+/// (some users set it on Windows too); otherwise `%APPDATA%` on Windows,
+/// `$HOME/.config` on Unix.
+fn config_base() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(x));
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        home_dir().map(|h| h.join(".config"))
+    }
+}
+
+/// Base directory for data files. `$XDG_DATA_HOME` wins on every platform;
+/// otherwise `%LOCALAPPDATA%` on Windows, `$HOME/.local/share` on Unix.
+fn data_base() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
+        return Some(PathBuf::from(x));
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        home_dir().map(|h| h.join(".local").join("share"))
+    }
+}
+
+/// `<config_base>/<app>/<filename>` (e.g.
+/// `$XDG_CONFIG_HOME/thurbox/<filename>` or `%APPDATA%\thurbox\<filename>`).
+fn xdg_config_subpath(filename: &str) -> Option<PathBuf> {
+    Some(config_base()?.join(app_dir_name()).join(filename))
+}
+
+/// `<data_base>/<app>/<segments...>` (e.g.
+/// `$XDG_DATA_HOME/thurbox/<segments>` or `%LOCALAPPDATA%\thurbox\<segments>`).
 fn xdg_data_subpath(segments: &[&str]) -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
-        })?;
-    let mut p = base.join(app_dir_name());
+    let mut p = data_base()?.join(app_dir_name());
     for seg in segments {
         p.push(seg);
     }
@@ -117,23 +148,7 @@ pub fn resolve(kind: PathKind) -> Option<PathBuf> {
 /// Resolve a path using XDG Base Directory Specification.
 fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
     match kind {
-        PathKind::Config => {
-            // Prefer $XDG_CONFIG_HOME, fall back to $HOME/.config
-            if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-                let mut p = PathBuf::from(xdg);
-                p.push(app_dir_name());
-                p.push("config.toml");
-                return Some(p);
-            }
-
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".config");
-                p.push(app_dir_name());
-                p.push("config.toml");
-                p
-            })
-        }
+        PathKind::Config => xdg_config_subpath("config.toml"),
         PathKind::Database => xdg_data_subpath(&["thurbox.db"]),
         PathKind::LogDir => xdg_data_subpath(&[]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
@@ -241,8 +256,8 @@ pub fn claude_transcript_exists(
     } else if let Some(env) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         PathBuf::from(env)
     } else {
-        match std::env::var_os("HOME") {
-            Some(h) => PathBuf::from(h).join(".claude"),
+        match home_dir() {
+            Some(h) => h.join(".claude"),
             None => return false,
         }
     };
@@ -325,12 +340,12 @@ impl Drop for TestPathGuard {
 /// - `"relative/path"` → unchanged
 pub fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home);
+        if let Some(home) = home_dir() {
+            return home;
         }
     } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
+        if let Some(home) = home_dir() {
+            return home.join(rest);
         }
     }
     PathBuf::from(path)
@@ -410,9 +425,14 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
     let expanded_str = expanded.to_str().unwrap_or(input);
     let path = Path::new(expanded_str);
 
-    // Determine parent directory and the prefix the user is typing
-    let (parent, prefix) = if expanded_str.ends_with('/') {
-        // User typed a trailing slash — list contents of this directory
+    // Determine parent directory and the prefix the user is typing. A trailing
+    // path separator (`/` everywhere, plus `\` on Windows — tilde expansion
+    // yields `C:\Users\me\`) means "list this directory's contents".
+    let ends_with_sep = expanded_str
+        .chars()
+        .next_back()
+        .is_some_and(std::path::is_separator);
+    let (parent, prefix) = if ends_with_sep {
         (path.to_path_buf(), String::new())
     } else {
         // Split into parent + partial filename
@@ -450,6 +470,11 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The env var `home_dir()` reads on this platform: `USERPROFILE` on
+    /// Windows, `HOME` elsewhere. Tests that exercise tilde expansion source the
+    /// home directory from the same var so they pass on every target.
+    const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 
     #[test]
     fn display_path_uses_basename() {
@@ -754,23 +779,31 @@ mod tests {
 
     #[test]
     fn complete_directory_path_with_real_dir() {
-        // /tmp should exist on all Unix systems
-        let result = complete_directory_path("/tm");
-        assert_eq!(result, Some("p/".to_string()));
+        // Build the scenario from a real temp dir so it's platform-independent
+        // (no reliance on `/tmp` existing).
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(temp.path().join("uniquedir")).unwrap();
+        let input = format!("{}/uniqued", temp.path().display());
+        assert_eq!(complete_directory_path(&input), Some("ir/".to_string()));
     }
 
     #[test]
     fn complete_directory_path_trailing_slash() {
-        // /tmp/ should list children — result depends on system, but shouldn't panic
-        let result = complete_directory_path("/tmp/");
-        // Either Some (has child dirs) or None (empty /tmp/)
+        // A real directory with a trailing slash lists children — result depends
+        // on contents, but it must not panic.
+        let temp = tempfile::TempDir::new().unwrap();
+        let result = complete_directory_path(&format!("{}/", temp.path().display()));
         assert!(result.is_some() || result.is_none());
     }
 
     #[test]
     fn complete_directory_path_exact_match() {
-        // /tmp already exists and is a directory
-        let result = complete_directory_path("/tmp");
+        // An existing directory path (no trailing slash) completes with the
+        // separator the function appends.
+        let temp = tempfile::TempDir::new().unwrap();
+        let inner = temp.path().join("exact");
+        std::fs::create_dir(&inner).unwrap();
+        let result = complete_directory_path(&inner.display().to_string());
         assert_eq!(result, Some("/".to_string()));
     }
 
@@ -865,13 +898,13 @@ mod tests {
 
     #[test]
     fn expand_tilde_home() {
-        let home = std::env::var("HOME").unwrap();
-        assert_eq!(expand_tilde("~/foo"), PathBuf::from(format!("{home}/foo")));
+        let home = std::env::var(HOME_VAR).unwrap();
+        assert_eq!(expand_tilde("~/foo"), PathBuf::from(&home).join("foo"));
     }
 
     #[test]
     fn expand_tilde_bare() {
-        let home = std::env::var("HOME").unwrap();
+        let home = std::env::var(HOME_VAR).unwrap();
         assert_eq!(expand_tilde("~"), PathBuf::from(&home));
     }
 
@@ -887,13 +920,14 @@ mod tests {
 
     #[test]
     fn expand_tilde_no_home() {
-        // Temporarily unset HOME — use a thread to avoid interfering with other tests
+        // Temporarily unset the home var — use a thread to avoid interfering with
+        // other tests.
         let result = std::thread::spawn(|| {
-            let orig = std::env::var_os("HOME");
-            std::env::remove_var("HOME");
+            let orig = std::env::var_os(HOME_VAR);
+            std::env::remove_var(HOME_VAR);
             let p = expand_tilde("~/foo");
             if let Some(home) = orig {
-                std::env::set_var("HOME", home);
+                std::env::set_var(HOME_VAR, home);
             }
             p
         })
@@ -904,10 +938,10 @@ mod tests {
 
     #[test]
     fn expand_tilde_nested_path() {
-        let home = std::env::var("HOME").unwrap();
+        let home = std::env::var(HOME_VAR).unwrap();
         assert_eq!(
             expand_tilde("~/a/b/c"),
-            PathBuf::from(format!("{home}/a/b/c"))
+            PathBuf::from(&home).join("a").join("b").join("c")
         );
     }
 
