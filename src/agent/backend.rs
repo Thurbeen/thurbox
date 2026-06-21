@@ -622,6 +622,16 @@ impl Session {
         self.exited.store(true, Ordering::SeqCst);
     }
 
+    /// Backdate the session's last-output timestamp by `ms`, for tests that need
+    /// to exercise the output-quiescence fallback (a stuck `working` state going
+    /// quiet → `Idle`).
+    #[cfg(test)]
+    pub fn backdate_output_for_test(&self, ms: u64) {
+        let now = now_millis();
+        self.last_output_at
+            .store(now.saturating_sub(ms), Ordering::Relaxed);
+    }
+
     pub fn millis_since_last_output(&self) -> u64 {
         now_millis().saturating_sub(self.last_output_at.load(Ordering::Relaxed))
     }

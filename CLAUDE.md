@@ -1097,6 +1097,17 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   change vs. `last_active_session_id` marks the just-left `done` session `seen`
   (persists `seen_at`, one-shot). A single focused session therefore reads
   `working ↔ done`; `idle` is the at-rest/acknowledged state.
+- **Stuck-`working` fallback.** Hooks are the *primary* signal, but they can
+  miss the turn-end edge: Claude Code fires **no hook on interrupt** (Esc/Ctrl+C)
+  and none when it returns to the idle prompt, so an interrupted (or crashed)
+  turn would leave `hook_state = working` and spin forever. `derive_session_status`
+  guards against this with an **output-quiescence fallback** (`WORKING_OUTPUT_STALE_MS`,
+  10 s): a `working` session that has produced no terminal output for that long is
+  treated as `Idle`. TUI agents animate their progress line (Claude's
+  `(Xs · esc to interrupt)` ticks every second) so a genuinely-live turn never
+  trips it; only `working` is time-gated (`blocked`/`done` are not). The DB row is
+  left untouched — the override is purely in the per-tick derivation, like
+  exited → `Idle`.
 - **Rollup.** Repo groups roll up to their most-urgent member
   (`Blocked > Error > Working > Done > Idle`), rendered as a colored dot on
   the group header (`ui::project_list::group_status` +

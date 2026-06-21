@@ -630,21 +630,41 @@ pub struct App {
 const EDITOR_NOT_CONFIGURED: &str =
     "No editor configured — set `editor_command` via MCP or export $EDITOR/$VISUAL";
 
+/// Output-quiescence threshold that breaks a *stuck* `working` hook state.
+///
+/// TUI agents continuously animate their in-progress line while a turn runs
+/// (Claude's `… (Xs · esc to interrupt)` ticks the elapsed seconds at least
+/// once a second), so a genuinely-working session is never quiet for long. But
+/// when a turn is **interrupted** (Esc / Ctrl+C) Claude Code fires *no* hook —
+/// it has no interrupt/idle-prompt event (verified against the hooks docs) — so
+/// the persisted state stays `working` forever and the dot spins indefinitely.
+/// If a `working` session has produced no terminal output for this long, the
+/// agent is actually idle at its prompt, so we fall back to `Idle`. Hooks stay
+/// the primary signal (this only rescues a missed `done`/`idle` edge); the
+/// threshold is generous so a slow-but-live turn never trips it.
+const WORKING_OUTPUT_STALE_MS: u64 = 10_000;
+
 /// Map a session's persisted hook state to its rendered [`SessionStatus`]. Pure
 /// so it's unit-testable without an `App`/DB. `exited` forces `Idle` (a crashed/
 /// finished process); `just_seen` is `true` when the user just moved focus off a
-/// `done` session this tick (acknowledged → `Idle`). A `done` session is `Done`
-/// (blue) until seen; `idle`/missing/unknown states are `Idle`.
+/// `done` session this tick (acknowledged → `Idle`); `quiet_for_ms` is the time
+/// since the session's last terminal output, used to rescue a stuck `working`
+/// state (see [`WORKING_OUTPUT_STALE_MS`]). A `done` session is `Done` (blue)
+/// until seen; `idle`/missing/unknown states are `Idle`.
 fn derive_session_status(
     hook: Option<&crate::storage::HookRow>,
     exited: bool,
     just_seen: bool,
+    quiet_for_ms: u64,
 ) -> SessionStatus {
     if exited {
         return SessionStatus::Idle;
     }
     match hook.and_then(|h| h.state.as_deref()) {
-        Some("working") => SessionStatus::Working,
+        // A live `working` turn keeps emitting output; a stuck one (interrupt /
+        // crash / an agent that missed its done edge) goes quiet → fall to Idle.
+        Some("working") if quiet_for_ms <= WORKING_OUTPUT_STALE_MS => SessionStatus::Working,
+        Some("working") => SessionStatus::Idle,
         Some("blocked") => SessionStatus::Blocked,
         Some("done") => {
             let state_at = hook.and_then(|h| h.state_at).unwrap_or(0);
@@ -3379,7 +3399,12 @@ impl App {
             // mark this tick (the DB write lands after this loop), so reflect it
             // now rather than waiting a tick.
             let just_seen = seen_writes.iter().any(|(sid, _)| *sid == id);
-            let new_status = derive_session_status(hooks.get(&id), session.has_exited(), just_seen);
+            let new_status = derive_session_status(
+                hooks.get(&id),
+                session.has_exited(),
+                just_seen,
+                session.millis_since_last_output(),
+            );
 
             // Live activity text from the agent-emitted OSC terminal title.
             let new_activity = session.agent_title();
@@ -6261,42 +6286,75 @@ mod tests {
 
         // Exited forces Idle, even with a live hook state.
         assert_eq!(
-            derive_session_status(Some(&row("working", 1, 0)), true, false),
+            derive_session_status(Some(&row("working", 1, 0)), true, false, 0),
             SessionStatus::Idle
         );
         // No hook / idle / unknown → Idle.
         assert_eq!(
-            derive_session_status(None, false, false),
+            derive_session_status(None, false, false, 0),
             SessionStatus::Idle
         );
         assert_eq!(
-            derive_session_status(Some(&row("idle", 1, 0)), false, false),
+            derive_session_status(Some(&row("idle", 1, 0)), false, false, 0),
             SessionStatus::Idle
         );
         assert_eq!(
-            derive_session_status(Some(&row("nonsense", 1, 0)), false, false),
+            derive_session_status(Some(&row("nonsense", 1, 0)), false, false, 0),
             SessionStatus::Idle
         );
-        // working / blocked map straight through.
+        // working (with live output) / blocked map straight through.
         assert_eq!(
-            derive_session_status(Some(&row("working", 1, 0)), false, false),
+            derive_session_status(Some(&row("working", 1, 0)), false, false, 0),
             SessionStatus::Working
         );
+        // Quiet *up to and including* the threshold is still live (boundary).
         assert_eq!(
-            derive_session_status(Some(&row("blocked", 1, 0)), false, false),
+            derive_session_status(
+                Some(&row("working", 1, 0)),
+                false,
+                false,
+                WORKING_OUTPUT_STALE_MS
+            ),
+            SessionStatus::Working,
+            "quiescence at exactly the threshold is still Working"
+        );
+        assert_eq!(
+            derive_session_status(Some(&row("blocked", 1, 0)), false, false, 0),
             SessionStatus::Blocked
+        );
+        // A `working` state that's gone quiet past the threshold is a stuck
+        // edge (interrupt / crash) → fall back to Idle; blocked is unaffected.
+        assert_eq!(
+            derive_session_status(
+                Some(&row("working", 1, 0)),
+                false,
+                false,
+                WORKING_OUTPUT_STALE_MS + 1
+            ),
+            SessionStatus::Idle,
+            "a quiet 'working' state past the staleness window reverts to Idle"
+        );
+        assert_eq!(
+            derive_session_status(
+                Some(&row("blocked", 1, 0)),
+                false,
+                false,
+                WORKING_OUTPUT_STALE_MS + 1
+            ),
+            SessionStatus::Blocked,
+            "blocked never times out on quiescence"
         );
         // done: unseen → Done; already-seen or just-seen → Idle.
         assert_eq!(
-            derive_session_status(Some(&row("done", 5, 0)), false, false),
+            derive_session_status(Some(&row("done", 5, 0)), false, false, 0),
             SessionStatus::Done
         );
         assert_eq!(
-            derive_session_status(Some(&row("done", 5, 5)), false, false),
+            derive_session_status(Some(&row("done", 5, 5)), false, false, 0),
             SessionStatus::Idle
         );
         assert_eq!(
-            derive_session_status(Some(&row("done", 5, 0)), false, true),
+            derive_session_status(Some(&row("done", 5, 0)), false, true, 0),
             SessionStatus::Idle
         );
     }
@@ -6321,6 +6379,31 @@ mod tests {
                 "hook '{state}' should map to {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn refresh_recovers_stuck_working_after_output_goes_quiet() {
+        // A `working` session whose `done`/`idle` edge never fired (e.g. the turn
+        // was interrupted with Esc — Claude Code emits no hook for that) must not
+        // spin forever: once its terminal goes quiet past the staleness window it
+        // falls back to Idle. While output is still fresh it stays Working.
+        let mut app = app_with_sessions(1);
+        let id = persist_session(&app, 0);
+        app.db.set_hook_state(id, "working").unwrap();
+
+        // Fresh output → genuinely working.
+        app.refresh_session_statuses();
+        assert_eq!(app.sessions[0].info.status, SessionStatus::Working);
+
+        // Terminal goes quiet past the threshold (interrupt, no further hook) →
+        // the stuck state is rescued to Idle even though the DB still says working.
+        app.sessions[0].backdate_output_for_test(WORKING_OUTPUT_STALE_MS + 1_000);
+        app.refresh_session_statuses();
+        assert_eq!(
+            app.sessions[0].info.status,
+            SessionStatus::Idle,
+            "an interrupted (quiet) 'working' session must not spin forever"
+        );
     }
 
     #[test]
