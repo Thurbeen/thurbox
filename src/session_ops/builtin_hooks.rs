@@ -104,7 +104,12 @@ pub fn ensure_builtin_hooks_extension(db: &Database) -> Vec<String> {
                 ));
             }
             if !report.external_files_written.is_empty() {
-                msgs.push("hooks: installed opencode status plugin".to_string());
+                // One per agent whose own config dir we drop a file into
+                // (opencode's plugin, vibe's hooks.toml) — only those present.
+                msgs.push(format!(
+                    "hooks: installed {} agent hook file(s)",
+                    report.external_files_written.len()
+                ));
             }
             msgs
         }
@@ -168,6 +173,17 @@ mod tests {
             .expect("vibe external file present");
         assert_eq!(vibe.source_path(), "vibe-hooks.toml");
         assert_eq!(vibe.requires_dir.as_deref(), Some("~/.vibe"));
+
+        // The vibe payload is valid TOML with at least one hook entry, so a
+        // typo can't ship a file vibe would reject.
+        let vibe_payload: toml::Value =
+            toml::from_str(VIBE_HOOKS).expect("vibe payload is valid TOML");
+        assert!(
+            vibe_payload["hooks"]
+                .as_array()
+                .is_some_and(|h| !h.is_empty()),
+            "vibe payload should declare hook entries"
+        );
 
         // antigravity (agy) shares gemini's ~/.gemini/settings.json for hooks.
         let antigravity = def
