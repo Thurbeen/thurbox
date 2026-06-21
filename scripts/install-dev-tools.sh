@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Install all required development tools for thurbox
+# Install all required development tools for thurbox.
+#
+# This is the NON-NIX fallback. The recommended path is the Nix flake, which
+# pins the whole toolchain reproducibly:
+#
+#     nix develop            # or `direnv allow` once, then it auto-enters
+#
+# Use this script if you don't have Nix. It also installs the couple of tools
+# not yet packaged in nixpkgs (prek, rumdl, nightly cargo-pup), so the flake's
+# shellHook points here for those. See docs/DEVELOPMENT.md.
 
 set -e
 

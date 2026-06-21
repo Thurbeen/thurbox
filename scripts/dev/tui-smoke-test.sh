@@ -33,27 +33,7 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v tmux >/dev/null || die "tmux not found (need >= 3.2)"
 
-# --- isolated environment -----------------------------------------------------
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/thurbox-smoke.XXXXXX")"
-export HOME="$WORKDIR/home"
-export XDG_CONFIG_HOME="$WORKDIR/config"
-export XDG_DATA_HOME="$WORKDIR/data"
-export XDG_STATE_HOME="$WORKDIR/state"
-export XDG_CACHE_HOME="$WORKDIR/cache"
-export TMUX_TMPDIR="$WORKDIR/tmux"
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" \
-  "$XDG_CACHE_HOME" "$TMUX_TMPDIR"
-
-# shellcheck disable=SC2317 # body runs via the `trap` below; not unreachable
-cleanup() {
-  tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  # thurbox's own dev socket lives under our private TMUX_TMPDIR too.
-  tmux -L thurbox-dev kill-server >/dev/null 2>&1 || true
-  rm -rf "$WORKDIR"
-}
-trap cleanup EXIT INT TERM
-
-# --- build (unless a binary was provided) ------------------------------------
+# --- build (unless a binary was provided) — before the HOME override below ----
 if [ -n "${THURBOX_BIN:-}" ]; then
   BIN="$THURBOX_BIN"
   [ -x "$BIN" ] || die "THURBOX_BIN=$BIN is not executable"
@@ -63,6 +43,21 @@ else
   BIN="$REPO_ROOT/target/debug/thurbox"
 fi
 [ -x "$BIN" ] || die "thurbox binary not found at $BIN"
+
+# --- isolated environment (shared dev-sandbox helper) ------------------------
+# shellcheck source=scripts/dev/lib/sandbox-env.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/dev/lib/sandbox-env.sh"
+tbx_sandbox_init_full fresh   # hermetic: temp HOME/XDG so it never touches real config
+
+# shellcheck disable=SC2317,SC2329 # body runs via the `trap` below; not unreachable
+cleanup() {
+  # The outer "driver" tmux (socket `tui-smoke`) lives in the same private
+  # TMUX_TMPDIR; kill it, then let the helper kill thurbox-dev + wipe the root.
+  tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+  tbx_sandbox_teardown
+}
+trap cleanup EXIT INT TERM
 
 # --- launch the TUI in an isolated tmux pane ---------------------------------
 log "launching TUI in tmux ($COLS x $ROWS)"

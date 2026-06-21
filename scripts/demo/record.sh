@@ -103,26 +103,22 @@ THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
 CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
 export THURBOX_BIN   # consumed by the tapes (they `exec "$THURBOX_BIN"`)
 
-# --- Isolated environment ----------------------------------------------------
+# --- Isolated environment (shared dev-sandbox helper) ------------------------
 REAL_HOME="$HOME"                        # captured before the override below
-DEMO_HOME=$(mktemp -d "${TMPDIR:-/tmp}/thurbox-demo.XXXXXX")
-export HOME="$DEMO_HOME/home"            # fresh agent auth (no real creds/history)
-export XDG_DATA_HOME="$DEMO_HOME/data"
-export XDG_CONFIG_HOME="$DEMO_HOME/config"
-export XDG_STATE_HOME="$DEMO_HOME/state"
-export XDG_CACHE_HOME="$DEMO_HOME/cache"
-export TMUX_TMPDIR="$DEMO_HOME/tmux"     # isolate the tmux socket DIRECTORY
+# shellcheck source=scripts/dev/lib/sandbox-env.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/dev/lib/sandbox-env.sh"
+tbx_sandbox_init_full fresh              # throwaway temp HOME/XDG/TMUX_TMPDIR
+DEMO_HOME="$TBX_SANDBOX_ROOT"            # fresh agent auth (no real creds/history)
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"   # dev_build subdir
 DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"  # SQLite db (dev_build subdir)
-mkdir -p "$HOME" "$CFG_DIR" "$XDG_DATA_HOME" "$XDG_STATE_HOME" \
-    "$XDG_CACHE_HOME" "$TMUX_TMPDIR"
+mkdir -p "$CFG_DIR"
 
 cleanup() {
-    # The isolated tmux server (in TMUX_TMPDIR) hosts every agent pane, so this
-    # single kill reaps all the real agent processes too — and cannot reach any
-    # tmux server outside this throwaway directory.
-    tmux -L thurbox-dev kill-server >/dev/null 2>&1 || true
-    rm -rf "$DEMO_HOME"
+    # The isolated tmux server (in TMUX_TMPDIR) hosts every agent pane, so the
+    # helper's single kill reaps all the real agent processes too — and cannot
+    # reach any tmux server outside this throwaway directory — then wipes it.
+    tbx_sandbox_teardown
 }
 trap cleanup EXIT INT TERM
 
