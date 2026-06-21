@@ -1636,14 +1636,16 @@ impl App {
             .map(|wt| wt.worktree_path.clone())
             .or(deleted.cwd.clone());
 
-        let config = SessionConfig {
-            resume_session_id: deleted.agent_session_id.clone(),
-            agent_session_id: deleted.agent_session_id,
+        // Reuse the existing SessionId + inject identity/dir env so the restored
+        // session's status hooks can attribute their `session signal` (otherwise
+        // it renders Idle forever).
+        let mut config = Self::restored_session_config(
+            deleted.id,
+            deleted.agent_session_id.clone(),
+            deleted.agent,
             cwd,
-            agent: deleted.agent,
-            fork_session_id: None,
-            ..SessionConfig::default()
-        };
+        );
+        config.resume_session_id = deleted.agent_session_id;
 
         let session_name = deleted.name.clone();
         let (rows, cols) = self.content_area_size();
@@ -3970,6 +3972,39 @@ impl App {
         }
     }
 
+    /// Build the [`SessionConfig`] for relaunching an *existing* session — either
+    /// a startup-restore respawn ([`Self::spawn_restored_session`]) or a `Ctrl+U`
+    /// undelete ([`Self::restore_deleted_session`]). Both reuse the session's
+    /// stable `SessionId` and must inject the `THURBOX_*` identity/dir env so the
+    /// agent's status hooks can attribute their `session signal` — without it the
+    /// row's `hook_state` never updates and the session renders Idle forever
+    /// (the bug these paths previously hit by calling `Session::spawn` directly).
+    /// The caller sets `resume_session_id` afterward. Mirrors the headless
+    /// `session_ops::restart_session_headless` shape.
+    fn restored_session_config(
+        id: crate::session::SessionId,
+        agent_session_id: Option<String>,
+        agent: String,
+        cwd: Option<PathBuf>,
+    ) -> SessionConfig {
+        let mut config = SessionConfig {
+            agent_session_id: agent_session_id.clone(),
+            session_id: Some(id),
+            cwd,
+            agent,
+            ..SessionConfig::default()
+        };
+        // `THURBOX_SESSION` (derived from `session_id`) is the identity that
+        // matters; an empty `THURBOX_SESSION_ID` for an id-less agent is harmless
+        // since the CLI resolves identity from `THURBOX_SESSION` first.
+        crate::session_ops::inject_thurbox_env(
+            &mut config,
+            agent_session_id.as_deref().unwrap_or_default(),
+            None,
+        );
+        config
+    }
+
     /// Spawn a fresh window for a restored session that has an
     /// `agent_session_id` but no matching discovered window.
     fn spawn_restored_session(
@@ -3988,14 +4023,16 @@ impl App {
             .map(|wt| wt.worktree_path.clone())
             .or(shared_session.cwd.clone());
 
-        let mut config = SessionConfig {
-            resume_session_id: None,
-            agent_session_id: Some(agent_sid.clone()),
+        // Build the relaunch config reusing the existing SessionId and injecting
+        // identity/dir env, so the agent's status hooks can attribute their
+        // `session signal` (otherwise the row stays Idle). The injector runs
+        // before `resume_trigger_for`, which only reads `CLAUDE_CONFIG_DIR`.
+        let mut config = Self::restored_session_config(
+            shared_session.id,
+            Some(agent_sid.clone()),
+            shared_session.agent.clone(),
             cwd,
-            agent: shared_session.agent.clone(),
-            fork_session_id: None,
-            ..SessionConfig::default()
-        };
+        );
         let def = self.agent_def_for(&config.agent);
         config.resume_session_id =
             crate::session_ops::resume_trigger_for(&def, agent_sid, &config.env);
@@ -6273,6 +6310,46 @@ mod tests {
         let shared = app.session_to_shared(&app.sessions[idx]);
         app.db.upsert_session(&shared).unwrap();
         shared.id
+    }
+
+    #[test]
+    fn restored_session_config_injects_identity_env() {
+        // Regression: a restored/undeleted session must carry `THURBOX_SESSION`
+        // so its status hooks can attribute `session signal` — otherwise the row
+        // stays Idle forever. The two relaunch paths previously skipped this.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let id = crate::session::SessionId::default();
+        let config = App::restored_session_config(
+            id,
+            Some("agent-conv-uuid".into()),
+            "claude".into(),
+            None,
+        );
+        assert_eq!(config.session_id, Some(id));
+        assert_eq!(
+            config.env.get("THURBOX_SESSION"),
+            Some(&id.to_string()),
+            "THURBOX_SESSION must match the reused SessionId"
+        );
+        assert_eq!(
+            config.env.get("THURBOX_SESSION_ID"),
+            Some(&"agent-conv-uuid".to_string())
+        );
+        // The config/data dir overrides pin the hook's `thurbox-cli` to this DB.
+        assert!(config.env.contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
+        assert!(config.env.contains_key(crate::paths::DATA_DIR_OVERRIDE_ENV));
+    }
+
+    #[test]
+    fn restored_session_config_idless_agent_still_has_session_identity() {
+        // An agent that can't report its own id (None) still gets `THURBOX_SESSION`
+        // from the reused SessionId — the identity the CLI resolves from first.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let id = crate::session::SessionId::default();
+        let config = App::restored_session_config(id, None, "codex".into(), None);
+        assert_eq!(config.env.get("THURBOX_SESSION"), Some(&id.to_string()));
     }
 
     #[test]

@@ -127,7 +127,11 @@ fn build_agent_invocation(config: &SessionConfig) -> (String, Vec<String>) {
 ///
 /// Kept in sync with `App::build_spawn_inputs` so headless and TUI sessions look
 /// identical to the spawned process (modulo `THURBOX_TASK` as noted above).
-fn inject_thurbox_env(config: &mut SessionConfig, agent_session_id: &str, task_id: Option<i64>) {
+pub(crate) fn inject_thurbox_env(
+    config: &mut SessionConfig,
+    agent_session_id: &str,
+    task_id: Option<i64>,
+) {
     config
         .env
         .insert("THURBOX_SESSION_ID".into(), agent_session_id.into());
