@@ -56,7 +56,7 @@ The sandbox runs the dev build (`0.0.0-dev` → `dev_build` cfg, which uses a
 `thurbox-dev` tmux socket) with **thurbox's own config/data redirected** into the
 sandbox (via `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`), so it never touches your
 real `~/.config/thurbox` or sessions. It **keeps your real `HOME`**, so your
-authenticated agent CLIs (`claude`/`codex`/`gemini`/…) work normally — and it puts
+authenticated agent CLIs (`claude`/`codex`/`antigravity`/…) work normally — and it puts
 the dev `target/debug` first on `PATH`, so an agent's status hook calls *this*
 `thurbox-cli` and writes to the sandbox DB the TUI reads.
 

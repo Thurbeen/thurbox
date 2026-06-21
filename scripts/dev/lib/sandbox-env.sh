@@ -10,7 +10,7 @@
 #   tbx_sandbox_init      — *thurbox-only* isolation (DEFAULT for sandbox.sh):
 #                           redirects only THURBOX_CONFIG_DIR / THURBOX_DATA_DIR
 #                           (+ TMUX_TMPDIR), leaving HOME/XDG real so your real,
-#                           authenticated agent CLIs (claude/codex/gemini/…) work.
+#                           authenticated agent CLIs (claude/codex/antigravity/…) work.
 #   tbx_sandbox_init_full — *full* isolation: also overrides HOME + XDG_* under
 #                           the sandbox (hermetic; agents boot with no creds).
 #                           Used by the demo recorder + TUI smoke test.

@@ -13,7 +13,7 @@
 #   * tasks-demo.{gif,mp4}              (tasks.tape)
 #   * search-demo.{gif,mp4}             (search.tape)
 #
-# Every clip drives the actual `claude`, `opencode`, `codex` and `gemini` CLIs —
+# Every clip drives the actual `claude`, `opencode`, `codex` and `antigravity` CLIs —
 # one per thurbox session — to showcase real multi-agent orchestration. No prompt
 # is sent to any agent; they are launched and left on their start screens.
 #
@@ -24,16 +24,17 @@
 #     is marked trusted (see "Seed agent credentials + pre-trust" below). Only the
 #     token is copied, never history; auth files absent for a CLI you are not
 #     logged into are simply skipped. No account email/handle is shown on screen:
-#     codex/gemini surface no identity when logged in, and claude is left logged
-#     out on purpose (only its folder trust is pre-accepted) because it would
-#     otherwise print your account email — see the claude note below.
+#     codex surfaces no identity when logged in; antigravity (agy) and claude are
+#     both featured LOGGED OUT on purpose, because each prints your account email
+#     in its welcome box when signed in (agy fetches it from the server via its
+#     keyring auth; claude prints the org name) — see their notes below.
 #   * TMUX_TMPDIR points at a throwaway dir -> the `thurbox-dev` tmux server lives
 #     in its own socket directory, so cleanup can't kill dev sessions you already
 #     have running.
 #   * XDG_{DATA,CONFIG,STATE,CACHE}_HOME point at a throwaway dir.
 #
 # Requirements: cargo, git, tmux, vhs (+ ffmpeg + ttyd) and whichever agent CLIs
-# you want to feature (claude / opencode / codex / gemini). Missing agents are
+# you want to feature (claude / opencode / codex / antigravity). Missing agents are
 # skipped with a warning.
 #
 # Usage:  scripts/demo/record.sh [tape-stem ...]
@@ -80,17 +81,28 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
+# Map a featured-agent display name to its actual CLI binary. They differ only
+# for antigravity, whose binary is `agy` (the Gemini CLI successor); identity for
+# everyone else.
+agent_command() {
+    case "$1" in
+        antigravity) echo "agy" ;;
+        *) echo "$1" ;;
+    esac
+}
+
 # Which agent CLIs are available? Feature only the ones present.
 AGENTS=
-for a in claude opencode codex gemini; do
-    if command -v "$a" >/dev/null 2>&1; then
+for a in claude opencode codex antigravity; do
+    bin=$(agent_command "$a")
+    if command -v "$bin" >/dev/null 2>&1; then
         AGENTS="$AGENTS $a"
     else
-        echo "warning: '$a' not found on PATH — skipping it in the demo" >&2
+        echo "warning: '$bin' not found on PATH — skipping '$a' in the demo" >&2
     fi
 done
 if [ -z "$AGENTS" ]; then
-    echo "error: none of claude/opencode/codex/gemini are installed" >&2
+    echo "error: none of claude/opencode/codex/antigravity (agy) are installed" >&2
     exit 1
 fi
 
@@ -128,7 +140,19 @@ trap cleanup EXIT INT TERM
     first=$(printf '%s\n' $AGENTS | head -n1)
     echo "default = \"$first\""
     for a in $AGENTS; do
-        printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$a"
+        if [ "$a" = "antigravity" ]; then
+            # Launch agy with the keyring/D-Bus cut off so it boots to its clean,
+            # branded logged-out screen ("Welcome to the Antigravity CLI … select
+            # login method") instead of printing the real signed-in Google account
+            # email + name. agy authenticates via the system keyring (D-Bus secret
+            # service), which survives the HOME/XDG isolation, and fetches the
+            # account identity from the server — so cutting D-Bus is the only way
+            # to keep that PII off screen. Mirrors the claude treatment: featured,
+            # but identity-free on screen.
+            printf '\n[[agents]]\nname = "antigravity"\ncommand = "env"\nargs = ["-u", "GNOME_KEYRING_CONTROL", "DBUS_SESSION_BUS_ADDRESS=/dev/null", "agy"]\n'
+        else
+            printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$(agent_command "$a")"
+        fi
     done
 } > "$CFG_DIR/agents.toml"
 
@@ -190,8 +214,11 @@ done
 # auth files are only copied when present, so this is a no-op for any CLI you are
 # not logged into. Per-CLI on-disk formats:
 #   codex  -> ~/.codex/{auth.json, config.toml: [projects."<p>"] trust_level}
-#   gemini -> ~/.gemini/{oauth_creds.json, google_accounts.json, settings.json,
-#                        trustedFolders.json: {"<p>": "TRUST_FOLDER"}}
+#   antigravity (agy) -> featured logged-OUT (keyring auth can't be seeded into a
+#                        throwaway HOME and leaks the account email); we only seed
+#                        ~/.gemini/{settings.json, trustedFolders.json} +
+#                        ~/.gemini/antigravity-cli/{cache/onboarding.json,
+#                        bin/webm_encoder} to keep its logged-out screen tidy
 #   claude -> ~/.claude/.credentials.json + ~/.claude.json projects."<p>"
 #             .hasTrustDialogAccepted (+ a binary symlink so its self-install
 #             check stays quiet under the throwaway HOME)
@@ -210,18 +237,28 @@ if [ -f "$REAL_HOME/.codex/auth.json" ]; then
     done
 fi
 
-# gemini: oauth creds + the selected-auth setting + a trusted-folders map
-if [ -f "$REAL_HOME/.gemini/oauth_creds.json" ]; then
-    mkdir -p "$HOME/.gemini"
-    cp "$REAL_HOME/.gemini/oauth_creds.json" "$HOME/.gemini/oauth_creds.json"
-    [ -f "$REAL_HOME/.gemini/google_accounts.json" ] && \
-        cp "$REAL_HOME/.gemini/google_accounts.json" \
-            "$HOME/.gemini/google_accounts.json"
-    printf '{"security":{"auth":{"selectedType":"oauth-personal"}}}\n' \
-        > "$HOME/.gemini/settings.json"
-    jq -n '$ARGS.positional | map({(.): "TRUST_FOLDER"}) | add' --args "$@" \
-        > "$HOME/.gemini/trustedFolders.json"
-fi
+# antigravity (agy): featured logged-OUT, like claude — NO auth token is seeded.
+# agy authenticates via the system keyring (D-Bus secret service), which survives
+# the HOME/XDG isolation, and prints the signed-in Google account's email + full
+# name in its welcome box (fetched from the server). The only way to keep that PII
+# off screen is to launch it with the keyring cut off (the agents.toml entry above
+# wraps `agy` in `env … DBUS_SESSION_BUS_ADDRESS=/dev/null`), so it boots to its
+# clean, branded "not signed in / select login method" screen. We still seed
+# ~/.gemini so that screen is tidy: onboarding marked complete (skips the
+# first-run intro), the demo folders pre-trusted, the oauth-personal auth type
+# selected, and webm_encoder copied in (avoids a ~17 MB on-camera download). This
+# runs unconditionally — agy is logged out, so it needs nothing from your real
+# ~/.gemini except the (optional) cached webm_encoder.
+mkdir -p "$HOME/.gemini/antigravity-cli/cache" "$HOME/.gemini/antigravity-cli/bin"
+printf '{"security":{"auth":{"selectedType":"oauth-personal"}}}\n' \
+    > "$HOME/.gemini/settings.json"
+jq -n '$ARGS.positional | map({(.): "TRUST_FOLDER"}) | add' --args "$@" \
+    > "$HOME/.gemini/trustedFolders.json"
+printf '{"consumerOnboardingComplete":true,"enterpriseOnboardingComplete":false,"onboardingComplete":true}\n' \
+    > "$HOME/.gemini/antigravity-cli/cache/onboarding.json"
+[ -f "$REAL_HOME/.gemini/antigravity-cli/bin/webm_encoder" ] && \
+    cp "$REAL_HOME/.gemini/antigravity-cli/bin/webm_encoder" \
+        "$HOME/.gemini/antigravity-cli/bin/webm_encoder"
 
 # claude: trust + onboarding flags only — deliberately NOT logged in. claude's
 # welcome box renders the account's organizationName, and a personal org is

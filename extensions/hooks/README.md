@@ -52,17 +52,18 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   wiring is fully reversible. codex has no per-event notify, so working/blocked/
   idle aren't expressible this way — the dot is accurate for the turn-complete
   edge (complementary to aider's blocked-only).
-- **gemini** *(experimental)* — gemini loads hooks only from its shared
-  `~/.gemini/settings.json`, so we **JSON-merge** our entries in (a
-  `[[config_merges]]`, guarded by `requires_dir`) without clobbering your
-  settings; uninstall prunes exactly ours back out. Events: `SessionStart` →
-  idle, `BeforeTool` → working, `AfterAgent` → done. **No blocked** — gemini has
-  no permission-only event (only an ambiguous `Notification` that also fires on
-  idle, the false-red trap we avoid for claude). **Caveats:** the event
-  names/settings shape are doc-sourced and unverified against a live binary — if
-  they differ, edit `gemini-hooks.json` (no code change). And if gemini sanitizes
-  the hook environment, `$THURBOX_SESSION` may not reach the hook, in which case
-  the signal is a fail-open no-op. Validate end-to-end before relying on it.
+- **antigravity** *(experimental)* — antigravity (the `agy` CLI, the Gemini CLI
+  successor) loads hooks only from its shared `~/.gemini/settings.json`, so we
+  **JSON-merge** our entries in (a `[[config_merges]]`, guarded by
+  `requires_dir`) without clobbering your settings; uninstall prunes exactly ours
+  back out. Events: `SessionStart` → idle, `BeforeTool` → working, `AfterAgent` →
+  done. **No blocked** — it has no permission-only event (only an ambiguous
+  `Notification` that also fires on idle, the false-red trap we avoid for
+  claude). **Caveats:** the event names/settings shape are inherited from gemini
+  and not exhaustively verified against the live `agy` binary — if they differ,
+  edit `antigravity-hooks.json` (no code change). And if agy sanitizes the hook
+  environment, `$THURBOX_SESSION` may not reach the hook, in which case the
+  signal is a fail-open no-op. Validate end-to-end before relying on it.
 
 ## Mechanism
 
@@ -74,7 +75,7 @@ This extension exercises two extension-manifest capabilities (see
 - `[[external_files]]` — place a file into an agent's **own** config dir
   (outside the extension home), guarded by `requires_dir`.
 - `[[config_merges]]` — **reversibly deep-merge** shipped JSON into an agent's
-  own *shared* config file (gemini's `settings.json`) without clobbering the
+  own *shared* config file (antigravity's `~/.gemini/settings.json`) without clobbering the
   user's other settings: objects recurse, arrays union, and uninstall prunes
   exactly the entries we shipped (matched by the `session signal` marker, so it
   stays correct across payload changes). Guarded by `requires_dir`; no-op when

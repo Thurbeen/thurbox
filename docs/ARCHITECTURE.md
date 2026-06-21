@@ -599,7 +599,7 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
 at creation time; each agent runs with its own default config.
 Agents are described as **data** in `~/.config/thurbox/agents.toml`
 (sibling of any other config), seeded with built-ins (claude,
-codex, gemini, opencode, aider, vibe) on first run via
+codex, antigravity, opencode, aider, vibe) on first run via
 `agent::agent_config::load_or_seed`. An `AgentDef` carries a
 `command`, `args` (always passed — bake in flags like a model
 here if you want), and argument-template groups (`resume_args`,
@@ -673,7 +673,7 @@ load-bearing contract.
 
 - *Vendor plugin formats* (e.g. a Claude Code plugin) — couples
   the workflow to one agent's ecosystem; the same agent brain must
-  be runnable by codex, gemini, opencode, vibe, ….
+  be runnable by codex, antigravity, opencode, vibe, ….
 - *A `thurbox-cli flow init` subcommand with embedded assets* —
   puts one opinionated workflow inside the agent-neutral core and
   ties spec iteration to the release cycle.

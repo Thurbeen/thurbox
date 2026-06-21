@@ -22,7 +22,7 @@ It is **forge-agnostic** *and* **agent-agnostic**, like thurbox itself. The only
 thing baked in is **git** — *how* to talk to a repo's host is decided by the
 **shepherd agent**, fresh each tick, from what the repo actually is. The monitor
 and fixer are plain `agents.toml` entries (`shepherd`, `shepherd-worker`), so
-each can be claude, codex, gemini, opencode, vibe, … The behavior lives in
+each can be claude, codex, antigravity, opencode, vibe, … The behavior lives in
 [SHEPHERD.md](SHEPHERD.md), surfaced to whatever CLI you pick via context-file
 symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `SHEPHERD.md`).
 

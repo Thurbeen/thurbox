@@ -7,7 +7,7 @@ when working with code in this repository.
 
 Thurbox is a multi-session coding-agent TUI orchestrator built
 with Rust. It runs multiple coding-agent CLI instances (Claude
-Code, Codex, Gemini CLI, opencode, aider, … — any CLI you
+Code, Codex, Antigravity, opencode, aider, … — any CLI you
 define) inside persistent tmux sessions, rendered as terminal
 panels via ratatui + tui-term. Sessions survive crashes/restarts
 because tmux keeps the processes alive.
@@ -313,7 +313,7 @@ Enforced by cocogitto via pre-commit hooks.
 
 The set of launchable coding agents is declared **as data** in
 `~/.config/thurbox/agents.toml`, seeded with built-ins
-(`claude`, `codex`, `gemini`, `opencode`, `aider`, `vibe`) on first run.
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `vibe`) on first run.
 Each `[[agents]]` entry is an `AgentDef`:
 
 ```toml
@@ -346,17 +346,17 @@ your own `[[agents]]` entry to support any CLI — no recompile.
 **Session id pinning vs. `resume_latest`.** thurbox generates the
 `agent_session_id` (a UUID) and only `claude` accepts it at creation
 (`--session-id {id}`), so only claude can resume/fork by that exact id.
-The other built-ins (`codex`, `opencode`, `gemini`, `aider`) can't pin
+The other built-ins (`codex`, `opencode`, `antigravity`, `aider`) can't pin
 or report their id, so they set `resume_latest = true` with **id-less**
 resume/fork flags (no `{id}` token): the agent resolves "the last
 session in *this* directory" itself (`codex resume --last`, `opencode
---continue`, `gemini --resume latest`, `aider --restore-chat-history`).
+--continue`, `agy --continue`, `aider --restore-chat-history`).
 This works because restart reuses the session's cwd and a single-repo
 fork reuses the parent's cwd. `resume_latest` only changes *when* the
 resume group fires (see `session_ops::resume_trigger_for`): for these
 agents restart always triggers resume; for claude it still defers to an
 on-disk transcript check. Caveats: agents without `fork_args`
-(`gemini`, `aider` — neither CLI forks) start fresh on `Ctrl+F`; and a
+(`antigravity`, `aider` — neither CLI forks) start fresh on `Ctrl+F`; and a
 **multi-repo** fork of a cwd-scoped agent lands in a fresh symlink
 workspace, so `--last`/`--continue` finds no parent session (multi-repo
 *restart* still resumes, since it keeps the same workspace dir).
@@ -904,7 +904,7 @@ agents.toml (`apply_agent_patches` via `toml_edit`, reversible — uninstall
 removes exactly the injected subsequence); and `[[config_merges]]`
 **reversibly deep-merges** shipped JSON into an agent's own *shared* config
 file (`{path, source, requires_dir}`) — for agents whose hooks live in a
-file that would be clobbered by `[[external_files]]` (gemini's
+file that would be clobbered by `[[external_files]]` (antigravity's
 `settings.json`). The merge (`agent::json_merge`) recurses objects, unions
 arrays by deep-equality, and leaves a user's conflicting value untouched;
 uninstall **prunes by marker** (every shipped hook command contains
@@ -924,7 +924,7 @@ clobbering user settings), aider gets `--notifications-command` (blocked-only),
 `codex` gets a `-c notify=…` override via `[[agent_patches]]` (codex's stable
 turn-complete hook → done, no `~/.codex` write), an `[[external_files]]` drops
 an opencode plugin into `~/.config/opencode/plugin/`, and a `[[config_merges]]`
-deep-merges hook entries into `gemini`'s shared `~/.gemini/settings.json`
+deep-merges hook entries into `antigravity`'s shared `~/.gemini/settings.json`
 (idle/working/done, no blocked; **experimental** — doc-sourced schema +
 possible hook-env sanitization, see `extensions/hooks/README.md`).
 Opt out with `thurbox-cli extension deactivate hooks` (records a
@@ -1227,7 +1227,7 @@ the hero, `automations`/`tasks`/`search` map to `<stem>-demo.*`,
 every other stem maps to `thurbox-<stem>.*`).
 
 Every clip uses **real agent CLIs**: the script seeds one session
-per installed CLI (`claude`, `opencode`, `codex`, `gemini`) in a
+per installed CLI (`claude`, `opencode`, `codex`, `antigravity`) in a
 throwaway sample repo and launches them with no prompt. It
 overrides `HOME`, so agents boot with fresh history/config (no
 past conversations leak); CLIs that authenticate via the system

@@ -27,7 +27,7 @@ manifests + lockfiles in an isolated worktree; the thurbox worker owns the rest
 (test, commit, push, open a PR). That keeps it forge-agnostic *and*
 agent-agnostic, like thurbox itself — only **git** is baked in. The monitor and
 worker are plain `agents.toml` aliases (`renovate`, `renovate-worker`), so each
-can be claude, codex, gemini, opencode, vibe, … The behavior lives in
+can be claude, codex, antigravity, opencode, vibe, … The behavior lives in
 [RENOVATE.md](RENOVATE.md), surfaced to whatever CLI you pick via context-file
 symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `RENOVATE.md`).
 

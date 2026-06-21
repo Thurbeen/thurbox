@@ -45,7 +45,7 @@ class Thurbox < Formula
 
   def caveats
     <<~EOS
-      thurbox needs tmux >= 3.2 and a coding-agent CLI (claude, codex, gemini,
+      thurbox needs tmux >= 3.2 and a coding-agent CLI (claude, codex, antigravity,
       opencode, aider, …) on your PATH. Launch the TUI with `thurbox`; the
       scriptable headless interface is `thurbox-cli`.
     EOS

@@ -36,7 +36,7 @@ platforms.
 ## Runtime dependencies
 
 - `tmux` (>= 3.2) and `git` — declared as formula `depends_on`.
-- A coding-agent CLI (claude-code, codex, gemini, opencode, aider, …) is
+- A coding-agent CLI (claude-code, codex, antigravity, opencode, aider, …) is
   user-supplied (mentioned in the formula `caveats`).
 
 ## Test locally

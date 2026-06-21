@@ -5,7 +5,7 @@
 # touches your real ~/.config/thurbox or tmux server.
 #
 # By default only *thurbox's own* config/data are redirected (via THURBOX_*_DIR)
-# — your real HOME/agents stay intact, so authenticated claude/codex/gemini work.
+# — your real HOME/agents stay intact, so authenticated claude/codex/antigravity work.
 # Pass --isolate-home for a fully hermetic env (fresh HOME, agents boot without
 # credentials), e.g. to reproduce the demo/smoke conditions.
 #

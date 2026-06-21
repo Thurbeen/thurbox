@@ -221,7 +221,7 @@ from accumulating stale entries.
 
 The set of available agents is **data**, not code. On first run
 Thurbox seeds `~/.config/thurbox/agents.toml` with built-in
-definitions for claude, codex, gemini, opencode, aider, and vibe
+definitions for claude, codex, antigravity, opencode, aider, and vibe
 (`agent::agent_config::load_or_seed`). Editing the file — adding an
 `[[agents]]` entry or tweaking an existing one — extends the agent
 picker with no recompile.
@@ -247,8 +247,8 @@ Only `claude` accepts the thurbox-generated id at creation
 (`--session-id {id}`), so only it resumes/forks by that exact id.
 The other built-ins can't pin or report their session id, so they
 set `resume_latest = true` and resume/fork via id-less, cwd-scoped
-flags (`codex resume --last`, `opencode --continue`, `gemini
---resume latest`, `aider --restore-chat-history`); the agent
+flags (`codex resume --last`, `opencode --continue`, `agy
+--continue`, `aider --restore-chat-history`); the agent
 resolves "the last session in this directory" itself, which works
 because restart reuses the session cwd and a single-repo fork reuses
 the parent cwd. Agents that declare no `resume_args` start fresh on

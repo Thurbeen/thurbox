@@ -93,7 +93,7 @@ way), making it usable as a dotfiles CI gate.
 ## agents.toml
 
 Declares the launchable coding agents. Seeded with the built-ins
-(`claude`, `codex`, `gemini`, `opencode`, `aider`, `vibe`) on first
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `vibe`) on first
 run; edit or add `[[agents]]` entries to support any CLI — no
 recompile. A malformed `[[agents]]` entry is skipped (with a toast
 naming it) and the rest still load; only a document-level syntax error
@@ -447,7 +447,7 @@ append_args = ["--settings", "{home}/claude.json"]
 
 [[config_merges]]               # reversibly deep-merge JSON into an agent's own
 path = "~/.gemini/settings.json"  #   SHARED config file (never clobbered)
-source = "gemini-hooks.json"    # objects recurse, arrays union; uninstall prunes
+source = "antigravity-hooks.json"  # objects recurse, arrays union; uninstall prunes
 requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
                                 #   when unchanged; malformed target soft-skipped
 

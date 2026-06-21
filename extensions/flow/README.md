@@ -18,7 +18,7 @@ Needs you: PR #42 has a failing migration — approve the schema change?
 
 Flow is **agent-agnostic**, like thurbox itself: the triager and the
 workers are plain `agents.toml` entries (`flow`, `flow-worker`,
-`flow-worker-heavy`), so each can be claude, codex, gemini, opencode,
+`flow-worker-heavy`), so each can be claude, codex, antigravity, opencode,
 vibe, … The behavior lives in [FLOW.md](FLOW.md), a plain context file
 surfaced to whatever CLI you pick via symlinks (`CLAUDE.md`, `AGENTS.md`,
 `GEMINI.md` → `FLOW.md`).

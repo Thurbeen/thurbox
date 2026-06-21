@@ -51,12 +51,13 @@ resume_args = ["resume", "--last"]
 fork_args = ["fork", "--last"]
 resume_latest = true
 
-# gemini resumes the latest session in the launch directory; it has no fork
-# (Ctrl+F falls back to a fresh session).
+# antigravity (the `agy` CLI, the Gemini CLI successor) resumes the latest
+# session in the launch directory via `--continue`; it has no fork (Ctrl+F falls
+# back to a fresh session).
 [[agents]]
-name = "gemini"
-command = "gemini"
-resume_args = ["--resume", "latest"]
+name = "antigravity"
+command = "agy"
+resume_args = ["--continue"]
 resume_latest = true
 
 # `--continue` resumes the last session in the cwd; add `--fork` to branch it.
@@ -350,7 +351,7 @@ mod tests {
         assert_eq!(reg.default, "claude");
         assert!(reg.get("claude").is_some());
         assert!(reg.get("codex").is_some());
-        assert!(reg.get("gemini").is_some());
+        assert!(reg.get("antigravity").is_some());
         assert!(reg.get("opencode").is_some());
         assert!(reg.get("aider").is_some());
         assert!(reg.get("vibe").is_some());
@@ -370,8 +371,8 @@ mod tests {
         assert_eq!(opencode.fork_args, ["--continue", "--fork"]);
         assert!(opencode.resume_latest);
 
-        // gemini/aider resume their latest session but have no fork group.
-        for name in ["gemini", "aider"] {
+        // antigravity/aider resume their latest session but have no fork group.
+        for name in ["antigravity", "aider"] {
             let a = reg.get(name).unwrap();
             assert!(a.resume_latest, "{name} should resume latest");
             assert!(!a.resume_args.is_empty(), "{name} needs resume_args");
@@ -380,7 +381,7 @@ mod tests {
 
         // No non-claude resume/fork token may carry a {id} placeholder — these
         // agents can't be addressed by a thurbox-known id.
-        for name in ["codex", "gemini", "opencode", "aider"] {
+        for name in ["codex", "antigravity", "opencode", "aider"] {
             let a = reg.get(name).unwrap();
             assert!(
                 !a.resume_args

@@ -2,7 +2,7 @@
 
 Run any coding-agent CLI in persistent terminal sessions.
 Thurbox is a multi-session TUI orchestrator that launches
-Claude Code, Codex, Gemini CLI, opencode, aider — or any agent
+Claude Code, Codex, Antigravity, opencode, aider — or any agent
 you describe — inside persistent tmux panes that survive
 crashes, restarts, and reboots. Sessions, agents, and git
 worktrees are first-class citizens.
@@ -115,7 +115,7 @@ adds:
 - **Parallelism** — many agents side-by-side, each on its own
   repo(s) and branch, each running the agent you chose.
 - **Any agent** — a session runs one coding-agent CLI selected at
-  creation time. Built-ins (claude, codex, gemini, opencode,
+  creation time. Built-ins (claude, codex, antigravity, opencode,
   aider, vibe) are seeded into `~/.config/thurbox/agents.toml`; add your
   own without recompiling.
 - **Git worktree isolation** — each session can spawn on a fresh
@@ -231,7 +231,7 @@ list:
   sessions, automations, and payload files it needs, so thurbox
   installs and **self-heals** it without knowing anything specific
   about it. The agents it registers are plain `agents.toml` aliases
-  you can map to claude, codex, gemini, opencode, vibe, or anything
+  you can map to claude, codex, antigravity, opencode, vibe, or anything
   else; the behavior lives in a plain context file surfaced to
   whichever CLI you pick.
 - One command installs, activates, and (on every TUI start / headless
@@ -432,7 +432,7 @@ still work). The same `settings.toml` holds scalar knobs
   on native Windows — a drop-in tmux clone thurbox drives identically
 - **A coding-agent CLI** — e.g.
   [claude](https://github.com/anthropics/claude-code), codex,
-  gemini, opencode, or aider (whichever agents you plan to run)
+  antigravity, opencode, or aider (whichever agents you plan to run)
 - **git** (required for worktree features)
 - **Rust 1.75+** (only to build from source)
 
@@ -485,7 +485,7 @@ See the full [keybindings](#keybindings) below.
 
 A session launches exactly one coding-agent CLI. Agents are
 described as data in `~/.config/thurbox/agents.toml`, which is
-seeded with built-ins (claude, codex, gemini, opencode, aider,
+seeded with built-ins (claude, codex, antigravity, opencode, aider,
 vibe) on first run. Edit the file to tweak an agent or add a new one — no
 recompile required.
 

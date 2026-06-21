@@ -24,7 +24,7 @@ pub const HOOKS_EXTENSION_NAME: &str = "hooks";
 const MANIFEST: &str = include_str!("../../extensions/hooks/extension.toml");
 const CLAUDE_SETTINGS: &str = include_str!("../../extensions/hooks/claude.json");
 const OPENCODE_PLUGIN: &str = include_str!("../../extensions/hooks/opencode-status.js");
-const GEMINI_HOOKS: &str = include_str!("../../extensions/hooks/gemini-hooks.json");
+const ANTIGRAVITY_HOOKS: &str = include_str!("../../extensions/hooks/antigravity-hooks.json");
 
 /// The hooks extension's home, under this build's resolved config dir
 /// (`~/.config/thurbox/hooks` for a release build, `~/.config/thurbox-dev/hooks`
@@ -48,7 +48,7 @@ fn materialize_source() -> Result<PathBuf, String> {
         ("extension.toml", MANIFEST),
         ("claude.json", CLAUDE_SETTINGS),
         ("opencode-status.js", OPENCODE_PLUGIN),
-        ("gemini-hooks.json", GEMINI_HOOKS),
+        ("antigravity-hooks.json", ANTIGRAVITY_HOOKS),
     ];
     for (name, contents) in writes {
         let path = dir.join(name);
@@ -122,10 +122,10 @@ mod tests {
     }
 
     #[test]
-    fn embedded_manifest_parses_with_codex_and_gemini_wiring() {
+    fn embedded_manifest_parses_with_codex_and_antigravity_wiring() {
         // Parse the embedded manifest exactly as the installer does — this guards
         // the tricky codex `notify` arg (a single-quoted TOML string holding JSON)
-        // and the gemini config_merge from silently breaking the build.
+        // and the antigravity config_merge from silently breaking the build.
         let def: crate::session::ExtensionDef =
             toml::from_str(MANIFEST).expect("embedded manifest parses");
 
@@ -140,19 +140,20 @@ mod tests {
             .iter()
             .any(|a| a.contains("notify=") && a.contains("session signal --state done")));
 
-        let gemini = def
+        // antigravity (agy) shares gemini's ~/.gemini/settings.json for hooks.
+        let antigravity = def
             .config_merges
             .iter()
             .find(|m| m.path.contains(".gemini"))
-            .expect("gemini config merge present");
-        assert_eq!(gemini.source_path(), "gemini-hooks.json");
-        assert_eq!(gemini.requires_dir.as_deref(), Some("~/.gemini"));
+            .expect("antigravity config merge present");
+        assert_eq!(antigravity.source_path(), "antigravity-hooks.json");
+        assert_eq!(antigravity.requires_dir.as_deref(), Some("~/.gemini"));
 
-        // The gemini payload is valid JSON and carries the prune marker.
+        // The antigravity payload is valid JSON and carries the prune marker.
         let payload: serde_json::Value =
-            serde_json::from_str(GEMINI_HOOKS).expect("gemini payload is valid JSON");
+            serde_json::from_str(ANTIGRAVITY_HOOKS).expect("antigravity payload is valid JSON");
         assert!(payload["hooks"]["SessionStart"].is_array());
-        assert!(GEMINI_HOOKS.contains("thurbox-cli session signal"));
+        assert!(ANTIGRAVITY_HOOKS.contains("thurbox-cli session signal"));
     }
 
     #[test]

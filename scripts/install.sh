@@ -192,7 +192,7 @@ show_success() {
 
   printf '\n%b\n' "${C_BOLD}${C_MAGENTA}Next steps${C_RESET}" >&2
   step "• Install tmux >= 3.2"
-  step "• Install a coding-agent CLI (claude, codex, gemini, opencode, aider, …)"
+  step "• Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, …)"
   step "• Launch the TUI:    ${C_CYAN}thurbox${C_RESET}"
   step "• Scriptable CLI:    ${C_CYAN}thurbox-cli${C_RESET}"
 }

@@ -24,7 +24,7 @@ use crate::session::{AgentUsage, UsageWindow};
 
 /// Agents we know how to fetch usage for. Others are skipped entirely (no
 /// process spawned, no panel section shown).
-const SUPPORTED: &[&str] = &["claude", "codex", "gemini"];
+const SUPPORTED: &[&str] = &["claude", "codex", "antigravity"];
 
 /// Whether [`fetch`] can return real usage for this agent name.
 pub fn is_supported(agent: &str) -> bool {
@@ -37,7 +37,7 @@ pub async fn fetch(agent: &str) -> AgentUsage {
     match agent {
         "claude" => claude().await,
         "codex" => codex().await,
-        "gemini" => gemini().await,
+        "antigravity" => antigravity().await,
         other => AgentUsage {
             note: Some(format!("usage not supported for '{other}'")),
             ..Default::default()
@@ -267,26 +267,29 @@ fn parse_codex_ratelimits(v: &serde_json::Value) -> AgentUsage {
     }
 }
 
-// ─────────────────────────────── Gemini ───────────────────────────────
+// ──────────────────────────── Antigravity ─────────────────────────────
+// antigravity (the `agy` CLI) is the Gemini CLI successor and shares the same
+// Google OAuth creds (~/.gemini/oauth_creds.json) + Code Assist quota backend.
 
-const GEMINI_QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
+const ANTIGRAVITY_QUOTA_URL: &str =
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 
-fn gemini_token() -> Option<String> {
+fn antigravity_token() -> Option<String> {
     let home = std::env::var_os("HOME")?;
     let v = read_json_file(&PathBuf::from(home).join(".gemini").join("oauth_creds.json"))?;
     let token = v.get("access_token").and_then(|x| x.as_str())?.to_string();
     (!token.contains('"') && !token.contains('\n')).then_some(token)
 }
 
-async fn gemini() -> AgentUsage {
-    let Some(token) = gemini_token() else {
+async fn antigravity() -> AgentUsage {
+    let Some(token) = antigravity_token() else {
         return AgentUsage {
             note: Some("not logged in (no Google OAuth creds)".into()),
             ..Default::default()
         };
     };
     let config = format!(
-        "url = \"{GEMINI_QUOTA_URL}\"\n\
+        "url = \"{ANTIGRAVITY_QUOTA_URL}\"\n\
          request = \"POST\"\n\
          header = \"Authorization: Bearer {token}\"\n\
          header = \"Content-Type: application/json\"\n\
@@ -294,7 +297,7 @@ async fn gemini() -> AgentUsage {
          max-time = 15\n"
     );
     match curl_json(config).await {
-        Some(v) => parse_gemini_quota(&v),
+        Some(v) => parse_antigravity_quota(&v),
         None => AgentUsage {
             note: Some("usage unavailable (API error)".into()),
             ..Default::default()
@@ -304,7 +307,7 @@ async fn gemini() -> AgentUsage {
 
 /// Parse `{ "buckets": [ {modelId, remainingFraction, resetTime}, ... ] }`.
 /// Surfaces the most-constrained bucket (lowest remaining) as a window.
-fn parse_gemini_quota(v: &serde_json::Value) -> AgentUsage {
+fn parse_antigravity_quota(v: &serde_json::Value) -> AgentUsage {
     let buckets = v.get("buckets").and_then(|b| b.as_array());
     let mut best: Option<UsageWindow> = None;
     if let Some(buckets) = buckets {
@@ -356,7 +359,7 @@ mod tests {
     fn supported_set() {
         assert!(is_supported("claude"));
         assert!(is_supported("codex"));
-        assert!(is_supported("gemini"));
+        assert!(is_supported("antigravity"));
         assert!(!is_supported("aider"));
         assert!(!is_supported("shell"));
     }
@@ -411,22 +414,22 @@ mod tests {
     }
 
     #[test]
-    fn gemini_quota_picks_most_constrained() {
+    fn antigravity_quota_picks_most_constrained() {
         let json = serde_json::json!({
             "buckets": [
                 { "modelId": "gemini-pro", "remainingFraction": 0.9, "resetTime": "2026-06-02T00:00:00Z" },
                 { "modelId": "gemini-flash", "remainingFraction": 0.25 }
             ]
         });
-        let u = parse_gemini_quota(&json);
+        let u = parse_antigravity_quota(&json);
         assert_eq!(u.windows.len(), 1);
         assert_eq!(u.windows[0].label, "gemini-flash");
         assert!((u.windows[0].used_percent - 75.0).abs() < 0.01);
     }
 
     #[test]
-    fn gemini_quota_empty_gives_note() {
-        let u = parse_gemini_quota(&serde_json::json!({ "buckets": [] }));
+    fn antigravity_quota_empty_gives_note() {
+        let u = parse_antigravity_quota(&serde_json::json!({ "buckets": [] }));
         assert!(u.windows.is_empty());
         assert!(u.note.is_some());
     }

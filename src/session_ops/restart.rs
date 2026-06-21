@@ -10,7 +10,7 @@ use crate::storage::Database;
 ///
 /// For the `claude` agent, uses its resume group when a transcript for the
 /// session id exists on disk, otherwise pins the same id for a fresh start.
-/// For `resume_latest` agents (codex, opencode, gemini, aider) it resumes the
+/// For `resume_latest` agents (codex, opencode, antigravity, aider) it resumes the
 /// latest session in the (unchanged) launch directory. Other agents degrade to
 /// "start fresh" (the live tmux process is what carries state across restarts).
 pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<(), String> {

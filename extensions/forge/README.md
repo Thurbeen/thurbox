@@ -25,7 +25,7 @@ created until you explicitly `apply` it.
 ```
 
 Forge is **agent-agnostic**, like thurbox itself: the analyst is a plain
-`agents.toml` entry (`forge`), so it can be claude, codex, gemini, opencode,
+`agents.toml` entry (`forge`), so it can be claude, codex, antigravity, opencode,
 vibe, … The behavior lives in [FORGE.md](FORGE.md), surfaced to whatever CLI
 you pick via context-file symlinks (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` →
 `FORGE.md`).

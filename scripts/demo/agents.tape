@@ -28,7 +28,7 @@ Show
 # Let the real agent CLIs finish booting in their panes.
 Sleep 3s
 
-# Walk through each pre-seeded agent session (claude / opencode / codex / gemini).
+# Walk through each pre-seeded agent session (claude / opencode / codex / antigravity).
 Ctrl+J
 Sleep 2500ms
 Ctrl+J

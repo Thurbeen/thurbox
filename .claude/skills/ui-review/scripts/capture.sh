@@ -12,7 +12,7 @@
 #     in its own socket directory and cleanup can't kill sessions you have running.
 #   * The dev binary (0.0.0-dev => dev_build cfg) uses the `thurbox-dev` socket/dirs.
 #
-# Stub-agent fallback: if none of claude/codex/gemini/opencode are on PATH, a trivial
+# Stub-agent fallback: if none of claude/codex/antigravity/opencode are on PATH, a trivial
 # stub agent (a long-lived shell) is registered so the TUI still spawns a session and
 # renders every panel.
 #
@@ -72,10 +72,20 @@ CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
 export THURBOX_BIN
 [ -x "$THURBOX_BIN" ] || die "dev binary not found at $THURBOX_BIN"
 
+# Map a featured-agent display name to its actual CLI binary. They differ only
+# for antigravity, whose binary is `agy` (the Gemini CLI successor); identity for
+# everyone else.
+agent_command() {
+    case "$1" in
+        antigravity) echo "agy" ;;
+        *) echo "$1" ;;
+    esac
+}
+
 # --- Which agent CLIs are available? ----------------------------------------
 AGENTS=
-for a in claude opencode codex gemini; do
-    command -v "$a" >/dev/null 2>&1 && AGENTS="$AGENTS $a"
+for a in claude opencode codex antigravity; do
+    command -v "$(agent_command "$a")" >/dev/null 2>&1 && AGENTS="$AGENTS $a"
 done
 STUB=0
 if [ -z "$AGENTS" ]; then
@@ -113,7 +123,7 @@ trap cleanup EXIT INT TERM
         printf '\n[[agents]]\nname = "stub"\ncommand = "sh"\nargs = ["-c", "echo ui-review stub agent; exec sh"]\n'
     else
         for a in $AGENTS; do
-            printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$a"
+            printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$(agent_command "$a")"
         done
     fi
 } > "$CFG_DIR/agents.toml"

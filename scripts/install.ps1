@@ -186,7 +186,7 @@ function Invoke-Install {
 
     Write-Host "`nNext steps" -ForegroundColor Magenta
     Write-Step '* Install psmux (the Windows multiplexer): https://github.com/psmux/psmux'
-    Write-Step '* Install a coding-agent CLI (claude, codex, gemini, opencode, aider, ...)'
+    Write-Step '* Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, ...)'
     Write-Step '* Launch the TUI:    thurbox'
     Write-Step '* Scriptable CLI:    thurbox-cli'
     Write-Host ''

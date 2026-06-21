@@ -24,7 +24,7 @@ real thurbox sessions, tmux server, or agent accounts — everything runs agains
 
 `vhs` (+ `ffmpeg` + `ttyd`), `sqlite3`, `cargo`, `git`, `tmux`. The capture script
 preflights these and fails fast with a clear message if any are missing. Real agent
-CLIs (`claude`/`codex`/`gemini`/`opencode`) are **optional** — if none are installed
+CLIs (`claude`/`codex`/`antigravity`/`opencode`) are **optional** — if none are installed
 the script registers a stub agent so every panel still renders.
 
 ## Phase 1 — Capture

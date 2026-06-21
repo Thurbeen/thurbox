@@ -1,7 +1,7 @@
 //! Declarative coding-agent definitions.
 //!
 //! A [`AgentDef`] describes how to launch one coding-agent CLI (claude, codex,
-//! gemini, opencode, aider, …) as data: the command name plus a set of
+//! antigravity, opencode, aider, …) as data: the command name plus a set of
 //! argument-group templates. Definitions are loaded from
 //! `~/.config/thurbox/agents.toml` (see [`crate::agent::agent_config`]) and
 //! seeded with built-ins on first run, so users can register custom agents

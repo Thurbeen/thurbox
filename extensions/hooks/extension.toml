@@ -62,19 +62,21 @@ append_args = [
   'notify=["sh","-c","thurbox-cli session signal --state done || true"]',
 ]
 
-# gemini loads hooks only from its shared ~/.gemini/settings.json, which we must
-# NOT clobber — so we JSON-merge our entries in (reversibly; uninstall prunes
-# exactly ours, leaving the user's settings intact). Guarded by requires_dir so
-# it's a no-op when gemini isn't installed.
+# antigravity (the `agy` CLI, the Gemini CLI successor) loads hooks only from its
+# shared ~/.gemini/settings.json, which we must NOT clobber — so we JSON-merge our
+# entries in (reversibly; uninstall prunes exactly ours, leaving the user's
+# settings intact). Guarded by requires_dir so it's a no-op when antigravity isn't
+# installed.
 #
-# EXPERIMENTAL: gemini's hook event names + settings shape here are doc-sourced
-# and unverified against a live binary; if they differ, fix gemini-hooks.json
-# (no code change needed). gemini also has no permission-only event, so we map
-# only idle/working/done (NO blocked — its ambiguous Notification fires on idle
-# too, the false-red trap we avoid for claude). Identity needs $THURBOX_SESSION
-# to reach the hook process; if gemini sanitizes the hook env the signal is a
-# fail-open no-op (`|| true`). Validate end-to-end before relying on it.
+# EXPERIMENTAL: antigravity's hook event names + settings shape here are inherited
+# from gemini and not exhaustively verified against the live `agy` binary; if they
+# differ, fix antigravity-hooks.json (no code change needed). It also has no
+# permission-only event, so we map only idle/working/done (NO blocked — its
+# ambiguous Notification fires on idle too, the false-red trap we avoid for
+# claude). Identity needs $THURBOX_SESSION to reach the hook process; if agy
+# sanitizes the hook env the signal is a fail-open no-op (`|| true`). Validate
+# end-to-end before relying on it.
 [[config_merges]]
 path = "~/.gemini/settings.json"
-source = "gemini-hooks.json"
+source = "antigravity-hooks.json"
 requires_dir = "~/.gemini"
