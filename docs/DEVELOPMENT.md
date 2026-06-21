@@ -83,6 +83,8 @@ Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-shell`,
   record.sh` and `scripts/dev/tui-smoke-test.sh` use (via
   `tbx_sandbox_init_full`).
 
+**Profile lifetimes:**
+
 - **Persistent** profiles live under `target/dev-sandbox/<profile>/` (gitignored;
   `cargo clean` or `--clean` removes them). Their tmux socket dir is kept short
   under `$XDG_RUNTIME_DIR` (AF_UNIX socket paths are length-limited, and the
