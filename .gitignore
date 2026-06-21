@@ -52,3 +52,7 @@ _site/
 
 # Local orchestrator/agent worker workspaces (stray nested checkouts)
 thurbox/
+
+# Python bytecode cache (from the packaging bump scripts)
+__pycache__/
+*.pyc

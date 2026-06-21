@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Chocolatey package for thurbox. This is the canonical source, kept in the
+  main repo. CI (the `publish-chocolatey` job in .github/workflows/cd.yml) bumps
+  <version> here and $url64/$checksum64 in tools/chocolateyinstall.ps1 on every
+  release, then runs `choco pack` + `choco push`. The <version> below is a
+  last-known-good template — CI overrides it per release.
+
+    choco install thurbox
+
+  Only Windows x86_64 is supported (the only published Windows release
+  artifact: thurbox-v<version>-x86_64-pc-windows-msvc.zip). ARM64 Windows runs
+  it under x64 emulation.
+-->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>thurbox</id>
+    <version>0.79.46</version>
+    <packageSourceUrl>https://github.com/Thurbeen/thurbox/tree/main/packaging/chocolatey</packageSourceUrl>
+    <owners>LeTuR</owners>
+    <title>thurbox</title>
+    <authors>LeTuR</authors>
+    <projectUrl>https://github.com/Thurbeen/thurbox</projectUrl>
+    <copyright>2026 LeTuR</copyright>
+    <licenseUrl>https://github.com/Thurbeen/thurbox/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/Thurbeen/thurbox</projectSourceUrl>
+    <docsUrl>https://github.com/Thurbeen/thurbox/blob/main/README.md</docsUrl>
+    <bugTrackerUrl>https://github.com/Thurbeen/thurbox/issues</bugTrackerUrl>
+    <tags>thurbox tui coding-agent orchestrator terminal cli claude codex aider developer-tools</tags>
+    <summary>TUI for orchestrating multiple coding-agent CLI sessions in persistent panels.</summary>
+    <description><![CDATA[
+thurbox is a TUI for orchestrating multiple coding-agent CLI sessions
+(claude, codex, gemini, opencode, aider, ...) in persistent multiplexer panels.
+Sessions survive crashes/restarts because the multiplexer keeps the processes
+alive.
+
+This package installs the prebuilt x86_64 Windows release binaries
+(`thurbox.exe` + `thurbox-cli.exe`) from the official GitHub Release and shims
+them onto your PATH.
+
+**Requirements not installed by this package:**
+
+- [psmux](https://github.com/psmux/psmux) — the native-Windows terminal
+  multiplexer thurbox drives (a drop-in tmux clone). There is no Chocolatey
+  package for psmux, so it cannot be declared as a dependency here — install it
+  separately.
+- A coding-agent CLI (claude, codex, gemini, opencode, aider, ...) on your PATH.
+    ]]></description>
+    <releaseNotes>https://github.com/Thurbeen/thurbox/releases</releaseNotes>
+    <!-- No <dependencies>: psmux has no Chocolatey package, so it can't be a
+         hard dependency. It is documented in <description> instead. -->
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

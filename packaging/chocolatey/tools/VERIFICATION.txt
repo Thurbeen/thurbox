@@ -1,0 +1,28 @@
+VERIFICATION
+
+thurbox is published by the upstream maintainer on GitHub:
+
+  https://github.com/Thurbeen/thurbox/releases
+
+This package downloads
+
+  thurbox-v<version>-x86_64-pc-windows-msvc.zip
+
+from that GitHub Release and verifies its SHA256 against the value in
+tools\chocolateyinstall.ps1 ($checksum64). That value is taken verbatim from
+the release's published checksums file
+
+  thurbox-v<version>-checksums.txt
+
+To verify the download manually, compare:
+
+  (Get-FileHash -Algorithm SHA256 <downloaded-zip>).Hash
+
+against the matching line in thurbox-v<version>-checksums.txt (and against
+$checksum64 in chocolateyinstall.ps1).
+
+The bundled binaries are built by the project's release pipeline
+(.github/workflows/cd.yml) and the LICENSE file inside the zip is the same MIT
+license shipped in the repository:
+
+  https://github.com/Thurbeen/thurbox/blob/main/LICENSE

@@ -47,6 +47,17 @@ verification. Pin a version or directory with the `THURBOX_VERSION` /
 `THURBOX_INSTALL_DIR` env vars. Needs [psmux](https://github.com/psmux/psmux)
 as the multiplexer.
 
+**Chocolatey (Windows):**
+
+```powershell
+choco install thurbox
+```
+
+Installs the prebuilt x86_64 Windows binaries (`thurbox.exe` +
+`thurbox-cli.exe`) from the GitHub Release and shims them onto your `PATH`.
+Needs [psmux](https://github.com/psmux/psmux) as the multiplexer (installed
+separately — there is no Chocolatey package for it).
+
 **Homebrew (macOS / Linux):**
 
 ```bash
@@ -433,6 +444,7 @@ Remove the binary, depending on how you installed it:
 rm ~/.local/bin/thurbox        # curl one-liner / manual install
 brew uninstall thurbox         # Homebrew
 paru -R thurbox thurbox-bin    # Arch (AUR)
+choco uninstall thurbox        # Chocolatey (Windows)
 ```
 
 Sessions outlive Thurbox in tmux, so stop them too:

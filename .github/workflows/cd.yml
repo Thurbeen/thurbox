@@ -354,3 +354,59 @@ jobs:
           git add Formula/thurbox.rb
           git commit -m "Update to ${VERSION}"
           git push origin HEAD
+
+  # Publish the Chocolatey package to the community repo.
+  # Runs after `publish` so the release zip + checksums.txt exist. The choco CLI
+  # is Windows-only, so this runs on windows-latest. Requires the
+  # CHOCOLATEY_API_KEY secret; skipped automatically if unset (e.g. on forks).
+  # New versions are held for community-repo moderation before going live.
+  publish-chocolatey:
+    name: Publish Chocolatey package
+    needs: [check-release, create-tag, publish]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: windows-latest
+    # Hoisted so the steps can be skipped when the secret is unset
+    # (the `secrets` context cannot be used directly in an `if` condition).
+    env:
+      CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+
+      - name: Download release checksums
+        if: env.CHOCOLATEY_API_KEY != ''
+        shell: pwsh
+        run: |
+          $version = "${{ needs.check-release.outputs.version }}"
+          $repo = "${{ github.repository }}"
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://github.com/$repo/releases/download/$version/thurbox-$version-checksums.txt" `
+            -OutFile checksums.txt
+          Get-Content checksums.txt
+
+      - name: Bump package to the release version
+        if: env.CHOCOLATEY_API_KEY != ''
+        shell: pwsh
+        run: |
+          python packaging/chocolatey/bump-nuspec.py `
+            "${{ needs.check-release.outputs.version }}" `
+            packaging/chocolatey `
+            checksums.txt
+          Get-Content packaging/chocolatey/thurbox.nuspec
+          Get-Content packaging/chocolatey/tools/chocolateyinstall.ps1
+
+      - name: Pack the package
+        if: env.CHOCOLATEY_API_KEY != ''
+        shell: pwsh
+        run: |
+          # Version is read from the bumped nuspec — do not pass --version.
+          choco pack packaging/chocolatey/thurbox.nuspec --outputdirectory packaging/chocolatey
+
+      - name: Push to the Chocolatey community repo
+        if: env.CHOCOLATEY_API_KEY != ''
+        shell: pwsh
+        run: |
+          $nupkg = Get-ChildItem packaging/chocolatey/thurbox.*.nupkg | Select-Object -First 1
+          choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY

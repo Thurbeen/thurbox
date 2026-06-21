@@ -280,6 +280,13 @@ package channels (each gated on its secret, skipped on forks):
   (`aarch64-apple-darwin`) + Linux x86_64 (`x86_64-unknown-linux-musl`).
 - **AUR** (`publish-aur`): bumps + pushes `thurbox`/`thurbox-bin` PKGBUILDs.
   Needs `AUR_SSH_PRIVATE_KEY`.
+- **Chocolatey** (`publish-chocolatey`): bumps `<version>` in
+  `packaging/chocolatey/thurbox.nuspec` and `$url64`/`$checksum64` in
+  `tools/chocolateyinstall.ps1` (via `packaging/chocolatey/bump-nuspec.py`,
+  reading the release `checksums.txt`), then `choco pack` + `choco push` to the
+  community repo. Runs on `windows-latest`; needs the `CHOCOLATEY_API_KEY`
+  secret. New versions go through community-repo moderation.
+  Install: `choco install thurbox`. Windows x86_64 only.
 
 See `packaging/README.md` for the full packaging overview.
 
