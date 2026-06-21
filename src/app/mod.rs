@@ -6320,12 +6320,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
         let id = crate::session::SessionId::default();
-        let config = App::restored_session_config(
-            id,
-            Some("agent-conv-uuid".into()),
-            "claude".into(),
-            None,
-        );
+        let config =
+            App::restored_session_config(id, Some("agent-conv-uuid".into()), "claude".into(), None);
         assert_eq!(config.session_id, Some(id));
         assert_eq!(
             config.env.get("THURBOX_SESSION"),
@@ -6337,7 +6333,9 @@ mod tests {
             Some(&"agent-conv-uuid".to_string())
         );
         // The config/data dir overrides pin the hook's `thurbox-cli` to this DB.
-        assert!(config.env.contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
+        assert!(config
+            .env
+            .contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
         assert!(config.env.contains_key(crate::paths::DATA_DIR_OVERRIDE_ENV));
     }
 
