@@ -152,7 +152,17 @@ mod tests {
         // The antigravity payload is valid JSON and carries the prune marker.
         let payload: serde_json::Value =
             serde_json::from_str(ANTIGRAVITY_HOOKS).expect("antigravity payload is valid JSON");
-        assert!(payload["hooks"]["SessionStart"].is_array());
+        // agy 1.0.9 adopted claude's hook schema; guard against a regression back
+        // to the gemini-era `BeforeTool`/`AfterAgent` names (which agy never fires,
+        // so working/done would silently stop reporting).
+        for event in ["SessionStart", "PreToolUse", "Notification", "Stop"] {
+            assert!(
+                payload["hooks"][event].is_array(),
+                "antigravity hook event {event} missing"
+            );
+        }
+        assert!(payload["hooks"]["BeforeTool"].is_null());
+        assert!(payload["hooks"]["AfterAgent"].is_null());
         assert!(ANTIGRAVITY_HOOKS.contains("thurbox-cli session signal"));
     }
 

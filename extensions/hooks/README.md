@@ -52,18 +52,19 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   wiring is fully reversible. codex has no per-event notify, so working/blocked/
   idle aren't expressible this way — the dot is accurate for the turn-complete
   edge (complementary to aider's blocked-only).
-- **antigravity** *(experimental)* — antigravity (the `agy` CLI, the Gemini CLI
-  successor) loads hooks only from its shared `~/.gemini/settings.json`, so we
-  **JSON-merge** our entries in (a `[[config_merges]]`, guarded by
-  `requires_dir`) without clobbering your settings; uninstall prunes exactly ours
-  back out. Events: `SessionStart` → idle, `BeforeTool` → working, `AfterAgent` →
-  done. **No blocked** — it has no permission-only event (only an ambiguous
-  `Notification` that also fires on idle, the false-red trap we avoid for
-  claude). **Caveats:** the event names/settings shape are inherited from gemini
-  and not exhaustively verified against the live `agy` binary — if they differ,
-  edit `antigravity-hooks.json` (no code change). And if agy sanitizes the hook
-  environment, `$THURBOX_SESSION` may not reach the hook, in which case the
-  signal is a fail-open no-op. Validate end-to-end before relying on it.
+- **antigravity** — antigravity (the `agy` CLI, the Gemini CLI successor) loads
+  hooks only from its shared `~/.gemini/settings.json`, so we **JSON-merge** our
+  entries in (a `[[config_merges]]`, guarded by `requires_dir`) without clobbering
+  your settings; uninstall prunes exactly ours back out. `agy` adopted Claude
+  Code's hook schema (verified against agy 1.0.9), so the mapping mirrors claude:
+  `SessionStart` → idle, `PreToolUse` → working, `Stop` → done, and `Notification`
+  → blocked **only for permission/approval prompts** (the payload is parsed, same
+  as claude, so an idle `Notification` doesn't flip the dot red). It has no
+  `UserPromptSubmit`, so working is signaled at the first tool call rather than on
+  prompt submit. **Caveat:** if agy sanitizes the hook environment,
+  `$THURBOX_SESSION` may not reach the hook, in which case the signal is a
+  fail-open no-op. If a future `agy` changes the hook schema, edit
+  `antigravity-hooks.json` (no code change).
 
 ## Mechanism
 

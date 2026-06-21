@@ -29,7 +29,7 @@ x86_64 build and runs it under x64 emulation (matching
   package for psmux**, so it cannot be declared as a package `<dependencies>`
   entry; install it separately. This is documented in the package
   `<description>`.
-- A coding-agent CLI (claude, codex, gemini, opencode, aider, …) on your PATH.
+- A coding-agent CLI (claude, codex, antigravity, opencode, aider, …) on your PATH.
 
 ## Test locally
 

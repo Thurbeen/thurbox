@@ -14,7 +14,7 @@
 name = "hooks"
 description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
 config_version = 1
-version = "1.3.0"
+version = "1.4.0"
 # Default home; the auto-activation path overrides this with *this build's*
 # resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
 # release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
@@ -68,14 +68,14 @@ append_args = [
 # settings intact). Guarded by requires_dir so it's a no-op when antigravity isn't
 # installed.
 #
-# EXPERIMENTAL: antigravity's hook event names + settings shape here are inherited
-# from gemini and not exhaustively verified against the live `agy` binary; if they
-# differ, fix antigravity-hooks.json (no code change needed). It also has no
-# permission-only event, so we map only idle/working/done (NO blocked — its
-# ambiguous Notification fires on idle too, the false-red trap we avoid for
-# claude). Identity needs $THURBOX_SESSION to reach the hook process; if agy
-# sanitizes the hook env the signal is a fail-open no-op (`|| true`). Validate
-# end-to-end before relying on it.
+# `agy` adopted Claude Code's hook schema (verified against agy 1.0.9): the event
+# names live in antigravity-hooks.json and map SessionStart→idle, PreToolUse→
+# working, Stop→done, and Notification→blocked (payload-parsed for permission/
+# approval, like claude, so an idle Notification doesn't flip the dot red). It has
+# no UserPromptSubmit, so working is signaled at the first tool call. If a future
+# agy changes the schema, fix antigravity-hooks.json (no code change needed).
+# Identity needs $THURBOX_SESSION to reach the hook process; if agy sanitizes the
+# hook env the signal is a fail-open no-op (`|| true`).
 [[config_merges]]
 path = "~/.gemini/settings.json"
 source = "antigravity-hooks.json"

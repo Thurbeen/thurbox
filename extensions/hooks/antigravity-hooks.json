@@ -10,7 +10,7 @@
         ]
       }
     ],
-    "BeforeTool": [
+    "PreToolUse": [
       {
         "hooks": [
           {
@@ -20,7 +20,17 @@
         ]
       }
     ],
-    "AfterAgent": [
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$(cat)\" in *permission*|*Permission*|*approval*|*approve*) thurbox-cli session signal --state blocked ;; esac; true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
       {
         "hooks": [
           {
