@@ -16,7 +16,7 @@ worktrees are first-class citizens.
 
 ## Installation
 
-**One-liner (recommended):**
+**One-liner:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
