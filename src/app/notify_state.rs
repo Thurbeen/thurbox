@@ -102,19 +102,18 @@ impl NotificationState {
         TransitionDecision::Fire
     }
 
-    /// Whether a `prev → current` transition is one we notify about. Pure;
-    /// no state. The "attention" case is the explicit OSC bell / OSC 9 /
-    /// OSC 777 from the agent; the "waiting" case is the timing-only quiet
-    /// state, which a user can opt into for agents that don't ring a bell.
+    /// Whether a `prev → current` transition is one we notify about. Pure; no
+    /// state. We always notify when a session becomes `Blocked` (the agent needs
+    /// the user). The `also_on_waiting` setting additionally fires when a session
+    /// becomes `Done` (work finished) — useful when the user wants a ping on
+    /// completion, not just on a block.
     fn should_notify_on(&self, prev: SessionStatus, current: SessionStatus) -> bool {
         match current {
-            SessionStatus::Attention => true,
-            SessionStatus::Waiting if self.settings.also_on_waiting => {
-                // Only the Busy → Waiting edge is interesting; an Idle
-                // (exited) → Waiting transition can't happen, and an
-                // Attention → Waiting transition is the user already
-                // having acknowledged the signal.
-                prev == SessionStatus::Busy
+            SessionStatus::Blocked => true,
+            SessionStatus::Done if self.settings.also_on_waiting => {
+                // Only the Working → Done edge is interesting; a Done re-derived
+                // from itself (or seen → Idle → Done) shouldn't re-fire.
+                prev == SessionStatus::Working
             }
             _ => false,
         }
@@ -196,7 +195,7 @@ mod tests {
         let id = SessionId::default();
         let now = Instant::now();
         assert_eq!(
-            s.observe(id, SessionStatus::Attention, false, now),
+            s.observe(id, SessionStatus::Blocked, false, now),
             TransitionDecision::NoFire
         );
     }
@@ -206,54 +205,54 @@ mod tests {
         let mut s = test_state(false, true, 0);
         let id = SessionId::default();
         let now = Instant::now();
-        let _ = s.observe(id, SessionStatus::Attention, false, now);
+        let _ = s.observe(id, SessionStatus::Blocked, false, now);
         assert_eq!(
-            s.observe(id, SessionStatus::Attention, false, now),
+            s.observe(id, SessionStatus::Blocked, false, now),
             TransitionDecision::NoFire
         );
     }
 
     #[test]
-    fn busy_to_attention_fires() {
+    fn working_to_blocked_fires() {
         let mut s = test_state(false, true, 0);
         let id = SessionId::default();
         let now = Instant::now();
-        let _ = s.observe(id, SessionStatus::Busy, false, now);
+        let _ = s.observe(id, SessionStatus::Working, false, now);
         assert_eq!(
-            s.observe(id, SessionStatus::Attention, false, now),
+            s.observe(id, SessionStatus::Blocked, false, now),
             TransitionDecision::Fire
         );
     }
 
     #[test]
-    fn busy_to_waiting_only_fires_when_opted_in() {
+    fn working_to_done_only_fires_when_opted_in() {
         let mut s = test_state(false, true, 0);
         let id = SessionId::default();
         let now = Instant::now();
-        let _ = s.observe(id, SessionStatus::Busy, false, now);
+        let _ = s.observe(id, SessionStatus::Working, false, now);
         assert_eq!(
-            s.observe(id, SessionStatus::Waiting, false, now),
+            s.observe(id, SessionStatus::Done, false, now),
             TransitionDecision::NoFire
         );
 
         let mut s = test_state(true, true, 0);
-        let _ = s.observe(id, SessionStatus::Busy, false, now);
+        let _ = s.observe(id, SessionStatus::Working, false, now);
         assert_eq!(
-            s.observe(id, SessionStatus::Waiting, false, now),
+            s.observe(id, SessionStatus::Done, false, now),
             TransitionDecision::Fire
         );
     }
 
     #[test]
-    fn attention_to_waiting_never_fires_even_with_also_on_waiting() {
-        // The user has already seen the Attention signal; sliding back to
-        // Waiting is not a new event worth re-notifying.
+    fn blocked_to_done_never_fires_even_with_also_on_done() {
+        // `also_on_done` fires only on the Working → Done edge; a Blocked → Done
+        // slide is not a fresh completion worth re-notifying.
         let mut s = test_state(true, true, 0);
         let id = SessionId::default();
         let now = Instant::now();
-        let _ = s.observe(id, SessionStatus::Attention, false, now);
+        let _ = s.observe(id, SessionStatus::Blocked, false, now);
         assert_eq!(
-            s.observe(id, SessionStatus::Waiting, false, now),
+            s.observe(id, SessionStatus::Done, false, now),
             TransitionDecision::NoFire
         );
     }
@@ -263,9 +262,9 @@ mod tests {
         let mut s = test_state(false, true, 0);
         let id = SessionId::default();
         let now = Instant::now();
-        let _ = s.observe(id, SessionStatus::Busy, true, now);
+        let _ = s.observe(id, SessionStatus::Working, true, now);
         assert_eq!(
-            s.observe(id, SessionStatus::Attention, true, now),
+            s.observe(id, SessionStatus::Blocked, true, now),
             TransitionDecision::NoFire
         );
     }
@@ -275,30 +274,35 @@ mod tests {
         let mut s = test_state(false, false, 0);
         let id = SessionId::default();
         let now = Instant::now();
-        let _ = s.observe(id, SessionStatus::Busy, true, now);
+        let _ = s.observe(id, SessionStatus::Working, true, now);
         assert_eq!(
-            s.observe(id, SessionStatus::Attention, true, now),
+            s.observe(id, SessionStatus::Blocked, true, now),
             TransitionDecision::Fire
         );
     }
 
     #[test]
-    fn rapid_re_attention_is_throttled() {
+    fn rapid_re_blocked_is_throttled() {
         let mut s = test_state(false, true, 60);
         let id = SessionId::default();
         let t0 = Instant::now();
-        let _ = s.observe(id, SessionStatus::Busy, false, t0);
+        let _ = s.observe(id, SessionStatus::Working, false, t0);
         assert_eq!(
-            s.observe(id, SessionStatus::Attention, false, t0),
+            s.observe(id, SessionStatus::Blocked, false, t0),
             TransitionDecision::Fire
         );
 
-        // Attention → Busy → Attention within the dedup window.
-        let _ = s.observe(id, SessionStatus::Busy, false, t0 + Duration::from_secs(1));
+        // Blocked → Working → Blocked within the dedup window.
+        let _ = s.observe(
+            id,
+            SessionStatus::Working,
+            false,
+            t0 + Duration::from_secs(1),
+        );
         assert_eq!(
             s.observe(
                 id,
-                SessionStatus::Attention,
+                SessionStatus::Blocked,
                 false,
                 t0 + Duration::from_secs(2)
             ),
@@ -306,11 +310,16 @@ mod tests {
         );
 
         // Past the window, a fresh fire is allowed.
-        let _ = s.observe(id, SessionStatus::Busy, false, t0 + Duration::from_secs(70));
+        let _ = s.observe(
+            id,
+            SessionStatus::Working,
+            false,
+            t0 + Duration::from_secs(70),
+        );
         assert_eq!(
             s.observe(
                 id,
-                SessionStatus::Attention,
+                SessionStatus::Blocked,
                 false,
                 t0 + Duration::from_secs(80)
             ),
@@ -324,18 +333,18 @@ mod tests {
         let keep = SessionId::default();
         let gone = SessionId::default();
         let now = Instant::now();
-        let _ = s.observe(keep, SessionStatus::Busy, false, now);
-        let _ = s.observe(gone, SessionStatus::Busy, false, now);
+        let _ = s.observe(keep, SessionStatus::Working, false, now);
+        let _ = s.observe(gone, SessionStatus::Working, false, now);
         s.prune_to(&[keep]);
         // The pruned session's first observation post-prune is a fresh
         // baseline → no fire.
         assert_eq!(
-            s.observe(gone, SessionStatus::Attention, false, now),
+            s.observe(gone, SessionStatus::Blocked, false, now),
             TransitionDecision::NoFire
         );
         // The kept session still has its baseline → a transition fires.
         assert_eq!(
-            s.observe(keep, SessionStatus::Attention, false, now),
+            s.observe(keep, SessionStatus::Blocked, false, now),
             TransitionDecision::Fire
         );
     }

@@ -14,7 +14,8 @@ pub use automation::{
     AutomationSchedule, ExtraRepo, SchedulePreset,
 };
 pub use extension_def::{
-    ExtensionAutomation, ExtensionDef, ExtensionFile, ExtensionSession, ExtensionSymlink,
+    AgentPatch, ConfigMerge, ExtensionAutomation, ExtensionDef, ExtensionFile, ExtensionSession,
+    ExtensionSymlink, ExternalFile,
 };
 pub use host_def::{is_ssh_backend, HostDef, HostRegistry, SSH_BACKEND_PREFIX};
 pub use keybindings::{Action, KeyBindings, KeyChord, KeyContext};
@@ -72,29 +73,40 @@ impl std::str::FromStr for SessionId {
     }
 }
 
+/// A session's lifecycle state, driven by agent hooks (see
+/// `thurbox-cli session signal`). Repo groups in the session list roll up to
+/// their most-urgent member so the whole list scans at a glance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
-    Busy,
-    Waiting,
+    /// 🟡 The agent is actively running (reported by a hook).
+    Working,
+    /// 🔴 The agent needs user input or approval (reported by a hook).
+    Blocked,
+    /// 🔵 A turn just finished; shown until the user switches focus off it.
+    Done,
+    /// 🟢 Acknowledged (focus moved off a `Done`), at rest, or never-active.
     Idle,
+    /// Reserved for a crashed agent. **Not currently derived** — process exit has
+    /// no failure signal yet (a clean or crashed exit both map to `Idle`), so this
+    /// variant is wired through colour/glyph/rollup but never assigned. Kept for
+    /// when exit-code plumbing lands.
     Error,
-    /// The agent signalled it finished or needs input (bell / OSC 9 / OSC 777).
-    /// Latched until the user looks at the session; sorts to the top of the list.
-    Attention,
 }
 
 impl SessionStatus {
     /// A status glyph chosen for **shape** distinctiveness, not just colour, so
-    /// the state survives in greyscale / for colour-blind users: filled circle
-    /// (busy) vs. diamond (waiting) vs. hollow circle (idle) vs. cross (error)
-    /// vs. triangle (attention).
+    /// the state survives in greyscale / for colour-blind users: a spinner
+    /// (working — the live session list animates it, see `ui::SPINNER_FRAMES`)
+    /// vs. diamond (blocked) vs. filled circle (done, unseen) vs. hollow circle
+    /// (idle, seen) vs. cross (error). The filled/hollow pair makes
+    /// done-vs-idle read at a glance.
     pub fn icon(self) -> &'static str {
         match self {
-            Self::Busy => "●",
-            Self::Waiting => "◆",
+            Self::Working => "◐",
+            Self::Blocked => "◆",
+            Self::Done => "●",
             Self::Idle => "○",
             Self::Error => "✗",
-            Self::Attention => "▲",
         }
     }
 }
@@ -102,11 +114,11 @@ impl SessionStatus {
 impl fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Busy => write!(f, "Busy"),
-            Self::Waiting => write!(f, "Waiting"),
+            Self::Working => write!(f, "Working"),
+            Self::Blocked => write!(f, "Blocked"),
+            Self::Done => write!(f, "Done"),
             Self::Idle => write!(f, "Idle"),
             Self::Error => write!(f, "Error"),
-            Self::Attention => write!(f, "Needs attention"),
         }
     }
 }
@@ -200,7 +212,7 @@ pub struct SessionInfo {
     /// captured from the terminal and refreshed each tick. Agent-neutral.
     pub agent_activity: Option<String>,
     /// Message text from the agent's latest attention notification (OSC 9/777),
-    /// shown as the status when `status == SessionStatus::Attention`.
+    /// shown as the status when `status == SessionStatus::Blocked`.
     pub notification: Option<String>,
     /// Real git state of the session's worktree(s), refreshed periodically by
     /// the app layer. `None` until first computed (or for non-git sessions).
@@ -222,7 +234,7 @@ impl SessionInfo {
         Self {
             id: SessionId::default(),
             name,
-            status: SessionStatus::Busy,
+            status: SessionStatus::Working,
             agent: DEFAULT_AGENT_NAME.to_string(),
             worktrees: Vec::new(),
             agent_session_id: None,
@@ -295,20 +307,20 @@ mod tests {
 
     #[test]
     fn session_status_display_and_icon() {
-        assert_eq!(SessionStatus::Busy.to_string(), "Busy");
+        assert_eq!(SessionStatus::Working.to_string(), "Working");
         // Glyphs are shape-distinct (not all circles) so status reads without colour.
-        assert_eq!(SessionStatus::Busy.icon(), "●");
-        assert_eq!(SessionStatus::Waiting.icon(), "◆");
+        assert_eq!(SessionStatus::Working.icon(), "◐");
+        assert_eq!(SessionStatus::Blocked.icon(), "◆");
+        assert_eq!(SessionStatus::Done.icon(), "●");
         assert_eq!(SessionStatus::Idle.icon(), "○");
         assert_eq!(SessionStatus::Error.icon(), "✗");
-        assert_eq!(SessionStatus::Attention.icon(), "▲");
     }
 
     #[test]
     fn session_info_new_defaults() {
         let info = SessionInfo::new("Test".to_string());
         assert_eq!(info.name, "Test");
-        assert_eq!(info.status, SessionStatus::Busy);
+        assert_eq!(info.status, SessionStatus::Working);
         assert_eq!(info.agent, DEFAULT_AGENT_NAME);
         assert!(info.worktrees.is_empty());
         assert!(info.agent_session_id.is_none());
@@ -317,7 +329,6 @@ mod tests {
         assert!(info.agent_metrics.is_none());
         assert!(info.agent_activity.is_none());
         assert!(info.notification.is_none());
-        assert_eq!(info.status, SessionStatus::Busy);
     }
 
     #[test]

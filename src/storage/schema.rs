@@ -6,9 +6,11 @@ use rusqlite::Connection;
 /// (`session_labels` + `session_spawn_config`); v30 added
 /// `parent_session_id`, v31 added `display_order`, v32 added
 /// `session_messages` (the inter-session mailbox), v33 adds
-/// `action_extra_repos` to `tasks` + `automations` (multi-repo spawns).
+/// `action_extra_repos` to `tasks` + `automations` (multi-repo spawns),
+/// v34 adds `hook_state` / `hook_state_at` / `seen_at` to `sessions`
+/// (hooks-driven session status).
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 33;
+pub const SCHEMA_VERSION: u32 = 34;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -44,6 +46,9 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             shell_backend_id  TEXT,
             parent_session_id TEXT,
             display_order     INTEGER,
+            hook_state        TEXT,
+            hook_state_at     INTEGER,
+            seen_at           INTEGER,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -220,6 +225,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (31, migrate_v31_display_order),
         (32, migrate_v32_session_messages),
         (33, migrate_v33_action_extra_repos),
+        (34, migrate_v34_hook_status),
     ];
 
     for &(target, step) in steps {
@@ -938,6 +944,25 @@ fn migrate_v33_action_extra_repos(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v33 → v34: add the hooks-driven session-status columns to `sessions`.
+///
+/// `hook_state` (`working`/`blocked`/`done`, NULL = no hook fired yet) and
+/// `hook_state_at` (epoch ms it was reported) are written by
+/// `thurbox-cli session signal` from an agent hook; `seen_at` (epoch ms) is
+/// written by the TUI when the user views a `done` session, so it renders
+/// `Idle` instead of `Done`. NULL on every existing row, so they decode
+/// identically to the pre-hooks behaviour.
+///
+/// Fresh v34 databases already have the columns from `initialize` and skip this
+/// step; existing databases get them via the ALTERs. `let _` swallows the
+/// "duplicate column" error so a re-run is a no-op.
+fn migrate_v34_hook_status(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN hook_state TEXT", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN hook_state_at INTEGER", []);
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN seen_at INTEGER", []);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,6 +1277,61 @@ mod tests {
             )
             .unwrap();
         assert!(parent.is_none());
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v33_adds_hook_status_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v33 state: a sessions table without the hook-status columns.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '33');
+             CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                agent TEXT NOT NULL DEFAULT 'claude',
+                backend_id TEXT NOT NULL DEFAULT '',
+                backend_type TEXT NOT NULL DEFAULT 'tmux',
+                agent_session_id TEXT, cwd TEXT,
+                additional_dirs TEXT NOT NULL DEFAULT '',
+                shell_backend_id TEXT, parent_session_id TEXT,
+                display_order INTEGER, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL, deleted_at INTEGER);
+             INSERT INTO sessions (id, name, created_at, updated_at)
+                VALUES ('s1', 'demo', 0, 0);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        for col in ["hook_state", "hook_state_at", "seen_at"] {
+            let exists: bool = conn
+                .prepare(&format!(
+                    "SELECT 1 FROM pragma_table_info('sessions') WHERE name='{col}'"
+                ))
+                .unwrap()
+                .exists([])
+                .unwrap();
+            assert!(exists, "{col} column should be added at v34");
+        }
+
+        // Existing rows survive with NULL hook state.
+        let state: Option<String> = conn
+            .query_row(
+                "SELECT hook_state FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(state.is_none());
 
         let version: String = conn
             .query_row(

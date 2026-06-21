@@ -12,7 +12,7 @@ expression: h.render()
 │                       ││                                                                         │
 │                   ╭ Theme ───────────────────────────────────────────────────╮                   │
 │                   │▸ Default                   Accent      █████ █████       │                   │
-│                   │  Catppuccin Mocha          Status      ● ◆ ○ ✗           │                   │
+│                   │  Catppuccin Mocha          Status      ◐ ◆ ● ○ ✗         │                   │
 │                   │  Tokyo Night               Border      ╭─────╮           │                   │
 │                   │  Gruvbox Dark              Modal bg                      │                   │
 │                   │  Catppuccin Latte (light)                                │                   │

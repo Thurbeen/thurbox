@@ -18,7 +18,7 @@ pub mod repo_bookmarks;
 mod schema;
 mod sessions;
 mod settings;
-pub use sessions::DeletedSessionInfo;
+pub use sessions::{DeletedSessionInfo, HookRow};
 pub mod sync;
 pub mod tasks;
 mod worktrees;

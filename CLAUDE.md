@@ -22,12 +22,42 @@ you want them).
 
 ## Build & Development Commands
 
+The reproducible dev environment is a **Nix flake** (`flake.nix`, pins the Rust
+toolchain + tmux/shellcheck/node/cargo-tools/just/demo stack) — enter it with
+`nix develop` (or `direnv allow` once; see `.envrc`). Non-Nix fallback:
+`scripts/install-dev-tools.sh`. Task entrypoint is **`just`** (`justfile`); full
+guide in **`docs/DEVELOPMENT.md`**.
+
 ```bash
-cargo check --all                    # Type check
-cargo build                          # Debug build
+just build                           # cargo build --bin thurbox --bin thurbox-cli
+just test                            # cargo nextest run --all
+just lint                            # fmt-check + clippy + deny + rumdl + shellcheck
+
+cargo check --all                    # Type check (bare cargo still works)
 cargo build --release                # Release build (LTO, stripped)
-cargo run                            # Run in dev mode
 ```
+
+To **run thurbox in an isolated sandbox** use `scripts/dev/sandbox.sh` (a.k.a.
+`just sandbox*`). By default it does **thurbox-only isolation**: redirects only
+thurbox's config/data into the sandbox (via the `THURBOX_CONFIG_DIR`/
+`THURBOX_DATA_DIR` overrides paths.rs honors) while keeping your real `HOME` —
+so your authenticated agent CLIs (claude/codex/…) work — and puts dev
+`target/debug` first on PATH so an agent hook's `thurbox-cli` hits the sandbox DB.
+
+```bash
+scripts/dev/sandbox.sh               # persistent "default" profile, launch the TUI
+scripts/dev/sandbox.sh --fresh       # throwaway env, wiped on exit
+scripts/dev/sandbox.sh --isolate-home    # full hermetic isolation (fresh HOME; agents have no creds)
+scripts/dev/sandbox.sh --shell       # shell with the sandbox env (run thurbox-cli by hand)
+scripts/dev/sandbox.sh -- session list   # run a thurbox-cli command in the sandbox
+scripts/dev/sandbox.sh --clean       # wipe the persistent profile
+```
+
+The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
+(`tbx_sandbox_init` = thurbox-only, `tbx_sandbox_init_full` = full HOME/XDG),
+sourced by the sandbox entrypoint plus `scripts/demo/record.sh` and
+`scripts/dev/tui-smoke-test.sh` (which use the full flavor). Single source of
+truth for the `thurbox-dev` sandbox pattern.
 
 ## Testing
 
@@ -853,9 +883,46 @@ declarative **manifest format**, never a specific extension. Each
 extension ships an `extension.toml` (`session::ExtensionDef`, pure data in
 `session/extension_def.rs`; loaded by `agent::extension_config`). It has
 two halves: an **install** spec (`home`, `[[agents]]` to register in
-agents.toml, `[[files]]` payload, `[[symlinks]]`) and a **runtime** spec
+agents.toml, `[[files]]` payload, `[[symlinks]]`, `[[external_files]]`,
+`[[agent_patches]]`, `[[config_merges]]`) and a **runtime** spec
 (`[[sessions]]` + `[[automations]]` to ensure/self-heal). The `{home}`
 token is substituted with the resolved home dir.
+
+Three install-spec capabilities exist for reaching **outside** the extension
+home (added for the built-in hooks extension): `[[external_files]]` places
+a file into an agent's own config dir (absolute / `~` / `{home}` path,
+guarded by `requires_dir` so it's skipped when that agent isn't installed);
+`[[agent_patches]]` appends args to an **existing** agent in
+agents.toml (`apply_agent_patches` via `toml_edit`, reversible — uninstall
+removes exactly the injected subsequence); and `[[config_merges]]`
+**reversibly deep-merges** shipped JSON into an agent's own *shared* config
+file (`{path, source, requires_dir}`) — for agents whose hooks live in a
+file that would be clobbered by `[[external_files]]` (gemini's
+`settings.json`). The merge (`agent::json_merge`) recurses objects, unions
+arrays by deep-equality, and leaves a user's conflicting value untouched;
+uninstall **prunes by marker** (every shipped hook command contains
+`thurbox-cli session signal`), so removal stays correct even after the
+payload's schema changes across an update — no orphans. Writes are skipped
+when unchanged (it re-runs every startup + heartbeat tick). All three are
+honoured by `install_extension`/`uninstall_extension`.
+
+**Built-in `hooks` extension** (`session_ops::builtin_hooks`,
+`extensions/hooks/`). Unlike user extensions it ships **embedded** in the
+binary and is **auto-activated by default** (`ensure_builtin_hooks_extension`
+at TUI startup + headless tick) so the default agent's status hook is
+pre-configured with zero setup. It materializes its embedded assets to a
+local dir and installs through the ordinary machinery: an `[[agent_patches]]`
+adds `--settings {home}/claude.json` to `claude` (claude merges it, never
+clobbering user settings), aider gets `--notifications-command` (blocked-only),
+`codex` gets a `-c notify=…` override via `[[agent_patches]]` (codex's stable
+turn-complete hook → done, no `~/.codex` write), an `[[external_files]]` drops
+an opencode plugin into `~/.config/opencode/plugin/`, and a `[[config_merges]]`
+deep-merges hook entries into `gemini`'s shared `~/.gemini/settings.json`
+(idle/working/done, no blocked; **experimental** — doc-sourced schema +
+possible hook-env sanitization, see `extensions/hooks/README.md`).
+Opt out with `thurbox-cli extension deactivate hooks` (records a
+`builtin_hooks_optout` metadata flag so self-heal won't resurrect it);
+`activate`/`install hooks` clears it. See the Session-status section.
 
 `thurbox-cli extension install <name|url|dir> [--home <dir>] [--force]`
 (`session_ops::install_extension`) is the one-command installer: it
@@ -987,15 +1054,70 @@ global_search` in settings.toml; scopes whose feature is disabled
   (session list, tasks panel) were removed in favour of it. The file
   viewer's `/` (in-file text search) is unrelated and stays.
 
+## Session status (hooks-driven)
+
+The session list shows, at a glance, which agents are blocked, working,
+or done. `SessionStatus` (`src/session/mod.rs`) has five states driven by
+**agent hooks**, not heuristics:
+
+| State | Colour | Glyph | Meaning |
+|-------|--------|-------|---------|
+| `Working` | yellow | animated braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running |
+| `Blocked` | red | `◆` | agent needs input or approval |
+| `Done` | blue | `●` (filled) | a turn just finished; shown until you switch away |
+| `Idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
+| `Error` | red | `✗` | reserved for a crashed agent — **not derived yet** (no exit-code signal; exited → `Idle`) |
+
+The live session list **animates** the `Working` spinner (`ui::SPINNER_FRAMES`,
+`App::spinner_frame` advanced from `tick_count`, ~8 fps, repaints forced only
+while something is working). The filled `●` (Done) vs hollow `○` (Idle) pair
+reads done-vs-seen at a glance. `ui::status_glyph(status, spinner)` picks the
+frame; the static `icon()` is used in non-animated contexts (info panel).
+
+- **The callback.** Agents report transitions with
+  `thurbox-cli session signal --state <working|blocked|done|idle>`
+  (`cli::sessions::Action::Signal`). Identity is the injected
+  `THURBOX_SESSION` (falling back to a lookup by `agent_session_id` /
+  `THURBOX_SESSION_ID`), so a hook passes no id. It writes the persisted
+  state and the TUI picks it up via `PRAGMA data_version` — works headless.
+  (`idle` = agent at rest, e.g. a boot-time hook; `done` = a turn just finished.)
+- **Persistence.** `sessions.hook_state` / `hook_state_at` / `seen_at`
+  (schema **v34**), with targeted-UPDATE accessors `set_hook_state` /
+  `mark_session_seen` / `load_hook_states` (`storage/sessions.rs`).
+  `upsert_session` deliberately **never** lists the hook columns, so the
+  TUI's full-row write-back can't clobber a state a headless hook set. A
+  fresh spawn seeds **nothing** — a never-reported session is `Idle`, and the
+  agent's hooks drive it from there (so an idle, just-booted agent doesn't look
+  stuck working).
+- **Derivation.** `App::refresh_session_statuses` (`src/app/mod.rs`) reads
+  all hook rows once per tick: exited → `Idle`; else the persisted state
+  (`working`/`blocked`; `idle`/none → `Idle`). `done` shows as `Done` (blue)
+  **whether focused or not** — so a turn you're watching visibly completes — and
+  becomes `Idle` only when you **move focus off it** (acknowledge it): the focus
+  change vs. `last_active_session_id` marks the just-left `done` session `seen`
+  (persists `seen_at`, one-shot). A single focused session therefore reads
+  `working ↔ done`; `idle` is the at-rest/acknowledged state.
+- **Rollup.** Repo groups roll up to their most-urgent member
+  (`Blocked > Error > Working > Done > Idle`), rendered as a colored dot on
+  the group header (`ui::project_list::group_status` +
+  `group_header_line`). Status only recolors — it **never** reorders rows
+  (the order cache stays status-independent).
+- **Colours** are tunable theme fields: `status_working` / `status_blocked`
+  / `status_done` / `status_idle` / `status_error`
+  (`session::theme_config`, all 9 presets + custom-theme overrides), mapped
+  by `ui::status_color`.
+- **Wiring the hooks** is the job of the built-in **hooks extension**
+  (auto-activated; see the Extensions section) — core thurbox only knows
+  the generic `session signal` command.
+
 ## OS notifications
 
-When a session crosses into a "needs you" state — the agent rang the
-terminal bell or emitted an OSC 9 / OSC 777 notification (i.e. it
-transitions to `SessionStatus::Attention`) — thurbox fires an OS
-desktop notification so the user can react without watching the TUI.
-The trigger is the explicit signal by default; an opt-in
-`also_on_waiting` extends it to the timing-only `Busy → Waiting` edge
-for agents that don't ring a bell. The transition is observed once per
+When a session transitions to `SessionStatus::Blocked` (the agent needs
+the user, reported by a hook) thurbox fires an OS desktop notification so
+the user can react without watching the TUI.
+The trigger is the block edge by default; an opt-in
+`also_on_waiting` extends it to the `Working → Done` (finished) edge
+(the field name is historical). The transition is observed once per
 tick in `App::refresh_session_statuses` (the *same* place
 `SessionStatus` is computed, so the rule never drifts from the icon
 in the list), dedup'd per session by `min_interval_secs`, and skipped

@@ -1,0 +1,80 @@
+# The built-in "hooks" extension.
+#
+# Wires each coding agent's lifecycle hooks to `thurbox-cli session signal` so
+# every session reports its state (working / blocked / done) back to thurbox.
+# Unlike user extensions this one ships embedded in the binary and is
+# auto-activated on first run. Opt out with:
+#
+#     thurbox-cli extension deactivate hooks
+#
+# Identity is the injected $THURBOX_SESSION env var (no ids passed by hand), and
+# every hook command is `… || true` so a missing thurbox-cli or a hook firing
+# outside a thurbox session can never break the agent.
+
+name = "hooks"
+description = "Report each agent's lifecycle state (working/blocked/done) to thurbox via agent hooks."
+config_version = 1
+version = "1.3.0"
+# Default home; the auto-activation path overrides this with *this build's*
+# resolved config dir (`~/.config/thurbox` or `~/.config/thurbox-dev`) so dev and
+# release installs stay isolated. See `session_ops::builtin_hooks::hooks_home`.
+home = "~/.config/thurbox/hooks"
+
+# claude reads hooks from a settings file we pass via --settings (merged with the
+# user's own settings, never clobbering them). The file lives under the home dir.
+[[files]]
+path = "claude.json"
+
+# Inject the --settings flag into the existing built-in `claude` agent (reversible).
+[[agent_patches]]
+name = "claude"
+append_args = ["--settings", "{home}/claude.json"]
+
+# aider has no lifecycle hook system — only a "waiting for input" callback, which
+# maps to blocked. (working/done aren't expressible; the dot stays accurate for
+# the block edge.)
+[[agent_patches]]
+name = "aider"
+append_args = [
+  "--notifications",
+  "--notifications-command",
+  "thurbox-cli session signal --state blocked",
+]
+
+# opencode loads plugins from its own config dir; drop one in (only when opencode
+# is actually installed, guarded by requires_dir).
+[[external_files]]
+path = "~/.config/opencode/plugin/thurbox-status.js"
+source = "opencode-status.js"
+requires_dir = "~/.config/opencode"
+
+# codex's stable, long-documented hook is `notify` — a single program codex runs
+# on agent-turn-complete (it appends a JSON event arg, which the inline `sh -c`
+# ignores). That maps cleanly to `done`. codex has no per-event notify, so
+# working/blocked/idle aren't expressible this way — the dot is accurate for the
+# turn-complete edge (complementary to aider's blocked-only). Passed as a launch
+# `-c` override so we never write into the user's ~/.codex/config.toml, and it's
+# fully reversible (uninstall strips these args).
+[[agent_patches]]
+name = "codex"
+append_args = [
+  "-c",
+  'notify=["sh","-c","thurbox-cli session signal --state done || true"]',
+]
+
+# gemini loads hooks only from its shared ~/.gemini/settings.json, which we must
+# NOT clobber — so we JSON-merge our entries in (reversibly; uninstall prunes
+# exactly ours, leaving the user's settings intact). Guarded by requires_dir so
+# it's a no-op when gemini isn't installed.
+#
+# EXPERIMENTAL: gemini's hook event names + settings shape here are doc-sourced
+# and unverified against a live binary; if they differ, fix gemini-hooks.json
+# (no code change needed). gemini also has no permission-only event, so we map
+# only idle/working/done (NO blocked — its ambiguous Notification fires on idle
+# too, the false-red trap we avoid for claude). Identity needs $THURBOX_SESSION
+# to reach the hook process; if gemini sanitizes the hook env the signal is a
+# fail-open no-op (`|| true`). Validate end-to-end before relying on it.
+[[config_merges]]
+path = "~/.gemini/settings.json"
+source = "gemini-hooks.json"
+requires_dir = "~/.gemini"

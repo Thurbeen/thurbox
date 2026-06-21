@@ -49,5 +49,10 @@ pub fn restart_session_headless(db: &Database, session_id: SessionId) -> Result<
     )
     .map_err(|e| format!("Failed to re-spawn tmux window: {e}"))?;
 
+    // The agent was re-spawned fresh; clear any stale hook-driven status so it
+    // doesn't show a leftover Blocked/Working/Done until the agent re-reports
+    // (a resumed agent may not re-fire its boot hook). Best-effort.
+    let _ = db.clear_hook_state(session_id);
+
     Ok(())
 }

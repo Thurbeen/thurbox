@@ -56,6 +56,98 @@ impl ExtensionFile {
     }
 }
 
+/// A file the installer places **outside** the extension home — into an agent's
+/// own config dir (e.g. `~/.config/opencode/plugin/thurbox-status.js`). `path`
+/// may be absolute, start with `~`, or contain [`HOME_TOKEN`]. Unlike
+/// [`ExtensionFile`] (home-confined), this is how a hook plugin reaches an agent
+/// that has no launch flag. Removed on uninstall when still thurbox-managed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalFile {
+    /// Destination path: absolute, `~`-relative, or containing `{home}`.
+    pub path: String,
+    /// Source path relative to the install source (defaults to `path`'s file name).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Mark the written file executable (`chmod +x`).
+    #[serde(default)]
+    pub executable: bool,
+    /// Only write when the destination is absent (don't clobber a user file).
+    #[serde(default)]
+    pub if_absent: bool,
+    /// Replace [`HOME_TOKEN`] in the content before writing.
+    #[serde(default)]
+    pub substitute: bool,
+    /// Only write when this directory exists (absolute / `~`). Guards against
+    /// creating an agent's config tree for an agent the user hasn't installed —
+    /// e.g. `~/.config/opencode` for the opencode plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_dir: Option<String>,
+}
+
+/// Source-relative path for a payload whose `source` defaults to the
+/// destination's *file name* (used by [`ExternalFile`] and [`ConfigMerge`],
+/// which write outside the home dir to an absolute/`~` destination).
+fn source_or_dest_filename<'a>(source: &'a Option<String>, dest: &'a str) -> &'a str {
+    source.as_deref().unwrap_or_else(|| {
+        std::path::Path::new(dest)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(dest)
+    })
+}
+
+impl ExternalFile {
+    /// Source-relative path to fetch this file's content from (defaults to the
+    /// destination's file name when `source` is unset).
+    pub fn source_path(&self) -> &str {
+        source_or_dest_filename(&self.source, &self.path)
+    }
+}
+
+/// An append-args patch applied to an **existing** agent in `agents.toml` — one
+/// the extension does not own (e.g. the built-in `claude`). Unlike `[[agents]]`
+/// (which only *adds* new agents), this injects `append_args` into the named
+/// agent's `args`, reversibly: uninstall removes exactly this subsequence.
+/// [`HOME_TOKEN`] is substituted in `append_args`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentPatch {
+    /// Name of the existing agent whose `args` to extend.
+    pub name: String,
+    /// Args appended to the agent's `args` (idempotent; removed on uninstall).
+    #[serde(default)]
+    pub append_args: Vec<String>,
+}
+
+/// A **non-destructive, reversible JSON merge** into a config file an agent owns
+/// (e.g. `~/.gemini/settings.json`). Unlike [`ExternalFile`] (which writes a
+/// whole file and would clobber the user's config), this deep-merges the shipped
+/// `source` JSON into the target in place: objects recurse, arrays union by
+/// deep-equality, and uninstall removes exactly our entries (see
+/// `agent::json_merge`). For agents whose hooks live in a *shared* config file
+/// that has no drop-in plugin location.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigMerge {
+    /// Target config file: absolute, `~`-relative, or containing [`HOME_TOKEN`].
+    pub path: String,
+    /// Source path (relative to the install source) of the JSON to merge in;
+    /// defaults to `path`'s file name.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Only merge when this directory exists (absolute / `~`) — skips the merge
+    /// when the agent isn't installed (e.g. `~/.gemini`), mirroring
+    /// [`ExternalFile::requires_dir`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_dir: Option<String>,
+}
+
+impl ConfigMerge {
+    /// Source-relative path to read the JSON-to-merge from (defaults to the
+    /// destination's file name).
+    pub fn source_path(&self) -> &str {
+        source_or_dest_filename(&self.source, &self.path)
+    }
+}
+
 /// A symlink the installer creates under the extension home directory. Used to
 /// surface a spec file under each agent CLI's context-file name
 /// (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`). An existing *regular* file
@@ -145,6 +237,18 @@ pub struct ExtensionDef {
     /// Payload files the installer lays down under the home dir. Install-time only.
     #[serde(default)]
     pub files: Vec<ExtensionFile>,
+    /// Files the installer places **outside** the home dir, into agents' own
+    /// config dirs (hook plugins, etc.). Install-time only.
+    #[serde(default)]
+    pub external_files: Vec<ExternalFile>,
+    /// Append-args patches applied to existing agents in `agents.toml`
+    /// (reversible). Install-time only.
+    #[serde(default)]
+    pub agent_patches: Vec<AgentPatch>,
+    /// Reversible JSON merges into agents' own config files (hooks into a shared
+    /// `settings.json`/`hooks.json`). Install-time only.
+    #[serde(default)]
+    pub config_merges: Vec<ConfigMerge>,
     /// Symlinks the installer creates under the home dir. Install-time only.
     #[serde(default)]
     pub symlinks: Vec<ExtensionSymlink>,
@@ -173,6 +277,23 @@ impl ExtensionDef {
         for s in &mut out.sessions {
             let p = s.repo_path.to_string_lossy().replace(HOME_TOKEN, home);
             s.repo_path = PathBuf::from(p);
+        }
+        // External-file destinations and patched agent args may reference the
+        // home dir (e.g. `--settings {home}/hooks/claude.json`); resolve them so
+        // activate/heal/uninstall read absolute paths without expanding tokens.
+        for f in &mut out.external_files {
+            f.path = f.path.replace(HOME_TOKEN, home);
+        }
+        for p in &mut out.agent_patches {
+            for arg in &mut p.append_args {
+                *arg = arg.replace(HOME_TOKEN, home);
+            }
+        }
+        for m in &mut out.config_merges {
+            m.path = m.path.replace(HOME_TOKEN, home);
+            if let Some(req) = &m.requires_dir {
+                m.requires_dir = Some(req.replace(HOME_TOKEN, home));
+            }
         }
         out
     }
@@ -320,6 +441,9 @@ prompt = "tick"
                 if_absent: false,
                 substitute: false,
             }],
+            external_files: vec![],
+            agent_patches: vec![],
+            config_merges: vec![],
             symlinks: vec![ExtensionSymlink {
                 link: "CLAUDE.md".into(),
                 target: "FLOW.md".into(),
@@ -348,6 +472,44 @@ prompt = "tick"
         assert!(def.is_empty());
         assert!(def.agents.is_empty());
         assert!(def.files.is_empty());
+    }
+
+    #[test]
+    fn config_merge_source_path_defaults_to_dest_filename() {
+        // Explicit source wins.
+        let explicit = ConfigMerge {
+            path: "~/.gemini/settings.json".into(),
+            source: Some("gemini-hooks.json".into()),
+            requires_dir: None,
+        };
+        assert_eq!(explicit.source_path(), "gemini-hooks.json");
+        // Unset source falls back to the destination's file name (not its full
+        // path) — the shared `source_or_dest_filename` behavior.
+        let defaulted = ConfigMerge {
+            path: "~/.gemini/settings.json".into(),
+            source: None,
+            requires_dir: None,
+        };
+        assert_eq!(defaulted.source_path(), "settings.json");
+    }
+
+    #[test]
+    fn resolved_for_home_substitutes_config_merge_paths() {
+        let def: ExtensionDef = toml::from_str(
+            "name = \"hooks\"\n[[config_merges]]\npath = \"{home}/settings.json\"\nrequires_dir = \"{home}\"\n",
+        )
+        .unwrap();
+        let resolved = def.resolved_for_home("/home/me/.gemini");
+        assert_eq!(
+            resolved.config_merges[0].path,
+            "/home/me/.gemini/settings.json"
+        );
+        assert_eq!(
+            resolved.config_merges[0].requires_dir.as_deref(),
+            Some("/home/me/.gemini")
+        );
+        // Original untouched.
+        assert_eq!(def.config_merges[0].path, "{home}/settings.json");
     }
 
     #[test]

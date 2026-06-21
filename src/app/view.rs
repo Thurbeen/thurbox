@@ -206,6 +206,8 @@ impl App {
         // A (global) search is active iff there's a query — non-matching rows dim.
         let session_search_active = global_query.is_some();
 
+        let spinner =
+            crate::ui::SPINNER_FRAMES[self.spinner_frame() % crate::ui::SPINNER_FRAMES.len()];
         let rows = project_list::render_left_panel(
             frame,
             left_area,
@@ -219,6 +221,7 @@ impl App {
                 session_search_active,
                 headers: &ordered.headers,
                 depths: &ordered.depths,
+                spinner,
             },
         );
         self.record_row_clicks(

@@ -125,6 +125,10 @@ fn install_extension(
     force: bool,
 ) -> Result<CommandOutput, String> {
     let report = crate::session_ops::install_extension(db, &target, home.as_deref(), force)?;
+    // Re-installing the built-in hooks extension clears any prior opt-out.
+    if report.name == crate::session_ops::HOOKS_EXTENSION_NAME {
+        let _ = db.set_builtin_hooks_optout(false);
+    }
     // Arm the heartbeat so the extension's automations fire headlessly.
     arm_heartbeat();
     Ok(CommandOutput::from_summary(install_report_to_json(&report)))
@@ -133,6 +137,11 @@ fn install_extension(
 /// Handle `extension uninstall`.
 fn uninstall_extension(db: &Database, name: String, purge: bool) -> Result<CommandOutput, String> {
     let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
+    // Uninstalling the auto-activated built-in extension is an explicit opt-out,
+    // so startup self-heal won't reinstall it.
+    if name == crate::session_ops::HOOKS_EXTENSION_NAME {
+        let _ = db.set_builtin_hooks_optout(true);
+    }
     Ok(CommandOutput::from_summary(json!({
         "ok": true,
         "summary": format!("Uninstalled extension '{}'", report.name),
@@ -232,6 +241,20 @@ fn reinstall_extension(db: &Database, name: String, purge: bool) -> Result<Comma
 
 /// Handle `extension activate`.
 fn activate_extension(db: &Database, name: String) -> Result<CommandOutput, String> {
+    // The built-in hooks extension is installed from embedded assets, not a
+    // discovery manifest — clear the opt-out and (re)apply the wiring directly.
+    if name == crate::session_ops::HOOKS_EXTENSION_NAME {
+        db.set_builtin_hooks_optout(false)
+            .map_err(|e| format!("clear opt-out: {e}"))?;
+        let msgs = crate::session_ops::ensure_builtin_hooks_extension(db);
+        arm_heartbeat();
+        return Ok(CommandOutput::from_summary(json!({
+            "ok": true,
+            "summary": "Activated 'hooks' (agent status hooks re-applied)",
+            "activated": name,
+            "messages": msgs,
+        })));
+    }
     let def = load_manifest(&name)?;
     let report = crate::session_ops::activate_extension(db, &def)?;
     // A `Send` automation only fires while something ticks it. Arm the
@@ -260,6 +283,23 @@ fn deactivate_extension(
     force: bool,
     purge: bool,
 ) -> Result<CommandOutput, String> {
+    // Deactivating the auto-activated built-in extension is an explicit opt-out:
+    // record the flag (so self-heal won't resurrect it) and fully reverse the
+    // wiring — uninstall removes the agent patches + external plugin files.
+    if name == crate::session_ops::HOOKS_EXTENSION_NAME {
+        db.set_builtin_hooks_optout(true)
+            .map_err(|e| format!("set opt-out: {e}"))?;
+        let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
+        return Ok(CommandOutput::from_summary(json!({
+            "ok": true,
+            "summary": "Deactivated 'hooks' (agent status hooks removed)",
+            "deactivated": name,
+            "was_active": true,
+            "agents_unpatched": report.agents_unpatched,
+            "external_files_removed": report.external_files_removed,
+            "config_merges_reverted": report.config_merges_reverted,
+        })));
+    }
     // Tear down whatever the manifest declares. If the manifest is gone
     // we can't know the resources, but still clear the active-set entry.
     let report = match crate::agent::extension_config::load_manifest(&name) {

@@ -32,6 +32,14 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
+/// Env var pinning the resolved config app dir for a child process (an agent
+/// whose hook calls `thurbox-cli`), so it targets the same config the spawning
+/// thurbox uses regardless of XDG/binary-flavor/tmux-server-env drift. Injected
+/// at spawn ([`crate::session_ops`]); consumed by `config_app_dir`.
+pub const CONFIG_DIR_OVERRIDE_ENV: &str = "THURBOX_CONFIG_DIR";
+/// Data counterpart of [`CONFIG_DIR_OVERRIDE_ENV`] (`THURBOX_DATA_DIR`).
+pub const DATA_DIR_OVERRIDE_ENV: &str = "THURBOX_DATA_DIR";
+
 /// Returns "thurbox-dev" for dev builds, "thurbox" for release builds.
 fn app_dir_name() -> &'static str {
     if cfg!(dev_build) {
@@ -80,16 +88,34 @@ fn data_base() -> Option<PathBuf> {
     }
 }
 
-/// `<config_base>/<app>/<filename>` (e.g.
-/// `$XDG_CONFIG_HOME/thurbox/<filename>` or `%APPDATA%\thurbox\<filename>`).
-fn xdg_config_subpath(filename: &str) -> Option<PathBuf> {
-    Some(config_base()?.join(app_dir_name()).join(filename))
+/// Resolved thurbox config app dir. A `THURBOX_CONFIG_DIR` env override (the
+/// already-resolved dir, incl. the `thurbox`/`thurbox-dev` segment) wins — this
+/// is how the TUI pins child processes (agent hooks calling `thurbox-cli`) to
+/// the *same* config it uses, immune to a stale tmux-server env or which
+/// `thurbox-cli` binary is on PATH. Otherwise `<config_base>/<app>`.
+fn config_app_dir() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os(CONFIG_DIR_OVERRIDE_ENV).filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(x));
+    }
+    Some(config_base()?.join(app_dir_name()))
 }
 
-/// `<data_base>/<app>/<segments...>` (e.g.
-/// `$XDG_DATA_HOME/thurbox/<segments>` or `%LOCALAPPDATA%\thurbox\<segments>`).
+/// Resolved thurbox data app dir; see [`config_app_dir`] (`THURBOX_DATA_DIR`).
+fn data_app_dir() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os(DATA_DIR_OVERRIDE_ENV).filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(x));
+    }
+    Some(data_base()?.join(app_dir_name()))
+}
+
+/// `<config_app_dir>/<filename>`.
+fn xdg_config_subpath(filename: &str) -> Option<PathBuf> {
+    Some(config_app_dir()?.join(filename))
+}
+
+/// `<data_app_dir>/<segments...>`.
 fn xdg_data_subpath(segments: &[&str]) -> Option<PathBuf> {
-    let mut p = data_base()?.join(app_dir_name());
+    let mut p = data_app_dir()?;
     for seg in segments {
         p.push(seg);
     }
@@ -107,6 +133,9 @@ pub enum PathKind {
     Database,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
     MetricsDir,
+    /// Embedded built-in extensions materialized for install:
+    /// `~/.local/share/thurbox/builtin-extensions/`
+    BuiltinExtensionsDir,
     /// Git worktrees: `~/.local/share/thurbox/worktrees/`
     WorktreesDir,
     /// Per-session multi-repo symlink workspaces:
@@ -152,6 +181,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
         PathKind::Database => xdg_data_subpath(&["thurbox.db"]),
         PathKind::LogDir => xdg_data_subpath(&[]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
+        PathKind::BuiltinExtensionsDir => xdg_data_subpath(&["builtin-extensions"]),
         PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
         PathKind::WorkspacesDir => xdg_data_subpath(&["workspaces"]),
         PathKind::KeybindingsFile => xdg_config_subpath("keybindings.json"),
@@ -165,6 +195,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::LogDir => base.to_path_buf(),
         PathKind::Database => base.join("thurbox.db"),
         PathKind::MetricsDir => base.join("metrics"),
+        PathKind::BuiltinExtensionsDir => base.join("builtin-extensions"),
         PathKind::WorktreesDir => base.join("worktrees"),
         PathKind::WorkspacesDir => base.join("workspaces"),
         PathKind::KeybindingsFile => base.join("keybindings.json"),
@@ -216,6 +247,15 @@ pub fn validate_safe_name(name: &str) -> Result<(), String> {
 /// Returns: `$XDG_DATA_HOME/thurbox/metrics/` or `$HOME/.local/share/thurbox/metrics/`
 pub fn metrics_directory() -> Option<PathBuf> {
     resolve(PathKind::MetricsDir)
+}
+
+/// Directory where embedded built-in extensions are materialized so the
+/// extension installer can treat them as a local source.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/builtin-extensions/` or
+/// `$HOME/.local/share/thurbox/builtin-extensions/`
+pub fn builtin_extensions_directory() -> Option<PathBuf> {
+    resolve(PathKind::BuiltinExtensionsDir)
 }
 
 /// Resolve the worktrees directory path.

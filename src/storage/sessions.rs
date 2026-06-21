@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::params;
@@ -7,6 +8,19 @@ use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
 
 use super::audit::{AuditAction, EntityType};
 use super::Database;
+
+/// The hooks-driven status columns of a session, read in one batch by the TUI
+/// each tick to derive [`crate::session::SessionStatus`]. See schema v34.
+#[derive(Debug, Clone, Default)]
+pub struct HookRow {
+    /// `working` / `blocked` / `done` / `idle`, or `None` when no hook has fired
+    /// yet. (`idle` and unknown values render as [`crate::session::SessionStatus`]`::Idle`.)
+    pub state: Option<String>,
+    /// Epoch ms the state was last reported.
+    pub state_at: Option<i64>,
+    /// Epoch ms the user last "saw" a `done` state (drives Done → Idle).
+    pub seen_at: Option<i64>,
+}
 
 /// Information about a soft-deleted session, including its worktrees.
 #[derive(Debug, Clone)]
@@ -348,6 +362,92 @@ impl Database {
         }
 
         Ok(sessions)
+    }
+
+    /// Get a single active (non-deleted) session by its agent conversation id
+    /// (`agent_session_id`, the value injected as `THURBOX_SESSION_ID`). Used by
+    /// `session signal` as an identity fallback when `$THURBOX_SESSION` is not
+    /// available to the hook process (e.g. an agent that sanitizes its env).
+    pub fn get_session_by_agent_session_id(
+        &self,
+        agent_session_id: &str,
+    ) -> rusqlite::Result<Option<SharedSession>> {
+        let sessions = self.query_sessions(
+            "s.deleted_at IS NULL AND s.agent_session_id = ?1",
+            params![agent_session_id],
+        )?;
+        Ok(sessions.into_iter().next())
+    }
+
+    /// Record an agent-reported lifecycle state (`working`/`blocked`/`done`) for
+    /// a session, stamping `hook_state_at` to now. Written by
+    /// `thurbox-cli session signal` (and at spawn, defaulting to `working`).
+    ///
+    /// Deliberately a targeted UPDATE that touches only the hook columns —
+    /// [`upsert_session`](Self::upsert_session) must never list them, so the
+    /// TUI's full-row write-back can't clobber a state a headless hook just set.
+    pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<()> {
+        let now = current_time_millis() as i64;
+        self.conn.execute(
+            "UPDATE sessions SET hook_state = ?1, hook_state_at = ?2 \
+             WHERE id = ?3 AND deleted_at IS NULL",
+            params![state, now, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a session as "seen" at `at_least` (epoch ms), so a `done` session
+    /// the user has looked at renders `Idle` instead of `Done`. The TUI calls
+    /// this once, on the transition (when `seen_at < hook_state_at`), never
+    /// every tick.
+    pub fn mark_session_seen(&self, id: SessionId, at_least: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET seen_at = ?1 WHERE id = ?2",
+            params![at_least, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Clear a session's hooks-driven status (NULL all three columns), returning
+    /// it to the never-reported `Idle` default. Called on **restart**: the agent
+    /// is re-spawned fresh, so a stale `Blocked`/`Working`/`Done` must not linger
+    /// until the agent's hooks re-report (which a resumed agent may not do).
+    pub fn clear_hook_state(&self, id: SessionId) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL \
+             WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Load the hook-status columns for every active session in one indexed
+    /// scan, keyed by id. Called once per tick by the TUI to derive statuses.
+    pub fn load_hook_states(&self) -> rusqlite::Result<HashMap<SessionId, HookRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, hook_state, hook_state_at, seen_at \
+             FROM sessions WHERE deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id_str: String = row.get(0)?;
+            Ok((
+                id_str,
+                HookRow {
+                    state: row.get(1)?,
+                    state_at: row.get(2)?,
+                    seen_at: row.get(3)?,
+                },
+            ))
+        })?;
+
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id_str, hook) = row?;
+            if let Ok(id) = id_str.parse::<SessionId>() {
+                map.insert(id, hook);
+            }
+        }
+        Ok(map)
     }
 }
 
@@ -795,5 +895,97 @@ mod tests {
 
         let active = db.list_active_sessions().unwrap();
         assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn hook_state_roundtrips_and_defaults_null() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("S1");
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        // No hook fired yet: row exists, hook state is NULL.
+        let states = db.load_hook_states().unwrap();
+        let hook = states.get(&sid).expect("session present in hook map");
+        assert_eq!(hook.state, None);
+        assert_eq!(hook.state_at, None);
+        assert_eq!(hook.seen_at, None);
+
+        db.set_hook_state(sid, "blocked").unwrap();
+        let states = db.load_hook_states().unwrap();
+        let hook = states.get(&sid).unwrap();
+        assert_eq!(hook.state.as_deref(), Some("blocked"));
+        assert!(hook.state_at.is_some());
+    }
+
+    #[test]
+    fn upsert_does_not_clobber_hook_state() {
+        // The TUI's full-row upsert must preserve a state a headless hook set.
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("S1");
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(sid, "done").unwrap();
+
+        // Simulate the TUI writing the session back (e.g. a rename).
+        session.name = "S1-renamed".to_string();
+        db.upsert_session(&session).unwrap();
+
+        let states = db.load_hook_states().unwrap();
+        assert_eq!(states.get(&sid).unwrap().state.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn mark_seen_records_timestamp() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("S1");
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(sid, "done").unwrap();
+
+        let done_at = db.load_hook_states().unwrap().get(&sid).unwrap().state_at;
+        db.mark_session_seen(sid, done_at.unwrap()).unwrap();
+
+        let hook = db.load_hook_states().unwrap();
+        let hook = hook.get(&sid).unwrap();
+        assert_eq!(hook.seen_at, done_at);
+        assert!(hook.seen_at >= hook.state_at);
+    }
+
+    #[test]
+    fn clear_hook_state_nulls_all_columns() {
+        // On restart, a stale Blocked/Working/Done must be wiped so the
+        // re-spawned session falls back to the never-reported Idle default.
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("S1");
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(sid, "blocked").unwrap();
+        let at = db.load_hook_states().unwrap().get(&sid).unwrap().state_at;
+        db.mark_session_seen(sid, at.unwrap()).unwrap();
+
+        db.clear_hook_state(sid).unwrap();
+
+        let hook = db.load_hook_states().unwrap();
+        let row = hook.get(&sid).unwrap();
+        assert_eq!(row.state, None);
+        assert_eq!(row.state_at, None);
+        assert_eq!(row.seen_at, None);
+    }
+
+    #[test]
+    fn lookup_by_agent_session_id() {
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("S1");
+        session.agent_session_id = Some("conv-123".to_string());
+        let sid = session.id;
+        db.upsert_session(&session).unwrap();
+
+        let found = db.get_session_by_agent_session_id("conv-123").unwrap();
+        assert_eq!(found.map(|s| s.id), Some(sid));
+        assert!(db
+            .get_session_by_agent_session_id("nope")
+            .unwrap()
+            .is_none());
     }
 }

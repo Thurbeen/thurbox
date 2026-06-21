@@ -15,7 +15,7 @@ use std::process::Command;
 
 use serde::Serialize;
 
-use crate::session::{AgentDef, ExtensionDef};
+use crate::session::{AgentDef, AgentPatch, ExtensionDef};
 
 /// Raw-content root of the thurbox repo (no git ref).
 const OFFICIAL_REPO_RAW: &str = "https://raw.githubusercontent.com/Thurbeen/thurbox";
@@ -481,6 +481,110 @@ pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> 
     Ok(removed)
 }
 
+/// Append each patch's `append_args` to the named existing agent's `args` in
+/// `agents.toml`, idempotently and preserving comments/formatting (toml_edit).
+/// Unlike [`ensure_agents_registered`] (which only adds *new* agents), this
+/// extends an agent the extension does not own (e.g. the built-in `claude`).
+/// Agents not present are skipped. Returns the names actually patched.
+pub fn apply_agent_patches(patches: &[AgentPatch]) -> Result<Vec<String>, String> {
+    edit_agent_patches(patches, true)
+}
+
+/// Reverse of [`apply_agent_patches`]: remove each patch's `append_args`
+/// subsequence from the named agent's `args`. Returns the names actually changed.
+pub fn remove_agent_patches(patches: &[AgentPatch]) -> Result<Vec<String>, String> {
+    edit_agent_patches(patches, false)
+}
+
+fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, String> {
+    use toml_edit::{Array, DocumentMut};
+
+    if patches.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Ensure the file exists (seeds built-ins if absent).
+    super::agent_config::load_or_seed();
+    let Some(path) = super::agent_config::agents_config_path() else {
+        return Err("could not resolve agents.toml path".into());
+    };
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut doc: DocumentMut = text
+        .parse()
+        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let Some(agents) = doc
+        .get_mut("agents")
+        .and_then(|i| i.as_array_of_tables_mut())
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut changed = Vec::new();
+    for patch in patches {
+        if patch.append_args.is_empty() {
+            continue;
+        }
+        for table in agents.iter_mut() {
+            if table.get("name").and_then(|v| v.as_str()) != Some(patch.name.as_str()) {
+                continue;
+            }
+            if table.get("args").is_none() {
+                table["args"] = toml_edit::value(Array::new());
+            }
+            let Some(args) = table.get_mut("args").and_then(|i| i.as_array_mut()) else {
+                break;
+            };
+            let current: Vec<String> = args
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            let present = contains_subsequence(&current, &patch.append_args);
+            if add && !present {
+                for a in &patch.append_args {
+                    args.push(a.as_str());
+                }
+                changed.push(patch.name.clone());
+            } else if !add && present {
+                let mut arr = Array::new();
+                for a in remove_subsequence(&current, &patch.append_args) {
+                    arr.push(a.as_str());
+                }
+                table["args"] = toml_edit::value(arr);
+                changed.push(patch.name.clone());
+            }
+            break;
+        }
+    }
+
+    if !changed.is_empty() {
+        std::fs::write(&path, doc.to_string())
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    Ok(changed)
+}
+
+/// Whether `hay` contains `needle` as a contiguous subsequence.
+fn contains_subsequence(hay: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    needle.len() <= hay.len() && hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// `hay` with the first contiguous occurrence of `needle` removed.
+fn remove_subsequence(hay: &[String], needle: &[String]) -> Vec<String> {
+    if needle.is_empty() {
+        return hay.to_vec();
+    }
+    if let Some(pos) = hay.windows(needle.len()).position(|w| w == needle) {
+        let mut out = hay[..pos].to_vec();
+        out.extend_from_slice(&hay[pos + needle.len()..]);
+        out
+    } else {
+        hay.to_vec()
+    }
+}
+
 /// Walk `lines`, dropping every `[[agents]]` block whose `name` is in `names`
 /// (with a single trailing blank separator). Returns the kept lines and the
 /// names actually removed.
@@ -799,6 +903,50 @@ mod tests {
         assert!(remove_agents_from_toml(&["ghost".to_string()])
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn agent_patches_apply_idempotently_and_reverse() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        let patch = AgentPatch {
+            name: "claude".into(),
+            append_args: vec!["--settings".into(), "/x/hooks.json".into()],
+        };
+
+        // Applies to the seeded built-in `claude`.
+        let patched = apply_agent_patches(std::slice::from_ref(&patch)).unwrap();
+        assert_eq!(patched, ["claude"]);
+        let reg = super::super::agent_config::load_or_seed();
+        let args = &reg.get("claude").unwrap().args;
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--settings".to_string(), "/x/hooks.json".to_string()]),
+            "args carry the injected flag: {args:?}"
+        );
+
+        // Idempotent: re-applying changes nothing.
+        assert!(apply_agent_patches(std::slice::from_ref(&patch))
+            .unwrap()
+            .is_empty());
+
+        // Reverse removes exactly the injected subsequence.
+        let removed = remove_agent_patches(std::slice::from_ref(&patch)).unwrap();
+        assert_eq!(removed, ["claude"]);
+        let reg = super::super::agent_config::load_or_seed();
+        assert!(!reg
+            .get("claude")
+            .unwrap()
+            .args
+            .contains(&"--settings".to_string()));
+
+        // Patching an absent agent is a silent no-op.
+        let ghost = AgentPatch {
+            name: "ghost".into(),
+            append_args: vec!["--x".into()],
+        };
+        assert!(apply_agent_patches(&[ghost]).unwrap().is_empty());
     }
 
     #[test]

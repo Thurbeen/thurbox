@@ -83,7 +83,9 @@ async fn main() -> Result<()> {
         .init();
 
     // Initialize session backends, load every config file, and open the DB.
-    let (backends, agents, hosts, mut config_warnings) = init_backends_and_config()?;
+    // `agents` is reloaded after the extension heal below (which may patch
+    // agents.toml), so the initial copy here is only used for its warnings.
+    let (backends, _agents, hosts, mut config_warnings) = init_backends_and_config()?;
     let db = open_database();
     activate_persisted_theme(&db);
 
@@ -98,6 +100,26 @@ async fn main() -> Result<()> {
         tracing::info!("{m}");
     }
     config_warnings.extend(heal_messages);
+
+    // Auto-activate the built-in `hooks` extension so the default agent reports
+    // its lifecycle state out of the box (working/blocked/done). Idempotent;
+    // re-applies the agent hook wiring on every launch. Opt out with
+    // `thurbox-cli extension deactivate hooks`.
+    let hook_messages = thurbox::session_ops::ensure_builtin_hooks_extension(&db);
+    for m in &hook_messages {
+        tracing::info!("{m}");
+    }
+    // Surface hook-wiring outcomes in the status bar too (not just the log) so a
+    // wiring failure is visible. Idempotent, so this is non-empty only on the
+    // first wire-up of a profile or on an error — never noisy per launch.
+    config_warnings.extend(hook_messages);
+    // The hooks extension (and any other extension heal above) may have just
+    // patched `agents.toml` on disk — e.g. injecting `--settings <hooks>` into
+    // the `claude` agent so its lifecycle hooks fire. Reload the registry so the
+    // in-memory copy App spawns from reflects that on the *first* run too
+    // (otherwise a freshly-seeded profile would spawn agents without their hooks
+    // and statuses would be stuck until the next launch).
+    let agents = thurbox::agent::agent_config::load_or_seed();
 
     // Silent auto-update (opt-in via [features] auto_update). Kicked off on a
     // background thread *before* the TUI starts so a slow download never blocks

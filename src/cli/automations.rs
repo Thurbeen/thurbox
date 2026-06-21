@@ -412,6 +412,10 @@ fn tick(db: &Database) -> Result<Value, String> {
     for m in &healed {
         tracing::info!("{m}");
     }
+    // Keep the auto-activated built-in `hooks` extension wired up headlessly too.
+    for m in &crate::session_ops::ensure_builtin_hooks_extension(db) {
+        tracing::info!("{m}");
+    }
     // Best-effort retention sweep of the inter-session mailbox (read messages
     // older than the default window), so the queue self-bounds with the TUI
     // closed. Never abort the due-automation pass over it.

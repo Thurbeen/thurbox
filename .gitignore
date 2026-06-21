@@ -3,6 +3,12 @@
 **/*.rs.bk
 *.pdb
 
+# Nix / direnv dev environment (flake.nix is committed; flake.lock is too —
+# generate it with `nix flake lock`). The direnv cache is local-only.
+.direnv/
+# Persistent dev sandboxes live under /target (already ignored above):
+#   target/dev-sandbox/<profile>/  — see scripts/dev/sandbox.sh
+
 # IDE
 .vscode/
 .idea/

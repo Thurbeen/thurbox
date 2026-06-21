@@ -146,9 +146,9 @@ fn append_session_section<'a>(
         ]));
     }
     // Latest signal the agent pushed (OSC 9/777 notification). Highlighted while
-    // the session is in the attention state, muted otherwise.
+    // the session is blocked, muted otherwise.
     if let Some(signal) = info.notification.as_deref() {
-        let value_style = if info.status == crate::session::SessionStatus::Attention {
+        let value_style = if info.status == crate::session::SessionStatus::Blocked {
             Style::default().fg(super::status_color(info.status))
         } else {
             Style::default().fg(Theme::text_muted())
@@ -297,7 +297,7 @@ fn append_agent_lines_changed(lines: &mut Vec<Line<'_>>, metrics: &AgentMetrics)
         Span::styled("Lines:   ", Theme::label()),
         Span::styled(
             format!("+{added}"),
-            Style::default().fg(Theme::status_busy()),
+            Style::default().fg(Theme::tool_allowed()),
         ),
         Span::styled(" / ", Style::default().fg(Theme::text_muted())),
         Span::styled(
@@ -416,7 +416,7 @@ fn append_git_section(lines: &mut Vec<Line<'_>>, git: &crate::session::GitStats)
             Span::raw(" "),
             Span::styled(
                 format!("+{}", git.insertions),
-                Style::default().fg(Theme::status_busy()),
+                Style::default().fg(Theme::tool_allowed()),
             ),
             Span::styled(" / ", Style::default().fg(Theme::text_muted())),
             Span::styled(

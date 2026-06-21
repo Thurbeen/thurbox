@@ -187,7 +187,7 @@ version_check = false          # opt-in: makes a network call
 auto_update   = false          # opt-in: downloads + replaces binaries
 
 [notifications]
-also_on_waiting     = false    # also fire on Busy → Waiting (no bell)
+also_on_waiting     = false    # also fire when a session finishes (Working → Done)
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
@@ -313,17 +313,32 @@ thurbox-cli notify --test   # fire a sample notification to confirm it works
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `also_on_waiting` | `false` | also fire on `Busy → Waiting` (no explicit bell from the agent) |
+| `also_on_waiting` | `false` | also fire when a session finishes (`Working → Done`); the field name is historical |
 | `suppress_for_active` | `true` | skip the notification for the session you're currently viewing |
 | `sound` | `true` | play the OS default notification sound |
 | `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
 | `backend` | `auto` | delivery backend: `auto` \| `dbus` \| `windows` \| `off` |
 
-The default-on `Attention` trigger is the right knob for any agent that
-respects the terminal bell / OSC 9 / OSC 777 conventions (Claude Code
-out of the box, for example). For agents that only go quiet without
-ringing a bell, set `also_on_waiting = true` — note this fires once each
-time the agent goes idle after activity, so it can be chatty.
+Notifications fire on the hooks-driven status transitions (see
+[Session status](#session-status)): always on `→ Blocked` (the agent needs
+you), and with `also_on_waiting = true` also on `Working → Done`.
+
+## Session status
+
+Each session's state (Blocked / Working / Done / Idle / Error) is driven by
+**agent hooks** that call `thurbox-cli session signal --state
+<working|blocked|done|idle>`. The state is persisted on the `sessions` row
+(`hook_state`, `hook_state_at`, `seen_at` — schema v34) and survives the TUI
+being closed; a hook fired headlessly is picked up via `PRAGMA data_version`.
+Identity comes from the injected `THURBOX_SESSION` env var, so a hook passes
+no id. A finished turn shows `Done` (blue) — for the session you're watching too
+— and becomes `Idle` once you switch focus off it.
+
+The hooks are wired up automatically by the built-in **hooks** extension
+(auto-activated on first run). Opt out with `thurbox-cli extension deactivate
+hooks`. See `extensions/hooks/README.md`. The status colours are tunable theme
+keys (`status_working` / `status_blocked` / `status_done` / `status_idle` /
+`status_error` — see `themes.toml`).
 
 ## themes.toml
 
@@ -419,6 +434,22 @@ substitute = true               # replace {home} in the content
 [[symlinks]]                    # never clobbers a real file at `link`
 link = "CLAUDE.md"
 target = "FLOW.md"
+
+# Reaching OUTSIDE the extension home (used by the built-in hooks extension):
+[[external_files]]              # write a file into an agent's OWN config dir
+path = "~/.config/opencode/plugin/x.js"
+source = "x.js"
+requires_dir = "~/.config/opencode"  # skip when that agent isn't installed
+
+[[agent_patches]]               # append args to an EXISTING agent (reversible)
+name = "claude"
+append_args = ["--settings", "{home}/claude.json"]
+
+[[config_merges]]               # reversibly deep-merge JSON into an agent's own
+path = "~/.gemini/settings.json"  #   SHARED config file (never clobbered)
+source = "gemini-hooks.json"    # objects recurse, arrays union; uninstall prunes
+requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
+                                #   when unchanged; malformed target soft-skipped
 
 # runtime spec (ensured on activate, self-healed if deleted) -----------------
 [[sessions]]
@@ -516,6 +547,7 @@ Live in the `metadata` table and apply immediately (no restart):
 | `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (nine built-ins) |
 | `editor_command` | `thurbox-cli editor set "<cmd>"` | what `Ctrl+O` runs |
 | `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
+| `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked
@@ -543,6 +575,7 @@ these to prove its own identity without scraping panes or names:
 | `THURBOX_SESSION_ID` | the agent's own conversation id (`agent_session_id`); consumed by the metrics statusline. Distinct from `THURBOX_SESSION` |
 | `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
 | `THURBOX_METRICS_DIR` | metrics output dir |
+| `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | the resolved config/data dirs, so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a stale tmux-server env. Also honored if you set them yourself to relocate thurbox's state. |
 
 Set **at build time** (not runtime):
 

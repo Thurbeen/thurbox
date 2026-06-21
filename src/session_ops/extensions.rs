@@ -107,7 +107,19 @@ pub struct InstallReport {
     pub symlinks_created: Vec<String>,
     /// Symlinks skipped because a regular file already occupies the link path.
     pub symlinks_skipped: Vec<String>,
+    /// External files written into agents' own config dirs (hook plugins).
+    pub external_files_written: Vec<String>,
+    /// External files skipped (`if_absent`/user-modified/`requires_dir` absent).
+    pub external_files_skipped: Vec<String>,
     pub agents_added: Vec<String>,
+    /// Existing agents whose `args` were extended with a hook patch.
+    pub agents_patched: Vec<String>,
+    /// Config files an extension JSON-merged hook entries into (e.g.
+    /// `~/.gemini/settings.json`).
+    pub config_merges_applied: Vec<String>,
+    /// Config merges skipped because their `requires_dir` was absent (the agent
+    /// isn't installed) or the merge was already present (no-op).
+    pub config_merges_skipped: Vec<String>,
     /// The activate result (sessions/automations created).
     pub ensure: EnsureReport,
     /// The newly-installed extension's declared `version` (if any).
@@ -186,6 +198,55 @@ pub fn install_extension(
     // 3. Agents → agents.toml (idempotent).
     report.agents_added = crate::agent::extension_config::ensure_agents_registered(&def.agents)?;
 
+    // 3b. External files (hook plugins) into agents' own config dirs. These take
+    //     absolute / `~` paths, so `{home}` is resolved first.
+    let resolved_externals: Vec<crate::session::ExternalFile> = def
+        .external_files
+        .iter()
+        .map(|f| {
+            let mut f = f.clone();
+            f.path = f.path.replace(HOME_TOKEN, &home_str);
+            if let Some(req) = &f.requires_dir {
+                f.requires_dir = Some(req.replace(HOME_TOKEN, &home_str));
+            }
+            f
+        })
+        .collect();
+    for f in &resolved_externals {
+        install_external_file(&source, f, &home_str, force, &mut report)?;
+    }
+
+    // 3c. Hook-arg patches into existing agents (reversible).
+    let resolved_patches: Vec<crate::session::AgentPatch> = def
+        .agent_patches
+        .iter()
+        .map(|p| {
+            let mut p = p.clone();
+            for a in &mut p.append_args {
+                *a = a.replace(HOME_TOKEN, &home_str);
+            }
+            p
+        })
+        .collect();
+    report.agents_patched = crate::agent::extension_config::apply_agent_patches(&resolved_patches)?;
+
+    // 3d. JSON merges into agents' own config files (reversible, non-clobbering).
+    let resolved_merges: Vec<crate::session::ConfigMerge> = def
+        .config_merges
+        .iter()
+        .map(|m| {
+            let mut m = m.clone();
+            m.path = m.path.replace(HOME_TOKEN, &home_str);
+            if let Some(req) = &m.requires_dir {
+                m.requires_dir = Some(req.replace(HOME_TOKEN, &home_str));
+            }
+            m
+        })
+        .collect();
+    for m in &resolved_merges {
+        install_config_merge(&source, m, &mut report)?;
+    }
+
     // 4. Persist the home-resolved manifest (stamped with install provenance —
     //    which binary installed it + where from) to the discovery dir, then
     //    activate. `target` is recorded verbatim so `update` re-fetches the same
@@ -245,6 +306,12 @@ fn install_payload_file(
     if f.substitute {
         content = content.replace(HOME_TOKEN, home_str);
     }
+    // Skip the write when nothing changed: `ensure` re-runs this on every TUI
+    // startup and every 60 s heartbeat tick, so a no-op rewrite each time is
+    // wasted disk churn.
+    if file_has_content(&dest, &content) {
+        return Ok(());
+    }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
@@ -254,6 +321,151 @@ fn install_payload_file(
     }
     report.files_written.push(f.path.clone());
     Ok(())
+}
+
+/// Whether `dest` already holds exactly `content` (so a rewrite would be a no-op).
+fn file_has_content(dest: &Path, content: &str) -> bool {
+    std::fs::read_to_string(dest).is_ok_and(|existing| existing == content)
+}
+
+/// Write one external file into an agent's own config dir (absolute / `~`
+/// path). Unlike [`install_payload_file`] this deliberately escapes the home
+/// dir, so it never uses the relative-path guard. Skips when `requires_dir` is
+/// absent (the agent isn't installed), when `if_absent` and the file exists, or
+/// when a user has edited our managed file (no marker) — unless `force`.
+fn install_external_file(
+    source: &crate::agent::extension_config::ExtensionSource,
+    f: &crate::session::ExternalFile,
+    home_str: &str,
+    force: bool,
+    report: &mut InstallReport,
+) -> Result<(), String> {
+    if let Some(req) = &f.requires_dir {
+        if !crate::agent::extension_config::expand_tilde(req).is_dir() {
+            report.external_files_skipped.push(f.path.clone());
+            return Ok(());
+        }
+    }
+    let dest = crate::agent::extension_config::expand_tilde(&f.path);
+    if f.if_absent && dest.exists() && !force {
+        report.external_files_skipped.push(f.path.clone());
+        return Ok(());
+    }
+    // Never clobber a file a user has edited (one lacking our managed marker).
+    if !force && dest.exists() && is_user_modified(&dest) {
+        report.external_files_skipped.push(f.path.clone());
+        return Ok(());
+    }
+    let mut content = crate::agent::extension_config::fetch_file(source, f.source_path())?;
+    if f.substitute {
+        content = content.replace(HOME_TOKEN, home_str);
+    }
+    // Skip the write when unchanged (re-run every startup + heartbeat tick).
+    if file_has_content(&dest, &content) {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&dest, content).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    if f.executable {
+        set_executable(&dest)?;
+    }
+    report.external_files_written.push(f.path.clone());
+    Ok(())
+}
+
+/// Marker present in every hook command we ship (`thurbox-cli session signal
+/// …`). [`crate::agent::json_merge::prune_marked`] uses it to remove exactly our
+/// merged entries on uninstall — robust across payload schema changes.
+const HOOK_SIGNAL_MARKER: &str = "thurbox-cli session signal";
+
+/// Read the JSON config at `path` (or `{}` when absent), parsed. A malformed
+/// file is an error rather than a silent overwrite — we never clobber config we
+/// can't safely round-trip.
+fn read_json_or_empty(path: &Path) -> Result<serde_json::Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) if s.trim().is_empty() => Ok(serde_json::json!({})),
+        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("parse {}: {e}", path.display())),
+        Err(_) => Ok(serde_json::json!({})),
+    }
+}
+
+/// Write `value` as pretty JSON to `path` only when it differs from the current
+/// contents (the merge runs every startup + heartbeat tick, so a no-op write
+/// would be churn). Returns whether it wrote.
+fn write_json_if_changed(path: &Path, value: &serde_json::Value) -> Result<bool, String> {
+    let content = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("serialize {}: {e}", path.display()))?;
+    if file_has_content(path, &content) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(true)
+}
+
+/// Deep-merge an extension's shipped JSON into an agent's *own* config file
+/// (`~/.gemini/settings.json`, …) in place — reversibly and without clobbering
+/// the user's other settings. Skips when `requires_dir` is absent (the agent
+/// isn't installed) or when the merge is already present (no-op write).
+fn install_config_merge(
+    source: &crate::agent::extension_config::ExtensionSource,
+    m: &crate::session::ConfigMerge,
+    report: &mut InstallReport,
+) -> Result<(), String> {
+    if let Some(req) = &m.requires_dir {
+        if !crate::agent::extension_config::expand_tilde(req).is_dir() {
+            report.config_merges_skipped.push(m.path.clone());
+            return Ok(());
+        }
+    }
+    let dest = crate::agent::extension_config::expand_tilde(&m.path);
+    let to_merge: serde_json::Value = serde_json::from_str(
+        &crate::agent::extension_config::fetch_file(source, m.source_path())?,
+    )
+    .map_err(|e| format!("parse merge source {}: {e}", m.source_path()))?;
+    // A user's malformed target must NOT abort the whole install: this runs every
+    // startup + heartbeat tick, so one broken file would degrade every agent's
+    // wiring. Soft-skip it (mirroring the `requires_dir` guard) and carry on.
+    let mut doc = match read_json_or_empty(&dest) {
+        Ok(doc) => doc,
+        Err(e) => {
+            tracing::warn!("skipping config merge into {}: {e}", dest.display());
+            report.config_merges_skipped.push(m.path.clone());
+            return Ok(());
+        }
+    };
+    crate::agent::json_merge::merge(&mut doc, &to_merge);
+    if write_json_if_changed(&dest, &doc)? {
+        report.config_merges_applied.push(m.path.clone());
+    } else {
+        report.config_merges_skipped.push(m.path.clone());
+    }
+    Ok(())
+}
+
+/// Reverse an [`install_config_merge`]: prune our marked hook entries out of the
+/// agent's config file, leaving the user's own settings intact. A missing file
+/// is a no-op. Returns whether the path was touched.
+fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> {
+    let dest = crate::agent::extension_config::expand_tilde(&m.path);
+    if !dest.exists() {
+        return Ok(false);
+    }
+    // A malformed target can't be safely pruned; leave it rather than abort the
+    // rest of the uninstall (consistent with the install soft-skip).
+    let mut doc = match read_json_or_empty(&dest) {
+        Ok(doc) => doc,
+        Err(e) => {
+            tracing::warn!("skipping config-merge revert in {}: {e}", dest.display());
+            return Ok(false);
+        }
+    };
+    crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+    write_json_if_changed(&dest, &doc)
 }
 
 /// Create one symlink under the home dir, replacing an existing symlink but
@@ -397,6 +609,12 @@ pub struct UninstallReport {
     /// The teardown of runtime resources (session/automation) + active set.
     pub deactivate: DeactivateReport,
     pub agents_removed: Vec<String>,
+    /// Existing agents whose hook-patch args were removed.
+    pub agents_unpatched: Vec<String>,
+    /// External files (hook plugins) removed from agents' config dirs.
+    pub external_files_removed: Vec<String>,
+    /// Config files our JSON-merged hook entries were pruned out of.
+    pub config_merges_reverted: Vec<String>,
     pub manifest_removed: bool,
     /// The home dir, if it was removed (`purge_home`).
     pub home_removed: Option<String>,
@@ -425,6 +643,26 @@ pub fn uninstall_extension(
     // Remove the agents this extension registered.
     let agent_names: Vec<String> = def.agents.iter().map(|a| a.name.clone()).collect();
     report.agents_removed = crate::agent::extension_config::remove_agents_from_toml(&agent_names)?;
+
+    // Reverse hook-arg patches on existing agents (manifest stores resolved args).
+    report.agents_unpatched =
+        crate::agent::extension_config::remove_agent_patches(&def.agent_patches)?;
+
+    // Remove external hook files we still own (those carrying our managed marker).
+    for f in &def.external_files {
+        let dest = crate::agent::extension_config::expand_tilde(&f.path);
+        if dest.is_file() && !is_user_modified(&dest) && std::fs::remove_file(&dest).is_ok() {
+            report.external_files_removed.push(f.path.clone());
+        }
+    }
+
+    // Prune our merged hook entries out of agents' own config files, leaving the
+    // user's other settings intact.
+    for m in &def.config_merges {
+        if revert_config_merge(m)? {
+            report.config_merges_reverted.push(m.path.clone());
+        }
+    }
 
     // Optionally delete the install home (payload + user data).
     if purge_home {
@@ -934,6 +1172,9 @@ mod tests {
             home: None,
             agents: Vec::new(),
             files: Vec::new(),
+            external_files: Vec::new(),
+            agent_patches: Vec::new(),
+            config_merges: Vec::new(),
             symlinks: Vec::new(),
             sessions: vec![ExtensionSession {
                 name: "flow".into(),
@@ -1170,6 +1411,335 @@ prompt = "tick"
             "if_absent file must not be clobbered on reinstall"
         );
         assert!(again.agents_added.is_empty());
+    }
+
+    #[test]
+    fn install_applies_agent_patches_and_external_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        // An out-of-home dir that exists (the "agent is installed" case) and a
+        // plugin destination under it — kept inside the tempdir so the test
+        // never touches the real home.
+        let plugin_dir = temp.path().join("opencode");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let plugin_dest = plugin_dir.join("plugin/status.js");
+        let home = temp.path().join("hookshome");
+
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                r#"name = "hooks"
+home = '{home}'
+
+[[agent_patches]]
+name = "claude"
+append_args = ["--settings", "{{home}}/claude.json"]
+
+[[external_files]]
+path = '{plugin}'
+source = "status.js"
+requires_dir = '{plugin_dir}'
+"#,
+                home = home.display(),
+                plugin = plugin_dest.display(),
+                plugin_dir = plugin_dir.display(),
+            ),
+        )
+        .unwrap();
+        // The plugin payload carries the managed marker so uninstall can remove it.
+        std::fs::write(
+            src.path().join("status.js"),
+            "// thurbox `extension install` managed\n",
+        )
+        .unwrap();
+
+        let target = src.path().to_string_lossy().to_string();
+        let report = install_extension(&db, &target, None, false).unwrap();
+
+        // The built-in claude agent's args gained the --settings flag, resolved.
+        assert_eq!(report.agents_patched, ["claude"]);
+        let reg = crate::agent::agent_config::load_or_seed();
+        let args = &reg.get("claude").unwrap().args;
+        let expected = format!("{}/claude.json", home.display());
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--settings".to_string(), expected.clone()]),
+            "claude args carry the resolved --settings: {args:?}"
+        );
+
+        // The external plugin file landed in the out-of-home config dir.
+        assert!(plugin_dest.is_file());
+        assert!(report
+            .external_files_written
+            .iter()
+            .any(|p| p == &plugin_dest.to_string_lossy()));
+
+        // Uninstall reverses both: the patch is removed and the plugin deleted.
+        let un = uninstall_extension(&db, "hooks", false).unwrap();
+        assert_eq!(un.agents_unpatched, ["claude"]);
+        assert!(!plugin_dest.exists(), "managed plugin removed on uninstall");
+        let reg = crate::agent::agent_config::load_or_seed();
+        assert!(!reg
+            .get("claude")
+            .unwrap()
+            .args
+            .contains(&"--settings".to_string()));
+    }
+
+    #[test]
+    fn config_merge_installs_and_reverts_without_clobbering_user_config() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        // The agent's config dir (gates the merge) + its shared settings file,
+        // seeded with the user's own settings incl. a pre-existing empty map.
+        let agent_dir = temp.path().join("dotgemini");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let settings = agent_dir.join("settings.json");
+        std::fs::write(
+            &settings,
+            r#"{"theme":"dark","mcpServers":{},"hooks":{"BeforeTool":[{"command":"user"}]}}"#,
+        )
+        .unwrap();
+        let home = temp.path().join("hookshome");
+
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "gemini-hooks.json"
+requires_dir = '{agent_dir}'
+"#,
+                home = home.display(),
+                settings = settings.display(),
+                agent_dir = agent_dir.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            src.path().join("gemini-hooks.json"),
+            r#"{"hooks":{"BeforeTool":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state working || true"}]}],"AfterAgent":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state done || true"}]}]}}"#,
+        )
+        .unwrap();
+
+        let target = src.path().to_string_lossy().to_string();
+        let report = install_extension(&db, &target, None, false).unwrap();
+        assert_eq!(report.config_merges_applied, [settings.to_string_lossy()]);
+
+        let merged: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        // User settings preserved (incl. the empty map) ...
+        assert_eq!(merged["theme"], serde_json::json!("dark"));
+        assert_eq!(merged["mcpServers"], serde_json::json!({}));
+        // ... the user's own BeforeTool hook survived, ours was unioned in ...
+        assert_eq!(merged["hooks"]["BeforeTool"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            merged["hooks"]["BeforeTool"][0],
+            serde_json::json!({"command": "user"})
+        );
+        // ... and our AfterAgent hook was added.
+        assert!(merged["hooks"]["AfterAgent"].is_array());
+
+        // A re-install is a no-op write (skipped, not re-applied).
+        let again = install_extension(&db, &target, None, false).unwrap();
+        assert!(again.config_merges_applied.is_empty());
+        assert_eq!(again.config_merges_skipped, [settings.to_string_lossy()]);
+
+        // Uninstall prunes exactly our entries; the user's config is restored.
+        let un = uninstall_extension(&db, "hooks", false).unwrap();
+        assert_eq!(un.config_merges_reverted, [settings.to_string_lossy()]);
+        let restored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            restored,
+            serde_json::json!({"theme":"dark","mcpServers":{},"hooks":{"BeforeTool":[{"command":"user"}]}})
+        );
+    }
+
+    #[test]
+    fn config_merge_skipped_when_requires_dir_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        // requires_dir points at a path that does NOT exist (agent not installed).
+        let missing_dir = temp.path().join("not-installed");
+        let settings = missing_dir.join("settings.json");
+        let home = temp.path().join("hookshome");
+
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "gemini-hooks.json"
+requires_dir = '{missing}'
+"#,
+                home = home.display(),
+                settings = settings.display(),
+                missing = missing_dir.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join("gemini-hooks.json"), "{}").unwrap();
+
+        let target = src.path().to_string_lossy().to_string();
+        let report = install_extension(&db, &target, None, false).unwrap();
+        assert_eq!(report.config_merges_skipped, [settings.to_string_lossy()]);
+        assert!(report.config_merges_applied.is_empty());
+        assert!(
+            !settings.exists(),
+            "no file created when the agent is absent"
+        );
+    }
+
+    #[test]
+    fn config_merge_soft_skips_a_malformed_user_target() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        // The agent is installed (dir exists) but the user's settings file is
+        // broken JSON. Install must NOT abort — it runs every startup + tick.
+        let agent_dir = temp.path().join("dotgemini");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let settings = agent_dir.join("settings.json");
+        std::fs::write(&settings, "{ this is not valid json").unwrap();
+        let home = temp.path().join("hookshome");
+
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "gemini-hooks.json"
+requires_dir = '{agent_dir}'
+"#,
+                home = home.display(),
+                settings = settings.display(),
+                agent_dir = agent_dir.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join("gemini-hooks.json"), r#"{"hooks":{}}"#).unwrap();
+
+        let target = src.path().to_string_lossy().to_string();
+        // Install succeeds despite the broken target; the merge is soft-skipped...
+        let report = install_extension(&db, &target, None, false).unwrap();
+        assert_eq!(report.config_merges_skipped, [settings.to_string_lossy()]);
+        assert!(report.config_merges_applied.is_empty());
+        // ...and the user's (broken) file is left exactly as-is, not overwritten.
+        assert_eq!(
+            std::fs::read_to_string(&settings).unwrap(),
+            "{ this is not valid json"
+        );
+    }
+
+    #[test]
+    fn config_merge_revert_soft_skips_a_malformed_target() {
+        // If the user corrupts settings.json AFTER install, uninstall must not
+        // abort on the unparseable file — it leaves it and reverts nothing.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        let agent_dir = temp.path().join("dotgemini");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let settings = agent_dir.join("settings.json");
+        std::fs::write(&settings, "{}").unwrap();
+        let home = temp.path().join("hookshome");
+
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                r#"name = "hooks"
+home = '{home}'
+
+[[config_merges]]
+path = '{settings}'
+source = "gemini-hooks.json"
+requires_dir = '{agent_dir}'
+"#,
+                home = home.display(),
+                settings = settings.display(),
+                agent_dir = agent_dir.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            src.path().join("gemini-hooks.json"),
+            r#"{"hooks":{"AfterAgent":[{"hooks":[{"type":"command","command":"thurbox-cli session signal --state done || true"}]}]}}"#,
+        )
+        .unwrap();
+
+        let target = src.path().to_string_lossy().to_string();
+        install_extension(&db, &target, None, false).unwrap();
+        // The user corrupts the file after install.
+        std::fs::write(&settings, "}{ broken").unwrap();
+
+        // Uninstall succeeds, reverts nothing, leaves the broken file untouched.
+        let un = uninstall_extension(&db, "hooks", false).unwrap();
+        assert!(un.config_merges_reverted.is_empty());
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), "}{ broken");
+    }
+
+    #[test]
+    fn external_file_skipped_when_requires_dir_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        let missing_dir = temp.path().join("not-installed");
+        let dest = missing_dir.join("plugin/status.js");
+        let home = temp.path().join("h");
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                r#"name = "hooks"
+home = '{home}'
+
+[[external_files]]
+path = '{dest}'
+source = "status.js"
+requires_dir = '{req}'
+"#,
+                home = home.display(),
+                dest = dest.display(),
+                req = missing_dir.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            src.path().join("status.js"),
+            "// thurbox `extension install`\n",
+        )
+        .unwrap();
+
+        let report = install_extension(&db, &src.path().to_string_lossy(), None, false).unwrap();
+        assert!(!dest.exists(), "skipped because requires_dir is absent");
+        assert!(report
+            .external_files_skipped
+            .iter()
+            .any(|p| p == &dest.to_string_lossy()));
     }
 
     #[test]

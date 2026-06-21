@@ -116,9 +116,9 @@ pub fn render_run_history(
 /// the relative age, and any free-text detail. Highlighted when `is_selected`.
 fn run_line<'a>(run: &AutomationRunRow<'_>, is_selected: bool) -> Line<'a> {
     let (glyph, word, color) = match run.status {
-        AutomationRunStatus::Success => ("✓", "ok", Theme::status_idle()),
+        AutomationRunStatus::Success => ("✓", "ok", Theme::tool_allowed()),
         AutomationRunStatus::Error => ("✗", "error", Theme::status_error()),
-        AutomationRunStatus::Skipped => ("–", "skipped", Theme::status_waiting()),
+        AutomationRunStatus::Skipped => ("–", "skipped", Theme::keybind_hint()),
     };
     let pointer = if is_selected { "▸" } else { " " };
     let mut spans = vec![

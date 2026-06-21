@@ -173,6 +173,11 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         return Err(format!("Failed to persist session: {e}"));
     }
 
+    // No spawn-time status seed: a fresh session is `Idle` (the hooks-driven
+    // default) until the agent's hooks report otherwise — e.g. claude's
+    // SessionStart → idle on boot, then working/blocked/done through the turn.
+    // Seeding `working` here made an idle, just-booted agent look stuck working.
+
     Ok(SpawnResult {
         session_id,
         name: req.name,

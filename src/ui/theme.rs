@@ -102,11 +102,14 @@ impl Theme {
 
     // ── Status colours ──────────────────────────────────────────────────────
 
-    pub fn status_busy() -> Color {
-        current().status_busy
+    pub fn status_working() -> Color {
+        current().status_working
     }
-    pub fn status_waiting() -> Color {
-        current().status_waiting
+    pub fn status_blocked() -> Color {
+        current().status_blocked
+    }
+    pub fn status_done() -> Color {
+        current().status_done
     }
     pub fn status_idle() -> Color {
         current().status_idle

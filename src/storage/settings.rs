@@ -9,6 +9,7 @@ use crate::session::PENDING_FOCUS_SESSION_ID_KEY;
 const EDITOR_COMMAND_KEY: &str = "editor_command";
 const THEME_KEY: &str = "active_theme";
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
+const BUILTIN_HOOKS_OPTOUT_KEY: &str = "builtin_hooks_optout";
 
 impl Database {
     /// Get the configured editor command (e.g. `code`, `nvim --remote-tab`).
@@ -97,6 +98,38 @@ impl Database {
                 "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![ACTIVE_EXTENSIONS_KEY, json],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Whether the user has opted out of the auto-activated built-in `hooks`
+    /// extension. Set when they `extension deactivate hooks`, so startup self-heal
+    /// won't resurrect it.
+    pub fn builtin_hooks_opted_out(&self) -> rusqlite::Result<bool> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![BUILTIN_HOOKS_OPTOUT_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(raw.as_deref() == Some("1"))
+    }
+
+    /// Record (or clear) the opt-out of the built-in `hooks` extension.
+    pub fn set_builtin_hooks_optout(&self, optout: bool) -> rusqlite::Result<()> {
+        if optout {
+            self.conn.execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, '1') \
+                 ON CONFLICT(key) DO UPDATE SET value = '1'",
+                params![BUILTIN_HOOKS_OPTOUT_KEY],
+            )?;
+        } else {
+            self.conn.execute(
+                "DELETE FROM metadata WHERE key = ?1",
+                params![BUILTIN_HOOKS_OPTOUT_KEY],
             )?;
         }
         Ok(())

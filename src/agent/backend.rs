@@ -615,6 +615,13 @@ impl Session {
         self.exited.load(Ordering::SeqCst)
     }
 
+    /// Force the session into the "process exited" state, for tests that need to
+    /// exercise the exited → `Idle` status branch.
+    #[cfg(test)]
+    pub fn mark_exited_for_test(&self) {
+        self.exited.store(true, Ordering::SeqCst);
+    }
+
     pub fn millis_since_last_output(&self) -> u64 {
         now_millis().saturating_sub(self.last_output_at.load(Ordering::Relaxed))
     }

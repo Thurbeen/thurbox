@@ -1426,7 +1426,10 @@ impl SettingsField {
                 "auto_update",
                 "Silently self-update on launch (network call)",
             ),
-            NotifAlsoOnWaiting => ("also_on_waiting", "Also notify on the Busy → Waiting edge"),
+            NotifAlsoOnWaiting => (
+                "also_on_waiting",
+                "Also notify when a session finishes (Done)",
+            ),
             NotifSuppressForActive => (
                 "suppress_for_active",
                 "Skip the session you're already viewing",

@@ -102,11 +102,27 @@ pub fn render_selector_rows(
 
 pub fn status_color(status: SessionStatus) -> Color {
     match status {
-        SessionStatus::Busy => Theme::status_busy(),
-        SessionStatus::Waiting => Theme::status_waiting(),
+        SessionStatus::Working => Theme::status_working(),
+        SessionStatus::Blocked => Theme::status_blocked(),
+        SessionStatus::Done => Theme::status_done(),
         SessionStatus::Idle => Theme::status_idle(),
         SessionStatus::Error => Theme::status_error(),
-        SessionStatus::Attention => Theme::accent_bright(),
+    }
+}
+
+/// Braille spinner frames for the `Working` status, animated in the live session
+/// list (`App::spinner_frame` advances them). Ten frames at ~8 fps reads as a
+/// smooth "in progress" spinner.
+pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// The glyph to render for `status`: the animated spinner frame `spinner` while
+/// `Working`, otherwise the status's static [`SessionStatus::icon`]. `spinner`
+/// is the caller's current frame (e.g. `SPINNER_FRAMES[app.spinner_frame()]`).
+pub fn status_glyph(status: SessionStatus, spinner: &str) -> &str {
+    if status == SessionStatus::Working {
+        spinner
+    } else {
+        status.icon()
     }
 }
 
@@ -802,15 +818,12 @@ mod tests {
 
     #[test]
     fn status_color_maps_all_variants() {
-        assert_eq!(status_color(SessionStatus::Busy), Color::Green);
-        assert_eq!(status_color(SessionStatus::Waiting), Color::Yellow);
-        assert_eq!(status_color(SessionStatus::Idle), Color::DarkGray);
+        // The default palette colours for the hooks-driven states.
+        assert_eq!(status_color(SessionStatus::Working), Color::Yellow);
+        assert_eq!(status_color(SessionStatus::Blocked), Color::Red);
+        assert_eq!(status_color(SessionStatus::Done), Color::LightBlue);
+        assert_eq!(status_color(SessionStatus::Idle), Color::Green);
         assert_eq!(status_color(SessionStatus::Error), Color::Red);
-        // Attention reuses the bright accent (distinct from the four above).
-        assert_eq!(
-            status_color(SessionStatus::Attention),
-            Theme::accent_bright()
-        );
     }
 
     #[test]

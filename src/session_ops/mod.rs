@@ -5,11 +5,13 @@
 //! operations are synchronous against the SQLite database and the `tmux -L
 //! thurbox` server.
 
+pub mod builtin_hooks;
 pub mod delete;
 pub mod extensions;
 pub mod restart;
 pub mod spawn;
 
+pub use builtin_hooks::{ensure_builtin_hooks_extension, HOOKS_EXTENSION_NAME};
 pub use delete::{delete_session_headless, ForceDeleteReport};
 pub use extensions::{
     activate_extension, deactivate_extension, ensure_extension, extension_health,
@@ -119,6 +121,9 @@ fn build_agent_invocation(config: &SessionConfig) -> (String, Vec<String>) {
 ///   a task (so messages auto-tag `from_task_id`). Headless `task run` only; the
 ///   TUI task-spawn path tracks the link in-memory instead.
 /// - `THURBOX_METRICS_DIR` — metrics output dir.
+/// - `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` — the resolved config/data dirs,
+///   so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI
+///   reads regardless of XDG / PATH / a stale tmux-server env.
 ///
 /// Kept in sync with `App::build_spawn_inputs` so headless and TUI sessions look
 /// identical to the spawned process (modulo `THURBOX_TASK` as noted above).
@@ -138,6 +143,25 @@ fn inject_thurbox_env(config: &mut SessionConfig, agent_session_id: &str, task_i
         config
             .env
             .insert("THURBOX_METRICS_DIR".into(), dir.to_string_lossy().into());
+    }
+    // Pin the agent's `thurbox-cli` (its status hook) to the *same* config/data
+    // dirs this thurbox resolved, so a status `signal` always lands in the DB
+    // the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a
+    // stale tmux-server env. Derived from the resolved file paths' parents.
+    if let Some(dir) = crate::paths::config_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        config.env.insert(
+            crate::paths::CONFIG_DIR_OVERRIDE_ENV.into(),
+            dir.to_string_lossy().into(),
+        );
+    }
+    if let Some(dir) =
+        crate::paths::database_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        config.env.insert(
+            crate::paths::DATA_DIR_OVERRIDE_ENV.into(),
+            dir.to_string_lossy().into(),
+        );
     }
 }
 
@@ -161,6 +185,41 @@ mod tests {
             Some(&"agent-conv-uuid".to_string())
         );
         assert_eq!(config.env.get("THURBOX_TASK"), Some(&"42".to_string()));
+    }
+
+    #[test]
+    fn inject_env_pins_config_and_data_dirs() {
+        // The agent's status hook must target the same DB the TUI reads, so the
+        // resolved config/data dirs are injected for `thurbox-cli` to honour.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        let mut config = SessionConfig {
+            session_id: Some(SessionId::default()),
+            ..SessionConfig::default()
+        };
+        inject_thurbox_env(&mut config, "agent-conv-uuid", None);
+
+        let cfg_dir = config
+            .env
+            .get(crate::paths::CONFIG_DIR_OVERRIDE_ENV)
+            .expect("config dir injected");
+        let data_dir = config
+            .env
+            .get(crate::paths::DATA_DIR_OVERRIDE_ENV)
+            .expect("data dir injected");
+        // They match the parents of the resolved config/db files.
+        assert_eq!(
+            Some(std::path::Path::new(cfg_dir)),
+            crate::paths::config_file()
+                .as_deref()
+                .and_then(|p| p.parent())
+        );
+        assert_eq!(
+            Some(std::path::Path::new(data_dir)),
+            crate::paths::database_file()
+                .as_deref()
+                .and_then(|p| p.parent())
+        );
     }
 
     #[test]

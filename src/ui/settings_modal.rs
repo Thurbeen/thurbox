@@ -140,7 +140,7 @@ fn footer_lines<'a>(state: &SettingsModalState<'_>) -> Vec<Line<'a>> {
     if state.restart_pending {
         footer.push(Line::from(Span::styled(
             "  ⟳ some changes apply after restart",
-            Style::default().fg(Theme::status_waiting()),
+            Style::default().fg(Theme::keybind_hint()),
         )));
     }
     footer.push(key_hint_line(&[

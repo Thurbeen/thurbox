@@ -21,8 +21,9 @@ pub struct ThemePalette {
     pub accent: Color,
     pub accent_bright: Color,
 
-    pub status_busy: Color,
-    pub status_waiting: Color,
+    pub status_working: Color,
+    pub status_blocked: Color,
+    pub status_done: Color,
     pub status_idle: Color,
     pub status_error: Color,
 
@@ -228,9 +229,11 @@ pub struct CustomThemeDef {
     #[serde(default)]
     pub accent_bright: Option<String>,
     #[serde(default)]
-    pub status_busy: Option<String>,
+    pub status_working: Option<String>,
     #[serde(default)]
-    pub status_waiting: Option<String>,
+    pub status_blocked: Option<String>,
+    #[serde(default)]
+    pub status_done: Option<String>,
     #[serde(default)]
     pub status_idle: Option<String>,
     #[serde(default)]
@@ -324,19 +327,24 @@ impl CustomThemeDef {
             palette.nerd_font_enabled = nerd;
         }
 
-        let fields: [(&str, &Option<String>, &mut Color); 25] = [
+        let fields: [(&str, &Option<String>, &mut Color); 26] = [
             ("accent", &self.accent, &mut palette.accent),
             (
                 "accent_bright",
                 &self.accent_bright,
                 &mut palette.accent_bright,
             ),
-            ("status_busy", &self.status_busy, &mut palette.status_busy),
             (
-                "status_waiting",
-                &self.status_waiting,
-                &mut palette.status_waiting,
+                "status_working",
+                &self.status_working,
+                &mut palette.status_working,
             ),
+            (
+                "status_blocked",
+                &self.status_blocked,
+                &mut palette.status_blocked,
+            ),
+            ("status_done", &self.status_done, &mut palette.status_done),
             ("status_idle", &self.status_idle, &mut palette.status_idle),
             (
                 "status_error",
@@ -429,9 +437,10 @@ fn default_palette() -> ThemePalette {
         accent: Color::Cyan,
         accent_bright: Color::LightCyan,
 
-        status_busy: Color::Green,
-        status_waiting: Color::Yellow,
-        status_idle: Color::DarkGray,
+        status_working: Color::Yellow,
+        status_blocked: Color::Red,
+        status_done: Color::LightBlue,
+        status_idle: Color::Green,
         status_error: Color::Red,
 
         text_primary: Color::White,
@@ -478,6 +487,7 @@ struct PaletteSlots {
     green: Color,
     yellow: Color,
     red: Color,
+    blue: Color,
     text_primary: Color,
     text_secondary: Color,
     text_muted: Color,
@@ -499,9 +509,10 @@ impl PaletteSlots {
         ThemePalette {
             accent: self.accent,
             accent_bright: self.accent_bright,
-            status_busy: self.green,
-            status_waiting: self.yellow,
-            status_idle: self.text_muted,
+            status_working: self.yellow,
+            status_blocked: self.red,
+            status_done: self.blue,
+            status_idle: self.green,
             status_error: self.red,
             text_primary: self.text_primary,
             text_secondary: self.text_secondary,
@@ -547,6 +558,7 @@ fn catppuccin_mocha_palette() -> ThemePalette {
         green,
         yellow,
         red,
+        blue,
         text_primary: text,
         text_secondary: subtext,
         text_muted: overlay,
@@ -585,6 +597,7 @@ fn tokyo_night_palette() -> ThemePalette {
         green,
         yellow,
         red,
+        blue,
         text_primary: text,
         text_secondary: subtext,
         text_muted: muted,
@@ -623,6 +636,7 @@ fn gruvbox_dark_palette() -> ThemePalette {
         green,
         yellow,
         red,
+        blue,
         text_primary: fg,
         text_secondary: fg2,
         text_muted: gray,
@@ -662,6 +676,7 @@ fn catppuccin_latte_palette() -> ThemePalette {
         green,
         yellow,
         red,
+        blue,
         text_primary: text,
         text_secondary: subtext,
         text_muted: overlay,
@@ -703,6 +718,7 @@ fn tokyo_night_day_palette() -> ThemePalette {
         green,
         yellow,
         red,
+        blue,
         text_primary: text,
         text_secondary: subtext,
         text_muted: muted,
@@ -741,6 +757,7 @@ fn gruvbox_light_palette() -> ThemePalette {
         green,
         yellow,
         red,
+        blue,
         text_primary: fg,
         text_secondary: fg2,
         text_muted: gray,
@@ -779,6 +796,7 @@ fn solarized_light_palette() -> ThemePalette {
         green,
         yellow,
         red,
+        blue,
         text_primary: base01,
         text_secondary: base00,
         text_muted: base1,
@@ -814,6 +832,7 @@ fn doom_palette() -> ThemePalette {
         green: bright_green,
         yellow: red,
         red,
+        blue: cyan,
         text_primary: text,
         text_secondary: subtext,
         text_muted: muted,

@@ -23,8 +23,9 @@ pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/t
 # app_bg). Bases: default, catppuccin-mocha, tokyo-night, gruvbox-dark, doom,
 # catppuccin-latte, tokyo-night-day, gruvbox-light, solarized-light.
 #
-# Overridable colour keys: accent, accent_bright, status_busy, status_waiting,
-# status_idle, status_error, text_primary, text_secondary, text_muted,
+# Overridable colour keys: accent, accent_bright, status_working,
+# status_blocked, status_done, status_idle, status_error,
+# text_primary, text_secondary, text_muted,
 # border_focused, border_unfocused, role_name, branch_name, search_bar,
 # keybind_hint, tool_allowed, tool_disallowed, danger, selection_bg,
 # selection_fg, modal_dim_bg, modal_bg, modal_border, inverted_fg, app_bg.
@@ -64,7 +65,7 @@ config_version = 1
 # nerd_font = true
 # accent = "#268bd2"
 # accent_bright = "#2aa198"
-# status_busy = "yellow"
+# status_working = "yellow"
 # status_error = "#dc322f"
 # selection_bg = "14"
 "##;
@@ -181,8 +182,9 @@ mod tests {
         for field in [
             "accent",
             "accent_bright",
-            "status_busy",
-            "status_waiting",
+            "status_working",
+            "status_blocked",
+            "status_done",
             "status_idle",
             "status_error",
             "text_primary",

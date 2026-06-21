@@ -99,6 +99,22 @@ pub enum Action {
         #[arg(long, default_value_t = 200)]
         lines: u32,
     },
+    /// Report an agent lifecycle transition (called from an agent hook).
+    ///
+    /// Records the session's state so the TUI can render it (working/blocked/
+    /// done/idle) — works headless; the TUI picks it up via its data_version
+    /// poll. Identity defaults to the calling session ($THURBOX_SESSION,
+    /// injected at spawn), so an agent hook passes no id.
+    Signal {
+        /// The reported state. `idle` = agent ready/at-rest (e.g. a fresh
+        /// session boot); `done` = a turn just finished (shows until you look).
+        #[arg(long, value_parser = ["working", "blocked", "done", "idle"])]
+        state: String,
+        /// Override the calling session (UUID). Defaults to $THURBOX_SESSION,
+        /// then a lookup by the agent conversation id ($THURBOX_SESSION_ID).
+        #[arg(long)]
+        session: Option<String>,
+    },
 }
 
 pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
@@ -267,7 +283,50 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 human,
             ))
         }
+        Action::Signal { state, session } => {
+            let target = resolve_signal_target(db, session.as_deref())?;
+            db.set_hook_state(target.id, &state)
+                .map_err(|e| format!("set_hook_state: {e}"))?;
+            Ok(CommandOutput::new(
+                json!({
+                    "signaled": true,
+                    "session_id": target.id.to_string(),
+                    "session_name": target.name,
+                    "state": state,
+                }),
+                format!("Signaled {state} for '{}'.", target.name),
+            ))
+        }
     }
+}
+
+/// Resolve the session a `signal` targets: an explicit `--session` UUID, else
+/// the calling session from `$THURBOX_SESSION`, else a lookup by the agent
+/// conversation id from `$THURBOX_SESSION_ID` (the env fallback for agents whose
+/// hooks don't inherit `$THURBOX_SESSION`). Errors when none resolves.
+fn resolve_signal_target(db: &Database, session: Option<&str>) -> Result<SharedSession, String> {
+    if let Some(uuid) = session {
+        return resolve(db, uuid);
+    }
+    if let Ok(raw) = std::env::var("THURBOX_SESSION") {
+        if let Ok(id) = raw.parse::<SessionId>() {
+            if let Some(s) = db
+                .get_session_by_id(id)
+                .map_err(|e| format!("get_session_by_id: {e}"))?
+            {
+                return Ok(s);
+            }
+        }
+    }
+    if let Ok(agent_sid) = std::env::var("THURBOX_SESSION_ID") {
+        if let Some(s) = db
+            .get_session_by_agent_session_id(&agent_sid)
+            .map_err(|e| format!("get_session_by_agent_session_id: {e}"))?
+        {
+            return Ok(s);
+        }
+    }
+    Err("not inside a thurbox session; pass --session <uuid>".into())
 }
 
 /// Render the session list as an aligned table (or a friendly empty line).
@@ -371,6 +430,64 @@ mod tests {
         assert_eq!(v.as_array().unwrap().len(), 0);
         // The human rendering for an empty list is a friendly line, not a table.
         assert_eq!(v.human, "No active sessions.");
+    }
+
+    #[test]
+    fn signal_explicit_session_sets_hook_state() {
+        let db = db();
+        let shared = make_test_session("worker");
+        let id = shared.id;
+        db.upsert_session(&shared).unwrap();
+
+        let out = run(
+            Action::Signal {
+                state: "blocked".into(),
+                session: Some(id.to_string()),
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(out["state"], "blocked");
+        assert_eq!(out["signaled"], true);
+
+        let states = db.load_hook_states().unwrap();
+        assert_eq!(states.get(&id).unwrap().state.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn signal_without_identity_errors() {
+        let db = db();
+        // No --session and (in test) no THURBOX_SESSION env → clear error.
+        std::env::remove_var("THURBOX_SESSION");
+        std::env::remove_var("THURBOX_SESSION_ID");
+        let err = run(
+            Action::Signal {
+                state: "done".into(),
+                session: None,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("not inside a thurbox session"), "got {err}");
+    }
+
+    fn make_test_session(name: &str) -> SharedSession {
+        SharedSession {
+            id: SessionId::default(),
+            name: name.into(),
+            agent: "claude".into(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        }
     }
 
     #[test]

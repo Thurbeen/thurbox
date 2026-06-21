@@ -46,8 +46,9 @@ const UNDO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a status-bar message is shown before reverting to default counts.
 const STATUS_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// If no output for this many milliseconds, consider session "Waiting".
-const ACTIVITY_TIMEOUT_MS: u64 = 1000;
+/// Ticks per `Working`-spinner frame. The loop ticks ~every 10 ms, so 12 ticks
+/// ≈ 125 ms/frame ≈ 8 fps — a smooth spinner without thrashing the renderer.
+const SPINNER_TICKS_PER_FRAME: u64 = 12;
 
 /// Upper bound between forced repaints when nothing else marked the UI dirty.
 /// The render loop only paints when state changed (a key, agent output, a
@@ -603,6 +604,15 @@ pub struct App {
     /// frame always paints. Set by [`Self::request_redraw`] from `update`,
     /// state-changing tick steps, and the agent-output detector.
     needs_redraw: bool,
+    /// Current frame of the `Working` status spinner (index into
+    /// [`crate::ui::SPINNER_FRAMES`]). Advanced from `tick_count` in
+    /// [`Self::refresh_session_statuses`]; only forces a repaint while a session
+    /// is actually working, so an idle TUI still paints ~4 fps.
+    spinner_frame: usize,
+    /// The session that was focused on the previous status refresh. When focus
+    /// moves off a `done` session, that session is marked "seen" (→ `Idle`), so
+    /// the blue `Done` state stays visible until you actually switch away.
+    last_active_session_id: Option<crate::session::SessionId>,
     /// When the last frame was painted, for the forced-redraw floor.
     last_draw_at: std::time::Instant,
     /// Cheap rolling signature of agent output across all sessions (sum of each
@@ -619,6 +629,35 @@ pub struct App {
 
 const EDITOR_NOT_CONFIGURED: &str =
     "No editor configured — set `editor_command` via MCP or export $EDITOR/$VISUAL";
+
+/// Map a session's persisted hook state to its rendered [`SessionStatus`]. Pure
+/// so it's unit-testable without an `App`/DB. `exited` forces `Idle` (a crashed/
+/// finished process); `just_seen` is `true` when the user just moved focus off a
+/// `done` session this tick (acknowledged → `Idle`). A `done` session is `Done`
+/// (blue) until seen; `idle`/missing/unknown states are `Idle`.
+fn derive_session_status(
+    hook: Option<&crate::storage::HookRow>,
+    exited: bool,
+    just_seen: bool,
+) -> SessionStatus {
+    if exited {
+        return SessionStatus::Idle;
+    }
+    match hook.and_then(|h| h.state.as_deref()) {
+        Some("working") => SessionStatus::Working,
+        Some("blocked") => SessionStatus::Blocked,
+        Some("done") => {
+            let state_at = hook.and_then(|h| h.state_at).unwrap_or(0);
+            let seen_at = hook.and_then(|h| h.seen_at).unwrap_or(0);
+            if just_seen || seen_at >= state_at {
+                SessionStatus::Idle
+            } else {
+                SessionStatus::Done
+            }
+        }
+        _ => SessionStatus::Idle,
+    }
+}
 
 /// Spin up the OS notification dispatcher when the feature is enabled,
 /// returning `None` otherwise so the background thread never starts.
@@ -773,6 +812,8 @@ impl App {
             },
             notification_state: build_notification_state(),
             needs_redraw: true,
+            spinner_frame: 0,
+            last_active_session_id: None,
             last_draw_at: std::time::Instant::now(),
             last_output_gen: 0,
             cached_session_order: None,
@@ -1213,8 +1254,14 @@ impl App {
             self.new_session.restart = false;
             return;
         };
+        let session_id = session.info.id;
         match session.restart(&config, rows, cols) {
             Ok(()) => {
+                // Re-spawned fresh: clear stale hook-driven status so it doesn't
+                // linger as Blocked/Working/Done until the agent re-reports (a
+                // resumed agent may not re-fire its boot hook). Mirrors the
+                // headless `restart_session_headless` path.
+                let _ = self.db.clear_hook_state(session_id);
                 self.save_state();
                 self.set_status(StatusLevel::Info, "Session restarted");
             }
@@ -2701,6 +2748,26 @@ impl App {
                 metrics_dir.to_string_lossy().into(),
             );
         }
+        // Pin the agent's `thurbox-cli` (status hook) to this thurbox's resolved
+        // config/data dirs, so a `session signal` lands in the DB the TUI reads
+        // regardless of XDG / PATH / stale tmux-server env. Mirrors
+        // `session_ops::inject_thurbox_env`.
+        if let Some(dir) =
+            crate::paths::config_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        {
+            config.env.insert(
+                crate::paths::CONFIG_DIR_OVERRIDE_ENV.into(),
+                dir.to_string_lossy().into(),
+            );
+        }
+        if let Some(dir) =
+            crate::paths::database_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        {
+            config.env.insert(
+                crate::paths::DATA_DIR_OVERRIDE_ENV.into(),
+                dir.to_string_lossy().into(),
+            );
+        }
 
         // For a multi-repo session, launch the agent in a symlink workspace that
         // gathers every member dir; `info.cwd` keeps the primary repo (restored
@@ -2757,6 +2824,10 @@ impl App {
         self.status_message = None;
 
         self.save_state();
+        // No spawn-time status seed: a fresh session is `Idle` until the agent's
+        // hooks report otherwise (claude's SessionStart → idle on boot, then
+        // working/blocked/done). Seeding `working` made an idle session look
+        // stuck working.
 
         // A task-initiated spawn (the trigger-time picker's "Spawn new session")
         // delivers the task title once the agent has booted, then advances the
@@ -3263,38 +3334,57 @@ impl App {
     }
 
     /// Recompute each session's status/activity/notification for this tick.
+    ///
+    /// Status is **hooks-driven**: agents report `working`/`blocked`/`done` via
+    /// `thurbox-cli session signal`, persisted in `sessions` and read here in one
+    /// batch (see [`derive_session_status`]). A `done` session stays `Done` until
+    /// the user moves focus *off* it (acknowledged → `Idle`). The OSC terminal
+    /// title is still captured for the live activity line, but no longer drives
+    /// status.
     fn refresh_session_statuses(&mut self) {
         self.metrics.bump(|p| &mut p.status_refreshes);
         let active_index = self.active_index;
-        // Track whether any visible field changed so a quiet `Busy → Waiting`
-        // transition (no new output, so the output detector won't catch it)
-        // still repaints promptly instead of waiting for the forced-redraw floor.
+        // One indexed scan per tick for the persisted hook columns.
+        let hooks = self.db.load_hook_states().unwrap_or_default();
+        // Track whether any visible field changed so a quiet transition (no new
+        // output, so the output detector won't catch it) still repaints promptly
+        // instead of waiting for the forced-redraw floor.
         let mut changed = false;
-        for (idx, session) in self.sessions.iter_mut().enumerate() {
-            // The active session is being watched, so acknowledge any pending
-            // attention signal (keeps it from flagging itself while focused).
-            if idx == active_index {
-                session.acknowledge_attention();
-            }
-            let needs_attention = session.needs_attention();
+        // "Seen" writes are deferred past the &mut self.sessions borrow below.
+        let mut seen_writes: Vec<(crate::session::SessionId, i64)> = Vec::new();
 
-            let new_status = if session.has_exited() {
-                SessionStatus::Idle
-            } else if session.millis_since_last_output() <= ACTIVITY_TIMEOUT_MS {
-                // Actively producing output → working, regardless of past signals.
-                SessionStatus::Busy
-            } else if needs_attention {
-                // Quiet after a bell / OSC 9 / OSC 777 → finished or needs input.
-                SessionStatus::Attention
-            } else {
-                SessionStatus::Waiting
-            };
+        // A `done` session is acknowledged ("seen" → Idle) when the user moves
+        // *off* it — not the instant it finishes under them — so the blue `Done`
+        // state is actually visible after a turn for the session you're watching.
+        // Detect the focus change and mark the session you just left, if it was
+        // an unseen `done`.
+        let active_id = self.sessions.get(active_index).map(|s| s.info.id);
+        if active_id != self.last_active_session_id {
+            if let Some(prev) = self.last_active_session_id {
+                if let Some(h) = hooks.get(&prev) {
+                    if h.state.as_deref() == Some("done") {
+                        let sa = h.state_at.unwrap_or(0);
+                        if h.seen_at.unwrap_or(0) < sa {
+                            seen_writes.push((prev, sa));
+                        }
+                    }
+                }
+            }
+            self.last_active_session_id = active_id;
+        }
+
+        for session in self.sessions.iter_mut() {
+            let id = session.info.id;
+            // `just_seen`: the focus-leave check above queued this session's seen
+            // mark this tick (the DB write lands after this loop), so reflect it
+            // now rather than waiting a tick.
+            let just_seen = seen_writes.iter().any(|(sid, _)| *sid == id);
+            let new_status = derive_session_status(hooks.get(&id), session.has_exited(), just_seen);
 
             // Live activity text from the agent-emitted OSC terminal title.
             let new_activity = session.agent_title();
             // Retain the agent's latest pushed notification (OSC 9/777) so the
-            // info panel can show it as a persistent "last signal", not only
-            // while the session is in the attention state.
+            // info panel can show it as a persistent "last signal".
             let new_notification = session.notification();
 
             if session.info.status != new_status
@@ -3308,10 +3398,34 @@ impl App {
             session.info.notification = new_notification;
         }
 
-        if changed {
+        // Persist the seen marks now that the sessions borrow is released. Done
+        // only on the transition (guarded above by `seen_at < state_at`), so the
+        // focused session doesn't bump `data_version` every tick.
+        for (id, state_at) in seen_writes {
+            let _ = self.db.mark_session_seen(id, state_at);
+        }
+
+        // Advance the Working spinner from the (deterministic) tick counter, and
+        // force a repaint when it ticks over *while* something is working — so an
+        // idle TUI still rests at ~4 fps but a working session animates smoothly.
+        let new_frame = (self.metrics.tick_count / SPINNER_TICKS_PER_FRAME) as usize
+            % crate::ui::SPINNER_FRAMES.len();
+        let spinner_advanced = new_frame != self.spinner_frame;
+        self.spinner_frame = new_frame;
+        let any_working = self
+            .sessions
+            .iter()
+            .any(|s| s.info.status == SessionStatus::Working);
+
+        if changed || (any_working && spinner_advanced) {
             self.request_redraw();
         }
         self.dispatch_status_notifications();
+    }
+
+    /// Current `Working`-spinner frame index (into [`crate::ui::SPINNER_FRAMES`]).
+    pub(crate) fn spinner_frame(&self) -> usize {
+        self.spinner_frame
     }
 
     /// Fire OS notifications for any session that just crossed into a
@@ -6128,6 +6242,202 @@ mod tests {
         app
     }
 
+    /// Persist `app.sessions[idx]` to the DB so `load_hook_states` can find it
+    /// by id (the stub harness pushes sessions without DB rows).
+    fn persist_session(app: &App, idx: usize) -> crate::session::SessionId {
+        let shared = app.session_to_shared(&app.sessions[idx]);
+        app.db.upsert_session(&shared).unwrap();
+        shared.id
+    }
+
+    #[test]
+    fn derive_session_status_covers_every_state() {
+        use crate::storage::HookRow;
+        let row = |state: &str, state_at: i64, seen_at: i64| HookRow {
+            state: Some(state.into()),
+            state_at: Some(state_at),
+            seen_at: Some(seen_at),
+        };
+
+        // Exited forces Idle, even with a live hook state.
+        assert_eq!(
+            derive_session_status(Some(&row("working", 1, 0)), true, false),
+            SessionStatus::Idle
+        );
+        // No hook / idle / unknown → Idle.
+        assert_eq!(
+            derive_session_status(None, false, false),
+            SessionStatus::Idle
+        );
+        assert_eq!(
+            derive_session_status(Some(&row("idle", 1, 0)), false, false),
+            SessionStatus::Idle
+        );
+        assert_eq!(
+            derive_session_status(Some(&row("nonsense", 1, 0)), false, false),
+            SessionStatus::Idle
+        );
+        // working / blocked map straight through.
+        assert_eq!(
+            derive_session_status(Some(&row("working", 1, 0)), false, false),
+            SessionStatus::Working
+        );
+        assert_eq!(
+            derive_session_status(Some(&row("blocked", 1, 0)), false, false),
+            SessionStatus::Blocked
+        );
+        // done: unseen → Done; already-seen or just-seen → Idle.
+        assert_eq!(
+            derive_session_status(Some(&row("done", 5, 0)), false, false),
+            SessionStatus::Done
+        );
+        assert_eq!(
+            derive_session_status(Some(&row("done", 5, 5)), false, false),
+            SessionStatus::Idle
+        );
+        assert_eq!(
+            derive_session_status(Some(&row("done", 5, 0)), false, true),
+            SessionStatus::Idle
+        );
+    }
+
+    #[test]
+    fn refresh_maps_hook_state_to_status() {
+        let mut app = app_with_sessions(1);
+        let id = persist_session(&app, 0);
+
+        // No hook fired yet → Idle (never-active default).
+        app.refresh_session_statuses();
+        assert_eq!(app.sessions[0].info.status, SessionStatus::Idle);
+
+        for (state, expected) in [
+            ("working", SessionStatus::Working),
+            ("blocked", SessionStatus::Blocked),
+        ] {
+            app.db.set_hook_state(id, state).unwrap();
+            app.refresh_session_statuses();
+            assert_eq!(
+                app.sessions[0].info.status, expected,
+                "hook '{state}' should map to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_done_shows_until_focus_leaves_then_idle() {
+        // Two sessions; session 0 is the active (focused) one.
+        let mut app = app_with_sessions(2);
+        let _id0 = persist_session(&app, 0);
+        let id1 = persist_session(&app, 1);
+        app.active_index = 0;
+        app.refresh_session_statuses(); // establish focus baseline (on session 0)
+
+        // The FOCUSED session finishes: `Done` is visible (not instantly Idle) —
+        // you should see the blue "done" for the session you're watching.
+        app.active_index = 1;
+        app.refresh_session_statuses(); // focus moves to 1 (baseline update)
+        app.db.set_hook_state(id1, "done").unwrap();
+        app.refresh_session_statuses();
+        assert_eq!(
+            app.sessions[1].info.status,
+            SessionStatus::Done,
+            "a done session you're viewing shows Done, not instant Idle"
+        );
+
+        // Move focus OFF it → acknowledged → seen → Idle (persisted).
+        app.active_index = 0;
+        app.refresh_session_statuses();
+        assert_eq!(app.sessions[1].info.status, SessionStatus::Idle);
+        let row = app.db.load_hook_states().unwrap();
+        let row = row.get(&id1).unwrap();
+        assert!(
+            row.seen_at.unwrap_or(0) >= row.state_at.unwrap_or(i64::MAX),
+            "seen_at persisted at/after the done timestamp"
+        );
+    }
+
+    #[test]
+    fn refresh_done_unfocused_shows_done() {
+        // A background session that finishes shows Done (blue) until visited.
+        let mut app = app_with_sessions(2);
+        persist_session(&app, 0);
+        let id1 = persist_session(&app, 1);
+        app.active_index = 0;
+        app.db.set_hook_state(id1, "done").unwrap();
+        app.refresh_session_statuses();
+        assert_eq!(app.sessions[1].info.status, SessionStatus::Done);
+    }
+
+    #[test]
+    fn refresh_marks_dirty_on_status_change() {
+        let mut app = app_with_sessions(1);
+        let id = persist_session(&app, 0);
+        app.refresh_session_statuses();
+        app.mark_redrawn();
+        assert!(!app.should_redraw(), "quiescent after a redraw");
+
+        // An external hook write must make the next refresh repaint.
+        app.db.set_hook_state(id, "blocked").unwrap();
+        app.refresh_session_statuses();
+        assert!(
+            app.should_redraw(),
+            "a hook-driven status change must mark the UI dirty"
+        );
+    }
+
+    #[test]
+    fn working_session_animates_spinner_and_repaints() {
+        let mut app = app_with_sessions(1);
+        let id = persist_session(&app, 0);
+        app.db.set_hook_state(id, "working").unwrap();
+
+        // Advance enough ticks to cross a spinner-frame boundary and confirm the
+        // frame moves and the UI is marked dirty (so the live list animates).
+        app.metrics.tick_count = 0;
+        app.refresh_session_statuses();
+        let f0 = app.spinner_frame();
+        app.mark_redrawn();
+        app.metrics.tick_count = SPINNER_TICKS_PER_FRAME; // next frame
+        app.refresh_session_statuses();
+        assert_ne!(app.spinner_frame(), f0, "spinner frame advances");
+        assert!(
+            app.should_redraw(),
+            "a working session keeps the list repainting"
+        );
+
+        // The live glyph for Working is a spinner frame, not the static icon.
+        let g = crate::ui::status_glyph(
+            SessionStatus::Working,
+            crate::ui::SPINNER_FRAMES[app.spinner_frame()],
+        );
+        assert!(crate::ui::SPINNER_FRAMES.contains(&g));
+    }
+
+    #[test]
+    fn idle_session_does_not_force_spinner_repaints() {
+        let mut app = app_with_sessions(1);
+        persist_session(&app, 0); // no hook → Idle
+        app.refresh_session_statuses();
+        app.mark_redrawn();
+        // No working session: crossing a spinner boundary must NOT force a paint.
+        app.metrics.tick_count += SPINNER_TICKS_PER_FRAME;
+        app.refresh_session_statuses();
+        assert!(
+            !app.should_redraw(),
+            "an idle TUI must not repaint just to animate a (nonexistent) spinner"
+        );
+    }
+
+    #[test]
+    fn refresh_exited_session_is_idle_regardless_of_hook() {
+        let mut app = app_with_sessions(1);
+        let id = persist_session(&app, 0);
+        app.db.set_hook_state(id, "blocked").unwrap();
+        app.sessions[0].mark_exited_for_test();
+        app.refresh_session_statuses();
+        assert_eq!(app.sessions[0].info.status, SessionStatus::Idle);
+    }
+
     #[test]
     fn start_new_session_skips_host_picker_when_no_hosts() {
         let mut app = app_with_sessions(0);
@@ -6353,23 +6663,24 @@ mod tests {
     #[test]
     fn switch_follows_activity_and_repo_group_order() {
         use crate::session::SessionStatus;
-        // DB order: [webapp/Busy, infra/Attention, webapp/Busy].
+        // DB order: [webapp/Working, infra/Blocked, webapp/Working].
         let mut app = app_with_sessions(3);
         app.sessions[0].info.repo_display_names = vec!["webapp".to_string()];
-        app.sessions[0].info.status = SessionStatus::Busy;
+        app.sessions[0].info.status = SessionStatus::Working;
         app.sessions[1].info.repo_display_names = vec!["infra".to_string()];
-        app.sessions[1].info.status = SessionStatus::Attention;
+        app.sessions[1].info.status = SessionStatus::Blocked;
         app.sessions[2].info.repo_display_names = vec!["webapp".to_string()];
-        app.sessions[2].info.status = SessionStatus::Busy;
+        app.sessions[2].info.status = SessionStatus::Working;
 
-        // Rendered order: infra group (Attention) first → [1], then webapp → [0, 2].
+        // Order is status-independent: by repo group (infra before webapp by
+        // group label), so navigation visits [1] then [0, 2].
         app.active_index = 1;
         app.switch_session_forward();
-        assert_eq!(app.active_index, 0, "infra/attn → webapp/0");
+        assert_eq!(app.active_index, 0, "infra → webapp/0");
         app.switch_session_forward();
         assert_eq!(app.active_index, 2, "webapp/0 → webapp/2");
         app.switch_session_forward();
-        assert_eq!(app.active_index, 1, "webapp/2 → wrap to infra/attn");
+        assert_eq!(app.active_index, 1, "webapp/2 → wrap to infra");
     }
 
     #[test]
@@ -9284,7 +9595,7 @@ mod tests {
         assert_eq!(names, ["s1", "s0", "s2"]);
 
         // A status change never moves a row.
-        app.sessions[2].info.status = SessionStatus::Attention;
+        app.sessions[2].info.status = SessionStatus::Blocked;
         assert_eq!(app.render_order_indices(), vec![1, 0, 2]);
     }
 

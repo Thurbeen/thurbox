@@ -66,7 +66,7 @@ config_version = 1
 # Run `thurbox-cli notify` to see the detected backend, or `--test` to fire a
 # sample. The dispatcher only starts when [features] notifications = true.
 # [notifications]
-# also_on_waiting = false       # also fire on Busy → Waiting (no explicit OSC bell)
+# also_on_waiting = false       # also fire when a session finishes (Working → Done)
 # suppress_for_active = true    # don't notify if you're already viewing that session
 # sound = true                  # play the OS default notification sound
 # min_interval_secs = 5         # per-session dedup floor (seconds)
@@ -91,7 +91,7 @@ config_version = 1
 # [features]
 # notifications = true
 # [notifications]
-# also_on_waiting = true        # also fire on the timing-only Busy → Waiting edge
+# also_on_waiting = true        # also fire when a session finishes (Working → Done)
 # suppress_for_active = false   # also notify the focused session
 # min_interval_secs = 30        # at most one notification / 30 s per session
 #

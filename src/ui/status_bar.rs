@@ -118,7 +118,7 @@ fn push_status_section<'a>(spans: &mut Vec<Span<'a>>, state: &'a FooterState<'a>
 fn push_status_message<'a>(spans: &mut Vec<Span<'a>>, msg: &'a StatusMessage) {
     let (badge_text, badge_bg, text_color) = match msg.level {
         StatusLevel::Info => (" INFO ", Theme::accent(), Theme::text_secondary()),
-        StatusLevel::Success => (" ✓ SYNC ", Theme::status_busy(), Theme::status_busy()),
+        StatusLevel::Success => (" ✓ SYNC ", Theme::tool_allowed(), Theme::tool_allowed()),
         StatusLevel::Error => (" ERROR ", Theme::status_error(), Theme::status_error()),
     };
     spans.push(Span::styled(

@@ -73,9 +73,11 @@ pub fn render_theme_picker_modal(
             ]),
             Line::from(vec![
                 Span::styled("  Status      ", Style::default().fg(Theme::text_muted())),
-                Span::styled("●", Style::default().fg(palette.status_busy)),
+                Span::styled("◐", Style::default().fg(palette.status_working)),
                 Span::styled(" ", Style::default()),
-                Span::styled("◆", Style::default().fg(palette.status_waiting)),
+                Span::styled("◆", Style::default().fg(palette.status_blocked)),
+                Span::styled(" ", Style::default()),
+                Span::styled("●", Style::default().fg(palette.status_done)),
                 Span::styled(" ", Style::default()),
                 Span::styled("○", Style::default().fg(palette.status_idle)),
                 Span::styled(" ", Style::default()),

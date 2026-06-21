@@ -86,6 +86,11 @@ cargo build --release
 
 See [Prerequisites](#prerequisites) for required tooling.
 
+**Contributing / hacking on thurbox?** The dev environment is a reproducible Nix
+flake (`nix develop` / `direnv allow`) with `just` tasks and an isolated runtime
+sandbox (`scripts/dev/sandbox.sh`) — see
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
 ## Why Thurbox
 
 Running a coding agent in several terminals gets you far — until

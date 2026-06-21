@@ -953,7 +953,7 @@ fn perf_status_change_keeps_order_cache() {
     h.render(); // cache hit
     assert_eq!(h.app.perf_counters().ordered_sessions_rebuilds, 1);
 
-    h.app.sessions[0].info.status = SessionStatus::Attention;
+    h.app.sessions[0].info.status = SessionStatus::Blocked;
     h.render(); // status changed, but order inputs did not → still a cache hit
     assert_eq!(
         h.app.perf_counters().ordered_sessions_rebuilds,

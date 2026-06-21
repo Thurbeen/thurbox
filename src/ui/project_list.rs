@@ -9,7 +9,7 @@ use ratatui::{
 use super::highlight::append_highlighted as append_name_spans;
 use super::theme::Theme;
 use super::{focus_block, status_color, FocusLevel};
-use crate::session::SessionInfo;
+use crate::session::{SessionInfo, SessionStatus};
 
 /// Per-field fuzzy match positions for a session entry.
 #[derive(Clone)]
@@ -514,6 +514,9 @@ pub struct LeftPanelState<'a> {
     /// Parallel to `sessions`: tree depth within the repo group
     /// (see [`SessionOrder::depths`]). Children render indented.
     pub depths: &'a [u8],
+    /// Current animated spinner frame for the `Working` status
+    /// (`SPINNER_FRAMES[App::spinner_frame()]`).
+    pub spinner: &'a str,
 }
 
 pub fn render_left_panel(
@@ -535,6 +538,7 @@ pub fn render_left_panel(
         state.session_search_active,
         state.headers,
         state.depths,
+        state.spinner,
     )
 }
 
@@ -618,6 +622,7 @@ fn render_session_section(
     search_active: bool,
     headers: &[Option<String>],
     depths: &[u8],
+    spinner: &str,
 ) -> Vec<super::RowHitbox> {
     let mut block = focus_block(" Sessions ", level);
 
@@ -626,7 +631,7 @@ fn render_session_section(
             .iter()
             .map(|info| {
                 Span::styled(
-                    info.status.icon(),
+                    super::status_glyph(info.status, spinner).to_string(),
                     Style::default().fg(status_color(info.status)),
                 )
             })
@@ -648,6 +653,20 @@ fn render_session_section(
     let active_group = show_selection
         .then(|| group_of.get(active_index).copied())
         .flatten();
+
+    // Roll each repo group up to its most-urgent member status, keyed by the
+    // group's header row index, so the header shows a single dot you can scan.
+    // Computed at render time (not in `SessionOrder`) so status never feeds the
+    // order cache or reorders rows — it only recolors.
+    let mut group_rollup: std::collections::HashMap<usize, SessionStatus> =
+        std::collections::HashMap::new();
+    for (i, info) in sessions.iter().enumerate() {
+        let h = group_of[i];
+        group_rollup
+            .entry(h)
+            .and_modify(|s| *s = group_status([*s, info.status]))
+            .or_insert(info.status);
+    }
 
     let mut item_heights: Vec<u16> = Vec::with_capacity(sessions.len());
 
@@ -677,6 +696,7 @@ fn render_session_section(
                 depth,
                 cross_group_child,
                 inner_width,
+                spinner,
             )];
 
             // Prepend a subtle repo-group header above the first session of
@@ -684,7 +704,11 @@ fn render_session_section(
             // anywhere in its group.
             if let Some(Some(label)) = headers.get(i) {
                 let selected = active_group == Some(i);
-                item_lines.insert(0, group_header_line(label, inner_width, selected));
+                let rollup = group_rollup.get(&i).copied().unwrap_or(info.status);
+                item_lines.insert(
+                    0,
+                    group_header_line(label, rollup, inner_width, selected, spinner),
+                );
             }
 
             item_heights.push(item_lines.len() as u16);
@@ -765,9 +789,16 @@ fn header_group_of(headers: &[Option<String>]) -> Vec<usize> {
     out
 }
 
-/// A full-width repo-group header: `── label ──────────`. Muted by default;
+/// A full-width repo-group header: `● ── label ──────────`. The leading dot is
+/// the group's rolled-up most-urgent status; the label is muted by default and
 /// painted with the selection background when the active row is in its group.
-fn group_header_line(label: &str, inner_width: usize, selected: bool) -> Line<'static> {
+fn group_header_line(
+    label: &str,
+    rollup: SessionStatus,
+    inner_width: usize,
+    selected: bool,
+    spinner: &str,
+) -> Line<'static> {
     let style = if selected {
         Style::default()
             .bg(Theme::selection_bg())
@@ -776,24 +807,48 @@ fn group_header_line(label: &str, inner_width: usize, selected: bool) -> Line<'s
     } else {
         Style::default().fg(Theme::text_muted())
     };
+    let dot = format!("{} ", super::status_glyph(rollup, spinner));
     let mut text = format!("\u{2500}\u{2500} {label} ");
-    let used = text.chars().count();
+    let used = dot.chars().count() + text.chars().count();
     if inner_width > used {
         text.push_str(&"\u{2500}".repeat(inner_width - used));
     }
-    Line::from(Span::styled(text, style))
+    Line::from(vec![
+        Span::styled(dot, Style::default().fg(status_color(rollup))),
+        Span::styled(text, style),
+    ])
+}
+
+/// Urgency rank for the repo-group rollup; higher is more urgent.
+fn status_urgency(s: SessionStatus) -> u8 {
+    match s {
+        SessionStatus::Blocked => 4,
+        SessionStatus::Error => 3,
+        SessionStatus::Working => 2,
+        SessionStatus::Done => 1,
+        SessionStatus::Idle => 0,
+    }
+}
+
+/// The most-urgent status across a group's members (Blocked > Error > Working >
+/// Done > Idle), so the group header dot surfaces whatever needs attention
+/// first. Empty input rolls up to `Idle`.
+pub fn group_status(statuses: impl IntoIterator<Item = SessionStatus>) -> SessionStatus {
+    statuses
+        .into_iter()
+        .max_by_key(|s| status_urgency(*s))
+        .unwrap_or(SessionStatus::Idle)
 }
 
 /// Resolve the agent-reported status text for a session row, if any.
 /// Priority:
-///   1. Attention → the agent's notification message ("Needs attention").
+///   1. Blocked → the agent's notification message (falls back to "Blocked").
 ///   2. The agent-reported OSC activity title (richer "insight").
 ///
-/// Timing-based Waiting/Busy text is deliberately *not* a fallback — the
-/// colored status dot already conveys that state, so a row with no
-/// agent-reported status carries no status text at all.
+/// The colored status dot already conveys the state, so a row with no
+/// agent-reported text carries no status text at all.
 fn agent_status_text(info: &SessionInfo) -> Option<String> {
-    if info.status == crate::session::SessionStatus::Attention {
+    if info.status == crate::session::SessionStatus::Blocked {
         return Some(
             info.notification
                 .clone()
@@ -899,7 +954,7 @@ fn push_agent_status(
     let Some(status_text) = agent_status_text(info) else {
         return;
     };
-    let agent_status_style = if info.status == crate::session::SessionStatus::Attention {
+    let agent_status_style = if info.status == crate::session::SessionStatus::Blocked {
         status_style
     } else {
         Style::default().fg(Theme::text_muted())
@@ -928,6 +983,7 @@ fn build_session_line<'a>(
     depth: u8,
     cross_group_child: bool,
     inner_width: usize,
+    spinner: &str,
 ) -> Line<'a> {
     let name_style = name_span_style(is_active, is_dimmed);
     let status_style = if is_dimmed {
@@ -937,7 +993,7 @@ fn build_session_line<'a>(
     };
 
     let mut spans = vec![Span::styled(
-        format!(" {} ", info.status.icon()),
+        format!(" {} ", super::status_glyph(info.status, spinner)),
         status_style,
     )];
 
@@ -983,10 +1039,10 @@ mod tests {
 
     #[test]
     fn agent_status_none_without_agent_report() {
-        // Waiting/Busy/Idle carry no status text — the colored dot is enough.
+        // Working/Done/Idle carry no status text — the colored dot is enough.
         for status in [
-            SessionStatus::Waiting,
-            SessionStatus::Busy,
+            SessionStatus::Working,
+            SessionStatus::Done,
             SessionStatus::Idle,
             SessionStatus::Error,
         ] {
@@ -999,7 +1055,7 @@ mod tests {
     #[test]
     fn agent_status_uses_activity_title() {
         let mut s = info("active");
-        s.status = SessionStatus::Busy;
+        s.status = SessionStatus::Working;
         s.agent_activity = Some("  Compacting conversation  ".to_string());
         assert_eq!(
             agent_status_text(&s),
@@ -1015,9 +1071,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_status_attention_prefers_notification() {
-        let mut s = info("attn");
-        s.status = SessionStatus::Attention;
+    fn agent_status_blocked_prefers_notification() {
+        let mut s = info("blocked");
+        s.status = SessionStatus::Blocked;
         s.agent_activity = Some("working".to_string());
         s.notification = Some("Needs your approval".to_string());
         assert_eq!(
@@ -1027,12 +1083,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_status_attention_without_notification_shows_status() {
-        let mut s = info("attn");
-        s.status = SessionStatus::Attention;
+    fn agent_status_blocked_without_notification_shows_status() {
+        let mut s = info("blocked");
+        s.status = SessionStatus::Blocked;
         assert_eq!(
             agent_status_text(&s),
-            Some(SessionStatus::Attention.to_string())
+            Some(SessionStatus::Blocked.to_string())
         );
     }
 
@@ -1223,6 +1279,7 @@ mod tests {
                         session_search_active: false,
                         headers: &ordered.headers,
                         depths: &ordered.depths,
+                        spinner: "◐",
                     },
                 );
             })
@@ -1260,14 +1317,14 @@ mod tests {
             worktree_path: std::path::PathBuf::from("/tmp/wt/feat"),
             branch: "feat".to_string(),
         });
-        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE, "◐");
         assert!(line_text(&line).contains('\u{2442}'));
     }
 
     #[test]
     fn line_no_worktree_glyph_for_plain_session() {
         let s = info("plain");
-        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE, "◐");
         assert!(!line_text(&line).contains('\u{2442}'));
     }
 
@@ -1275,28 +1332,28 @@ mod tests {
     fn line_shows_remote_glyph_when_remote_host_present() {
         let mut s = info("remote");
         s.remote_host = Some("devbox".to_string());
-        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE, "◐");
         assert!(line_text(&line).contains('\u{2601}'));
     }
 
     #[test]
     fn line_no_remote_glyph_for_local_session() {
         let s = info("local");
-        let line = build_session_line(&s, None, false, false, 0, false, WIDE);
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE, "◐");
         assert!(!line_text(&line).contains('\u{2601}'));
     }
 
     #[test]
     fn line_shows_tree_prefix_for_nested_child() {
         let s = info("worker");
-        let line = build_session_line(&s, None, false, false, 1, false, WIDE);
+        let line = build_session_line(&s, None, false, false, 1, false, WIDE, "◐");
         assert!(line_text(&line).contains('\u{2514}')); // └
     }
 
     #[test]
     fn line_shows_arrow_for_cross_group_child() {
         let s = info("worker");
-        let line = build_session_line(&s, None, false, false, 0, true, WIDE);
+        let line = build_session_line(&s, None, false, false, 0, true, WIDE, "◐");
         let text = line_text(&line);
         assert!(text.contains('\u{21b3}')); // ↳
         assert!(!text.contains('\u{2514}'));
@@ -1305,8 +1362,10 @@ mod tests {
     #[test]
     fn line_carries_no_status_text_without_agent_report() {
         let mut s = info("quiet");
-        s.status = SessionStatus::Waiting;
-        let text = line_text(&build_session_line(&s, None, false, false, 0, false, WIDE));
+        s.status = SessionStatus::Done;
+        let text = line_text(&build_session_line(
+            &s, None, false, false, 0, false, WIDE, "◐",
+        ));
         assert!(!text.contains("Waiting"));
         assert!(text.trim_end().ends_with("quiet"));
     }
@@ -1314,18 +1373,22 @@ mod tests {
     #[test]
     fn line_appends_agent_activity_after_name() {
         let mut s = info("busy");
-        s.status = SessionStatus::Busy;
+        s.status = SessionStatus::Working;
         s.agent_activity = Some("Compacting conversation".to_string());
-        let text = line_text(&build_session_line(&s, None, false, false, 0, false, WIDE));
+        let text = line_text(&build_session_line(
+            &s, None, false, false, 0, false, WIDE, "◐",
+        ));
         assert!(text.contains("busy  Compacting conversation"));
     }
 
     #[test]
     fn line_attention_appends_notification() {
         let mut s = info("attn");
-        s.status = SessionStatus::Attention;
+        s.status = SessionStatus::Blocked;
         s.notification = Some("Review this diff".to_string());
-        let text = line_text(&build_session_line(&s, None, false, false, 0, false, WIDE));
+        let text = line_text(&build_session_line(
+            &s, None, false, false, 0, false, WIDE, "◐",
+        ));
         assert!(text.contains("attn  Review this diff"));
     }
 
@@ -1333,7 +1396,7 @@ mod tests {
     fn line_truncates_agent_status_with_ellipsis() {
         let mut s = info("busy");
         s.agent_activity = Some("a very long activity title that cannot fit".to_string());
-        let line = build_session_line(&s, None, false, false, 0, false, 20);
+        let line = build_session_line(&s, None, false, false, 0, false, 20, "◐");
         let text = line_text(&line);
         assert!(text.chars().count() <= 20);
         assert!(text.ends_with('\u{2026}'));
@@ -1344,7 +1407,9 @@ mod tests {
         let mut s = info("busy");
         s.agent_activity = Some("Ready".to_string());
         // used = " ● " (3) + "busy" (4) + separator (2) = 9; "Ready" fits exactly.
-        let text = line_text(&build_session_line(&s, None, false, false, 0, false, 14));
+        let text = line_text(&build_session_line(
+            &s, None, false, false, 0, false, 14, "◐",
+        ));
         assert!(text.ends_with("busy  Ready"));
         assert!(!text.contains('\u{2026}'));
     }
@@ -1354,9 +1419,13 @@ mod tests {
         let mut s = info("busy");
         s.agent_activity = Some("Ready".to_string());
         // avail = AGENT_STATUS_MIN_WIDTH → shown truncated; one column less → skipped.
-        let shown = line_text(&build_session_line(&s, None, false, false, 0, false, 13));
+        let shown = line_text(&build_session_line(
+            &s, None, false, false, 0, false, 13, "◐",
+        ));
         assert!(shown.ends_with("Rea\u{2026}"));
-        let skipped = line_text(&build_session_line(&s, None, false, false, 0, false, 12));
+        let skipped = line_text(&build_session_line(
+            &s, None, false, false, 0, false, 12, "◐",
+        ));
         assert!(skipped.trim_end().ends_with("busy"));
     }
 
@@ -1364,7 +1433,9 @@ mod tests {
     fn line_skips_agent_status_when_no_room() {
         let mut s = info("a-rather-long-session-name");
         s.agent_activity = Some("activity".to_string());
-        let text = line_text(&build_session_line(&s, None, false, false, 0, false, 30));
+        let text = line_text(&build_session_line(
+            &s, None, false, false, 0, false, 30, "◐",
+        ));
         assert!(!text.contains("activity"));
         assert!(text.trim_end().ends_with("a-rather-long-session-name"));
     }
@@ -1414,9 +1485,9 @@ mod tests {
 
     #[test]
     fn groups_keep_same_repo_sessions_together() {
-        let a = info_repo("a", "webapp", SessionStatus::Waiting);
-        let b = info_repo("b", "infra", SessionStatus::Waiting);
-        let c = info_repo("c", "webapp", SessionStatus::Waiting);
+        let a = info_repo("a", "webapp", SessionStatus::Done);
+        let b = info_repo("b", "infra", SessionStatus::Done);
+        let c = info_repo("c", "webapp", SessionStatus::Done);
         let sessions = vec![&a, &b, &c];
         // Equal status: groups ordered by label ("infra" < "webapp"),
         // members of each group adjacent.
@@ -1428,9 +1499,9 @@ mod tests {
     fn status_never_reorders_groups() {
         // Manual order wins: an Attention session recolors its dot but never
         // bubbles its group. Groups stay in label order ("infra" < "webapp").
-        let waiting = info_repo("infra-1", "infra", SessionStatus::Waiting);
-        let attn = info_repo("web-attn", "webapp", SessionStatus::Attention);
-        let busy = info_repo("web-busy", "webapp", SessionStatus::Busy);
+        let waiting = info_repo("infra-1", "infra", SessionStatus::Done);
+        let attn = info_repo("web-attn", "webapp", SessionStatus::Blocked);
+        let busy = info_repo("web-busy", "webapp", SessionStatus::Working);
         let sessions = vec![&waiting, &attn, &busy];
         assert_eq!(
             order_names(&sessions),
@@ -1438,7 +1509,7 @@ mod tests {
         );
 
         // Flip every status: the order is identical.
-        let waiting2 = info_repo("infra-1", "infra", SessionStatus::Attention);
+        let waiting2 = info_repo("infra-1", "infra", SessionStatus::Blocked);
         let attn2 = info_repo("web-attn", "webapp", SessionStatus::Idle);
         let busy2 = info_repo("web-busy", "webapp", SessionStatus::Error);
         let flipped = vec![&waiting2, &attn2, &busy2];
@@ -1449,17 +1520,30 @@ mod tests {
     }
 
     #[test]
+    fn group_status_rolls_up_to_most_urgent() {
+        use SessionStatus::*;
+        // Precedence: Blocked > Error > Working > Done > Idle.
+        assert_eq!(group_status([Idle, Done, Working]), Working);
+        assert_eq!(group_status([Done, Idle]), Done);
+        assert_eq!(group_status([Working, Error]), Error);
+        assert_eq!(group_status([Working, Blocked, Error]), Blocked);
+        assert_eq!(group_status([Idle, Idle]), Idle);
+        // Empty rolls up to Idle.
+        assert_eq!(group_status(std::iter::empty()), Idle);
+    }
+
+    #[test]
     fn status_changes_never_reorder_within_a_group() {
-        // A live agent flickers Busy↔Waiting every tick, and sessions go
-        // Idle/Attention; none of it may move a row.
-        let a = info_repo("a", "webapp", SessionStatus::Busy);
-        let b = info_repo("b", "webapp", SessionStatus::Waiting);
-        let c = info_repo("c", "webapp", SessionStatus::Busy);
+        // A live agent flips Working↔Done every tick, and sessions go
+        // Idle/Blocked; none of it may move a row.
+        let a = info_repo("a", "webapp", SessionStatus::Working);
+        let b = info_repo("b", "webapp", SessionStatus::Done);
+        let c = info_repo("c", "webapp", SessionStatus::Working);
         let sessions = vec![&a, &b, &c];
         assert_eq!(order_names(&sessions), vec!["a", "b", "c"]);
 
         // Flip a→Attention and b→Idle: order is unchanged.
-        let a2 = info_repo("a", "webapp", SessionStatus::Attention);
+        let a2 = info_repo("a", "webapp", SessionStatus::Blocked);
         let b2 = info_repo("b", "webapp", SessionStatus::Idle);
         let flipped = vec![&a2, &b2, &c];
         assert_eq!(order_names(&flipped), vec!["a", "b", "c"]);
@@ -1467,9 +1551,9 @@ mod tests {
 
     #[test]
     fn headers_label_only_first_row_of_each_group() {
-        let a = info_repo("a", "webapp", SessionStatus::Busy);
-        let b = info_repo("b", "webapp", SessionStatus::Busy);
-        let c = info_repo("c", "infra", SessionStatus::Attention);
+        let a = info_repo("a", "webapp", SessionStatus::Working);
+        let b = info_repo("b", "webapp", SessionStatus::Working);
+        let c = info_repo("c", "infra", SessionStatus::Blocked);
         let sessions = vec![&a, &b, &c];
         let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
         let labelled: Vec<(&str, Option<String>)> = order
@@ -1502,9 +1586,9 @@ mod tests {
     fn multi_repo_session_forms_its_own_composite_group() {
         // A {webapp}, B {webapp, infra}, C {infra}: three distinct groups, the
         // multi-repo session is NOT folded into either single-repo group.
-        let a = info_repo("a", "webapp", SessionStatus::Waiting);
-        let b = info_repos("b", &["webapp", "infra"], SessionStatus::Waiting);
-        let c = info_repo("c", "infra", SessionStatus::Waiting);
+        let a = info_repo("a", "webapp", SessionStatus::Done);
+        let b = info_repos("b", &["webapp", "infra"], SessionStatus::Done);
+        let c = info_repo("c", "infra", SessionStatus::Done);
         let sessions = vec![&a, &b, &c];
 
         let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
@@ -1785,8 +1869,8 @@ mod tests {
     #[test]
     fn attention_child_does_not_move_its_group() {
         let lead = info_repo("lead", "webapp", SessionStatus::Idle);
-        let worker = info_child("worker", "webapp", SessionStatus::Attention, &lead);
-        let busy = info_repo("busy", "infra", SessionStatus::Busy);
+        let worker = info_child("worker", "webapp", SessionStatus::Blocked, &lead);
+        let busy = info_repo("busy", "infra", SessionStatus::Working);
         let sessions = vec![&busy, &lead, &worker];
         // The child's Attention status doesn't bubble its group: groups stay
         // in label order ("infra" < "webapp"); the child stays nested.
@@ -1848,8 +1932,8 @@ mod tests {
     fn duplicate_repos_collapse_to_one_group() {
         // A repo set with the same repo twice (e.g. two worktrees of one repo)
         // groups under that single repo, alongside a plain single-repo session.
-        let multi = info_repos("multi", &["webapp", "webapp"], SessionStatus::Waiting);
-        let single = info_repo("single", "webapp", SessionStatus::Waiting);
+        let multi = info_repos("multi", &["webapp", "webapp"], SessionStatus::Done);
+        let single = info_repo("single", "webapp", SessionStatus::Done);
         let sessions = vec![&multi, &single];
 
         let SessionOrder { order, headers, .. } = compute_session_order(&sessions);
@@ -1862,8 +1946,8 @@ mod tests {
     fn multi_repo_grouping_is_order_independent() {
         // Same repo *set*, different selection order → one group; the header
         // reflects the first session's natural order.
-        let b = info_repos("b", &["webapp", "infra"], SessionStatus::Waiting);
-        let d = info_repos("d", &["infra", "webapp"], SessionStatus::Waiting);
+        let b = info_repos("b", &["webapp", "infra"], SessionStatus::Done);
+        let d = info_repos("d", &["infra", "webapp"], SessionStatus::Done);
         let sessions = vec![&b, &d];
 
         let SessionOrder { order, headers, .. } = compute_session_order(&sessions);

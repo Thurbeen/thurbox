@@ -302,6 +302,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_session_signal_accepts_state_and_rejects_garbage() {
+        let cli = Cli::try_parse_from(["thurbox-cli", "session", "signal", "--state", "blocked"])
+            .unwrap();
+        let Command::Session {
+            action: sessions::Action::Signal { state, session },
+        } = cli.command
+        else {
+            panic!("expected Session::Signal");
+        };
+        assert_eq!(state, "blocked");
+        assert_eq!(session, None);
+
+        // The value_parser allow-list rejects unknown states.
+        assert!(
+            Cli::try_parse_from(["thurbox-cli", "session", "signal", "--state", "exploded",])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn parse_session_list_accepts_parent_filter() {
         let cli = Cli::try_parse_from([
             "thurbox-cli",

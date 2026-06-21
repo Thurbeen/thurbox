@@ -131,10 +131,10 @@ pub enum NotificationBackend {
 /// configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationSettings {
-    /// Also notify when a session goes `Busy → Waiting` (timing-only quiet
-    /// state, no explicit OSC bell from the agent). Off by default —
-    /// agents that respect `terminal_bell`/OSC 9 already drive the
-    /// `Attention` transition, which always fires.
+    /// Also notify when a session **finishes** (`Working → Done`, reported by an
+    /// agent hook), not just when it becomes `Blocked` (which always fires).
+    /// Off by default. (The field name is historical — it now governs the Done
+    /// edge.)
     #[serde(default)]
     pub also_on_waiting: bool,
     /// Skip notifications for the session currently in focus (you're already

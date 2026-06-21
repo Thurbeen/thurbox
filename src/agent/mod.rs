@@ -5,6 +5,7 @@ pub mod extension_config;
 pub mod generic;
 pub mod host_config;
 pub mod input;
+pub mod json_merge;
 pub mod provider;
 pub mod registry;
 pub mod self_update;
