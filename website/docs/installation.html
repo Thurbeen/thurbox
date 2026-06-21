@@ -159,6 +159,40 @@ onThisPage:
             </tbody>
           </table>
 
+          <h2 id="chocolatey">
+            Chocolatey (Windows)
+            <a href="#chocolatey" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            On Windows, install the prebuilt x86_64 binaries from the
+            <a href="https://community.chocolatey.org/packages/thurbox">Chocolatey community repository</a>
+            :
+          </p>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">powershell</span>
+            </div>
+            <div class="terminal-body">
+              <button class="copy-btn" data-code="choco install thurbox">Copy</button>
+              <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">choco</span> install thurbox</code></pre>
+            </div>
+          </div>
+          <p>
+            Installs
+            <code>thurbox.exe</code>
+            and
+            <code>thurbox-cli.exe</code>
+            from the GitHub Release and shims them onto your
+            <code>PATH</code>
+            . Needs
+            <a href="https://github.com/psmux/psmux">psmux</a>
+            as the multiplexer, installed separately (there is no Chocolatey package for it).
+            New versions go through community-repo moderation before they appear.
+          </p>
+
           <h2 id="homebrew">
             Homebrew
             <a href="#homebrew" class="heading-anchor">#</a>
@@ -386,7 +420,8 @@ cargo build --release"
               <button class="copy-btn" data-code="rm ~/.local/bin/thurbox">Copy</button>
               <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">rm</span> ~/.local/bin/thurbox        <span class="syn-comment"># curl one-liner / manual install</span>
 <span class="syn-prompt">$</span> <span class="syn-cmd">brew</span> uninstall thurbox         <span class="syn-comment"># Homebrew</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-R</span> thurbox thurbox-bin    <span class="syn-comment"># Arch (AUR)</span></code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-R</span> thurbox thurbox-bin    <span class="syn-comment"># Arch (AUR)</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">choco</span> uninstall thurbox        <span class="syn-comment"># Chocolatey (Windows)</span></code></pre>
             </div>
           </div>
           <p>

@@ -80,6 +80,16 @@ footer: true
             </button>
             <button
               class="install-tab"
+              id="tab-choco"
+              role="tab"
+              aria-controls="panel-choco"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              Chocolatey
+            </button>
+            <button
+              class="install-tab"
               id="tab-brew"
               role="tab"
               aria-controls="panel-brew"
@@ -165,6 +175,36 @@ footer: true
                   Copy
                 </button>
                 <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">irm</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1</span> | <span class="syn-cmd">iex</span></code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="install-panel" role="tabpanel" id="panel-choco" aria-labelledby="tab-choco" hidden>
+            <p>
+              Windows x86_64 via the
+              <a href="https://community.chocolatey.org/packages/thurbox" target="_blank" rel="noopener">
+                Chocolatey community repository
+              </a>
+              . Installs the prebuilt
+              <code>thurbox.exe</code>
+              +
+              <code>thurbox-cli.exe</code>
+              and shims them onto your
+              <code>PATH</code>
+              . Needs
+              <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
+              as the multiplexer (installed separately).
+            </p>
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">powershell</span>
+              </div>
+              <div class="terminal-body">
+                <button class="copy-btn" data-code="choco install thurbox">Copy</button>
+                <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">choco</span> install thurbox</code></pre>
               </div>
             </div>
           </div>
