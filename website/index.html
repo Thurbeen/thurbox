@@ -70,6 +70,16 @@ footer: true
             </button>
             <button
               class="install-tab"
+              id="tab-windows"
+              role="tab"
+              aria-controls="panel-windows"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              Windows
+            </button>
+            <button
+              class="install-tab"
               id="tab-brew"
               role="tab"
               aria-controls="panel-brew"
@@ -122,6 +132,39 @@ footer: true
                   Copy
                 </button>
                 <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div
+            class="install-panel"
+            role="tabpanel"
+            id="panel-windows"
+            aria-labelledby="tab-windows"
+            hidden
+          >
+            <p>
+              Native Windows (PowerShell 5.1+). Verifies checksums and installs the latest release to
+              <code>%LOCALAPPDATA%\Programs\thurbox</code>
+              (added to your user
+              <code>PATH</code>
+              ).
+            </p>
+            <div class="terminal-frame">
+              <div class="terminal-header">
+                <div class="terminal-dot red"></div>
+                <div class="terminal-dot yellow"></div>
+                <div class="terminal-dot green"></div>
+                <span class="terminal-title">powershell</span>
+              </div>
+              <div class="terminal-body">
+                <button
+                  class="copy-btn"
+                  data-code="irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"
+                >
+                  Copy
+                </button>
+                <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">irm</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1</span> | <span class="syn-cmd">iex</span></code></pre>
               </div>
             </div>
           </div>
