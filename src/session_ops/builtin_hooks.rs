@@ -25,6 +25,8 @@ const MANIFEST: &str = include_str!("../../extensions/hooks/extension.toml");
 const CLAUDE_SETTINGS: &str = include_str!("../../extensions/hooks/claude.json");
 const OPENCODE_PLUGIN: &str = include_str!("../../extensions/hooks/opencode-status.js");
 const ANTIGRAVITY_HOOKS: &str = include_str!("../../extensions/hooks/antigravity-hooks.json");
+const CODEX_HOOKS: &str = include_str!("../../extensions/hooks/codex-hooks.json");
+const VIBE_HOOKS: &str = include_str!("../../extensions/hooks/vibe-hooks.toml");
 
 /// The hooks extension's home, under this build's resolved config dir
 /// (`~/.config/thurbox/hooks` for a release build, `~/.config/thurbox-dev/hooks`
@@ -49,6 +51,8 @@ fn materialize_source() -> Result<PathBuf, String> {
         ("claude.json", CLAUDE_SETTINGS),
         ("opencode-status.js", OPENCODE_PLUGIN),
         ("antigravity-hooks.json", ANTIGRAVITY_HOOKS),
+        ("codex-hooks.json", CODEX_HOOKS),
+        ("vibe-hooks.toml", VIBE_HOOKS),
     ];
     for (name, contents) in writes {
         let path = dir.join(name);
@@ -119,26 +123,51 @@ mod tests {
         // The opencode plugin must carry the managed marker so uninstall can
         // safely remove it (see `is_user_modified`).
         assert!(OPENCODE_PLUGIN.contains("thurbox `extension install`"));
+        // codex's hooks.json reports the full idle/working/done range.
+        assert!(CODEX_HOOKS.contains("session signal --state idle"));
+        // The vibe payload carries the signal marker (prune) and the managed
+        // marker (external-file uninstall, see `is_user_modified`).
+        assert!(VIBE_HOOKS.contains("thurbox-cli session signal"));
+        assert!(VIBE_HOOKS.contains("thurbox `extension install`"));
     }
 
     #[test]
-    fn embedded_manifest_parses_with_codex_and_antigravity_wiring() {
+    fn embedded_manifest_parses_with_codex_vibe_and_antigravity_wiring() {
         // Parse the embedded manifest exactly as the installer does — this guards
-        // the tricky codex `notify` arg (a single-quoted TOML string holding JSON)
-        // and the antigravity config_merge from silently breaking the build.
+        // the codex + antigravity config_merges (and the vibe external file) from
+        // silently breaking the build.
         let def: crate::session::ExtensionDef =
             toml::from_str(MANIFEST).expect("embedded manifest parses");
 
+        // codex now JSON-merges a claude-shaped hooks.json into ~/.codex/hooks.json
+        // (idle/working/done) rather than the old `-c notify=…` agent patch.
         let codex = def
-            .agent_patches
+            .config_merges
             .iter()
-            .find(|p| p.name == "codex")
-            .expect("codex agent patch present");
-        assert!(codex.append_args.iter().any(|a| a == "-c"));
-        assert!(codex
-            .append_args
+            .find(|m| m.path.contains(".codex"))
+            .expect("codex config merge present");
+        assert_eq!(codex.source_path(), "codex-hooks.json");
+        assert_eq!(codex.requires_dir.as_deref(), Some("~/.codex"));
+        assert!(
+            def.agent_patches.iter().all(|p| p.name != "codex"),
+            "codex should no longer be wired via an agent patch"
+        );
+
+        // The codex payload is valid JSON, claude-shaped, and carries the marker.
+        let codex_payload: serde_json::Value =
+            serde_json::from_str(CODEX_HOOKS).expect("codex payload is valid JSON");
+        assert!(codex_payload["hooks"]["SessionStart"].is_array());
+        assert!(codex_payload["hooks"]["Stop"].is_array());
+        assert!(CODEX_HOOKS.contains("thurbox-cli session signal"));
+
+        // vibe drops a managed hooks.toml into ~/.vibe/ (guarded by requires_dir).
+        let vibe = def
+            .external_files
             .iter()
-            .any(|a| a.contains("notify=") && a.contains("session signal --state done")));
+            .find(|f| f.path.contains(".vibe"))
+            .expect("vibe external file present");
+        assert_eq!(vibe.source_path(), "vibe-hooks.toml");
+        assert_eq!(vibe.requires_dir.as_deref(), Some("~/.vibe"));
 
         // antigravity (agy) shares gemini's ~/.gemini/settings.json for hooks.
         let antigravity = def

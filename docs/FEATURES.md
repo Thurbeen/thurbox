@@ -53,28 +53,40 @@ the user to remember which field to type into.
 ### Live status & "needs attention"
 
 Each row is a single line: `<status-dot> <name> [<agent-status>]`
-(worktree sessions get a `⑂` mark before the name). The agent-reported
-status — the OSC activity title or an attention notification — is
-appended after the name when present, muted and truncated with `…` to
-fit the panel. There is no timing-based `Waiting`/`Busy` text: the
-colored status dot already conveys that state, so a session with no
-agent-reported status is just the dot and the name. The repo/branch
-and agent live in the info panel, not the list row.
+(worktree sessions get a `⑂` mark before the name). The agent's live
+activity title (the OSC `0`/`1`/`2` window title it sets, e.g. Gemini's
+`◇ Ready`) is appended after the name when present, muted and truncated
+with `…` to fit the panel. The repo/branch and agent live in the info
+panel, not the list row.
 
-The status is richer than raw output-timing. We parse the agent's
-own terminal signals from its PTY (via the `vt100` callbacks already
-used for the window title):
+The colored **status dot** is driven by **agent hooks**, not output
+heuristics. Each agent CLI's lifecycle hooks call `thurbox-cli session
+signal --state <working|blocked|done|idle>` (identity from the injected
+`THURBOX_SESSION`), and `refresh_session_statuses` maps the persisted
+state to one of five `SessionStatus` values once per tick:
 
-- **OSC title** (`0`/`1`/`2`) → shown as live activity when the agent
-  reports one (e.g. Gemini's `◇ Ready`).
-- **Attention** — a terminal bell (`BEL`) or a desktop-notification
-  escape (**OSC 9**, **OSC 777**) means the agent finished or is
-  waiting for input. This latches a distinct `Needs attention` status
-  (`▲`, accent colour) that shows the notification's message text when
-  present, marking the row so blocked or finished agents stand out
-  (the dot recolors in place — the manual order is never disturbed; see
-  *Smart ordering* below). It clears automatically once you select the
-  session (you're now looking at it).
+| State | Colour | Glyph | Meaning |
+|-------|--------|-------|---------|
+| `Working` | yellow | braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running |
+| `Blocked` | red | `◆` | agent needs input or approval |
+| `Done` | blue | `●` | a turn just finished; shown until you switch away |
+| `Idle` | green | `○` | acknowledged, never active, or at rest |
+| `Error` | red | `✗` | reserved for a crashed agent (not derived yet) |
+
+A `Done` session becomes `Idle` once you move focus off it (you've
+acknowledged it); a `working` session that goes quiet for 10 s is
+treated as `Idle` so an interrupted turn never spins forever. Status
+only **recolors** the dot — the manual order is never disturbed (see
+*Smart ordering* below). Repo groups roll up to their most-urgent
+member (`Blocked > Error > Working > Done > Idle`).
+
+The hooks are wired automatically by the built-in **hooks** extension
+(auto-activated on first run; opt out with `thurbox-cli extension
+deactivate hooks`). How much each agent can report depends on the
+lifecycle surface its CLI exposes — claude, opencode, and antigravity
+report the full range, codex reports idle/working/done, aider reports
+blocked, and vibe is experimental. See the per-agent matrix in
+`extensions/hooks/README.md` (and the website's *Agent hooks* page).
 
 ### Smart ordering & repo groups
 
@@ -1472,13 +1484,10 @@ restore, worktree sync, and theme changes.
 Status messages are in-app and transient; OS notifications are the
 out-of-app analog for the one event a user must not miss — a session
 that **needs them**. When a session transitions to
-`SessionStatus::Attention` (the agent rang the terminal bell or
-emitted an OSC 9 / OSC 777 notification), thurbox fires an OS desktop
-notification whose body is the agent's last OSC message, or `Waiting
-for input` otherwise. An opt-in `also_on_waiting` extends the trigger
-to the timing-only `Busy → Waiting` edge for agents that never ring a
-bell (chattier — it fires each time the agent goes idle after
-activity).
+`SessionStatus::Blocked` (the agent's hook reported it needs input or
+approval), thurbox fires an OS desktop notification. An opt-in
+`also_on_waiting` extends the trigger to the `Working → Done` (finished)
+edge for when you want a nudge each time a turn completes.
 
 ### Why the transition is observed in one place
 

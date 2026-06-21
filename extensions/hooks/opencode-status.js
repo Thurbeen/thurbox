@@ -18,7 +18,8 @@ export const ThurboxStatus = async ({ $ }) => {
     },
     event: async ({ event }) => {
       if (!event || !event.type) return;
-      if (event.type === "permission.asked") await signal("blocked");
+      if (event.type === "session.created") await signal("idle");
+      else if (event.type === "permission.asked") await signal("blocked");
       else if (event.type === "session.idle") await signal("done");
     },
   };

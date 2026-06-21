@@ -78,6 +78,18 @@ onThisPage:
               ). The commands and manifest fields below are generic; the examples use flow.
             </p>
           </div>
+          <div class="info-box">
+            <p>
+              <strong>One extension ships built in:</strong>
+              <a href="agent-hooks.html">agent hooks</a>
+              . Unlike the others it's
+              <strong>embedded in the binary and auto-activated</strong>
+              , wiring each agent's lifecycle hooks to
+              <code>thurbox-cli session signal</code>
+              so the session list shows working/blocked/done/idle. It still installs through the
+              same manifest machinery shown here.
+            </p>
+          </div>
 
           <h2 id="install">
             Install
@@ -427,6 +439,17 @@ prompt = "tick"</code></pre>
             Each extension has its own page with what it does, how to install it, and how to use it:
           </p>
           <div class="docs-hub-grid">
+            <a href="agent-hooks.html" class="docs-hub-card">
+              <div class="card">
+                <div class="card-icon">&#x1f50c;</div>
+                <h3>agent hooks <span class="badge badge-green">built in</span></h3>
+                <p>
+                  Wires each agent's lifecycle hooks to
+                  <code>thurbox-cli session signal</code>
+                  so every session reports working/blocked/done/idle. Embedded and on by default.
+                </p>
+              </div>
+            </a>
             <a href="extension-flow.html" class="docs-hub-card">
               <div class="card">
                 <div class="card-icon">&#x1f9ed;</div>

@@ -921,12 +921,17 @@ pre-configured with zero setup. It materializes its embedded assets to a
 local dir and installs through the ordinary machinery: an `[[agent_patches]]`
 adds `--settings {home}/claude.json` to `claude` (claude merges it, never
 clobbering user settings), aider gets `--notifications-command` (blocked-only),
-`codex` gets a `-c notify=…` override via `[[agent_patches]]` (codex's stable
-turn-complete hook → done, no `~/.codex` write), an `[[external_files]]` drops
-an opencode plugin into `~/.config/opencode/plugin/`, and a `[[config_merges]]`
-deep-merges hook entries into `antigravity`'s shared `~/.gemini/settings.json`
-(idle/working/done, no blocked; **experimental** — doc-sourced schema +
-possible hook-env sanitization, see `extensions/hooks/README.md`).
+a `[[config_merges]]` deep-merges `codex`'s claude-shaped hooks into
+`~/.codex/hooks.json` (idle/working/done, no blocked; **experimental**, replaced
+the old `-c notify=…` done-only override — a reversible write into `hooks.json`,
+never `config.toml`), an `[[external_files]]` drops an opencode plugin into
+`~/.config/opencode/plugin/` (idle/working/blocked/done) and a managed
+`~/.vibe/hooks.toml` for Mistral `vibe` (working/blocked/done; **experimental**,
+refused if a user file already exists), and a `[[config_merges]]` deep-merges
+hook entries into `antigravity`'s shared `~/.gemini/settings.json`
+(idle/working/blocked/done; `agy` adopted claude's hook schema, verified
+against agy 1.0.9 — `PreToolUse` drives working, `Notification` blocked, see
+`extensions/hooks/README.md`).
 Opt out with `thurbox-cli extension deactivate hooks` (records a
 `builtin_hooks_optout` metadata flag so self-heal won't resurrect it);
 `activate`/`install hooks` clears it. See the Session-status section.

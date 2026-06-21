@@ -1,0 +1,24 @@
+# Managed by thurbox `extension install` (the built-in "hooks" extension).
+# Reinstalling or updating overwrites this file — do not edit; uninstalling
+# removes it. Reports Mistral Vibe's lifecycle state to thurbox via
+# `thurbox-cli session signal`. Identity comes from the inherited
+# $THURBOX_SESSION env var; every call is best-effort (`|| true`) so it can
+# never break a session running outside thurbox.
+#
+# EXPERIMENTAL: the hooks.toml schema below is not verified against the live
+# `vibe` binary. If the event/key names differ, edit this file (no code change
+# needed) — a wrong name just means the state isn't reported (the `|| true`
+# keeps vibe itself safe). before_tool -> working, after_turn -> done,
+# notification (awaiting approval / question) -> blocked.
+
+[[hooks]]
+event = "before_tool"
+command = "thurbox-cli session signal --state working || true"
+
+[[hooks]]
+event = "after_turn"
+command = "thurbox-cli session signal --state done || true"
+
+[[hooks]]
+event = "notification"
+command = "thurbox-cli session signal --state blocked || true"

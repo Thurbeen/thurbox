@@ -1,0 +1,361 @@
+---
+layout: docs.njk
+title: 'Agent hooks — Thurbox Docs'
+description: 'The built-in hooks extension: wire each coding agent CLI lifecycle hook to thurbox-cli session signal so every session reports working/blocked/done/idle. Per-agent coverage matrix for claude, codex, antigravity, opencode, aider, and vibe.'
+currentPage: 'agent-hooks'
+breadcrumb: 'Agent hooks'
+onThisPage:
+  - { id: 'overview', label: 'Overview' }
+  - { id: 'states', label: 'The five states' }
+  - { id: 'coverage', label: 'Per-agent coverage' }
+  - { id: 'wiring', label: 'How each agent is wired' }
+  - { id: 'optout', label: 'Opt out' }
+  - { id: 'files', label: 'Files' }
+---
+<h1>Agent hooks</h1>
+          <p>
+            The built-in
+            <strong>hooks</strong>
+            extension wires each coding agent's lifecycle hooks to
+            <code>thurbox-cli session signal</code>
+            so every session reports its state back to Thurbox. The session list then shows, at a
+            glance, which agents are
+            <strong>working</strong>
+            ,
+            <strong>blocked</strong>
+            ,
+            <strong>done</strong>
+            , or
+            <strong>idle</strong>
+            &mdash; a colored dot per row, rolled up per repo group.
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>On by default.</strong>
+              Unlike other
+              <a href="extensions.html">extensions</a>
+              , hooks ships
+              <strong>embedded in the binary</strong>
+              and is
+              <strong>auto-activated on first run</strong>
+              &mdash; the default agent's hook is pre-configured with zero setup. It installs
+              through the ordinary extension machinery (it just lives inside Thurbox instead of
+              being fetched).
+            </p>
+          </div>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The hook command is always
+            <code>thurbox-cli session signal --state &lt;working|blocked|done|idle&gt;</code>
+            , suffixed
+            <code>|| true</code>
+            so it can never break the agent. Identity comes from the injected
+            <code>$THURBOX_SESSION</code>
+            environment variable, so a hook passes
+            <strong>no ids</strong>
+            . The reported state is persisted on the session row and picked up by the TUI within a
+            tick (via
+            <code>PRAGMA data_version</code>
+            ), so a hook firing headlessly is honored too.
+          </p>
+
+          <h2 id="states">
+            The five states
+            <a href="#states" class="heading-anchor">#</a>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>State</th>
+                <th>Colour</th>
+                <th>Glyph</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Working</code></td>
+                <td>yellow</td>
+                <td>animated braille spinner (<code>&#x280b;&#x2819;&#x2839;&hellip;</code>)</td>
+                <td>the agent is actively running</td>
+              </tr>
+              <tr>
+                <td><code>Blocked</code></td>
+                <td>red</td>
+                <td><code>&#x25c6;</code></td>
+                <td>the agent needs input or approval</td>
+              </tr>
+              <tr>
+                <td><code>Done</code></td>
+                <td>blue</td>
+                <td><code>&#x25cf;</code></td>
+                <td>a turn just finished; shown until you switch away</td>
+              </tr>
+              <tr>
+                <td><code>Idle</code></td>
+                <td>green</td>
+                <td><code>&#x25cb;</code></td>
+                <td>acknowledged, never active, or at rest</td>
+              </tr>
+              <tr>
+                <td><code>Error</code></td>
+                <td>red</td>
+                <td><code>&#x2717;</code></td>
+                <td>reserved for a crashed agent (not derived yet)</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            A
+            <code>Done</code>
+            session becomes
+            <code>Idle</code>
+            once you move focus off it (you've acknowledged it); a
+            <code>Working</code>
+            session that goes quiet for 10&nbsp;s is treated as
+            <code>Idle</code>
+            so an interrupted turn never spins forever. Repo groups roll up to their most-urgent
+            member (
+            <code>Blocked &gt; Error &gt; Working &gt; Done &gt; Idle</code>
+            ), and the status colours are tunable theme keys.
+          </p>
+
+          <h2 id="coverage">
+            Per-agent coverage
+            <a href="#coverage" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            How much each agent can report depends on the lifecycle surface its CLI exposes &mdash;
+            Thurbox maps whatever hooks an agent offers, and the dot is accurate for the edges that
+            agent can express:
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>idle</th>
+                <th>working</th>
+                <th>blocked</th>
+                <th>done</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>claude</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+              </tr>
+              <tr>
+                <td>opencode</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+              </tr>
+              <tr>
+                <td>codex <sup>*</sup></td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&mdash;</td>
+                <td>&#x2713;</td>
+              </tr>
+              <tr>
+                <td>antigravity</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+              </tr>
+              <tr>
+                <td>aider</td>
+                <td>&mdash;</td>
+                <td>&mdash;</td>
+                <td>&#x2713;</td>
+                <td>&mdash;</td>
+              </tr>
+              <tr>
+                <td>vibe <sup>*</sup></td>
+                <td>&mdash;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            <sup>*</sup>
+            <strong>Experimental</strong>
+            &mdash; the hook schema for codex and vibe is newer or not exhaustively
+            verified against the live CLI. If event names differ, the fix is a one-file edit to the
+            extension payload (no code change), and an unrecognized hook is a fail-open no-op
+            (
+            <code>|| true</code>
+            ) so the agent is never broken.
+          </p>
+
+          <h2 id="wiring">
+            How each agent is wired
+            <a href="#wiring" class="heading-anchor">#</a>
+          </h2>
+          <ul>
+            <li>
+              <strong>claude</strong>
+              &mdash; a managed settings file passed via
+              <code>--settings</code>
+              (claude merges it with your own settings, never clobbering them).
+              <code>SessionStart</code>
+              &rarr; idle,
+              <code>UserPromptSubmit</code>
+              /
+              <code>PreToolUse</code>
+              &rarr; working,
+              <code>Stop</code>
+              &rarr; done, and
+              <code>Notification</code>
+              &rarr; blocked
+              <em>only</em>
+              for permission/approval prompts (an idle nudge is ignored so a session never flips to
+              a false red).
+            </li>
+            <li>
+              <strong>opencode</strong>
+              &mdash; a plugin dropped into
+              <code>~/.config/opencode/plugin/</code>
+              (only when opencode is installed).
+              <code>session.created</code>
+              &rarr; idle,
+              <code>chat.message</code>
+              &rarr; working,
+              <code>permission.asked</code>
+              &rarr; blocked,
+              <code>session.idle</code>
+              &rarr; done.
+            </li>
+            <li>
+              <strong>codex</strong>
+              <em>(experimental)</em>
+              &mdash; codex's claude-shaped
+              <code>hooks.json</code>
+              is JSON-merged into
+              <code>~/.codex/hooks.json</code>
+              (reversibly; uninstall prunes exactly our entries).
+              <code>SessionStart</code>
+              &rarr; idle,
+              <code>UserPromptSubmit</code>
+              /
+              <code>PreToolUse</code>
+              &rarr; working,
+              <code>Stop</code>
+              &rarr; done. No blocked &mdash; codex's top-level hooks have no permission event. This
+              replaced the older
+              <code>notify</code>
+              override (which reported done only).
+            </li>
+            <li>
+              <strong>antigravity</strong>
+              &mdash; the
+              <code>agy</code>
+              CLI loads hooks from its shared
+              <code>~/.gemini/settings.json</code>
+              , so Thurbox
+              <strong>JSON-merges</strong>
+              its entries in without clobbering your settings.
+              <code>agy</code>
+              adopted claude's hook schema (verified against agy 1.0.9), so the mapping mirrors
+              claude:
+              <code>SessionStart</code>
+              &rarr; idle,
+              <code>PreToolUse</code>
+              &rarr; working,
+              <code>Stop</code>
+              &rarr; done, and
+              <code>Notification</code>
+              &rarr; blocked (permission/approval prompts only). It has no
+              <code>UserPromptSubmit</code>
+              , so working is signaled at the first tool call.
+            </li>
+            <li>
+              <strong>aider</strong>
+              &mdash;
+              <code>--notifications-command</code>
+              reports the only edge aider exposes: blocked (waiting for input).
+            </li>
+            <li>
+              <strong>vibe</strong>
+              <em>(experimental)</em>
+              &mdash; Mistral Vibe loads hooks from
+              <code>~/.vibe/hooks.toml</code>
+              ; Thurbox drops a managed file in (only when vibe is installed).
+              <code>before_tool</code>
+              &rarr; working,
+              <code>after_turn</code>
+              &rarr; done,
+              <code>notification</code>
+              &rarr; blocked. If you already maintain your own
+              <code>hooks.toml</code>
+              the write is
+              <strong>refused</strong>
+              (never clobbered) &mdash; vibe simply goes unreported.
+            </li>
+          </ul>
+          <p>
+            These use three manifest capabilities &mdash;
+            <code>[[agent_patches]]</code>
+            (append args to an agent),
+            <code>[[external_files]]</code>
+            (place a file in an agent's own config dir), and
+            <code>[[config_merges]]</code>
+            (reversibly deep-merge JSON into an agent's shared config). Each is fully reversible:
+            uninstall removes exactly what was added, matched by the
+            <code>session signal</code>
+            marker.
+          </p>
+
+          <h2 id="optout">
+            Opt out
+            <a href="#optout" class="heading-anchor">#</a>
+          </h2>
+          <p>Hooks is the one extension that's on without you asking. Turn it off (and back on):</p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension deactivate hooks   <span class="syn-comment"># remove the wiring; won't come back</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension activate hooks     <span class="syn-comment"># re-enable it</span></code></pre>
+          <p>
+            Deactivating records an opt-out flag, so startup self-heal won't resurrect it. All the
+            per-agent wiring is reversible, so opting out leaves your agent configs exactly as they
+            were.
+          </p>
+
+          <h2 id="files">
+            Files
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            See
+            <a
+              href="https://github.com/Thurbeen/thurbox/tree/main/extensions/hooks"
+              target="_blank"
+              rel="noopener"
+            >
+              extensions/hooks
+            </a>
+            for the
+            <code>README.md</code>
+            , the
+            <code>extension.toml</code>
+            manifest, and the per-agent payloads (
+            <code>claude.json</code>
+            ,
+            <code>codex-hooks.json</code>
+            ,
+            <code>antigravity-hooks.json</code>
+            ,
+            <code>opencode-status.js</code>
+            ,
+            <code>vibe-hooks.toml</code>
+            ).
+          </p>

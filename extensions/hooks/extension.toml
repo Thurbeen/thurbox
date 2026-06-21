@@ -48,19 +48,39 @@ path = "~/.config/opencode/plugin/thurbox-status.js"
 source = "opencode-status.js"
 requires_dir = "~/.config/opencode"
 
-# codex's stable, long-documented hook is `notify` — a single program codex runs
-# on agent-turn-complete (it appends a JSON event arg, which the inline `sh -c`
-# ignores). That maps cleanly to `done`. codex has no per-event notify, so
-# working/blocked/idle aren't expressible this way — the dot is accurate for the
-# turn-complete edge (complementary to aider's blocked-only). Passed as a launch
-# `-c` override so we never write into the user's ~/.codex/config.toml, and it's
-# fully reversible (uninstall strips these args).
-[[agent_patches]]
-name = "codex"
-append_args = [
-  "-c",
-  'notify=["sh","-c","thurbox-cli session signal --state done || true"]',
-]
+# codex now has a claude-shaped hooks.json (SessionStart/UserPromptSubmit/
+# PreToolUse/Stop) loaded from ~/.codex/hooks.json — strictly richer than the
+# old `notify` (which only fired agent-turn-complete → done). We JSON-merge our
+# entries into that file (reversibly; uninstall prunes exactly ours by the
+# `session signal` marker, leaving the user's hooks intact), guarded by
+# requires_dir so it's a no-op when codex isn't installed. Events: SessionStart
+# → idle, UserPromptSubmit/PreToolUse → working, Stop → done. No `blocked` —
+# codex's top-level hooks have no permission/approval event (that lives only in
+# the legacy `notify`).
+#
+# EXPERIMENTAL: codex's hooks.json is newer than its `notify`; the event names
+# here are assumed identical to claude's. If they differ on the live `codex`,
+# edit codex-hooks.json (no code change). Replaces the old `-c notify=…` patch
+# (avoiding a double-`done` signal); the trade is a reversible write into a
+# separate ~/.codex/hooks.json — never the user's config.toml.
+[[config_merges]]
+path = "~/.codex/hooks.json"
+source = "codex-hooks.json"
+requires_dir = "~/.codex"
+
+# vibe (Mistral Vibe) loads hooks from ~/.vibe/hooks.toml. It's TOML, so we
+# can't JSON-merge it — we drop a managed file in (only when vibe is installed,
+# guarded by requires_dir). If the user already maintains their own
+# ~/.vibe/hooks.toml, the write is refused (no managed marker), so we never
+# clobber it — vibe just goes unreported rather than broken.
+#
+# EXPERIMENTAL: the hooks.toml schema is not verified against the live `vibe`
+# binary. If event/key names differ, edit vibe-hooks.toml (no code change).
+# Events: before_tool → working, after_turn → done, notification → blocked.
+[[external_files]]
+path = "~/.vibe/hooks.toml"
+source = "vibe-hooks.toml"
+requires_dir = "~/.vibe"
 
 # antigravity (the `agy` CLI, the Gemini CLI successor) loads hooks only from its
 # shared ~/.gemini/settings.json, which we must NOT clobber — so we JSON-merge our

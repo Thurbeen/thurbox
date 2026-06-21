@@ -44,14 +44,28 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
 - **aider** — `--notifications-command` reports the only edge aider exposes:
   blocked (waiting for input).
 - **opencode** — a plugin dropped into `~/.config/opencode/plugin/` (only when
-  opencode is installed). Events: `chat.message` → working, `permission.asked`
-  → blocked, `session.idle` → done.
-- **codex** — codex's stable `notify` program runs on **agent-turn-complete**,
-  which maps to **done**. It's injected as a launch `-c notify=…` override (an
-  `[[agent_patches]]`), so your `~/.codex/config.toml` is never written and the
-  wiring is fully reversible. codex has no per-event notify, so working/blocked/
-  idle aren't expressible this way — the dot is accurate for the turn-complete
-  edge (complementary to aider's blocked-only).
+  opencode is installed). Events: `session.created` → idle, `chat.message` →
+  working, `permission.asked` → blocked, `session.idle` → done.
+- **codex** *(experimental)* — codex's `hooks.json` is claude-shaped, loaded
+  from `~/.codex/hooks.json`. We **JSON-merge** our entries in (a
+  `[[config_merges]]`, guarded by `requires_dir`) so your own hooks are
+  preserved; uninstall prunes exactly ours back out. Events: `SessionStart` →
+  idle, `UserPromptSubmit`/`PreToolUse` → working, `Stop` → done. **No blocked**
+  — codex's top-level hooks have no permission/approval event (that lives only in
+  the legacy `notify`). This replaced the old `-c notify=…` override (which only
+  reported done); the trade is a reversible write into a separate
+  `~/.codex/hooks.json`, never your `config.toml`. **Caveat:** codex's hooks.json
+  is newer than its `notify`; the event names are assumed identical to claude's —
+  if they differ, edit `codex-hooks.json` (no code change).
+- **vibe** *(experimental)* — Mistral Vibe loads hooks from `~/.vibe/hooks.toml`.
+  It's TOML, so we can't JSON-merge it — we drop a managed file in (an
+  `[[external_files]]`, guarded by `requires_dir`, only when vibe is installed).
+  Events: `before_tool` → working, `after_turn` → done, `notification` (awaiting
+  approval / question) → blocked. **Caveats:** the `hooks.toml` schema is not
+  verified against the live `vibe` binary — if event/key names differ, edit
+  `vibe-hooks.toml` (no code change). And if you already maintain your own
+  `~/.vibe/hooks.toml`, the write is **refused** (no managed marker) so it's never
+  clobbered — vibe simply goes unreported rather than broken.
 - **antigravity** — antigravity (the `agy` CLI, the Gemini CLI successor) loads
   hooks only from its shared `~/.gemini/settings.json`, so we **JSON-merge** our
   entries in (a `[[config_merges]]`, guarded by `requires_dir`) without clobbering
