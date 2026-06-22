@@ -4,7 +4,7 @@ use rusqlite::{params, OptionalExtension};
 
 use super::Database;
 
-use crate::session::PENDING_FOCUS_SESSION_ID_KEY;
+use crate::session::{SessionId, PENDING_FOCUS_SESSION_ID_KEY};
 
 const EDITOR_COMMAND_KEY: &str = "editor_command";
 const THEME_KEY: &str = "active_theme";
@@ -175,6 +175,21 @@ impl Database {
             )
             .optional()
     }
+
+    /// Record a "focus this session" request for the running TUI to consume.
+    /// Used by the macOS click-to-focus CLI (`thurbox-cli session focus`) —
+    /// the symmetric writer to [`Self::take_pending_focus_session_id`].
+    /// Linux dispatches in-process from the dbus action callback and writes
+    /// the metadata row directly; the CLI path needs this helper because it
+    /// runs in a separate process spawned by `terminal-notifier -execute`.
+    pub fn set_pending_focus_session_id(&self, session_id: SessionId) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![PENDING_FOCUS_SESSION_ID_KEY, session_id.to_string()],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +276,25 @@ mod tests {
         assert_eq!(
             db.take_pending_focus_session_id().unwrap().as_deref(),
             Some("deadbeef-0000-0000-0000-000000000000")
+        );
+        assert_eq!(db.take_pending_focus_session_id().unwrap(), None);
+    }
+
+    #[test]
+    fn set_pending_focus_session_id_is_idempotent_and_overwrites() {
+        let db = Database::open_in_memory().unwrap();
+        let first = SessionId::default();
+        let second = SessionId::default();
+        // Two distinct ids (UUIDs are unique).
+        assert_ne!(first, second);
+
+        db.set_pending_focus_session_id(first).unwrap();
+        // A second set overwrites — the latest click wins, no stacking.
+        db.set_pending_focus_session_id(second).unwrap();
+
+        assert_eq!(
+            db.take_pending_focus_session_id().unwrap().as_deref(),
+            Some(second.to_string().as_str())
         );
         assert_eq!(db.take_pending_focus_session_id().unwrap(), None);
     }

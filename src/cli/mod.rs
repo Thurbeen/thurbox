@@ -302,6 +302,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_session_focus_takes_uuid() {
+        let cli = Cli::try_parse_from([
+            "thurbox-cli",
+            "session",
+            "focus",
+            "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a",
+        ])
+        .unwrap();
+        let Command::Session {
+            action: sessions::Action::Focus { uuid },
+        } = cli.command
+        else {
+            panic!("expected Session::Focus");
+        };
+        assert_eq!(uuid, "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a");
+
+        // No UUID arg fails.
+        assert!(Cli::try_parse_from(["thurbox-cli", "session", "focus"]).is_err());
+    }
+
+    #[test]
     fn parse_session_signal_accepts_state_and_rejects_garbage() {
         let cli = Cli::try_parse_from(["thurbox-cli", "session", "signal", "--state", "blocked"])
             .unwrap();

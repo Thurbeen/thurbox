@@ -508,7 +508,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 ```
 
 Subcommands: `session` (create/list/get/delete/restore/restart/
-send/capture), `automation` (alias `auto`:
+send/capture/focus/signal), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `message` (alias `msg`:
 send/inbox/prune — the inter-session mailbox queue; see below), `editor`, `config`

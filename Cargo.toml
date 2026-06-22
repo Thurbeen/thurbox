@@ -73,10 +73,14 @@ chrono-tz = "0.10"
 cron = "0.16"
 serde_ignored = "0.1.14"
 
-# OS notifications (Linux/macOS). On Linux: dbus with action callbacks
-# (click-to-focus works). On macOS: passive banner only — clicking does
-# nothing (the action API requires a signed app bundle). The notifications
-# module degrades gracefully on either platform if dispatch fails.
+# OS notifications. Linux-only: dbus with action callbacks (click-to-focus
+# works). macOS dispatches via `terminal-notifier` if installed, else the
+# system `osascript` binary — both inside `src/notifications.rs`, neither
+# needs notify-rust. notify-rust's macOS backend (`mac-notification-sys`)
+# rides the deprecated `NSUserNotificationCenter` API and is non-functional
+# for unbundled CLIs on macOS 12+, so it isn't pulled in there. Windows
+# (WSL toast) shells out to `powershell.exe`, also no notify-rust.
+[target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
 
 [[bin]]

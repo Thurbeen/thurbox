@@ -13,9 +13,15 @@
 //!   appear in the Windows Action Center. Click-to-focus is *not* supported on
 //!   this path (a Windows toast can't call back into the WSL process), so the
 //!   banner is informational — the user alt-tabs back themselves.
-//! - **macOS** native banner (informational; the modern
-//!   `UNUserNotificationCenter` click API needs a signed app bundle, which
-//!   thurbox is not).
+//! - **macOS** native banner via `terminal-notifier` if installed (own
+//!   bundle + icon, looks like a real app), falling back to `osascript`'s
+//!   `display notification` (always available, attributed to Apple's
+//!   Script Editor). Both paths are informational; the
+//!   `UNUserNotificationCenter` click API needs a signed app bundle,
+//!   which thurbox is not. `notify-rust`'s macOS backend
+//!   (`mac-notification-sys`) is intentionally not used: it rides the
+//!   deprecated `NSUserNotificationCenter` API, which silently no-ops on
+//!   macOS 12+ for unbundled CLIs.
 //!
 //! A previous silent-failure bug motivated this: under WSL the dbus path errors
 //! on connect, but the only signal was a `warn!` to the logfile — the user saw
@@ -77,9 +83,18 @@ impl DeliveryBackend {
     }
 
     /// Whether clicking the notification focuses the session in the TUI.
-    /// Only the dbus path wires this up.
+    /// Linux dbus wires this up natively (action callback); macOS does too
+    /// when `terminal-notifier` is in PATH (its `-execute` flag shells back
+    /// into `thurbox-cli session focus <id>`). The `osascript` fallback
+    /// can't, so on macOS this flips to false when only the fallback path
+    /// is available.
     pub fn supports_click_to_focus(self) -> bool {
-        matches!(self, DeliveryBackend::Dbus)
+        match self {
+            DeliveryBackend::Dbus => true,
+            #[cfg(target_os = "macos")]
+            DeliveryBackend::Macos => terminal_notifier_available(),
+            _ => false,
+        }
     }
 }
 
@@ -245,17 +260,151 @@ fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 fn dispatch_macos(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
-    use notify_rust::Notification as NotifRust;
-
-    // macOS path: no action callbacks (UNUserNotificationCenter requires a
-    // signed app bundle). The notification is informational; the user
-    // navigates back to thurbox manually.
-    let mut notif = NotifRust::new();
-    notif.summary(&n.title).body(&n.body).appname("thurbox");
-    if !n.sound {
-        notif.sound_name("");
+    // notify-rust's macOS backend (`mac-notification-sys`) uses the
+    // deprecated `NSUserNotificationCenter` API, which silently no-ops on
+    // macOS 12+ for unbundled CLIs — the cause of "thurbox notifications
+    // don't fire on Mac". Two viable replacements that need no `.app`
+    // bundle / no code signing:
+    //
+    //   1. `terminal-notifier` — a small signed helper distributed via
+    //      Homebrew. Banner attribution + icon belong to the helper (a
+    //      bell-on-terminal mark), so it looks like a normal app
+    //      notification. Opt-in: the user must `brew install terminal-notifier`.
+    //   2. `osascript` (`display notification`) — built into every macOS
+    //      release, so always available. Banner attribution is "Script
+    //      Editor" (Apple's Script Editor agent owns the notification
+    //      permission `display notification` rides on).
+    //
+    // Try (1) and fall back to (2). The first attempt also acts as a
+    // failure escape hatch: if `terminal-notifier` is in PATH but broken
+    // we still land on the `osascript` path.
+    //
+    // No action callbacks on either path: those need `UNUserNotificationCenter`
+    // (a signed `.app`), which thurbox is not.
+    if terminal_notifier_available() {
+        match dispatch_macos_terminal_notifier(n) {
+            Ok(()) => return Ok(()),
+            Err(e) => debug!("terminal-notifier failed, falling back to osascript: {e}"),
+        }
     }
-    notif.show()?;
+    dispatch_macos_osascript(n)
+}
+
+/// Cached check for `terminal-notifier` in `PATH`. We probe once per
+/// process (it won't appear mid-session) and reuse the answer so every
+/// notification doesn't pay a spawn.
+#[cfg(target_os = "macos")]
+fn terminal_notifier_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| which_on_path("terminal-notifier"))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::{Command, Stdio};
+
+    // `-group <id>` collapses repeat notifications for the same session
+    // into a single banner instead of stacking — the per-session dedup
+    // floor already bounds frequency, but if a long-running session fires
+    // across the floor we still want the latest one to replace the prior.
+    let mut cmd = Command::new("terminal-notifier");
+    cmd.arg("-title")
+        .arg(&n.title)
+        .arg("-message")
+        .arg(&n.body)
+        .arg("-group")
+        .arg(format!("thurbox-{}", n.session_id));
+    if n.sound {
+        cmd.arg("-sound").arg("default");
+    }
+    // Click-to-focus: `terminal-notifier -execute "<cmd>"` runs the command
+    // via `/bin/sh -c` when the user clicks the banner. We point it at
+    // `thurbox-cli session focus <id>`, which writes the same
+    // `pending_focus_session_id` metadata row the Linux dbus path writes;
+    // the TUI's external-state poll then switches active_index. We resolve
+    // an *absolute* `thurbox-cli` path from the running binary's directory
+    // — the click handler runs under launchd's environment, which has a
+    // very sparse PATH, so a bare `thurbox-cli` would often not resolve.
+    // If we can't locate the CLI binary the click is simply non-interactive
+    // (the banner still shows).
+    if let Some(focus_cmd) = thurbox_cli_focus_command(n.session_id) {
+        cmd.arg("-execute").arg(focus_cmd);
+    }
+    let status = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    if !status.success() {
+        return Err(format!("terminal-notifier exited with {status}").into());
+    }
+    Ok(())
+}
+
+/// Build the shell command `terminal-notifier -execute` should run on click:
+/// `<thurbox-cli> session focus <session-id>`, with the thurbox-cli path
+/// quoted for `/bin/sh`. Returns `None` if we can't find a sibling
+/// `thurbox-cli` binary next to the running executable — the path probe
+/// is cached, the resolution is not, because `current_exe()` is cheap.
+#[cfg(target_os = "macos")]
+fn thurbox_cli_focus_command(session_id: SessionId) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let parent = exe.parent()?;
+    let cli = parent.join("thurbox-cli");
+    if !cli.exists() {
+        return None;
+    }
+    // SessionId is a UUID (hex + dashes), shell-safe without quoting.
+    Some(format!(
+        "{} session focus {}",
+        sh_single_quote(&cli.to_string_lossy()),
+        session_id
+    ))
+}
+
+/// POSIX single-quote a string so it survives `/bin/sh -c "<cmd>"`. The
+/// terminal-notifier `-execute` argument is interpreted by `sh`, and a user
+/// `HOME` containing a space or apostrophe would otherwise break the
+/// command. The trick: close the quote, emit an escaped quote, re-open
+/// (`'\''`).
+#[cfg(target_os = "macos")]
+fn sh_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    // Arguments are passed via AppleScript's `argv` (rather than spliced
+    // into the script text) so the body/title can contain any characters —
+    // quotes, backslashes, newlines — with zero escaping.
+    let script = if n.sound {
+        "on run argv\n\
+         display notification (item 1 of argv) with title (item 2 of argv) \
+         sound name \"default\"\n\
+         end run"
+    } else {
+        "on run argv\n\
+         display notification (item 1 of argv) with title (item 2 of argv)\n\
+         end run"
+    };
+    let status = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .arg("--")
+        .arg(&n.body)
+        .arg(&n.title)
+        .status()?;
+    if !status.success() {
+        return Err(format!("osascript exited with {status}").into());
+    }
     Ok(())
 }
 

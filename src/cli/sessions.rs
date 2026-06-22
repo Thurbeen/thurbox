@@ -99,6 +99,19 @@ pub enum Action {
         #[arg(long, default_value_t = 200)]
         lines: u32,
     },
+    /// Mark a session as the pending focus target for the running TUI.
+    ///
+    /// Writes the session id into the SQLite `metadata` row the TUI polls;
+    /// the next external-state tick reads + clears it and switches the
+    /// active terminal. Used by the macOS click-to-focus path
+    /// (`terminal-notifier -execute` shells back into this), and works as
+    /// a generic "switch the TUI to <session>" hook from any external
+    /// trigger. A no-op when the TUI isn't running (the request just
+    /// sits in the DB until either it is or the row is overwritten).
+    Focus {
+        /// Session UUID.
+        uuid: String,
+    },
     /// Report an agent lifecycle transition (called from an agent hook).
     ///
     /// Records the session's state so the TUI can render it (working/blocked/
@@ -281,6 +294,19 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                     "output": output,
                 }),
                 human,
+            ))
+        }
+        Action::Focus { uuid } => {
+            let session = resolve(db, &uuid)?;
+            db.set_pending_focus_session_id(session.id)
+                .map_err(|e| format!("set_pending_focus_session_id: {e}"))?;
+            Ok(CommandOutput::new(
+                json!({
+                    "focused": true,
+                    "session_id": session.id.to_string(),
+                    "session_name": session.name,
+                }),
+                format!("Focus requested for '{}'.", session.name),
             ))
         }
         Action::Signal { state, session } => {

@@ -304,7 +304,7 @@ is what sees the bell, and it doesn't run when thurbox isn't.
 |---------|------|----------------|
 | `dbus` | normal Linux desktop with a running notification daemon (`org.freedesktop.Notifications`) | **yes** — clicking the banner writes a focus request the running TUI reads next tick and switches to that session |
 | `windows` (toast) | **native Windows**, or **WSL** / any Linux with no dbus daemon — delivers a Windows toast via `powershell.exe` (WSL needs interop, on by default) | no (a Windows toast can't call back into the thurbox process) |
-| `macos` | macOS native banner — informational only (the modern `UNUserNotificationCenter` click API needs a signed app bundle, which thurbox is not) | no |
+| `macos` | macOS native banner. Uses **`terminal-notifier`** when it's in `PATH` (own bundle + icon, looks like a real app notification — `brew install terminal-notifier`), otherwise the built-in **`osascript`** `display notification` (attributed to Apple's Script Editor). The `UNUserNotificationCenter` click API needs a signed `.app` bundle, which thurbox is not, so the `osascript` path is informational | **with `terminal-notifier`** — clicking the banner runs `thurbox-cli session focus <id>`, which writes the same metadata row the dbus path does and the TUI picks it up next tick. Without `terminal-notifier` (osascript fallback): no |
 
 `auto` prefers `dbus` whenever a daemon answers, and only falls back to
 the Windows toast when no dbus service is reachable. Force a specific
