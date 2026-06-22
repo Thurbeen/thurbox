@@ -109,7 +109,7 @@ get_version() {
 
   # Try API
   local response="$(fetch_url "https://api.github.com/repos/${REPO}/releases/latest")"
-  local v="$(echo "$response" | grep -o '"tag_name":"[^"]*' | head -1 | cut -d'"' -f4)"
+  local v="$(echo "$response" | grep -o '"tag_name": *"[^"]*' | head -1 | cut -d'"' -f4)"
   [ -n "$v" ] && { echo "$v"; return 0; }
 
   # Fallback: scrape releases page

@@ -10,7 +10,7 @@
 #
 # Recognized JSON fields (extra keys preserved verbatim):
 #   Required: status ∈ {"ok","error"}
-#   Optional: artifact, notes, pr_url
+#   Optional: url, notes, question
 
 set -euo pipefail
 

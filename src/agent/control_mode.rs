@@ -1,8 +1,8 @@
 //! Shared tmux control mode I/O infrastructure.
 //!
 //! This module contains the transport-agnostic control mode parsing and I/O types
-//! used by both `LocalTmuxBackend` (local tmux) and `QemuVmBackend` (SSH into VM).
-//! The tmux control mode protocol is identical whether accessed locally or over SSH.
+//! shared by the single `TmuxBackend` across its local and SSH (`TmuxTransport`)
+//! transports. The tmux control mode protocol is identical over either.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};

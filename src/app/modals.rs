@@ -1620,7 +1620,9 @@ impl SettingsModal {
         match code {
             KeyCode::Esc => EditorOutcome::Cancel,
             // Explicit save only (Ctrl+S) — keeps Enter free to toggle a bool.
-            KeyCode::Char('s') if mods.contains(KeyModifiers::CONTROL) => EditorOutcome::Save,
+            KeyCode::Char('s') | KeyCode::Char('S') if mods.contains(KeyModifiers::CONTROL) => {
+                EditorOutcome::Save
+            }
             KeyCode::Tab | KeyCode::Down => {
                 self.next_field();
                 EditorOutcome::Continue

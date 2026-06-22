@@ -283,6 +283,9 @@ impl ExtensionDef {
         // activate/heal/uninstall read absolute paths without expanding tokens.
         for f in &mut out.external_files {
             f.path = f.path.replace(HOME_TOKEN, home);
+            if let Some(req) = &f.requires_dir {
+                f.requires_dir = Some(req.replace(HOME_TOKEN, home));
+            }
         }
         for p in &mut out.agent_patches {
             for arg in &mut p.append_args {
