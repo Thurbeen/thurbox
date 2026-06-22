@@ -1849,8 +1849,6 @@ impl App {
     }
 
     fn handle_mouse_click(&mut self, x: u16, y: u16, modifiers: KeyModifiers) {
-        use crate::ui::links;
-
         // A modal captures every click: a hit on one of its rows acts on it,
         // anything else is swallowed — clicks never reach the scrollbars,
         // panes, or selection beneath an overlay.
@@ -1865,19 +1863,7 @@ impl App {
         // Ctrl+Click: URL opening (terminal-relative, existing behavior)
         if modifiers.contains(KeyModifiers::CONTROL) {
             self.text_selection = None;
-            let inner = border_block.inner(areas.terminal);
-
-            if inner.contains(Position::new(x, y)) {
-                let screen_col = (x - inner.x) as usize;
-                let screen_row = (y - inner.y) as usize;
-                self.with_active_parser(|parser| {
-                    let rows = links::extract_screen_rows(parser.screen());
-                    let detected = links::detect_urls(&rows);
-                    if let Some(url) = links::url_at_position(&detected, screen_row, screen_col) {
-                        helpers::open_url(url);
-                    }
-                });
-            }
+            self.open_ctrl_clicked_url(border_block.inner(areas.terminal), x, y);
             return;
         }
 
@@ -1929,6 +1915,26 @@ impl App {
             col: x as usize,
         };
         self.text_selection = Some(Selection::new(anchor, pane));
+    }
+
+    /// Open the URL under a Ctrl+Click inside the terminal pane, if any.
+    /// `inner` is the terminal's content area (borders excluded); a click
+    /// outside it (or with no URL at that cell) is a no-op.
+    fn open_ctrl_clicked_url(&mut self, inner: Rect, x: u16, y: u16) {
+        use crate::ui::links;
+
+        if !inner.contains(Position::new(x, y)) {
+            return;
+        }
+        let screen_col = (x - inner.x) as usize;
+        let screen_row = (y - inner.y) as usize;
+        self.with_active_parser(|parser| {
+            let rows = links::extract_screen_rows(parser.screen());
+            let detected = links::detect_urls(&rows);
+            if let Some(url) = links::url_at_position(&detected, screen_row, screen_col) {
+                helpers::open_url(url);
+            }
+        });
     }
 
     /// Route a click while a modal is open: a hit on a recorded row selects
@@ -3395,10 +3401,6 @@ impl App {
         let active_index = self.active_index;
         // One indexed scan per tick for the persisted hook columns.
         let hooks = self.db.load_hook_states().unwrap_or_default();
-        // Track whether any visible field changed so a quiet transition (no new
-        // output, so the output detector won't catch it) still repaints promptly
-        // instead of waiting for the forced-redraw floor.
-        let mut changed = false;
         // "Seen" writes are deferred past the &mut self.sessions borrow below.
         let mut seen_writes: Vec<(crate::session::SessionId, i64)> = Vec::new();
 
@@ -3409,20 +3411,62 @@ impl App {
         // an unseen `done`.
         let active_id = self.sessions.get(active_index).map(|s| s.info.id);
         if active_id != self.last_active_session_id {
-            if let Some(prev) = self.last_active_session_id {
-                if let Some(h) = hooks.get(&prev) {
-                    if h.state.as_deref() == Some("done") {
-                        let sa = h.state_at.unwrap_or(0);
-                        if h.seen_at.unwrap_or(0) < sa {
-                            seen_writes.push((prev, sa));
-                        }
-                    }
-                }
+            if let Some((prev, state_at)) = self.unseen_done_on_focus_leave(&hooks) {
+                seen_writes.push((prev, state_at));
             }
             self.last_active_session_id = active_id;
         }
 
-        for session in self.sessions.iter_mut() {
+        // Track whether any visible field changed so a quiet transition (no new
+        // output, so the output detector won't catch it) still repaints promptly
+        // instead of waiting for the forced-redraw floor.
+        let changed = Self::apply_session_status_fields(&mut self.sessions, &hooks, &seen_writes);
+
+        // Persist the seen marks now that the sessions borrow is released. Done
+        // only on the transition (guarded above by `seen_at < state_at`), so the
+        // focused session doesn't bump `data_version` every tick.
+        for (id, state_at) in seen_writes {
+            let _ = self.db.mark_session_seen(id, state_at);
+        }
+
+        // Advance the spinner unconditionally (it must tick every call, not just
+        // when no field changed — `||` would short-circuit past it), then redraw
+        // on either trigger.
+        let spinner_redraw = self.advance_spinner_frame();
+        if changed || spinner_redraw {
+            self.request_redraw();
+        }
+        self.dispatch_status_notifications();
+    }
+
+    /// If the just-left session (`last_active_session_id`) is an unseen `done`,
+    /// return its `(id, state_at)` so the caller can queue a "seen" write.
+    fn unseen_done_on_focus_leave(
+        &self,
+        hooks: &HashMap<crate::session::SessionId, crate::storage::HookRow>,
+    ) -> Option<(crate::session::SessionId, i64)> {
+        let prev = self.last_active_session_id?;
+        let hook = hooks.get(&prev)?;
+        if hook.state.as_deref() != Some("done") {
+            return None;
+        }
+        let state_at = hook.state_at.unwrap_or(0);
+        if hook.seen_at.unwrap_or(0) < state_at {
+            Some((prev, state_at))
+        } else {
+            None
+        }
+    }
+
+    /// Recompute each session's status/activity/notification from the hook rows
+    /// and apply them in place. Returns whether any visible field changed.
+    fn apply_session_status_fields(
+        sessions: &mut [Session],
+        hooks: &HashMap<crate::session::SessionId, crate::storage::HookRow>,
+        seen_writes: &[(crate::session::SessionId, i64)],
+    ) -> bool {
+        let mut changed = false;
+        for session in sessions.iter_mut() {
             let id = session.info.id;
             // `just_seen`: the focus-leave check above queued this session's seen
             // mark this tick (the DB write lands after this loop), so reflect it
@@ -3451,17 +3495,14 @@ impl App {
             session.info.agent_activity = new_activity;
             session.info.notification = new_notification;
         }
+        changed
+    }
 
-        // Persist the seen marks now that the sessions borrow is released. Done
-        // only on the transition (guarded above by `seen_at < state_at`), so the
-        // focused session doesn't bump `data_version` every tick.
-        for (id, state_at) in seen_writes {
-            let _ = self.db.mark_session_seen(id, state_at);
-        }
-
-        // Advance the Working spinner from the (deterministic) tick counter, and
-        // force a repaint when it ticks over *while* something is working — so an
-        // idle TUI still rests at ~4 fps but a working session animates smoothly.
+    /// Advance the Working spinner from the (deterministic) tick counter, and
+    /// report whether a repaint is needed because the frame ticked over *while*
+    /// something is working — so an idle TUI still rests at ~4 fps but a working
+    /// session animates smoothly.
+    fn advance_spinner_frame(&mut self) -> bool {
         let new_frame = (self.metrics.tick_count / SPINNER_TICKS_PER_FRAME) as usize
             % crate::ui::SPINNER_FRAMES.len();
         let spinner_advanced = new_frame != self.spinner_frame;
@@ -3470,11 +3511,7 @@ impl App {
             .sessions
             .iter()
             .any(|s| s.info.status == SessionStatus::Working);
-
-        if changed || (any_working && spinner_advanced) {
-            self.request_redraw();
-        }
-        self.dispatch_status_notifications();
+        any_working && spinner_advanced
     }
 
     /// Current `Working`-spinner frame index (into [`crate::ui::SPINNER_FRAMES`]).
@@ -6616,6 +6653,34 @@ mod tests {
             crate::ui::SPINNER_FRAMES[app.spinner_frame()],
         );
         assert!(crate::ui::SPINNER_FRAMES.contains(&g));
+    }
+
+    #[test]
+    fn spinner_advances_even_when_a_status_field_also_changes() {
+        // Regression: the spinner must tick on *every* refresh, never be
+        // short-circuited past by the `||` when another visible field changed
+        // the same tick. Session 0 stays Working (driving the spinner); session
+        // 1 flips Idle→Blocked on the second refresh so `changed` is true.
+        let mut app = app_with_sessions(2);
+        let id0 = persist_session(&app, 0);
+        let id1 = persist_session(&app, 1);
+        app.db.set_hook_state(id0, "working").unwrap();
+
+        app.metrics.tick_count = 0;
+        app.refresh_session_statuses();
+        let f0 = app.spinner_frame();
+
+        // Cross a spinner-frame boundary AND change session 1's status together.
+        app.metrics.tick_count = SPINNER_TICKS_PER_FRAME;
+        app.db.set_hook_state(id1, "blocked").unwrap();
+        app.refresh_session_statuses();
+
+        assert_eq!(app.sessions[1].info.status, SessionStatus::Blocked);
+        assert_ne!(
+            app.spinner_frame(),
+            f0,
+            "spinner must advance even when another field changed the same tick"
+        );
     }
 
     #[test]

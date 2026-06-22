@@ -338,7 +338,6 @@ impl App {
     /// Drive the trigger-time task action picker: `j`/`k` (or arrows) select,
     /// `Enter` runs the chosen action, `Esc` closes.
     fn handle_task_action_picker_key(&mut self, code: KeyCode) {
-        use super::modals::TaskActionChoice;
         let super::modals::Modal::TaskActionPicker(ref mut p) = self.modal else {
             return;
         };
@@ -350,34 +349,42 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 p.selected = p.selected.saturating_sub(1);
             }
-            KeyCode::Enter => {
-                let Some(choice) = p.choices.get(p.selected).cloned() else {
-                    self.modal.close();
-                    return;
-                };
-                let task_id = p.task_id;
-                let title = p.title.clone();
-                let status = self
-                    .task_ui
-                    .cached_tasks
-                    .iter()
-                    .find(|t| t.id == task_id)
-                    .map(|t| t.status)
-                    .unwrap_or_default();
-                self.modal.close();
-                match choice {
-                    TaskActionChoice::Send(session_id, _) => {
-                        self.send_task_to_session(task_id, &title, status, session_id);
-                    }
-                    TaskActionChoice::SpawnNew => {
-                        // Reuse the normal new-session flow; the prompt is
-                        // delivered + the task advanced when the spawn lands.
-                        self.task_ui.pending_task_prompt = Some((task_id, title));
-                        self.open_repo_picker();
-                    }
-                }
-            }
+            KeyCode::Enter => self.confirm_task_action_picker(),
             _ => {}
+        }
+    }
+
+    /// `Enter` on the task action picker: run the selected Send/Spawn choice for
+    /// the task being acted on, then close the picker.
+    fn confirm_task_action_picker(&mut self) {
+        use super::modals::TaskActionChoice;
+        let super::modals::Modal::TaskActionPicker(ref p) = self.modal else {
+            return;
+        };
+        let Some(choice) = p.choices.get(p.selected).cloned() else {
+            self.modal.close();
+            return;
+        };
+        let task_id = p.task_id;
+        let title = p.title.clone();
+        let status = self
+            .task_ui
+            .cached_tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .map(|t| t.status)
+            .unwrap_or_default();
+        self.modal.close();
+        match choice {
+            TaskActionChoice::Send(session_id, _) => {
+                self.send_task_to_session(task_id, &title, status, session_id);
+            }
+            TaskActionChoice::SpawnNew => {
+                // Reuse the normal new-session flow; the prompt is
+                // delivered + the task advanced when the spawn lands.
+                self.task_ui.pending_task_prompt = Some((task_id, title));
+                self.open_repo_picker();
+            }
         }
     }
 
@@ -723,28 +730,36 @@ impl App {
             }
             // Open the central-pane editor for the selected task. On an empty
             // panel, start a new task instead.
-            KeyCode::Char('e') | KeyCode::Enter => {
-                if count == 0 {
-                    self.new_task_in_pane();
-                } else {
-                    self.enter_task_editor();
-                }
-            }
+            KeyCode::Char('e') | KeyCode::Enter => self.enter_task_editor_or_new(count),
             // Scroll the full-screen preview (the list itself uses j/k).
             KeyCode::PageDown => self.scroll_task_preview(5),
             KeyCode::PageUp => self.scroll_task_preview(-5),
             KeyCode::Char(' ') => self.cycle_selected_task_status(),
             // Open the trigger-time action picker (Send → session / Spawn new).
-            KeyCode::Char('r') => {
-                if let Some(task) = self.selected_task().cloned() {
-                    self.open_task_action_picker(&task);
-                }
-            }
+            KeyCode::Char('r') => self.open_selected_task_action_picker(),
             // Jump to the task's related session terminal (the spawned
             // `<title> · #<id>` window, or a persisted Send target).
             KeyCode::Char('o') => self.open_task_related_session(),
             KeyCode::Char('d') => self.delete_selected_task(),
             _ => {}
+        }
+    }
+
+    /// `e`/`Enter` on the tasks panel: open the central-pane editor for the
+    /// selection, or start a new task when the panel is empty.
+    fn enter_task_editor_or_new(&mut self, count: usize) {
+        if count == 0 {
+            self.new_task_in_pane();
+        } else {
+            self.enter_task_editor();
+        }
+    }
+
+    /// `r` on the tasks panel: open the trigger-time action picker for the
+    /// selected task (Send → session / Spawn new).
+    fn open_selected_task_action_picker(&mut self) {
+        if let Some(task) = self.selected_task().cloned() {
+            self.open_task_action_picker(&task);
         }
     }
 
@@ -1197,16 +1212,23 @@ impl App {
                     .map(|c| c.backend.clone())
                     .unwrap_or_default();
                 self.modal.close();
-                // Empty backend == local default.
-                self.new_session.backend = if backend.is_empty() {
-                    None
-                } else {
-                    Some(backend)
-                };
-                self.open_repo_picker();
+                self.confirm_host_picker(backend);
             }
             _ => {}
         }
+    }
+
+    /// `Enter` on the host picker: record the chosen backend (empty == local
+    /// default) and advance to the repo picker. The backend is passed in to
+    /// avoid re-borrowing the modal after it's closed.
+    fn confirm_host_picker(&mut self, backend: String) {
+        // Empty backend == local default.
+        self.new_session.backend = if backend.is_empty() {
+            None
+        } else {
+            Some(backend)
+        };
+        self.open_repo_picker();
     }
 
     fn handle_agent_picker_key(&mut self, code: KeyCode) {
@@ -1230,17 +1252,25 @@ impl App {
             KeyCode::Enter => {
                 let chosen = ap.choices.get(ap.selected_index).map(|c| c.name.clone());
                 self.modal.close();
-                if let (Some(mut config), Some(name), Some(agent)) = (
-                    self.new_session.spawn_config.take(),
-                    self.new_session.spawn_name.take(),
-                    chosen,
-                ) {
-                    config.agent = agent;
-                    let worktrees = std::mem::take(&mut self.new_session.spawn_worktrees);
-                    self.do_spawn_session_async(name, &config, worktrees);
-                }
+                self.confirm_agent_picker(chosen);
             }
             _ => {}
+        }
+    }
+
+    /// `Enter` on the agent picker: stamp the chosen agent onto the pending
+    /// spawn config and launch the session (a no-op if any pending state is
+    /// missing). The chosen agent name is passed in to avoid re-borrowing the
+    /// modal after it's closed.
+    fn confirm_agent_picker(&mut self, chosen: Option<String>) {
+        if let (Some(mut config), Some(name), Some(agent)) = (
+            self.new_session.spawn_config.take(),
+            self.new_session.spawn_name.take(),
+            chosen,
+        ) {
+            config.agent = agent;
+            let worktrees = std::mem::take(&mut self.new_session.spawn_worktrees);
+            self.do_spawn_session_async(name, &config, worktrees);
         }
     }
 
@@ -1265,8 +1295,30 @@ impl App {
     }
 
     fn dispatch_action(&mut self, action: crate::session::Action) -> bool {
+        if let Some(consumed) = self.dispatch_app_action(action) {
+            return consumed;
+        }
+        if let Some(consumed) = self.dispatch_focus_action(action) {
+            return consumed;
+        }
+        if let Some(consumed) = self.dispatch_panel_action(action) {
+            return consumed;
+        }
+        if let Some(consumed) = self.dispatch_clipboard_action(action) {
+            return consumed;
+        }
+        if let Some(consumed) = self.dispatch_session_list_action(action) {
+            return consumed;
+        }
+        self.dispatch_scoped_pane_action(action)
+    }
+
+    /// Global app-control actions (quit, new/fork/restart/delete session, sync,
+    /// open editor, undo/restore, theme/settings/help). Returns `Some(consumed)`
+    /// when `action` is one of these, else `None`.
+    fn dispatch_app_action(&mut self, action: crate::session::Action) -> Option<bool> {
         use crate::session::Action;
-        match action {
+        let consumed = match action {
             Action::QuitApp => {
                 self.should_quit = true;
                 true
@@ -1280,20 +1332,10 @@ impl App {
                 self.open_active_in_editor();
                 true
             }
-            Action::OpenAutomations => self.gated(
-                self.features.automations,
-                "Automations",
-                Self::open_automations_list,
-            ),
             Action::StartSync => {
                 self.start_sync();
                 true
             }
-            Action::ToggleShell => self.gated(
-                self.features.shell_pane,
-                "Shell pane",
-                Self::toggle_shell_view,
-            ),
             Action::ForkSession => {
                 self.fork_active_session();
                 true
@@ -1316,28 +1358,55 @@ impl App {
                 self.open_theme_picker();
                 true
             }
-            Action::FocusBackward => {
-                self.focus = self.cycle_focus_backward();
-                self.on_focus_changed();
-                true
-            }
-            Action::FocusForward => {
-                self.focus = self.cycle_focus_forward();
-                self.on_focus_changed();
-                true
-            }
-            Action::NextSession => {
-                self.switch_session_forward();
-                true
-            }
-            Action::PreviousSession => {
-                self.switch_session_backward();
-                true
-            }
             Action::ToggleHelp => {
                 self.modal = super::modals::Modal::Help(super::modals::HelpModal::default());
                 true
             }
+            Action::OpenSettings => {
+                self.open_settings_panel();
+                true
+            }
+            _ => return None,
+        };
+        Some(consumed)
+    }
+
+    /// Focus-cycle and inter-session navigation actions. Returns
+    /// `Some(consumed)` when `action` is one of these, else `None`.
+    fn dispatch_focus_action(&mut self, action: crate::session::Action) -> Option<bool> {
+        use crate::session::Action;
+        match action {
+            Action::FocusBackward => {
+                self.focus = self.cycle_focus_backward();
+                self.on_focus_changed();
+            }
+            Action::FocusForward => {
+                self.focus = self.cycle_focus_forward();
+                self.on_focus_changed();
+            }
+            Action::NextSession => self.switch_session_forward(),
+            Action::PreviousSession => self.switch_session_backward(),
+            _ => return None,
+        }
+        Some(true)
+    }
+
+    /// Feature-gated panel/pane toggles (shell, info panel, tasks, file viewer,
+    /// global search, automations). Returns `Some(consumed)` when `action` is
+    /// one of these, else `None`.
+    fn dispatch_panel_action(&mut self, action: crate::session::Action) -> Option<bool> {
+        use crate::session::Action;
+        let consumed = match action {
+            Action::ToggleShell => self.gated(
+                self.features.shell_pane,
+                "Shell pane",
+                Self::toggle_shell_view,
+            ),
+            Action::OpenAutomations => self.gated(
+                self.features.automations,
+                "Automations",
+                Self::open_automations_list,
+            ),
             Action::ToggleInfoPanel => self.gated(self.features.info_panel, "Info panel", |s| {
                 s.show_info_panel = !s.show_info_panel;
                 s.resize_sessions_to_content_area();
@@ -1355,16 +1424,19 @@ impl App {
                 "Global search",
                 Self::open_global_search,
             ),
-            Action::OpenSettings => {
-                self.open_settings_panel();
-                true
-            }
+            _ => return None,
+        };
+        Some(consumed)
+    }
 
-            // ── Clipboard (global) ──────────────────────────────────────
-            // Copy only consumes the key when there's a selection; otherwise
-            // it yields (false) so the terminal can send SIGINT. Paste is
-            // normally intercepted earlier (so it reaches modal text inputs);
-            // this arm covers the plain-terminal path.
+    /// Clipboard actions (Copy/Paste). Copy only consumes the key when there's a
+    /// selection; otherwise it yields (false) so the terminal can send SIGINT.
+    /// Paste is normally intercepted earlier (so it reaches modal text inputs);
+    /// this path covers the plain-terminal case. Returns `Some(consumed)` when
+    /// `action` is one of these, else `None`.
+    fn dispatch_clipboard_action(&mut self, action: crate::session::Action) -> Option<bool> {
+        use crate::session::Action;
+        let consumed = match action {
             Action::Copy => {
                 if self.text_selection.is_some() {
                     self.copy_selection_to_clipboard();
@@ -1377,34 +1449,32 @@ impl App {
                 self.paste_from_clipboard();
                 true
             }
+            _ => return None,
+        };
+        Some(consumed)
+    }
 
-            // ── Session list (scoped) ───────────────────────────────────
-            Action::SessionListNext => {
-                self.act_session_list_next();
-                true
-            }
-            Action::SessionListPrev => {
-                self.act_session_list_prev();
-                true
-            }
-            Action::SessionListOpen => {
-                self.focus = InputFocus::Terminal;
-                true
-            }
-            Action::SessionListMoveDown => {
-                self.move_active_session(true);
-                true
-            }
-            Action::SessionListMoveUp => {
-                self.move_active_session(false);
-                true
-            }
-            Action::SessionListSortAlphabetically => {
-                self.sort_sessions_alphabetically();
-                true
-            }
+    /// Session-list-scoped actions (navigation, move, open, sort). Returns
+    /// `Some(consumed)` when `action` is one of these, else `None`.
+    fn dispatch_session_list_action(&mut self, action: crate::session::Action) -> Option<bool> {
+        use crate::session::Action;
+        match action {
+            Action::SessionListNext => self.act_session_list_next(),
+            Action::SessionListPrev => self.act_session_list_prev(),
+            Action::SessionListOpen => self.focus = InputFocus::Terminal,
+            Action::SessionListMoveDown => self.move_active_session(true),
+            Action::SessionListMoveUp => self.move_active_session(false),
+            Action::SessionListSortAlphabetically => self.sort_sessions_alphabetically(),
+            _ => return None,
+        }
+        Some(true)
+    }
 
-            // ── File viewer + terminal scroll (scoped) ──────────────────
+    /// File-viewer and terminal-scroll scoped actions, delegated to their
+    /// sub-dispatchers. This is the final fall-through arm of `dispatch_action`.
+    fn dispatch_scoped_pane_action(&mut self, action: crate::session::Action) -> bool {
+        use crate::session::Action;
+        match action {
             Action::FileViewerDown
             | Action::FileViewerUp
             | Action::FileViewerCollapse
@@ -1416,6 +1486,9 @@ impl App {
             | Action::TerminalScrollDown
             | Action::TerminalPageUp
             | Action::TerminalPageDown => self.dispatch_terminal_scroll_action(action),
+            // Every other action is handled by an earlier dispatcher in
+            // `dispatch_action`, so this fall-through is never reached.
+            _ => unreachable!("action handled by an earlier dispatcher"),
         }
     }
 
@@ -1591,16 +1664,27 @@ impl App {
             KeyCode::Enter => {
                 let idx = tp.index;
                 self.modal.close();
-                if let Some(entry) = entries.into_iter().nth(idx) {
-                    crate::ui::theme::set_active(entry.palette.clone());
-                    if let Err(e) = self.db.set_active_theme(&entry.name) {
-                        tracing::error!("Failed to persist active theme: {e}");
-                    }
-                    self.active_theme = entry;
-                }
+                self.commit_theme_selection(entries, idx);
             }
             _ => {}
         }
+    }
+
+    /// `Enter` on the theme picker: activate the selected entry and persist it
+    /// as the active theme (a persistence failure is logged, not surfaced).
+    fn commit_theme_selection(
+        &mut self,
+        entries: Vec<crate::session::theme_config::ThemeEntry>,
+        idx: usize,
+    ) {
+        let Some(entry) = entries.into_iter().nth(idx) else {
+            return;
+        };
+        crate::ui::theme::set_active(entry.palette.clone());
+        if let Err(e) = self.db.set_active_theme(&entry.name) {
+            tracing::error!("Failed to persist active theme: {e}");
+        }
+        self.active_theme = entry;
     }
 
     pub(crate) fn start_branch_selection(&mut self) {
@@ -1895,22 +1979,7 @@ impl App {
         } else {
             paths::expand_tilde(&path)
         };
-        // If the path is already represented, just select it (no duplicate row
-        // and no duplicate DB entry). A path already shown as a parent's child
-        // must NOT also be persisted as a standalone bookmark.
-        let persist = if let Some(idx) = rp.bookmarks.iter().position(|p| p == &expanded) {
-            let is_child = rp.is_child_row(idx);
-            let is_header = rp.is_header_row(idx);
-            if !is_header {
-                rp.selected[idx] = true;
-            }
-            // Only (re)persist standalone repos; children/headers are covered by
-            // their parent bookmark already.
-            !is_child && !is_header
-        } else {
-            rp.push_row(expanded.clone(), true, false, false); // auto-select newly added
-            true
-        };
+        let persist = Self::repo_picker_select_or_add_row(rp, &expanded);
         if persist && !remote {
             if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
                 error!("Failed to save repo bookmark: {e}");
@@ -1922,6 +1991,31 @@ impl App {
         rp.path_input.clear();
         rp.path_suggestion = None;
         self.recompute_repo_filter();
+    }
+
+    /// Select an already-represented bookmark row for `expanded`, or push a new
+    /// auto-selected row. Returns whether the path should be persisted as a
+    /// standalone bookmark: a path already shown as a parent's child (or the
+    /// parent header itself) is already covered, so it is not re-persisted.
+    fn repo_picker_select_or_add_row(
+        rp: &mut super::modals::RepoPickerModal,
+        expanded: &std::path::Path,
+    ) -> bool {
+        // If the path is already represented, just select it (no duplicate row
+        // and no duplicate DB entry). A path already shown as a parent's child
+        // must NOT also be persisted as a standalone bookmark.
+        let Some(idx) = rp.bookmarks.iter().position(|p| p == expanded) else {
+            rp.push_row(expanded.to_path_buf(), true, false, false); // auto-select newly added
+            return true;
+        };
+        let is_child = rp.is_child_row(idx);
+        let is_header = rp.is_header_row(idx);
+        if !is_header {
+            rp.selected[idx] = true;
+        }
+        // Only (re)persist standalone repos; children/headers are covered by
+        // their parent bookmark already.
+        !is_child && !is_header
     }
 
     /// Import the typed path as a *parent* folder: persist it as a parent
