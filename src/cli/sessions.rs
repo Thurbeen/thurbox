@@ -105,7 +105,7 @@ pub enum Action {
     /// the next external-state tick reads + clears it and switches the
     /// active terminal. Used by the macOS click-to-focus path
     /// (`terminal-notifier -execute` shells back into this), and works as
-    /// a generic "switch the TUI to <session>" hook from any external
+    /// a generic "switch the TUI to `<session>`" hook from any external
     /// trigger. A no-op when the TUI isn't running (the request just
     /// sits in the DB until either it is or the row is overwritten).
     Focus {
