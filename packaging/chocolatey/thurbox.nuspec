@@ -18,9 +18,10 @@
     <version>0.79.46</version>
     <packageSourceUrl>https://github.com/Thurbeen/thurbox/tree/main/packaging/chocolatey</packageSourceUrl>
     <owners>LeTuR</owners>
-    <title>thurbox</title>
+    <title>thurbox (Coding-Agent TUI Orchestrator)</title>
     <authors>LeTuR</authors>
-    <projectUrl>https://github.com/Thurbeen/thurbox</projectUrl>
+    <projectUrl>https://thurbeen.github.io/thurbox/</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/Thurbeen/thurbox@main/website/assets/favicon.svg</iconUrl>
     <copyright>2026 LeTuR</copyright>
     <licenseUrl>https://github.com/Thurbeen/thurbox/blob/main/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
