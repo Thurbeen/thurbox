@@ -60,8 +60,8 @@ ROWS="$(printf '%s' "$SESSIONS" | jq -r --argjson tasks "$TASKS" '
                   else "(no task)" end),
       }
   ]
-  # flow first, then worker sessions by id
-  | sort_by((.id == "—" | not), .id)
+  # flow first, then worker sessions by numeric id (#9 before #10, not lexical)
+  | sort_by((.id == "—" | not), (.id | ltrimstr("#") | tonumber? // 0))
   | select(length > 0)
   | (["ID","SESSION","AGENT","STATUS","AGE","TITLE"]),
     (.[] | [.id, .session, .agent, .status, .age, .title])
