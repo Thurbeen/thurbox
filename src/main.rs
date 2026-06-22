@@ -49,6 +49,36 @@ fn pop_keyboard_enhancement() {
     }
 }
 
+/// Undo every terminal mutation we made on startup, in reverse order: pop the
+/// kitty flags, disable bracketed paste + mouse capture, then leave the
+/// alternate screen / raw mode (`ratatui::restore()`). Idempotent enough that
+/// calling it twice (e.g. the panic hook *and* the unwinding `TerminalGuard`)
+/// is harmless. The single source of truth shared by the panic hook and the
+/// guard so the two restore paths can't drift.
+fn restore_terminal() {
+    pop_keyboard_enhancement();
+    let _ = execute!(
+        std::io::stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture
+    );
+    ratatui::restore();
+}
+
+/// RAII guard that restores the terminal when it drops. Held from just after
+/// `ratatui::init()`, it covers the **error paths too**: a `?` failure during
+/// terminal setup or `run_loop` returns through this drop, so the user's shell
+/// is never left in raw mode (which would garble it) before the error is
+/// printed. The panic hook restores independently; a double restore on unwind
+/// is harmless.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Process start, for the opt-in time-to-first-frame measurement (logged
@@ -59,13 +89,7 @@ async fn main() -> Result<()> {
     // Set up panic hook that restores terminal before printing the panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        pop_keyboard_enhancement();
-        let _ = execute!(
-            std::io::stdout(),
-            DisableBracketedPaste,
-            DisableMouseCapture
-        );
-        ratatui::restore();
+        restore_terminal();
         original_hook(panic_info);
     }));
 
@@ -130,6 +154,10 @@ async fn main() -> Result<()> {
     let auto_update_rx = spawn_auto_update();
 
     let mut terminal = ratatui::init();
+    // Restore the terminal on every exit from here on — including an early `?`
+    // return from terminal setup or `run_loop` — so a startup error can't leave
+    // the shell in raw mode. Declared after `terminal` so it drops first.
+    let _terminal_guard = TerminalGuard;
     enable_terminal_features()?;
     push_keyboard_enhancement();
     let size = terminal.size()?;
@@ -153,14 +181,8 @@ async fn main() -> Result<()> {
     let res = run_loop(&mut terminal, &mut app, process_start).await;
 
     app.shutdown();
-    pop_keyboard_enhancement();
-    execute!(
-        std::io::stdout(),
-        DisableBracketedPaste,
-        DisableMouseCapture
-    )?;
-    ratatui::restore();
-
+    // `_terminal_guard` restores the terminal as it drops here (and on any early
+    // error return above).
     res
 }
 
@@ -220,35 +242,43 @@ fn init_backends_and_config() -> Result<(
 /// Open the SQLite database for persistent state, falling back to the default
 /// XDG location (dev vs. prod build) when the path can't be resolved.
 fn open_database() -> Database {
-    let db_path = thurbox::paths::database_file().unwrap_or_else(|| {
-        // Degenerate fallback: even the platform data dir couldn't be resolved
-        // (no XDG/HOME on Unix, no LOCALAPPDATA/USERPROFILE on Windows). Anchor
-        // under the user's home with the platform-native data layout.
-        let app = if cfg!(dev_build) {
-            "thurbox-dev"
-        } else {
-            "thurbox"
-        };
-        #[cfg(windows)]
-        {
-            let mut p =
-                std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
-            p.push("AppData");
-            p.push("Local");
-            p.push(app);
-            p.push("thurbox.db");
-            p
-        }
-        #[cfg(not(windows))]
-        {
-            let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-            p.push(".local/share");
-            p.push(app);
-            p.push("thurbox.db");
-            p
-        }
-    });
+    let db_path = thurbox::paths::database_file().unwrap_or_else(fallback_database_path);
     Database::open(&db_path).expect("Failed to open database")
+}
+
+/// Degenerate-fallback database path, used only when
+/// `paths::database_file()` couldn't resolve the platform data dir. Mirrors
+/// `paths::data_base()` so the override still wins here: `$XDG_DATA_HOME` is
+/// honored first on every platform (the previous fallback ignored it and jumped
+/// straight to the home layout), otherwise we anchor under the platform-native
+/// home data layout (`%USERPROFILE%\AppData\Local` on Windows,
+/// `$HOME/.local/share` on Unix).
+fn fallback_database_path() -> std::path::PathBuf {
+    let app = if cfg!(dev_build) {
+        "thurbox-dev"
+    } else {
+        "thurbox"
+    };
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            #[cfg(windows)]
+            {
+                let mut p =
+                    std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default());
+                p.push("AppData");
+                p.push("Local");
+                p
+            }
+            #[cfg(not(windows))]
+            {
+                let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                p.push(".local");
+                p.push("share");
+                p
+            }
+        });
+    base.join(app).join("thurbox.db")
 }
 
 /// Activate the persisted theme — built-in or custom — falling back to the
