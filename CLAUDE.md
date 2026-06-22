@@ -168,6 +168,9 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 - Pure helpers (`Get-Target`, `Get-ExpectedChecksum`) are guarded by
   `$env:THURBOX_PS_TEST` so the file can be dot-sourced for testing without
   running the installer
+- Tested by `scripts/install.Tests.ps1` (Pester 5; CI `install-script-ps` job,
+  run with `pwsh` on ubuntu since the helpers are platform-independent) —
+  the PowerShell mirror of `install.bats`
 
 ## Linting & Formatting
 

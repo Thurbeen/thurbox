@@ -166,6 +166,29 @@ jobs:
       - name: Run install script tests
         run: bats scripts/install.bats
 
+  install-script-ps:
+    name: Install Script Tests (PowerShell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      # pwsh is preinstalled on GitHub-hosted runners. The install.ps1 helpers
+      # are platform-independent (the tests set PROCESSOR_ARCHITECTURE
+      # themselves), so they run on ubuntu rather than needing a windows runner.
+      - name: Run install.ps1 helper tests (Pester)
+        shell: pwsh
+        run: |
+          $mod = Get-Module -ListAvailable Pester |
+            Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $mod -or $mod.Version.Major -lt 5) {
+            Install-Module Pester -MinimumVersion 5.0.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          }
+          Import-Module Pester -MinimumVersion 5.0.0
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'scripts/install.Tests.ps1'
+          $cfg.Run.Exit = $true
+          $cfg.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $cfg
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
@@ -263,6 +286,7 @@ jobs:
       - conventional-commits
       - markdown-lint
       - install-script
+      - install-script-ps
       - shellcheck
       - website-lint
       - sonarqube
