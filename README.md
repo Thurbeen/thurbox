@@ -119,7 +119,7 @@ adds:
   aider, vibe) are seeded into `~/.config/thurbox/agents.toml`; add your
   own without recompiling.
 - **Git worktree isolation** — each session can spawn on a fresh
-  worktree; `Ctrl+S` syncs them with `origin/main` and asks the
+  worktree; `Ctrl+S` syncs them with their base branch and asks the
   agent to resolve rebase conflicts automatically.
 
 ## Main Features
@@ -307,7 +307,7 @@ and each extension's README under
 
 - Pick "Worktree" in the new-session flow to branch off a base and
   launch the agent inside the worktree. Closing the session removes
-  it. `Ctrl+S` syncs all worktree sessions with `origin/main`.
+  it. `Ctrl+S` syncs all worktree sessions with their base branch.
 
 ### Remote SSH sessions
 
@@ -545,7 +545,7 @@ command = "codex"
 | `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
-| `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
+| `Ctrl+S` | Sync worktrees with their base branch | **S**ync |
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |

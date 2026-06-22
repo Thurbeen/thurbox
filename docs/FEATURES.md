@@ -381,7 +381,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+O` | Global | Open active session's worktrees in editor | **O**pen |
 | `Ctrl+R` | Global | Restart active session | **R**estart |
 | `Ctrl+F` | Global | Fork active session | **F**ork |
-| `Ctrl+S` | Global | Sync all worktree sessions with origin/main | **S**ync |
+| `Ctrl+S` | Global | Sync all worktree sessions with their base branch | **S**ync |
 | `Ctrl+Z` | Global | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Global | Restore deleted sessions list | **U**ndelete |
 | `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |

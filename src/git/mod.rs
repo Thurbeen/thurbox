@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -434,13 +432,32 @@ fn worktree_path(repo_path: &Path, branch: &str) -> Option<PathBuf> {
     ))
 }
 
+/// Stable 64-bit FNV-1a hash of `input`, rendered as 16 lowercase hex digits.
+///
+/// This is the `<repo-hash>` segment of a worktree path. It must be a **fixed**
+/// algorithm: `std::collections::hash_map::DefaultHasher` (SipHash) is
+/// explicitly documented as *not* guaranteed stable across Rust versions or
+/// builds, so the same repo path could hash to different directories after a
+/// toolchain bump — orphaning every persisted worktree. FNV-1a is a tiny,
+/// dependency-free, fully specified algorithm, so a given path always maps to
+/// the same directory.
+fn stable_repo_hash(input: &str) -> String {
+    // FNV-1a 64-bit constants (offset basis + prime).
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for &byte in input.as_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 /// The deterministic `<base>/<repo-hash>/<sanitized-branch>` worktree layout,
 /// shared by local ([`worktree_path`]) and remote ([`worktree_path_for`])
 /// resolution so both produce identical sub-paths under their own base.
 fn worktree_subpath(base: PathBuf, repo_path: &Path, branch: &str) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    repo_path.display().to_string().hash(&mut hasher);
-    let repo_hash = format!("{:016x}", hasher.finish());
+    let repo_hash = stable_repo_hash(&repo_path.display().to_string());
     let sanitized = branch.replace('/', "-");
     base.join(repo_hash).join(sanitized)
 }
@@ -450,14 +467,12 @@ fn worktree_subpath(base: PathBuf, repo_path: &Path, branch: &str) -> PathBuf {
 /// separate from the `PathBuf` form because on Windows `PathBuf::join` inserts
 /// `\`, which the remote login shell would not accept.
 fn worktree_subpath_posix(base: &str, repo_path: &Path, branch: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    repo_path.display().to_string().hash(&mut hasher);
-    let repo_hash = format!("{:016x}", hasher.finish());
+    let repo_hash = stable_repo_hash(&repo_path.display().to_string());
     let sanitized = branch.replace('/', "-");
     format!("{}/{repo_hash}/{sanitized}", base.trim_end_matches('/'))
 }
 
-/// Result of attempting to sync a worktree with origin/main.
+/// Result of attempting to sync a worktree with its base ref.
 #[derive(Debug)]
 pub enum SyncResult {
     /// Rebase succeeded (includes already-up-to-date).
@@ -505,11 +520,11 @@ pub fn git_fetch_on(host: Option<&HostDef>, worktree_path: &Path) -> Result<()> 
     Ok(())
 }
 
-/// Rebase current branch onto origin/main. Returns `Ok(())` on success,
+/// Rebase the current branch onto `base_ref`. Returns `Ok(())` on success,
 /// or an error if there are conflicts (rebase is aborted before returning).
-fn git_rebase_main(worktree_path: &Path) -> Result<()> {
+fn git_rebase_onto(worktree_path: &Path, base_ref: &str) -> Result<()> {
     let output = Command::new("git")
-        .args(["rebase", "origin/main"])
+        .args(["rebase", base_ref])
         .current_dir(worktree_path)
         .output()
         .context("failed to run git rebase")?;
@@ -691,11 +706,53 @@ fn stash_with_retry(worktree_path: &Path) -> Result<bool> {
     anyhow::bail!("transient error persisted after retries: {last_err}")
 }
 
-/// High-level sync: stash, fetch, rebase origin/main, pop stash.
+/// Resolve the ref a worktree should be rebased onto during a sync.
 ///
+/// Prefers the branch's configured upstream (`@{upstream}`), then the remote's
+/// advertised default branch (`origin/HEAD`, e.g. `origin/main` or
+/// `origin/master` — whatever the repo actually uses), then the conventional
+/// `origin/main` / `origin/master`. Returns `None` when none resolve, so the
+/// caller can surface a clear error instead of blindly rebasing onto a
+/// possibly-missing `origin/main`.
+fn resolve_sync_base_ref(worktree_path: &Path) -> Option<String> {
+    // A branch with an explicit upstream rebases onto exactly that.
+    if run_git_capture(
+        &["rev-parse", "--verify", "--quiet", "@{upstream}"],
+        worktree_path,
+    )
+    .is_some()
+    {
+        return Some("@{upstream}".to_string());
+    }
+
+    // The remote's advertised HEAD (origin/HEAD → e.g. "origin/main").
+    if let Some(out) = run_git_capture(
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        worktree_path,
+    ) {
+        let advertised = out.trim();
+        if !advertised.is_empty() {
+            return Some(advertised.to_string());
+        }
+    }
+
+    // Conventional fallbacks.
+    ["origin/main", "origin/master"]
+        .into_iter()
+        .find(|r| {
+            run_git_capture(&["rev-parse", "--verify", "--quiet", r], worktree_path).is_some()
+        })
+        .map(str::to_string)
+}
+
+/// High-level sync: stash, fetch, rebase onto the base ref, pop stash.
+///
+/// `base_ref` pins the ref to rebase onto; when `None` it is derived from the
+/// worktree via `resolve_sync_base_ref` (upstream → `origin/HEAD` →
+/// `origin/main` → `origin/master`) rather than hardcoding `origin/main`.
 /// On conflict the rebase is aborted and any stash is restored.
 /// Retries `git stash` on transient index-lock errors.
-pub fn sync_worktree(worktree_path: &Path) -> SyncResult {
+pub fn sync_worktree(worktree_path: &Path, base_ref: Option<&str>) -> SyncResult {
     cleanup_stale_index_lock(worktree_path);
 
     let stashed = match stash_with_retry(worktree_path) {
@@ -714,7 +771,24 @@ pub fn sync_worktree(worktree_path: &Path) -> SyncResult {
         return SyncResult::Error(format!("fetch: {e:#}"));
     }
 
-    if let Err(e) = git_rebase_main(worktree_path) {
+    // Resolve the rebase target after the fetch so derived refs (origin/HEAD,
+    // origin/main, …) reflect the just-fetched remote state.
+    let base_ref = match base_ref
+        .map(str::to_string)
+        .or_else(|| resolve_sync_base_ref(worktree_path))
+    {
+        Some(r) => r,
+        None => {
+            restore_stash();
+            return SyncResult::Error(
+                "could not resolve a base ref to sync onto (no upstream, \
+                 origin/HEAD, origin/main, or origin/master)"
+                    .to_string(),
+            );
+        }
+    };
+
+    if let Err(e) = git_rebase_onto(worktree_path, &base_ref) {
         restore_stash();
         return SyncResult::Conflict(format!("{e:#}"));
     }
@@ -915,9 +989,7 @@ mod tests {
 
     /// Compute the 16-char hex repo hash used in worktree paths.
     fn repo_hash(repo_path: &Path) -> String {
-        let mut hasher = DefaultHasher::new();
-        repo_path.display().to_string().hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        stable_repo_hash(&repo_path.display().to_string())
     }
 
     #[test]
@@ -1005,6 +1077,89 @@ mod tests {
         let first = worktree_path(repo, "main").unwrap();
         let second = worktree_path(repo, "main").unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn stable_repo_hash_is_pinned_fnv1a() {
+        // Pin the exact output so a future swap back to a non-stable hasher
+        // (e.g. DefaultHasher/SipHash, whose digest varies across builds) is
+        // caught: these are the canonical FNV-1a 64-bit hashes for the inputs.
+        assert_eq!(stable_repo_hash(""), "cbf29ce484222325");
+        assert_eq!(stable_repo_hash("a"), "af63dc4c8601ec8c");
+        assert_eq!(stable_repo_hash("/home/user/repo"), "96e5ae60e8caf52a");
+    }
+
+    #[test]
+    fn resolve_sync_base_ref_none_without_remote() {
+        // A repo with no upstream and no remote refs resolves to no base ref,
+        // so sync surfaces an error rather than rebasing onto a missing
+        // `origin/main`.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .expect("run git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("file.txt"), "hi").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+
+        assert_eq!(resolve_sync_base_ref(repo), None);
+    }
+
+    #[test]
+    fn resolve_sync_base_ref_prefers_upstream() {
+        // A branch tracking an upstream resolves to `@{upstream}`, ahead of the
+        // origin/HEAD and origin/main fallbacks.
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        let work = tmp.path().join("work");
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("run git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // Bare remote to push to.
+        std::fs::create_dir_all(&remote).unwrap();
+        run(&remote, &["init", "-q", "--bare"]);
+
+        // Working repo with one commit, pushed with upstream tracking (`-u`).
+        std::fs::create_dir_all(&work).unwrap();
+        run(&work, &["init", "-q"]);
+        run(&work, &["config", "user.email", "t@example.com"]);
+        run(&work, &["config", "user.name", "t"]);
+        std::fs::write(work.join("file.txt"), "hi").unwrap();
+        run(&work, &["add", "."]);
+        run(&work, &["commit", "-qm", "init"]);
+        run(
+            &work,
+            &["remote", "add", "origin", &remote.display().to_string()],
+        );
+        run(&work, &["push", "-q", "-u", "origin", "HEAD"]);
+
+        assert_eq!(
+            resolve_sync_base_ref(&work),
+            Some("@{upstream}".to_string())
+        );
     }
 
     #[test]

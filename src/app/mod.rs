@@ -3749,7 +3749,7 @@ impl App {
         }
     }
 
-    /// Start syncing the active session's worktrees with origin/main.
+    /// Start syncing the active session's worktrees with their base ref.
     ///
     /// Worktrees sharing the same parent repo are synced sequentially (to avoid
     /// concurrent `index.lock` contention), while different repos sync in parallel.
@@ -3790,7 +3790,9 @@ impl App {
             let tx = tx.clone();
             std::thread::spawn(move || {
                 for (session_id, worktree_path) in worktrees {
-                    let result = git::sync_worktree(&worktree_path);
+                    // base_ref = None: derive the rebase target per-worktree
+                    // (upstream → origin/HEAD → origin/main → origin/master).
+                    let result = git::sync_worktree(&worktree_path, None);
                     let _ = tx.send((session_id, result));
                 }
             });

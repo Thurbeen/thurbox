@@ -1414,7 +1414,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+O` | Open active session's working dirs in editor | **O**pen |
 | `Ctrl+R` | Restart active session | **R**estart |
 | `Ctrl+F` | Fork active session | **F**ork |
-| `Ctrl+S` | Sync worktrees with origin/main | **S**ync |
+| `Ctrl+S` | Sync worktrees with their base branch | **S**ync |
 | `Ctrl+Z` | Undo session delete | **Z** = undo |
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
