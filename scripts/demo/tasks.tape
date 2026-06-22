@@ -26,11 +26,19 @@ Enter
 Sleep 2s
 Show
 
+# On launch the active session's TERMINAL is focused (session restore focuses
+# it), and Ctrl+W (FocusTasks) is a terminal-passthrough chord — so from the
+# terminal it would be sent to the agent's PTY instead of toggling the panel.
+# Ctrl+H (focus previous pane) is a navigation chord that is never passed
+# through, so it reliably moves focus to the session list first.
+Sleep 2500ms
+Ctrl+H
+Sleep 600ms
+
 # Sessions are pre-seeded (incl. a task with a markdown description). Open AND
 # focus the tasks panel — a toggleable right-side column between the terminal
 # and the file viewer (Ctrl+W, the F5 alternative). The central pane shows the
 # selected task full-screen: its title, metadata, and rendered-markdown body.
-Sleep 2500ms
 Ctrl+W
 Sleep 2200ms
 
