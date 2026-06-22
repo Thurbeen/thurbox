@@ -25,8 +25,9 @@ jobs:
           fetch-depth: 0  # Full history for cocogitto
 
       - name: Check for releasable commits
-        # Use latest main branch of cocogitto-action to get install-only feature
-        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # main
+        # Pinned to v4.2.0 (same SHA as the other cocogitto-action steps below);
+        # used here in install-only mode to provide the `cog` binary.
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         id: check
         with:
           install-only: true
@@ -58,6 +59,8 @@ jobs:
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push the version tag
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -135,12 +138,14 @@ jobs:
           TARGET="${{ matrix.target }}"
           ARCHIVE_NAME="thurbox-${VERSION}-${TARGET}.tar.gz"
 
+          # Stage LICENSE next to the binaries so a single `tar czf` ships all
+          # three. (`tar --append` cannot operate on a gzip archive, so the old
+          # two-step append silently omitted LICENSE.) No `|| true`: a packaging
+          # failure must fail the job.
+          cp LICENSE "target/$TARGET/release/"
           cd target/$TARGET/release
-          tar czf "../../../$ARCHIVE_NAME" thurbox thurbox-cli
+          tar czf "../../../$ARCHIVE_NAME" thurbox thurbox-cli LICENSE
           cd ../../..
-
-          # Also package LICENSE
-          tar --append -zf "$ARCHIVE_NAME" LICENSE || true
 
       # Windows archive: .zip with the .exe binaries + LICENSE. install.ps1
       # extracts this with the built-in Expand-Archive (no tar dependency).
