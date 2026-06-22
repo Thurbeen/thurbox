@@ -407,7 +407,7 @@ impl Database {
     /// every tick.
     pub fn mark_session_seen(&self, id: SessionId, at_least: i64) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE sessions SET seen_at = ?1 WHERE id = ?2",
+            "UPDATE sessions SET seen_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![at_least, id.to_string()],
         )?;
         Ok(())
