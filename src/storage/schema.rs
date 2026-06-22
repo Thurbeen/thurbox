@@ -244,31 +244,89 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Run an idempotent `ALTER TABLE` whose *only* expected failure is that the
-/// change is already in place (column already added/dropped, or an older SQLite
-/// that lacks `DROP COLUMN`). Those benign cases keep the migration idempotent;
-/// any *other* error is surfaced via `tracing::warn!` rather than silently
-/// discarded — important because `SCHEMA_VERSION` advances regardless, so a
-/// genuinely failed `ALTER` would otherwise leave an inconsistent schema with no
-/// trace in the log.
-fn exec_idempotent_alter(conn: &Connection, sql: &str, benign: &[&str]) {
-    if let Err(e) = conn.execute(sql, []) {
-        let msg = e.to_string().to_lowercase();
-        if !benign.iter().any(|needle| msg.contains(needle)) {
-            tracing::warn!("schema migration: unexpected error running `{sql}`: {e}");
-        }
+// The `ALTER TABLE` migrations below were historically written as
+// `let _ = conn.execute("ALTER …")` to stay idempotent on re-runs (the column is
+// already present). But that swallowed *every* error — including genuine
+// failures — while `SCHEMA_VERSION` still advanced, silently leaving an
+// inconsistent schema marked as upgraded. The helpers here make the *benign*
+// "already applied" case a true no-op (decided up front via a `PRAGMA` check
+// rather than by matching SQLite's error text, which is locale/version
+// dependent) and propagate any *real* failure via `?`, so a failed migration
+// aborts `migrate` before the version bump and the stored version stays put.
+
+/// Return whether a table named `table` exists.
+fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
+        .exists([table])
+}
+
+/// Return whether `table` has a column named `column` (false if the table is
+/// absent: `pragma_table_info` yields no rows for a missing table).
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    // `table` is always a hardcoded identifier from the migration code below
+    // (never user input), so interpolating it into the PRAGMA is injection-safe.
+    let sql = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1");
+    conn.prepare(&sql)?.exists([column])
+}
+
+/// `ALTER TABLE <table> ADD COLUMN <column> <decl>`, but only when the table
+/// exists and the column does not. The skip-when-present check keeps the
+/// migration idempotent without swallowing errors; a genuine `ALTER` failure
+/// propagates. A missing table is a no-op — in a real upgrade path the table is
+/// always created by an earlier step, so this never hides a column we needed.
+fn add_column_if_absent(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> rusqlite::Result<()> {
+    if !table_exists(conn, table)? || column_exists(conn, table, column)? {
+        return Ok(());
     }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+        [],
+    )?;
+    Ok(())
+}
+
+/// `ALTER TABLE <table> DROP COLUMN <column>`, but only when both exist. Already
+/// dropped (or table absent) is a no-op; a real `DROP` failure propagates.
+fn drop_column_if_present(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<()> {
+    if !table_exists(conn, table)? || !column_exists(conn, table, column)? {
+        return Ok(());
+    }
+    conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])?;
+    Ok(())
+}
+
+/// `ALTER TABLE <table> RENAME COLUMN <from> TO <to>`, but only when the source
+/// column is present. Already renamed (or table absent) is a no-op; a real
+/// `RENAME` failure propagates.
+fn rename_column_if_present(
+    conn: &Connection,
+    table: &str,
+    from: &str,
+    to: &str,
+) -> rusqlite::Result<()> {
+    if !table_exists(conn, table)? || !column_exists(conn, table, from)? {
+        return Ok(());
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} RENAME COLUMN {from} TO {to}"),
+        [],
+    )?;
+    Ok(())
 }
 
 /// v2 → v3: add additional_dirs column to sessions
 fn migrate_v3_additional_dirs(conn: &Connection) -> rusqlite::Result<()> {
-    // Benign: the column already exists (migration re-run on a newer DB).
-    exec_idempotent_alter(
+    add_column_if_absent(
         conn,
-        "ALTER TABLE sessions ADD COLUMN additional_dirs TEXT NOT NULL DEFAULT ''",
-        &["duplicate column name"],
-    );
-    Ok(())
+        "sessions",
+        "additional_dirs",
+        "TEXT NOT NULL DEFAULT ''",
+    )
 }
 
 /// v3 → v4: add project_mcp_servers table
@@ -324,16 +382,12 @@ fn migrate_v6_worktrees_pk(conn: &Connection) -> rusqlite::Result<()> {
 
 /// v6 → v7: add shell_backend_id column to sessions
 fn migrate_v7_shell_backend_id(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN shell_backend_id TEXT", []);
-    Ok(())
+    add_column_if_absent(conn, "sessions", "shell_backend_id", "TEXT")
 }
 
 /// v7 → v8: add env column to project_roles, add VM tables for sandboxed sessions
 fn migrate_v8_vms(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute(
-        "ALTER TABLE project_roles ADD COLUMN env TEXT NOT NULL DEFAULT ''",
-        [],
-    );
+    add_column_if_absent(conn, "project_roles", "env", "TEXT NOT NULL DEFAULT ''")?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS vms (
@@ -372,11 +426,7 @@ fn migrate_v8_vms(conn: &Connection) -> rusqlite::Result<()> {
 
 /// v8 → v9: rename claude_session_id → agent_session_id
 fn migrate_v9_agent_session_id(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute(
-        "ALTER TABLE sessions RENAME COLUMN claude_session_id TO agent_session_id",
-        [],
-    );
-    Ok(())
+    rename_column_if_present(conn, "sessions", "claude_session_id", "agent_session_id")
 }
 
 /// v9 → v10: add containers and project_container_config tables
@@ -416,12 +466,8 @@ fn migrate_v10_containers(conn: &Connection) -> rusqlite::Result<()> {
 
 /// v10 → v11: add containerfile column to containers and project_container_config
 fn migrate_v11_containerfile(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE containers ADD COLUMN containerfile TEXT", []);
-    let _ = conn.execute(
-        "ALTER TABLE project_container_config ADD COLUMN containerfile TEXT",
-        [],
-    );
-    Ok(())
+    add_column_if_absent(conn, "containers", "containerfile", "TEXT")?;
+    add_column_if_absent(conn, "project_container_config", "containerfile", "TEXT")
 }
 
 /// v11 → v12: add scheduled_commands table for time-scheduled session inputs
@@ -699,19 +745,11 @@ fn migrate_v20_profiles(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// v20 → v21: drop the sessions.model column. Model selection was
-/// removed from the product — the agent picks its own model now.
-/// Use ignore-on-error in case an older SQLite (<3.35) lacks DROP
-/// COLUMN support; the unused column is harmless.
+/// removed from the product — the agent picks its own model now. The
+/// drop is guarded so a re-run (column already gone) is a no-op.
 fn migrate_v21_drop_model(conn: &Connection) -> rusqlite::Result<()> {
-    // Benign: the column is already gone (re-run), or the SQLite build predates
-    // `DROP COLUMN` (<3.35) and rejects the syntax — the unused column is
-    // harmless either way.
-    exec_idempotent_alter(
-        conn,
-        "ALTER TABLE sessions DROP COLUMN model",
-        &["no such column", "near \"drop\"", "syntax error"],
-    );
-    Ok(())
+    // Already gone (re-run) is a no-op; a real failure propagates.
+    drop_column_if_present(conn, "sessions", "model")
 }
 
 /// v21 → v22: drop tables for removed subsystems. VM, devcontainer,
@@ -734,14 +772,7 @@ fn migrate_v22_drop_subsystems(conn: &Connection) -> rusqlite::Result<()> {
 /// column to sessions (existing rows default to "claude") and drop the
 /// now-unused Claude-config tables. Existing sessions/worktrees are kept.
 fn migrate_v23_generic_agent(conn: &Connection) -> rusqlite::Result<()> {
-    let has_agent_col: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'agent'")?
-        .exists([])?;
-    if !has_agent_col {
-        conn.execute_batch(
-            "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude';",
-        )?;
-    }
+    add_column_if_absent(conn, "sessions", "agent", "TEXT NOT NULL DEFAULT 'claude'")?;
     conn.execute_batch(
         "DROP TABLE IF EXISTS profiles;
          DROP TABLE IF EXISTS skills;
@@ -848,10 +879,9 @@ fn migrate_v25_tasks(conn: &Connection) -> rusqlite::Result<()> {
 ///
 /// Fresh v26 databases already have the column from `initialize` and skip this
 /// step (the seeded version is current); existing v25 databases get it via the
-/// ALTER. `let _` swallows the "duplicate column" error so a re-run is a no-op.
+/// ALTER, guarded so a re-run is a no-op.
 fn migrate_v26_task_description(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN description TEXT", []);
-    Ok(())
+    add_column_if_absent(conn, "tasks", "description", "TEXT")
 }
 
 /// v26 → v27: add an `is_parent` flag to `repo_bookmarks`. Parent bookmarks
@@ -859,36 +889,32 @@ fn migrate_v26_task_description(conn: &Connection) -> rusqlite::Result<()> {
 /// each time the repo picker opens.
 ///
 /// Fresh v27 databases already have the column from `initialize` and skip this
-/// step; existing v26 databases get it via the ALTER. `let _` swallows the
-/// "duplicate column" error so a re-run is a no-op.
+/// step; existing v26 databases get it via the ALTER, guarded so a re-run is a
+/// no-op.
 fn migrate_v27_repo_parent_bookmarks(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute(
-        "ALTER TABLE repo_bookmarks ADD COLUMN is_parent INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    Ok(())
+    add_column_if_absent(
+        conn,
+        "repo_bookmarks",
+        "is_parent",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
 }
 
 /// v28: typed related-session column on run history, replacing the
 /// parse-the-detail-string approach (pre-v28 rows keep working via a
 /// detail-parsing fallback in the TUI).
 fn migrate_v28_run_related_session(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute(
-        "ALTER TABLE automation_runs ADD COLUMN related_session_id TEXT",
-        [],
-    );
-    Ok(())
+    add_column_if_absent(conn, "automation_runs", "related_session_id", "TEXT")
 }
 
 /// v29 → v30: add a nullable `parent_session_id` column to `sessions`
 /// (lead/worker linkage for orchestration; v29 belongs to another branch).
 ///
 /// Fresh v30 databases already have the column from `initialize` and skip this
-/// step; existing databases get it via the ALTER. `let _` swallows the
-/// "duplicate column" error so a re-run is a no-op.
+/// step; existing databases get it via the ALTER, guarded so a re-run is a
+/// no-op.
 fn migrate_v30_parent_session_id(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", []);
-    Ok(())
+    add_column_if_absent(conn, "sessions", "parent_session_id", "TEXT")
 }
 
 /// v30 → v31: add a nullable `display_order` column to `sessions` (manual
@@ -896,11 +922,10 @@ fn migrate_v30_parent_session_id(conn: &Connection) -> rusqlite::Result<()> {
 /// sessions in creation order). No backfill on purpose.
 ///
 /// Fresh v31 databases already have the column from `initialize` and skip this
-/// step; existing databases get it via the ALTER. `let _` swallows the
-/// "duplicate column" error so a re-run is a no-op.
+/// step; existing databases get it via the ALTER, guarded so a re-run is a
+/// no-op.
 fn migrate_v31_display_order(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN display_order INTEGER", []);
-    Ok(())
+    add_column_if_absent(conn, "sessions", "display_order", "INTEGER")
 }
 
 /// v31 → v32: add the `session_messages` table (inter-session mailbox).
@@ -933,15 +958,11 @@ fn migrate_v32_session_messages(conn: &Connection) -> rusqlite::Result<()> {
 /// so existing rows decode byte-identically to the pre-multi-repo behavior.
 ///
 /// Fresh v33 databases already have the columns from `initialize` and skip this
-/// step; existing databases get them via the ALTERs. `let _` swallows the
-/// "duplicate column" error so a re-run is a no-op.
+/// step; existing databases get them via the ALTERs, guarded so a re-run is a
+/// no-op.
 fn migrate_v33_action_extra_repos(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN action_extra_repos TEXT", []);
-    let _ = conn.execute(
-        "ALTER TABLE automations ADD COLUMN action_extra_repos TEXT",
-        [],
-    );
-    Ok(())
+    add_column_if_absent(conn, "tasks", "action_extra_repos", "TEXT")?;
+    add_column_if_absent(conn, "automations", "action_extra_repos", "TEXT")
 }
 
 /// v33 → v34: add the hooks-driven session-status columns to `sessions`.
@@ -1540,43 +1561,65 @@ mod tests {
     }
 
     #[test]
-    fn exec_idempotent_alter_ignores_benign_duplicate_column() {
+    fn add_column_if_absent_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE t (a INTEGER);").unwrap();
 
-        // First add succeeds; the column now exists.
-        exec_idempotent_alter(
-            &conn,
-            "ALTER TABLE t ADD COLUMN b TEXT",
-            &["duplicate column name"],
-        );
-        let has_b: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('t') WHERE name='b'")
-            .unwrap()
-            .exists([])
-            .unwrap();
-        assert!(has_b);
+        // First call adds the column.
+        add_column_if_absent(&conn, "t", "b", "TEXT").unwrap();
+        assert!(column_exists(&conn, "t", "b").unwrap());
 
-        // Re-running is a benign "duplicate column" — swallowed, no panic.
-        exec_idempotent_alter(
-            &conn,
-            "ALTER TABLE t ADD COLUMN b TEXT",
-            &["duplicate column name"],
+        // Re-running is a no-op (column already present), not an error.
+        add_column_if_absent(&conn, "t", "b", "TEXT").unwrap();
+
+        // A missing table is a no-op too (a real upgrade never hits this).
+        add_column_if_absent(&conn, "does_not_exist", "b", "TEXT").unwrap();
+    }
+
+    #[test]
+    fn add_column_if_absent_propagates_real_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        // A non-empty table: SQLite rejects adding a NOT NULL column with no
+        // default. That is a genuine failure, not a benign re-run, so it must
+        // propagate rather than being swallowed.
+        conn.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t (a) VALUES (1);")
+            .unwrap();
+
+        let result = add_column_if_absent(&conn, "t", "b", "TEXT NOT NULL");
+        assert!(
+            result.is_err(),
+            "a real ALTER failure must propagate, not be swallowed"
         );
     }
 
     #[test]
-    fn exec_idempotent_alter_swallows_unexpected_errors() {
+    fn drop_column_if_present_is_idempotent_and_propagates() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE t (a INTEGER);").unwrap();
+        conn.execute_batch("CREATE TABLE t (a INTEGER, b TEXT);")
+            .unwrap();
 
-        // Operating on a missing table is NOT in the benign list, so the helper
-        // logs a warning and continues rather than panicking (migrations must
-        // not abort here — they only need the error to be visible in the log).
-        exec_idempotent_alter(
-            &conn,
-            "ALTER TABLE does_not_exist ADD COLUMN b TEXT",
-            &["duplicate column name"],
-        );
+        // Present → dropped.
+        drop_column_if_present(&conn, "t", "b").unwrap();
+        assert!(!column_exists(&conn, "t", "b").unwrap());
+
+        // Already gone, and missing table: both no-ops.
+        drop_column_if_present(&conn, "t", "b").unwrap();
+        drop_column_if_present(&conn, "does_not_exist", "b").unwrap();
+    }
+
+    #[test]
+    fn rename_column_if_present_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (old_name TEXT);")
+            .unwrap();
+
+        // Present → renamed.
+        rename_column_if_present(&conn, "t", "old_name", "new_name").unwrap();
+        assert!(!column_exists(&conn, "t", "old_name").unwrap());
+        assert!(column_exists(&conn, "t", "new_name").unwrap());
+
+        // Source already gone, and missing table: both no-ops.
+        rename_column_if_present(&conn, "t", "old_name", "new_name").unwrap();
+        rename_column_if_present(&conn, "does_not_exist", "old_name", "new_name").unwrap();
     }
 }
