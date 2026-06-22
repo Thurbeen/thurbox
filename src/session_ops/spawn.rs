@@ -300,7 +300,10 @@ fn create_worktree(
 /// Mirrors the TUI's `App::resolve_process_cwd`: members are the worktree repos
 /// (labeled by their original repo name) followed by the non-worktree
 /// additional dirs; a workspace build failure falls back to the primary cwd.
-fn resolve_launch_cwd(
+///
+/// Shared with [`super::restart`] so the headless restart launches a multi-repo
+/// session in its symlink workspace, not the primary repo.
+pub(crate) fn resolve_launch_cwd(
     agent_session_id: &str,
     primary_cwd: &std::path::Path,
     worktrees: &[SharedWorktree],

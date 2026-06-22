@@ -1246,18 +1246,27 @@ impl App {
         };
 
         let agent = session.info.agent.clone();
+        // Keep the same thurbox identity across a restart so injected env stays
+        // stable (`THURBOX_SESSION`).
+        let session_id = session.info.id;
         // Rebuild the process cwd: the primary repo for a single-repo session,
         // or the (idempotently rebuilt) symlink workspace for a multi-repo one.
         let cwd = session_process_cwd(&session.info);
 
         let mut config = SessionConfig {
             resume_session_id: None,
+            session_id: Some(session_id),
             agent_session_id: Some(agent_session_id.clone()),
             cwd,
             agent,
             fork_session_id: None,
             ..SessionConfig::default()
         };
+        // `Session::restart` replaces the session env wholesale, so re-inject the
+        // standard `THURBOX_*` identity vars (the same set a fresh spawn gets via
+        // `build_spawn_inputs`); otherwise the restarted agent loses its identity
+        // and the metrics/status hooks break.
+        crate::session_ops::inject_thurbox_env(&mut config, &agent_session_id, None);
         let def = self.agent_def_for(&config.agent);
         config.resume_session_id =
             crate::session_ops::resume_trigger_for(&def, &agent_session_id, &config.env);
@@ -1636,6 +1645,18 @@ impl App {
             .map(|wt| wt.worktree_path.clone())
             .or(deleted.cwd.clone());
 
+        // Re-spawn on the session's *persisted* backend, not the local default:
+        // a remote (`ssh:<host>`) session must land on its own host, or its
+        // `backend_type` is corrupted (and a remote pane-id could collide with a
+        // local one). Skip restore when this instance can't manage that backend.
+        let Some(backend) = self.resolve_persisted_backend(&deleted.backend_type) else {
+            self.set_error(format!(
+                "Cannot restore '{}': backend '{}' is not available on this instance",
+                deleted.name, deleted.backend_type
+            ));
+            return;
+        };
+
         // Reuse the existing SessionId + inject identity/dir env so the restored
         // session's status hooks can attribute their `session signal` (otherwise
         // it renders Idle forever).
@@ -1646,6 +1667,11 @@ impl App {
             cwd,
         );
         config.resume_session_id = deleted.agent_session_id;
+        // Preserve the persisted backend so a restored remote (`ssh:<host>`)
+        // session keeps its backend name on the config; local sessions stay `None`.
+        if crate::session::is_ssh_backend(&deleted.backend_type) {
+            config.backend = Some(deleted.backend_type.clone());
+        }
 
         let session_name = deleted.name.clone();
         let (rows, cols) = self.content_area_size();
@@ -1656,7 +1682,7 @@ impl App {
             rows,
             cols,
             &config,
-            self.backends.default_backend(),
+            &backend,
             &provider,
         ) {
             Ok(mut session) => {
@@ -3687,16 +3713,34 @@ impl App {
 
     /// Poll for completed worktree sync results and handle them.
     fn poll_sync_results(&mut self) {
-        if let Some(rx) = &self.worktree_sync.rx {
-            while let Ok((session_id, result)) = rx.try_recv() {
-                self.worktree_sync.completed.push((session_id, result));
-            }
+        let Some(rx) = &self.worktree_sync.rx else {
+            return;
+        };
 
-            if self.worktree_sync.completed.len() >= self.worktree_sync.pending {
-                self.worktree_sync.in_progress = false;
-                self.worktree_sync.rx = None;
-                self.finish_sync();
+        // Drain everything currently buffered. A worker thread that *panics*
+        // drops its sender without sending every result, so `completed` may
+        // never reach `pending`; detecting the channel disconnecting (all
+        // senders gone) lets us finalize with whatever arrived instead of
+        // leaving `in_progress` stuck forever.
+        let mut disconnected = false;
+        loop {
+            match rx.try_recv() {
+                Ok((session_id, result)) => {
+                    self.worktree_sync.completed.push((session_id, result));
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
             }
+        }
+
+        let all_received = self.worktree_sync.completed.len() >= self.worktree_sync.pending;
+        if all_received || disconnected {
+            self.worktree_sync.in_progress = false;
+            self.worktree_sync.rx = None;
+            self.finish_sync();
         }
     }
 
@@ -10612,6 +10656,30 @@ mod tests {
         assert!(app.auto_update_rx.is_none());
         app.poll_auto_update();
         assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn poll_sync_results_finishes_when_a_worker_dies_without_sending_all() {
+        // A panicked worker drops its sender without sending every result, so
+        // `completed` can never reach `pending`. The channel disconnecting must
+        // still finalize, or `in_progress` would be stuck forever.
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        let (tx, rx) = mpsc::channel();
+
+        tx.send((SessionId::default(), git::SyncResult::Synced))
+            .unwrap();
+        // Simulate the other worker panicking: its sender is gone, and so is
+        // ours — the channel is now fully disconnected with 1 of 2 results.
+        drop(tx);
+
+        app.worktree_sync.in_progress = true;
+        app.worktree_sync.rx = Some(rx);
+        app.worktree_sync.pending = 2;
+
+        app.poll_sync_results();
+
+        assert!(!app.worktree_sync.in_progress);
+        assert!(app.worktree_sync.rx.is_none());
     }
 
     #[test]

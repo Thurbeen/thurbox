@@ -677,6 +677,14 @@ impl Session {
         self.backend.name()
     }
 
+    /// The session's current environment — the env it was last (re)spawned
+    /// with. Used by acceptance tests to assert the identity env (`THURBOX_*`)
+    /// is preserved across a restart.
+    #[cfg(test)]
+    pub(crate) fn env(&self) -> &HashMap<String, String> {
+        &self.env
+    }
+
     /// Return the PID of the process running in this session's backend pane.
     pub fn pane_pid(&self) -> Result<Option<u32>> {
         self.backend.pane_pid(&self.backend_id)

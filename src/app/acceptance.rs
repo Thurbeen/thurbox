@@ -833,6 +833,34 @@ async fn ctrl_r_restarts_session_on_spawnable_backend() {
 }
 
 #[tokio::test]
+async fn ctrl_r_restart_preserves_thurbox_identity_env() {
+    // `Session::restart` replaces the session env wholesale, so the restart path
+    // must re-inject the `THURBOX_*` identity vars — otherwise the restarted
+    // agent loses its identity and the metrics/status hooks break.
+    let mut h = Harness::spawnable(1);
+    let session_id = h.app.sessions[0].info.id;
+    let agent_session_id = h.app.sessions[0]
+        .info
+        .agent_session_id
+        .clone()
+        .expect("spawnable sessions have an agent_session_id");
+
+    h.ctrl('r'); // RestartSession
+
+    let env = h.app.sessions[0].env();
+    assert_eq!(
+        env.get("THURBOX_SESSION"),
+        Some(&session_id.to_string()),
+        "the thurbox session key survives the restart"
+    );
+    assert_eq!(
+        env.get("THURBOX_SESSION_ID"),
+        Some(&agent_session_id),
+        "the agent conversation id survives the restart"
+    );
+}
+
+#[tokio::test]
 async fn ctrl_t_opens_shell_pane_on_spawnable_backend() {
     // Ctrl+T lazily spawns a shell pane via the backend and flips the session's
     // terminal view to the shell.

@@ -31,6 +31,9 @@ pub struct DeletedSessionInfo {
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub parent_session_id: Option<SessionId>,
+    /// Persisted backend (`local-tmux` or `ssh:<host>`). Preserved on restore so
+    /// a remote session re-spawns against its own host, not the local default.
+    pub backend_type: String,
     pub deleted_at: u64,
     pub worktrees: Vec<SharedWorktree>,
 }
@@ -308,7 +311,7 @@ impl Database {
     ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
-             s.cwd, s.parent_session_id, s.deleted_at, \
+             s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
@@ -322,9 +325,10 @@ impl Database {
             let cwd: Option<String> = row.get(4)?;
             let parent_str: Option<String> = row.get(5)?;
             let deleted_at: i64 = row.get(6)?;
-            let wt_repo: Option<String> = row.get(7)?;
-            let wt_path: Option<String> = row.get(8)?;
-            let wt_branch: Option<String> = row.get(9)?;
+            let backend_type: String = row.get(7)?;
+            let wt_repo: Option<String> = row.get(8)?;
+            let wt_path: Option<String> = row.get(9)?;
+            let wt_branch: Option<String> = row.get(10)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
 
@@ -336,6 +340,7 @@ impl Database {
                     agent_session_id: row.get(3)?,
                     cwd: cwd.map(PathBuf::from),
                     parent_session_id: parent_str.and_then(|s| s.parse().ok()),
+                    backend_type,
                     deleted_at: deleted_at as u64,
                     worktrees: Vec::new(),
                 },
@@ -866,6 +871,21 @@ mod tests {
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].id, s1_id);
         assert_eq!(deleted[0].name, "S1");
+    }
+
+    #[test]
+    fn deleted_session_preserves_backend_type() {
+        // A remote session must restore against its own host, so the persisted
+        // `backend_type` has to survive soft-delete + listing.
+        let db = Database::open_in_memory().unwrap();
+        let mut s = make_session("remote");
+        s.backend_type = "ssh:devbox".to_string();
+        let sid = s.id;
+        db.upsert_session(&s).unwrap();
+        db.soft_delete_session(sid).unwrap();
+
+        let deleted = db.get_deleted_session_by_id(sid).unwrap().unwrap();
+        assert_eq!(deleted.backend_type, "ssh:devbox");
     }
 
     #[test]
