@@ -33,7 +33,7 @@
 #     have running.
 #   * XDG_{DATA,CONFIG,STATE,CACHE}_HOME point at a throwaway dir.
 #
-# Requirements: cargo, git, tmux, vhs (+ ffmpeg + ttyd) and whichever agent CLIs
+# Requirements: cargo, git, tmux, sqlite3, jq, vhs (+ ffmpeg + ttyd) and whichever agent CLIs
 # you want to feature (claude / opencode / codex / antigravity). Missing agents are
 # skipped with a warning.
 #
@@ -72,7 +72,7 @@ done
 
 # --- Preflight: required tools ----------------------------------------------
 missing=
-for tool in cargo git tmux vhs sqlite3; do
+for tool in cargo git tmux vhs sqlite3 jq; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then
