@@ -508,9 +508,13 @@ pub struct SessionNameModal {
     pub name: TextInput,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ThemePickerModal {
     pub index: usize,
+    /// Palette active when the picker opened. The picker live-previews by
+    /// mutating the global palette as the selection moves, so cancelling
+    /// (`Esc`) restores this snapshot; only confirming (`Enter`) persists.
+    pub original: crate::session::ThemePalette,
 }
 
 /// Confirmation prompt for a destructive (hard) session delete, shown only when

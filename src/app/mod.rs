@@ -1463,7 +1463,8 @@ impl App {
             .as_deref()
             .and_then(|name| entries.iter().position(|e| e.name == name))
             .unwrap_or(0);
-        self.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index });
+        let original = crate::ui::theme::current();
+        self.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index, original });
     }
 
     /// Open the Settings panel. The draft reflects the live source of truth:
@@ -7671,7 +7672,10 @@ mod tests {
     #[test]
     fn click_with_modal_open_is_swallowed() {
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index: 0 });
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
+            index: 0,
+            original: crate::ui::theme::current(),
+        });
         // A scrollbar track and a pane target beneath the overlay must both
         // be unreachable while the modal is open.
         app.scrollbar_hits.push(ScrollbarHit {
@@ -7697,7 +7701,10 @@ mod tests {
     #[test]
     fn click_theme_picker_row_confirms_theme() {
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index: 2 });
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
+            index: 2,
+            original: crate::ui::theme::current(),
+        });
         // As in a real frame: the pane targets beneath the overlay are
         // recorded first and overlap the modal — the modal row must still
         // win while a modal is open.
@@ -7827,7 +7834,10 @@ mod tests {
         // targets *and* the theme-picker rows; clicking a rendered row must
         // reach the modal, not the pane beneath it.
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal { index: 1 });
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
+            index: 1,
+            original: crate::ui::theme::current(),
+        });
         let backend = ratatui::backend::TestBackend::new(120, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| app.view(f)).unwrap();
@@ -10327,7 +10337,10 @@ mod tests {
     #[test]
     fn paste_into_selector_only_modal_is_swallowed_not_sent_to_terminal() {
         let mut app = app_with_sessions(1);
-        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal::default());
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
+            index: 0,
+            original: crate::ui::theme::current(),
+        });
 
         // A theme picker has no text field, but the paste must still be
         // consumed so it can't leak into the terminal behind the overlay.

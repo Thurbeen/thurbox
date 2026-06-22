@@ -1575,6 +1575,9 @@ impl App {
         };
         match code {
             KeyCode::Esc => {
+                // Cancel: undo the live preview by restoring the palette that
+                // was active when the picker opened (nothing is persisted).
+                crate::ui::theme::set_active(tp.original.clone());
                 self.modal.close();
             }
             KeyCode::Char('j') | KeyCode::Down if tp.index + 1 < entry_count => {

@@ -736,6 +736,43 @@ fn theme_picker_selection_applies_and_persists() {
 }
 
 #[test]
+fn theme_picker_cancel_restores_previewed_theme() {
+    // The picker live-previews by mutating the global palette as the selection
+    // moves; cancelling (`Esc`) must undo that preview, leaving the original
+    // theme active and unpersisted.
+    let mut h = Harness::standard(0);
+    let entries = crate::ui::theme::all_theme_entries();
+    let original_name = h.app.active_theme.name.clone();
+    let original_palette = crate::ui::theme::current();
+
+    h.ctrl('y'); // open the picker (opens on the active theme, index 0)
+    h.key(KeyCode::Char('j'), KeyModifiers::NONE); // preview the next palette
+    assert_eq!(
+        crate::ui::theme::current(),
+        entries[1].palette,
+        "navigating previews the highlighted palette globally"
+    );
+
+    h.key(KeyCode::Esc, KeyModifiers::NONE); // cancel
+
+    assert!(!h.app.modal.is_open(), "Esc closes the picker");
+    assert_eq!(
+        crate::ui::theme::current(),
+        original_palette,
+        "cancelling restores the palette active when the picker opened"
+    );
+    assert_eq!(
+        h.app.active_theme.name, original_name,
+        "the active theme is unchanged after cancel"
+    );
+    assert_eq!(
+        h.app.db.get_active_theme().ok().flatten(),
+        None,
+        "cancelling persists nothing to the database"
+    );
+}
+
+#[test]
 fn help_editor_capture_rebinds_the_selected_action() {
     // The help editor opens with the first rebindable action selected; capturing
     // a fresh chord must reassign exactly that action.
