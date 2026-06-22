@@ -26,23 +26,7 @@ onThisPage:
             checksums automatically.
           </p>
 
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button
-                class="copy-btn"
-                data-code="curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
-              >
-                Copy
-              </button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
-            </div>
-          </div>
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <p>
             This installs to
@@ -62,42 +46,10 @@ onThisPage:
           </ul>
 
           <h3>Custom install directory</h3>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button
-                class="copy-btn"
-                data-code="INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
-              >
-                Copy
-              </button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-keyword">INSTALL_DIR</span>=<span class="syn-string">/usr/local/bin</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
-            </div>
-          </div>
+          <pre data-wrap><code class="language-bash">INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <h3>Specific version</h3>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button
-                class="copy-btn"
-                data-code="VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
-              >
-                Copy
-              </button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-keyword">VERSION</span>=<span class="syn-string">v0.1.0</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
-            </div>
-          </div>
+          <pre data-wrap><code class="language-bash">VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <h3>Windows (PowerShell)</h3>
           <p>
@@ -108,23 +60,7 @@ onThisPage:
             <a href="https://github.com/psmux/psmux">psmux</a>
             as the multiplexer.
           </p>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">powershell</span>
-            </div>
-            <div class="terminal-body">
-              <button
-                class="copy-btn"
-                data-code="irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"
-              >
-                Copy
-              </button>
-              <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">irm</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1</span> | <span class="syn-cmd">iex</span></code></pre>
-            </div>
-          </div>
+          <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
 
           <h3>Available platforms</h3>
           <table>
@@ -168,18 +104,7 @@ onThisPage:
             <a href="https://community.chocolatey.org/packages/thurbox">Chocolatey community repository</a>
             :
           </p>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">powershell</span>
-            </div>
-            <div class="terminal-body">
-              <button class="copy-btn" data-code="choco install thurbox">Copy</button>
-              <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">choco</span> install thurbox</code></pre>
-            </div>
-          </div>
+          <pre><code class="language-powershell">choco install thurbox</code></pre>
           <p>
             Installs
             <code>thurbox.exe</code>
@@ -202,20 +127,7 @@ onThisPage:
             <a href="https://github.com/Thurbeen/homebrew-thurbox">thurbox tap</a>
             :
           </p>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button class="copy-btn" data-code="brew install thurbeen/thurbox/thurbox">
-                Copy
-              </button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">brew</span> install thurbeen/thurbox/thurbox</code></pre>
-            </div>
-          </div>
+          <pre><code class="language-bash">brew install thurbeen/thurbox/thurbox</code></pre>
           <p>
             This installs
             <code>thurbox</code>
@@ -241,19 +153,8 @@ onThisPage:
             <a href="https://aur.archlinux.org/packages/thurbox-bin"><code>thurbox-bin</code></a>
             (prebuilt release binary). Install with your AUR helper:
           </p>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button class="copy-btn" data-code="paru -S thurbox-bin">Copy</button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox-bin   <span class="syn-comment"># prebuilt binary (fastest)</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox       <span class="syn-comment"># build from source</span></code></pre>
-            </div>
-          </div>
+          <pre><code class="language-bash">paru -S thurbox-bin   # prebuilt binary (fastest)
+paru -S thurbox       # build from source</code></pre>
           <p>
             <code>tmux</code>
             is pulled in as a dependency. Swap
@@ -268,27 +169,9 @@ onThisPage:
             <a href="#from-source" class="heading-anchor">#</a>
           </h2>
 
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button
-                class="copy-btn"
-                data-code="git clone https://github.com/Thurbeen/thurbox.git
+          <pre><code class="language-bash">git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
-cargo build --release"
-              >
-                Copy
-              </button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">git</span> clone <span class="syn-url">https://github.com/Thurbeen/thurbox.git</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">cd</span> thurbox
-<span class="syn-prompt">$</span> <span class="syn-cmd">cargo</span> build <span class="syn-flag">--release</span></code></pre>
-            </div>
-          </div>
+cargo build --release</code></pre>
 
           <p>
             The binary will be at
@@ -409,37 +292,15 @@ cargo build --release"
             <a href="#uninstall" class="heading-anchor">#</a>
           </h2>
           <p>Remove the binary, depending on how you installed it:</p>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button class="copy-btn" data-code="rm ~/.local/bin/thurbox">Copy</button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">rm</span> ~/.local/bin/thurbox        <span class="syn-comment"># curl one-liner / manual install</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">brew</span> uninstall thurbox         <span class="syn-comment"># Homebrew</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-R</span> thurbox thurbox-bin    <span class="syn-comment"># Arch (AUR)</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">choco</span> uninstall thurbox        <span class="syn-comment"># Chocolatey (Windows)</span></code></pre>
-            </div>
-          </div>
+          <pre><code class="language-bash">rm ~/.local/bin/thurbox        # curl one-liner / manual install
+brew uninstall thurbox         # Homebrew
+paru -R thurbox thurbox-bin    # Arch (AUR)
+choco uninstall thurbox        # Chocolatey (Windows)</code></pre>
           <p>
             Sessions outlive Thurbox in tmux, so stop them too &mdash; and optionally delete state
             and config (this erases session history, theme, and
             <code>agents.toml</code>
             ):
           </p>
-          <div class="terminal-frame">
-            <div class="terminal-header">
-              <div class="terminal-dot red"></div>
-              <div class="terminal-dot yellow"></div>
-              <div class="terminal-dot green"></div>
-              <span class="terminal-title">bash</span>
-            </div>
-            <div class="terminal-body">
-              <button class="copy-btn" data-code="tmux -L thurbox kill-server">Copy</button>
-              <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">tmux</span> <span class="syn-flag">-L</span> thurbox kill-server    <span class="syn-comment"># ends all running agent sessions</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">rm</span> <span class="syn-flag">-rf</span> ~/.local/share/thurbox ~/.config/thurbox   <span class="syn-comment"># optional: wipe state</span></code></pre>
-            </div>
-          </div>
+          <pre data-wrap><code class="language-bash">tmux -L thurbox kill-server    # ends all running agent sessions
+rm -rf ~/.local/share/thurbox ~/.config/thurbox   # optional: wipe state</code></pre>

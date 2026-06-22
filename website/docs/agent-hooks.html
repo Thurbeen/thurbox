@@ -322,8 +322,8 @@ onThisPage:
             <a href="#optout" class="heading-anchor">#</a>
           </h2>
           <p>Hooks is the one extension that's on without you asking. Turn it off (and back on):</p>
-          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension deactivate hooks   <span class="syn-comment"># remove the wiring; won't come back</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension activate hooks     <span class="syn-comment"># re-enable it</span></code></pre>
+          <pre><code class="language-bash">thurbox-cli extension deactivate hooks   # remove the wiring; won't come back
+thurbox-cli extension activate hooks     # re-enable it</code></pre>
           <p>
             Deactivating records an opt-out flag, so startup self-heal won't resurrect it. All the
             per-agent wiring is reversible, so opting out leaves your agent configs exactly as they

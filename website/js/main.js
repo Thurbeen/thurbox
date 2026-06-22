@@ -40,12 +40,15 @@
   }
 
   // ---- Copy-to-clipboard ----
+  // The button lives in the code-block header; the code is in the sibling
+  // .code-block-body. Read the rendered <pre> text content (the Prism token
+  // spans contribute only their text, so this round-trips to the source).
   document.querySelectorAll('.copy-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var code = btn.getAttribute('data-code');
       if (!code) {
-        // Fallback: get text from sibling pre
-        var pre = btn.parentElement.querySelector('pre');
+        var block = btn.closest('.code-block') || btn.parentElement;
+        var pre = block ? block.querySelector('pre') : null;
         if (pre) code = pre.textContent.replace(/^\$\s*/gm, '').trim();
       }
       if (!code) return;

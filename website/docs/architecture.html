@@ -28,7 +28,7 @@ onThisPage:
             <code>view()</code>
             renders the result.
           </p>
-          <div class="terminal-frame">
+          <div class="tui-demo">
             <div class="terminal-header">
               <div class="terminal-dot red"></div>
               <div class="terminal-dot yellow"></div>
@@ -36,7 +36,7 @@ onThisPage:
               <span class="terminal-title">event loop</span>
             </div>
             <div class="terminal-body">
-              <pre><code>Event <span class="syn-flag">&rarr;</span> Message <span class="syn-flag">&rarr;</span> update(model, msg) <span class="syn-flag">&rarr;</span> view(model) <span class="syn-flag">&rarr;</span> Frame</code></pre>
+              <pre>Event &rarr; Message &rarr; update(model, msg) &rarr; view(model) &rarr; Frame</pre>
             </div>
           </div>
           <p>
@@ -45,7 +45,7 @@ onThisPage:
           </p>
 
           <h3>Event loop</h3>
-          <div class="terminal-frame">
+          <div class="tui-demo">
             <div class="terminal-header">
               <div class="terminal-dot red"></div>
               <div class="terminal-dot yellow"></div>
@@ -53,18 +53,18 @@ onThisPage:
               <span class="terminal-title">main.rs</span>
             </div>
             <div class="terminal-body">
-              <pre><code><span class="syn-keyword">tokio::main</span> <span class="syn-flag">&rarr;</span> init backend (<span class="syn-string">TmuxBackend</span>)
-  <span class="syn-flag">&rarr;</span> open SQLite DB
-  <span class="syn-flag">&rarr;</span> init terminal
-  <span class="syn-flag">&rarr;</span> spawn/restore sessions
-  <span class="syn-flag">&rarr;</span> <span class="syn-keyword">loop</span> {
-    draw frame <span class="syn-flag">&rarr;</span> poll crossterm events (10ms)
-    <span class="syn-flag">&rarr;</span> convert to AppMessage
-    <span class="syn-flag">&rarr;</span> app.update()
-    <span class="syn-flag">&rarr;</span> app.tick()
+              <pre>tokio::main &rarr; init backend (TmuxBackend)
+  &rarr; open SQLite DB
+  &rarr; init terminal
+  &rarr; spawn/restore sessions
+  &rarr; loop {
+    draw frame &rarr; poll crossterm events (10ms)
+    &rarr; convert to AppMessage
+    &rarr; app.update()
+    &rarr; app.tick()
   }
-  <span class="syn-flag">&rarr;</span> app.shutdown() (detach sessions)
-  <span class="syn-flag">&rarr;</span> restore terminal</code></pre>
+  &rarr; app.shutdown() (detach sessions)
+  &rarr; restore terminal</pre>
             </div>
           </div>
 
@@ -77,7 +77,7 @@ onThisPage:
             <code>tests/architecture_rules.rs</code>
             .
           </p>
-          <div class="terminal-frame">
+          <div class="tui-demo">
             <div class="terminal-header">
               <div class="terminal-dot red"></div>
               <div class="terminal-dot yellow"></div>
@@ -85,10 +85,10 @@ onThisPage:
               <span class="terminal-title">dependency rules</span>
             </div>
             <div class="terminal-body">
-              <pre><code><span class="syn-keyword">session</span>  <span class="syn-comment">&larr; pure data types, no project-local imports</span>
-<span class="syn-keyword">agent</span>    <span class="syn-comment">&larr; imports session only (NEVER ui or git)</span>
-<span class="syn-keyword">ui</span>       <span class="syn-comment">&larr; imports session only (NEVER agent or git)</span>
-<span class="syn-keyword">app</span>      <span class="syn-comment">&larr; coordinator, imports all modules</span></code></pre>
+              <pre>session  &larr; pure data types, no project-local imports
+agent    &larr; imports session only (NEVER ui or git)
+ui       &larr; imports session only (NEVER agent or git)
+app      &larr; coordinator, imports all modules</pre>
             </div>
           </div>
 

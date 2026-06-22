@@ -96,7 +96,7 @@ onThisPage:
             <a href="#install" class="heading-anchor">#</a>
           </h2>
           <p>Install an extension by name from the official source:</p>
-          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install flow</code></pre>
+          <pre><code class="language-bash">thurbox-cli extension install flow</code></pre>
           <p>
             That single command is the whole installer. It resolves the source, fetches the manifest
             and payload, writes them under the extension home (
@@ -219,8 +219,8 @@ onThisPage:
               &mdash; installs from your own source.
             </li>
           </ul>
-          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install ./extensions/flow
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install https://example.com/ext/flow --home ~/work/flow</code></pre>
+          <pre data-wrap><code class="language-bash">thurbox-cli extension install ./extensions/flow
+thurbox-cli extension install https://example.com/ext/flow --home ~/work/flow</code></pre>
           <div class="info-box">
             <p>
               <strong>Safety:</strong>
@@ -279,7 +279,7 @@ onThisPage:
             <code>{home}</code>
             token is substituted with the resolved home directory.
           </p>
-          <pre><code>name = "flow"
+          <pre data-title="extension.toml"><code class="language-toml">name = "flow"
 description = "Focus-protecting triage agent"
 config_version = 1
 home = "~/flow"                 # install home; {home} is substituted everywhere

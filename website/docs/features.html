@@ -380,8 +380,7 @@ breadcrumb: 'Features'
               <strong>git</strong>
             </li>
           </ul>
-          <pre><code># ~/.config/thurbox/hosts.toml
-[[hosts]]
+          <pre data-title="~/.config/thurbox/hosts.toml"><code class="language-toml">[[hosts]]
 name = "devbox"            # backend "ssh:devbox"; what --host expects
 destination = "me@devbox"  # ssh target or a ~/.ssh/config alias
 ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
@@ -842,7 +841,7 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <code>thurbox-cli</code>
             surface keep working &mdash; so flipping a flag back on is lossless.
           </p>
-          <pre><code>[features]
+          <pre data-title="settings.toml"><code class="language-toml">[features]
 tasks = true          # F5/Ctrl+W tasks panel
 automations = true    # automations pane, Ctrl+P, schedule firing
 file_viewer = true    # F3/Ctrl+E file viewer
@@ -962,12 +961,12 @@ auto_update = false   # opt-in: silently download+verify+replace binaries on sta
             <code>--text</code>
             (human even when piped).
           </p>
-          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session list
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session create <span class="syn-flag">--name</span> reviewer <span class="syn-flag">--repo-path</span> <span class="syn-string">/path/to/repo</span> <span class="syn-flag">--agent</span> codex
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session send <span class="syn-string">&lt;uuid&gt;</span> <span class="syn-string">"run the test suite"</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> session capture <span class="syn-string">&lt;uuid&gt;</span> <span class="syn-flag">--lines</span> 500
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> message send <span class="syn-flag">--to</span> flow <span class="syn-flag">--kind</span> questions <span class="syn-flag">--task</span> 5 <span class="syn-flag">--body</span> <span class="syn-string">"scope?"</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> message inbox <span class="syn-flag">--for</span> flow <span class="syn-flag">--claim</span></code></pre>
+          <pre data-wrap><code class="language-bash">thurbox-cli session list
+thurbox-cli session create --name reviewer --repo-path /path/to/repo --agent codex
+thurbox-cli session send &lt;uuid&gt; "run the test suite"
+thurbox-cli session capture &lt;uuid&gt; --lines 500
+thurbox-cli message send --to flow --kind questions --task 5 --body "scope?"
+thurbox-cli message inbox --for flow --claim</code></pre>
           <ul>
             <li>
               <strong>session</strong>

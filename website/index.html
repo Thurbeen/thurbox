@@ -126,23 +126,7 @@ footer: true
               <code>~/.local/bin</code>
               .
             </p>
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
-                <span class="terminal-title">bash</span>
-              </div>
-              <div class="terminal-body">
-                <button
-                  class="copy-btn"
-                  data-code="curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
-                >
-                  Copy
-                </button>
-                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> <span class="syn-flag">-fsSL</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh</span> | <span class="syn-cmd">sh</span></code></pre>
-              </div>
-            </div>
+            <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
           </div>
 
           <div
@@ -159,23 +143,7 @@ footer: true
               <code>PATH</code>
               ).
             </p>
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
-                <span class="terminal-title">powershell</span>
-              </div>
-              <div class="terminal-body">
-                <button
-                  class="copy-btn"
-                  data-code="irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"
-                >
-                  Copy
-                </button>
-                <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">irm</span> <span class="syn-url">https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1</span> | <span class="syn-cmd">iex</span></code></pre>
-              </div>
-            </div>
+            <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-choco" aria-labelledby="tab-choco" hidden>
@@ -194,18 +162,7 @@ footer: true
               <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
               as the multiplexer (installed separately).
             </p>
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
-                <span class="terminal-title">powershell</span>
-              </div>
-              <div class="terminal-body">
-                <button class="copy-btn" data-code="choco install thurbox">Copy</button>
-                <pre><code><span class="syn-prompt">PS&gt;</span> <span class="syn-cmd">choco</span> install thurbox</code></pre>
-              </div>
-            </div>
+            <pre><code class="language-powershell">choco install thurbox</code></pre>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-brew" aria-labelledby="tab-brew" hidden>
@@ -220,20 +177,7 @@ footer: true
               <code>git</code>
               automatically.
             </p>
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
-                <span class="terminal-title">bash</span>
-              </div>
-              <div class="terminal-body">
-                <button class="copy-btn" data-code="brew install thurbeen/thurbox/thurbox">
-                  Copy
-                </button>
-                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">brew</span> install thurbeen/thurbox/thurbox</code></pre>
-              </div>
-            </div>
+            <pre><code class="language-bash">brew install thurbeen/thurbox/thurbox</code></pre>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-aur" aria-labelledby="tab-aur" hidden>
@@ -255,19 +199,8 @@ footer: true
               <code>yay</code>
               , or your preferred AUR helper.
             </p>
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
-                <span class="terminal-title">bash</span>
-              </div>
-              <div class="terminal-body">
-                <button class="copy-btn" data-code="paru -S thurbox-bin">Copy</button>
-                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox-bin   <span class="syn-comment"># prebuilt (fastest)</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">paru</span> <span class="syn-flag">-S</span> thurbox       <span class="syn-comment"># build from source</span></code></pre>
-              </div>
-            </div>
+            <pre><code class="language-bash">paru -S thurbox-bin   # prebuilt (fastest)
+paru -S thurbox       # build from source</code></pre>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden>
@@ -280,27 +213,9 @@ footer: true
               <code>target/release/</code>
               .
             </p>
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
-                <span class="terminal-title">bash</span>
-              </div>
-              <div class="terminal-body">
-                <button
-                  class="copy-btn"
-                  data-code="git clone https://github.com/Thurbeen/thurbox.git
+            <pre><code class="language-bash">git clone https://github.com/Thurbeen/thurbox.git
 cd thurbox
-cargo build --release"
-                >
-                  Copy
-                </button>
-                <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">git</span> clone <span class="syn-url">https://github.com/Thurbeen/thurbox.git</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">cd</span> thurbox
-<span class="syn-prompt">$</span> <span class="syn-cmd">cargo</span> build <span class="syn-flag">--release</span></code></pre>
-              </div>
-            </div>
+cargo build --release</code></pre>
           </div>
         </div>
         <div class="hero-badges">
@@ -491,18 +406,7 @@ cargo build --release"
             <div class="step-content">
               <h3>Launch</h3>
               <p>Start Thurbox. The session sidebar and terminal panel appear.</p>
-              <div class="terminal-frame">
-                <div class="terminal-header">
-                  <div class="terminal-dot red"></div>
-                  <div class="terminal-dot yellow"></div>
-                  <div class="terminal-dot green"></div>
-                  <span class="terminal-title">bash</span>
-                </div>
-                <div class="terminal-body">
-                  <button class="copy-btn" data-code="thurbox">Copy</button>
-                  <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox</span></code></pre>
-                </div>
-              </div>
+              <pre><code class="language-bash">thurbox</code></pre>
             </div>
           </div>
 
@@ -515,7 +419,7 @@ cargo build --release"
                 <code>Ctrl+N</code>
                 to pick repos, name the session, then choose an agent.
               </p>
-              <div class="terminal-frame">
+              <div class="tui-demo">
                 <div class="terminal-header">
                   <div class="terminal-dot red"></div>
                   <div class="terminal-dot yellow"></div>
@@ -523,9 +427,9 @@ cargo build --release"
                   <span class="terminal-title">thurbox</span>
                 </div>
                 <div class="terminal-body">
-                  <pre><code><span class="syn-keyword">Ctrl+N</span>  <span class="syn-comment">New session</span>
-<span class="syn-comment"># Pick repo: ~/projects/my-app</span>
-<span class="syn-comment"># Name: my-app   Agent: claude</span></code></pre>
+                  <pre>Ctrl+N  New session
+# Pick repo: ~/projects/my-app
+# Name: my-app   Agent: claude</pre>
                 </div>
               </div>
             </div>
@@ -539,7 +443,7 @@ cargo build --release"
                 Spin up sessions (optionally on a fresh git worktree) and start working with the
                 agent. Navigate, sync, and fork with Vim-inspired keys.
               </p>
-              <div class="terminal-frame">
+              <div class="tui-demo">
                 <div class="terminal-header">
                   <div class="terminal-dot red"></div>
                   <div class="terminal-dot yellow"></div>
@@ -547,14 +451,14 @@ cargo build --release"
                   <span class="terminal-title">thurbox</span>
                 </div>
                 <div class="terminal-body">
-                  <pre><code><span class="syn-keyword">Ctrl+N</span>  <span class="syn-comment">New session (select mode)</span>
-<span class="syn-keyword">Ctrl+L</span>  <span class="syn-comment">Cycle focus to terminal</span>
-<span class="syn-keyword">Ctrl+J</span>  <span class="syn-comment">Switch between sessions</span>
-<span class="syn-keyword">Ctrl+S</span>  <span class="syn-comment">Sync worktrees with origin/main</span>
-<span class="syn-keyword">Ctrl+P</span>  <span class="syn-comment">Automations (scheduled agent runs)</span>
-<span class="syn-keyword">Ctrl+R</span>  <span class="syn-comment">Restart active session</span>
-<span class="syn-keyword">Ctrl+F</span>  <span class="syn-comment">Fork active session</span>
-<span class="syn-keyword">Ctrl+O</span>  <span class="syn-comment">Open repos in editor</span></code></pre>
+                  <pre>Ctrl+N  New session (select mode)
+Ctrl+L  Cycle focus to terminal
+Ctrl+J  Switch between sessions
+Ctrl+S  Sync worktrees with origin/main
+Ctrl+P  Automations (scheduled agent runs)
+Ctrl+R  Restart active session
+Ctrl+F  Fork active session
+Ctrl+O  Open repos in editor</pre>
                 </div>
               </div>
             </div>

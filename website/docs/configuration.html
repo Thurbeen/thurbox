@@ -149,7 +149,7 @@ onThisPage:
             reported by name, while syntax/type errors fall back to built-ins (agents), zero hosts,
             or defaults (settings). Check everything from the command line:
           </p>
-          <pre><code>thurbox-cli config validate   # strict parse of every file; exit 1 on problems
+          <pre><code class="language-bash">thurbox-cli config validate   # strict parse of every file; exit 1 on problems
 thurbox-cli config show       # effective config + where each value came from</code></pre>
 
           <h3 id="which-file">Which file do I edit?</h3>
@@ -224,7 +224,7 @@ thurbox-cli config show       # effective config + where each value came from</c
             entries to support any CLI &mdash; no recompile. A malformed file falls back to the
             built-ins and shows the error.
           </p>
-          <pre><code>config_version = 1
+          <pre data-title="agents.toml"><code class="language-toml">config_version = 1
 default = "claude"          # agent preselected in the picker / headless spawns
 
 [[agents]]
@@ -385,7 +385,7 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
             <code>[notifications]</code> apply live; the write-once scalars take effect on the next
             launch):
           </p>
-          <pre><code>config_version = 1
+          <pre data-title="settings.toml"><code class="language-toml">config_version = 1
 
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
@@ -624,7 +624,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             <code>base</code>
             and overrides only the colours it names:
           </p>
-          <pre><code>[[themes]]
+          <pre data-title="themes.toml"><code class="language-toml">[[themes]]
 name = "my-mocha"            # stable id; must not shadow a built-in
 display_name = "My Mocha"    # picker label (default: name)
 base = "catppuccin-mocha"    # starting palette (default: default)
@@ -649,7 +649,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             <a href="#keybindings-json" class="heading-anchor">#</a>
           </h2>
           <p>Maps <code>Action</code> names to one or more chord strings:</p>
-          <pre><code>{ "QuitApp": ["ctrl+x"], "OpenThemePicker": ["ctrl+y", "f4"] }</code></pre>
+          <pre data-title="keybindings.json"><code class="language-json">{ "QuitApp": ["ctrl+x"], "OpenThemePicker": ["ctrl+y", "f4"] }</code></pre>
           <ul>
             <li>
               The preferred editing path is the
@@ -727,7 +727,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             <a href="extensions.html">Extensions</a>
             page for the full manifest format, lifecycle commands, and versioning.
           </p>
-          <pre><code>thurbox-cli extension install flow         # fetch + lay files + agents + activate
+          <pre><code class="language-bash">thurbox-cli extension install flow         # fetch + lay files + agents + activate
 thurbox-cli extension list                 # installed + active/healthy + version/stale
 thurbox-cli extension update --all         # re-fetch every installed extension
 thurbox-cli extension activate &lt;name&gt;      # (re)create resources + mark active

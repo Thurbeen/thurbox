@@ -67,7 +67,7 @@ onThisPage:
   The script
   <a href="#script" class="heading-anchor">#</a>
 </h2>
-<pre><code>#!/usr/bin/env bash
+<pre><code class="language-bash">#!/usr/bin/env bash
 set -euo pipefail
 REPO="${REPO:-/home/me/code/monorepo}"   # path to the monorepo
 N_OPERATORS="${N_OPERATORS:-1}"
@@ -131,8 +131,7 @@ cli session list</code></pre>
   <code>~/.config/thurbox/agents.toml</code>
   :
 </p>
-<pre><code># ~/.config/thurbox/agents.toml
-default = "claude"
+<pre data-title="~/.config/thurbox/agents.toml"><code class="language-toml">default = "claude"
 
 [[agents]]
 name = "operator"                 # prod backoffice: read/write
@@ -171,8 +170,7 @@ fork_args        = ["--resume", "{id}", "--fork-session"]</code></pre>
   <code>~/.config/thurbox/mcp/</code>
   :
 </p>
-<pre><code># ~/.config/thurbox/mcp/backoffice-rw.json
-{
+<pre data-title="~/.config/thurbox/mcp/backoffice-rw.json"><code class="language-json">{
   "mcpServers": {
     "backoffice": {
       "command": "npx",
