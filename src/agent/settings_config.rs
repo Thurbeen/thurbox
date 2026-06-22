@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::settings::Settings;
+use crate::session::settings::{NotificationBackend, Settings};
 
 /// Seed contents for `settings.toml` on first run: every knob documented with
 /// its default, all commented out.
@@ -246,6 +246,14 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         set_table_bool(notifications, "suppress_for_active", n.suppress_for_active);
         set_table_bool(notifications, "sound", n.sound);
         notifications["min_interval_secs"] = value(n.min_interval_secs as i64);
+        // Mirror serde's `rename_all = "lowercase"` on `NotificationBackend`.
+        let backend = match n.backend {
+            NotificationBackend::Auto => "auto",
+            NotificationBackend::Dbus => "dbus",
+            NotificationBackend::Windows => "windows",
+            NotificationBackend::Off => "off",
+        };
+        notifications["backend"] = value(backend);
     }
 
     std::fs::write(&path, doc.to_string())
@@ -374,6 +382,10 @@ mod tests {
         s.features.auto_update = true;
         s.notifications.min_interval_secs = 30;
         s.notifications.suppress_for_active = false;
+        // A non-default backend must survive the save/reload round-trip; the
+        // full-Settings equality below would silently pass on the `Auto`
+        // default even if `backend` were dropped.
+        s.notifications.backend = NotificationBackend::Off;
 
         save_settings(&s).unwrap();
 
