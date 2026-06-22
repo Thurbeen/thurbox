@@ -290,13 +290,21 @@ shown and you update extensions by hand.
 
 ### `[notifications]` — OS notification settings
 
-Surfaces an OS notification when a session crosses into a state that
-needs the user's attention (the agent rang the terminal bell or emitted
-an OSC 9 / OSC 777 message — usually because it's waiting on an answer
-or has finished a task). The notification body is the agent's last OSC
-message when present (truncated to 200 chars), otherwise `Waiting for
-input`. **Only fires while the TUI is open** — the agent terminal parser
-is what sees the bell, and it doesn't run when thurbox isn't.
+Surfaces an OS notification when a session **transitions into a state
+that needs your attention**. The trigger is the hooks-driven
+[session status](#session-status) (reported by the agent's hooks, *not*
+the terminal bell / output): the notification fires when a session crosses
+into `Blocked` (the agent needs input or approval) and, with
+`also_on_waiting = true`, also when it finishes a turn (`Working → Done`).
+The edge is observed once per tick in `refresh_session_statuses` — the
+same place the session-list status icon is computed, so the banner can
+never drift from the list — then deduped per session (`min_interval_secs`)
+and skipped for the session you're currently viewing (`suppress_for_active`).
+The notification body is the agent's last OSC 9 / OSC 777 message when
+present (truncated to 200 chars), otherwise `Waiting for input` — the OSC
+message is kept only for the body text, no longer for the trigger.
+**Only fires while the TUI is open** — the dispatcher thread runs only
+inside the TUI, so a headless `automation tick` never notifies.
 
 **Delivery backend** (`backend`, default `auto`) is detected at startup:
 
