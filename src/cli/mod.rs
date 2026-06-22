@@ -169,6 +169,49 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn parse_extra_repos_splits_base_on_last_at() {
+        // A path containing '@' must keep it: only the suffix after the LAST
+        // '@' is the base branch.
+        let extra = parse_extra_repos(
+            &[
+                "/srv/repo@main".to_string(),
+                "/srv/user@host/repo@develop".to_string(),
+                "/srv/plain".to_string(),
+                "@onlybase".to_string(),
+            ],
+            &["/reference".to_string()],
+        );
+
+        assert_eq!(extra.len(), 5);
+
+        // PATH@BASE — straightforward.
+        assert_eq!(extra[0].repo_path, std::path::PathBuf::from("/srv/repo"));
+        assert_eq!(extra[0].base_branch.as_deref(), Some("main"));
+        assert!(extra[0].worktree);
+
+        // Path itself contains '@' — only the last '@' splits off the base.
+        assert_eq!(
+            extra[1].repo_path,
+            std::path::PathBuf::from("/srv/user@host/repo")
+        );
+        assert_eq!(extra[1].base_branch.as_deref(), Some("develop"));
+
+        // No '@' — taken verbatim, no base.
+        assert_eq!(extra[2].repo_path, std::path::PathBuf::from("/srv/plain"));
+        assert_eq!(extra[2].base_branch, None);
+
+        // Empty path before '@' — the guard rejects the split and the token is
+        // taken verbatim (no base).
+        assert_eq!(extra[3].repo_path, std::path::PathBuf::from("@onlybase"));
+        assert_eq!(extra[3].base_branch, None);
+
+        // --add-dir is attached as-is, never a worktree.
+        assert_eq!(extra[4].repo_path, std::path::PathBuf::from("/reference"));
+        assert_eq!(extra[4].base_branch, None);
+        assert!(!extra[4].worktree);
+    }
+
+    #[test]
     fn pretty_flag_is_global() {
         let cli = Cli::try_parse_from(["thurbox-cli", "session", "list", "--pretty"]).unwrap();
         assert!(cli.pretty);
