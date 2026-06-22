@@ -1,0 +1,275 @@
+---
+layout: docs.njk
+title: 'gitlab-issues extension — Thurbox Docs'
+description: 'The gitlab-issues extension: bidirectionally syncs GitLab issues with the Thurbox task list — your issues show up as tasks, and marking a task done closes the issue.'
+currentPage: 'extension-gitlab-issues'
+breadcrumb: 'GitLab issues'
+onThisPage:
+  - { id: 'overview', label: 'Overview' }
+  - { id: 'requirements', label: 'Requirements' }
+  - { id: 'authenticate', label: 'Authenticate GitLab' }
+  - { id: 'install', label: 'Install' }
+  - { id: 'configure', label: 'Configure trackers.md' }
+  - { id: 'sync', label: 'First sync &amp; verify' }
+  - { id: 'pushback', label: 'Two-way sync' }
+  - { id: 'files', label: 'Files' }
+---
+<h1>gitlab-issues</h1>
+          <p>
+            The gitlab-issues extension bidirectionally syncs
+            <strong>GitLab issues</strong>
+            with the Thurbox
+            <strong>task list</strong>
+            : your issues show up as tasks, and marking a task done closes the issue. A
+            <code>gitlab-issues-tick</code>
+            <strong>automation</strong>
+            (every 15&nbsp;min,
+            <code>cron:*/15 * * * *</code>
+            ) runs a deterministic
+            <code>Exec</code>
+            command &mdash;
+            <code>{home}/scripts/sync.sh</code>
+            &mdash; that reconciles the projects in
+            <code>trackers.md</code>
+            with the task list. There is
+            <strong>no agent, no LLM, no tokens</strong>
+            : Thurbox's scheduler runs the script (TUI or headless heartbeat) and records its output
+            in the automation run history. The script only calls
+            <code>thurbox-cli</code>
+            and the
+            <code>glab</code>
+            CLI; no GitLab bot, no webhook.
+          </p>
+          <div class="info-box warning">
+            <p>
+              <strong>Experimental.</strong>
+              gitlab-issues is new and under active testing &mdash; its sync scripts and manifest may
+              change between releases.
+            </p>
+          </div>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Pull is the default direction: GitLab issues become Thurbox tasks. GitLab is
+            authoritative for an issue's
+            <strong>title, URL, and open-vs-done state</strong>
+            ; your local
+            <code>todo</code>
+            &harr;
+            <code>in_progress</code>
+            distinction is preserved. Imported tasks carry
+            <code>source=gitlab</code>
+            and
+            <code>external_id="group/project#&lt;iid&gt;"</code>
+            , so re-syncing never duplicates them &mdash; dedup is by
+            <code>(source, external_id)</code>
+            . The sync is a plain shell script run as a deterministic
+            <code>Exec</code>
+            automation &mdash; no coding agent is involved.
+          </p>
+
+          <h2 id="requirements">
+            Requirements
+            <a href="#requirements" class="heading-anchor">#</a>
+          </h2>
+          <ul>
+            <li>
+              <code>thurbox-cli</code>
+              <strong>&ge;&nbsp;0.141</strong>
+              on
+              <code>PATH</code>
+              &mdash; the sync uses the
+              <code>task --source/--external-id/--external-url</code>
+              flags added there (check with
+              <code>thurbox-cli version</code>
+              ).
+            </li>
+            <li>
+              <code>glab</code>
+              (the GitLab CLI) and
+              <code>jq</code>
+              on
+              <code>PATH</code>
+              .
+            </li>
+          </ul>
+
+          <h2 id="authenticate">
+            Authenticate GitLab
+            <a href="#authenticate" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Log in with
+            <code>glab</code>
+            &mdash; the token needs the
+            <code>api</code>
+            scope. No token env var is needed (
+            <code>glab</code>
+            stores the credential;
+            <code>GITLAB_HOST</code>
+            /
+            <code>GITLAB_TOKEN</code>
+            also work if you prefer):
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">glab</span> auth login    <span class="syn-comment"># gitlab.com or your self-managed host; token needs `api` scope</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">glab</span> auth status   <span class="syn-comment"># confirm "Logged in"</span></code></pre>
+
+          <h2 id="install">
+            Install
+            <a href="#install" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            gitlab-issues is a Thurbox
+            <a href="extensions.html">extension</a>
+            (a declarative
+            <code>extension.toml</code>
+            manifest):
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install gitlab-issues       <span class="syn-comment"># or ./extensions/gitlab-issues</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall gitlab-issues     <span class="syn-comment"># --purge also deletes ~/gitlab-issues</span></code></pre>
+          <p>
+            Installing lays down the
+            <code>~/gitlab-issues/</code>
+            home (override with
+            <code>--home</code>
+            ; it holds
+            <code>scripts/sync.sh</code>
+            + helpers and the seeded
+            <code>trackers.md</code>
+            ) and activates the
+            <code>gitlab-issues-tick</code>
+            automation &mdash;
+            <strong>self-healed</strong>
+            by Thurbox if deleted.
+          </p>
+
+          <h2 id="configure">
+            Configure trackers.md
+            <a href="#configure" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Edit
+            <code>~/gitlab-issues/trackers.md</code>
+            &mdash; one row per project or saved filter. The
+            <strong>query</strong>
+            is
+            <code>group/project</code>
+            plus any
+            <code>glab issue list</code>
+            flags. Open issues are the default; pass
+            <code>--all</code>
+            to include closed,
+            <code>--assignee=@me</code>
+            ,
+            <code>--label=&hellip;</code>
+            ,
+            <code>--milestone=&hellip;</code>
+            , etc. (There is
+            <strong>no</strong>
+            <code>--state</code>
+            flag for
+            <code>glab issue list</code>
+            .) Keep
+            <code>push_back = no</code>
+            for the first run.
+          </p>
+          <pre><code>| name    | query                            | push_back |
+|---------|----------------------------------|-----------|
+| backend | mygroup/backend --assignee=@me   | no        |
+| triage  | mygroup/web --label=needs-triage | no        |</code></pre>
+
+          <h2 id="sync">
+            First sync &amp; verify
+            <a href="#sync" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The automation fires every 15&nbsp;min. To run it now, trigger it from the
+            <strong>Automations</strong>
+            pane (
+            <code>Ctrl+P</code>
+            &rarr; select
+            <code>gitlab-issues-tick</code>
+            &rarr;
+            <code>r</code>
+            ) or headless:
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> automation run &lt;id&gt;     <span class="syn-comment"># id from: thurbox-cli automation list</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">~/gitlab-issues/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
+          <p>Then inspect the imported tasks:</p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> task list --json | jq -c '.[] | select(.source=="gitlab") | {id,status,external_id,title}'</code></pre>
+          <p>
+            Open issues import as
+            <code>todo</code>
+            (or
+            <code>in_progress</code>
+            if assigned), closed as
+            <code>done</code>
+            . Re-running is
+            <strong>idempotent</strong>
+            &mdash; dedup by
+            <code>(source, external_id)</code>
+            leaves unchanged issues alone, and the
+            <code>source=gitlab</code>
+            tag keeps these tasks distinct from any other tracker's. The run's output
+            (created/updated/unchanged counts) shows in the automation run history.
+          </p>
+
+          <h2 id="pushback">
+            Two-way sync
+            <a href="#pushback" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Once the pull looks right, set
+            <code>push_back = yes</code>
+            on a tracker row. Now marking an imported task
+            <strong>done</strong>
+            closes its GitLab issue, and moving it back to
+            <strong>todo</strong>
+            reopens it &mdash; only the
+            <strong>open&harr;done axis</strong>
+            is pushed, so
+            <code>in_progress</code>
+            stays open. The sync runs
+            <strong>push-then-pull</strong>
+            (
+            <code>push-status.sh</code>
+            then per-tracker
+            <code>fetch.sh | upsert.sh</code>
+            ), so your local change reaches GitLab before the pull reads state back. Push acts only
+            on
+            <code>push_back=yes</code>
+            rows.
+          </p>
+
+          <h2 id="files">
+            Files
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            See
+            <a
+              href="https://github.com/Thurbeen/thurbox/tree/main/extensions/gitlab-issues"
+              target="_blank"
+              rel="noopener"
+            >
+              extensions/gitlab-issues
+            </a>
+            for the
+            <code>extension.toml</code>
+            manifest, the seeded
+            <code>trackers.md</code>
+            , the
+            <code>README.md</code>
+            , and the sync scripts (
+            <code>scripts/sync.sh</code>
+            ,
+            <code>scripts/fetch.sh</code>
+            ,
+            <code>scripts/upsert.sh</code>
+            ,
+            <code>scripts/push-status.sh</code>
+            ).
+          </p>

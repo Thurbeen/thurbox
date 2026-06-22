@@ -657,6 +657,21 @@ conventions, not an enum), a `body`, and optional provenance (`from_session_id`,
     still drained headless. `PRAGMA data_version` already surfaces writes to the
     TUI — no sync/`SharedState` change.
 
+An automation's `AutomationAction` is one of: **Send** (paste a prompt into a
+running session), **Spawn** (start a fresh session and prompt it), or **Exec**
+(run a shell command headlessly — `sh -c`, or `cmd /C` on Windows — with no
+agent/session; its exit status + tail-truncated output land in the run history).
+`Exec` is the deterministic-scheduled-job action (the task-integration sync
+extensions use it). The shared runner is `session_ops::run_exec_command` (called
+by both the headless `automation tick` and the TUI `App::fire_automation`); the
+command is stored in the `action_command` column (schema **v36**, on both
+`tasks` and `automations`). Author one headlessly with `thurbox-cli automation
+create --command "<shell>"` (mutually exclusive with `--session`/`--repo`), in
+the TUI editor (the action selector now cycles Send → Spawn → Exec), or from an
+extension manifest (`[[automations]]` with a `command` field instead of
+`session_ref`/`prompt`). `Task.action` shares the enum but tasks never carry an
+`Exec` (it's automation-only).
+
 Automations fire even when the TUI is closed: a tmux heartbeat
 keeper window (`automation-heartbeat`, armed on TUI startup and on
 `automation create`) loops `automation tick` every 60 s and keeps
@@ -739,14 +754,18 @@ sync, but the TUI editor never sets it.)
   `description: Option<String>` (free-form markdown notes, `None` when blank),
   `status: TaskStatus` {`Todo`/`InProgress`/`Done`},
   `action: Option<AutomationAction>`, plus `source`/`external_id`/
-  `external_url` scaffolding for **deferred** external sync — Jira/
-  GitHub Issues slot in later with no migration; local tasks use
-  `source = "local"`).
+  `external_url` for external-tracker sync — `source = "local"` for native
+  todos, or a tracker tag (`github`/`gitlab`/`linear`/`jira`) for items
+  imported by the per-provider task-integration extensions (below). The
+  `(source, external_id)` pair is the natural dedup key.
 - **Storage** (`storage/tasks.rs`, schema v25): `tasks` table mirroring
   the automation action columns (`action_kind` nullable) plus a nullable
   `description` column (added in the v26 migration), soft-delete via
-  `deleted_at`, audited under `EntityType::Task`. CRUD: `create_task`,
-  `get_task`, `list_tasks`, `update_task`, `set_task_status`,
+  `deleted_at`, audited under `EntityType::Task`. The
+  `idx_tasks_external` index on `(source, external_id)` (v35) backs the
+  `get_task_by_external_id` upsert lookup. CRUD: `create_task`,
+  `get_task`, `get_task_by_external_id`, `list_tasks`, `update_task`,
+  `set_task_status`,
   `soft_delete_task`.
 - **UI** — tasks render in a **toggleable right-side column** that sits
   between the terminal and the file viewer, behaving exactly like the file
@@ -800,7 +819,10 @@ sync, but the TUI editor never sets it.)
   Both paths call `App::advance_task_to_in_progress`.
 - **CLI**: `thurbox-cli task` (alias `todo`) —
   `create`/`list`/`show`/`edit`/`remove`/`run`. `create`/`edit` take an
-  optional `--description` (markdown; `edit --description ""` clears it), and
+  optional `--description` (markdown; `edit --description ""` clears it) and
+  the external-sync fields `--source` / `--external-id` / `--external-url`
+  (used by the task-integration extensions; an empty `--external-id`/
+  `--external-url` clears it, `create` defaults `source` to `local`), and
   `task_to_json` emits a `description` field. `create` with neither
   `--session` nor `--repo` is a plain local todo; `run` triggers the
   Send/Spawn action headlessly. Tasks do **not** participate in sync
@@ -887,6 +909,27 @@ sync, but the TUI editor never sets it.)
   adoption). Version strategy is per-repo (`strategy` column: `patch`/`minor`/
   `major`/`all`, layered as a `RENOVATE_CONFIG` overlay) plus a global
   `renovate-config.json`. Spec: `RENOVATE.md`.
+- **`extensions/{github-issues,gitlab-issues,linear,jira}/`** *(experimental)* —
+  per-provider **task-integration** extensions that sync an external issue
+  tracker **bidirectionally** with the thurbox task list. **No agent/LLM** — each
+  ships a `*-tick` automation (every 15 min) that is a deterministic
+  `AutomationAction::Exec` running `{home}/scripts/sync.sh`; thurbox's scheduler
+  runs it (TUI or headless heartbeat) and records the output in the run history.
+  `sync.sh` (identical across all four bar the `SOURCE` tag) sources
+  `{home}/credentials.env` (how Linear/Jira keys reach the headless run), then
+  push-then-pull: `push-status.sh` (push thurbox status back — `done` closes the
+  issue, reopening on revert; only `push_back=yes` rows), then per `trackers.md`
+  row `fetch.sh "<query>"` (provider API → normalized JSON) `| upsert.sh --source
+  <tag>` (dedup by `(source, external_id)`; status rule treats only open-vs-done
+  as authoritative so a local `in_progress` is never clobbered; `upsert.sh` is
+  byte-identical across all four). Watch list is a `trackers.md` seed
+  (`| name | query | push_back |`, `query` interpreted per provider:
+  `owner/repo` flags for github, project for gitlab, team key for linear, JQL for
+  jira). Backends: `gh`/`glab` CLIs (github/gitlab), `curl` GraphQL (linear),
+  `curl` REST v3 (jira). The only Rust support is the generic, tracker-neutral
+  `task --source/--external-id/--external-url` flags, `get_task_by_external_id`,
+  and the `Exec` automation action (ADR-20: no provider name in the binary). See
+  each extension's `README.md`.
 
 ### Extension manifests + self-heal (`thurbox-cli extension`)
 

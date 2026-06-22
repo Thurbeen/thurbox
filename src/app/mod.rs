@@ -4634,6 +4634,10 @@ impl App {
                     (AutomationRunStatus::Error, e, None)
                 }
             },
+            AutomationAction::Exec { command } => {
+                let (status, detail) = crate::session_ops::run_exec_command(command);
+                (status, detail, None)
+            }
         }
     }
 
@@ -4853,7 +4857,7 @@ impl App {
         let mut m = modals::AutomationEditorModal::from_automation(auto);
         let selected = match &auto.action {
             AutomationAction::Send { session_id } => Some(*session_id),
-            AutomationAction::Spawn { .. } => None,
+            AutomationAction::Spawn { .. } | AutomationAction::Exec { .. } => None,
         };
         m.set_target_sessions(self.session_target_choices(), selected);
         m
@@ -5050,6 +5054,16 @@ impl App {
                     // The TUI automation editor is single-repo; multi-repo spawns
                     // are authored via the CLI (`--add-repo`/`--add-dir`).
                     extra_repos: Vec::new(),
+                })
+            }
+            modals::AutomationActionKind::Exec => {
+                let command = m.command.value().trim();
+                if command.is_empty() {
+                    self.set_error("Command required for exec action");
+                    return None;
+                }
+                Some(AutomationAction::Exec {
+                    command: command.to_string(),
                 })
             }
         }

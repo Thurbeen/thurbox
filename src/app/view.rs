@@ -1111,6 +1111,9 @@ fn task_action_parts(task: &crate::session::Task) -> TaskActionParts {
             };
             TaskActionParts::Spawn { target }
         }
+        // Exec is an automation-only action; a task never carries one, so it has
+        // no agent linkage to show.
+        Some(AutomationAction::Exec { .. }) => TaskActionParts::Local,
     }
 }
 

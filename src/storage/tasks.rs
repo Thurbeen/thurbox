@@ -48,15 +48,23 @@ impl Database {
     /// Insert a new task, returning its row id.
     pub fn create_task(&self, new: &NewTask) -> rusqlite::Result<i64> {
         let now = current_time_millis() as i64;
-        let (action_kind, target_session, repo_path, worktree_branch, base_branch, agent, extra) =
-            action_columns(new.action.as_ref());
+        let (
+            action_kind,
+            target_session,
+            repo_path,
+            worktree_branch,
+            base_branch,
+            agent,
+            extra,
+            command,
+        ) = action_columns(new.action.as_ref());
         self.conn.execute(
             "INSERT INTO tasks
                 (title, status, action_kind, target_session, repo_path,
                  worktree_branch, base_branch, agent, source, external_id,
                  external_url, created_at, updated_at, deleted_at, description,
-                 action_extra_repos)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, NULL, ?13, ?14)",
+                 action_extra_repos, action_command)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, NULL, ?13, ?14, ?15)",
             params![
                 new.title,
                 new.status.as_str(),
@@ -72,6 +80,7 @@ impl Database {
                 now,
                 new.description,
                 extra,
+                command,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -97,6 +106,28 @@ impl Database {
             .optional()
     }
 
+    /// Fetch a single active task by its `(source, external_id)` natural key —
+    /// the identity of an item imported from an external tracker. Used by the
+    /// task-integration sync extensions to dedup/upsert imported issues. Returns
+    /// `None` for a missing or soft-deleted match. (Indexed by
+    /// `idx_tasks_external`.)
+    pub fn get_task_by_external_id(
+        &self,
+        source: &str,
+        external_id: &str,
+    ) -> rusqlite::Result<Option<Task>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {COLS} FROM tasks
+                     WHERE source = ?1 AND external_id = ?2 AND deleted_at IS NULL"
+                ),
+                params![source, external_id],
+                map_task,
+            )
+            .optional()
+    }
+
     /// List all active tasks, newest first.
     pub fn list_tasks(&self) -> rusqlite::Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(&format!(
@@ -108,15 +139,23 @@ impl Database {
 
     /// Replace a task's definition (everything except id/created_at/deleted_at).
     pub fn update_task(&self, task: &Task) -> rusqlite::Result<()> {
-        let (action_kind, target_session, repo_path, worktree_branch, base_branch, agent, extra) =
-            action_columns(task.action.as_ref());
+        let (
+            action_kind,
+            target_session,
+            repo_path,
+            worktree_branch,
+            base_branch,
+            agent,
+            extra,
+            command,
+        ) = action_columns(task.action.as_ref());
         let now = current_time_millis() as i64;
         self.conn.execute(
             "UPDATE tasks SET
                 title = ?2, status = ?3, action_kind = ?4, target_session = ?5,
                 repo_path = ?6, worktree_branch = ?7, base_branch = ?8, agent = ?9,
                 source = ?10, external_id = ?11, external_url = ?12, updated_at = ?13,
-                description = ?14, action_extra_repos = ?15
+                description = ?14, action_extra_repos = ?15, action_command = ?16
              WHERE id = ?1",
             params![
                 task.id,
@@ -134,6 +173,7 @@ impl Database {
                 now,
                 task.description,
                 extra,
+                command,
             ],
         )?;
         self.log_audit(
@@ -191,7 +231,8 @@ impl Database {
 /// Column list for task SELECTs (keep in sync with [`map_task`]).
 const COLS: &str = "id, title, status, action_kind, target_session, repo_path, \
     worktree_branch, base_branch, agent, source, external_id, external_url, \
-    created_at, updated_at, deleted_at, description, action_extra_repos";
+    created_at, updated_at, deleted_at, description, action_extra_repos, \
+    action_command";
 
 /// Decompose an optional action into its persisted columns. All `None` when the
 /// task is unconnected (`action_kind` is then NULL). The final element is the
@@ -204,14 +245,16 @@ type ActionColumns = (
     Option<String>, // base_branch
     Option<String>, // agent
     Option<String>, // action_extra_repos (JSON)
+    Option<String>, // action_command
 );
 
 fn action_columns(action: Option<&AutomationAction>) -> ActionColumns {
     match action {
-        None => (None, None, None, None, None, None, None),
+        None => (None, None, None, None, None, None, None, None),
         Some(AutomationAction::Send { session_id }) => (
             Some("send".to_string()),
             Some(session_id.to_string()),
+            None,
             None,
             None,
             None,
@@ -232,6 +275,19 @@ fn action_columns(action: Option<&AutomationAction>) -> ActionColumns {
             base_branch.clone(),
             agent.clone(),
             super::extra_repos_to_json(extra_repos),
+            None,
+        ),
+        // Exec is an automation-only action; a task never carries one in
+        // practice, but the shared enum means we round-trip it for completeness.
+        Some(AutomationAction::Exec { command }) => (
+            Some("exec".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(command.clone()),
         ),
     }
 }
@@ -244,6 +300,7 @@ fn map_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
     let base_branch: Option<String> = row.get(7)?;
     let agent: Option<String> = row.get(8)?;
     let extra_repos_json: Option<String> = row.get(16)?;
+    let action_command: Option<String> = row.get(17)?;
 
     let action = match action_kind.as_deref() {
         Some("send") => Some(AutomationAction::Send {
@@ -258,6 +315,9 @@ fn map_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
             base_branch,
             agent,
             extra_repos: super::extra_repos_from_json(extra_repos_json),
+        }),
+        Some("exec") => Some(AutomationAction::Exec {
+            command: action_command.unwrap_or_default(),
         }),
         _ => None,
     };
@@ -455,6 +515,40 @@ mod tests {
             got.external_url.as_deref(),
             Some("https://example.com/issues/42")
         );
+    }
+
+    #[test]
+    fn get_task_by_external_id_finds_and_misses() {
+        let db = Database::open_in_memory().unwrap();
+        let new = NewTask {
+            title: "imported".into(),
+            source: "github".into(),
+            external_id: Some("42".into()),
+            external_url: Some("https://example.com/issues/42".into()),
+            ..NewTask::local("imported")
+        };
+        let id = db.create_task(&new).unwrap();
+
+        // Exact (source, external_id) pair finds the task.
+        let got = db.get_task_by_external_id("github", "42").unwrap();
+        assert_eq!(got.map(|t| t.id), Some(id));
+
+        // Wrong source or wrong id misses.
+        assert!(db
+            .get_task_by_external_id("gitlab", "42")
+            .unwrap()
+            .is_none());
+        assert!(db
+            .get_task_by_external_id("github", "99")
+            .unwrap()
+            .is_none());
+
+        // A soft-deleted match is excluded.
+        assert!(db.soft_delete_task(id).unwrap());
+        assert!(db
+            .get_task_by_external_id("github", "42")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

@@ -1,0 +1,47 @@
+# Jira extension manifest.
+#
+# Install with `thurbox-cli extension install jira` (or point at this directory:
+# `thurbox-cli extension install ./extensions/jira`). thurbox fetches this file,
+# lays the [[files]] down under `home`, and activates the [[automations]] — a
+# deterministic `exec` job (no agent, no session): thurbox's scheduler runs
+# `{home}/scripts/sync.sh` every 15 min and self-heals the automation if
+# deleted. Turn it off with `thurbox-cli extension deactivate jira`.
+
+name = "jira"
+description = "Syncs Jira issues bidirectionally with the thurbox task list"
+config_version = 1
+version = "2.0.0"                # v2: deterministic exec sync (was an agent session)
+min_thurbox_version = "0.141.0"  # needs the Exec automation action + task --source flags
+home = "~/jira"
+
+# --- payload files laid down under home ---------------------------------------
+
+[[files]]
+path = "scripts/sync.sh"
+executable = true
+
+[[files]]
+path = "scripts/fetch.sh"
+executable = true
+
+[[files]]
+path = "scripts/upsert.sh"
+executable = true
+
+[[files]]
+path = "scripts/push-status.sh"
+executable = true
+
+# Tracker watch list — seeded once, then user-owned (never clobbered on reinstall).
+[[files]]
+path = "trackers.md"
+if_absent = true
+
+# --- runtime resource: a deterministic scheduled sync (no agent) --------------
+# The `command` form runs `sh -c {home}/scripts/sync.sh` headlessly on each fire
+# and records its output in the run history. `{home}` is resolved at install.
+
+[[automations]]
+name = "jira-tick"
+trigger = "cron:*/15 * * * *"
+command = "{home}/scripts/sync.sh"

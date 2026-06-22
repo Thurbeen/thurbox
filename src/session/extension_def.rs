@@ -173,6 +173,11 @@ pub struct ExtensionSession {
 }
 
 /// An automation an extension wants kept alive. Identified by `name`.
+///
+/// Two flavours: a **send** automation prompts an extension session
+/// (`session_ref` + `prompt`), or an **exec** automation runs a shell `command`
+/// headlessly (no session — a deterministic scheduled job). Set exactly one of
+/// `command` or (`session_ref` + `prompt`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionAutomation {
     /// Automation name. Used to find/reuse it.
@@ -181,10 +186,16 @@ pub struct ExtensionAutomation {
     /// (`hourly` | `daily` | `weekdays` | `weekly` | `cron:<expr>` | `at:<ms>`).
     pub trigger: String,
     /// Name of the extension session this automation sends its prompt to. Must
-    /// match one of the manifest's `[[sessions]]` entries.
-    pub session_ref: String,
-    /// Prompt text delivered on each fire (e.g. `tick`).
-    pub prompt: String,
+    /// match one of the manifest's `[[sessions]]` entries. Omitted for `command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ref: Option<String>,
+    /// Prompt text delivered on each fire (e.g. `tick`). Omitted for `command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Shell command run headlessly on each fire (the `Exec` action). Mutually
+    /// exclusive with `session_ref`/`prompt`; `{home}` is substituted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 /// A full extension manifest: the resources to ensure when the extension is
@@ -296,6 +307,13 @@ impl ExtensionDef {
             m.path = m.path.replace(HOME_TOKEN, home);
             if let Some(req) = &m.requires_dir {
                 m.requires_dir = Some(req.replace(HOME_TOKEN, home));
+            }
+        }
+        // An exec automation's command typically calls a script under the home
+        // dir (e.g. `{home}/sync.sh`); resolve it to an absolute path.
+        for a in &mut out.automations {
+            if let Some(cmd) = &a.command {
+                a.command = Some(cmd.replace(HOME_TOKEN, home));
             }
         }
         out
@@ -412,8 +430,8 @@ prompt = "tick"
         assert_eq!(def.sessions[0].agent, "flow");
         assert_eq!(def.sessions[0].repo_path, PathBuf::from("/home/me/flow"));
         assert_eq!(def.automations.len(), 1);
-        assert_eq!(def.automations[0].session_ref, "flow");
-        assert_eq!(def.automations[0].prompt, "tick");
+        assert_eq!(def.automations[0].session_ref.as_deref(), Some("flow"));
+        assert_eq!(def.automations[0].prompt.as_deref(), Some("tick"));
         assert!(!def.is_empty());
     }
 
@@ -459,8 +477,9 @@ prompt = "tick"
             automations: vec![ExtensionAutomation {
                 name: "flow-tick".into(),
                 trigger: "cron:*/5 * * * *".into(),
-                session_ref: "flow".into(),
-                prompt: "tick".into(),
+                session_ref: Some("flow".into()),
+                prompt: Some("tick".into()),
+                command: None,
             }],
         };
         let text = toml::to_string(&def).unwrap();

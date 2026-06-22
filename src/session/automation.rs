@@ -145,6 +145,13 @@ pub enum AutomationAction {
         /// Additional repositories spanned by this session (empty = single-repo).
         extra_repos: Vec<ExtraRepo>,
     },
+    /// Run a shell command headlessly (`sh -c <command>`), no agent/session.
+    ///
+    /// Used by deterministic scheduled jobs (e.g. the task-integration sync
+    /// extensions): the command is run by thurbox's automation scheduler — TUI
+    /// and headless `automation tick` alike — and its exit status is recorded in
+    /// the run history. There is no model in the loop.
+    Exec { command: String },
 }
 
 impl AutomationAction {
@@ -153,6 +160,7 @@ impl AutomationAction {
         match self {
             Self::Send { .. } => "send",
             Self::Spawn { .. } => "spawn",
+            Self::Exec { .. } => "exec",
         }
     }
 }

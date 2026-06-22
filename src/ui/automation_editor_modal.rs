@@ -27,6 +27,7 @@ pub struct AutomationEditorState<'a> {
     pub repo: &'a str,
     pub worktree: &'a str,
     pub agent: &'a str,
+    pub command: &'a str,
     pub prompt: &'a str,
     /// Display name of the Send target session, if any.
     pub target_session: Option<&'a str>,
@@ -62,6 +63,7 @@ impl<'a> AutomationEditorState<'a> {
             repo: m.repo.value(),
             worktree: m.worktree.value(),
             agent: m.agent.value(),
+            command: m.command.value(),
             prompt: m.prompt.value(),
             target_session: m.selected_target().map(|(_, name)| name.as_str()),
             preview,
@@ -89,8 +91,11 @@ fn visible_fields(trigger: TriggerKind, action: AutomationActionKind) -> Vec<Aut
     match action {
         AutomationActionKind::Send => fields.push(Target),
         AutomationActionKind::Spawn => fields.extend([Repo, Worktree, Agent]),
+        AutomationActionKind::Exec => fields.push(Command),
     }
-    fields.push(Prompt);
+    if action != AutomationActionKind::Exec {
+        fields.push(Prompt);
+    }
     fields
 }
 
@@ -191,6 +196,7 @@ fn field_line<'a>(
         AutomationField::Repo => ("repo", state.repo.to_string(), false),
         AutomationField::Worktree => ("worktree", optional_display(state.worktree), false),
         AutomationField::Agent => ("agent", optional_display(state.agent), false),
+        AutomationField::Command => ("command", state.command.to_string(), false),
         AutomationField::Prompt => ("prompt", state.prompt.to_string(), false),
     };
 
@@ -233,6 +239,7 @@ fn action_display(state: &AutomationEditorState<'_>) -> String {
     match state.action {
         AutomationActionKind::Send => "send".to_string(),
         AutomationActionKind::Spawn => "spawn".to_string(),
+        AutomationActionKind::Exec => "exec".to_string(),
     }
 }
 

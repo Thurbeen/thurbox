@@ -886,12 +886,23 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
     }
 
     for auto in &def.automations {
-        let target = *session_ids.get(&auto.session_ref).ok_or_else(|| {
-            format!(
-                "automation '{}' references unknown session '{}'",
-                auto.name, auto.session_ref
-            )
-        })?;
+        // An exec automation has no session; a send one resolves its target.
+        let target = if auto.command.is_some() {
+            None
+        } else {
+            let session_ref = auto.session_ref.as_deref().ok_or_else(|| {
+                format!(
+                    "automation '{}' has neither a command nor a session_ref",
+                    auto.name
+                )
+            })?;
+            Some(*session_ids.get(session_ref).ok_or_else(|| {
+                format!(
+                    "automation '{}' references unknown session '{session_ref}'",
+                    auto.name
+                )
+            })?)
+        };
         ensure_automation(db, auto, target, &mut report)?;
     }
 
@@ -905,20 +916,36 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
 fn ensure_automation(
     db: &Database,
     auto: &ExtensionAutomation,
-    target: SessionId,
+    target: Option<SessionId>,
     report: &mut EnsureReport,
 ) -> Result<(), String> {
+    // Desired action: a command wins (exec); otherwise send to the target.
+    let action = match (&auto.command, target) {
+        (Some(command), _) => AutomationAction::Exec {
+            command: command.clone(),
+        },
+        (None, Some(session_id)) => AutomationAction::Send { session_id },
+        (None, None) => {
+            return Err(format!(
+                "automation '{}' has neither a command nor a session_ref",
+                auto.name
+            ))
+        }
+    };
     let existing = db
         .list_automations()
         .map_err(|e| format!("list_automations: {e}"))?
         .into_iter()
         .find(|row| row.name == auto.name);
     if let Some(mut row) = existing {
-        if matches!(&row.action, AutomationAction::Send { session_id } if *session_id != target) {
-            row.action = AutomationAction::Send { session_id: target };
-            db.update_automation(&row)
-                .map_err(|e| format!("update_automation: {e}"))?;
-            report.automations_relinked.push(auto.name.clone());
+        // Re-link a send automation whose target session was recreated (a new id).
+        if let (AutomationAction::Send { session_id }, Some(t)) = (&row.action, target) {
+            if *session_id != t {
+                row.action = AutomationAction::Send { session_id: t };
+                db.update_automation(&row)
+                    .map_err(|e| format!("update_automation: {e}"))?;
+                report.automations_relinked.push(auto.name.clone());
+            }
         }
         return Ok(());
     }
@@ -929,8 +956,8 @@ fn ensure_automation(
         enabled: true,
         schedule,
         timezone: None,
-        action: AutomationAction::Send { session_id: target },
-        prompt: auto.prompt.clone(),
+        action,
+        prompt: auto.prompt.clone().unwrap_or_default(),
         next_run_at,
     };
     db.create_automation(&new)
@@ -1228,8 +1255,9 @@ mod tests {
             automations: vec![ExtensionAutomation {
                 name: "flow-tick".into(),
                 trigger: "cron:*/5 * * * *".into(),
-                session_ref: "flow".into(),
-                prompt: "tick".into(),
+                session_ref: Some("flow".into()),
+                prompt: Some("tick".into()),
+                command: None,
             }],
         }
     }
@@ -1298,7 +1326,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         insert_session(&db, "flow");
         let mut def = flow_def();
-        def.automations[0].session_ref = "ghost".into();
+        def.automations[0].session_ref = Some("ghost".into());
         let err = ensure_extension(&db, &def).unwrap_err();
         assert!(err.contains("ghost"), "got: {err}");
     }

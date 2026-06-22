@@ -1,0 +1,333 @@
+---
+layout: docs.njk
+title: 'jira extension — Thurbox Docs'
+description: 'The jira extension: bidirectionally syncs Jira issues with the Thurbox task list — your issues show up as tasks, and marking a task done moves the issue to a Done-category status.'
+currentPage: 'extension-jira'
+breadcrumb: 'Jira'
+onThisPage:
+  - { id: 'overview', label: 'Overview' }
+  - { id: 'requirements', label: 'Requirements' }
+  - { id: 'authenticate', label: 'Get a Jira API token' }
+  - { id: 'install', label: 'Install' }
+  - { id: 'configure', label: 'Configure trackers.md' }
+  - { id: 'sync', label: 'First sync &amp; verify' }
+  - { id: 'pushback', label: 'Two-way sync' }
+  - { id: 'files', label: 'Files' }
+---
+<h1>jira</h1>
+          <p>
+            The jira extension bidirectionally syncs
+            <strong>Jira issues</strong>
+            with the Thurbox
+            <strong>task list</strong>
+            : your issues show up as tasks, and marking a task done moves the issue to a
+            Done-category status. A
+            <code>jira-tick</code>
+            <strong>automation</strong>
+            (every 15&nbsp;min,
+            <code>cron:*/15 * * * *</code>
+            ) runs a deterministic
+            <code>Exec</code>
+            command &mdash;
+            <code>{home}/scripts/sync.sh</code>
+            &mdash; that reconciles the JQL filters in
+            <code>trackers.md</code>
+            with the task list. There is
+            <strong>no agent, no LLM, no tokens</strong>
+            : Thurbox's scheduler runs the script (TUI or headless heartbeat) and records its output
+            in the automation run history. The script only calls
+            <code>thurbox-cli</code>
+            and talks to Jira Cloud's REST API v3 over
+            <code>curl</code>
+            ; no Jira app, no webhook.
+          </p>
+          <div class="info-box warning">
+            <p>
+              <strong>Experimental.</strong>
+              jira is new and under active testing &mdash; its sync scripts and manifest may change
+              between releases.
+            </p>
+          </div>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Pull is the default direction: Jira issues become Thurbox tasks. Jira is authoritative for
+            an issue's
+            <strong>title, URL, and open-vs-done state</strong>
+            ; your local
+            <code>todo</code>
+            &harr;
+            <code>in_progress</code>
+            distinction is preserved. Status maps by
+            <code>statusCategory</code>
+            :
+            <code>new</code>
+            &rarr;
+            <code>todo</code>
+            ,
+            <code>indeterminate</code>
+            &rarr;
+            <code>in_progress</code>
+            ,
+            <code>done</code>
+            &rarr;
+            <code>done</code>
+            . Imported tasks carry
+            <code>source=jira</code>
+            and
+            <code>external_id="&lt;issue key&gt;"</code>
+            (e.g.
+            <code>ENG-7</code>
+            ), so re-syncing never duplicates them &mdash; dedup is by
+            <code>(source, external_id)</code>
+            .
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>Descriptions are not synced.</strong>
+              Jira v3 descriptions are ADF (rich JSON); converting them to text is out of scope, so
+              tasks carry
+              <strong>title + URL only</strong>
+              .
+            </p>
+          </div>
+
+          <h2 id="requirements">
+            Requirements
+            <a href="#requirements" class="heading-anchor">#</a>
+          </h2>
+          <ul>
+            <li>
+              <code>thurbox-cli</code>
+              <strong>&ge;&nbsp;0.141</strong>
+              on
+              <code>PATH</code>
+              &mdash; the sync uses the
+              <code>task --source/--external-id/--external-url</code>
+              flags added there (check with
+              <code>thurbox-cli version</code>
+              ).
+            </li>
+            <li>
+              <code>curl</code>
+              and
+              <code>jq</code>
+              on
+              <code>PATH</code>
+              .
+            </li>
+          </ul>
+
+          <h2 id="authenticate">
+            Get a Jira API token
+            <a href="#authenticate" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Create a token at
+            <a
+              href="https://id.atlassian.com/manage-profile/security/api-tokens"
+              target="_blank"
+              rel="noopener"
+            >
+              id.atlassian.com
+            </a>
+            . Because the sync runs
+            <strong>headless</strong>
+            (via the automation, with no shell session to inherit your environment), hand it the
+            three values via a
+            <code>credentials.env</code>
+            file in the install home &mdash;
+            <code>sync.sh</code>
+            sources it before running:
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">mkdir</span> -p ~/jira
+<span class="syn-prompt">$</span> <span class="syn-cmd">cat</span> &gt; ~/jira/credentials.env &lt;&lt;'EOF'
+JIRA_BASE_URL=https://your-domain.atlassian.net
+JIRA_EMAIL=you@example.com
+JIRA_API_TOKEN=your-atlassian-api-token
+EOF
+<span class="syn-prompt">$</span> <span class="syn-cmd">chmod</span> 600 ~/jira/credentials.env</code></pre>
+          <p>
+            (Exporting the three vars from your shell profile is an alternative, but it only reaches
+            the headless run if the scheduler inherits your profile &mdash; so
+            <code>credentials.env</code>
+            is recommended.) Auth is HTTP Basic (
+            <code>-u "$JIRA_EMAIL:$JIRA_API_TOKEN"</code>
+            ). Confirm the credentials:
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">curl</span> -fsSL -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "$JIRA_BASE_URL/rest/api/3/myself"</code></pre>
+
+          <h2 id="install">
+            Install
+            <a href="#install" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            jira is a Thurbox
+            <a href="extensions.html">extension</a>
+            (a declarative
+            <code>extension.toml</code>
+            manifest):
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install jira       <span class="syn-comment"># or ./extensions/jira</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall jira     <span class="syn-comment"># --purge also deletes ~/jira</span></code></pre>
+          <p>
+            Installing lays down the
+            <code>~/jira/</code>
+            home (override with
+            <code>--home</code>
+            ; it holds
+            <code>scripts/sync.sh</code>
+            + helpers and the seeded
+            <code>trackers.md</code>
+            ) and activates the
+            <code>jira-tick</code>
+            automation &mdash;
+            <strong>self-healed</strong>
+            by Thurbox if deleted.
+          </p>
+
+          <h2 id="configure">
+            Configure trackers.md
+            <a href="#configure" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Edit
+            <code>~/jira/trackers.md</code>
+            &mdash; one row per filter. The
+            <strong>query</strong>
+            is a
+            <strong>JQL</strong>
+            string: the whole cell is one JQL value (it contains spaces and is
+            <strong>not</strong>
+            word-split), e.g.
+            <code>project = ENG AND statusCategory != Done</code>
+            . Keep
+            <code>push_back = no</code>
+            for the first run.
+          </p>
+          <pre><code>| name   | query                                               | push_back |
+|--------|-----------------------------------------------------|-----------|
+| mine   | assignee = currentUser() AND statusCategory != Done | no        |
+| triage | project = WEB AND labels = needs-triage             | no        |</code></pre>
+
+          <h2 id="sync">
+            First sync &amp; verify
+            <a href="#sync" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The automation fires every 15&nbsp;min. To run it now, trigger it from the
+            <strong>Automations</strong>
+            pane (
+            <code>Ctrl+P</code>
+            &rarr; select
+            <code>jira-tick</code>
+            &rarr;
+            <code>r</code>
+            ) or headless:
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> automation run &lt;id&gt;     <span class="syn-comment"># id from: thurbox-cli automation list</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">~/jira/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
+          <p>Then inspect the imported tasks:</p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> task list --json | jq -c '.[] | select(.source=="jira") | {id,status,external_id,title}'</code></pre>
+          <p>
+            Status maps by
+            <code>statusCategory</code>
+            (
+            <code>new</code>
+            &rarr;
+            <code>todo</code>
+            ,
+            <code>indeterminate</code>
+            &rarr;
+            <code>in_progress</code>
+            ,
+            <code>done</code>
+            &rarr;
+            <code>done</code>
+            ). Re-running is
+            <strong>idempotent</strong>
+            &mdash; dedup by
+            <code>(source, external_id)</code>
+            leaves unchanged issues alone, and the
+            <code>source=jira</code>
+            tag keeps these tasks distinct from any other tracker's. The run's output
+            (created/updated/unchanged counts) shows in the automation run history.
+          </p>
+
+          <h2 id="pushback">
+            Two-way sync
+            <a href="#pushback" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Once the pull looks right, set
+            <code>push_back = yes</code>
+            on a tracker row. Now marking an imported task
+            <strong>done</strong>
+            transitions its Jira issue into the Done category, and moving it back to
+            <strong>todo</strong>
+            reopens it &mdash; only the
+            <strong>open&harr;done axis</strong>
+            is pushed. The sync runs
+            <strong>push-then-pull</strong>
+            (
+            <code>push-status.sh</code>
+            then per-tracker
+            <code>fetch.sh | upsert.sh</code>
+            ), so your local change reaches Jira before the pull reads state back. Push uses the
+            workflow's
+            <strong>transitions</strong>
+            : to close, the first transition landing in the Done category; to reopen, the first
+            non-Done (preferring
+            <code>new</code>
+            ) transition. If the workflow lacks a suitable transition the issue is surfaced in the
+            run output and skipped, not failed.
+          </p>
+          <div class="info-box warning">
+            <p>
+              <strong>All-or-nothing push-back.</strong>
+              A Jira issue key can't be tied back to the specific JQL row that returned it, so
+              push-back is
+              <strong>all-or-nothing</strong>
+              &mdash; if
+              <em>any</em>
+              row is
+              <code>yes</code>
+              , push acts on
+              <strong>all</strong>
+              <code>source=jira</code>
+              tasks.
+            </p>
+          </div>
+
+          <h2 id="files">
+            Files
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            See
+            <a
+              href="https://github.com/Thurbeen/thurbox/tree/main/extensions/jira"
+              target="_blank"
+              rel="noopener"
+            >
+              extensions/jira
+            </a>
+            for the
+            <code>extension.toml</code>
+            manifest, the seeded
+            <code>trackers.md</code>
+            , the
+            <code>README.md</code>
+            , and the sync scripts (
+            <code>scripts/sync.sh</code>
+            ,
+            <code>scripts/fetch.sh</code>
+            ,
+            <code>scripts/upsert.sh</code>
+            ,
+            <code>scripts/push-status.sh</code>
+            ).
+          </p>

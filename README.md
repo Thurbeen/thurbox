@@ -267,6 +267,13 @@ list:
     Sweeps a watch list, runs **Renovate's `local` platform** (no
     hosted bot, no token), tests the result, and opens a review PR
     per eligible repo.
+  - **Task integrations** — `github-issues`, `gitlab-issues`,
+    `linear`, `jira`: one extension per provider that **bidirectionally**
+    syncs an external issue tracker with the thurbox task list. Issues
+    show up as tasks; marking a task done closes/completes the issue
+    (and reopens it on revert). A `*-tick` automation runs a deterministic
+    sync script over a `trackers.md` watch list every 15 min (no agent,
+    no tokens), dedup'd by `(source, external_id)`.
 
 > **Note:** Extensions are a brand-new, **experimental** capability
 > under active testing — expect their behavior, specs, and manifests
@@ -277,7 +284,11 @@ and each extension's README under
 [`extensions/`](./extensions/) ([flow](./extensions/flow/README.md),
 [forge](./extensions/forge/README.md),
 [ci-shepherd](./extensions/ci-shepherd/README.md),
-[renovate](./extensions/renovate/README.md)).
+[renovate](./extensions/renovate/README.md),
+[github-issues](./extensions/github-issues/README.md),
+[gitlab-issues](./extensions/gitlab-issues/README.md),
+[linear](./extensions/linear/README.md),
+[jira](./extensions/jira/README.md)).
 
 ### Global search
 

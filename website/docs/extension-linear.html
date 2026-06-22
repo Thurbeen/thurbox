@@ -1,0 +1,316 @@
+---
+layout: docs.njk
+title: 'linear extension — Thurbox Docs'
+description: 'The linear extension: bidirectionally syncs Linear issues with the Thurbox task list — your issues show up as tasks, and marking a task done moves the issue to a completed state.'
+currentPage: 'extension-linear'
+breadcrumb: 'Linear'
+onThisPage:
+  - { id: 'overview', label: 'Overview' }
+  - { id: 'requirements', label: 'Requirements' }
+  - { id: 'authenticate', label: 'Get a Linear API key' }
+  - { id: 'install', label: 'Install' }
+  - { id: 'configure', label: 'Configure trackers.md' }
+  - { id: 'sync', label: 'First sync &amp; verify' }
+  - { id: 'pushback', label: 'Two-way sync' }
+  - { id: 'files', label: 'Files' }
+---
+<h1>linear</h1>
+          <p>
+            The linear extension bidirectionally syncs
+            <strong>Linear issues</strong>
+            with the Thurbox
+            <strong>task list</strong>
+            : your issues show up as tasks, and marking a task done moves the issue to a completed
+            state. A
+            <code>linear-tick</code>
+            <strong>automation</strong>
+            (every 15&nbsp;min,
+            <code>cron:*/15 * * * *</code>
+            ) runs a deterministic
+            <code>Exec</code>
+            command &mdash;
+            <code>{home}/scripts/sync.sh</code>
+            &mdash; that reconciles the teams in
+            <code>trackers.md</code>
+            with the task list. There is
+            <strong>no agent, no LLM, no tokens</strong>
+            : Thurbox's scheduler runs the script (TUI or headless heartbeat) and records its output
+            in the automation run history. The script only calls
+            <code>thurbox-cli</code>
+            and the Linear GraphQL API. Linear has
+            <strong>no CLI</strong>
+            , so all calls hit
+            <code>https://api.linear.app/graphql</code>
+            via
+            <code>curl</code>
+            ; no Linear bot, no webhook.
+          </p>
+          <div class="info-box warning">
+            <p>
+              <strong>Experimental.</strong>
+              linear is new and under active testing &mdash; its sync scripts and manifest may change
+              between releases.
+            </p>
+          </div>
+
+          <h2 id="overview">
+            Overview
+            <a href="#overview" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Pull is the default direction: Linear issues become Thurbox tasks. Linear is
+            authoritative for an issue's
+            <strong>title, URL, and open-vs-done state</strong>
+            ; your local
+            <code>todo</code>
+            &harr;
+            <code>in_progress</code>
+            distinction is preserved. Linear's richer states map faithfully:
+            <code>unstarted</code>
+            /
+            <code>backlog</code>
+            /
+            <code>triage</code>
+            &rarr;
+            <code>todo</code>
+            ,
+            <code>started</code>
+            &rarr;
+            <code>in_progress</code>
+            ,
+            <code>completed</code>
+            /
+            <code>canceled</code>
+            &rarr;
+            <code>done</code>
+            . Imported tasks carry
+            <code>source=linear</code>
+            and
+            <code>external_id="&lt;issue identifier&gt;"</code>
+            (e.g.
+            <code>ENG-7</code>
+            ), so re-syncing never duplicates them &mdash; dedup is by
+            <code>(source, external_id)</code>
+            .
+          </p>
+
+          <h2 id="requirements">
+            Requirements
+            <a href="#requirements" class="heading-anchor">#</a>
+          </h2>
+          <ul>
+            <li>
+              <code>thurbox-cli</code>
+              <strong>&ge;&nbsp;0.141</strong>
+              on
+              <code>PATH</code>
+              &mdash; the sync uses the
+              <code>task --source/--external-id/--external-url</code>
+              flags added there (check with
+              <code>thurbox-cli version</code>
+              ).
+            </li>
+            <li>
+              <code>curl</code>
+              and
+              <code>jq</code>
+              on
+              <code>PATH</code>
+              .
+            </li>
+          </ul>
+
+          <h2 id="authenticate">
+            Get a Linear API key
+            <a href="#authenticate" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            In Linear, go to
+            <strong>Settings &rarr; Security &amp; access &rarr; Personal API keys &rarr; New key</strong>
+            . Because the automation runs
+            <strong>headless</strong>
+            (the scheduler fires it with no inherited shell environment), hand it the key via a
+            <code>credentials.env</code>
+            file in the install home &mdash;
+            <code>sync.sh</code>
+            sources it before running:
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">mkdir</span> -p ~/linear
+<span class="syn-prompt">$</span> <span class="syn-cmd">printf</span> 'LINEAR_API_KEY=lin_api_xxxxxxxx\n' &gt; ~/linear/credentials.env
+<span class="syn-prompt">$</span> <span class="syn-cmd">chmod</span> 600 ~/linear/credentials.env</code></pre>
+          <p>
+            (Exporting
+            <code>LINEAR_API_KEY</code>
+            from your shell profile is an alternative, but it only reaches the sync if the scheduler
+            inherits your profile &mdash; so
+            <code>credentials.env</code>
+            is recommended.) The key is sent
+            <strong>verbatim</strong>
+            in the
+            <code>Authorization</code>
+            header &mdash; Linear personal API keys are
+            <strong>not</strong>
+            prefixed with
+            <code>Bearer</code>
+            . Also note your
+            <strong>team key</strong>
+            (the prefix on issue ids, e.g.
+            <code>ENG</code>
+            in
+            <code>ENG-7</code>
+            ).
+          </p>
+
+          <h2 id="install">
+            Install
+            <a href="#install" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            linear is a Thurbox
+            <a href="extensions.html">extension</a>
+            (a declarative
+            <code>extension.toml</code>
+            manifest):
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install linear       <span class="syn-comment"># or ./extensions/linear</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall linear     <span class="syn-comment"># --purge also deletes ~/linear</span></code></pre>
+          <p>
+            Installing lays down the
+            <code>~/linear/</code>
+            home (override with
+            <code>--home</code>
+            ; it holds
+            <code>scripts/sync.sh</code>
+            + helpers and the seeded
+            <code>trackers.md</code>
+            ) and activates the
+            <code>linear-tick</code>
+            automation &mdash;
+            <strong>self-healed</strong>
+            by Thurbox if deleted.
+          </p>
+
+          <h2 id="configure">
+            Configure trackers.md
+            <a href="#configure" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Edit
+            <code>~/linear/trackers.md</code>
+            &mdash; one row per Linear team. The
+            <strong>query</strong>
+            is a Linear
+            <strong>team key</strong>
+            (e.g.
+            <code>ENG</code>
+            ): the whole cell is the team key, and all of that team's issues are synced. Keep
+            <code>push_back = no</code>
+            for the first run.
+          </p>
+          <pre><code>| name    | query | push_back |
+|---------|-------|-----------|
+| backend | ENG   | no        |
+| web     | WEB   | no        |</code></pre>
+
+          <h2 id="sync">
+            First sync &amp; verify
+            <a href="#sync" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The automation fires every 15&nbsp;min. To run it now, trigger it from the
+            <strong>Automations</strong>
+            pane (
+            <code>Ctrl+P</code>
+            &rarr; select
+            <code>linear-tick</code>
+            &rarr;
+            <code>r</code>
+            ) or headless:
+          </p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> automation run &lt;id&gt;     <span class="syn-comment"># id from: thurbox-cli automation list</span>
+<span class="syn-prompt">$</span> <span class="syn-cmd">~/linear/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
+          <p>Then inspect the imported tasks:</p>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> task list --json | jq -c '.[] | select(.source=="linear") | {id,status,external_id,title}'</code></pre>
+          <p>
+            States map as above (
+            <code>unstarted</code>
+            /
+            <code>backlog</code>
+            /
+            <code>triage</code>
+            &rarr;
+            <code>todo</code>
+            ,
+            <code>started</code>
+            &rarr;
+            <code>in_progress</code>
+            ,
+            <code>completed</code>
+            /
+            <code>canceled</code>
+            &rarr;
+            <code>done</code>
+            ). Re-running is
+            <strong>idempotent</strong>
+            &mdash; dedup by
+            <code>(source, external_id)</code>
+            leaves unchanged issues alone, and the
+            <code>source=linear</code>
+            tag keeps these tasks distinct from any other tracker's. The run's output
+            (created/updated/unchanged counts) shows in the automation run history.
+          </p>
+
+          <h2 id="pushback">
+            Two-way sync
+            <a href="#pushback" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Once the pull looks right, set
+            <code>push_back = yes</code>
+            on a tracker row. Now marking an imported task
+            <strong>done</strong>
+            moves its Linear issue to a completed state, and moving it back to
+            <strong>todo</strong>
+            moves it to an unstarted state &mdash; only the
+            <strong>open&harr;done axis</strong>
+            is pushed. The sync runs
+            <strong>push-then-pull</strong>
+            (
+            <code>push-status.sh</code>
+            then per-tracker
+            <code>fetch.sh | upsert.sh</code>
+            ), so your local change reaches Linear before the pull reads state back. Push acts only
+            on
+            <code>push_back=yes</code>
+            rows.
+          </p>
+
+          <h2 id="files">
+            Files
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            See
+            <a
+              href="https://github.com/Thurbeen/thurbox/tree/main/extensions/linear"
+              target="_blank"
+              rel="noopener"
+            >
+              extensions/linear
+            </a>
+            for the
+            <code>extension.toml</code>
+            manifest, the seeded
+            <code>trackers.md</code>
+            , the
+            <code>README.md</code>
+            , and the sync scripts (
+            <code>scripts/sync.sh</code>
+            ,
+            <code>scripts/fetch.sh</code>
+            ,
+            <code>scripts/upsert.sh</code>
+            ,
+            <code>scripts/push-status.sh</code>
+            ).
+          </p>

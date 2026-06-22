@@ -24,7 +24,61 @@ pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 
 use std::collections::HashMap;
 
-use crate::session::SessionConfig;
+use crate::session::{AutomationRunStatus, SessionConfig};
+
+/// Run an `Exec` automation's shell command headlessly (`sh -c`, or `cmd /C` on
+/// Windows) and report its outcome for the run history. No session/agent is
+/// involved — this is the deterministic-scheduled-job path shared by the TUI and
+/// the headless `automation tick`. stdout+stderr are tail-truncated so a chatty
+/// command can't bloat the history.
+pub fn run_exec_command(command: &str) -> (AutomationRunStatus, String) {
+    use std::process::Command;
+    let result = if cfg!(windows) {
+        Command::new("cmd").args(["/C", command]).output()
+    } else {
+        Command::new("sh").args(["-c", command]).output()
+    };
+    let out = match result {
+        Ok(out) => out,
+        Err(e) => return (AutomationRunStatus::Error, format!("spawn failed: {e}")),
+    };
+    // Keep the last ~500 chars of each stream.
+    let tail = |s: &[u8]| -> String {
+        let t = String::from_utf8_lossy(s);
+        let t = t.trim();
+        let n = t.chars().count();
+        if n > 500 {
+            t.chars().skip(n - 500).collect()
+        } else {
+            t.to_string()
+        }
+    };
+    let stdout = tail(&out.stdout);
+    let stderr = tail(&out.stderr);
+    let mut detail = stdout;
+    if !stderr.is_empty() {
+        if !detail.is_empty() {
+            detail.push('\n');
+        }
+        detail.push_str(&stderr);
+    }
+    if out.status.success() {
+        let msg = if detail.is_empty() {
+            "ok".into()
+        } else {
+            detail
+        };
+        (AutomationRunStatus::Success, msg)
+    } else {
+        let code = out.status.code().map_or("signal".into(), |c| c.to_string());
+        let msg = if detail.is_empty() {
+            format!("exit {code}")
+        } else {
+            format!("exit {code}: {detail}")
+        };
+        (AutomationRunStatus::Error, msg)
+    }
+}
 
 /// Decide whether to pass the agent's resume group vs starting fresh when
 /// (re)spawning. Returns `Some(id.clone())` only when a Claude transcript for
@@ -177,6 +231,25 @@ pub(crate) fn inject_thurbox_env(
 mod tests {
     use super::*;
     use crate::session::SessionId;
+
+    #[cfg(unix)]
+    #[test]
+    fn run_exec_command_reports_success_and_failure() {
+        // A zero-exit command → Success, with stdout captured.
+        let (status, detail) = run_exec_command("printf hello");
+        assert_eq!(status, AutomationRunStatus::Success);
+        assert!(detail.contains("hello"), "got {detail}");
+
+        // A non-zero exit → Error, with the exit code in the detail.
+        let (status, detail) = run_exec_command("exit 3");
+        assert_eq!(status, AutomationRunStatus::Error);
+        assert!(detail.contains('3'), "got {detail}");
+
+        // No output on success collapses to a friendly "ok".
+        let (status, detail) = run_exec_command("true");
+        assert_eq!(status, AutomationRunStatus::Success);
+        assert_eq!(detail, "ok");
+    }
 
     #[test]
     fn inject_env_sets_identity_and_task() {

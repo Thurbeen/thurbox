@@ -544,6 +544,8 @@ pub enum AutomationActionKind {
     Send,
     /// Spawn a new session and prompt it.
     Spawn,
+    /// Run a shell command headlessly (no session/agent).
+    Exec,
 }
 
 /// How an automation's schedule is entered in the editor. Cycled with the
@@ -619,6 +621,8 @@ pub enum AutomationField {
     Repo,
     Worktree,
     Agent,
+    /// Exec action: shell command text.
+    Command,
     Prompt,
 }
 
@@ -649,6 +653,8 @@ pub struct AutomationEditorModal {
     pub worktree: TextInput,
     /// Spawn action: optional agent name.
     pub agent: TextInput,
+    /// Exec action: the shell command to run.
+    pub command: TextInput,
     pub prompt: TextInput,
     pub enabled: bool,
     pub field: AutomationField,
@@ -691,6 +697,7 @@ impl Default for AutomationEditorModal {
             repo: TextInput::default(),
             worktree: TextInput::default(),
             agent: TextInput::default(),
+            command: TextInput::default(),
             prompt: TextInput::default(),
             enabled: true,
             field: AutomationField::default(),
@@ -722,8 +729,12 @@ impl AutomationEditorModal {
         match self.action {
             AutomationActionKind::Send => fields.push(Target),
             AutomationActionKind::Spawn => fields.extend([Repo, Worktree, Agent]),
+            AutomationActionKind::Exec => fields.push(Command),
         }
-        fields.push(Prompt);
+        // Exec has no prompt (it runs a command, not an agent turn).
+        if self.action != AutomationActionKind::Exec {
+            fields.push(Prompt);
+        }
         fields
     }
 
@@ -749,6 +760,7 @@ impl AutomationEditorModal {
             Repo => &mut self.repo,
             Worktree => &mut self.worktree,
             Agent => &mut self.agent,
+            Command => &mut self.command,
             Prompt => &mut self.prompt,
             Trigger | Weekday | Hour | Minute | Action | Target => return None,
         })
@@ -828,11 +840,12 @@ impl AutomationEditorModal {
         self.sessions.get(self.target_index)
     }
 
-    /// Toggle between Send and Spawn actions.
+    /// Cycle through Send → Spawn → Exec actions.
     pub fn toggle_action(&mut self) {
         self.action = match self.action {
             AutomationActionKind::Send => AutomationActionKind::Spawn,
-            AutomationActionKind::Spawn => AutomationActionKind::Send,
+            AutomationActionKind::Spawn => AutomationActionKind::Exec,
+            AutomationActionKind::Exec => AutomationActionKind::Send,
         };
     }
 
@@ -940,6 +953,10 @@ impl AutomationEditorModal {
                 if let Some(a) = agent {
                     m.agent.set(a);
                 }
+            }
+            AutomationAction::Exec { command } => {
+                m.action = AutomationActionKind::Exec;
+                m.command.set(command);
             }
         }
         m
@@ -2183,6 +2200,12 @@ mod tests {
             ..Default::default()
         };
         assert!(modal.visible_fields().contains(&AutomationField::Repo));
+        // The action cycles Send → Spawn → Exec → Send.
+        modal.toggle_action();
+        assert_eq!(modal.action, AutomationActionKind::Exec);
+        assert!(modal.visible_fields().contains(&AutomationField::Command));
+        // Exec has no prompt; it runs a command.
+        assert!(!modal.visible_fields().contains(&AutomationField::Prompt));
         modal.toggle_action();
         assert_eq!(modal.action, AutomationActionKind::Send);
         assert!(!modal.visible_fields().contains(&AutomationField::Repo));

@@ -55,6 +55,16 @@ pub enum Action {
         /// as-is (no worktree / branch). Makes a multi-repo task session.
         #[arg(long = "add-dir")]
         add_dir: Vec<String>,
+        /// Origin tracker (default `local`); set by sync extensions to e.g.
+        /// `github`, `gitlab`, `linear`, `jira`.
+        #[arg(long)]
+        source: Option<String>,
+        /// Identifier in the external tracker (the dedup/upsert key).
+        #[arg(long = "external-id")]
+        external_id: Option<String>,
+        /// Link to the item in the external tracker.
+        #[arg(long = "external-url")]
+        external_url: Option<String>,
     },
     /// List all active tasks.
     List,
@@ -74,6 +84,15 @@ pub enum Action {
         description: Option<String>,
         #[arg(long)]
         status: Option<String>,
+        /// Origin tracker (e.g. `github`, `linear`); unchanged when omitted.
+        #[arg(long)]
+        source: Option<String>,
+        /// External tracker id; `--external-id ""` clears it.
+        #[arg(long = "external-id")]
+        external_id: Option<String>,
+        /// External tracker link; `--external-url ""` clears it.
+        #[arg(long = "external-url")]
+        external_url: Option<String>,
     },
     /// Remove a task (soft delete).
     Remove {
@@ -100,6 +119,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             agent,
             add_repo,
             add_dir,
+            source,
+            external_id,
+            external_url,
         } => {
             if title.trim().is_empty() {
                 return Err("title must not be empty".into());
@@ -109,12 +131,15 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let action = resolve_action(session, repo, worktree, base, agent, extra_repos, db)?;
             let new = NewTask {
                 title,
-                description: normalize_description(description),
+                description: blank_to_none(description),
                 status,
                 action,
-                source: SOURCE_LOCAL.to_string(),
-                external_id: None,
-                external_url: None,
+                source: source
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| SOURCE_LOCAL.to_string()),
+                external_id: blank_to_none(external_id),
+                external_url: blank_to_none(external_url),
             };
             let id = db
                 .create_task(&new)
@@ -142,6 +167,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             title,
             description,
             status,
+            source,
+            external_id,
+            external_url,
         } => {
             let mut task = load(db, id)?;
             if let Some(t) = title {
@@ -152,10 +180,25 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             }
             // Passing --description always sets it (trimmed-empty → cleared).
             if let Some(d) = description {
-                task.description = normalize_description(Some(d));
+                task.description = blank_to_none(Some(d));
             }
             if let Some(s) = status {
                 task.status = parse_status(Some(&s))?;
+            }
+            // External-sync fields: passing the flag sets it; an empty string
+            // clears the two external_* to NULL. A blank --source is ignored
+            // (source is NOT NULL).
+            if let Some(s) = source {
+                let s = s.trim();
+                if !s.is_empty() {
+                    task.source = s.to_string();
+                }
+            }
+            if let Some(e) = external_id {
+                task.external_id = blank_to_none(Some(e));
+            }
+            if let Some(u) = external_url {
+                task.external_url = blank_to_none(Some(u));
             }
             db.update_task(&task)
                 .map_err(|e| format!("update_task: {e}"))?;
@@ -253,6 +296,8 @@ fn task_action_label(action: &Option<AutomationAction>) -> String {
         None => "-".to_string(),
         Some(AutomationAction::Send { .. }) => "send".to_string(),
         Some(AutomationAction::Spawn { .. }) => "spawn".to_string(),
+        // Exec is an automation-only action; tasks never carry one.
+        Some(AutomationAction::Exec { .. }) => "exec".to_string(),
     }
 }
 
@@ -322,6 +367,11 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             mark_in_progress(db, task)?;
             Ok(json!({ "spawned": name, "id": task.id }))
         }
+        // Exec is an automation-only action; a task never carries one.
+        Some(AutomationAction::Exec { .. }) => Ok(json!({
+            "skipped": "exec action is not supported for tasks",
+            "id": task.id,
+        })),
     }
 }
 
@@ -342,9 +392,11 @@ fn load(db: &Database, id: i64) -> Result<Task, String> {
         .ok_or_else(|| format!("Task not found: {id}"))
 }
 
-/// Trim a CLI-supplied description, mapping blank input to `None` (cleared).
-fn normalize_description(d: Option<String>) -> Option<String> {
-    d.and_then(|s| {
+/// Trim an optional CLI string, mapping blank input to `None` (cleared). Shared
+/// by the blank-able task fields: `--description`, `--external-id`, and
+/// `--external-url` (passing `""` clears each).
+fn blank_to_none(s: Option<String>) -> Option<String> {
+    s.and_then(|s| {
         let t = s.trim();
         (!t.is_empty()).then(|| t.to_string())
     })
@@ -428,6 +480,10 @@ fn task_to_json(t: &Task) -> Value {
             "base_branch": base_branch,
             "agent": agent,
             "extra_repos": serde_json::to_value(extra_repos).unwrap_or(Value::Null),
+        }),
+        Some(AutomationAction::Exec { command }) => json!({
+            "kind": "exec",
+            "command": command,
         }),
     };
     json!({
@@ -528,6 +584,9 @@ mod tests {
                 agent: None,
                 add_repo: Vec::new(),
                 add_dir: Vec::new(),
+                source: None,
+                external_id: None,
+                external_url: None,
             },
             &db,
         )
@@ -547,6 +606,9 @@ mod tests {
                 agent: None,
                 add_repo: Vec::new(),
                 add_dir: Vec::new(),
+                source: None,
+                external_id: None,
+                external_url: None,
             },
             &db,
         )
@@ -558,6 +620,9 @@ mod tests {
                 title: Some("  ".into()),
                 description: None,
                 status: None,
+                source: None,
+                external_id: None,
+                external_url: None,
             },
             &db,
         )
@@ -583,5 +648,155 @@ mod tests {
             render_task_run(&json!({ "skipped": "no agent", "id": 1 })),
             "Skipped: no agent"
         );
+    }
+
+    /// A local-todo create with all the spawn knobs defaulted, parameterized on
+    /// just the external-sync fields under test.
+    fn create_action(
+        title: &str,
+        source: Option<&str>,
+        external_id: Option<&str>,
+        external_url: Option<&str>,
+    ) -> Action {
+        Action::Create {
+            title: title.into(),
+            description: None,
+            status: None,
+            session: None,
+            repo: None,
+            worktree: None,
+            base: None,
+            agent: None,
+            add_repo: Vec::new(),
+            add_dir: Vec::new(),
+            source: source.map(Into::into),
+            external_id: external_id.map(Into::into),
+            external_url: external_url.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn create_with_external_fields_persists() {
+        let db = Database::open_in_memory().unwrap();
+        let out = run(
+            create_action(
+                "Imported from Linear",
+                Some("linear"),
+                Some("ENG-7"),
+                Some("https://linear.app/x/issue/ENG-7"),
+            ),
+            &db,
+        )
+        .unwrap();
+        assert_eq!(out["source"], "linear");
+        assert_eq!(out["external_id"], "ENG-7");
+        assert_eq!(out["external_url"], "https://linear.app/x/issue/ENG-7");
+
+        // The (source, external_id) pair is now resolvable for dedup.
+        let id = out["id"].as_i64().unwrap();
+        assert_eq!(
+            db.get_task_by_external_id("linear", "ENG-7")
+                .unwrap()
+                .map(|t| t.id),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn create_without_source_defaults_to_local() {
+        let db = Database::open_in_memory().unwrap();
+        let out = run(create_action("plain", None, None, None), &db).unwrap();
+        assert_eq!(out["source"], SOURCE_LOCAL);
+        assert!(out["external_id"].is_null());
+        assert!(out["external_url"].is_null());
+    }
+
+    #[test]
+    fn create_blank_source_falls_back_to_local() {
+        // A whitespace-only --source is treated as "not given" → local.
+        let db = Database::open_in_memory().unwrap();
+        let out = run(create_action("plain", Some("   "), None, None), &db).unwrap();
+        assert_eq!(out["source"], SOURCE_LOCAL);
+    }
+
+    #[test]
+    fn edit_can_change_source_but_ignores_blank() {
+        let db = Database::open_in_memory().unwrap();
+        let id = run(create_action("t", Some("github"), Some("1"), None), &db).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        let edit = |source: Option<&str>| {
+            run(
+                Action::Edit {
+                    id,
+                    title: None,
+                    description: None,
+                    status: None,
+                    source: source.map(Into::into),
+                    external_id: None,
+                    external_url: None,
+                },
+                &db,
+            )
+            .unwrap()
+        };
+        // A real value re-points the source.
+        assert_eq!(edit(Some("gitlab"))["source"], "gitlab");
+        // A blank value is ignored (source is NOT NULL) — left unchanged.
+        assert_eq!(edit(Some("  "))["source"], "gitlab");
+    }
+
+    #[test]
+    fn edit_updates_and_clears_external_fields() {
+        let db = Database::open_in_memory().unwrap();
+        let created = run(
+            create_action(
+                "issue",
+                Some("github"),
+                Some("42"),
+                Some("https://example.com/issues/42"),
+            ),
+            &db,
+        )
+        .unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        // Edit re-points the external link and status.
+        let edited = run(
+            Action::Edit {
+                id,
+                title: None,
+                description: None,
+                status: Some("done".into()),
+                source: None,
+                external_id: None,
+                external_url: Some("https://example.com/issues/42#closed".into()),
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(edited["status"], "done");
+        assert_eq!(edited["source"], "github"); // untouched (flag omitted)
+        assert_eq!(edited["external_id"], "42"); // untouched
+        assert_eq!(
+            edited["external_url"],
+            "https://example.com/issues/42#closed"
+        );
+
+        // Passing an empty --external-url clears it to null.
+        let cleared = run(
+            Action::Edit {
+                id,
+                title: None,
+                description: None,
+                status: None,
+                source: None,
+                external_id: None,
+                external_url: Some(String::new()),
+            },
+            &db,
+        )
+        .unwrap();
+        assert!(cleared["external_url"].is_null());
     }
 }

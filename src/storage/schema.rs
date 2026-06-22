@@ -8,9 +8,11 @@ use rusqlite::Connection;
 /// `session_messages` (the inter-session mailbox), v33 adds
 /// `action_extra_repos` to `tasks` + `automations` (multi-repo spawns),
 /// v34 adds `hook_state` / `hook_state_at` / `seen_at` to `sessions`
-/// (hooks-driven session status).
+/// (hooks-driven session status); v35 adds `idx_tasks_external` on
+/// `tasks(source, external_id)` (external-tracker sync lookup); v36 adds
+/// `action_command` to `tasks` + `automations` (the `Exec` automation action).
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 34;
+pub const SCHEMA_VERSION: u32 = 36;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -101,7 +103,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             updated_at      INTEGER NOT NULL,
             last_run_at     INTEGER,
             next_run_at     INTEGER,
-            action_extra_repos TEXT
+            action_extra_repos TEXT,
+            action_command  TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_automations_due
             ON automations(next_run_at)
@@ -143,10 +146,13 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             updated_at      INTEGER NOT NULL,
             deleted_at      INTEGER,
             description     TEXT,
-            action_extra_repos TEXT
+            action_extra_repos TEXT,
+            action_command  TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status
             ON tasks(status) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_tasks_external
+            ON tasks(source, external_id) WHERE deleted_at IS NULL;
 
         CREATE TABLE IF NOT EXISTS session_messages (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -226,6 +232,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (32, migrate_v32_session_messages),
         (33, migrate_v33_action_extra_repos),
         (34, migrate_v34_hook_status),
+        (35, migrate_v35_tasks_external_index),
+        (36, migrate_v36_action_command),
     ];
 
     for &(target, step) in steps {
@@ -984,6 +992,40 @@ fn migrate_v34_hook_status(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v34 → v35: index `tasks(source, external_id)` for external-tracker sync.
+///
+/// The task-integration extensions (linear/jira/github-issues/gitlab-issues)
+/// look up a task by its `(source, external_id)` natural key on every sync tick
+/// (`Database::get_task_by_external_id`) to dedup/upsert imported issues. The
+/// columns exist since v25; this only adds the partial index (matching the
+/// `idx_tasks_status` predicate so soft-deleted rows are excluded). Fresh v35
+/// databases already have it from `initialize` and skip this step; it is a plain
+/// (non-unique) index — dedup is enforced in application logic. `IF NOT EXISTS`
+/// keeps a re-run a no-op.
+fn migrate_v35_tasks_external_index(conn: &Connection) -> rusqlite::Result<()> {
+    // No-op when the table is absent (it is always created by an earlier step in
+    // a real upgrade path); guard so this never errors on a partial schema.
+    if !table_exists(conn, "tasks")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_external
+            ON tasks(source, external_id) WHERE deleted_at IS NULL;",
+    )
+}
+
+/// v35 → v36: add `action_command` to `tasks` + `automations`.
+///
+/// Holds the shell command for the `Exec` automation action (deterministic
+/// scheduled jobs — the task-integration sync extensions). NULL on every
+/// existing row, so non-Exec actions decode identically. Fresh v36 databases
+/// already have the column from `initialize` and skip this step; the ALTERs add
+/// it on upgrade (mirroring v33's `action_extra_repos`).
+fn migrate_v36_action_command(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "automations", "action_command", "TEXT")?;
+    add_column_if_absent(conn, "tasks", "action_command", "TEXT")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1353,6 +1395,85 @@ mod tests {
             )
             .unwrap();
         assert!(state.is_none());
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v34_adds_external_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v34 state: a tasks table (with the v25 external columns) but no
+        // idx_tasks_external index.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '34');
+             CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'todo', source TEXT NOT NULL DEFAULT 'local',
+                external_id TEXT, external_url TEXT,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let exists: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_tasks_external'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(exists, "idx_tasks_external should be added at v35");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v35_adds_action_command() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v35 state: tasks + automations without action_command.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '35');
+             CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'todo', created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL, deleted_at INTEGER);
+             CREATE TABLE automations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, schedule_kind TEXT NOT NULL,
+                schedule_spec TEXT NOT NULL, action_kind TEXT NOT NULL,
+                prompt TEXT NOT NULL, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        for table in ["tasks", "automations"] {
+            let exists: bool = conn
+                .prepare(&format!(
+                    "SELECT 1 FROM pragma_table_info('{table}') WHERE name='action_command'"
+                ))
+                .unwrap()
+                .exists([])
+                .unwrap();
+            assert!(exists, "{table}.action_command should be added at v36");
+        }
 
         let version: String = conn
             .query_row(

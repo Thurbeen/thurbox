@@ -40,8 +40,8 @@ pub enum Action {
         /// IANA timezone (e.g. `Europe/Zurich`); default system local.
         #[arg(long)]
         timezone: Option<String>,
-        /// Prompt/command text sent when the automation fires.
-        #[arg(long)]
+        /// Prompt text sent on fire (send/spawn actions). Unused by `--command`.
+        #[arg(long, default_value = "")]
         prompt: String,
         /// Send action: target an existing session by UUID.
         #[arg(long)]
@@ -58,6 +58,10 @@ pub enum Action {
         /// Agent name (spawn action; default registry agent).
         #[arg(long)]
         agent: Option<String>,
+        /// Exec action: shell command to run headlessly on fire (no session,
+        /// no agent). Mutually exclusive with --session/--repo.
+        #[arg(long)]
+        command: Option<String>,
         /// Create the automation disabled.
         #[arg(long)]
         disabled: bool,
@@ -129,10 +133,11 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             worktree,
             base,
             agent,
+            command,
             disabled,
         } => create_automation(
             db, name, trigger, time, weekday, timezone, prompt, session, repo, worktree, base,
-            agent, disabled,
+            agent, command, disabled,
         ),
         Action::List => list_automations(db),
         Action::Show { id } => {
@@ -187,13 +192,24 @@ fn create_automation(
     worktree: Option<String>,
     base: Option<String>,
     agent: Option<String>,
+    command: Option<String>,
     disabled: bool,
 ) -> Result<CommandOutput, String> {
-    if prompt.trim().is_empty() {
+    // An exec automation carries the command, not a prompt; send/spawn need one.
+    if command.is_none() && prompt.trim().is_empty() {
         return Err("prompt must not be empty".into());
     }
     let schedule = parse_trigger(&trigger, time.as_deref(), weekday)?;
-    let action = resolve_action(session, repo, worktree, base, agent, Vec::new(), db)?;
+    let action = resolve_action(
+        session,
+        repo,
+        worktree,
+        base,
+        agent,
+        Vec::new(),
+        command,
+        db,
+    )?;
     let next_run_at = if disabled {
         None
     } else {
@@ -409,6 +425,7 @@ fn automation_action_label(action: &AutomationAction) -> String {
     match action {
         AutomationAction::Send { .. } => "send".to_string(),
         AutomationAction::Spawn { .. } => "spawn".to_string(),
+        AutomationAction::Exec { .. } => "exec".to_string(),
     }
 }
 
@@ -495,7 +512,15 @@ fn fire_headless(
             agent,
             extra_repos,
         ),
+        AutomationAction::Exec { command } => fire_exec(command),
     }
+}
+
+/// Execute an `exec` automation headlessly via the shared runner. No session is
+/// involved (deterministic scheduled job).
+fn fire_exec(command: &str) -> (AutomationRunStatus, String, Option<SessionId>) {
+    let (status, detail) = crate::session_ops::run_exec_command(command);
+    (status, detail, None)
 }
 
 /// Execute a `send` automation: type the prompt into the target session's
@@ -608,13 +633,24 @@ fn resolve_action(
     base: Option<String>,
     agent: Option<String>,
     extra_repos: Vec<crate::session::ExtraRepo>,
+    command: Option<String>,
     db: &Database,
 ) -> Result<AutomationAction, String> {
+    // Exec is mutually exclusive with the session/spawn forms.
+    if let Some(cmd) = command {
+        if session.is_some() || repo.is_some() {
+            return Err("specify only one of --session, --repo, or --command".into());
+        }
+        if cmd.trim().is_empty() {
+            return Err("--command must not be empty".into());
+        }
+        return Ok(AutomationAction::Exec { command: cmd });
+    }
     match (session, repo) {
         (Some(_), Some(_)) => {
             Err("specify either --session (send) or --repo (spawn), not both".into())
         }
-        (None, None) => Err("specify --session (send) or --repo (spawn)".into()),
+        (None, None) => Err("specify --session (send), --repo (spawn), or --command (exec)".into()),
         (Some(s), None) => {
             let session_id: SessionId = s
                 .parse()
@@ -653,6 +689,10 @@ fn automation_to_json(a: &Automation) -> Value {
             "base_branch": base_branch,
             "agent": agent,
             "extra_repos": serde_json::to_value(extra_repos).unwrap_or(Value::Null),
+        }),
+        AutomationAction::Exec { command } => json!({
+            "kind": "exec",
+            "command": command,
         }),
     };
     json!({
@@ -829,6 +869,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             false,
         )
         .unwrap_err();
@@ -839,7 +880,8 @@ mod tests {
     fn resolve_action_spawn_carries_extra_repos() {
         let db = Database::open_in_memory().unwrap();
         let extra = super::super::parse_extra_repos(&["/b@main".into()], &["/c".into()]);
-        let action = resolve_action(None, Some("/a".into()), None, None, None, extra, &db).unwrap();
+        let action =
+            resolve_action(None, Some("/a".into()), None, None, None, extra, None, &db).unwrap();
         match action {
             AutomationAction::Spawn { extra_repos, .. } => {
                 assert_eq!(extra_repos.len(), 2);
@@ -849,6 +891,40 @@ mod tests {
             }
             other => panic!("expected spawn, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_action_command_builds_exec() {
+        let db = Database::open_in_memory().unwrap();
+        let action = resolve_action(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            Some("~/sync.sh".into()),
+            &db,
+        )
+        .unwrap();
+        assert!(matches!(action, AutomationAction::Exec { command } if command == "~/sync.sh"));
+    }
+
+    #[test]
+    fn resolve_action_rejects_command_with_session() {
+        let db = Database::open_in_memory().unwrap();
+        let err = resolve_action(
+            Some("s".into()),
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            Some("cmd".into()),
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("only one"), "got {err}");
     }
 
     #[test]
