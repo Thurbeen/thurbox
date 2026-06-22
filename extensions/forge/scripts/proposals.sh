@@ -27,6 +27,51 @@ RENDER="$HOME_DIR/proposals.md"
 
 src() { [ -f "$STORE" ] && printf '%s' "$STORE" || printf '/dev/null'; }
 
+# is_single_thurbox_cli COMMAND
+# True iff COMMAND is exactly one `thurbox-cli` invocation: its first word is
+# `thurbox-cli` AND it contains no shell command-chaining (`;`, `&`, `|`,
+# newline) or command/process substitution (`$(...)`, backticks, `<(...)`,
+# `>(...)`) *outside* of quotes. A prefix match alone is not enough — `sh -c`
+# would happily run a second, arbitrary command chained after a `thurbox-cli `
+# prefix. The scan is quote-aware so a legitimately quoted argument (e.g.
+# `--prompt "do a; then b"`) is still allowed; only operators that would let
+# `sh` execute *another* program are rejected.
+is_single_thurbox_cli() {
+  local s=$1 n i ch nxt state=none bs=$'\\'
+  [ "${s%%[[:space:]]*}" = "thurbox-cli" ] || return 1
+  n=${#s}
+  for (( i = 0; i < n; i++ )); do
+    ch=${s:i:1}
+    nxt=${s:i+1:1}
+    case "$state" in
+      single)
+        [ "$ch" = "'" ] && state=none
+        ;;
+      double)
+        if [ "$ch" = '"' ]; then state=none
+        elif [ "$ch" = "$bs" ]; then i=$(( i + 1 ))    # escaped char, skip
+        elif [ "$ch" = '`' ]; then return 1            # backtick subst (active in "")
+        elif [ "$ch" = '$' ] && [ "$nxt" = '(' ]; then return 1
+        fi
+        ;;
+      *)  # outside quotes
+        case "$ch" in
+          "'") state=single ;;
+          '"') state=double ;;
+          "$bs") i=$(( i + 1 )) ;;                       # escaped char, skip
+          ';'|'&'|'|') return 1 ;;                      # chaining
+          '`') return 1 ;;                              # command substitution
+          '$') [ "$nxt" = '(' ] && return 1 ;;          # $(...) substitution
+          '<'|'>') [ "$nxt" = '(' ] && return 1 ;;      # <(...)/>(...) process subst
+          *) [ "$ch" = $'\n' ] && return 1 ;;           # newline separates commands
+        esac
+        ;;
+    esac
+  done
+  [ "$state" = none ] || return 1                        # unterminated quote → suspect
+  return 0
+}
+
 render() {
   {
     echo "# Forge proposals"
@@ -104,12 +149,14 @@ case "$cmd" in
     REC="$(jq -c --arg s "$SLUG" 'select(.slug==$s)' "$STORE" | head -1)"
     [ -n "$REC" ] || { echo "no such proposal: $SLUG" >&2; exit 1; }
     CMD="$(printf '%s' "$REC" | jq -r '.command')"
-    case "$CMD" in
-      "thurbox-cli "*) : ;;
-      *) echo "refusing to run command that is not 'thurbox-cli ...': $CMD" >&2; exit 3 ;;
-    esac
+    if ! is_single_thurbox_cli "$CMD"; then
+      echo "refusing to run command that is not a single 'thurbox-cli ...' invocation: $CMD" >&2
+      exit 3
+    fi
     echo "+ $CMD"
-    OUT="$(sh -c "$CMD")"; rc=$?
+    # `if` exempts the assignment from `set -e`, so a failing command does not
+    # abort the script before we capture its status and run the graceful path.
+    if OUT="$(sh -c "$CMD")"; then rc=0; else rc=$?; fi
     printf '%s\n' "$OUT"
     [ "$rc" -eq 0 ] || { echo "command failed (rc=$rc); leaving proposal open" >&2; exit "$rc"; }
     jq -c --arg s "$SLUG" 'if .slug==$s then .status="applied" else . end' "$STORE" > "$STORE.tmp"
