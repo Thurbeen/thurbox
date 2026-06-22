@@ -58,7 +58,11 @@ else
 fi
 
 echo
-echo "## sessions (renovate / task-*)"
+echo "## sessions (renovate / workers)"
+# Worker sessions are named "<title> · #<id>" (current) or "task-<id>[-…]"
+# (legacy) — mirror flow-snapshot.sh / Task::matches_spawn_session.
 thurbox-cli session list --json 2>/dev/null | jq -r '
-  .[] | select(.name == "renovate" or (.name | startswith("task-"))) |
+  .[] | select(.name == "renovate"
+               or (.name | startswith("task-"))
+               or (.name | test(" · #[0-9]+$"))) |
   "  \(.name)  \(.id)  agent=\(.agent)  cwd=\(.cwd)"' 2>/dev/null || true
