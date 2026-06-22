@@ -101,7 +101,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             add_repo,
             add_dir,
         } => {
-            if title.is_empty() {
+            if title.trim().is_empty() {
                 return Err("title must not be empty".into());
             }
             let status = parse_status(status.as_deref())?;
@@ -145,6 +145,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         } => {
             let mut task = load(db, id)?;
             if let Some(t) = title {
+                if t.trim().is_empty() {
+                    return Err("title must not be empty".into());
+                }
                 task.title = t;
             }
             // Passing --description always sets it (trimmed-empty → cleared).
@@ -507,6 +510,59 @@ mod tests {
         assert!(rendered.contains("id:"));
         assert!(rendered.contains("Title"));
         assert!(rendered.ends_with("notes here"));
+    }
+
+    #[test]
+    fn create_and_edit_reject_blank_title() {
+        let db = Database::open_in_memory().unwrap();
+        // Whitespace-only title is rejected at create.
+        let err = run(
+            Action::Create {
+                title: "   ".into(),
+                description: None,
+                status: None,
+                session: None,
+                repo: None,
+                worktree: None,
+                base: None,
+                agent: None,
+                add_repo: Vec::new(),
+                add_dir: Vec::new(),
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("title"), "got {err}");
+
+        // A real task cannot have its title cleared to blank via edit.
+        let created = run(
+            Action::Create {
+                title: "Real".into(),
+                description: None,
+                status: None,
+                session: None,
+                repo: None,
+                worktree: None,
+                base: None,
+                agent: None,
+                add_repo: Vec::new(),
+                add_dir: Vec::new(),
+            },
+            &db,
+        )
+        .unwrap();
+        let id = created["id"].as_i64().unwrap();
+        let err = run(
+            Action::Edit {
+                id,
+                title: Some("  ".into()),
+                description: None,
+                status: None,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("title"), "got {err}");
     }
 
     #[test]

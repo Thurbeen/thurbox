@@ -266,7 +266,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         }
         Action::Send { uuid, text } => {
             let session = resolve(db, &uuid)?;
-            if text.is_empty() {
+            if text.trim().is_empty() {
                 return Err("text must not be empty".into());
             }
             crate::agent::tmux::send_prompt_now(&session.name, &text)
@@ -673,15 +673,18 @@ mod tests {
             tombstone_at: None,
         };
         db.upsert_session(&shared).unwrap();
-        let err = run(
-            Action::Send {
-                uuid: id.to_string(),
-                text: String::new(),
-            },
-            &db,
-        )
-        .unwrap_err();
-        assert!(err.contains("text"), "got {err}");
+        // Both empty and whitespace-only text are rejected (trimmed check).
+        for text in ["", "   \t\n"] {
+            let err = run(
+                Action::Send {
+                    uuid: id.to_string(),
+                    text: text.to_string(),
+                },
+                &db,
+            )
+            .unwrap_err();
+            assert!(err.contains("text"), "got {err}");
+        }
     }
 
     #[test]

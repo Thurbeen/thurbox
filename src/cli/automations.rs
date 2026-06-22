@@ -33,7 +33,8 @@ pub enum Action {
         /// Time of day `HH:MM` for presets (default `00:00`).
         #[arg(long)]
         time: Option<String>,
-        /// Day of week (0=Sun..6=Sat) for the `weekly` preset (default Mon).
+        /// Day of week (0=Sun..6=Sat, or 7=Sun) for the `weekly` preset
+        /// (default Mon).
         #[arg(long)]
         weekday: Option<u32>,
         /// IANA timezone (e.g. `Europe/Zurich`); default system local.
@@ -188,11 +189,11 @@ fn create_automation(
     agent: Option<String>,
     disabled: bool,
 ) -> Result<CommandOutput, String> {
-    if prompt.is_empty() {
+    if prompt.trim().is_empty() {
         return Err("prompt must not be empty".into());
     }
     let schedule = parse_trigger(&trigger, time.as_deref(), weekday)?;
-    let action = resolve_action(session, repo, worktree, base, agent, db)?;
+    let action = resolve_action(session, repo, worktree, base, agent, Vec::new(), db)?;
     let next_run_at = if disabled {
         None
     } else {
@@ -281,6 +282,11 @@ fn edit_automation(
 }
 
 /// Apply the name/prompt/timezone/schedule overrides supplied to `edit`.
+///
+/// `--time`/`--weekday` only shape a preset trigger, so they require `--trigger`
+/// in the same call (the stored schedule is a raw cron expression with no
+/// recoverable preset to re-apply them to). Supplying them alone is a clear
+/// error rather than a silent no-op.
 fn apply_edit_overrides(
     auto: &mut Automation,
     name: Option<String>,
@@ -294,6 +300,9 @@ fn apply_edit_overrides(
         auto.name = n;
     }
     if let Some(p) = prompt {
+        if p.trim().is_empty() {
+            return Err("prompt must not be empty".into());
+        }
         auto.prompt = p;
     }
     if let Some(tz) = timezone {
@@ -301,6 +310,8 @@ fn apply_edit_overrides(
     }
     if let Some(t) = trigger {
         auto.schedule = parse_trigger(&t, time.as_deref(), weekday)?;
+    } else if time.is_some() || weekday.is_some() {
+        return Err("--time/--weekday only apply with --trigger (a preset)".into());
     }
     Ok(())
 }
@@ -589,12 +600,14 @@ fn load(db: &Database, id: i64) -> Result<Automation, String> {
 }
 
 /// Resolve the action from the send/spawn flags (exactly one of session/repo).
+#[allow(clippy::too_many_arguments)]
 fn resolve_action(
     session: Option<String>,
     repo: Option<String>,
     worktree: Option<String>,
     base: Option<String>,
     agent: Option<String>,
+    extra_repos: Vec<crate::session::ExtraRepo>,
     db: &Database,
 ) -> Result<AutomationAction, String> {
     match (session, repo) {
@@ -616,7 +629,7 @@ fn resolve_action(
             worktree_branch: worktree,
             base_branch: base,
             agent,
-            extra_repos: Vec::new(),
+            extra_repos,
         }),
     }
 }
@@ -660,7 +673,14 @@ fn automation_to_json(a: &Automation) -> Value {
 /// Best-effort: ensure the tmux heartbeat keeper is running so the automation
 /// fires even when no TUI is attached. Failures (e.g. tmux missing) are
 /// non-fatal — the automation still works while the TUI is up.
+///
+/// Gated on `[features] automations`: when disabled the TUI neither fires
+/// schedules nor arms the heartbeat, so the CLI must not arm it either (it
+/// would spawn a keeper window that can never fire anything).
 pub(crate) fn arm_heartbeat() {
+    if !crate::session::settings::global().features.automations {
+        return;
+    }
     let cli = crate::agent::tmux::resolve_cli_binary();
     if let Err(e) = crate::agent::tmux::ensure_automation_heartbeat(&cli) {
         eprintln!("warning: failed to arm automation heartbeat: {e}");
@@ -726,6 +746,109 @@ mod tests {
             }),
             "spawn"
         );
+    }
+
+    fn sample_automation() -> Automation {
+        Automation {
+            id: 1,
+            name: "noop".into(),
+            enabled: true,
+            schedule: crate::session::AutomationSchedule::Cron {
+                expr: "0 9 * * *".into(),
+            },
+            timezone: None,
+            action: AutomationAction::Send {
+                session_id: SessionId::default(),
+            },
+            prompt: "hi".into(),
+            created_at: 0,
+            updated_at: 0,
+            last_run_at: None,
+            next_run_at: None,
+        }
+    }
+
+    #[test]
+    fn edit_time_or_weekday_without_trigger_errors() {
+        let mut auto = sample_automation();
+        let err = apply_edit_overrides(
+            &mut auto,
+            None,
+            None,
+            Some("09:30".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("--trigger"), "got {err}");
+
+        let mut auto = sample_automation();
+        let err =
+            apply_edit_overrides(&mut auto, None, None, None, Some(3), None, None).unwrap_err();
+        assert!(err.contains("--trigger"), "got {err}");
+    }
+
+    #[test]
+    fn edit_time_with_trigger_applies() {
+        let mut auto = sample_automation();
+        apply_edit_overrides(
+            &mut auto,
+            None,
+            Some("daily".into()),
+            Some("06:15".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(auto.schedule.spec(), "15 6 * * *");
+    }
+
+    #[test]
+    fn edit_rejects_blank_prompt() {
+        let mut auto = sample_automation();
+        let err = apply_edit_overrides(&mut auto, None, None, None, None, None, Some("   ".into()))
+            .unwrap_err();
+        assert!(err.contains("prompt"), "got {err}");
+    }
+
+    #[test]
+    fn create_rejects_blank_prompt() {
+        let db = Database::open_in_memory().unwrap();
+        let err = create_automation(
+            &db,
+            "n".into(),
+            "daily".into(),
+            None,
+            None,
+            None,
+            "   ".into(),
+            None,
+            Some("/repo".into()),
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("prompt"), "got {err}");
+    }
+
+    #[test]
+    fn resolve_action_spawn_carries_extra_repos() {
+        let db = Database::open_in_memory().unwrap();
+        let extra = super::super::parse_extra_repos(&["/b@main".into()], &["/c".into()]);
+        let action = resolve_action(None, Some("/a".into()), None, None, None, extra, &db).unwrap();
+        match action {
+            AutomationAction::Spawn { extra_repos, .. } => {
+                assert_eq!(extra_repos.len(), 2);
+                assert!(extra_repos[0].worktree);
+                assert_eq!(extra_repos[0].base_branch.as_deref(), Some("main"));
+                assert!(!extra_repos[1].worktree);
+            }
+            other => panic!("expected spawn, got {other:?}"),
+        }
     }
 
     #[test]

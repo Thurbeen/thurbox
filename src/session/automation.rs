@@ -245,7 +245,8 @@ pub fn preset_to_cron(preset: SchedulePreset, hour: u32, minute: u32, dow: u32) 
 ///
 /// Accepts: `cron:"<expr>"`, `at:<unix_millis>`, or a preset name
 /// (`hourly`/`daily`/`weekdays`/`weekly`) combined with an optional `HH:MM`
-/// `time` and `weekday` (0 = Sun, for `weekly`; default Monday).
+/// `time` and `weekday` (0..=6 = Sun..Sat, or 7 = Sun, for `weekly`; default
+/// Monday).
 pub fn parse_trigger(
     trigger: &str,
     time: Option<&str>,
@@ -273,7 +274,18 @@ pub fn parse_trigger(
         Some(t) => parse_hhmm(t).ok_or_else(|| format!("invalid time `{t}` (expected HH:MM)"))?,
         None => (0, 0),
     };
-    let dow = weekday.unwrap_or(1).min(6);
+    // Unix cron day-of-week: 0 and 7 both mean Sunday. Accept the full 0..=7
+    // range (normalize_cron remaps it for the `cron` crate) rather than
+    // clamping 7 down to 6 (Saturday), which silently broke Sunday.
+    let dow = match weekday {
+        Some(d) if d > 7 => {
+            return Err(format!(
+                "invalid weekday `{d}` (use 0=Sun..6=Sat, or 7=Sun)"
+            ))
+        }
+        Some(d) => d,
+        None => 1,
+    };
     Ok(AutomationSchedule::Cron {
         expr: preset_to_cron(preset, hour, minute, dow),
     })
@@ -472,6 +484,31 @@ mod tests {
         assert_eq!(parse_duration("30"), None); // no unit
         assert_eq!(parse_duration("m"), None); // no number
         assert_eq!(parse_duration("30x"), None); // bad unit
+    }
+
+    #[test]
+    fn parse_trigger_weekly_handles_sunday_both_ways() {
+        // Sunday is 0 or 7 in Unix cron; neither must clamp to Saturday (6).
+        for sun in [0, 7] {
+            let sched = parse_trigger("weekly", Some("09:00"), Some(sun)).unwrap();
+            let AutomationSchedule::Cron { expr } = sched else {
+                panic!("expected cron schedule");
+            };
+            assert_eq!(expr, format!("0 9 * * {sun}"));
+            // ...and it actually lands on a Sunday: from Saturday 2024-01-06 the
+            // next fire is Sunday 2024-01-07 09:00 UTC.
+            let sat = MON_2024 + 5 * 86_400_000;
+            let next = AutomationSchedule::Cron { expr }
+                .next_after(sat, Some("UTC"))
+                .unwrap();
+            assert_eq!(next, MON_2024 + 6 * 86_400_000 + 9 * 3_600_000);
+        }
+    }
+
+    #[test]
+    fn parse_trigger_rejects_out_of_range_weekday() {
+        let err = parse_trigger("weekly", None, Some(8)).unwrap_err();
+        assert!(err.contains("weekday"), "got {err}");
     }
 
     #[test]
