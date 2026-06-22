@@ -97,6 +97,12 @@
   grep -q "darwin-aarch64) echo \"aarch64-apple-darwin\"" "${BATS_TEST_DIRNAME}/install.sh"
 }
 
+@test "script does not map unshipped platforms (linux-aarch64, darwin-x86_64)" {
+  # cd.yml builds no .tar.gz for these, so get_target must NOT resolve them.
+  run grep -E "linux-aarch64\)|darwin-x86_64\)" "${BATS_TEST_DIRNAME}/install.sh"
+  [ "$status" -ne 0 ]
+}
+
 @test "script supports VERSION env var" {
   grep -q "VERSION" "${BATS_TEST_DIRNAME}/install.sh"
 }

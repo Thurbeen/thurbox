@@ -170,7 +170,9 @@ Both installers share the same shape: ASCII banner, platform detection, version
 resolution (GitHub API → releases-page scrape fallback), SHA256 checksum
 verification, extract, post-install hints. They download from the same release:
 `install.sh` pulls the `.tar.gz` for `x86_64-unknown-linux-musl` /
-`aarch64-unknown-linux-gnu` / `*-apple-darwin`; `install.ps1` pulls the
+`aarch64-apple-darwin` (Linux x86_64 + Apple-silicon macOS — the only
+platforms it installs onto; it errors cleanly on any other);
+`install.ps1` pulls the
 **`thurbox-<ver>-x86_64-pc-windows-msvc.zip`** (the Windows artifact built by
 `cd.yml`) and extracts it with the built-in `Expand-Archive` (no tar needed).
 ARM64 Windows installs the x86_64 build (runs under x64 emulation).
@@ -737,7 +739,7 @@ sync, but the TUI editor never sets it.)
   `external_url` scaffolding for **deferred** external sync — Jira/
   GitHub Issues slot in later with no migration; local tasks use
   `source = "local"`).
-- **Storage** (`storage/tasks.rs`, schema v26): `tasks` table mirroring
+- **Storage** (`storage/tasks.rs`, schema v25): `tasks` table mirroring
   the automation action columns (`action_kind` nullable) plus a nullable
   `description` column (added in the v26 migration), soft-delete via
   `deleted_at`, audited under `EntityType::Task`. CRUD: `create_task`,
@@ -1417,10 +1419,9 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+U` | Restore deleted sessions | **U**ndelete |
 | `Ctrl+Y` / `F4` | Pick TUI theme | Color **Y**oke |
 | `Ctrl+,` / `F6` | Settings panel (edit settings.toml) | **,** = preferences |
+| `Ctrl+B` / `F2` | Toggle info panel (visible at width >= 120) | Info **b**ox |
+| `Ctrl+E` / `F3` | Toggle file viewer | **E**xplore files |
 | `F1` / `Ctrl+G` | Keybindings help + interactive editor | Universal |
-| `F2` | Toggle info panel (visible at width >= 120) | Next to F1 |
-| `F3` | Toggle file viewer | Next to F2 |
-| `F5` | Toggle tasks panel (visible at width >= 120) | Next to F4 |
 
 List contexts use plain `j`/`k`/`Enter` for navigation.
 In the focused session list, `Shift+J`/`Shift+K` move the selected

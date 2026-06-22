@@ -45,16 +45,22 @@ pub enum UpdateOutcome {
 }
 
 /// Map an OS/arch pair to the release artifact's Rust target triple. Mirrors
-/// `scripts/install.sh`'s `get_target`. Pure (takes os/arch) so it's testable;
-/// note Rust spells these `"macos"`/`"aarch64"` where `uname` says
-/// `darwin`/`arm64`, but they map to the same triples.
+/// `scripts/install.sh`'s `get_target`, and is restricted to the platforms
+/// `cd.yml`'s release matrix actually builds a `.tar.gz` for — Linux x86_64 (we
+/// pick the portable musl tarball) and Apple-silicon macOS — so an update never
+/// 404s on a missing artifact. Linux aarch64 and Intel macOS have no build, so
+/// they error cleanly here rather than pointing at a download that isn't there.
+/// Pure (takes os/arch) so it's testable; note Rust spells these
+/// `"macos"`/`"aarch64"` where `uname` says `darwin`/`arm64`, but they map to
+/// the same triples.
 fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
     match (os, arch) {
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
-        ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
-        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
         ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
-        _ => Err(format!("unsupported platform: {os}-{arch}")),
+        _ => Err(format!(
+            "unsupported platform: {os}-{arch} (no release artifact is built \
+             for it; see scripts/install.sh)"
+        )),
     }
 }
 
@@ -290,19 +296,19 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
 mod tests {
     use super::*;
 
+    /// The `.tar.gz` triples an update may download — the artifacts `cd.yml`
+    /// builds that `target_triple` actually selects (it prefers musl over the
+    /// also-built gnu tarball for Linux x86_64; the Windows artifact is a `.zip`
+    /// handled by `install.ps1`, not this tar path). `target_triple` /
+    /// `current_target` must only ever resolve to one of these — anything else
+    /// would 404 on download.
+    const SHIPPED_TRIPLES: [&str; 2] = ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"];
+
     #[test]
     fn target_triple_maps_supported_platforms() {
         assert_eq!(
             target_triple("linux", "x86_64").unwrap(),
             "x86_64-unknown-linux-musl"
-        );
-        assert_eq!(
-            target_triple("linux", "aarch64").unwrap(),
-            "aarch64-unknown-linux-gnu"
-        );
-        assert_eq!(
-            target_triple("macos", "x86_64").unwrap(),
-            "x86_64-apple-darwin"
         );
         assert_eq!(
             target_triple("macos", "aarch64").unwrap(),
@@ -311,9 +317,27 @@ mod tests {
     }
 
     #[test]
-    fn target_triple_rejects_unknown_platform() {
+    fn target_triple_rejects_unshipped_platforms() {
+        // Platforms `cd.yml` does NOT build a `.tar.gz` for must error cleanly
+        // rather than resolve to a non-existent artifact.
         assert!(target_triple("windows", "x86_64").is_err());
         assert!(target_triple("linux", "riscv64").is_err());
+        // aarch64 Linux and Intel macOS are intentionally not shipped.
+        assert!(target_triple("linux", "aarch64").is_err());
+        assert!(target_triple("macos", "x86_64").is_err());
+    }
+
+    #[test]
+    fn current_target_resolves_to_a_shipped_triple_or_errors() {
+        // On a release-built host `current_target` must name a shipped triple;
+        // on any other host it must error (never point at a missing download).
+        match current_target() {
+            Ok(triple) => assert!(
+                SHIPPED_TRIPLES.contains(&triple),
+                "current_target() -> {triple} is not a release-built triple"
+            ),
+            Err(e) => assert!(e.contains("unsupported platform"), "got: {e}"),
+        }
     }
 
     #[test]
