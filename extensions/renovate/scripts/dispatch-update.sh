@@ -77,7 +77,7 @@ If you are blocked (a major upgrade that needs a human decision, test failures
 you can't resolve), do NOT guess — stop and report it in the result
 \`question\` field.
 
-When finished: mark this task done (thurbox-cli task edit <id> --status done),
+When finished: mark this task done (thurbox-cli task edit \$THURBOX_TASK --status done),
 print a final line \`===RESULT===\` followed by one line of JSON:
 {"status":"ok|error","artifact":"...","notes":"...","pr_url":"..."}
 then notify the renovate monitor so the next repo dispatches immediately:

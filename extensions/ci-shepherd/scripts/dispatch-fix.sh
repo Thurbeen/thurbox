@@ -162,7 +162,7 @@ If you are blocked (a decision only the user can make, missing credentials, an
 ambiguous review request), do NOT guess — stop and report it in the result
 \`question\` field.
 
-When finished: mark this task done (thurbox-cli task edit <id> --status done),
+When finished: mark this task done (thurbox-cli task edit \$THURBOX_TASK --status done),
 print a final line \`===RESULT===\` followed by one line of JSON:
 {"status":"ok|error","url":"...","notes":"...","question":"..."}
 then notify the shepherd so the next request dispatches immediately:
