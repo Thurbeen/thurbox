@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use regex::Regex;
+use unicode_width::UnicodeWidthStr;
 
 pub struct DetectedLink {
     pub row: usize,
@@ -15,26 +16,34 @@ fn url_regex() -> &'static Regex {
 }
 
 /// Extract visible rows from a vt100 screen, one string per row.
+///
+/// Emits one char per *glyph*, not per cell: a wide (CJK/emoji) glyph occupies
+/// two cells, where vt100 stores the glyph in the lead cell and marks the next
+/// cell as a continuation. Those continuation cells are skipped so the string
+/// holds exactly the printed characters, letting [`detect_urls`] recover screen
+/// cell columns via display width rather than a per-cell placeholder.
 pub fn extract_screen_rows(screen: &vt100::Screen) -> Vec<String> {
     let (rows, cols) = screen.size();
     (0..rows)
         .map(|row| {
-            (0..cols)
-                .map(|col| {
-                    screen
-                        .cell(row, col)
-                        .and_then(|c| c.contents().chars().next())
-                        .unwrap_or(' ')
-                })
-                .collect()
+            let mut line = String::new();
+            for col in 0..cols {
+                match screen.cell(row, col) {
+                    Some(c) if c.is_wide_continuation() => continue,
+                    Some(c) => line.push(c.contents().chars().next().unwrap_or(' ')),
+                    None => line.push(' '),
+                }
+            }
+            line
         })
         .collect()
 }
 
 /// Detect URLs in screen rows, stripping trailing punctuation.
 ///
-/// Positions are character-based (not byte-based) so they map directly
-/// to vt100 screen cell columns.
+/// Positions are display-width based (not byte- or char-based) so they map
+/// directly to vt100 screen cell columns even on rows containing wide
+/// (CJK/emoji) glyphs, which each span two cells.
 pub fn detect_urls(screen_rows: &[String]) -> Vec<DetectedLink> {
     let re = url_regex();
     let mut links = Vec::new();
@@ -46,10 +55,10 @@ pub fn detect_urls(screen_rows: &[String]) -> Vec<DetectedLink> {
             }
             // Skip bare scheme-only matches like "http://" with no host
             if url.len() > "https://".len() {
-                // Convert byte offsets to character offsets: regex returns byte
-                // positions, but we need cell positions (1 char = 1 cell).
-                let start_col = row[..m.start()].chars().count();
-                let end_col = start_col + url.chars().count();
+                // Convert the regex's byte offsets to cell columns using display
+                // width: a wide glyph before the URL shifts it two cells, not one.
+                let start_col = UnicodeWidthStr::width(&row[..m.start()]);
+                let end_col = start_col + UnicodeWidthStr::width(url);
                 links.push(DetectedLink {
                     row: row_idx,
                     start_col,
@@ -226,6 +235,45 @@ mod tests {
         assert_eq!(links[0].end_col, 21);
         assert_eq!(url_at_position(&links, 0, 2), Some("https://example.com"));
         assert_eq!(url_at_position(&links, 0, 1), None);
+    }
+
+    #[test]
+    fn wide_chars_before_url_use_display_width() {
+        // Each CJK glyph spans two cells; the URL therefore starts at column 5
+        // (漢=2 + 字=2 + space=1), not column 3 as a per-char count would give.
+        let rows = vec!["漢字 https://example.com".to_string()];
+        let links = detect_urls(&rows);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://example.com");
+        assert_eq!(links[0].start_col, 5);
+        assert_eq!(links[0].end_col, 5 + "https://example.com".len());
+        assert_eq!(url_at_position(&links, 0, 5), Some("https://example.com"));
+        // The trailing cell of 字 (column 4) is not part of the URL.
+        assert_eq!(url_at_position(&links, 0, 4), None);
+    }
+
+    #[test]
+    fn emoji_before_url_uses_display_width() {
+        // 🚀 is one char but two cells wide; URL starts at column 3 (🚀=2 + space).
+        let rows = vec!["🚀 https://example.com".to_string()];
+        let links = detect_urls(&rows);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].start_col, 3);
+        assert_eq!(url_at_position(&links, 0, 3), Some("https://example.com"));
+    }
+
+    #[test]
+    fn wide_chars_through_parser_match_cell_columns() {
+        // End-to-end over the real screen path: extract_screen_rows must agree
+        // with the cell columns that a mouse click reports.
+        let mut parser = vt100::Parser::new(1, 40, 0);
+        parser.process("漢字 https://example.com".as_bytes());
+        let rows = extract_screen_rows(parser.screen());
+        let links = detect_urls(&rows);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].start_col, 5);
+        assert_eq!(url_at_position(&links, 0, 5), Some("https://example.com"));
+        assert_eq!(url_at_position(&links, 0, 4), None);
     }
 
     #[test]
