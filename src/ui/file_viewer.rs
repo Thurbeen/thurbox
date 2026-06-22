@@ -831,12 +831,19 @@ fn search_title(query: &str, current: usize, total: usize) -> String {
     }
 }
 
+/// Keep the trailing `budget` characters of `query` so the cursor end stays
+/// visible. Counts and slices on `char` boundaries — never raw byte indices —
+/// so a multi-byte (non-ASCII) query never panics on a mid-codepoint slice.
 fn truncate_left(query: &str, budget: usize) -> &str {
-    if query.len() <= budget {
-        query
-    } else {
-        &query[query.len().saturating_sub(budget)..]
+    let char_count = query.chars().count();
+    if char_count <= budget {
+        return query;
     }
+    let start = query
+        .char_indices()
+        .nth(char_count - budget)
+        .map_or(query.len(), |(i, _)| i);
+    &query[start..]
 }
 
 fn split_at_cursor(text: &str, cursor: usize) -> (&str, &str) {
@@ -1057,6 +1064,37 @@ mod tests {
         let before = st.selected;
         st.next_match();
         assert_eq!(st.selected, before);
+    }
+
+    #[test]
+    fn truncate_left_keeps_trailing_chars_within_budget() {
+        assert_eq!(truncate_left("hello", 10), "hello");
+        assert_eq!(truncate_left("hello", 5), "hello");
+        assert_eq!(truncate_left("hello", 3), "llo");
+        assert_eq!(truncate_left("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_left_handles_multibyte_query_without_panicking() {
+        // A multi-byte (non-ASCII) query whose byte length exceeds the budget
+        // used to slice on a raw byte index and panic mid-codepoint. Slicing on
+        // char boundaries must keep the trailing chars and stay valid UTF-8.
+        // "héllo wörld 你好" — mix of 1-, 2-, and 3-byte code points.
+        let q = "héllo wörld 你好";
+        assert!(q.len() > q.chars().count(), "query must be multi-byte");
+
+        // Budget smaller than the char count would put a naive byte slice in
+        // the middle of a multi-byte char. We keep the trailing `budget` chars.
+        let out = truncate_left(q, 4);
+        assert_eq!(out.chars().count(), 4);
+        assert_eq!(out, "d 你好");
+
+        // A budget that lands exactly on a multi-byte boundary, and one of 0.
+        assert_eq!(truncate_left(q, 2), "你好");
+        assert_eq!(truncate_left(q, 0), "");
+        // Budget >= char count returns the whole string unchanged.
+        assert_eq!(truncate_left(q, q.chars().count()), q);
+        assert_eq!(truncate_left(q, 999), q);
     }
 
     #[test]
