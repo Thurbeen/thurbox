@@ -82,22 +82,26 @@ impl Database {
     /// Validates `kind`/`body` (see
     /// [`MAX_KIND_LEN`](crate::session::message::MAX_KIND_LEN) /
     /// [`MAX_BODY_LEN`](crate::session::message::MAX_BODY_LEN)) and enforces the
-    /// per-recipient unread cap before inserting.
+    /// per-recipient unread cap atomically as part of the insert.
+    ///
+    /// The cap check and the insert are a **single** `INSERT … SELECT … WHERE`
+    /// statement: the row is written only if the recipient's unread count is
+    /// still below [`MAX_UNREAD_PER_RECIPIENT`] *at insert time*. SQLite
+    /// serializes writers, so two concurrent senders can't both pass the cap and
+    /// both insert (the TOCTOU a separate count-then-insert would allow). A zero
+    /// row-count means the guard rejected it → [`EnqueueError::InboxFull`].
     pub fn enqueue_message(&self, new: &NewMessage) -> Result<i64, EnqueueError> {
         validate_kind_body(&new.kind, &new.body).map_err(EnqueueError::Invalid)?;
 
-        let unread = self.count_unread_messages(new.to_session_id)?;
-        if unread >= MAX_UNREAD_PER_RECIPIENT {
-            return Err(EnqueueError::InboxFull {
-                cap: MAX_UNREAD_PER_RECIPIENT,
-            });
-        }
-
         let now = current_time_millis() as i64;
-        self.conn.execute(
+        let inserted = self.conn.execute(
             "INSERT INTO session_messages
                 (to_session_id, from_session_id, from_task_id, kind, body, created_at, read_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, NULL
+             WHERE (
+                 SELECT count(*) FROM session_messages
+                 WHERE to_session_id = ?1 AND read_at IS NULL
+             ) < ?7",
             params![
                 new.to_session_id.to_string(),
                 new.from_session_id.map(|id| id.to_string()),
@@ -105,8 +109,14 @@ impl Database {
                 new.kind,
                 new.body,
                 now,
+                MAX_UNREAD_PER_RECIPIENT as i64,
             ],
         )?;
+        if inserted == 0 {
+            return Err(EnqueueError::InboxFull {
+                cap: MAX_UNREAD_PER_RECIPIENT,
+            });
+        }
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -345,6 +355,57 @@ mod tests {
         assert!(db
             .enqueue_message(&new_msg(SessionId::default(), "note", "ok"))
             .is_ok());
+    }
+
+    #[test]
+    fn concurrent_enqueue_never_exceeds_cap() {
+        // Several Database connections (file-backed shared store) hammer
+        // enqueue_message past the cap from N threads. The atomic
+        // INSERT … SELECT … WHERE guard must keep total inserts ≤ cap — a
+        // separate count-then-insert would let racing writers overshoot it.
+        use std::sync::Arc;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("messages.db");
+        // Materialize the schema before the threads race on it.
+        let writer = Database::open(&path).unwrap();
+        let to = SessionId::default();
+
+        const THREADS: usize = 8;
+        // Each thread attempts more than its share of the cap, so collectively
+        // they greatly overshoot and the guard has to reject the excess.
+        const PER_THREAD: usize = MAX_UNREAD_PER_RECIPIENT / 4;
+
+        let path = Arc::new(path);
+        let mut handles = Vec::new();
+        for _ in 0..THREADS {
+            let path = Arc::clone(&path);
+            handles.push(std::thread::spawn(move || {
+                let db = Database::open(path.as_ref()).unwrap();
+                let mut ok = 0usize;
+                for i in 0..PER_THREAD {
+                    match db.enqueue_message(&new_msg(to, "note", &format!("m{i}"))) {
+                        Ok(_) => ok += 1,
+                        Err(EnqueueError::InboxFull { .. }) => {}
+                        Err(e) => panic!("unexpected enqueue error: {e}"),
+                    }
+                }
+                ok
+            }));
+        }
+        let total_ok: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+
+        // The cap is the ceiling: never exceeded, regardless of races.
+        assert_eq!(
+            writer.count_unread_messages(to).unwrap(),
+            MAX_UNREAD_PER_RECIPIENT,
+            "inbox filled exactly to the cap"
+        );
+        // Every successful enqueue is accounted for by a real unread row.
+        assert_eq!(
+            total_ok, MAX_UNREAD_PER_RECIPIENT,
+            "successful enqueues equal the cap — none lost, none overshot"
+        );
     }
 
     #[test]
