@@ -1,0 +1,219 @@
+---
+layout: docs.njk
+title: 'Recipes — Thurbox Docs'
+description: 'Worked Thurbox recipes: provision a monorepo headless with operator, developer, and security/quality reviewer sessions, each with its own MCP config and blast radius.'
+currentPage: 'recipes'
+breadcrumb: 'Recipes'
+onThisPage:
+  - { id: 'monorepo', label: 'Provision a monorepo' }
+  - { id: 'script', label: 'The script' }
+  - { id: 'agents', label: 'Agent definitions' }
+  - { id: 'mcp', label: 'MCP configs' }
+  - { id: 'scale', label: 'Scale knobs' }
+---
+<h1>Recipes</h1>
+<p>
+  Worked, copy-pasteable patterns built on
+  <a href="features.html#headless-cli"><code>thurbox-cli</code></a>
+  and
+  <a href="configuration.html"><code>agents.toml</code></a>
+  &mdash; no glue code, no recompile.
+</p>
+
+<h2 id="monorepo">
+  Provision a monorepo
+  <a href="#monorepo" class="heading-anchor">#</a>
+</h2>
+<p>
+  A practical example for a monorepo with a production app &mdash; three roles, each with a
+  different blast radius:
+</p>
+<ul>
+  <li>
+    one or more
+    <strong>operator</strong>
+    sessions in worktrees with a custom MCP config &mdash;
+    <strong>read/write</strong>
+    access to the prod backoffice;
+  </li>
+  <li>
+    one or more
+    <strong>developer</strong>
+    sessions in worktrees with a custom MCP config &mdash;
+    <strong>read-only</strong>
+    access to the prod backoffice;
+  </li>
+  <li>
+    one or more
+    <strong>security/quality reviewer</strong>
+    sessions running continuous code review across the monorepo.
+  </li>
+</ul>
+<p>
+  The "custom MCP config" is just an
+  <strong>agent</strong>
+  that launches
+  <code>claude</code>
+  with a different
+  <code>--mcp-config</code>
+  file &mdash; Thurbox stays agent-neutral. The whole thing is a single shell script over
+  <code>thurbox-cli</code>
+  plus three
+  <code>agents.toml</code>
+  entries.
+</p>
+
+<h2 id="script">
+  The script
+  <a href="#script" class="heading-anchor">#</a>
+</h2>
+<pre><code>#!/usr/bin/env bash
+set -euo pipefail
+REPO="${REPO:-/home/me/code/monorepo}"   # path to the monorepo
+N_OPERATORS="${N_OPERATORS:-1}"
+N_DEVELOPERS="${N_DEVELOPERS:-2}"
+N_REVIEWERS="${N_REVIEWERS:-1}"
+HOST="${HOST:-}"                          # e.g. devbox to run remotely; empty = local
+STAMP="$(date +%y%m%d-%H%M)"
+cli() { thurbox-cli "$@"; }
+
+host_flag() { [ -n "$HOST" ] && printf -- '--host\n%s\n' "$HOST"; }
+
+# 1) Operator sessions — RW backoffice, each on its own worktree branch.
+for i in $(seq 1 "$N_OPERATORS"); do
+  cli session create \
+    --name "operator-$i" \
+    --repo-path "$REPO" \
+    --agent operator \
+    --worktree-branch "ops/$STAMP-$i" \
+    $(host_flag)
+done
+
+# 2) Developer sessions — RO backoffice, each on its own worktree branch.
+for i in $(seq 1 "$N_DEVELOPERS"); do
+  cli session create \
+    --name "developer-$i" \
+    --repo-path "$REPO" \
+    --agent developer \
+    --worktree-branch "dev/$STAMP-$i" \
+    $(host_flag)
+done
+
+# 3) Security/quality reviewer sessions — continuous review across the monorepo.
+#    No worktree: review the repo as-is (read-only stance comes from the prompt).
+for i in $(seq 1 "$N_REVIEWERS"); do
+  id="$(cli session create \
+        --name "reviewer-$i" \
+        --repo-path "$REPO" \
+        --agent reviewer \
+        $(host_flag) \
+        --json | jq -r '.id')"
+  # Seed the reviewer with its standing instructions.
+  cli session send --to "$id" --no-wake --body \
+"You are a continuous security &amp; code-quality reviewer for this monorepo.
+Loop: pick the most recently changed files, review for security issues, correctness bugs,
+and quality regressions. Report findings concisely, then move to the next changed area.
+Do not modify code — review only."
+done
+
+cli session list</code></pre>
+
+<h2 id="agents">
+  Agent definitions
+  <a href="#agents" class="heading-anchor">#</a>
+</h2>
+<p>
+  Each role is one
+  <code>[[agents]]</code>
+  entry pointing at its own MCP config. Anything in
+  <code>args</code>
+  is always passed, so bake in a model or any other default flags there. Drop this into
+  <code>~/.config/thurbox/agents.toml</code>
+  :
+</p>
+<pre><code># ~/.config/thurbox/agents.toml
+default = "claude"
+
+[[agents]]
+name = "operator"                 # prod backoffice: read/write
+command = "claude"
+args = [
+  "--mcp-config", "/home/me/.config/thurbox/mcp/backoffice-rw.json",
+  "--model", "opus",              # bake any default flags into args
+]
+new_session_args = ["--session-id", "{id}"]
+resume_args      = ["--resume", "{id}"]
+fork_args        = ["--resume", "{id}", "--fork-session"]
+
+[[agents]]
+name = "developer"                # prod backoffice: read-only
+command = "claude"
+args = ["--mcp-config", "/home/me/.config/thurbox/mcp/backoffice-ro.json"]
+new_session_args = ["--session-id", "{id}"]
+resume_args      = ["--resume", "{id}"]
+fork_args        = ["--resume", "{id}", "--fork-session"]
+
+[[agents]]
+name = "reviewer"                 # continuous code review, no backoffice access
+command = "claude"
+args = []
+new_session_args = ["--session-id", "{id}"]
+resume_args      = ["--resume", "{id}"]
+fork_args        = ["--resume", "{id}", "--fork-session"]</code></pre>
+
+<h2 id="mcp">
+  MCP configs
+  <a href="#mcp" class="heading-anchor">#</a>
+</h2>
+<p>
+  The read/write vs read-only split lives entirely in the two MCP config files those agents point
+  at, under
+  <code>~/.config/thurbox/mcp/</code>
+  :
+</p>
+<pre><code># ~/.config/thurbox/mcp/backoffice-rw.json
+{
+  "mcpServers": {
+    "backoffice": {
+      "command": "npx",
+      "args": ["-y", "@yourco/backoffice-mcp"],
+      "env": {
+        "BACKOFFICE_URL": "https://prod-backoffice.internal",
+        "BACKOFFICE_MODE": "rw"
+      }
+    }
+  }
+}</code></pre>
+<p>
+  <code>backoffice-ro.json</code>
+  is identical but with
+  <code>"BACKOFFICE_MODE": "ro"</code>
+  . The reviewer agent ships no MCP server at all, so it can never touch the backoffice.
+</p>
+
+<h2 id="scale">
+  Scale knobs
+  <a href="#scale" class="heading-anchor">#</a>
+</h2>
+<ul>
+  <li>
+    Counts are env vars &mdash;
+    <code>N_DEVELOPERS=3 ./provision.sh</code>
+    spins up three developer sessions.
+  </li>
+  <li>
+    <code>HOST=devbox ./provision.sh</code>
+    runs every session's worktree + tmux on a remote machine from
+    <a href="features.html#remote-ssh-sessions"><code>hosts.toml</code></a>
+    .
+  </li>
+  <li>
+    Need one session to span several repos? Add
+    <code>--add-repo PATH@main</code>
+    (its own worktree per repo) or
+    <code>--add-dir PATH</code>
+    (attached read-only) to its
+    <code>session create</code>
+    .
+  </li>
+</ul>

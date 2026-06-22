@@ -521,6 +521,133 @@ command = "codex"
 - **Recover a crash** — if Thurbox dies, relaunch it: sessions
   resume from tmux. Prefer raw tmux? `tmux -L thurbox attach`.
 
+### Recipe: provision a monorepo headless
+
+A practical example for a monorepo with a production app — three
+roles, each with a different blast radius:
+
+- one or more **operator** sessions in worktrees with a custom MCP
+  config — **read/write** access to the prod backoffice;
+- one or more **developer** sessions in worktrees with a custom MCP
+  config — **read-only** access to the prod backoffice;
+- one or more **security/quality reviewer** sessions running
+  continuous code review across the monorepo.
+
+A single shell script — no glue code, no overhead:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+REPO="${REPO:-/home/me/code/monorepo}"   # path to the monorepo
+N_OPERATORS="${N_OPERATORS:-1}"
+N_DEVELOPERS="${N_DEVELOPERS:-2}"
+N_REVIEWERS="${N_REVIEWERS:-1}"
+HOST="${HOST:-}"                          # e.g. devbox to run remotely; empty = local
+STAMP="$(date +%y%m%d-%H%M)"
+cli() { thurbox-cli "$@"; }
+
+host_flag() { [ -n "$HOST" ] && printf -- '--host\n%s\n' "$HOST"; }
+
+# 1) Operator sessions — RW backoffice, each on its own worktree branch.
+for i in $(seq 1 "$N_OPERATORS"); do
+  cli session create \
+    --name "operator-$i" \
+    --repo-path "$REPO" \
+    --agent operator \
+    --worktree-branch "ops/$STAMP-$i" \
+    $(host_flag)
+done
+
+# 2) Developer sessions — RO backoffice, each on its own worktree branch.
+for i in $(seq 1 "$N_DEVELOPERS"); do
+  cli session create \
+    --name "developer-$i" \
+    --repo-path "$REPO" \
+    --agent developer \
+    --worktree-branch "dev/$STAMP-$i" \
+    $(host_flag)
+done
+
+# 3) Security/quality reviewer sessions — continuous review across the monorepo.
+#    No worktree: review the repo as-is (read-only stance comes from the prompt).
+for i in $(seq 1 "$N_REVIEWERS"); do
+  id="$(cli session create \
+        --name "reviewer-$i" \
+        --repo-path "$REPO" \
+        --agent reviewer \
+        $(host_flag) \
+        --json | jq -r '.id')"
+  # Seed the reviewer with its standing instructions.
+  cli session send --to "$id" --no-wake --body \
+"You are a continuous security & code-quality reviewer for this monorepo.
+Loop: pick the most recently changed files, review for security issues, correctness bugs,
+and quality regressions. Report findings concisely, then move to the next changed area.
+Do not modify code — review only."
+done
+
+cli session list
+```
+
+The "custom MCP config" is just an **agent** that launches `claude`
+with a different `--mcp-config` file — Thurbox stays agent-neutral.
+Define the three roles in `~/.config/thurbox/agents.toml`:
+
+```toml
+default = "claude"
+
+[[agents]]
+name = "operator"                 # prod backoffice: read/write
+command = "claude"
+args = [
+  "--mcp-config", "/home/me/.config/thurbox/mcp/backoffice-rw.json",
+  "--model", "opus",              # bake any default flags into args
+]
+new_session_args = ["--session-id", "{id}"]
+resume_args      = ["--resume", "{id}"]
+fork_args        = ["--resume", "{id}", "--fork-session"]
+
+[[agents]]
+name = "developer"                # prod backoffice: read-only
+command = "claude"
+args = ["--mcp-config", "/home/me/.config/thurbox/mcp/backoffice-ro.json"]
+new_session_args = ["--session-id", "{id}"]
+resume_args      = ["--resume", "{id}"]
+fork_args        = ["--resume", "{id}", "--fork-session"]
+
+[[agents]]
+name = "reviewer"                 # continuous code review, no backoffice access
+command = "claude"
+args = []
+new_session_args = ["--session-id", "{id}"]
+resume_args      = ["--resume", "{id}"]
+fork_args        = ["--resume", "{id}", "--fork-session"]
+```
+
+The read/write vs read-only split lives entirely in the two MCP
+config files those agents point at (`~/.config/thurbox/mcp/`):
+
+```json
+{
+  "mcpServers": {
+    "backoffice": {
+      "command": "npx",
+      "args": ["-y", "@yourco/backoffice-mcp"],
+      "env": {
+        "BACKOFFICE_URL": "https://prod-backoffice.internal",
+        "BACKOFFICE_MODE": "rw"
+      }
+    }
+  }
+}
+```
+
+`backoffice-ro.json` is identical but with `"BACKOFFICE_MODE": "ro"`.
+Scale knobs are env vars — `N_DEVELOPERS=3 ./provision.sh` — and
+`HOST=devbox ./provision.sh` runs every session's worktree + tmux on
+a remote machine from `hosts.toml`. Need one session to span several
+repos? Add `--add-repo PATH@main` (its own worktree per repo) or
+`--add-dir PATH` (attached read-only) to its `session create`.
+
 ## Keybindings
 
 ### Global Keys
