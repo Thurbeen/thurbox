@@ -372,9 +372,12 @@ impl Drop for TestPathGuard {
     }
 }
 
-/// Expand a leading `~` or `~/` to the user's home directory.
+/// Expand a leading `~` followed by a path separator to the user's home
+/// directory. On Windows both separators are accepted (`~/` and `~\`); on Unix
+/// only `~/` is (a backslash is a legal filename character there).
 ///
 /// - `"~/foo"` → `"/home/user/foo"`
+/// - `"~\\foo"` → `"C:\\Users\\user\\foo"` (Windows)
 /// - `"~"` → `"/home/user"`
 /// - `"/absolute/path"` → unchanged
 /// - `"relative/path"` → unchanged
@@ -383,12 +386,24 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         if let Some(home) = home_dir() {
             return home;
         }
-    } else if let Some(rest) = path.strip_prefix("~/") {
+    } else if let Some(rest) = strip_tilde_prefix(path) {
         if let Some(home) = home_dir() {
             return home.join(rest);
         }
     }
     PathBuf::from(path)
+}
+
+/// Strip a leading `~` + path separator, returning the remainder. Accepts `~/`
+/// everywhere and `~\` on Windows (where `\` is a path separator).
+fn strip_tilde_prefix(path: &str) -> Option<&str> {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return Some(rest);
+    }
+    if cfg!(windows) {
+        return path.strip_prefix("~\\");
+    }
+    None
 }
 
 /// Short display label for a repo/dir path: the final path component,
@@ -994,6 +1009,26 @@ mod tests {
     fn expand_tilde_other_user() {
         // ~otheruser should NOT be expanded — only ~ and ~/ are handled
         assert_eq!(expand_tilde("~otheruser"), PathBuf::from("~otheruser"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_tilde_backslash_on_windows() {
+        // On Windows `~\foo` uses the native separator and must expand too.
+        let home = std::env::var(HOME_VAR).unwrap();
+        assert_eq!(expand_tilde("~\\foo"), PathBuf::from(&home).join("foo"));
+        assert_eq!(
+            expand_tilde("~\\a\\b"),
+            PathBuf::from(&home).join("a").join("b")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn expand_tilde_backslash_literal_on_unix() {
+        // On Unix `\` is a legal filename character, not a separator, so
+        // `~\foo` is left untouched.
+        assert_eq!(expand_tilde("~\\foo"), PathBuf::from("~\\foo"));
     }
 
     #[test]
