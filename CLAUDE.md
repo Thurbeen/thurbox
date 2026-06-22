@@ -986,8 +986,13 @@ fields into the discovery-dir copy: `installed_with` (the thurbox version
 that installed it) and `source` (the resolved install target). After a
 thurbox upgrade the on-disk copy is older than the binary, so
 `ExtensionDef::is_stale` flags it (`extension list`/`status`, and a
-self-heal nudge). `update_extension` re-runs `install_extension` from the
-recorded `source` — a bare name re-resolves against the *new* binary's
+self-heal nudge). With `[features] auto_update` on (the same opt-in flag that
+self-updates the binary), the self-heal pass — `heal_one_extension`, run on TUI
+startup **and** the headless `automation tick` — goes a step past the nudge and
+**refreshes the stale extension in place** (calls `update_extension`); the
+`is_stale` gate is local/network-free, so a refresh fetches at most once per
+extension per binary version. `update_extension` re-runs `install_extension` from
+the recorded `source` — a bare name re-resolves against the *new* binary's
 release tag, so the matching extension version is pulled — preserving
 user-edited files unless `--force`; `update_all_extensions` does every
 installed one. Version helpers (`compare_versions`, `is_dev_version`,

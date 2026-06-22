@@ -215,7 +215,7 @@ no results. Data is never touched, so re-enabling a flag is lossless.
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
 | `version_check` | `false` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
-| `auto_update` | `false` | Silent self-update: download + verify + replace the binaries on startup + `thurbox-cli update` |
+| `auto_update` | `false` | Silent self-update: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
 
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
@@ -276,6 +276,17 @@ guards); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a
 root-owned directory will fail the replace (logged, non-fatal). `version_check`
 and `auto_update` are independent — enable either or both.
+
+`auto_update = true` also keeps **installed extensions** in step with the
+binary. Extension versions are pinned to the binary's release tag, so an
+extension only goes stale (`installed_with` ≠ the running binary) right after an
+upgrade. The self-heal pass — which already runs on TUI startup and on the
+headless `automation tick` — then refreshes each stale extension in place
+(re-fetching it from its recorded source) instead of only nudging you to run
+`thurbox-cli extension update`. The staleness check is local and network-free,
+so a launch where nothing is stale does no extra work; a refresh runs at most
+once per extension per binary version. With `auto_update` off, the nudge is
+shown and you update extensions by hand.
 
 ### `[notifications]` — OS notification settings
 

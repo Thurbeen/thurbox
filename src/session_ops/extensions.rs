@@ -1027,13 +1027,14 @@ fn heal_one_extension(db: &Database, name: &str, messages: &mut Vec<String>) {
         ));
         return;
     };
-    // Nudge once-per-pass when the binary upgraded since install, or when the
-    // extension wants a newer thurbox than this one. Both clear after the
-    // user acts (`extension update` / a thurbox upgrade), so they don't
-    // persist as noise.
+    // Handle binary-vs-extension version drift once per pass (warn / auto-update /
+    // nudge). A successful auto-update re-activates the extension, so it already
+    // re-ensured its resources — skip the trailing ensure (which would run against
+    // the now-stale `def`).
     let current = crate::agent::extension_config::binary_version();
-    if let Some(w) = heal_compat_message(&def, name, current) {
-        messages.push(w);
+    let auto_update = crate::session::settings::global().features.auto_update;
+    if heal_version_drift(db, &def, name, current, auto_update, messages) {
+        return;
     }
     match ensure_extension(db, &def) {
         Ok(report) if report.created_anything() => {
@@ -1044,20 +1045,63 @@ fn heal_one_extension(db: &Database, name: &str, messages: &mut Vec<String>) {
     }
 }
 
-/// A compatibility warning (binary too old) or a staleness nudge (extension
-/// installed under an older binary), or `None` when neither applies.
-fn heal_compat_message(def: &ExtensionDef, name: &str, current: &str) -> Option<String> {
+/// Reconcile a binary-vs-extension version mismatch during self-heal, appending
+/// any user-facing message. Returns `true` when it auto-updated the extension
+/// (the caller should then skip its own `ensure_extension`, since the update
+/// already re-activated it). `current` / `auto_update` are passed in (not read
+/// from the globals) so the branches are unit-testable without a real release
+/// build or a write-once settings init.
+///
+/// The branches are mutually exclusive:
+/// - binary *older* than the extension wants (`compat_warning`) → only warn; an
+///   update can't fix it (the matching extension version targets a newer binary);
+/// - installed under an older binary (`is_stale`) → auto-update in place when
+///   `auto_update` is on (mirroring the binary self-update), else nudge the user
+///   to run `extension update` by hand;
+/// - otherwise → nothing. Dev builds never go stale, so they fall here.
+fn heal_version_drift(
+    db: &Database,
+    def: &ExtensionDef,
+    name: &str,
+    current: &str,
+    auto_update: bool,
+    messages: &mut Vec<String>,
+) -> bool {
     if let Some(w) = def.compat_warning(current) {
-        Some(w)
-    } else if def.is_stale(current) {
-        Some(format!(
-            "extension '{name}' was installed under thurbox {} but this binary is {current}; \
-             run `thurbox-cli extension update {name}` to refresh it",
-            def.installed_with.as_deref().unwrap_or("an older version")
-        ))
-    } else {
-        None
+        messages.push(w);
+        return false;
     }
+    if !def.is_stale(current) {
+        return false;
+    }
+    if auto_update {
+        match update_extension(db, name, false) {
+            Ok(report) => {
+                if report.changed {
+                    messages.push(format!(
+                        "Auto-updated extension '{name}' to v{}",
+                        report.install.version.as_deref().unwrap_or("?")
+                    ));
+                }
+                return true;
+            }
+            // Fall back to the manual nudge so the user can still act; the caller
+            // then re-ensures resources with the (unchanged) current def.
+            Err(e) => tracing::warn!("auto-update of extension '{name}' failed: {e}"),
+        }
+    }
+    messages.push(stale_extension_nudge(def, name, current));
+    false
+}
+
+/// The "installed under an older binary — run `extension update`" nudge, shown
+/// by self-heal when an extension is stale and auto-update is off (or failed).
+fn stale_extension_nudge(def: &ExtensionDef, name: &str, current: &str) -> String {
+    format!(
+        "extension '{name}' was installed under thurbox {} but this binary is {current}; \
+         run `thurbox-cli extension update {name}` to refresh it",
+        def.installed_with.as_deref().unwrap_or("an older version")
+    )
 }
 
 /// Human-readable "Repaired …" message describing what a self-heal pass
@@ -1938,6 +1982,183 @@ prompt = "tick"
         // A no-op update (same source, unchanged) reports changed = false.
         let again = update_extension(&db, "flow", false).unwrap();
         assert!(!again.changed);
+    }
+
+    /// Install a fixture extension from a local source, then bump the source's
+    /// version so the discovery copy is one release behind. Returns the temp
+    /// guards (kept alive by the caller), the db, and the home dir.
+    fn install_then_bump_source(
+        temp: &tempfile::TempDir,
+        src: &tempfile::TempDir,
+    ) -> (Database, std::path::PathBuf) {
+        let db = Database::open_in_memory().unwrap();
+        insert_session(&db, "flow");
+        let home = temp.path().join("flowhome");
+        let manifest = |version: &str| {
+            format!(
+                "name = \"flow\"\nversion = \"{version}\"\nhome = '{}'\n[[files]]\npath = \"FLOW.md\"\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
+                home.display()
+            )
+        };
+        std::fs::write(src.path().join("extension.toml"), manifest("1.0.0")).unwrap();
+        std::fs::write(src.path().join("FLOW.md"), "v1 spec").unwrap();
+        let target = src.path().to_string_lossy().to_string();
+        install_extension(&db, &target, None, false).unwrap();
+        // Author publishes a new version at the same recorded source.
+        std::fs::write(src.path().join("extension.toml"), manifest("2.0.0")).unwrap();
+        std::fs::write(src.path().join("FLOW.md"), "v2 spec").unwrap();
+        (db, home)
+    }
+
+    #[test]
+    fn heal_auto_updates_stale_extension_when_enabled() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let src = tempfile::TempDir::new().unwrap();
+        let (db, home) = install_then_bump_source(&temp, &src);
+
+        // A non-dev `current` newer than `installed_with` (= the dev build that
+        // installed it) makes the extension stale; auto_update = true refreshes it.
+        let def = crate::agent::extension_config::load_manifest("flow").unwrap();
+        let mut messages = Vec::new();
+        let updated = heal_version_drift(&db, &def, "flow", "9.9.9", true, &mut messages);
+
+        assert!(
+            updated,
+            "auto-update returns true so the caller skips ensure"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("Auto-updated extension 'flow' to v2.0.0")),
+            "got: {messages:?}"
+        );
+        // The discovery copy now carries the new version + this binary's stamp.
+        let stored = crate::agent::extension_config::load_manifest("flow").unwrap();
+        assert_eq!(stored.version.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            stored.installed_with.as_deref(),
+            Some(crate::agent::extension_config::binary_version())
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("FLOW.md")).unwrap(),
+            "v2 spec"
+        );
+    }
+
+    #[test]
+    fn heal_nudges_stale_extension_when_auto_update_off() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let src = tempfile::TempDir::new().unwrap();
+        let (db, home) = install_then_bump_source(&temp, &src);
+
+        let def = crate::agent::extension_config::load_manifest("flow").unwrap();
+        let mut messages = Vec::new();
+        let updated = heal_version_drift(&db, &def, "flow", "9.9.9", false, &mut messages);
+
+        assert!(
+            !updated,
+            "no auto-update, so the caller still ensures resources"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("run `thurbox-cli extension update flow`")),
+            "got: {messages:?}"
+        );
+        // The discovery copy is untouched — still the old version, never fetched.
+        assert_eq!(
+            crate::agent::extension_config::load_manifest("flow")
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("FLOW.md")).unwrap(),
+            "v1 spec"
+        );
+    }
+
+    #[test]
+    fn heal_does_not_auto_update_a_current_extension() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let src = tempfile::TempDir::new().unwrap();
+        let (db, _home) = install_then_bump_source(&temp, &src);
+
+        // `current` equals what installed it → not stale → no fetch, no message,
+        // and the caller proceeds to its own ensure (returns false).
+        let def = crate::agent::extension_config::load_manifest("flow").unwrap();
+        let installed_with = def.installed_with.clone().unwrap();
+        let mut messages = Vec::new();
+        let updated = heal_version_drift(&db, &def, "flow", &installed_with, true, &mut messages);
+
+        assert!(!updated);
+        assert!(messages.is_empty(), "got: {messages:?}");
+        assert_eq!(
+            crate::agent::extension_config::load_manifest("flow")
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("1.0.0"),
+            "current source never fetched"
+        );
+    }
+
+    #[test]
+    fn heal_warns_without_auto_updating_when_binary_too_old() {
+        // Binary older than the extension's `min_thurbox_version`: an update
+        // can't help (the matching extension version targets a newer binary), so
+        // even with auto_update on we only warn and never call update_extension.
+        // No install/source needed — the compat branch returns before touching db.
+        let db = Database::open_in_memory().unwrap();
+        let mut def = flow_def();
+        def.min_thurbox_version = Some("5.0.0".into());
+        let mut messages = Vec::new();
+        let updated = heal_version_drift(&db, &def, "flow", "1.0.0", true, &mut messages);
+
+        assert!(!updated, "compat warning is not an auto-update");
+        assert_eq!(messages.len(), 1, "got: {messages:?}");
+        assert!(
+            messages[0].contains("wants thurbox >= 5.0.0"),
+            "got: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn heal_falls_back_to_nudge_when_auto_update_fetch_fails() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let src = tempfile::TempDir::new().unwrap();
+        let (db, _home) = install_then_bump_source(&temp, &src);
+
+        // Make the recorded source unreachable so the in-place refresh errors.
+        drop(src);
+
+        let def = crate::agent::extension_config::load_manifest("flow").unwrap();
+        let mut messages = Vec::new();
+        let updated = heal_version_drift(&db, &def, "flow", "9.9.9", true, &mut messages);
+
+        assert!(
+            !updated,
+            "a failed update returns false so the caller ensures"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("run `thurbox-cli extension update flow`")),
+            "falls back to the manual nudge; got: {messages:?}"
+        );
+        // The discovery copy is untouched — the failed fetch wrote nothing.
+        assert_eq!(
+            crate::agent::extension_config::load_manifest("flow")
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("1.0.0")
+        );
     }
 
     #[test]
