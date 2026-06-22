@@ -689,8 +689,15 @@ impl TmuxBackend {
     }
 
     /// Build the shell command string to pass to tmux new-window.
+    ///
+    /// The whole string is interpreted by the multiplexer server's shell, so
+    /// **every** token — the command itself as well as each argument — is
+    /// shell-escaped. Leaving the command unescaped would break (or allow
+    /// injection through) a command path containing a space or shell
+    /// metacharacter; `shell_escape` is a no-op for ordinary binary names so the
+    /// common case (`claude`, `/usr/bin/codex`) is unchanged.
     fn build_shell_command(command: &str, args: &[String]) -> String {
-        let mut parts = vec![command.to_string()];
+        let mut parts = vec![control_mode::shell_escape(command)];
         for arg in args {
             parts.push(control_mode::shell_escape(arg));
         }
@@ -993,26 +1000,30 @@ impl SessionBackend for TmuxBackend {
             return Ok(Vec::new());
         }
 
-        // Use control mode if available, otherwise fall back to direct tmux command.
-        let result = {
+        // Once control mode is up, route through `ctrl_command` so a dead
+        // connection is transparently reconnected + retried (like every other
+        // control-mode call) instead of failing the discovery. Before control
+        // mode has started, fall back to a one-shot direct tmux command.
+        let control_started = {
             let guard = self
                 .control
                 .lock()
                 .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
-            if let Some(ref ctrl) = *guard {
-                ctrl.send_command(&format!(
-                    "list-windows -t {} -F '#{{pane_id}}|#{{window_name}}|#{{pane_dead}}'",
-                    self.session
-                ))?
-            } else {
-                self.tmux_output(&[
-                    "list-windows",
-                    "-t",
-                    &self.session,
-                    "-F",
-                    "#{pane_id}|#{window_name}|#{pane_dead}",
-                ])?
-            }
+            guard.is_some()
+        };
+        let result = if control_started {
+            self.ctrl_command(&format!(
+                "list-windows -t {} -F '#{{pane_id}}|#{{window_name}}|#{{pane_dead}}'",
+                self.session
+            ))?
+        } else {
+            self.tmux_output(&[
+                "list-windows",
+                "-t",
+                &self.session,
+                "-F",
+                "#{pane_id}|#{window_name}|#{pane_dead}",
+            ])?
         };
 
         let mut sessions = Vec::new();
@@ -1606,6 +1617,16 @@ mod tests {
         ];
         let cmd = LocalTmuxBackend::build_shell_command("claude", &args);
         assert_eq!(cmd, "claude --allowed-tools 'Read Bash(git:*)'");
+    }
+
+    #[test]
+    fn build_shell_command_escapes_command_path() {
+        // The command token is interpreted by the server's shell, so a path
+        // with a space (or any metacharacter) must be quoted, not left bare —
+        // otherwise the shell would split it and the launch would break.
+        let cmd =
+            LocalTmuxBackend::build_shell_command("/opt/My Agents/codex", &["--foo".to_string()]);
+        assert_eq!(cmd, "'/opt/My Agents/codex' --foo");
     }
 
     // --- decode_octal tests (verify import works) ---
