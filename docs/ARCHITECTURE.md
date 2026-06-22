@@ -321,10 +321,13 @@ code.
 
 ## ADR-12: Local tmux as default backend
 
-**Choice**: The first `SessionBackend` implementation is
-`LocalTmuxBackend`, using a dedicated tmux server
+**Choice**: The default `SessionBackend` is `TmuxBackend`
+parameterized over its `Local` transport (`TmuxTransport::Local`)
+and registered as `local-tmux`, using a dedicated tmux server
 (`tmux -L thurbox`) with session name `thurbox`. All I/O goes
-through tmux control mode (`-C`).
+through tmux control mode (`-C`). (The transport abstraction that
+also enables remote SSH backends is ADR-13; here the choice is
+simply that the out-of-the-box backend runs tmux locally.)
 
 **Why**: tmux provides session persistence (survives crashes),
 multi-instance support (multiple thurbox processes can independently
