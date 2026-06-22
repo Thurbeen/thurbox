@@ -59,18 +59,27 @@ pub fn render_automations_pane(
     let width = inner.width as usize;
     let focused = matches!(state.focus, FocusLevel::Focused);
 
-    let lines: Vec<Line> = state
-        .entries
+    // Scroll the selected row into view, mirroring the session list: window the
+    // rows around `selected` so a selection below the visible area stays
+    // visible. Reuses the shared file-tree/run-history windowing helper.
+    let selected = state.selected.min(state.entries.len() - 1);
+    let (start, end) =
+        super::file_viewer::visible_window(state.entries.len(), selected, inner.height as usize);
+
+    let lines: Vec<Line> = state.entries[start..end]
         .iter()
         .enumerate()
-        .map(|(i, e)| {
-            let selected = (focused || state.preview_selected) && i == state.selected;
-            entry_line(e, selected, width)
+        .map(|(row, e)| {
+            let i = start + row;
+            let is_selected = (focused || state.preview_selected) && i == state.selected;
+            entry_line(e, is_selected, width)
         })
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
-    super::single_line_row_hitboxes(inner, state.entries.len())
+
+    // One single-line hitbox per visible row, indexed in entry space.
+    super::windowed_row_hitboxes(inner, start, end)
 }
 
 /// Render the placeholder shown when there are no automations.
@@ -115,4 +124,67 @@ fn entry_line<'a>(e: &AutomationPaneEntry, selected: bool, width: usize) -> Line
     ));
     spans.push(Span::styled(tail, base));
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn entry(name: &str) -> AutomationPaneEntry {
+        AutomationPaneEntry {
+            name: name.into(),
+            summary: "daily".into(),
+            enabled: true,
+            match_positions: vec![],
+            dimmed: false,
+        }
+    }
+
+    fn hitboxes(count: usize, selected: usize) -> Vec<super::super::RowHitbox> {
+        let backend = TestBackend::new(30, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let entries: Vec<AutomationPaneEntry> =
+            (0..count).map(|i| entry(&format!("a{i}"))).collect();
+        let mut rows = Vec::new();
+        terminal
+            .draw(|f| {
+                rows = render_automations_pane(
+                    f,
+                    Rect::new(0, 0, 30, 5),
+                    &AutomationsPaneState {
+                        entries: &entries,
+                        selected,
+                        focus: FocusLevel::Focused,
+                        preview_selected: false,
+                    },
+                );
+            })
+            .unwrap();
+        rows
+    }
+
+    #[test]
+    fn rows_render_from_top_when_everything_fits() {
+        // 5 outer rows → 3 inner; two automations fit without scrolling.
+        let rows = hitboxes(2, 0);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].rect, Rect::new(1, 1, 28, 1));
+        assert_eq!(rows[0].index, 0);
+        assert_eq!(rows[1].index, 1);
+    }
+
+    #[test]
+    fn selection_below_viewport_scrolls_into_view() {
+        // 10 automations, only 3 inner rows: a selection near the bottom must
+        // be windowed into view rather than clipped off-screen.
+        let rows = hitboxes(10, 9);
+        assert_eq!(rows.len(), 3);
+        let visible: Vec<usize> = rows.iter().map(|r| r.index).collect();
+        assert!(
+            visible.contains(&9),
+            "selected row 9 should be windowed into view, got {visible:?}"
+        );
+        assert!(!visible.contains(&0));
+    }
 }

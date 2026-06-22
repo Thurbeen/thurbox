@@ -76,13 +76,17 @@ pub fn render_tasks_panel(
         inner.height -= 1;
     }
 
-    render_task_list(frame, inner, state);
-    // One single-line hitbox per visible row (the hint footer, when present,
-    // was already subtracted from `inner`).
-    super::single_line_row_hitboxes(inner, state.entries.len())
+    // The list windows around the selected row (the hint footer, when present,
+    // was already subtracted from `inner`), so the returned hitboxes are indexed
+    // in entry space over just the visible window.
+    render_task_list(frame, inner, state)
 }
 
-fn render_task_list(frame: &mut Frame, area: Rect, state: &TaskPaneState<'_>) {
+fn render_task_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TaskPaneState<'_>,
+) -> Vec<super::RowHitbox> {
     if state.entries.is_empty() {
         let text = if matches!(state.focus, FocusLevel::Focused) {
             "no tasks — n to add"
@@ -94,26 +98,36 @@ fn render_task_list(frame: &mut Frame, area: Rect, state: &TaskPaneState<'_>) {
             Style::default().fg(Theme::text_muted()),
         )));
         frame.render_widget(hint, area);
-        return;
+        return Vec::new();
     }
 
     let width = area.width as usize;
     let focused = matches!(state.focus, FocusLevel::Focused);
 
-    let lines: Vec<Line> = state
-        .entries
+    // Scroll the selected row into view, mirroring the session list: window the
+    // rows around `selected` so a selection below the visible area stays
+    // visible. Reuses the shared file-tree/run-history windowing helper.
+    let selected = state.selected.min(state.entries.len() - 1);
+    let (start, end) =
+        super::file_viewer::visible_window(state.entries.len(), selected, area.height as usize);
+
+    let lines: Vec<Line> = state.entries[start..end]
         .iter()
         .enumerate()
-        .map(|(i, e)| {
+        .map(|(row, e)| {
+            let i = start + row;
             // Highlight the selected row when the panel is focused, OR when a
             // global-search preview points here (so the moving cursor is visible
             // even though focus is in the search box).
-            let selected = (focused || state.preview_selected) && i == state.selected;
-            task_row_line(e, selected, width)
+            let is_selected = (focused || state.preview_selected) && i == state.selected;
+            task_row_line(e, is_selected, width)
         })
         .collect();
 
     frame.render_widget(Paragraph::new(lines), area);
+
+    // One single-line hitbox per visible row, indexed in entry space.
+    super::windowed_row_hitboxes(area, start, end)
 }
 
 /// Build one task row: `<glyph> <title>` with global-search highlighting, plus a
@@ -190,6 +204,14 @@ mod tests {
     }
 
     fn hitboxes(focus: FocusLevel, count: usize) -> Vec<super::super::RowHitbox> {
+        hitboxes_sel(focus, count, 0)
+    }
+
+    fn hitboxes_sel(
+        focus: FocusLevel,
+        count: usize,
+        selected: usize,
+    ) -> Vec<super::super::RowHitbox> {
         let backend = TestBackend::new(20, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         let entries: Vec<TaskPaneEntry> = (0..count).map(|i| entry(&format!("t{i}"))).collect();
@@ -201,7 +223,7 @@ mod tests {
                     Rect::new(0, 0, 20, 6),
                     &TaskPaneState {
                         entries: &entries,
-                        selected: 0,
+                        selected,
                         focus,
                         preview_selected: false,
                     },
@@ -227,5 +249,21 @@ mod tests {
         let rows = hitboxes(FocusLevel::Focused, 10);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows.last().unwrap().rect.y, 3);
+    }
+
+    #[test]
+    fn selection_below_viewport_scrolls_into_view() {
+        // 10 tasks but only 3 visible rows (focused → footer reserved). A
+        // selection near the bottom must be inside the rendered window, not
+        // clipped off-screen.
+        let rows = hitboxes_sel(FocusLevel::Focused, 10, 9);
+        assert_eq!(rows.len(), 3);
+        let visible: Vec<usize> = rows.iter().map(|r| r.index).collect();
+        assert!(
+            visible.contains(&9),
+            "selected row 9 should be windowed into view, got {visible:?}"
+        );
+        // Rows above the window are scrolled off (not row 0).
+        assert!(!visible.contains(&0));
     }
 }

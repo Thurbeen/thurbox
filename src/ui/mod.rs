@@ -51,15 +51,19 @@ pub struct RowHitbox {
     pub index: usize,
 }
 
-/// Build one `RowHitbox` per single-line entry of a vertically packed list
-/// starting at `area`'s top row — the common shape for the tasks/automations
-/// panes and every selector modal. Rows that would fall below `area` are
-/// clipped.
-pub fn single_line_row_hitboxes(area: Rect, count: usize) -> Vec<RowHitbox> {
-    (0..count.min(area.height as usize))
-        .map(|i| RowHitbox {
-            rect: Rect::new(area.x, area.y + i as u16, area.width, 1),
-            index: i,
+/// Build one `RowHitbox` per single-line entry of a vertically packed list that
+/// has been windowed to the visible range `start..end` — the common shape for
+/// the tasks/automations panes. The first visible entry (`start`) is drawn at
+/// `area`'s top row; each hitbox carries its index in *entry* space (not row
+/// space) so callers map a click straight back to the entry. Rows that would
+/// fall below `area` are clipped.
+pub fn windowed_row_hitboxes(area: Rect, start: usize, end: usize) -> Vec<RowHitbox> {
+    (start..end)
+        .take(area.height as usize)
+        .enumerate()
+        .map(|(row, index)| RowHitbox {
+            rect: Rect::new(area.x, area.y + row as u16, area.width, 1),
+            index,
         })
         .collect()
 }
@@ -670,13 +674,25 @@ mod tests {
     }
 
     #[test]
-    fn single_line_row_hitboxes_clip_to_area() {
-        let rows = single_line_row_hitboxes(Rect::new(2, 5, 10, 3), 5);
+    fn windowed_row_hitboxes_from_top_clip_to_area() {
+        let rows = windowed_row_hitboxes(Rect::new(2, 5, 10, 3), 0, 5);
         assert_eq!(rows.len(), 3, "rows below the area are clipped");
         assert_eq!(rows[0].rect, Rect::new(2, 5, 10, 1));
         assert_eq!(rows[2].rect, Rect::new(2, 7, 10, 1));
         assert_eq!(rows[2].index, 2);
-        assert!(single_line_row_hitboxes(Rect::new(0, 0, 10, 5), 0).is_empty());
+        assert!(windowed_row_hitboxes(Rect::new(0, 0, 10, 5), 0, 0).is_empty());
+    }
+
+    #[test]
+    fn windowed_row_hitboxes_offset_maps_rows_to_entry_indices() {
+        // A window scrolled past the top: the first visible entry (3) draws at
+        // the area's top row, and each hitbox keeps its entry-space index.
+        let rows = windowed_row_hitboxes(Rect::new(1, 1, 10, 4), 3, 7);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].rect, Rect::new(1, 1, 10, 1));
+        assert_eq!(rows[0].index, 3);
+        assert_eq!(rows[3].rect, Rect::new(1, 4, 10, 1));
+        assert_eq!(rows[3].index, 6);
     }
 
     #[test]
