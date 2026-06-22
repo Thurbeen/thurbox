@@ -156,6 +156,14 @@ trap cleanup EXIT INT TERM
     done
 } > "$CFG_DIR/agents.toml"
 
+# --- Keybindings: rebind global search to Ctrl+A for the demo ----------------
+# The real default for Action::GlobalSearch is Ctrl+/ (plus the Ctrl+7/Ctrl+_
+# raw-0x1F encodings), which VHS+ttyd do not deliver reliably across terminals.
+# The search.tape opens the strip with Ctrl+A — an unambiguous chord every
+# terminal sends — so seed a keybindings.json that maps it. Only GlobalSearch is
+# overridden; every other action keeps its built-in default.
+printf '{\n  "GlobalSearch": ["ctrl+a"]\n}\n' > "$CFG_DIR/keybindings.json"
+
 # --- A throwaway sample repo so the file viewer shows a realistic tree --------
 DEMO_REPO="$DEMO_HOME/sample-project"
 mkdir -p "$DEMO_REPO/src" "$DEMO_REPO/tests" "$DEMO_REPO/docs"
