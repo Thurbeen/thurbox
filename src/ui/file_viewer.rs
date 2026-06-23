@@ -711,13 +711,7 @@ fn render_tree(
 
     // One hitbox per visible tree row; `rows_area` already excludes the
     // reserved scrollbar column, so row clicks never overlap the track.
-    let hitboxes = (start..end)
-        .enumerate()
-        .map(|(line, i)| super::RowHitbox {
-            rect: Rect::new(rows_area.x, rows_area.y + line as u16, rows_area.width, 1),
-            index: i,
-        })
-        .collect();
+    let hitboxes = super::windowed_row_hitboxes(rows_area, start, end);
 
     let geom = track
         .and_then(|track| scrollbar::render_into(frame, track, rows.len(), height, state.selected));

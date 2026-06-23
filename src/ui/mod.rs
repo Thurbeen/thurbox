@@ -97,13 +97,7 @@ pub fn render_selector_rows(
     let (start, end) = file_viewer::visible_window(total, selected, height);
     let visible: Vec<Line<'_>> = lines.into_iter().skip(start).take(end - start).collect();
     frame.render_widget(Paragraph::new(visible), rows_area);
-    let hitboxes = (start..end)
-        .enumerate()
-        .map(|(line, i)| RowHitbox {
-            rect: Rect::new(rows_area.x, rows_area.y + line as u16, rows_area.width, 1),
-            index: i,
-        })
-        .collect();
+    let hitboxes = windowed_row_hitboxes(rows_area, start, end);
     let geom = track.and_then(|t| scrollbar::render_into(frame, t, total, height, selected));
     (hitboxes, geom)
 }
@@ -395,6 +389,38 @@ pub fn editor_field_line_with_cursor<'a>(
     Line::from(spans)
 }
 
+/// Push a block-cursor text run into `spans`: the text before the caret styled
+/// with `style`, the character under the caret in [`Theme::cursor`] (a single
+/// space when the caret sits at end-of-text), then the text after it in `style`.
+///
+/// The single source of truth for the editor block-cursor split — every editor
+/// (and the scroll-windowing path) wraps this rather than re-deriving the
+/// `caret + 1..` slice (an easy off-by-one).
+pub(crate) fn push_block_cursor<'a>(
+    spans: &mut Vec<Span<'a>>,
+    chars: &[char],
+    caret: usize,
+    style: Style,
+) {
+    let caret = caret.min(chars.len());
+    let before: String = chars[..caret].iter().collect();
+    if !before.is_empty() {
+        spans.push(Span::styled(before, style));
+    }
+    let cursor_char = chars
+        .get(caret)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    spans.push(Span::styled(cursor_char, Theme::cursor()));
+    let after: String = chars
+        .get(caret + 1..)
+        .map(|s| s.iter().collect())
+        .unwrap_or_default();
+    if !after.is_empty() {
+        spans.push(Span::styled(after, style));
+    }
+}
+
 /// Append `value` to `spans` with a real block cursor drawn at the caret
 /// position so horizontal movement inside the text is visible. Falls back to a
 /// trailing block when no cursor is supplied (preserves the prior end-of-line
@@ -406,23 +432,8 @@ fn push_value_with_cursor<'a>(
     value_style: Style,
 ) {
     let chars: Vec<char> = value.chars().collect();
-    let caret = cursor.unwrap_or(chars.len()).min(chars.len());
-
-    let before: String = chars[..caret].iter().collect();
-    if !before.is_empty() {
-        spans.push(Span::styled(before, value_style));
-    }
-    let cursor_char = chars
-        .get(caret)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    spans.push(Span::styled(cursor_char, Theme::cursor()));
-    if caret < chars.len() {
-        let after: String = chars[caret + 1..].iter().collect();
-        if !after.is_empty() {
-            spans.push(Span::styled(after, value_style));
-        }
-    }
+    let caret = cursor.unwrap_or(chars.len());
+    push_block_cursor(spans, &chars, caret, value_style);
 }
 
 /// Build a footer/hint [`Line`] from `(key, description)` pairs, styling keys
@@ -796,34 +807,24 @@ fn push_cursor_spans(
     has_left_overflow: bool,
     suggestion_text: &str,
 ) {
-    let before: String = chars[content_start..cursor].iter().collect();
-    let cursor_char = if cursor < chars.len() {
-        chars[cursor].to_string()
-    } else {
-        " ".to_string()
-    };
-    let after_start = (cursor + 1).min(chars.len());
-    let after_end = visible_end.min(chars.len());
-    let after: String = chars[after_start..after_end].iter().collect();
-    let after_len = after.len();
-
-    if !before.is_empty() {
-        spans.push(Span::styled(
-            before,
-            Style::default().fg(Theme::text_primary()),
-        ));
-    }
-    spans.push(Span::styled(cursor_char, Theme::cursor()));
-    if !after.is_empty() {
-        spans.push(Span::styled(
-            after,
-            Style::default().fg(Theme::text_primary()),
-        ));
-    }
+    let window = &chars[content_start..visible_end];
+    let caret = cursor - content_start;
+    push_block_cursor(
+        spans,
+        window,
+        caret,
+        Style::default().fg(Theme::text_primary()),
+    );
 
     if suggestion_text.is_empty() {
         return;
     }
+    // Byte length of the rendered "after" text, used to budget the suggestion
+    // tail against the remaining visible width.
+    let after_len = window
+        .get(caret + 1..)
+        .map(|s| s.iter().collect::<String>().len())
+        .unwrap_or(0);
     let used = if has_left_overflow { 1 } else { 0 }
         + (cursor - content_start)
         + 1 // cursor block

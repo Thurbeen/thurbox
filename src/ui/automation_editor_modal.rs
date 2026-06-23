@@ -451,24 +451,8 @@ fn wrapped_cursor(col: usize, wrap_w: usize, n_rows: usize) -> (usize, usize) {
 
 /// One indented prompt row with a block cursor drawn at char index `caret`.
 fn prompt_cursor_row<'a>(chunk: &[char], caret: usize, text_style: Style) -> Line<'a> {
-    let caret = caret.min(chunk.len());
     let mut spans = vec![Span::raw("    ")];
-    let before: String = chunk[..caret].iter().collect();
-    if !before.is_empty() {
-        spans.push(Span::styled(before, text_style));
-    }
-    let cursor_char = chunk
-        .get(caret)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    spans.push(Span::styled(cursor_char, Theme::cursor()));
-    let after: String = chunk
-        .get(caret + 1..)
-        .map(|s| s.iter().collect())
-        .unwrap_or_default();
-    if !after.is_empty() {
-        spans.push(Span::styled(after, text_style));
-    }
+    super::push_block_cursor(&mut spans, chunk, caret, text_style);
     Line::from(spans)
 }
 

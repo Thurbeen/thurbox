@@ -175,24 +175,8 @@ fn description_text_rows<'a>(
 /// Render one description row with a block cursor drawn at `cur_col`.
 fn description_cursor_line<'a>(text: &str, cur_col: usize, text_style: Style) -> Line<'a> {
     let chars: Vec<char> = text.chars().collect();
-    let caret = cur_col.min(chars.len());
     let mut spans = vec![Span::raw("    ")];
-    let before: String = chars[..caret].iter().collect();
-    if !before.is_empty() {
-        spans.push(Span::styled(before, text_style));
-    }
-    let cursor_char = chars
-        .get(caret)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    spans.push(Span::styled(cursor_char, Theme::cursor()));
-    let after: String = chars
-        .get(caret + 1..)
-        .map(|s| s.iter().collect())
-        .unwrap_or_default();
-    if !after.is_empty() {
-        spans.push(Span::styled(after, text_style));
-    }
+    super::push_block_cursor(&mut spans, &chars, cur_col, text_style);
     Line::from(spans)
 }
 
