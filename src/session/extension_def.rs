@@ -198,6 +198,32 @@ pub struct ExtensionAutomation {
     pub command: Option<String>,
 }
 
+impl ExtensionAutomation {
+    /// Reject the invalid flavour combinations the 3-`Option` shape allows but
+    /// the `send`-xor-`exec` model forbids: setting `command` *and* a send field
+    /// (downstream `command` silently wins, dropping the send fields), or
+    /// setting neither. Mirrors [`crate::session::message::validate_kind_body`];
+    /// called where the manifest is turned into resources
+    /// ([`crate::session_ops::ensure_extension`]).
+    pub fn validate(&self) -> Result<(), String> {
+        let has_send_fields = self.session_ref.is_some() || self.prompt.is_some();
+        if self.command.is_some() && has_send_fields {
+            return Err(format!(
+                "automation '{}' sets both `command` (exec) and send fields \
+                 (`session_ref`/`prompt`); set exactly one flavour",
+                self.name
+            ));
+        }
+        if self.command.is_none() && self.session_ref.is_none() {
+            return Err(format!(
+                "automation '{}' has neither a `command` nor a `session_ref`",
+                self.name
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A full extension manifest: the resources to ensure when the extension is
 /// active. One manifest per `extension.toml` file.
 ///
@@ -433,6 +459,32 @@ prompt = "tick"
         assert_eq!(def.automations[0].session_ref.as_deref(), Some("flow"));
         assert_eq!(def.automations[0].prompt.as_deref(), Some("tick"));
         assert!(!def.is_empty());
+    }
+
+    #[test]
+    fn automation_validate_rejects_invalid_flavours() {
+        let auto = |session_ref: Option<&str>, prompt: Option<&str>, command: Option<&str>| {
+            ExtensionAutomation {
+                name: "a".into(),
+                trigger: "hourly".into(),
+                session_ref: session_ref.map(str::to_string),
+                prompt: prompt.map(str::to_string),
+                command: command.map(str::to_string),
+            }
+        };
+        // Valid: a pure send, or a pure exec.
+        assert!(auto(Some("flow"), Some("tick"), None).validate().is_ok());
+        assert!(auto(None, None, Some("sync.sh")).validate().is_ok());
+        // Invalid: both flavours (exec would silently win, dropping the send fields).
+        assert!(auto(Some("flow"), Some("tick"), Some("sync.sh"))
+            .validate()
+            .is_err());
+        assert!(auto(None, Some("tick"), Some("sync.sh"))
+            .validate()
+            .is_err());
+        // Invalid: neither flavour.
+        assert!(auto(None, None, None).validate().is_err());
+        assert!(auto(None, Some("tick"), None).validate().is_err());
     }
 
     #[test]
