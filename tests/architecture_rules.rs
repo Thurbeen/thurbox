@@ -69,7 +69,9 @@ const MODULE_RULES: &[ModuleRules] = &[
     ModuleRules {
         name: "usage",
         allowed: &["session"],
-        allowed_path_only: &[],
+        // `paths::home_dir()` (fully-qualified, never `use`) to resolve agent
+        // credential files cross-platform ($HOME / %USERPROFILE%).
+        allowed_path_only: &["paths"],
     },
     // Headless session ops: no TUI state or PTY-attached backend. Talks to
     // tmux through the narrow helpers in `agent::tmux` via fully-qualified

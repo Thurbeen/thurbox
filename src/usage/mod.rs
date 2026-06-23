@@ -106,8 +106,7 @@ fn claude_credentials_path() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let home = std::env::var_os("HOME")?;
-    let p = PathBuf::from(home)
+    let p = crate::paths::home_dir()?
         .join(".claude")
         .join(".credentials.json");
     p.exists().then_some(p)
@@ -275,8 +274,11 @@ const ANTIGRAVITY_QUOTA_URL: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 
 fn antigravity_token() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let v = read_json_file(&PathBuf::from(home).join(".gemini").join("oauth_creds.json"))?;
+    let v = read_json_file(
+        &crate::paths::home_dir()?
+            .join(".gemini")
+            .join("oauth_creds.json"),
+    )?;
     let token = v.get("access_token").and_then(|x| x.as_str())?.to_string();
     (!token.contains('"') && !token.contains('\n')).then_some(token)
 }
