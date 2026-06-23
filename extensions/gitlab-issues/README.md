@@ -35,12 +35,13 @@ thurbox-cli extension install gitlab-issues
 thurbox-cli extension install ./extensions/gitlab-issues
 ```
 
-This lays down `~/gitlab-issues/` (override with `--home`) and activates the
-`gitlab-issues-tick` automation, which thurbox self-heals if deleted.
+This lays down `~/.config/thurbox/extensions/gitlab-issues/` (override with
+`--home`) and activates the `gitlab-issues-tick` automation, which thurbox
+self-heals if deleted.
 
 ### 4. Configure the projects to sync
 
-Edit `~/gitlab-issues/trackers.md` — one row per project or saved filter:
+Edit `~/.config/thurbox/extensions/gitlab-issues/trackers.md` — one row per project or saved filter:
 
 ```markdown
 | name    | query                            | push_back |
@@ -60,7 +61,7 @@ The automation fires every 15 min. To run it now, trigger it from the
 ```sh
 thurbox-cli automation run <id>     # id from: thurbox-cli automation list
 # or run the script directly:
-~/gitlab-issues/scripts/sync.sh
+~/.config/thurbox/extensions/gitlab-issues/scripts/sync.sh
 ```
 
 Then check the imported tasks:
@@ -108,7 +109,7 @@ local `todo`↔`in_progress` distinction is preserved.
 
 - **Nothing syncs** — check the automation run history (`Ctrl+P`, or
   `thurbox-cli automation runs <id>`) for the script's output; run
-  `~/gitlab-issues/scripts/sync.sh` by hand to see errors directly.
+  `~/.config/thurbox/extensions/gitlab-issues/scripts/sync.sh` by hand to see errors directly.
 - **`glab` auth error / 401 Unauthorized** — the stored token expired or lacks
   the `api` scope; re-run `glab auth login` and confirm with `glab auth status`.
 - **Empty pull** — confirm the project path and that `glab issue list -R <path>`

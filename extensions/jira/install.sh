@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/jira, and activates the jira-tick automation — a deterministic exec
+# down ~/.config/thurbox/extensions/jira, and activates the jira-tick automation — a deterministic exec
 # sync (no agent, no session), which thurbox then self-heals.
 #
 # Usage:
@@ -14,11 +14,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/jira/install.sh | sh
 #
 # Environment variables:
-#   JIRA_HOME=~/jira              install home (passed as --home)
+#   JIRA_HOME=<dir>   override install home (default: <config>/extensions/jira)
 #
-# Authenticate afterwards by creating ~/jira/credentials.env with JIRA_BASE_URL,
+# Authenticate afterwards by creating ~/.config/thurbox/extensions/jira/credentials.env with JIRA_BASE_URL,
 # JIRA_EMAIL, and JIRA_API_TOKEN (an Atlassian API token). Then add
-# projects/filters to ~/jira/trackers.md. To turn it off:
+# projects/filters to ~/.config/thurbox/extensions/jira/trackers.md. To turn it off:
 #   thurbox-cli extension deactivate jira [--force --purge]
 
 set -eu

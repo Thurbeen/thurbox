@@ -63,8 +63,9 @@ or from a checkout: `thurbox-cli extension install ./extensions/renovate` (the
 `install.sh` / curl one-liner is a thin shim over this). Override the home with
 `--home <dir>`. Installing:
 
-1. lays down the renovate home (`~/renovate`): the `RENOVATE.md` spec, helper
-   scripts, context-file symlinks, claude permission settings, a `repos.md`
+1. lays down the renovate home (`~/.config/thurbox/extensions/renovate`): the
+   `RENOVATE.md` spec, helper scripts, context-file symlinks, claude permission
+   settings, a `repos.md`
    watch list, and a `renovate-config.json` (both seeded once, then user-owned);
 2. registers the `renovate` / `renovate-worker` agents in
    `~/.config/thurbox/agents.toml` (defaults: claude on haiku for the monitor,
@@ -78,7 +79,7 @@ extension list` / `status renovate` show what's active.
 
 ## Use
 
-- Add the repos to keep current to `~/renovate/repos.md` (one row each;
+- Add the repos to keep current to `~/.config/thurbox/extensions/renovate/repos.md` (one row each;
   `strategy` defaults to `minor`, `provider` to `auto`).
 - The monitor sweeps on its schedule; trigger one now by sending `tick` to the
   renovate session (or open it in the TUI).
@@ -117,7 +118,7 @@ uncommitted work).
 ```bash
 thurbox-cli extension deactivate renovate   # off-switch: tears down session + automation
 thurbox-cli extension uninstall renovate    # also removes the agents + manifest
-thurbox-cli extension uninstall renovate --purge  # ...and deletes ~/renovate
+thurbox-cli extension uninstall renovate --purge  # ...and deletes ~/.config/thurbox/extensions/renovate
 ```
 
 > Remove any leftover update worktrees first (`git -C <repo> worktree remove …`)

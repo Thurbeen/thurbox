@@ -13,7 +13,7 @@ description = "Syncs GitHub issues bidirectionally with the thurbox task list"
 config_version = 1
 version = "2.0.0"                # v2: deterministic exec sync (was an agent session)
 min_thurbox_version = "0.141.0"  # needs the Exec automation action + task --source flags
-home = "~/github-issues"
+# No `home`: defaults to `<config>/extensions/github-issues` (override with --home).
 
 # --- payload files laid down under home ---------------------------------------
 

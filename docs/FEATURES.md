@@ -830,7 +830,7 @@ thing to focus on (`🎯 Next: …`).
 Nothing in the extension names a vendor:
 
 - The behavior is a plain context file, `FLOW.md`, installed into the
-  flow home (`~/flow`) and surfaced to whichever CLI runs the session
+  flow home (`~/.config/thurbox/extensions/flow`) and surfaced to whichever CLI runs the session
   via symlinks to each CLI's context convention
   (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` → `FLOW.md`).
 - The triager and workers are **agents.toml aliases** — `flow`,

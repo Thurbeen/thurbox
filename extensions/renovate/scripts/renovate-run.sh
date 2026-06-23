@@ -21,7 +21,7 @@
 #   minor -> patch + minor updates    (major disabled)        [default]
 #   major | all -> everything
 #
-# --config defaults to ~/renovate/renovate-config.json (Renovate's own config,
+# --config defaults to ~/.config/thurbox/extensions/renovate/renovate-config.json (Renovate's own config,
 # passed via RENOVATE_CONFIG_FILE). Set GITHUB_COM_TOKEN in the environment to
 # raise GitHub API limits / fetch changelogs; it is optional and read-only.
 

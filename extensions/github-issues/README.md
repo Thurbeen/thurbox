@@ -34,12 +34,13 @@ thurbox-cli extension install github-issues
 thurbox-cli extension install ./extensions/github-issues
 ```
 
-This lays down `~/github-issues/` (override with `--home`) and activates the
-`github-issues-tick` automation, which thurbox self-heals if deleted.
+This lays down `~/.config/thurbox/extensions/github-issues/` (override with
+`--home`) and activates the `github-issues-tick` automation, which thurbox
+self-heals if deleted.
 
 ### 4. Configure the repos to sync
 
-Edit `~/github-issues/trackers.md` — one row per repo or saved filter:
+Edit `~/.config/thurbox/extensions/github-issues/trackers.md` — one row per repo or saved filter:
 
 ```markdown
 | name    | query                              | push_back |
@@ -59,7 +60,7 @@ The automation fires every 15 min. To run it now, trigger it from the
 ```sh
 thurbox-cli automation run <id>     # id from: thurbox-cli automation list
 # or run the script directly:
-~/github-issues/scripts/sync.sh
+~/.config/thurbox/extensions/github-issues/scripts/sync.sh
 ```
 
 Then check the imported tasks:
@@ -107,7 +108,7 @@ local `todo`↔`in_progress` distinction is preserved.
 
 - **Nothing syncs** — check the automation run history (`Ctrl+P`, or
   `thurbox-cli automation runs <id>`) for the script's output; run
-  `~/github-issues/scripts/sync.sh` by hand to see errors directly.
+  `~/.config/thurbox/extensions/github-issues/scripts/sync.sh` by hand to see errors directly.
 - **`gh` auth error / empty pull** — `gh auth status`; confirm
   `gh issue list --repo <owner/repo>` works for each tracker's repo.
 - **`unknown option '--source'`** — your `thurbox-cli` predates 0.141; rebuild /

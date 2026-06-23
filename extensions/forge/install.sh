@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/forge, registers the forge agent in agents.toml, and activates the
+# down ~/.config/thurbox/extensions/forge, registers the forge agent in agents.toml, and activates the
 # forge session + forge-scan automation (which thurbox then self-heals).
 #
 # Usage:
@@ -14,7 +14,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/forge/install.sh | sh
 #
 # Environment variables:
-#   FORGE_HOME=~/forge            install home (passed as --home)
+#   FORGE_HOME=<dir>   override install home (default: <config>/extensions/forge)
 #
 # To turn forge off:  thurbox-cli extension deactivate forge [--force --purge]
 

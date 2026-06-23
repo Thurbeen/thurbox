@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/linear, and activates the linear-tick automation — a deterministic exec
+# down ~/.config/thurbox/extensions/linear, and activates the linear-tick automation — a deterministic exec
 # sync (no agent, no session), which thurbox then self-heals.
 #
 # Usage:
@@ -14,11 +14,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/linear/install.sh | sh
 #
 # Environment variables:
-#   LINEAR_HOME=~/linear   install home (passed as --home)
+#   LINEAR_HOME=<dir>   override install home (default: <config>/extensions/linear)
 #
 # Authenticate afterwards: put your Linear personal API key in
-# ~/linear/credentials.env as `LINEAR_API_KEY=lin_api_xxom` (Settings → Account →
-# Security & access → Personal API keys). Then add teams to ~/linear/trackers.md.
+# ~/.config/thurbox/extensions/linear/credentials.env as `LINEAR_API_KEY=lin_api_xxom` (Settings → Account →
+# Security & access → Personal API keys). Then add teams to ~/.config/thurbox/extensions/linear/trackers.md.
 # To turn it off:
 #   thurbox-cli extension deactivate linear [--force --purge]
 

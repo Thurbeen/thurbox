@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/github-issues, and activates the github-issues-tick automation — a
+# down ~/.config/thurbox/extensions/github-issues, and activates the github-issues-tick automation — a
 # deterministic exec sync (no agent, no session), which thurbox then self-heals.
 #
 # Usage:
@@ -14,10 +14,10 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/github-issues/install.sh | sh
 #
 # Environment variables:
-#   GITHUB_ISSUES_HOME=~/github-issues   install home (passed as --home)
+#   GITHUB_ISSUES_HOME=<dir>   override install home (default: <config>/extensions/github-issues)
 #
 # Authenticate afterwards: `gh auth login`. Then add repos to
-# ~/github-issues/trackers.md. To turn it off:
+# ~/.config/thurbox/extensions/github-issues/trackers.md. To turn it off:
 #   thurbox-cli extension deactivate github-issues [--force --purge]
 
 set -eu

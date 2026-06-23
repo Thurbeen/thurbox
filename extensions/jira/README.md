@@ -26,16 +26,17 @@ Create an Atlassian API token at
 Because the sync runs **headless** (via the automation, with no shell session to
 inherit your environment), the robust way to hand it the credentials is a
 `credentials.env` file in the extension home — `sync.sh` sources
-`~/jira/credentials.env` if present. Create it with the three required vars:
+`~/.config/thurbox/extensions/jira/credentials.env` if present. Create it with
+the three required vars:
 
 ```sh
-mkdir -p ~/jira
-cat > ~/jira/credentials.env <<'EOF'
+mkdir -p ~/.config/thurbox/extensions/jira
+cat > ~/.config/thurbox/extensions/jira/credentials.env <<'EOF'
 JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-atlassian-api-token
 EOF
-chmod 600 ~/jira/credentials.env
+chmod 600 ~/.config/thurbox/extensions/jira/credentials.env
 ```
 
 Alternatively you can `export` those three vars from your shell profile, but that
@@ -51,13 +52,14 @@ thurbox-cli extension install jira
 thurbox-cli extension install ./extensions/jira
 ```
 
-This lays down `~/jira/` (override with `--home`) and activates the `jira-tick`
-automation, which thurbox self-heals if deleted.
+This lays down `~/.config/thurbox/extensions/jira/` (override with `--home`) and
+activates the `jira-tick` automation, which thurbox self-heals if deleted.
 
 ### 4. Configure the projects/filters to sync
 
-Edit `~/jira/trackers.md` — one row per project or saved filter. Each row's
-`query` is a **JQL string** (it may contain spaces and is used verbatim):
+Edit `~/.config/thurbox/extensions/jira/trackers.md` — one row per project or
+saved filter. Each row's `query` is a **JQL string** (it may contain spaces and
+is used verbatim):
 
 ```markdown
 | name    | query                                    | push_back |
@@ -76,7 +78,7 @@ The automation fires every 15 min. To run it now, trigger it from the
 ```sh
 thurbox-cli automation run <id>     # id from: thurbox-cli automation list
 # or run the script directly:
-~/jira/scripts/sync.sh
+~/.config/thurbox/extensions/jira/scripts/sync.sh
 ```
 
 Then check the imported tasks:
@@ -141,10 +143,10 @@ Notes:
 
 - **Nothing syncs** — check the automation run history (`Ctrl+P`, or
   `thurbox-cli automation runs <id>`) for the script's output; run
-  `~/jira/scripts/sync.sh` by hand to see errors directly.
+  `~/.config/thurbox/extensions/jira/scripts/sync.sh` by hand to see errors directly.
 - **`set JIRA_BASE_URL …` / auth errors** — the headless run can't see the vars;
-  confirm `~/jira/credentials.env` exists with all three (`JIRA_BASE_URL`,
-  `JIRA_EMAIL`, `JIRA_API_TOKEN`). Test with
+  confirm `~/.config/thurbox/extensions/jira/credentials.env` exists with all
+  three (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`). Test with
   `curl -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "$JIRA_BASE_URL/rest/api/3/myself"`.
 - **`unknown option '--source'`** — your `thurbox-cli` predates 0.141; rebuild /
   update thurbox.

@@ -42,7 +42,7 @@ or from a checkout: `thurbox-cli extension install ./extensions/forge`
 (the `install.sh` / curl one-liner is a thin shim over this). Override the home
 with `--home <dir>`. Installing:
 
-1. lays down the forge home (`~/forge`): `FORGE.md` spec, helper scripts,
+1. lays down the forge home (`~/.config/thurbox/extensions/forge`): `FORGE.md` spec, helper scripts,
    context-file symlinks, claude permission settings, and an empty
    `proposals.jsonl`/`proposals.md` store (seed files are never clobbered on
    reinstall);
@@ -60,7 +60,7 @@ version. `thurbox-cli extension list` / `status forge` show what's active.
 - Forge scans on its schedule; trigger one now by sending `scan` to the forge
   session (or open it in the TUI).
 - `status` for a one-screen list of open proposals.
-- Review the rendered backlog in `~/forge/proposals.md`.
+- Review the rendered backlog in `~/.config/thurbox/extensions/forge/proposals.md`.
 - `apply <slug>` runs the proposal's stored command (which always starts with
   `thurbox-cli`) and marks it applied. `dismiss <slug>` buries one so future
   scans won't resurface it.
@@ -89,5 +89,5 @@ can only ever create/edit a thurbox automation, never run arbitrary shell.
 ```bash
 thurbox-cli extension deactivate forge        # off-switch: tears down session + automation
 thurbox-cli extension uninstall forge         # also removes the agent + manifest
-thurbox-cli extension uninstall forge --purge  # ...and deletes ~/forge (your proposals too)
+thurbox-cli extension uninstall forge --purge  # ...and deletes ~/.config/thurbox/extensions/forge (your proposals too)
 ```

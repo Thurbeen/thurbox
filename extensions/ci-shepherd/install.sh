@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/ci-shepherd, registers the shepherd agents in agents.toml, and
+# down ~/.config/thurbox/extensions/ci-shepherd, registers the shepherd agents in agents.toml, and
 # activates the shepherd session + shepherd-tick automation (which thurbox then
 # self-heals).
 #
@@ -15,7 +15,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/ci-shepherd/install.sh | sh
 #
 # Environment variables:
-#   SHEPHERD_HOME=~/ci-shepherd   install home (passed as --home)
+#   SHEPHERD_HOME=<dir>   override install home (default: <config>/extensions/ci-shepherd)
 #
 # Authenticate your forge client(s) afterwards: gh auth login / glab auth login,
 # or export BB_TOKEN for Bitbucket. To turn it off:

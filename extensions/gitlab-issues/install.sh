@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/gitlab-issues, and activates the gitlab-issues-tick automation — a
+# down ~/.config/thurbox/extensions/gitlab-issues, and activates the gitlab-issues-tick automation — a
 # deterministic exec sync (no agent, no session), which thurbox then self-heals.
 #
 # Usage:
@@ -14,10 +14,10 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/gitlab-issues/install.sh | sh
 #
 # Environment variables:
-#   GITLAB_ISSUES_HOME=~/gitlab-issues   install home (passed as --home)
+#   GITLAB_ISSUES_HOME=<dir>   override install home (default: <config>/extensions/gitlab-issues)
 #
 # Authenticate afterwards: `glab auth login`. Then add projects to
-# ~/gitlab-issues/trackers.md. To turn it off:
+# ~/.config/thurbox/extensions/gitlab-issues/trackers.md. To turn it off:
 #   thurbox-cli extension deactivate gitlab-issues [--force --purge]
 
 set -eu

@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/flow, registers the flow agents in agents.toml, and activates the flow
+# down ~/.config/thurbox/extensions/flow, registers the flow agents in agents.toml, and activates the flow
 # session (which thurbox then self-heals). Flow is event-driven — worker pushes
 # over the mailbox queue wake it; there is no scheduled automation.
 #
@@ -15,7 +15,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/flow/install.sh | sh
 #
 # Environment variables:
-#   FLOW_HOME=~/flow              install home (passed as --home)
+#   FLOW_HOME=<dir>   override install home (default: <config>/extensions/flow)
 #
 # To turn flow off:  thurbox-cli extension deactivate flow [--force --purge]
 

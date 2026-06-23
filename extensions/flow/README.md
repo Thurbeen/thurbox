@@ -32,7 +32,7 @@ thurbox-cli extension install flow
 That single command is the installer — it reads flow's
 [`extension.toml`](extension.toml) manifest and:
 
-1. sets up the flow home (`~/flow`, override with `--home`): `FLOW.md`
+1. sets up the flow home (`~/.config/thurbox/extensions/flow`, override with `--home`): `FLOW.md`
    spec, helper scripts, context-file symlinks, claude permission
    settings, and a `repos.md` routing table (edit it!);
 2. registers the `flow` / `flow-worker` / `flow-worker-heavy` entries in
@@ -167,8 +167,8 @@ tagged URL (`…/thurbox/v0.112.0/extensions/flow`) instead.
 `flow*` agents from `agents.toml`, and deletes the manifest:
 
 ```bash
-thurbox-cli extension uninstall flow            # keeps ~/flow (your repos.md etc.)
-thurbox-cli extension uninstall flow --purge    # also deletes ~/flow
+thurbox-cli extension uninstall flow            # keeps ~/.config/thurbox/extensions/flow (your repos.md etc.)
+thurbox-cli extension uninstall flow --purge    # also deletes ~/.config/thurbox/extensions/flow
 ```
 
 To only switch flow off (keeping it installed for a later `activate`):

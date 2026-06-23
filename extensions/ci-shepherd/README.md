@@ -66,8 +66,9 @@ or from a checkout: `thurbox-cli extension install ./extensions/ci-shepherd`
 (the `install.sh` / curl one-liner is a thin shim over this). Override the home
 with `--home <dir>`. Installing:
 
-1. lays down the shepherd home (`~/ci-shepherd`): `SHEPHERD.md` spec, helper
-   scripts (incl. the provider adapter), context-file symlinks, claude
+1. lays down the shepherd home (`~/.config/thurbox/extensions/ci-shepherd`):
+   `SHEPHERD.md` spec, helper scripts (incl. the provider adapter),
+   context-file symlinks, claude
    permission settings, and a `repos.md` watch list (seeded once, then
    user-owned);
 2. registers the `shepherd` / `shepherd-worker` agents in
@@ -82,8 +83,8 @@ extension list` / `status ci-shepherd` show what's active.
 
 ## Use
 
-- Add the repos to watch to `~/ci-shepherd/repos.md` (one row each; `author`
-  defaults to `@me`, `provider` to `auto`).
+- Add the repos to watch to `~/.config/thurbox/extensions/ci-shepherd/repos.md`
+  (one row each; `author` defaults to `@me`, `provider` to `auto`).
 - The shepherd sweeps on its schedule; trigger one now by sending `tick` to the
   shepherd session (or open it in the TUI).
 - `status` for a one-screen report; `clean` to prune merged/closed worktrees.
@@ -96,8 +97,9 @@ extension list` / `status ci-shepherd` show what's active.
 thurbox's own `--worktree` always runs `git worktree add -b`, which fails on a
 branch that already exists — and a request's head branch always does. So
 `dispatch-fix.sh` adopts the branch itself into a shepherd-owned worktree under
-`~/ci-shepherd/worktrees/<repo>-<provider>-<n>`, then spawns the fixer there.
-The checkout is git-universal: for a built-in forge it uses the provider's
+`~/.config/thurbox/extensions/ci-shepherd/worktrees/<repo>-<provider>-<n>`, then
+spawns the fixer there. The checkout is git-universal: for a built-in forge it
+uses the provider's
 checkout (`gh pr checkout` / `glab mr checkout` / `git fetch`), and for any
 other forge it uses the agent-supplied `--checkout-cmd` (or a plain
 `git fetch origin <branch>` fallback). The worker pushes straight to the request
@@ -124,7 +126,7 @@ branch; `clean` removes the worktree once the request is no longer actionable
 ```bash
 thurbox-cli extension deactivate ci-shepherd   # off-switch: tears down session + automation
 thurbox-cli extension uninstall ci-shepherd    # also removes the agents + manifest
-thurbox-cli extension uninstall ci-shepherd --purge  # ...and deletes ~/ci-shepherd
+thurbox-cli extension uninstall ci-shepherd --purge  # ...and deletes ~/.config/thurbox/extensions/ci-shepherd
 ```
 
 > Remove any leftover fixer worktrees first (`git -C <repo> worktree remove …`)

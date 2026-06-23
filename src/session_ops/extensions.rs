@@ -160,12 +160,20 @@ pub fn install_extension(
     let previous_version =
         crate::agent::extension_config::load_manifest(&def.name).and_then(|prev| prev.version);
 
+    // Home precedence: `--home` > a manifest-pinned `home` > the derived default
+    // under the config dir (`<extensions_dir>/<name>`). Official manifests omit
+    // `home`, so they land in the derived default rather than the user's `$HOME`.
     let home_raw = home_override
         .map(str::to_string)
         .or_else(|| def.home.clone())
+        .or_else(|| {
+            crate::agent::extension_config::default_home(&def.name)
+                .map(|p| p.to_string_lossy().into_owned())
+        })
         .ok_or_else(|| {
             format!(
-                "extension '{}' has no `home` in its manifest; pass --home <dir>",
+                "extension '{}': cannot resolve a default home (config dir unavailable); \
+                 pass --home <dir>",
                 def.name
             )
         })?;
@@ -1887,6 +1895,63 @@ requires_dir = '{req}'
         // --force overrides and rewrites from the template.
         let r3 = install_extension(&db, &target, None, true).unwrap();
         assert!(r3.files_written.contains(&"settings.json".to_string()));
+    }
+
+    #[test]
+    fn install_defaults_home_under_extensions_dir() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        // Manifest with NO `home` field → falls through to the derived default.
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            "name = \"demo\"\n[[files]]\npath = \"NOTES.md\"\n",
+        )
+        .unwrap();
+        std::fs::write(src.path().join("NOTES.md"), "hello\n").unwrap();
+
+        let target = src.path().to_string_lossy().to_string();
+        let report = install_extension(&db, &target, None, false).unwrap();
+
+        // The Override path strategy maps the config dir under the test base, so
+        // the default home is `<base>/extensions/demo` (sibling of demo.toml).
+        let expected = temp.path().join("extensions").join("demo");
+        assert_eq!(report.home, expected.to_string_lossy());
+        assert!(
+            expected.join("NOTES.md").exists(),
+            "payload lands in the default home, not $HOME"
+        );
+    }
+
+    #[test]
+    fn install_home_override_and_manifest_home_beat_default() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+
+        // (a) A manifest-pinned `home` wins over the derived default.
+        let pinned = temp.path().join("pinned");
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            src.path().join("extension.toml"),
+            format!(
+                "name = \"demo\"\nhome = '{}'\n[[files]]\npath = \"NOTES.md\"\n",
+                pinned.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join("NOTES.md"), "hi\n").unwrap();
+        let target = src.path().to_string_lossy().to_string();
+        let report = install_extension(&db, &target, None, false).unwrap();
+        assert_eq!(report.home, pinned.to_string_lossy());
+
+        // (b) `--home` beats both the manifest home and the default.
+        let override_home = temp.path().join("override");
+        let report =
+            install_extension(&db, &target, Some(&override_home.to_string_lossy()), false).unwrap();
+        assert_eq!(report.home, override_home.to_string_lossy());
     }
 
     #[test]

@@ -183,6 +183,14 @@ pub fn manifest_path(name: &str) -> Option<PathBuf> {
     extensions_dir().map(|d| d.join(format!("{name}.toml")))
 }
 
+/// Default install home for an extension: `<extensions_dir>/<name>/` (a sibling
+/// dir of its `<name>.toml` manifest, e.g. `~/.config/thurbox/extensions/flow`).
+/// Used when neither `--home` nor a manifest `home` is given. Discovery
+/// (`list_manifests_with_warnings`) only reads `*.toml`, so this dir is ignored.
+pub fn default_home(name: &str) -> Option<PathBuf> {
+    extensions_dir().map(|d| d.join(name))
+}
+
 /// Load one extension manifest by name. Returns `None` when the file is absent,
 /// unreadable, or malformed (with a logged warning) — callers treat a missing
 /// manifest as "this extension isn't installed".

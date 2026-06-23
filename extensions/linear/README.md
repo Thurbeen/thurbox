@@ -28,12 +28,12 @@ keys → New key**).
 Because the automation runs **headless** (the scheduler fires it without a
 reliable inherited shell environment), the robust way to hand the key to the
 sync is a `credentials.env` file in the install home — `sync.sh` sources it
-before running. Create `~/linear/credentials.env`:
+before running. Create `~/.config/thurbox/extensions/linear/credentials.env`:
 
 ```sh
-mkdir -p ~/linear
-printf 'LINEAR_API_KEY=lin_api_xxom\n' > ~/linear/credentials.env
-chmod 600 ~/linear/credentials.env
+mkdir -p ~/.config/thurbox/extensions/linear
+printf 'LINEAR_API_KEY=lin_api_xxom\n' > ~/.config/thurbox/extensions/linear/credentials.env
+chmod 600 ~/.config/thurbox/extensions/linear/credentials.env
 ```
 
 (Exporting `LINEAR_API_KEY` from your shell profile, e.g. `~/.zshrc`/`~/.bashrc`,
@@ -52,12 +52,13 @@ thurbox-cli extension install linear
 thurbox-cli extension install ./extensions/linear
 ```
 
-This lays down `~/linear/` (override with `--home`) and activates the
+This lays down `~/.config/thurbox/extensions/linear/` (override with `--home`) and activates the
 `linear-tick` automation, which thurbox self-heals if deleted.
 
 ### 4. Configure the teams to sync
 
-Edit `~/linear/trackers.md` — one row per Linear team, where `query` is the
+Edit `~/.config/thurbox/extensions/linear/trackers.md` — one row per Linear
+team, where `query` is the
 **team key** (e.g. `ENG`):
 
 ```markdown
@@ -78,7 +79,7 @@ The automation fires every 15 min. To run it now, trigger it from the
 ```sh
 thurbox-cli automation run <id>     # id from: thurbox-cli automation list
 # or run the script directly:
-~/linear/scripts/sync.sh
+~/.config/thurbox/extensions/linear/scripts/sync.sh
 ```
 
 Then check the imported tasks:
@@ -119,8 +120,9 @@ State mapping (Linear state type → thurbox task status):
 
 ## How it works
 
-`scripts/sync.sh` (run by the automation) sources `~/linear/credentials.env` (so
-`LINEAR_API_KEY` is available headless), then does, in order:
+`scripts/sync.sh` (run by the automation) sources
+`~/.config/thurbox/extensions/linear/credentials.env` (so `LINEAR_API_KEY` is
+available headless), then does, in order:
 
 | Step | Script | Behavior |
 |------|--------|----------|
@@ -135,8 +137,8 @@ Linear is authoritative for an issue's title, URL, and state; your local
 
 - **Nothing syncs** — check the automation run history (`Ctrl+P`, or
   `thurbox-cli automation runs <id>`) for the script's output; run
-  `~/linear/scripts/sync.sh` by hand to see errors directly.
-- **`LINEAR_API_KEY is unset`** — create `~/linear/credentials.env` with
+  `~/.config/thurbox/extensions/linear/scripts/sync.sh` by hand to see errors directly.
+- **`LINEAR_API_KEY is unset`** — create `~/.config/thurbox/extensions/linear/credentials.env` with
   `LINEAR_API_KEY=lin_api_xxom` (step 2). The headless automation can't see a
   variable you only exported interactively.
 - **Empty pull / GraphQL error** — confirm the key is valid and the team key in

@@ -13,7 +13,7 @@ description = "Workflow analyst that proposes new automations"
 config_version = 1
 version = "1.0.0"                 # this extension's own version; bump on changes
 min_thurbox_version = "0.113.0"  # needs the `extension install`/self-heal machinery
-home = "~/forge"
+# No `home`: defaults to `<config>/extensions/forge` (override with --home).
 
 # --- agents registered in agents.toml (override the model by editing it) ------
 

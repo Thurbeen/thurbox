@@ -6,7 +6,7 @@
 #
 # This script just forwards to it — using a local checkout when run from one,
 # otherwise the official remote source. It fetches the manifest + payload, lays
-# down ~/renovate, registers the renovate agents in agents.toml, and activates
+# down ~/.config/thurbox/extensions/renovate, registers the renovate agents in agents.toml, and activates
 # the renovate session + renovate-tick automation (which thurbox then
 # self-heals).
 #
@@ -15,7 +15,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/extensions/renovate/install.sh | sh
 #
 # Environment variables:
-#   RENOVATE_HOME=~/renovate      install home (passed as --home)
+#   RENOVATE_HOME=<dir>   override install home (default: <config>/extensions/renovate)
 #
 # Renovate runs via `npx --yes renovate` (needs Node >= 20). Authenticate your
 # forge client(s) afterwards if you want workers to open review PRs:

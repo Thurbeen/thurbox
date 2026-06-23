@@ -420,8 +420,10 @@ Maps `Action` names to one or more chord strings:
 Each opt-in extension (see `extensions/<name>/`) is described by a single
 `extension.toml` manifest. `thurbox-cli extension install` writes the
 home-resolved copy to `~/.config/thurbox/extensions/<name>.toml` (thurbox
-never seeds this dir). The manifest has two halves — an **install** spec
-and a **runtime** spec:
+never seeds this dir). The install **home** (where payload files land and the
+session runs) defaults to `~/.config/thurbox/extensions/<name>/` — a sibling dir
+of that manifest — unless the manifest pins a `home` or you pass `--home`. The
+manifest has two halves — an **install** spec and a **runtime** spec:
 
 ```toml
 name = "flow"
@@ -429,7 +431,8 @@ description = "Focus-protecting triage agent"
 config_version = 1              # manifest *format* version (for migrations)
 version = "1.0.0"              # the extension's own version (bumped by its author)
 min_thurbox_version = "0.113.0" # minimum thurbox; older binaries get a warning
-home = "~/flow"                 # install home; {home} is substituted everywhere
+# home = "~/flow"               # OPTIONAL; default is <config>/extensions/<name>.
+                                # {home} is substituted everywhere it appears
 
 # install spec ---------------------------------------------------------------
 [[agents]]                      # registered in agents.toml (existing kept)
