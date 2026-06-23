@@ -207,6 +207,25 @@ h3:hover .heading-anchor {
   color: var(--cyan);
 }
 
+/* ---- Docs hub categories ---- */
+.docs-hub-category {
+  margin-top: var(--space-2xl);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border);
+}
+
+.docs-hub-category-desc {
+  margin-top: var(--space-sm);
+  margin-bottom: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* Tighten the grid's default top gap when it follows a category blurb. */
+.docs-hub-category-desc + .docs-hub-grid {
+  margin-top: var(--space-lg);
+}
+
 /* ---- Info boxes ---- */
 .info-box {
   background: var(--bg-secondary);
