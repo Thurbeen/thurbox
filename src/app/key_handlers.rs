@@ -1671,7 +1671,7 @@ impl App {
     }
 
     /// `Enter` on the theme picker: activate the selected entry and persist it
-    /// as the active theme (a persistence failure is logged, not surfaced).
+    /// as the active theme.
     fn commit_theme_selection(
         &mut self,
         entries: Vec<crate::session::theme_config::ThemeEntry>,
@@ -1683,6 +1683,7 @@ impl App {
         crate::ui::theme::set_active(entry.palette.clone());
         if let Err(e) = self.db.set_active_theme(&entry.name) {
             tracing::error!("Failed to persist active theme: {e}");
+            self.set_error(format!("Failed to persist theme: {e}"));
         }
         self.active_theme = entry;
     }
@@ -1983,6 +1984,7 @@ impl App {
         if persist && !remote {
             if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
                 error!("Failed to save repo bookmark: {e}");
+                self.set_error(format!("Failed to save repo bookmark: {e}"));
             }
         }
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
@@ -2036,6 +2038,7 @@ impl App {
         let expanded = paths::expand_tilde(&path);
         if let Err(e) = self.db.upsert_repo_bookmark_kind(&expanded, true) {
             error!("Failed to save parent bookmark: {e}");
+            self.set_error(format!("Failed to save parent bookmark: {e}"));
         }
         if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
             rp.path_input.clear();

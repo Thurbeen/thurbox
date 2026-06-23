@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event, KeyEventKind, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
     startup.config_init_ms = t_phase.elapsed().as_millis();
 
     let t_phase = std::time::Instant::now();
-    let db = open_database();
+    let db = open_database()?;
     startup.db_open_ms = t_phase.elapsed().as_millis();
     activate_persisted_theme(&db);
 
@@ -257,9 +257,10 @@ fn init_backends_and_config() -> Result<(
 
 /// Open the SQLite database for persistent state, falling back to the default
 /// XDG location (dev vs. prod build) when the path can't be resolved.
-fn open_database() -> Database {
+fn open_database() -> Result<Database> {
     let db_path = thurbox::paths::database_file().unwrap_or_else(fallback_database_path);
-    Database::open(&db_path).expect("Failed to open database")
+    Database::open(&db_path)
+        .with_context(|| format!("failed to open database at {}", db_path.display()))
 }
 
 /// Degenerate-fallback database path, used only when
