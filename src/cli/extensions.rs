@@ -9,6 +9,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::automations::arm_heartbeat;
 use crate::cli::output::{self, CommandOutput};
 use crate::session::ExtensionDef;
 use crate::storage::Database;
@@ -408,15 +409,6 @@ fn load_manifest(name: &str) -> Result<ExtensionDef, String> {
              (it writes ~/.config/thurbox/extensions/{name}.toml)."
         )
     })
-}
-
-/// Best-effort: ensure the tmux heartbeat keeper runs so the extension's
-/// automations fire even when no TUI is attached. Non-fatal on failure.
-fn arm_heartbeat() {
-    let cli = crate::agent::tmux::resolve_cli_binary();
-    if let Err(e) = crate::agent::tmux::ensure_automation_heartbeat(&cli) {
-        eprintln!("warning: failed to arm automation heartbeat: {e}");
-    }
 }
 
 /// Build the `extension available` result: every official extension with its
