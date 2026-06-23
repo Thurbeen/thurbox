@@ -242,8 +242,8 @@ impl App {
                 session_list_state: &mut self.session_list_state,
                 session_match_positions: &ordered.match_positions,
                 session_search_active,
-                headers: &ordered.headers,
-                depths: &ordered.depths,
+                headers: ordered.headers,
+                depths: ordered.depths,
                 spinner,
             },
         );

@@ -155,18 +155,16 @@ pub fn compute_session_order(sessions: &[&SessionInfo]) -> SessionOrder {
 
     // Groups: by lowest member manual order, then label for determinism.
     // Moves renumber all sessions densely in render order, so a group's
-    // minimum reproduces the group order the user last saw.
-    groups.sort_by(|a, b| {
-        let key = |g: &Group| {
-            let order = g
-                .members
-                .iter()
-                .map(|&i| sort_key(i).0)
-                .min()
-                .unwrap_or(i64::MAX);
-            (order, g.label.clone().unwrap_or_default())
-        };
-        key(a).cmp(&key(b))
+    // minimum reproduces the group order the user last saw. `sort_by_cached_key`
+    // computes each group's key once rather than per pairwise comparison.
+    groups.sort_by_cached_key(|g| {
+        let order = g
+            .members
+            .iter()
+            .map(|&i| sort_key(i).0)
+            .min()
+            .unwrap_or(i64::MAX);
+        (order, g.label.clone().unwrap_or_default())
     });
 
     let mut order = Vec::with_capacity(sessions.len());
@@ -438,36 +436,28 @@ pub struct OrderedSessions<'a> {
     pub match_positions: Vec<Option<SessionMatch>>,
     pub active_index: usize,
     /// Parallel to `sessions`: `Some(label)` on each repo group's first row,
-    /// used to render a subtle header above it. `None` elsewhere.
-    pub headers: Vec<Option<String>>,
+    /// used to render a subtle header above it. `None` elsewhere. Borrowed from
+    /// the source [`SessionOrder`] (never cloned — the order is render-stable).
+    pub headers: &'a [Option<String>],
     /// Parallel to `sessions`: tree depth within the repo group
-    /// (see [`SessionOrder::depths`]).
-    pub depths: Vec<u8>,
+    /// (see [`SessionOrder::depths`]). Borrowed from the source [`SessionOrder`].
+    pub depths: &'a [u8],
 }
 
 impl<'a> OrderedSessions<'a> {
-    /// Reorder the parallel arrays into render order, remapping `active_index`
-    /// and `match_positions` to follow it.
-    pub fn new(
-        sessions: &[&'a SessionInfo],
-        match_positions: &[Option<SessionMatch>],
-        active_index: usize,
-    ) -> Self {
-        let order = compute_session_order(sessions);
-        Self::from_order(sessions, &order, match_positions, active_index)
-    }
-
-    /// As [`Self::new`], but reuses a previously computed [`SessionOrder`]
-    /// instead of recomputing it. The order is a pure function of the session
-    /// set's grouping/nesting inputs (`repo_display_names`, `display_order`,
-    /// `id`, `parent_session_id`) — never status — so the caller can cache it
-    /// keyed by a content signature and skip the grouping/sort/nest work on
-    /// frames where none of those changed (see `App::render_left_panel`). The
-    /// per-frame remap of refs / match positions / `active_index` still runs,
-    /// since those vary independently of the order.
+    /// Reorder the parallel arrays into render order against a previously
+    /// computed [`SessionOrder`], remapping `active_index` and `match_positions`
+    /// to follow it. The order is a pure function of the session set's
+    /// grouping/nesting inputs (`repo_display_names`, `display_order`, `id`,
+    /// `parent_session_id`) — never status — so the caller can cache it keyed by
+    /// a content signature and skip the grouping/sort/nest work on frames where
+    /// none of those changed (see `App::render_left_panel`). The per-frame remap
+    /// of refs / match positions / `active_index` still runs, since those vary
+    /// independently of the order; `headers`/`depths` are *borrowed* from the
+    /// cached `order` rather than cloned each frame.
     pub fn from_order(
         sessions: &[&'a SessionInfo],
-        order: &SessionOrder,
+        order: &'a SessionOrder,
         match_positions: &[Option<SessionMatch>],
         active_index: usize,
     ) -> Self {
@@ -487,8 +477,8 @@ impl<'a> OrderedSessions<'a> {
             sessions: ordered_sessions,
             match_positions: ordered_matches,
             active_index: new_active,
-            headers: order.headers.clone(),
-            depths: order.depths.clone(),
+            headers: &order.headers,
+            depths: &order.depths,
         }
     }
 }
@@ -1029,7 +1019,8 @@ mod tests {
         let matches: Vec<Option<SessionMatch>> = vec![None, None];
         // active_index points at the first input session; the manually ordered
         // one renders above it and active_index is remapped to follow it.
-        let ordered = OrderedSessions::new(&sessions, &matches, 0);
+        let order = compute_session_order(&sessions);
+        let ordered = OrderedSessions::from_order(&sessions, &order, &matches, 0);
         assert_eq!(ordered.sessions[0].name, "moved");
         assert_eq!(ordered.sessions[1].name, "first");
         assert_eq!(ordered.active_index, 1);
@@ -1247,9 +1238,13 @@ mod tests {
         let n1 = info("n1");
         let n2 = info("n2");
         let sessions = vec![&n1, &n2];
-        let ordered = OrderedSessions::new(&sessions, &[None, None], 0);
+        let order = compute_session_order(&sessions);
+        let ordered = OrderedSessions::from_order(&sessions, &order, &[None, None], 0);
         // Single "(no repo)" group: header on row 0, none after.
-        assert_eq!(ordered.headers, vec![Some("(no repo)".to_string()), None]);
+        assert_eq!(
+            ordered.headers.to_vec(),
+            vec![Some("(no repo)".to_string()), None]
+        );
     }
 
     #[test]
@@ -1265,7 +1260,8 @@ mod tests {
         terminal
             .draw(|f| {
                 let sessions = vec![&n1, &n2];
-                let ordered = OrderedSessions::new(&sessions, &[None, None], 0);
+                let order = compute_session_order(&sessions);
+                let ordered = OrderedSessions::from_order(&sessions, &order, &[None, None], 0);
                 hitboxes = render_left_panel(
                     f,
                     Rect::new(0, 0, 30, 12),
@@ -1277,8 +1273,8 @@ mod tests {
                         session_list_state: &mut list_state,
                         session_match_positions: &ordered.match_positions,
                         session_search_active: false,
-                        headers: &ordered.headers,
-                        depths: &ordered.depths,
+                        headers: ordered.headers,
+                        depths: ordered.depths,
                         spinner: "◐",
                     },
                 );
@@ -1294,7 +1290,8 @@ mod tests {
     #[test]
     fn ordered_sessions_empty_input() {
         let sessions: Vec<&SessionInfo> = vec![];
-        let ordered = OrderedSessions::new(&sessions, &[], 0);
+        let order = compute_session_order(&sessions);
+        let ordered = OrderedSessions::from_order(&sessions, &order, &[], 0);
         assert!(ordered.sessions.is_empty());
         assert_eq!(ordered.active_index, 0);
         assert!(ordered.headers.is_empty());
