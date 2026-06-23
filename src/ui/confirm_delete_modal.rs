@@ -18,7 +18,10 @@ pub struct ConfirmDeleteState<'a> {
 /// `soft_delete` feature flag is off, where a delete is irreversible (the tmux
 /// window + worktrees are torn down with no Ctrl+Z undo), so it warns before
 /// acting.
-pub fn render_confirm_delete_modal(frame: &mut Frame, state: &ConfirmDeleteState<'_>) {
+pub fn render_confirm_delete_modal(
+    frame: &mut Frame,
+    state: &ConfirmDeleteState<'_>,
+) -> super::ModalButtons {
     let area = centered_fixed_height_rect(60, 9, frame.area());
 
     let inner = render_modal_frame_danger(frame, area, "Delete session");
@@ -49,11 +52,26 @@ pub fn render_confirm_delete_modal(frame: &mut Frame, state: &ConfirmDeleteState
     ));
     frame.render_widget(Paragraph::new(warning), chunks[2]);
 
-    let footer = Line::from(vec![
-        Span::styled("Enter/y", Theme::keybind()),
-        Span::styled(" delete  ", Theme::keybind_desc()),
-        Span::styled("Esc/n", Theme::keybind()),
-        Span::styled(" cancel", Theme::keybind_desc()),
-    ]);
-    frame.render_widget(Paragraph::new(footer), chunks[3]);
+    let hits = super::render_button_bar(
+        frame,
+        chunks[3],
+        &[
+            super::ButtonSpec::primary("Delete"),
+            super::ButtonSpec::secondary("Cancel"),
+        ],
+        true,
+    );
+    super::modal_button_keys(
+        hits,
+        &[
+            (
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            (
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ],
+    )
 }

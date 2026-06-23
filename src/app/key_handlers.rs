@@ -1294,7 +1294,7 @@ impl App {
         true
     }
 
-    fn dispatch_action(&mut self, action: crate::session::Action) -> bool {
+    pub(super) fn dispatch_action(&mut self, action: crate::session::Action) -> bool {
         if let Some(consumed) = self.dispatch_app_action(action) {
             return consumed;
         }

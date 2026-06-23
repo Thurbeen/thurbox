@@ -35,10 +35,17 @@ pub struct RepoPickerState<'a> {
     pub filtered_indices: &'a [usize],
 }
 
+/// The clickable sub-areas of the repo picker that focus an editable field:
+/// the always-present path input and the optional search bar.
+pub struct RepoFocusAreas {
+    pub input: ratatui::layout::Rect,
+    pub search: Option<ratatui::layout::Rect>,
+}
+
 pub fn render_repo_picker_modal(
     frame: &mut Frame,
     state: &RepoPickerState<'_>,
-) -> super::SelectorHits {
+) -> (super::ModalRender, RepoFocusAreas) {
     let visible_count = if state.filtered_indices.is_empty() {
         1
     } else {
@@ -94,9 +101,38 @@ pub fn render_repo_picker_modal(
         state.path_suggestion,
     );
 
-    // Footer
+    // Footer: focus-dependent key hints on the left, clickable `[ Done ]`
+    // (Enter) / `[ Cancel ]` (Esc) buttons on the right.
     frame.render_widget(Paragraph::new(footer_line(state)), footer_area);
-    hitboxes
+    let button_hits = super::render_button_bar(
+        frame,
+        footer_area,
+        &[
+            super::ButtonSpec::primary("Done"),
+            super::ButtonSpec::secondary("Cancel"),
+        ],
+        true,
+    );
+    let buttons = super::modal_button_keys(
+        button_hits,
+        &[
+            (
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            (
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ],
+    );
+    (
+        (hitboxes, buttons),
+        RepoFocusAreas {
+            input: input_area,
+            search: search_area,
+        },
+    )
 }
 
 /// Render the search bar at the top of the modal (only shown when search is active).

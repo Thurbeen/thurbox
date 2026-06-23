@@ -3,6 +3,7 @@
 //! Contains the main `App::view` method and helper functions for
 //! rendering the help overlay and formatting timestamps.
 
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -78,28 +79,50 @@ impl App {
         }
         let pos = ratatui::layout::Position::new(hx, hy);
         let hovered = self.click_targets.iter().find(|t| {
-            // While a modal is open, only its rows react — the pane targets
-            // recorded beneath the overlay are unreachable for clicks too.
-            (!modal_open || matches!(t.action, ClickAction::ModalRow(_)))
-                && matches!(
+            // While a modal is open, only its rows/buttons react — the pane and
+            // footer targets recorded beneath the overlay are unreachable too.
+            let reachable = if modal_open {
+                matches!(
+                    t.action,
+                    ClickAction::ModalRow(_)
+                        | ClickAction::ModalButton { .. }
+                        | ClickAction::ModalField(_)
+                        | ClickAction::RepoFocus(_)
+                )
+            } else {
+                matches!(
                     t.action,
                     ClickAction::SelectSession(_)
                         | ClickAction::SelectTask(_)
                         | ClickAction::SelectAutomation(_)
                         | ClickAction::SelectFileRow(_)
-                        | ClickAction::ModalRow(_)
+                        | ClickAction::Global(_)
+                        | ClickAction::PaneField { .. }
                 )
-                && t.rect.contains(pos)
+            };
+            reachable && t.rect.contains(pos)
         });
         let Some(target) = hovered else {
             return;
+        };
+        // Buttons (footer + modal) get a stronger, button-like hover — reverse
+        // the styled cell so an accent chip lights up — while list rows just
+        // underline to mark what a click would hit.
+        let is_button = matches!(
+            target.action,
+            ClickAction::Global(_) | ClickAction::ModalButton { .. }
+        );
+        let hover_mod = if is_button {
+            Modifier::REVERSED
+        } else {
+            Modifier::UNDERLINED
         };
         let buf = frame.buffer_mut();
         let rect = target.rect;
         for y in rect.y..rect.y + rect.height {
             for x in rect.x..rect.x + rect.width {
                 if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
-                    cell.modifier |= Modifier::UNDERLINED;
+                    cell.modifier |= hover_mod;
                 }
             }
         }
@@ -457,7 +480,18 @@ impl App {
         // preview while the panel is focused, editable once the editor is) with
         // the task's details beneath it.
         if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
-            let geom = self.render_task_workspace(frame, terminal);
+            let (geom, field_hits) = self.render_task_workspace(frame, terminal);
+            // Per-field click targets (only present while the editor is shown);
+            // recorded before any whole-pane fallback so a field click wins.
+            for hit in field_hits {
+                self.record_click(
+                    hit.rect,
+                    ClickAction::PaneField {
+                        focus: InputFocus::TaskEditor,
+                        index: hit.index,
+                    },
+                );
+            }
             self.record_scrollbar(geom, ScrollTarget::TaskPreview);
             return;
         }
@@ -532,7 +566,7 @@ impl App {
     }
 
     /// Render the bottom status-bar footer.
-    fn render_footer(&self, frame: &mut Frame, footer: Rect) {
+    fn render_footer(&mut self, frame: &mut Frame, footer: Rect) {
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
         let focus_label = match self.focus {
             InputFocus::SessionList => "Sessions",
@@ -546,7 +580,7 @@ impl App {
             InputFocus::FileViewer => "Files",
             InputFocus::GlobalSearch => "Search",
         };
-        status_bar::render_footer(
+        let button_hits = status_bar::render_footer(
             frame,
             footer,
             &status_bar::FooterState {
@@ -569,6 +603,12 @@ impl App {
                 file_viewer_open: self.show_file_viewer,
             },
         );
+        // Map each rendered footer button back to the Action it dispatches.
+        for hit in button_hits {
+            if let Some(action) = footer_button_action(hit.index) {
+                self.record_click(hit.rect, ClickAction::Global(action));
+            }
+        }
     }
 
     /// Render any active modal overlay on top of everything else. Selector
@@ -576,18 +616,34 @@ impl App {
     /// targets; text-input modals report none, so every click on them is
     /// swallowed.
     fn render_modals(&mut self, frame: &mut Frame) {
-        // Text-input modals report no hitboxes (every click is swallowed).
-        self.render_text_input_modals(frame);
+        // Text-input modals report footer buttons (Confirm/Delete/Cancel) but
+        // no row hitboxes (every other click is swallowed).
+        let text_buttons = self.render_text_input_modals(frame);
 
-        // Selector modals report row hitboxes for click routing. Exactly one
-        // modal is active at a time, so the first match wins.
-        let modal_hits = self
+        // Selector/editor modals report row hitboxes + footer buttons. Exactly
+        // one modal is active at a time, so the first match wins.
+        let ((modal_rows, modal_geom), sel_buttons) = self
             .render_selector_modal(frame)
-            .unwrap_or((Vec::new(), None));
+            .unwrap_or(((Vec::new(), None), Vec::new()));
 
-        let (modal_rows, modal_geom) = modal_hits;
+        // Editor modals (Settings / Automation) ship per-field hitboxes in the
+        // rows slot — recorded as `ModalField` (select a field), not `ModalRow`
+        // (activate a list row).
+        let field_editor = matches!(
+            self.modal,
+            super::modals::Modal::Settings(_) | super::modals::Modal::AutomationEditor(_)
+        );
         for row in modal_rows {
-            self.record_click(row.rect, ClickAction::ModalRow(row.index));
+            let action = if field_editor {
+                ClickAction::ModalField(row.index)
+            } else {
+                ClickAction::ModalRow(row.index)
+            };
+            self.record_click(row.rect, action);
+        }
+        // Footer buttons replay a key through the modal's own handler.
+        for (hit, code, mods) in sel_buttons.into_iter().chain(text_buttons) {
+            self.record_click(hit.rect, ClickAction::ModalButton { code, mods });
         }
         // The modal's own scrollbar: grabbable while the modal is open
         // (pane scrollbars beneath the overlay are not — see
@@ -595,13 +651,14 @@ impl App {
         self.record_scrollbar(modal_geom, ScrollTarget::Modal);
     }
 
-    /// Render the text-input modals (worktree / session name). These report no
-    /// click hitboxes, so they are rendered separately from selector modals.
-    fn render_text_input_modals(&self, frame: &mut Frame) {
+    /// Render the text-input modals (worktree / session name) and the
+    /// hard-delete confirmation. These report only footer buttons (every other
+    /// click is swallowed), so they are rendered separately from selectors.
+    fn render_text_input_modals(&self, frame: &mut Frame) -> crate::ui::ModalButtons {
         // Worktree name modal
         if let super::modals::Modal::WorktreeName(ref wn) = self.modal {
             let base = self.new_session.base_branch.as_deref().unwrap_or("");
-            worktree_name_modal::render_worktree_name_modal(
+            return worktree_name_modal::render_worktree_name_modal(
                 frame,
                 &worktree_name_modal::WorktreeNameState {
                     name: wn.name.value(),
@@ -613,7 +670,7 @@ impl App {
 
         // Session name modal
         if let super::modals::Modal::SessionName(ref sn) = self.modal {
-            session_name_modal::render_session_name_modal(
+            return session_name_modal::render_session_name_modal(
                 frame,
                 &session_name_modal::SessionNameState {
                     name: sn.name.value(),
@@ -624,18 +681,20 @@ impl App {
 
         // Hard-delete confirmation prompt (soft_delete feature off)
         if let super::modals::Modal::ConfirmDelete(ref cd) = self.modal {
-            crate::ui::confirm_delete_modal::render_confirm_delete_modal(
+            return crate::ui::confirm_delete_modal::render_confirm_delete_modal(
                 frame,
                 &crate::ui::confirm_delete_modal::ConfirmDeleteState {
                     session_name: &cd.session_name,
                 },
             );
         }
+
+        Vec::new()
     }
 
     /// Render whichever selector-style modal is active, returning its row
     /// hitboxes + scrollbar geometry (`None` when no selector modal is open).
-    fn render_selector_modal(&self, frame: &mut Frame) -> Option<crate::ui::SelectorHits> {
+    fn render_selector_modal(&mut self, frame: &mut Frame) -> Option<crate::ui::ModalRender> {
         // Help overlay (rendered last, on top of everything)
         if let super::modals::Modal::Help(ref help) = self.modal {
             return Some(render_help_overlay(frame, &self.keybindings, help));
@@ -682,16 +741,18 @@ impl App {
             ));
         }
 
-        // Settings panel (centered overlay).
+        // Settings panel (centered overlay). The field hitboxes ride in the
+        // rows slot; `render_modals` records them as `ModalField` (not
+        // `ModalRow`) because this is a field editor, not a list.
         if let super::modals::Modal::Settings(ref m) = self.modal {
-            crate::ui::settings_modal::render_settings_modal(
+            let (fields, buttons) = crate::ui::settings_modal::render_settings_modal(
                 frame,
                 &crate::ui::settings_modal::SettingsModalState {
                     modal: m,
                     restart_pending: m.restart_required_changed(),
                 },
             );
-            return Some((Vec::new(), None));
+            return Some(((fields, None), buttons));
         }
 
         // Restore sessions modal
@@ -705,11 +766,11 @@ impl App {
             // validation error for the current input).
             let now = crate::sync::current_time_millis();
             let preview = editor_preview(m, now);
-            automation_editor_modal::render_automation_editor_modal(
+            let (fields, buttons) = automation_editor_modal::render_automation_editor_modal(
                 frame,
                 &automation_editor_modal::AutomationEditorState::from_modal(m, &preview, true),
             );
-            return Some((Vec::new(), None));
+            return Some(((fields, None), buttons));
         }
 
         // Automations list modal
@@ -717,9 +778,27 @@ impl App {
             return Some(self.render_automations_list_modal(frame, al));
         }
 
-        // Repo picker modal
-        if let super::modals::Modal::RepoPicker(ref rp) = self.modal {
-            return Some(self.render_repo_picker_modal(frame, rp));
+        // Repo picker modal. Render under an immutable borrow of the modal,
+        // then (borrow released) record click targets that focus its editable
+        // sub-fields (path input + search bar).
+        if matches!(self.modal, super::modals::Modal::RepoPicker(_)) {
+            let (render, areas) = {
+                let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+                    unreachable!()
+                };
+                self.render_repo_picker_modal(frame, rp)
+            };
+            if let Some(search) = areas.search {
+                self.record_click(
+                    search,
+                    ClickAction::RepoFocus(super::modals::RepoPickerFocus::Search),
+                );
+            }
+            self.record_click(
+                areas.input,
+                ClickAction::RepoFocus(super::modals::RepoPickerFocus::Input),
+            );
+            return Some(render);
         }
 
         None
@@ -729,7 +808,7 @@ impl App {
         &self,
         frame: &mut Frame,
         rsm: &super::modals::RestoreSessionsModal,
-    ) -> crate::ui::SelectorHits {
+    ) -> crate::ui::ModalRender {
         let entries: Vec<restore_sessions_modal::DeletedSessionEntry> = rsm
             .list
             .iter()
@@ -753,7 +832,7 @@ impl App {
         &self,
         frame: &mut Frame,
         al: &super::modals::AutomationsListModal,
-    ) -> crate::ui::SelectorHits {
+    ) -> crate::ui::ModalRender {
         let entries: Vec<automations_list_modal::AutomationsListEntry> = al
             .entries
             .iter()
@@ -776,7 +855,10 @@ impl App {
         &self,
         frame: &mut Frame,
         rp: &super::modals::RepoPickerModal,
-    ) -> crate::ui::SelectorHits {
+    ) -> (
+        crate::ui::ModalRender,
+        crate::ui::repo_picker_modal::RepoFocusAreas,
+    ) {
         crate::ui::repo_picker_modal::render_repo_picker_modal(
             frame,
             &crate::ui::repo_picker_modal::RepoPickerState {
@@ -896,7 +978,7 @@ impl App {
 
         let now = crate::sync::current_time_millis();
         let preview = editor_preview(m, now);
-        automation_editor_modal::render_automation_editor_into(
+        let field_hits = automation_editor_modal::render_automation_editor_into(
             frame,
             editor_area,
             &automation_editor_modal::AutomationEditorState::from_modal(m, &preview, editing),
@@ -905,6 +987,17 @@ impl App {
         // Clicks focus the in-pane editor / run-history panels. Direct field
         // pushes (not `record_click`): `runs` above still borrows
         // `self.automation_ui`, so no `&mut self` method can be called here.
+        // Per-field targets are pushed before the whole-pane fallback so a
+        // click on a field wins (first match).
+        for hit in field_hits {
+            self.click_targets.push(ClickTarget {
+                rect: hit.rect,
+                action: ClickAction::PaneField {
+                    focus: InputFocus::AutomationEditor,
+                    index: hit.index,
+                },
+            });
+        }
         self.click_targets.push(ClickTarget {
             rect: editor_area,
             action: ClickAction::FocusPane(InputFocus::AutomationEditor),
@@ -936,7 +1029,11 @@ impl App {
     /// toggle**: while the editor is focused (`TaskEditor`) it shows the
     /// editor full-screen; while the tasks panel is focused (`TaskList`) it
     /// shows the selected task's read-only, scrollable markdown preview.
-    fn render_task_workspace(&self, frame: &mut Frame, area: Rect) -> Option<ScrollbarGeom> {
+    fn render_task_workspace(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+    ) -> (Option<ScrollbarGeom>, Vec<crate::ui::RowHitbox>) {
         let editing = self.focus == InputFocus::TaskEditor;
 
         let Some(m) = self.task_ui.task_editor.as_ref() else {
@@ -947,17 +1044,17 @@ impl App {
                 "No tasks yet — press n to create one.",
                 editing,
             );
-            return None;
+            return (None, Vec::new());
         };
 
         if editing {
-            // Full-screen editor.
-            task_editor_modal::render_task_editor_into(
+            // Full-screen editor — its per-field hitboxes drive click-to-edit.
+            let field_hits = task_editor_modal::render_task_editor_into(
                 frame,
                 area,
                 &task_editor_modal::TaskEditorState::from_modal(m, true),
             );
-            return None;
+            return (None, field_hits);
         }
 
         // Preview mode: render the selected (scoped) task's details + markdown
@@ -968,10 +1065,10 @@ impl App {
             .and_then(|id| self.task_ui.cached_tasks.iter().find(|t| t.id == id));
         let Some(task) = scoped else {
             render_empty_workspace_hint(frame, area, " Task ", "No task selected.", false);
-            return None;
+            return (None, Vec::new());
         };
 
-        self.render_task_detail_pane(frame, area, task)
+        (self.render_task_detail_pane(frame, area, task), Vec::new())
     }
 
     /// Render a single task's read-only details + scrollable markdown preview
@@ -1216,11 +1313,24 @@ fn help_action_hitboxes(
         .collect()
 }
 
+/// Map a footer button index (the order in [`status_bar::FOOTER_BUTTONS`]) to
+/// the `Action` a click dispatches.
+fn footer_button_action(index: usize) -> Option<crate::session::Action> {
+    use crate::session::Action;
+    match index {
+        0 => Some(Action::ToggleHelp),
+        1 => Some(Action::OpenSettings),
+        2 => Some(Action::OpenThemePicker),
+        3 => Some(Action::QuitApp),
+        _ => None,
+    }
+}
+
 fn render_help_overlay(
     frame: &mut Frame,
     keybindings: &KeyBindings,
     help: &super::modals::HelpModal,
-) -> crate::ui::SelectorHits {
+) -> crate::ui::ModalRender {
     let area = centered_rect(60, 70, frame.area());
 
     let inner = crate::ui::render_modal_frame(frame, area, "Keybindings");
@@ -1271,11 +1381,11 @@ fn render_help_overlay(
     help_lines.push(help_line("Click+drag".into(), "Select text"));
     help_lines.push(help_line(
         "Click".into(),
-        "Select row / focus pane; pickers: confirm row",
+        "Select row / focus pane; pickers: confirm row; footer & modal buttons",
     ));
     help_lines.push(help_line(
         "Hover".into(),
-        "Underline the clickable row under the pointer",
+        "Highlight the clickable row/button under the pointer",
     ));
     help_lines.push(help_line(
         "*".into(),
@@ -1311,10 +1421,27 @@ fn render_help_overlay(
     frame.render_widget(Paragraph::new(help_lines).scroll((scroll as u16, 0)), body);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "j/k move · Enter/r rebind · d reset · shift+D reset all · Esc close",
+            "j/k move · r rebind · d reset",
             Style::default().fg(Theme::text_muted()),
         ))),
         footer,
+    );
+    // Clickable `[ Reset all ]` (Shift+D) / `[ Close ]` (Esc) buttons.
+    let button_hits = crate::ui::render_button_bar(
+        frame,
+        footer,
+        &[
+            crate::ui::ButtonSpec::secondary("Reset all"),
+            crate::ui::ButtonSpec::primary("Close"),
+        ],
+        true,
+    );
+    let buttons = crate::ui::modal_button_keys(
+        button_hits,
+        &[
+            (KeyCode::Char('D'), KeyModifiers::SHIFT),
+            (KeyCode::Esc, KeyModifiers::NONE),
+        ],
     );
 
     // Hitboxes for the rebindable action rows visible after scrolling;
@@ -1330,7 +1457,7 @@ fn render_help_overlay(
     } else {
         None
     };
-    (hitboxes, geom)
+    ((hitboxes, geom), buttons)
 }
 
 /// Format a slice of chords as the F1-help key column, e.g.

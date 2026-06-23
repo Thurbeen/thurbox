@@ -14,7 +14,7 @@ use ratatui::{
 use crate::app::modals::SettingsField;
 
 use super::theme::Theme;
-use super::{key_hint_line, render_modal_frame};
+use super::{key_hint_line, modal_button_keys, render_button_bar, render_modal_frame, ButtonSpec};
 
 /// Preferred modal width. Sized to fit the longest description plus the value
 /// column with a tidy gap, so values aren't flung to the far edge of a wide
@@ -88,7 +88,12 @@ const SECTIONS: [(&str, &[SettingsField]); 3] = [
     ),
 ];
 
-pub fn render_settings_modal(frame: &mut Frame, state: &SettingsModalState<'_>) {
+/// Renders the Settings modal. Returns its per-field click hitboxes (indexed by
+/// position in [`SettingsField::ORDER`]) plus the footer buttons.
+pub fn render_settings_modal(
+    frame: &mut Frame,
+    state: &SettingsModalState<'_>,
+) -> (Vec<super::RowHitbox>, super::ModalButtons) {
     // The footer (the selected field's settings.toml key, optional restart note,
     // key hints) is pinned to the bottom; the field list above it scroll-windows
     // around the active field when the modal is shorter than the content.
@@ -108,22 +113,60 @@ pub fn render_settings_modal(frame: &mut Frame, state: &SettingsModalState<'_>) 
         .position(|(_, f)| *f == Some(state.modal.field))
         .unwrap_or(0);
 
-    let mut lines: Vec<Line> = if rows.len() <= visible || visible == 0 {
-        rows.into_iter().map(|(line, _)| line).collect()
-    } else {
-        // Keep the active row centered in the window where possible.
-        let start = active_disp
+    // Window the rows around the active field when they overflow.
+    let window = rows.len() > visible && visible > 0;
+    let start = if window {
+        active_disp
             .saturating_sub(visible / 2)
-            .min(rows.len() - visible);
-        rows.into_iter()
-            .skip(start)
-            .take(visible)
-            .map(|(line, _)| line)
-            .collect()
+            .min(rows.len() - visible)
+    } else {
+        0
     };
+    let count = if window { visible } else { rows.len() };
+
+    // Each visible field row gets a click hitbox carrying its ORDER index.
+    let mut lines: Vec<Line> = Vec::with_capacity(count + footer.len());
+    let mut field_hits: Vec<super::RowHitbox> = Vec::new();
+    for (screen_row, (line, field)) in rows.into_iter().skip(start).take(count).enumerate() {
+        if let Some(idx) = field.and_then(|f| SettingsField::ORDER.iter().position(|o| *o == f)) {
+            field_hits.push(super::RowHitbox {
+                rect: Rect::new(inner.x, inner.y + screen_row as u16, inner.width, 1),
+                index: idx,
+            });
+        }
+        lines.push(line);
+    }
     lines.extend(footer);
 
     frame.render_widget(Paragraph::new(lines), inner);
+
+    // Clickable `[ Save ]` / `[ Cancel ]` buttons over the bottom footer row.
+    let footer_row = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width,
+        1,
+    );
+    let hits = render_button_bar(
+        frame,
+        footer_row,
+        &[ButtonSpec::primary("Save"), ButtonSpec::secondary("Cancel")],
+        true,
+    );
+    let buttons = modal_button_keys(
+        hits,
+        &[
+            (
+                crossterm::event::KeyCode::Char('s'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+            (
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ],
+    );
+    (field_hits, buttons)
 }
 
 /// The pinned footer: the selected field's settings.toml key, an optional
@@ -143,12 +186,12 @@ fn footer_lines<'a>(state: &SettingsModalState<'_>) -> Vec<Line<'a>> {
             Style::default().fg(Theme::keybind_hint()),
         )));
     }
+    // Save/Cancel are rendered as clickable buttons over this row; keep only
+    // the navigation/adjust hints as text here.
     footer.push(key_hint_line(&[
         ("Tab/↑↓", " move  "),
         ("←→", " adjust  "),
-        ("Space", " toggle  "),
-        ("^S", " save  "),
-        ("Esc", " cancel"),
+        ("Space", " toggle"),
     ]));
     footer
 }

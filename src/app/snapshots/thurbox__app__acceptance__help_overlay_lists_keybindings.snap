@@ -26,9 +26,9 @@ expression: h.render()
 │                   │                                                         ║│                   │
 │                   │Project                                                  ║│                   │
 │                   │  ctrl+o          Open in editor                         ▼│                   │
-│                   │j/k move · Enter/r rebind · d reset · shift+D reset all · │                   │
+│                   │j/k move · r rebind · d reset           Reset all   Close │                   │
 ╰───────────────────╰──────────────────────────────────────────────────────────╯                   │
 ┌ Automations ──────────┐│                                                                         │
 │none                   ││                                                                         │
 └───────────────────────┘└─────────────────────────────────────────────────────────────────────────┘
- Sessions  0 session(s)  ^H/^L Focus  F1 Help  ^Q Quit
+ Sessions  0 session(s)  ^H/^L Focus                                 Help   Settings   Theme   Quit

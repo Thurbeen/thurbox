@@ -392,6 +392,23 @@ pub(crate) enum ClickAction {
     FocusPane(InputFocus),
     /// Select + activate the row in the active modal's list.
     ModalRow(usize),
+    /// A global footer button — dispatches `Action` (Help/Settings/Theme/Quit)
+    /// exactly as if its bound key were pressed. Only live when no modal is
+    /// open (a modal swallows every click).
+    Global(crate::session::Action),
+    /// A modal footer button — replays a synthesized key through the open
+    /// modal's own handler (Save→Enter/^S, Cancel→Esc, …) so the side effects
+    /// match the keyboard path. Dispatched by `handle_modal_click`.
+    ModalButton { code: KeyCode, mods: KeyModifiers },
+    /// Select the index-th field of the active **editor modal** (Settings /
+    /// Automation editor) — `index` is its position in that modal's visible
+    /// field order. Dispatched by `handle_modal_click` → `select_modal_field`.
+    ModalField(usize),
+    /// Focus the repo picker's `Input`/`Search` sub-area (its editable fields).
+    RepoFocus(modals::RepoPickerFocus),
+    /// Focus an **in-pane editor** (automation / task) and select its index-th
+    /// visible field. Dispatched by `activate_click_target`.
+    PaneField { focus: InputFocus, index: usize },
 }
 
 /// One clickable region rendered this frame: its rect plus what a click on it
@@ -1971,11 +1988,49 @@ impl App {
             return;
         }
 
+        let pos = Position::new(x, y);
+
+        // Footer buttons (`[ Save ]` / `[ Cancel ]` / …) replay their key
+        // through the modal's own handler, so a click is identical to the
+        // keypress. Checked before rows (their rects never overlap, so order
+        // is for clarity).
+        if let Some((code, mods)) = self.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::ModalButton { code, mods } if t.rect.contains(pos) => Some((code, mods)),
+            _ => None,
+        }) {
+            if matches!(self.modal, modals::Modal::Help(_)) {
+                self.handle_help_key(code, mods);
+            } else {
+                self.handle_modal_key_if_open(code, mods);
+            }
+            return;
+        }
+
+        // Editor-field clicks select that field (no key replay — the user then
+        // adjusts/types with the keyboard, exactly as after Tab/↑↓).
+        if let Some(index) = self.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::ModalField(i) if t.rect.contains(pos) => Some(i),
+            _ => None,
+        }) {
+            self.select_modal_field(index);
+            return;
+        }
+
+        // Repo picker: clicking the path-input / search field focuses it.
+        if let Some(focus) = self.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::RepoFocus(focus) if t.rect.contains(pos) => Some(focus),
+            _ => None,
+        }) {
+            if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
+                rp.focus = focus;
+            }
+            return;
+        }
+
         // Only `ModalRow` targets count here: the registry also holds the
         // pane targets recorded beneath the overlay (panes render first), and
         // a plain first-match lookup would hit those instead and swallow the
         // click.
-        let pos = Position::new(x, y);
         let Some(row) = self.click_targets.iter().find_map(|t| match t.action {
             ClickAction::ModalRow(row) if t.rect.contains(pos) => Some(row),
             _ => None,
@@ -2040,6 +2095,25 @@ impl App {
         }
     }
 
+    /// Select the index-th field of the active editor modal (its position in
+    /// that modal's visible field order), so a click focuses a field exactly
+    /// like Tab/↑↓ would. No-op for modals without a field list.
+    fn select_modal_field(&mut self, index: usize) {
+        match &mut self.modal {
+            modals::Modal::Settings(s) => {
+                if let Some(&field) = modals::SettingsField::ORDER.get(index) {
+                    s.field = field;
+                }
+            }
+            modals::Modal::AutomationEditor(a) => {
+                if let Some(&field) = a.visible_fields().get(index) {
+                    a.field = field;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Act on a clicked target. Returns `true` when the click is fully
     /// consumed; `false` lets the caller continue to text-selection arming
     /// (terminal / session-list / info panes keep their drag-select).
@@ -2091,9 +2165,52 @@ impl App {
                 // Terminal and session-list clicks keep arming drag-select.
                 !matches!(focus, InputFocus::Terminal | InputFocus::SessionList)
             }
-            // Modal rows are dispatched by `handle_modal_click` before pane
-            // targets are even considered.
-            ClickAction::ModalRow(_) => true,
+            // Modal rows/buttons/fields are dispatched by `handle_modal_click`
+            // before pane targets are even considered.
+            ClickAction::ModalRow(_)
+            | ClickAction::ModalButton { .. }
+            | ClickAction::ModalField(_)
+            | ClickAction::RepoFocus(_) => true,
+            ClickAction::Global(action) => {
+                self.dispatch_action(action);
+                true
+            }
+            ClickAction::PaneField { focus, index } => {
+                // Enter the editor if not already in it (a fresh sync resets the
+                // field), then select the clicked field. When already focused we
+                // only move the field — never re-sync — so unsaved edits survive.
+                if self.focus != focus {
+                    match focus {
+                        InputFocus::AutomationEditor => self.enter_automation_editor(),
+                        InputFocus::TaskEditor => self.enter_task_editor(),
+                        _ => self.focus = focus,
+                    }
+                }
+                self.select_pane_field(focus, index);
+                true
+            }
+        }
+    }
+
+    /// Set the active field of the focused in-pane editor (automation / task) by
+    /// its position in the editor's visible field order.
+    fn select_pane_field(&mut self, focus: InputFocus, index: usize) {
+        match focus {
+            InputFocus::AutomationEditor => {
+                if let Some(m) = self.automation_ui.automation_editor.as_mut() {
+                    if let Some(&field) = m.visible_fields().get(index) {
+                        m.field = field;
+                    }
+                }
+            }
+            InputFocus::TaskEditor => {
+                if let Some(m) = self.task_ui.task_editor.as_mut() {
+                    if let Some(&field) = m.visible_fields().get(index) {
+                        m.field = field;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -8620,6 +8737,224 @@ mod tests {
         let mut app = app_with_sessions(1);
         app.update(AppMessage::MouseMove { x: 7, y: 9 });
         assert_eq!(app.mouse_hover, Some((7, 9)));
+    }
+
+    /// Render a frame so `click_targets` are recorded, then return the center of
+    /// the first target whose action matches `pred`.
+    fn rendered_target(app: &mut App, pred: impl Fn(&ClickAction) -> bool) -> Rect {
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        app.click_targets
+            .iter()
+            .find(|t| pred(&t.action))
+            .map(|t| t.rect)
+            .expect("matching click target recorded this frame")
+    }
+
+    /// Each footer button dispatches its global action when clicked.
+    #[test]
+    fn footer_help_button_click_opens_help() {
+        let mut app = app_with_sessions(1);
+        let r = rendered_target(&mut app, |a| {
+            *a == ClickAction::Global(crate::session::Action::ToggleHelp)
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::Help(_)));
+    }
+
+    #[test]
+    fn footer_settings_button_click_opens_settings() {
+        let mut app = app_with_sessions(1);
+        let r = rendered_target(&mut app, |a| {
+            *a == ClickAction::Global(crate::session::Action::OpenSettings)
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::Settings(_)));
+    }
+
+    #[test]
+    fn footer_theme_button_click_opens_theme_picker() {
+        let mut app = app_with_sessions(1);
+        let r = rendered_target(&mut app, |a| {
+            *a == ClickAction::Global(crate::session::Action::OpenThemePicker)
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::ThemePicker(_)));
+    }
+
+    #[test]
+    fn footer_quit_button_click_quits() {
+        let mut app = app_with_sessions(1);
+        let r = rendered_target(&mut app, |a| {
+            *a == ClickAction::Global(crate::session::Action::QuitApp)
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    /// A footer button click is swallowed while a modal is open (the modal owns
+    /// every click), so it can't quit/navigate from underneath the overlay.
+    #[test]
+    fn footer_button_swallowed_while_modal_open() {
+        let mut app = app_with_sessions(1);
+        app.modal = modals::Modal::ThemePicker(modals::ThemePickerModal {
+            index: 0,
+            original: crate::ui::theme::current(),
+        });
+        // The footer still renders its buttons beneath the overlay.
+        let r = rendered_target(&mut app, |a| {
+            *a == ClickAction::Global(crate::session::Action::QuitApp)
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        assert!(!app.should_quit, "modal must swallow the footer click");
+        assert!(matches!(app.modal, modals::Modal::ThemePicker(_)));
+    }
+
+    /// The Settings modal's `[ Cancel ]` button closes it (Esc-equivalent).
+    #[test]
+    fn modal_cancel_button_closes() {
+        let mut app = app_with_sessions(1);
+        app.open_settings_panel();
+        let r = rendered_target(&mut app, |a| {
+            matches!(
+                a,
+                ClickAction::ModalButton {
+                    code: KeyCode::Esc,
+                    ..
+                }
+            )
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
+    /// The Settings modal's `[ Save ]` button persists + closes (Ctrl+S).
+    #[test]
+    fn modal_save_button_saves_and_closes() {
+        let mut app = app_with_sessions(1);
+        app.open_settings_panel();
+        let r = rendered_target(&mut app, |a| {
+            matches!(
+                a,
+                ClickAction::ModalButton {
+                    code: KeyCode::Char('s'),
+                    mods: KeyModifiers::CONTROL,
+                }
+            )
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
+    /// Render a frame, then return the (rect, index) of the first click target
+    /// whose action matches `pred` (mapping the action to its field index).
+    fn rendered_indexed_target(
+        app: &mut App,
+        pred: impl Fn(&ClickAction) -> Option<usize>,
+    ) -> (Rect, usize) {
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        app.click_targets
+            .iter()
+            .find_map(|t| pred(&t.action).map(|i| (t.rect, i)))
+            .expect("matching field click target recorded this frame")
+    }
+
+    /// Clicking a Settings field row selects that field (like Tab/↑↓).
+    #[test]
+    fn click_settings_field_selects_it() {
+        let mut app = app_with_sessions(1);
+        app.open_settings_panel();
+        // Any field past the first, so the selection visibly changes.
+        let (r, index) = rendered_indexed_target(&mut app, |a| match a {
+            ClickAction::ModalField(i) if *i > 0 => Some(*i),
+            _ => None,
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        let modals::Modal::Settings(ref s) = app.modal else {
+            panic!("settings modal must stay open");
+        };
+        assert_eq!(s.field, modals::SettingsField::ORDER[index]);
+    }
+
+    /// Clicking an Automation-editor field row selects that field.
+    #[test]
+    fn click_automation_editor_field_selects_it() {
+        let mut app = app_with_sessions(1);
+        app.open_automation_editor();
+        let (r, index) = rendered_indexed_target(&mut app, |a| match a {
+            ClickAction::ModalField(i) if *i > 0 => Some(*i),
+            _ => None,
+        });
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        let modals::Modal::AutomationEditor(ref m) = app.modal else {
+            panic!("automation editor must stay open");
+        };
+        assert_eq!(m.field, m.visible_fields()[index]);
+    }
+
+    /// Clicking a field in the in-pane task editor focuses that field.
+    #[test]
+    fn click_task_editor_field_selects_it() {
+        let mut app = app_with_sessions(1);
+        app.focus = InputFocus::TaskEditor;
+        app.task_ui.task_editor = Some(modals::TaskEditorModal::new());
+        // Index 2 = Status (default is Title), so the change is observable.
+        let r = rendered_indexed_target(&mut app, |a| match a {
+            ClickAction::PaneField {
+                focus: InputFocus::TaskEditor,
+                index,
+            } if *index == 2 => Some(*index),
+            _ => None,
+        })
+        .0;
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        let m = app.task_ui.task_editor.as_ref().unwrap();
+        assert_eq!(m.field, modals::TaskField::Status);
+    }
+
+    /// Clicking the repo picker's path-input area focuses the input field.
+    #[test]
+    fn click_repo_picker_input_focuses_input() {
+        let mut app = app_with_sessions(0);
+        app.start_new_session(); // no hosts → opens the repo picker (List focus)
+        let r = rendered_indexed_target(&mut app, |a| match a {
+            ClickAction::RepoFocus(modals::RepoPickerFocus::Input) => Some(0),
+            _ => None,
+        })
+        .0;
+        app.handle_mouse_click(r.x, r.y, KeyModifiers::NONE);
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("repo picker must stay open");
+        };
+        assert_eq!(rp.focus, modals::RepoPickerFocus::Input);
+    }
+
+    /// Hovering a footer button reverses its cells (a button-like hover),
+    /// distinct from the underline a list row gets.
+    #[test]
+    fn hovering_footer_button_reverses_it() {
+        let mut app = app_with_sessions(1);
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        let r = app
+            .click_targets
+            .iter()
+            .find(|t| matches!(t.action, ClickAction::Global(_)))
+            .map(|t| t.rect)
+            .expect("footer buttons recorded");
+        app.update(AppMessage::MouseMove { x: r.x, y: r.y });
+        terminal.draw(|f| app.view(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buf[(r.x, r.y)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED),
+            "hovered footer button should be reversed"
+        );
     }
 
     /// `[features] mouse = false` drops every mouse message before dispatch.

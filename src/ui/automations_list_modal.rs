@@ -23,7 +23,7 @@ pub struct AutomationsListState<'a> {
 pub fn render_automations_list_modal(
     frame: &mut Frame,
     state: &AutomationsListState<'_>,
-) -> super::SelectorHits {
+) -> super::ModalRender {
     let empty_footer = Line::from(vec![
         Span::styled("n", Theme::keybind()),
         Span::styled(" new  ", Theme::keybind_desc()),
@@ -39,7 +39,7 @@ pub fn render_automations_list_modal(
         Some("No automations — press n to create one"),
         Some(empty_footer),
     ) else {
-        return (Vec::new(), None);
+        return ((Vec::new(), None), Vec::new());
     };
 
     let inner_width = list_area.width as usize;
@@ -73,19 +73,37 @@ pub fn render_automations_list_modal(
     let help = Line::from(vec![
         Span::styled("n", Theme::keybind()),
         Span::styled(" new  ", Theme::keybind_desc()),
-        Span::styled("e", Theme::keybind()),
-        Span::styled(" edit  ", Theme::keybind_desc()),
         Span::styled("Spc", Theme::keybind()),
         Span::styled(" toggle  ", Theme::keybind_desc()),
         Span::styled("r", Theme::keybind()),
         Span::styled(" run  ", Theme::keybind_desc()),
         Span::styled("d", Theme::keybind()),
-        Span::styled(" delete  ", Theme::keybind_desc()),
-        Span::styled("Esc", Theme::keybind()),
-        Span::styled(" close", Theme::keybind_desc()),
+        Span::styled(" delete", Theme::keybind_desc()),
     ]);
     frame.render_widget(Paragraph::new(help), footer_area);
-    hits
+    let button_hits = super::render_button_bar(
+        frame,
+        footer_area,
+        &[
+            super::ButtonSpec::primary("Edit"),
+            super::ButtonSpec::secondary("Close"),
+        ],
+        true,
+    );
+    let buttons = super::modal_button_keys(
+        button_hits,
+        &[
+            (
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            (
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ],
+    );
+    (hits, buttons)
 }
 
 fn truncate(s: &str, max: usize) -> String {

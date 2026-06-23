@@ -108,8 +108,27 @@ fn visible_fields(trigger: TriggerKind, action: AutomationActionKind) -> Vec<Aut
     fields
 }
 
+/// One click hitbox per visible field, given each field's `(index, display_row,
+/// row_count)` within `inner` (the prompt spans several rows; scroll-windowing
+/// can drop a field off-screen). Rows are already clipped to the window by
+/// [`windowed_editor_lines`].
+fn field_hitboxes(inner: Rect, field_rows: &[(usize, u16, u16)]) -> Vec<super::RowHitbox> {
+    field_rows
+        .iter()
+        .map(|&(index, row, count)| super::RowHitbox {
+            rect: Rect::new(inner.x, inner.y + row, inner.width, count.max(1)),
+            index,
+        })
+        .collect()
+}
+
 /// Render the editor as a centered modal overlay (the `Ctrl+P` list path).
-pub fn render_automation_editor_modal(frame: &mut Frame, state: &AutomationEditorState<'_>) {
+/// Returns the per-field click hitboxes plus the `[ Save ]` / `[ Cancel ]`
+/// footer buttons.
+pub fn render_automation_editor_modal(
+    frame: &mut Frame,
+    state: &AutomationEditorState<'_>,
+) -> (Vec<super::RowHitbox>, super::ModalButtons) {
     let frame_area = frame.area();
     let fields = visible_fields(state.trigger_kind, state.action);
     // One row per field + status + preview + spacing inside the modal frame.
@@ -126,20 +145,55 @@ pub fn render_automation_editor_modal(frame: &mut Frame, state: &AutomationEdito
     let area = centered_fixed_height_rect(60, height.min(frame_area.height), frame_area);
 
     let inner = render_modal_frame(frame, area, editor_title(state));
-    let lines = windowed_editor_lines(state, inner.width, inner.height);
+    // Compact footer (nav hints only) — Save/Cancel are clickable buttons.
+    let (lines, field_rows) = windowed_editor_lines(state, inner.width, inner.height, true);
     frame.render_widget(Paragraph::new(lines), inner);
+    let field_hits = field_hitboxes(inner, &field_rows);
+
+    let footer_row = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width,
+        1,
+    );
+    let hits = super::render_button_bar(
+        frame,
+        footer_row,
+        &[
+            super::ButtonSpec::primary("Save"),
+            super::ButtonSpec::secondary("Cancel"),
+        ],
+        true,
+    );
+    let buttons = super::modal_button_keys(
+        hits,
+        &[
+            (
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            (
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ],
+    );
+    (field_hits, buttons)
 }
 
 /// Render the editor inline into a given area (the automations-pane central
 /// view), framed by a border whose style reflects [`AutomationEditorState::focused`].
+/// Returns the per-field click hitboxes (the caller records them as
+/// `PaneField` targets).
 pub fn render_automation_editor_into(
     frame: &mut Frame,
     area: Rect,
     state: &AutomationEditorState<'_>,
-) {
+) -> Vec<super::RowHitbox> {
     let inner = super::render_editor_frame(frame, area, editor_title(state), state.focused);
-    let lines = windowed_editor_lines(state, inner.width, inner.height);
+    let (lines, field_rows) = windowed_editor_lines(state, inner.width, inner.height, false);
     frame.render_widget(Paragraph::new(lines), inner);
+    field_hitboxes(inner, &field_rows)
 }
 
 fn editor_title(state: &AutomationEditorState<'_>) -> &'static str {
@@ -155,39 +209,65 @@ fn editor_title(state: &AutomationEditorState<'_>) -> &'static str {
 /// `height` rows around the active field's row so the cursor stays visible when
 /// the prompt is taller than the available area. Shared by the centered overlay
 /// and the in-pane editor; mirrors the settings modal's scroll-windowing.
+/// `compact_footer` drops the Save/Cancel text hints (the modal shows them as
+/// clickable buttons instead). Also returns each visible field's `(index,
+/// display_row, row_count)` for click hit-testing.
 fn windowed_editor_lines<'a>(
     state: &AutomationEditorState<'a>,
     width: u16,
     height: u16,
-) -> Vec<Line<'a>> {
-    let (body, active_row) = editor_body_lines(state, width);
-    let footer = editor_footer_lines(state);
+    compact_footer: bool,
+) -> (Vec<Line<'a>>, Vec<(usize, u16, u16)>) {
+    let (body, active_row, field_spans) = editor_body_lines(state, width);
+    let footer = editor_footer_lines(state, compact_footer);
 
     // The footer is always pinned at the bottom; the body scrolls in the rest.
     let visible = (height as usize).saturating_sub(footer.len());
-    let mut lines = if body.len() <= visible || visible == 0 {
-        body
+    let body_len = body.len();
+    let (mut lines, start) = if body_len <= visible || visible == 0 {
+        (body, 0usize)
     } else {
         // Keep the active row centered in the window where possible.
         let active = active_row.unwrap_or(0);
-        let start = active.saturating_sub(visible / 2).min(body.len() - visible);
-        body.into_iter().skip(start).take(visible).collect()
+        let start = active.saturating_sub(visible / 2).min(body_len - visible);
+        (
+            body.into_iter().skip(start).take(visible).collect::<Vec<_>>(),
+            start,
+        )
     };
+
+    // Clip each field's row span to the visible window (rows scrolled off are
+    // simply not clickable).
+    let mut field_rows = Vec::new();
+    if visible > 0 {
+        let win_end = start + visible;
+        for (i, (fstart, fcount)) in field_spans.into_iter().enumerate() {
+            let vstart = fstart.max(start);
+            let vend = (fstart + fcount).min(win_end);
+            if vstart < vend {
+                field_rows.push((i, (vstart - start) as u16, (vend - vstart) as u16));
+            }
+        }
+    }
+
     lines.extend(footer);
-    lines
+    (lines, field_rows)
 }
 
-/// The body rows (one line per field, the prompt expanded into wrapped rows) and
-/// the display index of the active field's row — the focus point the caller
-/// scroll-windows around.
+/// The body rows (one line per field, the prompt expanded into wrapped rows),
+/// the display index of the active field's row (the focus point the caller
+/// scroll-windows around), and each field's `(start_row, row_count)` span in
+/// field order — used to build per-field click hitboxes.
 fn editor_body_lines<'a>(
     state: &AutomationEditorState<'a>,
     width: u16,
-) -> (Vec<Line<'a>>, Option<usize>) {
+) -> (Vec<Line<'a>>, Option<usize>, Vec<(usize, usize)>) {
     let fields = visible_fields(state.trigger_kind, state.action);
     let mut lines: Vec<Line> = Vec::new();
     let mut active_row = None;
+    let mut field_spans = Vec::with_capacity(fields.len());
     for f in &fields {
+        let start = lines.len();
         let active = *f == state.field && state.focused;
         // The multi-line prompt expands into a label row + wrapped text rows;
         // every other field is a single row.
@@ -204,13 +284,17 @@ fn editor_body_lines<'a>(
             }
             lines.push(field_line(*f, state, active));
         }
+        field_spans.push((start, lines.len() - start));
     }
-    (lines, active_row)
+    (lines, active_row, field_spans)
 }
 
 /// The pinned footer: the live schedule preview, the enabled status, and the
 /// key-hint line.
-fn editor_footer_lines<'a>(state: &AutomationEditorState<'a>) -> Vec<Line<'a>> {
+fn editor_footer_lines<'a>(
+    state: &AutomationEditorState<'a>,
+    compact_footer: bool,
+) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
 
     // Live preview of the resulting schedule.
@@ -230,14 +314,19 @@ fn editor_footer_lines<'a>(state: &AutomationEditorState<'a>) -> Vec<Line<'a>> {
         enabled_label,
     ]));
 
-    lines.push(super::key_hint_line(&[
+    // In the modal, Save/Cancel are rendered as clickable buttons over this
+    // row, so the text footer carries only the nav/adjust/enable hints.
+    let mut hints = vec![
         ("Tab/↑↓", " move  "),
         ("←→", " adjust  "),
-        ("^E", " enable  "),
-        ("Enter", " save/newline  "),
-        ("^S", " save  "),
-        ("Esc", " cancel"),
-    ]));
+        ("^E", " enable"),
+    ];
+    if !compact_footer {
+        hints.push(("  Enter", " save/newline  "));
+        hints.push(("^S", " save  "));
+        hints.push(("Esc", " cancel"));
+    }
+    lines.push(super::key_hint_line(&hints));
 
     lines
 }
@@ -776,7 +865,7 @@ mod tests {
         s.prompt_cursor = (39, 0); // cursor on the last logical line
 
         let height = 12; // small modal: 3 footer + 9 body rows visible
-        let lines = windowed_editor_lines(&s, 60, height);
+        let (lines, _field_rows) = windowed_editor_lines(&s, 60, height, false);
         assert_eq!(lines.len(), height as usize, "fills exactly the height");
         // The window scrolled to the bottom, so the cursor row is present...
         assert!(
@@ -797,7 +886,7 @@ mod tests {
         // With ample height the whole body renders (no windowing): every field
         // row plus the prompt is present and the footer follows.
         let s = state();
-        let lines = windowed_editor_lines(&s, 60, 40);
+        let (lines, _field_rows) = windowed_editor_lines(&s, 60, 40, false);
         // Daily+Send body = 8 field rows (prompt expands to label + 1 (none) row
         // when empty+inactive... here Name is active so prompt is inactive empty).
         // Just assert the footer is present and nothing was dropped.

@@ -24,7 +24,7 @@ pub struct RestoreSessionsModalState<'a> {
 pub fn render_restore_sessions_modal(
     frame: &mut Frame,
     state: &RestoreSessionsModalState<'_>,
-) -> super::SelectorHits {
+) -> super::ModalRender {
     let empty_footer = Line::from(vec![
         Span::styled("Esc", Theme::keybind()),
         Span::raw(" close"),
@@ -38,7 +38,7 @@ pub fn render_restore_sessions_modal(
         Some("No deleted sessions"),
         Some(empty_footer),
     ) else {
-        return (Vec::new(), None);
+        return ((Vec::new(), None), Vec::new());
     };
 
     // Session list — `render_selector_rows` windows the entries around the
@@ -68,15 +68,37 @@ pub fn render_restore_sessions_modal(
 
     let hits = super::render_selector_rows(frame, list_area, lines, state.selected_index);
 
-    // Footer
-    let help = Line::from(vec![
-        Span::styled("Enter", Theme::keybind()),
-        Span::raw(" restore  "),
-        Span::styled("Esc", Theme::keybind()),
-        Span::raw(" close"),
-    ]);
-    frame.render_widget(Paragraph::new(help), footer_area);
-    hits
+    // Footer: left hint + right-aligned clickable buttons.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("j/k", Theme::keybind()),
+            Span::styled(" navigate", Theme::keybind_desc()),
+        ])),
+        footer_area,
+    );
+    let button_hits = super::render_button_bar(
+        frame,
+        footer_area,
+        &[
+            super::ButtonSpec::primary("Restore"),
+            super::ButtonSpec::secondary("Close"),
+        ],
+        true,
+    );
+    let buttons = super::modal_button_keys(
+        button_hits,
+        &[
+            (
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            (
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ],
+    );
+    (hits, buttons)
 }
 
 #[cfg(test)]
@@ -139,7 +161,7 @@ mod tests {
         let list = entries(40);
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut hits: super::super::SelectorHits = (Vec::new(), None);
+        let mut hits: super::super::ModalRender = ((Vec::new(), None), Vec::new());
         terminal
             .draw(|frame| {
                 hits = render_restore_sessions_modal(
@@ -151,7 +173,7 @@ mod tests {
                 );
             })
             .unwrap();
-        let (rows, geom) = hits;
+        let ((rows, geom), _buttons) = hits;
         assert!(geom.is_some(), "overflowing list draws a scrollbar");
         assert!(rows.len() < 40, "only the visible window is clickable");
         assert!(

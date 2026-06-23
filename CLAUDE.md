@@ -1402,7 +1402,26 @@ backend dependency stays visible at each call site.
   renderers return `ui::RowHitbox`es, `App::view` records them as
   `ClickAction`s, and `handle_mouse_click` hit-tests them (rows
   select/confirm, panes focus, modals swallow everything else; the
-  hovered row is underlined via mouse-move events). With a modal
+  hovered row is underlined via mouse-move events).
+  **Clickable buttons** reuse the same registry: `ui::render_button_bar`
+  draws filled "pill" buttons (` Label ` on a solid accent/gray fill, no
+  brackets) and returns `ui::ButtonHit`es. The bottom status-bar footer
+  renders Help/Settings/Theme/Quit pills (always shown — when the file
+  viewer is open its hints fill the space to their left), recorded as
+  `ClickAction::Global(Action)` (a click runs `dispatch_action`, ignored
+  while a modal is open). Every modal footer renders action buttons
+  (Save/Cancel/Select/…) returned as `ui::ModalButtons` (each `ButtonHit`
+  paired with the key it replays) and recorded as
+  `ClickAction::ModalButton { code, mods }`; `handle_modal_click` replays
+  that key through the modal's own handler so a click matches the keyboard
+  path. **Clicking a field** selects it: editor modals (Settings / Automation)
+  ship per-field hitboxes recorded as `ClickAction::ModalField(i)` (→
+  `select_modal_field`, sets the active field like Tab/↑↓); the in-pane
+  automation/task editors record `ClickAction::PaneField { focus, index }` (→
+  focus the editor + `select_pane_field`); the repo picker records
+  `ClickAction::RepoFocus(..)` for its path-input / search sub-fields. Hovering
+  a button reverses its fill (`Modifier::REVERSED`), distinct from the row
+  underline. With a modal
   open, the wheel steps its selection and overflowing picker lists
   render a draggable scrollbar (`ScrollTarget::Modal`, drag replayed
   as Up/Down through the modal's key handler). All of it is gated by

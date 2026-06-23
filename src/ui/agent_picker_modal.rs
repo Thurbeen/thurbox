@@ -1,13 +1,12 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     text::Line,
-    widgets::Paragraph,
     Frame,
 };
 
 use super::{
-    centered_fixed_height_rect, render_modal_frame, render_selector_rows, selector_line,
-    selector_nav_footer,
+    centered_fixed_height_rect, render_modal_frame, render_selector_footer, render_selector_rows,
+    selector_line,
 };
 
 /// One selectable agent row: display name + the CLI command it launches.
@@ -26,7 +25,7 @@ pub struct AgentPickerState {
 pub fn render_agent_picker_modal(
     frame: &mut Frame,
     state: &AgentPickerState,
-) -> super::SelectorHits {
+) -> super::ModalRender {
     let height = (state.choices.len() as u16) + 3;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
@@ -51,6 +50,7 @@ pub fn render_agent_picker_modal(
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[1]);
-    render_selector_rows(frame, chunks[0], lines, state.selected_index)
+    let buttons = render_selector_footer(frame, chunks[1]);
+    let hits = render_selector_rows(frame, chunks[0], lines, state.selected_index);
+    (hits, buttons)
 }

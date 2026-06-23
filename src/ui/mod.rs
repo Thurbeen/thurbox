@@ -72,6 +72,10 @@ pub fn windowed_row_hitboxes(area: Rect, start: usize, end: usize) -> Vec<RowHit
 /// renderers (and the F1 help overlay).
 pub type SelectorHits = (Vec<RowHitbox>, Option<scrollbar::ScrollbarGeom>);
 
+/// What a selector/editor modal renderer returns: its [`SelectorHits`] (rows +
+/// scrollbar) plus the clickable footer buttons paired with their replay keys.
+pub type ModalRender = (SelectorHits, ModalButtons);
+
 /// Render a single-line-per-row selector list into `area`. When the entries
 /// overflow, the list windows around `selected` (like the file viewer) and a
 /// scrollbar is drawn in the reserved rightmost column. Returns the visible
@@ -102,6 +106,169 @@ pub fn render_selector_rows(
         .collect();
     let geom = track.and_then(|t| scrollbar::render_into(frame, t, total, height, selected));
     (hitboxes, geom)
+}
+
+/// One button to render in a [`render_button_bar`] row: its visible `label`
+/// and whether it is the primary/affirmative action (an accent-filled pill vs a
+/// muted gray pill). Pure presentation — the app layer maps the rendered
+/// hitbox's index back to an action/key.
+#[derive(Debug, Clone, Copy)]
+pub struct ButtonSpec<'a> {
+    pub label: &'a str,
+    pub primary: bool,
+}
+
+impl<'a> ButtonSpec<'a> {
+    pub fn primary(label: &'a str) -> Self {
+        Self {
+            label,
+            primary: true,
+        }
+    }
+
+    pub fn secondary(label: &'a str) -> Self {
+        Self {
+            label,
+            primary: false,
+        }
+    }
+}
+
+/// A rendered button's hitbox: the rect it occupies plus its index in the
+/// `specs` slice the caller passed to [`render_button_bar`]. Pure geometry —
+/// the app layer maps the index back to a key/action (mirrors [`RowHitbox`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonHit {
+    pub rect: Rect,
+    pub index: usize,
+}
+
+/// Footer button hitboxes paired with the key each replays when clicked,
+/// returned by the modal renderers so the index→key map stays colocated with
+/// the modal. `view.rs` records each as a `ClickAction::ModalButton`.
+pub type ModalButtons = Vec<(
+    ButtonHit,
+    crossterm::event::KeyCode,
+    crossterm::event::KeyModifiers,
+)>;
+
+/// Width (display columns) the button for `label` occupies when rendered as a
+/// pill chip (one space of padding on each side: ` label `).
+fn button_width(label: &str) -> u16 {
+    label.chars().count() as u16 + 2
+}
+
+/// The resting fill style for a button — a filled "pill" chip. Primary actions
+/// use the accent colour (a focused-badge look); secondary actions a muted gray
+/// fill. The space-padded label on a solid background reads as a button without
+/// brackets, and the fill is what the hover highlight reverses.
+fn button_style(primary: bool) -> Style {
+    if primary {
+        Style::default()
+            .fg(Theme::inverted_fg())
+            .bg(Theme::accent())
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Theme::inverted_fg())
+            .bg(Theme::text_muted())
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    }
+}
+
+/// Render a row of filled "pill" buttons (` label `, padded, on a solid accent
+/// or gray fill) into the single-row `area`, returning one [`ButtonHit`] per
+/// *placed* button (index = position in `specs`). Buttons are separated by one
+/// space. When `right_align` is set the row is packed against the right edge of
+/// `area` (the convention for modal Save/Cancel and the global footer);
+/// otherwise it starts at the left edge.
+///
+/// Responsive by design: a button that would overflow `area` is dropped rather
+/// than wrapped or clipped mid-glyph, so a narrow footer simply shows fewer
+/// buttons. The solid fill (not brackets) is what marks each label as a
+/// clickable button.
+pub fn render_button_bar(
+    frame: &mut Frame,
+    area: Rect,
+    specs: &[ButtonSpec<'_>],
+    right_align: bool,
+) -> Vec<ButtonHit> {
+    if area.height == 0 || area.width == 0 || specs.is_empty() {
+        return Vec::new();
+    }
+    // Total width of every button plus single-space separators.
+    let total: u16 = specs.iter().map(|s| button_width(s.label)).sum::<u16>()
+        + specs.len().saturating_sub(1) as u16;
+
+    let mut x = if right_align && total <= area.width {
+        area.x + area.width - total
+    } else {
+        area.x
+    };
+    let limit = area.x + area.width;
+
+    let mut hits = Vec::with_capacity(specs.len());
+    for (index, spec) in specs.iter().enumerate() {
+        let width = button_width(spec.label);
+        if x + width > limit {
+            break; // out of room — drop the rest rather than corrupt the row
+        }
+        let rect = Rect::new(x, area.y, width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {} ", spec.label),
+                button_style(spec.primary),
+            ))),
+            rect,
+        );
+        hits.push(ButtonHit { rect, index });
+        x += width + 1; // advance past the button + separator
+    }
+    hits
+}
+
+/// Map button-bar hitboxes to the keys they replay, by index. Pairs each
+/// [`ButtonHit`] with `(code, mods)` from `keys[hit.index]` to build the
+/// [`ModalButtons`] the modal renderers return.
+pub fn modal_button_keys(
+    hits: Vec<ButtonHit>,
+    keys: &[(crossterm::event::KeyCode, crossterm::event::KeyModifiers)],
+) -> ModalButtons {
+    hits.into_iter()
+        .filter_map(|h| keys.get(h.index).map(|&(code, mods)| (h, code, mods)))
+        .collect()
+}
+
+/// Render the standard selector-modal footer into the single-row `area`: a
+/// left-aligned `j/k navigate` hint plus right-aligned `[ Select ]` (Enter) /
+/// `[ Cancel ]` (Esc) buttons. Returns the buttons paired with their replay
+/// keys (see [`ModalButtons`]). Shared by the picker modals so their clickable
+/// footer reads identically.
+pub fn render_selector_footer(frame: &mut Frame, area: Rect) -> ModalButtons {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("j/k", Theme::keybind()),
+            Span::styled(" navigate", Theme::keybind_desc()),
+        ])),
+        area,
+    );
+    let hits = render_button_bar(
+        frame,
+        area,
+        &[
+            ButtonSpec::primary("Select"),
+            ButtonSpec::secondary("Cancel"),
+        ],
+        true,
+    );
+    modal_button_keys(
+        hits,
+        &[
+            (KeyCode::Enter, KeyModifiers::NONE),
+            (KeyCode::Esc, KeyModifiers::NONE),
+        ],
+    )
 }
 
 pub fn status_color(status: SessionStatus) -> Color {
@@ -726,6 +893,49 @@ mod tests {
                     rows.iter().all(|r| r.rect.width == 19),
                     "rows exclude the track column"
                 );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn render_button_bar_lays_out_left_and_right() {
+        let backend = ratatui::backend::TestBackend::new(40, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 40, 1);
+                let specs = [ButtonSpec::primary("Save"), ButtonSpec::secondary("Cancel")];
+
+                // Left-aligned: first button starts at area.x.
+                let hits = render_button_bar(f, area, &specs, false);
+                assert_eq!(hits.len(), 2);
+                assert_eq!(hits[0].rect, Rect::new(0, 0, 6, 1)); // " Save " = 6 cols
+                assert_eq!(hits[0].index, 0);
+                // " Cancel " => 8 cols, after a 6-col button + 1 separator.
+                assert_eq!(hits[1].rect, Rect::new(7, 0, 8, 1));
+
+                // Right-aligned: the row is packed against the right edge.
+                let hits = render_button_bar(f, area, &specs, true);
+                assert_eq!(hits.len(), 2);
+                let last = hits[1].rect;
+                assert_eq!(last.x + last.width, area.x + area.width);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn render_button_bar_drops_overflowing_buttons() {
+        let backend = ratatui::backend::TestBackend::new(40, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                // Only room for the first button (" Save " = 6 cols; a second
+                // would need 6+1+8 = 15).
+                let area = Rect::new(0, 0, 9, 1);
+                let specs = [ButtonSpec::primary("Save"), ButtonSpec::secondary("Cancel")];
+                let hits = render_button_bar(f, area, &specs, false);
+                assert_eq!(hits.len(), 1, "overflowing button is dropped");
+                assert_eq!(hits[0].index, 0);
             })
             .unwrap();
     }

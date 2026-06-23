@@ -13,15 +13,15 @@ use ratatui::{
 };
 
 use super::{
-    centered_fixed_height_rect, render_modal_frame, render_selector_rows, selector_line,
-    selector_nav_footer, theme::Theme, truncate_ellipsis,
+    centered_fixed_height_rect, render_modal_frame, render_selector_footer, render_selector_rows,
+    selector_line, theme::Theme, truncate_ellipsis,
 };
 use crate::app::modals::TaskActionPickerModal;
 
 pub fn render_task_action_picker_modal(
     frame: &mut Frame,
     state: &TaskActionPickerModal,
-) -> super::SelectorHits {
+) -> super::ModalRender {
     let height = (state.choices.len() as u16).max(2) + 6;
     let area = centered_fixed_height_rect(60, height, frame.area());
     let inner = render_modal_frame(frame, area, "Run task");
@@ -54,6 +54,7 @@ pub fn render_task_action_picker_modal(
         .map(|(i, choice)| selector_line(&choice.label(), i == state.selected))
         .collect();
 
-    frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[2]);
-    render_selector_rows(frame, chunks[1], lines, state.selected)
+    let buttons = render_selector_footer(frame, chunks[2]);
+    let hits = render_selector_rows(frame, chunks[1], lines, state.selected);
+    (hits, buttons)
 }

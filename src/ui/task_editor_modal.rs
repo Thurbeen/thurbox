@@ -54,9 +54,37 @@ impl<'a> TaskEditorState<'a> {
 
 /// Render the editor inline into `area`, framed by a border whose style reflects
 /// [`TaskEditorState::focused`] (mirrors `render_automation_editor_into`).
-pub fn render_task_editor_into(frame: &mut Frame, area: Rect, state: &TaskEditorState<'_>) {
+/// Returns one click hitbox per field (Title row, the whole Description block,
+/// Status row), indexed by position in the task's visible field order
+/// (Title=0, Description=1, Status=2). The caller records them as `PaneField`.
+pub fn render_task_editor_into(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TaskEditorState<'_>,
+) -> Vec<super::RowHitbox> {
     let inner = super::render_editor_frame(frame, area, editor_title(state), state.focused);
     frame.render_widget(Paragraph::new(editor_lines(state)), inner);
+
+    // Row layout (matches `editor_lines`): Title=1 row, Description=1 header +
+    // one row per newline-separated line, Status=1 row. Build a hitbox per
+    // field, clipped to the inner area.
+    let desc_rows = 1 + state.description.split('\n').count() as u16;
+    let mut y = 0u16;
+    let mut hits = Vec::new();
+    let mut push = |y: &mut u16, height: u16, index: usize| {
+        if *y < inner.height {
+            let h = height.min(inner.height - *y);
+            hits.push(super::RowHitbox {
+                rect: Rect::new(inner.x, inner.y + *y, inner.width, h),
+                index,
+            });
+        }
+        *y = y.saturating_add(height);
+    };
+    push(&mut y, 1, 0); // Title
+    push(&mut y, desc_rows, 1); // Description (header + text rows)
+    push(&mut y, 1, 2); // Status
+    hits
 }
 
 fn editor_title(state: &TaskEditorState<'_>) -> &'static str {

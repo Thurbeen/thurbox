@@ -13,8 +13,8 @@ use ratatui::{
 };
 
 use super::{
-    centered_fixed_height_rect, render_modal_frame, render_selector_rows, selector_line,
-    selector_nav_footer, theme::Theme,
+    centered_fixed_height_rect, render_modal_frame, render_selector_footer, render_selector_rows,
+    selector_line, theme::Theme,
 };
 use crate::session::theme_config::ThemeEntry;
 
@@ -26,7 +26,7 @@ pub struct ThemePickerState<'a> {
 pub fn render_theme_picker_modal(
     frame: &mut Frame,
     state: &ThemePickerState<'_>,
-) -> super::SelectorHits {
+) -> super::ModalRender {
     let height = (state.entries.len() as u16).max(4) + 6;
     let area = centered_fixed_height_rect(60, height, frame.area());
 
@@ -106,7 +106,7 @@ pub fn render_theme_picker_modal(
         frame.render_widget(Paragraph::new(id), chunks[1]);
     }
 
-    frame.render_widget(Paragraph::new(selector_nav_footer()), chunks[2]);
+    let buttons = render_selector_footer(frame, chunks[2]);
     // Rows live in the left column only; the swatch column isn't clickable.
-    hits
+    (hits, buttons)
 }

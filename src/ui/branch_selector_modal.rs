@@ -1,14 +1,12 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    text::{Line, Span},
-    widgets::Paragraph,
+    text::Line,
     Frame,
 };
 
 use super::centered_fixed_height_rect;
 use super::render_modal_frame;
-use super::theme::Theme;
-use super::{render_selector_rows, selector_line};
+use super::{render_selector_footer, render_selector_rows, selector_line};
 
 pub struct BranchSelectorState<'a> {
     pub branches: &'a [String],
@@ -18,7 +16,7 @@ pub struct BranchSelectorState<'a> {
 pub fn render_branch_selector_modal(
     frame: &mut Frame,
     state: &BranchSelectorState<'_>,
-) -> super::SelectorHits {
+) -> super::ModalRender {
     let height = (state.branches.len().min(15) + 4) as u16;
     let area = centered_fixed_height_rect(50, height, frame.area());
 
@@ -41,16 +39,9 @@ pub fn render_branch_selector_modal(
         .map(|(i, branch)| selector_line(branch, i == state.selected_index))
         .collect();
 
-    let footer = Line::from(vec![
-        Span::styled("j/k", Theme::keybind()),
-        Span::styled(" navigate  ", Theme::keybind_desc()),
-        Span::styled("Enter", Theme::keybind()),
-        Span::styled(" select  ", Theme::keybind_desc()),
-        Span::styled("Esc", Theme::keybind()),
-        Span::styled(" cancel", Theme::keybind_desc()),
-    ]);
-    frame.render_widget(Paragraph::new(footer), chunks[1]);
-    render_selector_rows(frame, chunks[0], lines, state.selected_index)
+    let buttons = render_selector_footer(frame, chunks[1]);
+    let hits = render_selector_rows(frame, chunks[0], lines, state.selected_index);
+    (hits, buttons)
 }
 
 #[cfg(test)]
