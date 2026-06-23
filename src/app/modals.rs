@@ -655,7 +655,9 @@ pub struct AutomationEditorModal {
     pub agent: TextInput,
     /// Exec action: the shell command to run.
     pub command: TextInput,
-    pub prompt: TextInput,
+    /// Multi-line agent prompt (Send/Spawn). A `TextArea` so it accepts newlines
+    /// and renders wrapped, mirroring the task editor's description field.
+    pub prompt: TextArea,
     pub enabled: bool,
     pub field: AutomationField,
     /// Send action: the running sessions available as targets (id + display
@@ -698,7 +700,7 @@ impl Default for AutomationEditorModal {
             worktree: TextInput::default(),
             agent: TextInput::default(),
             command: TextInput::default(),
-            prompt: TextInput::default(),
+            prompt: TextArea::default(),
             enabled: true,
             field: AutomationField::default(),
             sessions: Vec::new(),
@@ -761,8 +763,9 @@ impl AutomationEditorModal {
             Worktree => &mut self.worktree,
             Agent => &mut self.agent,
             Command => &mut self.command,
-            Prompt => &mut self.prompt,
-            Trigger | Weekday | Hour | Minute | Action | Target => return None,
+            // Prompt is a multi-line `TextArea`, handled explicitly in
+            // `handle_key`, not as a single-line `TextInput`.
+            Prompt | Trigger | Weekday | Hour | Minute | Action | Target => return None,
         })
     }
 
@@ -796,20 +799,61 @@ impl AutomationEditorModal {
         }
     }
 
-    /// Feed a key to the editor, mutating field state. Returns whether the
-    /// caller should save (`Enter`), cancel (`Esc`), or keep editing. Shared by
-    /// the centered overlay (Ctrl+P) and the in-pane editor so both behave
-    /// identically.
+    /// Feed a key to the editor, mutating field state. Returns whether the caller
+    /// should save (`Ctrl+S`, or `Enter` on any non-prompt field), cancel
+    /// (`Esc`), or keep editing. On the multi-line `Prompt` field `Enter` inserts
+    /// a newline instead of saving. Shared by the centered overlay (Ctrl+P) and
+    /// the in-pane editor so both behave identically.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> EditorOutcome {
+        // Ctrl+S is the universal save: the multi-line Prompt field needs a save
+        // path that isn't Enter (Enter inserts a newline there).
+        if mods.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('s') | KeyCode::Char('S'))
+        {
+            return EditorOutcome::Save;
+        }
+        // Ctrl+E toggles enabled from any field. Lifted above the Prompt branch
+        // (which swallows every Ctrl chord) so it still works while editing it.
+        if mods.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Char('e') | KeyCode::Char('E'))
+        {
+            self.enabled = !self.enabled;
+            return EditorOutcome::Continue;
+        }
+
+        // The Prompt is a multi-line `TextArea`: Enter inserts a newline, Up/Down
+        // move within the text, and Ctrl+letter chords edit (or are swallowed)
+        // rather than leaking literal letters. Mirrors the task editor's
+        // description field.
+        if self.field == AutomationField::Prompt {
+            if apply_ctrl_line_edit(&mut self.prompt, code, mods) {
+                return EditorOutcome::Continue;
+            }
+            match code {
+                KeyCode::Esc => return EditorOutcome::Cancel,
+                KeyCode::Tab => self.next_field(),
+                KeyCode::BackTab => self.prev_field(),
+                KeyCode::Enter => self.prompt.insert_newline(),
+                KeyCode::Up => self.prompt.move_up(),
+                KeyCode::Down => self.prompt.move_down(),
+                KeyCode::Char(c) => self.prompt.insert(c),
+                KeyCode::Backspace => self.prompt.backspace(),
+                KeyCode::Delete => self.prompt.delete(),
+                KeyCode::Left => self.prompt.move_left(),
+                KeyCode::Right => self.prompt.move_right(),
+                KeyCode::Home => self.prompt.home(),
+                KeyCode::End => self.prompt.end(),
+                _ => {}
+            }
+            return EditorOutcome::Continue;
+        }
+
         // Selector/stepper fields (trigger, weekday, hour, minute, action,
         // target) are adjusted with ←/→/Space; text fields edit as usual.
         let adjustable = self.is_adjustable();
         match code {
             KeyCode::Esc => return EditorOutcome::Cancel,
             KeyCode::Enter => return EditorOutcome::Save,
-            KeyCode::Char('e') if mods.contains(KeyModifiers::CONTROL) => {
-                self.enabled = !self.enabled;
-            }
             KeyCode::Tab | KeyCode::Down => self.next_field(),
             KeyCode::BackTab | KeyCode::Up => self.prev_field(),
             KeyCode::Left if adjustable => self.adjust(-1),
@@ -2694,6 +2738,93 @@ mod tests {
             AutomationField::Prompt,
             "Up from first wraps to last"
         );
+    }
+
+    #[test]
+    fn automation_editor_prompt_enter_inserts_newline_not_save() {
+        let mut m = AutomationEditorModal {
+            field: AutomationField::Prompt,
+            ..Default::default()
+        };
+        m.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            m.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+            EditorOutcome::Continue,
+            "Enter on the prompt inserts a newline, never saves"
+        );
+        m.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(m.prompt.value(), "a\nb");
+    }
+
+    #[test]
+    fn automation_editor_ctrl_s_saves_from_prompt() {
+        let mut m = AutomationEditorModal {
+            field: AutomationField::Prompt,
+            ..Default::default()
+        };
+        assert_eq!(
+            m.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            EditorOutcome::Save
+        );
+    }
+
+    #[test]
+    fn automation_editor_prompt_up_down_move_within_text() {
+        let mut m = AutomationEditorModal {
+            field: AutomationField::Prompt,
+            ..Default::default()
+        };
+        m.prompt.set("a\nbb"); // cursor parks at the end → line 1
+        assert_eq!(m.prompt.cursor_line_col().0, 1);
+        m.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(
+            m.prompt.cursor_line_col().0,
+            0,
+            "Up moves to the line above"
+        );
+        m.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(m.prompt.cursor_line_col().0, 1, "Down moves back");
+        // Field navigation is unchanged: still on Prompt (Up/Down didn't nav).
+        assert_eq!(m.field, AutomationField::Prompt);
+    }
+
+    #[test]
+    fn automation_editor_prompt_tab_navigates_fields() {
+        let mut m = AutomationEditorModal {
+            field: AutomationField::Prompt,
+            ..Default::default()
+        }; // Daily + Send: Prompt is the last visible field.
+        m.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            m.field,
+            AutomationField::Name,
+            "Tab from the last field wraps"
+        );
+        m.field = AutomationField::Prompt;
+        m.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(
+            m.field,
+            AutomationField::Target,
+            "BackTab steps to the prior field"
+        );
+    }
+
+    #[test]
+    fn automation_editor_ctrl_e_still_toggles_on_prompt() {
+        let mut m = AutomationEditorModal {
+            field: AutomationField::Prompt,
+            ..Default::default()
+        };
+        assert!(m.enabled);
+        assert_eq!(
+            m.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            EditorOutcome::Continue
+        );
+        assert!(
+            !m.enabled,
+            "Ctrl+E toggles enabled even while editing the prompt"
+        );
+        assert_eq!(m.prompt.value(), "", "Ctrl+E is not inserted as text");
     }
 
     #[test]

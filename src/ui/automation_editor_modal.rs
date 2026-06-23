@@ -1,6 +1,6 @@
 use ratatui::{
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -10,6 +10,11 @@ use crate::app::{AutomationActionKind, AutomationField, TriggerKind};
 
 use super::theme::Theme;
 use super::{centered_fixed_height_rect, render_modal_frame};
+
+/// Maximum prompt text rows shown at once (the label row is extra). Keeps the
+/// editor tight: a taller prompt scrolls within this window instead of growing
+/// the modal / pane. Applies to both the centered overlay and the in-pane editor.
+const MAX_PROMPT_VISIBLE_ROWS: usize = 10;
 
 pub struct AutomationEditorState<'a> {
     pub editing: bool,
@@ -29,6 +34,9 @@ pub struct AutomationEditorState<'a> {
     pub agent: &'a str,
     pub command: &'a str,
     pub prompt: &'a str,
+    /// Caret `(line, col)` within the prompt, for drawing the block cursor while
+    /// the multi-line `Prompt` field is active.
+    pub prompt_cursor: (usize, usize),
     /// Display name of the Send target session, if any.
     pub target_session: Option<&'a str>,
     /// Human summary of when this will next fire (computed by the caller).
@@ -65,6 +73,7 @@ impl<'a> AutomationEditorState<'a> {
             agent: m.agent.value(),
             command: m.command.value(),
             prompt: m.prompt.value(),
+            prompt_cursor: m.prompt.cursor_line_col(),
             target_session: m.selected_target().map(|(_, name)| name.as_str()),
             preview,
             focused,
@@ -101,13 +110,24 @@ fn visible_fields(trigger: TriggerKind, action: AutomationActionKind) -> Vec<Aut
 
 /// Render the editor as a centered modal overlay (the `Ctrl+P` list path).
 pub fn render_automation_editor_modal(frame: &mut Frame, state: &AutomationEditorState<'_>) {
+    let frame_area = frame.area();
     let fields = visible_fields(state.trigger_kind, state.action);
     // One row per field + status + preview + spacing inside the modal frame.
-    let height = fields.len() as u16 + 5;
-    let area = centered_fixed_height_rect(60, height.min(22), frame.area());
+    // The multi-line Prompt field spans more than one row, so grow the height by
+    // its wrapped row count (the old `+ 5` already counted Prompt as one row).
+    let extra = if fields.contains(&AutomationField::Prompt) {
+        // Inner text width of the 60%-wide overlay (minus the 1-col borders).
+        let inner_w = (frame_area.width * 60 / 100).saturating_sub(2);
+        prompt_display_rows(state.prompt, inner_w).saturating_sub(1)
+    } else {
+        0
+    };
+    let height = fields.len() as u16 + 5 + extra;
+    let area = centered_fixed_height_rect(60, height.min(frame_area.height), frame_area);
 
     let inner = render_modal_frame(frame, area, editor_title(state));
-    frame.render_widget(Paragraph::new(editor_lines(state)), inner);
+    let lines = windowed_editor_lines(state, inner.width, inner.height);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Render the editor inline into a given area (the automations-pane central
@@ -118,7 +138,8 @@ pub fn render_automation_editor_into(
     state: &AutomationEditorState<'_>,
 ) {
     let inner = super::render_editor_frame(frame, area, editor_title(state), state.focused);
-    frame.render_widget(Paragraph::new(editor_lines(state)), inner);
+    let lines = windowed_editor_lines(state, inner.width, inner.height);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn editor_title(state: &AutomationEditorState<'_>) -> &'static str {
@@ -129,14 +150,68 @@ fn editor_title(state: &AutomationEditorState<'_>) -> &'static str {
     }
 }
 
-/// The editor body: one line per visible field, then the live schedule preview,
-/// enabled status, and the key-hint footer.
-fn editor_lines<'a>(state: &AutomationEditorState<'a>) -> Vec<Line<'a>> {
+/// The full editor body (every field, the prompt expanded into wrapped rows)
+/// plus the pinned footer (preview / status / key hints), scroll-windowed to
+/// `height` rows around the active field's row so the cursor stays visible when
+/// the prompt is taller than the available area. Shared by the centered overlay
+/// and the in-pane editor; mirrors the settings modal's scroll-windowing.
+fn windowed_editor_lines<'a>(
+    state: &AutomationEditorState<'a>,
+    width: u16,
+    height: u16,
+) -> Vec<Line<'a>> {
+    let (body, active_row) = editor_body_lines(state, width);
+    let footer = editor_footer_lines(state);
+
+    // The footer is always pinned at the bottom; the body scrolls in the rest.
+    let visible = (height as usize).saturating_sub(footer.len());
+    let mut lines = if body.len() <= visible || visible == 0 {
+        body
+    } else {
+        // Keep the active row centered in the window where possible.
+        let active = active_row.unwrap_or(0);
+        let start = active.saturating_sub(visible / 2).min(body.len() - visible);
+        body.into_iter().skip(start).take(visible).collect()
+    };
+    lines.extend(footer);
+    lines
+}
+
+/// The body rows (one line per field, the prompt expanded into wrapped rows) and
+/// the display index of the active field's row — the focus point the caller
+/// scroll-windows around.
+fn editor_body_lines<'a>(
+    state: &AutomationEditorState<'a>,
+    width: u16,
+) -> (Vec<Line<'a>>, Option<usize>) {
     let fields = visible_fields(state.trigger_kind, state.action);
-    let mut lines: Vec<Line> = fields
-        .iter()
-        .map(|f| field_line(*f, state, *f == state.field))
-        .collect();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut active_row = None;
+    for f in &fields {
+        let active = *f == state.field && state.focused;
+        // The multi-line prompt expands into a label row + wrapped text rows;
+        // every other field is a single row.
+        if *f == AutomationField::Prompt {
+            let base = lines.len();
+            let (rows, cursor_idx) = prompt_lines(state, active, width);
+            if let Some(idx) = cursor_idx {
+                active_row = Some(base + idx);
+            }
+            lines.extend(rows);
+        } else {
+            if active {
+                active_row = Some(lines.len());
+            }
+            lines.push(field_line(*f, state, active));
+        }
+    }
+    (lines, active_row)
+}
+
+/// The pinned footer: the live schedule preview, the enabled status, and the
+/// key-hint line.
+fn editor_footer_lines<'a>(state: &AutomationEditorState<'a>) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
 
     // Live preview of the resulting schedule.
     lines.push(Line::from(vec![
@@ -159,11 +234,172 @@ fn editor_lines<'a>(state: &AutomationEditorState<'a>) -> Vec<Line<'a>> {
         ("Tab/↑↓", " move  "),
         ("←→", " adjust  "),
         ("^E", " enable  "),
-        ("Enter", " save  "),
+        ("Enter", " save/newline  "),
+        ("^S", " save  "),
         ("Esc", " cancel"),
     ]));
 
     lines
+}
+
+/// Render the prompt as a `▸ prompt` label row followed by its indented,
+/// hard-wrapped text rows, drawing a block cursor at `state.prompt_cursor` when
+/// active. An empty, inactive prompt shows a dimmed `(none)`. Mirrors the task
+/// editor's `description_lines`, plus width-aware wrapping so long lines never
+/// overflow and a [`MAX_PROMPT_VISIBLE_ROWS`] cap so a tall prompt scrolls
+/// within a tight window instead of growing the editor.
+///
+/// Returns the display rows and, when `active`, the index (within those rows) of
+/// the row carrying the block cursor — so the caller can scroll-window the whole
+/// body to keep it visible too.
+fn prompt_lines<'a>(
+    state: &AutomationEditorState<'a>,
+    active: bool,
+    width: u16,
+) -> (Vec<Line<'a>>, Option<usize>) {
+    let prefix = if active { "▸ " } else { "  " };
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{prefix}{:<9}", "prompt"),
+        Theme::label(),
+    ))];
+
+    let text_style = if active {
+        Style::default()
+            .fg(Theme::border_focused())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Theme::text_primary())
+    };
+
+    if state.prompt.is_empty() && !active {
+        lines.push(Line::from(Span::styled(
+            "    (none)",
+            Style::default().fg(Theme::text_secondary()),
+        )));
+        return (lines, None);
+    }
+
+    // Build every wrapped text row first, tracking which one carries the cursor.
+    let wrap_w = prompt_wrap_width(width);
+    let (cur_line, cur_col) = state.prompt_cursor;
+    let mut text_rows: Vec<Line> = Vec::new();
+    let mut text_cursor = None;
+    for (li, logical) in state.prompt.split('\n').enumerate() {
+        let chars: Vec<char> = logical.chars().collect();
+        let rows = wrap_chars(&chars, wrap_w);
+        let cursor_row = if active && li == cur_line {
+            let (row, col) = wrapped_cursor(cur_col, wrap_w, rows.len());
+            Some((row, col))
+        } else {
+            None
+        };
+        for (ri, chunk) in rows.iter().enumerate() {
+            match cursor_row {
+                Some((row, col)) if row == ri => {
+                    text_cursor = Some(text_rows.len());
+                    text_rows.push(prompt_cursor_row(chunk, col, text_style));
+                }
+                _ => text_rows.push(prompt_plain_row(chunk, text_style)),
+            }
+        }
+    }
+
+    // Cap the visible text rows so the editor stays tight; a taller prompt
+    // scrolls within the window, kept centered on the cursor.
+    let (visible, start) =
+        window_rows(text_rows, text_cursor.unwrap_or(0), MAX_PROMPT_VISIBLE_ROWS);
+    let cursor_idx = text_cursor.map(|tc| 1 + tc.saturating_sub(start));
+    lines.extend(visible);
+    (lines, cursor_idx)
+}
+
+/// Window `rows` to at most `max` entries, centered on `focus`, returning the
+/// kept rows and the start offset (so a caller can re-map an index into them).
+fn window_rows<'a>(rows: Vec<Line<'a>>, focus: usize, max: usize) -> (Vec<Line<'a>>, usize) {
+    if rows.len() <= max || max == 0 {
+        return (rows, 0);
+    }
+    let start = focus.saturating_sub(max / 2).min(rows.len() - max);
+    let kept = rows.into_iter().skip(start).take(max).collect();
+    (kept, start)
+}
+
+/// Usable width for wrapped prompt text rows: the inner width minus the 4-space
+/// indent, floored to at least 1 so wrapping never divides by zero.
+fn prompt_wrap_width(width: u16) -> usize {
+    (width as usize).saturating_sub(4).max(1)
+}
+
+/// Total display rows the prompt occupies (1 label row + the wrapped text rows,
+/// capped at [`MAX_PROMPT_VISIBLE_ROWS`]), so the centered overlay's height and
+/// body agree on the count and the modal never grows past the tight cap.
+fn prompt_display_rows(prompt: &str, width: u16) -> u16 {
+    let wrap_w = prompt_wrap_width(width);
+    let text_rows: usize = prompt
+        .split('\n')
+        .map(|logical| {
+            let chars: Vec<char> = logical.chars().collect();
+            wrap_chars(&chars, wrap_w).len()
+        })
+        .sum();
+    (1 + text_rows.min(MAX_PROMPT_VISIBLE_ROWS)).min(u16::MAX as usize) as u16
+}
+
+/// Hard-wrap one logical line into chunks of at most `wrap_w` chars. An empty
+/// line yields one empty chunk so it still occupies a row.
+fn wrap_chars(line: &[char], wrap_w: usize) -> Vec<Vec<char>> {
+    if line.is_empty() {
+        return vec![Vec::new()];
+    }
+    let wrap_w = wrap_w.max(1);
+    line.chunks(wrap_w).map(|c| c.to_vec()).collect()
+}
+
+/// Map a logical column on a logical line to `(wrapped_row, wrapped_col)` for
+/// hard char wrapping. A caret past the last produced row (end of a line whose
+/// length is a multiple of `wrap_w`) is clamped to the last row's tail so the
+/// block cursor stays visible just after the wrap boundary.
+fn wrapped_cursor(col: usize, wrap_w: usize, n_rows: usize) -> (usize, usize) {
+    let wrap_w = wrap_w.max(1);
+    let row = col / wrap_w;
+    if row >= n_rows {
+        (n_rows.saturating_sub(1), wrap_w)
+    } else {
+        (row, col % wrap_w)
+    }
+}
+
+/// One indented prompt row with a block cursor drawn at char index `caret`.
+fn prompt_cursor_row<'a>(chunk: &[char], caret: usize, text_style: Style) -> Line<'a> {
+    let caret = caret.min(chunk.len());
+    let mut spans = vec![Span::raw("    ")];
+    let before: String = chunk[..caret].iter().collect();
+    if !before.is_empty() {
+        spans.push(Span::styled(before, text_style));
+    }
+    let cursor_char = chunk
+        .get(caret)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    spans.push(Span::styled(cursor_char, Theme::cursor()));
+    let after: String = chunk
+        .get(caret + 1..)
+        .map(|s| s.iter().collect())
+        .unwrap_or_default();
+    if !after.is_empty() {
+        spans.push(Span::styled(after, text_style));
+    }
+    Line::from(spans)
+}
+
+/// One indented prompt row without a cursor.
+fn prompt_plain_row<'a>(chunk: &[char], text_style: Style) -> Line<'a> {
+    let mut spans = vec![Span::raw("    ")];
+    if !chunk.is_empty() {
+        let text: String = chunk.iter().collect();
+        spans.push(Span::styled(text, text_style));
+    }
+    Line::from(spans)
 }
 
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -197,7 +433,9 @@ fn field_line<'a>(
         AutomationField::Worktree => ("worktree", optional_display(state.worktree), false),
         AutomationField::Agent => ("agent", optional_display(state.agent), false),
         AutomationField::Command => ("command", state.command.to_string(), false),
-        AutomationField::Prompt => ("prompt", state.prompt.to_string(), false),
+        // The multi-line prompt is rendered by `prompt_lines`; `editor_body_lines`
+        // never routes it here.
+        AutomationField::Prompt => unreachable!("Prompt is rendered via prompt_lines"),
     };
 
     super::editor_field_line(label, value, selector, focused)
@@ -275,6 +513,7 @@ mod tests {
             agent: "",
             command: "",
             prompt: "",
+            prompt_cursor: (0, 0),
             target_session: None,
             preview: "",
             focused: true,
@@ -363,5 +602,211 @@ mod tests {
         assert_eq!(target_display(&s), "(no running sessions)");
         s.target_session = Some("backend");
         assert_eq!(target_display(&s), "backend");
+    }
+
+    fn chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    #[test]
+    fn wrap_chars_splits_at_width() {
+        let thirty: Vec<char> = "x".repeat(30).chars().collect();
+        let rows = wrap_chars(&thirty, 10);
+        assert_eq!(
+            rows.iter().map(|r| r.len()).collect::<Vec<_>>(),
+            vec![10, 10, 10]
+        );
+        let twenty_five: Vec<char> = "x".repeat(25).chars().collect();
+        let rows = wrap_chars(&twenty_five, 10);
+        assert_eq!(
+            rows.iter().map(|r| r.len()).collect::<Vec<_>>(),
+            vec![10, 10, 5]
+        );
+    }
+
+    #[test]
+    fn wrap_chars_empty_line_is_one_empty_row() {
+        assert_eq!(wrap_chars(&[], 10), vec![Vec::<char>::new()]);
+    }
+
+    #[test]
+    fn wrap_chars_short_line_is_one_row() {
+        assert_eq!(wrap_chars(&chars("hi"), 10), vec![chars("hi")]);
+    }
+
+    #[test]
+    fn wrapped_cursor_maps_logical_col_to_display() {
+        // start
+        assert_eq!(wrapped_cursor(0, 10, 1), (0, 0));
+        // mid-row
+        assert_eq!(wrapped_cursor(5, 10, 1), (0, 5));
+        // exactly on a wrap boundary moves to the next row's start
+        assert_eq!(wrapped_cursor(10, 10, 2), (1, 0));
+        // caret past the last produced row (end of a full final row) clamps to
+        // the last row's tail so the block cursor stays visible
+        assert_eq!(wrapped_cursor(10, 10, 1), (0, 10));
+    }
+
+    #[test]
+    fn prompt_display_rows_counts_label_plus_wrapped_rows() {
+        // Empty prompt: label + one (empty) text row.
+        assert_eq!(prompt_display_rows("", 20), 2);
+        // Two logical lines, second wraps to 2 rows at width 20 (wrap_w = 16).
+        let p = format!("short\n{}", "y".repeat(20));
+        assert_eq!(prompt_display_rows(&p, 20), 1 + 1 + 2);
+    }
+
+    fn has_cursor_span(line: &Line) -> bool {
+        line.spans.iter().any(|s| s.style == Theme::cursor())
+    }
+
+    #[test]
+    fn prompt_lines_wraps_and_draws_cursor() {
+        let mut s = state();
+        let long = "y".repeat(20);
+        let text = format!("short\n{long}");
+        s.prompt = &text;
+        // Cursor on the second logical line, col 18 → second wrapped row.
+        s.prompt_cursor = (1, 18);
+        let (lines, cursor_idx) = prompt_lines(&s, true, 20); // wrap_w = 16
+                                                              // label + 1 (short) + 2 (wrapped long) = 4 rows.
+        assert_eq!(lines.len(), 4);
+        // The cursor lands on the last row (col 18 → row 1 of the long line).
+        assert_eq!(cursor_idx, Some(3));
+        assert!(has_cursor_span(&lines[3]));
+        assert!(!has_cursor_span(&lines[1]));
+    }
+
+    #[test]
+    fn prompt_lines_empty_inactive_shows_none() {
+        let s = state();
+        let (lines, cursor_idx) = prompt_lines(&s, false, 40);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(cursor_idx, None);
+        let none_text: String = lines[1]
+            .spans
+            .iter()
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(none_text.contains("(none)"));
+    }
+
+    #[test]
+    fn prompt_lines_empty_active_shows_single_cursor_row() {
+        let mut s = state();
+        s.prompt = "";
+        s.prompt_cursor = (0, 0);
+        let (lines, cursor_idx) = prompt_lines(&s, true, 40);
+        // label + one cursor row.
+        assert_eq!(lines.len(), 2);
+        assert_eq!(cursor_idx, Some(1));
+        assert!(has_cursor_span(&lines[1]));
+    }
+
+    #[test]
+    fn window_rows_centers_and_clamps() {
+        let rows = || -> Vec<Line<'static>> { (0..10).map(|_| Line::from("")).collect() };
+        // Fits → returned whole, no offset.
+        let (kept, start) = window_rows(rows(), 0, 20);
+        assert_eq!((kept.len(), start), (10, 0));
+        // Focus near the start clamps the window to the top.
+        let (kept, start) = window_rows(rows(), 0, 4);
+        assert_eq!((kept.len(), start), (4, 0));
+        // Focus in the middle centers the window.
+        let (kept, start) = window_rows(rows(), 5, 4);
+        assert_eq!((kept.len(), start), (4, 3));
+        // Focus near the end clamps to the bottom.
+        let (kept, start) = window_rows(rows(), 9, 4);
+        assert_eq!((kept.len(), start), (4, 6));
+        // max == 0 is a no-op (avoids a zero-width window).
+        let (kept, start) = window_rows(rows(), 5, 0);
+        assert_eq!((kept.len(), start), (10, 0));
+    }
+
+    #[test]
+    fn prompt_lines_caps_visible_rows_and_keeps_cursor() {
+        let mut s = state();
+        // 30 logical lines → 30 text rows, capped to MAX_PROMPT_VISIBLE_ROWS.
+        let text = (0..30).fold(String::new(), |mut acc, i| {
+            if !acc.is_empty() {
+                acc.push('\n');
+            }
+            acc.push((b'a' + (i % 26) as u8) as char);
+            acc
+        });
+        s.prompt = &text;
+        s.prompt_cursor = (25, 0); // cursor near the end
+
+        let (lines, cursor_idx) = prompt_lines(&s, true, 40);
+        // label + at most MAX visible text rows.
+        assert_eq!(lines.len(), 1 + MAX_PROMPT_VISIBLE_ROWS);
+        // The cursor row is within the window and actually carries the cursor.
+        let idx = cursor_idx.expect("active prompt has a cursor row");
+        assert!(idx >= 1 && idx < lines.len());
+        assert!(has_cursor_span(&lines[idx]));
+    }
+
+    #[test]
+    fn prompt_display_rows_is_capped() {
+        // 50 logical lines, but the reported height caps the text rows.
+        let text = "x\n".repeat(50);
+        assert_eq!(
+            prompt_display_rows(&text, 40),
+            1 + MAX_PROMPT_VISIBLE_ROWS as u16
+        );
+    }
+
+    #[test]
+    fn windowed_editor_lines_scrolls_to_keep_cursor_visible() {
+        // A prompt taller than the available height must window so the cursor row
+        // stays on screen, with the 3-line footer (preview/status/hints) pinned.
+        let mut s = state();
+        s.field = AutomationField::Prompt;
+        // 40 single-char logical lines → 40 wrapped rows + 1 label row.
+        let text = (0..40)
+            .map(|i| (b'a' + (i % 26)) as char)
+            .fold(String::new(), |mut acc, c| {
+                if !acc.is_empty() {
+                    acc.push('\n');
+                }
+                acc.push(c);
+                acc
+            });
+        s.prompt = &text;
+        s.prompt_cursor = (39, 0); // cursor on the last logical line
+
+        let height = 12; // small modal: 3 footer + 9 body rows visible
+        let lines = windowed_editor_lines(&s, 60, height);
+        assert_eq!(lines.len(), height as usize, "fills exactly the height");
+        // The window scrolled to the bottom, so the cursor row is present...
+        assert!(
+            lines.iter().any(has_cursor_span),
+            "cursor row stays visible after scrolling"
+        );
+        // ...and the footer (the key-hint line) is pinned at the very bottom.
+        let last: String = lines[lines.len() - 1]
+            .spans
+            .iter()
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(last.contains("save"), "footer key hints pinned at bottom");
+    }
+
+    #[test]
+    fn windowed_editor_lines_no_scroll_when_it_fits() {
+        // With ample height the whole body renders (no windowing): every field
+        // row plus the prompt is present and the footer follows.
+        let s = state();
+        let lines = windowed_editor_lines(&s, 60, 40);
+        // Daily+Send body = 8 field rows (prompt expands to label + 1 (none) row
+        // when empty+inactive... here Name is active so prompt is inactive empty).
+        // Just assert the footer is present and nothing was dropped.
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(joined.contains("prompt"));
+        assert!(joined.contains("save"));
     }
 }
