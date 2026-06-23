@@ -860,7 +860,7 @@ pub fn worktree_is_dirty(cwd: &Path) -> bool {
 }
 
 /// Commits the worktree's HEAD is `(ahead, behind)` relative to its base ref,
-/// resolved by [`resolve_base_ref`] (upstream → `origin/HEAD` → `origin/main` →
+/// resolved by `resolve_base_ref` (upstream → `origin/HEAD` → `origin/main` →
 /// `origin/master`) — the same chain [`sync_worktree`] rebases onto, so the
 /// "behind" count is measured against the ref sync would use. Returns `(0, 0)`
 /// when no base can be resolved.
