@@ -14,6 +14,10 @@ worktrees are first-class citizens.
 
 ![Thurbox Demo](./docs/media/thurbox-demo.gif)
 
+> **Note:** Thurbox is still **v0.x.x**. While we try hard to avoid
+> them, breaking changes may occasionally happen between releases
+> until the project reaches 1.0. Pin a version if you need stability.
+
 ## Installation
 
 **One-liner:**
