@@ -495,8 +495,6 @@ pub struct HostProbe {
     pub is_macos: bool,
     /// Compiled for `target_os = "windows"` (native Windows, not WSL).
     pub is_windows: bool,
-    /// Running under WSL (Microsoft kernel marker in `/proc/version`).
-    pub is_wsl: bool,
     /// A reachable freedesktop notification service on the session bus.
     pub has_dbus_service: bool,
     /// `powershell.exe` resolves on `PATH` (WSL interop available).
@@ -556,32 +554,18 @@ pub fn resolve_backend(configured: NotificationBackend, probe: HostProbe) -> Del
 }
 
 /// Gather host facts for [`detect_backend`]. The `cfg!` flags are
-/// compile-time; the dynamic probes (WSL marker, dbus service, powershell)
-/// are best-effort and never panic.
+/// compile-time; the dynamic probes (dbus service, powershell) are
+/// best-effort and never panic. WSL is not probed directly: routing keys off
+/// the absence of a dbus service plus the presence of `powershell.exe`, which
+/// is exactly the WSL case (and degrades correctly on any other host).
 pub fn probe_host() -> HostProbe {
     HostProbe {
         is_linux: cfg!(target_os = "linux"),
         is_macos: cfg!(target_os = "macos"),
         is_windows: cfg!(target_os = "windows"),
-        is_wsl: detect_wsl(),
         has_dbus_service: detect_dbus_service(),
         has_powershell: detect_powershell(),
     }
-}
-
-/// WSL is detected by the Microsoft marker the WSL kernel writes into
-/// `/proc/version` (e.g. "...microsoft-standard-WSL2..."). Pure check exposed
-/// for tests via [`proc_version_is_wsl`].
-fn detect_wsl() -> bool {
-    std::fs::read_to_string("/proc/version")
-        .map(|v| proc_version_is_wsl(&v))
-        .unwrap_or(false)
-}
-
-/// Pure WSL test over a `/proc/version` string.
-pub(crate) fn proc_version_is_wsl(proc_version: &str) -> bool {
-    let lower = proc_version.to_ascii_lowercase();
-    lower.contains("microsoft") || lower.contains("wsl")
 }
 
 /// Probe for a working freedesktop notification service. We deliberately do a
@@ -666,30 +650,22 @@ fn write_focus_request(session_id: SessionId) -> Result<(), Box<dyn std::error::
 mod tests {
     use super::*;
 
-    fn probe(
-        is_linux: bool,
-        is_macos: bool,
-        is_wsl: bool,
-        has_dbus: bool,
-        has_ps: bool,
-    ) -> HostProbe {
+    fn probe(is_linux: bool, is_macos: bool, has_dbus: bool, has_ps: bool) -> HostProbe {
         HostProbe {
             is_linux,
             is_macos,
             is_windows: false,
-            is_wsl,
             has_dbus_service: has_dbus,
             has_powershell: has_ps,
         }
     }
 
-    /// A native-Windows host facts struct (no WSL, no dbus, powershell present).
+    /// A native-Windows host facts struct (no dbus, powershell present).
     fn probe_windows() -> HostProbe {
         HostProbe {
             is_linux: false,
             is_macos: false,
             is_windows: true,
-            is_wsl: false,
             has_dbus_service: false,
             has_powershell: true,
         }
@@ -736,19 +712,8 @@ mod tests {
     }
 
     #[test]
-    fn proc_version_wsl_marker() {
-        assert!(proc_version_is_wsl(
-            "Linux version 6.6.0-microsoft-standard-WSL2 (gcc ...)"
-        ));
-        assert!(proc_version_is_wsl("... WSL ..."));
-        assert!(!proc_version_is_wsl(
-            "Linux version 6.6.0-arch1-1 (linux@archlinux) ..."
-        ));
-    }
-
-    #[test]
     fn auto_picks_dbus_on_normal_linux_desktop() {
-        let p = probe(true, false, false, true, false);
+        let p = probe(true, false, true, false);
         assert_eq!(
             resolve_backend(NotificationBackend::Auto, p),
             DeliveryBackend::Dbus
@@ -759,7 +724,7 @@ mod tests {
     fn auto_falls_back_to_windows_toast_under_wsl_without_dbus() {
         // The exact WSL failure case: linux + WSL marker + no dbus service,
         // but powershell.exe is reachable.
-        let p = probe(true, false, true, false, true);
+        let p = probe(true, false, false, true);
         assert_eq!(
             resolve_backend(NotificationBackend::Auto, p),
             DeliveryBackend::WindowsToast
@@ -768,7 +733,7 @@ mod tests {
 
     #[test]
     fn auto_under_wsl_without_powershell_reports_none() {
-        let p = probe(true, false, true, false, false);
+        let p = probe(true, false, false, false);
         assert_eq!(
             resolve_backend(NotificationBackend::Auto, p),
             DeliveryBackend::None
@@ -778,7 +743,7 @@ mod tests {
     #[test]
     fn auto_prefers_dbus_even_under_wsl_if_a_daemon_answers() {
         // A WSL setup that *does* run a notification daemon should still use it.
-        let p = probe(true, false, true, true, true);
+        let p = probe(true, false, true, true);
         assert_eq!(
             resolve_backend(NotificationBackend::Auto, p),
             DeliveryBackend::Dbus
@@ -787,7 +752,7 @@ mod tests {
 
     #[test]
     fn auto_picks_macos_banner() {
-        let p = probe(false, true, false, false, false);
+        let p = probe(false, true, false, false);
         assert_eq!(
             resolve_backend(NotificationBackend::Auto, p),
             DeliveryBackend::Macos
@@ -796,7 +761,7 @@ mod tests {
 
     #[test]
     fn off_always_disables() {
-        let p = probe(true, false, false, true, true);
+        let p = probe(true, false, true, true);
         assert_eq!(
             resolve_backend(NotificationBackend::Off, p),
             DeliveryBackend::None
@@ -806,17 +771,11 @@ mod tests {
     #[test]
     fn forced_dbus_requires_linux() {
         assert_eq!(
-            resolve_backend(
-                NotificationBackend::Dbus,
-                probe(true, false, false, false, false)
-            ),
+            resolve_backend(NotificationBackend::Dbus, probe(true, false, false, false)),
             DeliveryBackend::Dbus
         );
         assert_eq!(
-            resolve_backend(
-                NotificationBackend::Dbus,
-                probe(false, true, false, false, false)
-            ),
+            resolve_backend(NotificationBackend::Dbus, probe(false, true, false, false)),
             DeliveryBackend::None
         );
     }
@@ -826,14 +785,14 @@ mod tests {
         assert_eq!(
             resolve_backend(
                 NotificationBackend::Windows,
-                probe(true, false, true, false, true)
+                probe(true, false, false, true)
             ),
             DeliveryBackend::WindowsToast
         );
         assert_eq!(
             resolve_backend(
                 NotificationBackend::Windows,
-                probe(true, false, true, false, false)
+                probe(true, false, false, false)
             ),
             DeliveryBackend::None
         );
