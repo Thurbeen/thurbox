@@ -307,6 +307,13 @@ fn apply_color(
 }
 
 impl CustomThemeDef {
+    /// Number of per-colour override fields wired into [`Self::resolve`]'s
+    /// `fields` array. Tied to the array's length at compile time; a test
+    /// (`override_array_covers_every_color_field`) asserts it matches the
+    /// struct's colour-field count, so a forgotten row can't silently make a
+    /// colour un-overridable.
+    const COLOR_OVERRIDE_COUNT: usize = 26;
+
     /// Materialise the theme: base preset palette + overrides. Unparsable
     /// colours and an unknown base degrade to warnings, never to a hard
     /// failure — a half-styled theme beats no theme.
@@ -327,7 +334,7 @@ impl CustomThemeDef {
             palette.nerd_font_enabled = nerd;
         }
 
-        let fields: [(&str, &Option<String>, &mut Color); 26] = [
+        let fields: [(&str, &Option<String>, &mut Color); Self::COLOR_OVERRIDE_COUNT] = [
             ("accent", &self.accent, &mut palette.accent),
             (
                 "accent_bright",
@@ -893,5 +900,43 @@ mod tests {
             "Catppuccin Mocha"
         );
         assert_eq!(ThemePreset::TokyoNight.display_name(), "Tokyo Night");
+    }
+
+    #[test]
+    fn all_enumerates_every_preset_variant() {
+        // Exhaustive match: adding a variant fails to compile until it's listed
+        // here, and the EXPECTED guard ensures `all()` was also updated. Mirrors
+        // keybindings.rs's `all_enumerates_every_action_variant`.
+        fn classify(p: ThemePreset) -> u8 {
+            match p {
+                ThemePreset::Default => 0,
+                ThemePreset::CatppuccinMocha => 0,
+                ThemePreset::TokyoNight => 0,
+                ThemePreset::GruvboxDark => 0,
+                ThemePreset::CatppuccinLatte => 0,
+                ThemePreset::TokyoNightDay => 0,
+                ThemePreset::GruvboxLight => 0,
+                ThemePreset::SolarizedLight => 0,
+                ThemePreset::Doom => 0,
+            }
+        }
+        const EXPECTED: usize = 9;
+        assert_eq!(ThemePreset::all().len(), EXPECTED);
+        for p in ThemePreset::all() {
+            classify(*p);
+        }
+    }
+
+    #[test]
+    fn override_array_covers_every_color_field() {
+        // Count the struct's colour-override fields (total serialized fields
+        // minus the five non-colour meta fields) and assert it equals the
+        // `fields` array length. A new `Option<String>` colour added to the
+        // struct but not to `resolve()`'s array would be silently
+        // un-overridable; this catches the omission.
+        let json = serde_json::to_value(CustomThemeDef::default()).unwrap();
+        let total = json.as_object().unwrap().len();
+        const META_FIELDS: usize = 5; // name, display_name, base, light, nerd_font
+        assert_eq!(total - META_FIELDS, CustomThemeDef::COLOR_OVERRIDE_COUNT);
     }
 }
