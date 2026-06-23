@@ -134,13 +134,18 @@ adds:
 
 ### Sessions
 
-Many coding agents side-by-side, each in its own tmux-backed pane that survives crashes, restarts, and reboots. Pick the agent and repo(s) at `Ctrl+N`; reattach from any terminal with `tmux -L thurbox attach`. Reorder by hand (`Shift+J`/`Shift+K`), sort (`Shift+S`), restart with resume (`Ctrl+R`), or soft-delete with undo.
+Many coding agents side-by-side, each in its own tmux-backed pane that
+survives crashes, restarts, and reboots. Pick the agent and repo(s) at
+`Ctrl+N`; reattach from any terminal with `tmux -L thurbox attach`. Reorder
+by hand (`Shift+J`/`Shift+K`), sort (`Shift+S`), restart with resume
+(`Ctrl+R`), or soft-delete with undo.
 
 [Getting started →](#getting-started)
 
 </td>
 <td width="50%">
-  <img src="./docs/media/thurbox-session-creation.gif" alt="Session creation workflow" width="100%" />
+  <img src="./docs/media/thurbox-session-creation.gif"
+       alt="Session creation workflow" width="100%" />
 </td>
 </tr>
 <tr>
@@ -148,7 +153,10 @@ Many coding agents side-by-side, each in its own tmux-backed pane that survives 
 
 ### Fork & Lead/Worker
 
-`Ctrl+F` forks a session and records the source as its **parent**; children nest under their lead in the list. Build lead → worker trees by hand or headlessly with `--parent`. The link is informational — deleting a lead never cascades to its workers.
+`Ctrl+F` forks a session and records the source as its **parent**; children
+nest under their lead in the list. Build lead → worker trees by hand or
+headlessly with `--parent`. The link is informational — deleting a lead
+never cascades to its workers.
 
 [CLI →](#sessions)
 
@@ -162,7 +170,11 @@ Many coding agents side-by-side, each in its own tmux-backed pane that survives 
 
 ### Automations
 
-Named, scheduled agent runs — one-shot or recurring (cron, with `hourly`/`daily`/`weekdays`/`weekly` presets) that **send** a prompt to a running session or **spawn** a fresh one. The editor needs no cron knowledge, and they fire even when the TUI is closed via a tmux heartbeat keeper.
+Named, scheduled agent runs — one-shot or recurring (cron, with
+`hourly`/`daily`/`weekdays`/`weekly` presets) that **send** a prompt to a
+running session or **spawn** a fresh one. The editor needs no cron
+knowledge, and they fire even when the TUI is closed via a tmux heartbeat
+keeper.
 
 [CLI →](#automations-alias-auto)
 
@@ -176,7 +188,10 @@ Named, scheduled agent runs — one-shot or recurring (cron, with `hourly`/`dail
 
 ### Tasks
 
-A built-in todo list whose items can be handed to a coding agent with the same Send/Spawn model — or stay plain local todos. Lives in a toggleable side column (`Ctrl+W` / `F5`); triggering a task (`r`) runs its action and advances it to *in progress*.
+A built-in todo list whose items can be handed to a coding agent with the
+same Send/Spawn model — or stay plain local todos. Lives in a toggleable
+side column (`Ctrl+W` / `F5`); triggering a task (`r`) runs its action and
+advances it to *in progress*.
 
 [CLI →](#tasks-alias-todo)
 
@@ -190,7 +205,10 @@ A built-in todo list whose items can be handed to a coding agent with the same S
 
 ### Global Search
 
-One key (`Ctrl+/`) searches every scope at once — sessions (including live terminal-buffer content), tasks, automations, and the file tree — highlighting matches live in the panels themselves. `Enter` jumps to a result; `Esc` restores exactly what you had.
+One key (`Ctrl+/`) searches every scope at once — sessions (including live
+terminal-buffer content), tasks, automations, and the file tree —
+highlighting matches live in the panels themselves. `Enter` jumps to a
+result; `Esc` restores exactly what you had.
 
 [Keybindings →](#keybindings)
 
@@ -204,7 +222,8 @@ One key (`Ctrl+/`) searches every scope at once — sessions (including live ter
 
 ### Info Panel & Live Metrics
 
-`Ctrl+B` (`F2`) shows per-session details with live CPU/RAM and agent metrics, right beside the terminal.
+`Ctrl+B` (`F2`) shows per-session details with live CPU/RAM and agent
+metrics, right beside the terminal.
 
 [Keybindings →](#keybindings)
 
@@ -232,7 +251,8 @@ One key (`Ctrl+/`) searches every scope at once — sessions (including live ter
 
 ### Themes
 
-Nine palettes (five dark, four light) plus user-defined custom themes, switched live with `Ctrl+Y` (or `F4`) and persisted across restarts.
+Nine palettes (five dark, four light) plus user-defined custom themes,
+switched live with `Ctrl+Y` (or `F4`) and persisted across restarts.
 
 [Config →](docs/CONFIG.md)
 
@@ -245,15 +265,35 @@ Nine palettes (five dark, four light) plus user-defined custom themes, switched 
 
 **Also in the box:**
 
-- **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)** *(experimental)* — opt-in, agent-agnostic add-ons that are **data, not code**: `flow`, `forge`, `ci-shepherd`, `renovate`, and bidirectional task-integration for GitHub Issues / GitLab / Linear / Jira. One command installs, activates, and self-heals each.
-- **[Inter-session messages](#features)** — an agent-neutral mailbox queue for structured agent↔agent coordination, with atomic exactly-once `--claim` drains and wake nudges. Agents pass no ids — thurbox injects a stable identity.
-- **[Agent definitions](#agents)** — every launchable agent is declared as data in `agents.toml` (seeded with claude, codex, antigravity, opencode, aider, vibe); add your own with no recompile.
-- **[Git worktree isolation](#common-workflows)** — spawn a session on a fresh worktree branch; `Ctrl+S` syncs them with their base branch and asks the agent to resolve rebase conflicts.
-- **[Remote SSH sessions](docs/CONFIG.md)** — run an agent on a remote box over SSH while the TUI stays local; declare hosts in `hosts.toml` and they become `ssh:<name>` backends with the same persistence and restore as local ones.
-- **[OS notifications](docs/CONFIG.md)** — desktop alerts when a session needs you, with click-to-focus on Linux.
-- **Mouse navigation** — the whole TUI is clickable: select rows, confirm picker entries in one click, wheel-scroll, drag-select text, `Ctrl+Click` URLs. Toggle with `mouse` in `settings.toml`.
-- **[Feature flags](docs/CONFIG.md)** — switch whole panels off in `settings.toml`; a disabled feature hides its UI but keeps its data and CLI surface, so flipping it back on is lossless.
-- **Responsive layout** — `< 80` cols: terminal only · `>= 80`: + sidebar · `>= 120`: + info panel. Vim-inspired keys throughout.
+- **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)**
+  *(experimental)* — opt-in, agent-agnostic add-ons that are **data, not
+  code**: `flow`, `forge`, `ci-shepherd`, `renovate`, and bidirectional
+  task-integration for GitHub Issues / GitLab / Linear / Jira. One command
+  installs, activates, and self-heals each.
+- **[Inter-session messages](#features)** — an agent-neutral mailbox queue
+  for structured agent↔agent coordination, with atomic exactly-once
+  `--claim` drains and wake nudges. Agents pass no ids — thurbox injects a
+  stable identity.
+- **[Agent definitions](#agents)** — every launchable agent is declared as
+  data in `agents.toml` (seeded with claude, codex, antigravity, opencode,
+  aider, vibe); add your own with no recompile.
+- **[Git worktree isolation](#common-workflows)** — spawn a session on a
+  fresh worktree branch; `Ctrl+S` syncs them with their base branch and asks
+  the agent to resolve rebase conflicts.
+- **[Remote SSH sessions](docs/CONFIG.md)** — run an agent on a remote box
+  over SSH while the TUI stays local; declare hosts in `hosts.toml` and they
+  become `ssh:<name>` backends with the same persistence and restore as
+  local ones.
+- **[OS notifications](docs/CONFIG.md)** — desktop alerts when a session
+  needs you, with click-to-focus on Linux.
+- **Mouse navigation** — the whole TUI is clickable: select rows, confirm
+  picker entries in one click, wheel-scroll, drag-select text, `Ctrl+Click`
+  URLs. Toggle with `mouse` in `settings.toml`.
+- **[Feature flags](docs/CONFIG.md)** — switch whole panels off in
+  `settings.toml`; a disabled feature hides its UI but keeps its data and
+  CLI surface, so flipping it back on is lossless.
+- **Responsive layout** — `< 80` cols: terminal only · `>= 80`: + sidebar ·
+  `>= 120`: + info panel. Vim-inspired keys throughout.
 
 > **Note:** Some features (tasks, extensions, the session-list display) are
 > new and still evolving — expect their UX to keep improving release to release.

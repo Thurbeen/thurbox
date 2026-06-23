@@ -6,3 +6,7 @@ line_length = 100
 # Allow longer lines in tables and code blocks
 tables = false
 code_blocks = false
+
+[MD033]
+# Allow the HTML used for the README feature-wall layout
+allowed_elements = ["table", "tr", "td", "img", "picture", "source", "a", "br", "div"]
