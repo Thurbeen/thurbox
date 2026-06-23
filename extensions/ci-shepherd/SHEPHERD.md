@@ -73,13 +73,53 @@ sessions. The relevant forge client must be authenticated (`gh auth status` /
 `glab auth status` / Bitbucket `BB_TOKEN`); if a repo shows a provider error,
 surface it once under "Needs you" and move on.
 
+**Live-session links.** Right under a request's classify line the snapshot may
+print a `⮑ #<n> head=<branch> already has a live session: <name> <id>` line.
+That means a thurbox session **other than a fixer** (not `shepherd`, not a
+`task-*` / `… · #<id>` worker) is already on that request's head branch — the
+user, or another agent, is working it by hand. **This is a worker, not a
+blocker.** Don't dispatch your own fixer (you'd duplicate the work and race
+their force-push), but don't park it either: **monitor it and fold it into the
+merge ordering**. The live session counts as that repo's active worker exactly
+like one of your in-flight fixers — so it holds the repo's rebase slot (see
+*Rebase serialization*): keep the **other** same-repo requests queued behind it,
+and report it as **in progress**, not under "Needs you" (it's advancing, the
+user is on it). You're sequencing merges, not standing down.
+
 **Action flags** (precedence, highest first): `draft` (skip) → `CHANGES-REQ` →
-`CI-FAIL` → `REBASE` → `ok`. **`REBASE`** means the request is **behind its
-target branch** (`rebase=NEEDED`) or has **diverged into conflict**
+`CI-FAIL` → `REBASE` → `REBASE-QUEUED` → `ok`. **`REBASE`** means the request is
+**behind its target branch** (`rebase=NEEDED`) or has **diverged into conflict**
 (`rebase=CONFLICT`) — branch protection ("require branches up to date") blocks
 the merge until it's rebased. CI-FAIL outranks REBASE on purpose: clear red
 checks first, since the rebase re-runs CI and is the last gate before a clean
 request can merge. The per-request line shows `rebase=NEEDED|CONFLICT|none`.
+
+**`REBASE-QUEUED`** is a `REBASE` request that must **wait its turn** (see
+*Rebase serialization* below): another REBASE request in the same repo goes
+first, so this one is **not** dispatched yet — its line carries
+`(queued behind #<n>)`. Treat it as **not actionable** this tick.
+
+**Rebase serialization (per repo) — the merge accelerator.** With "require
+branches up to date" protection on, REBASE-only requests in the same repo
+mutually invalidate each other: rebase them all at once and whichever merges
+first knocks the rest back out of date, so you burn O(n²) rebases + CI runs and
+nothing converges. `classify.sh` therefore lets **only the lowest-numbered**
+REBASE request in a repo keep the live `REBASE` flag (it's the oldest → most
+likely already reviewed → closest to merge); every other REBASE request becomes
+`REBASE-QUEUED`. Dispatch only the active one; once it merges, the next tick
+promotes the next-lowest. The result is one rebase at a time per repo, O(n)
+total, merging fastest. CI-FAIL / CHANGES-REQ requests are **not** queued — they
+need independent work and dispatch in parallel; a request joins the rebase queue
+only once it is REBASE-only.
+
+The classify queue orders by **number** because it's pure (no session
+knowledge). The **active rebase slot** is held by whatever is *already working*
+that repo — a live session (the `⮑` link) or your own in-flight rebase fixer —
+even if that isn't the lowest number. So when a same-repo request already has a
+worker, treat **it** as the active rebase and keep the rest `REBASE-QUEUED`
+behind it, rather than dispatching a second rebase that would race the worker.
+Only when **no** same-repo request is being worked do you dispatch the
+lowest-numbered `REBASE` to open the slot.
 
 The `rebase` signal is **git-local and authoritative**: the snapshot fetches
 `origin` and tests each request's head against its base directly
@@ -93,11 +133,19 @@ The forge's own value is kept only as a fallback for heads that aren't on
 1. **Dispatch** a fixer for every request that is actionable AND has no live
    fixer:
    - **Actionable**: flag is `CI-FAIL`, `CHANGES-REQ`, or `REBASE`, and not
-     `draft`.
+     `draft`. **`REBASE-QUEUED` is NOT actionable** — it's waiting on the active
+     rebase in its repo (see *Rebase serialization*); leave it for a later tick.
    - **Already handled**: a `fix #<n>` task exists for that repo+number that is
      not `done` → skip (a worker is on it). If the task is `done` but the
      request is STILL actionable, the previous fix didn't land it →
      re-dispatch and flag under "Needs you".
+   - **Worked by a live session**: the snapshot printed a `⮑ … already has a
+     live session` line for this request → someone is working its branch by
+     hand. Do **not** dispatch (you'd duplicate the work and race their
+     force-push), but **don't park it** — it's an active worker. **Monitor** it
+     (track its CI/rebase state across ticks) and treat it as its repo's active
+     rebase, so the other same-repo requests stay `REBASE-QUEUED` behind it (see
+     *Rebase serialization*). Report it as **in progress**, not "Needs you".
    - **Capacity**: at most **3** running fixer sessions total. Over capacity →
      leave it for the next tick.
    - Dispatch. **Built-in forge** (the snapshot listed it) — one call:
@@ -140,7 +188,14 @@ The forge's own value is kept only as a fallback for heads that aren't on
        permission prompt, or a question addressed to the user → "Needs you".
      - Exit 2 → malformed; treat as still working, flag if it repeats.
 
-3. Output: if nothing needs the user, reply EXACTLY
+3. **Monitor each live-session request** (the `⮑` links) the same way — but you
+   own none of these, so just watch state, never touch the worktree: note its
+   flag (still `CI-FAIL`/`REBASE`, or now `ok`/merged), and keep its same-repo
+   followers `REBASE-QUEUED` behind it. Surface it only if it's stuck (its
+   session vanished while the request is still actionable → the hand-off
+   stalled; "Needs you") — otherwise it's silent in-progress.
+
+4. Output: if nothing needs the user, reply EXACTLY
    `tick: all quiet (N fixing, M actionable)` — nothing else. Otherwise emit
    ONLY the Needs-you bullets + footer.
 
@@ -149,9 +204,14 @@ The forge's own value is kept only as a fallback for heads that aren't on
 One screen max:
 
 - **Fixing**: `#task #n <repo> [worker] (age)`
+- **In progress (live session)**: `#n <repo> — <session> [CI-FAIL|REBASE|ok]` —
+  worked by hand, you're monitoring + ordering around it; omit the line if none.
 - **Actionable, unassigned**: `#n <repo> — CI-FAIL|CHANGES-REQ|REBASE`
+- **Queued behind a rebase**: `#n <repo> — REBASE-QUEUED (behind #m)` — fine, just
+  waiting their turn; omit the line if none.
 - **Needs you**: true blockers only (a worker's question, a request that keeps
-  failing after a fix, a provider auth error)
+  failing after a fix, a provider auth error, a live-session request that
+  stalled — its session vanished while the request is still actionable)
 - Footer.
 
 ## CLEAN

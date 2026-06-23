@@ -77,3 +77,45 @@ classify() { req "$@" | "$SCRIPT"; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"(no open requests)"* ]]
 }
+
+# --- Rebase serialization (per repo): one REBASE active, the rest queued ------
+
+# A multi-request array: each arg is "number,rebase[,ci]" (review/draft default
+# to none/false). Used to exercise the cross-request rebase ordering.
+many() {
+  printf '%s\n' "$@" | jq -R 'split(",") |
+    { number: (.[0] | tonumber), title: "t", branch: "b\(.[0])", draft: false,
+      review: "none", ci: (.[2] // "OK"), rebase: .[1] }' | jq -sc '.'
+}
+
+@test "a lone REBASE request keeps the active flag (no queue)" {
+  run bash -c "echo '$(many 3,NEEDED)' | '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#3  [REBASE]"* ]]
+  [[ "$output" != *"REBASE-QUEUED"* ]]
+}
+
+@test "two same-repo REBASE requests serialize: lowest number is active" {
+  run bash -c "echo '$(many 5,NEEDED 2,CONFLICT)' | '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#2  [REBASE]"* ]]
+  [[ "$output" == *"#5  [REBASE-QUEUED]"* ]]
+  [[ "$output" == *"queued behind #2"* ]]
+}
+
+@test "rebase ordering is numeric, not lexical (#9 before #10)" {
+  run bash -c "echo '$(many 10,NEEDED 9,NEEDED)' | '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#9  [REBASE]"* ]]
+  [[ "$output" == *"#10  [REBASE-QUEUED]"* ]]
+  [[ "$output" == *"queued behind #9"* ]]
+}
+
+@test "CI-FAIL is never queued; only REBASE requests serialize among themselves" {
+  run bash -c "echo '$(many 1,NEEDED,FAIL 4,NEEDED 7,NEEDED)' | '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#1  [CI-FAIL]"* ]]
+  [[ "$output" == *"#4  [REBASE]"* ]]
+  [[ "$output" == *"#7  [REBASE-QUEUED]"* ]]
+  [[ "$output" == *"queued behind #4"* ]]
+}

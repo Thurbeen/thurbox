@@ -91,6 +91,17 @@ extension list` / `status ci-shepherd` show what's active.
 - A fixer is a thurbox **task** named `fix #<n>: …`; its worker runs in an
   isolated worktree on the request branch and self-reports via a `===RESULT===`
   sentinel, pinging the shepherd the moment it finishes.
+- The shepherd stays out of your way without losing track: if you (or another
+  agent) already have a live thurbox session on a request's head branch, it
+  **won't** dispatch a duplicate fixer there (the two would fight over the same
+  branch) — instead it **monitors** that request and folds it into the merge
+  ordering, treating your session as that repo's active worker so the other
+  same-repo PRs queue behind it.
+- When several PRs in the **same repo** only need a rebase (branch protection
+  requires up-to-date branches), the shepherd rebases them **one at a time**
+  (lowest number first) instead of all at once — each merge advances the base
+  for the next, so the stack clears in O(n) rebases instead of O(n²) and merges
+  faster.
 
 ## How the fixer gets the request branch
 
@@ -113,8 +124,9 @@ branch; `clean` removes the worktree once the request is no longer actionable
 | `SHEPHERD.md` | The agent behavior spec (modes, actionability rules, output contract) |
 | `scripts/provider.sh` | The forge adapter layer — normalizes GitHub/GitLab/Bitbucket onto one contract (incl. the `rebase` behind/conflict signal, overridden by a git-local check) |
 | `scripts/rebase-check.sh` | Authoritative git-local behind/conflict check (`none`/`NEEDED`/`CONFLICT`) — fetched `origin/<base>` vs `origin/<head>`; unit-tested by `rebase-check.bats` |
-| `scripts/classify.sh` | Pure request → action-flag classifier (`CHANGES-REQ`/`CI-FAIL`/`REBASE`/…); unit-tested by `classify.bats` |
-| `scripts/shepherd-snapshot.sh` | One-call view: watched requests (with action flags) + fixer tasks/sessions/worktrees |
+| `scripts/classify.sh` | Pure request → action-flag classifier (`CHANGES-REQ`/`CI-FAIL`/`REBASE`/`REBASE-QUEUED`/…), incl. per-repo rebase serialization; unit-tested by `classify.bats` |
+| `scripts/link-sessions.sh` | Pure (requests × sessions) head-branch join — flags requests already worked by a live, non-fixer thurbox session; unit-tested by `link-sessions.bats` |
+| `scripts/shepherd-snapshot.sh` | One-call view: watched requests (with action flags + live-session links) + fixer tasks/sessions/worktrees |
 | `scripts/dispatch-fix.sh` | Prepare a request-branch worktree + create and run the fixer task |
 | `scripts/parse-result.sh` | Extract the worker `===RESULT===` sentinel |
 | `extension.toml` | Declarative install + runtime manifest (`thurbox-cli extension install` reads this) |

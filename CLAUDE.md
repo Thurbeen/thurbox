@@ -883,7 +883,13 @@ sync, but the TUI editor never sets it.)
   (needs rebase — the normalized `rebase` signal from `provider.sh`, surfaced
   as the `REBASE` action flag by `scripts/classify.sh`; `dispatch-fix.sh
   --rebase` makes the worker rebase onto the base and force-push before
-  fixing). A `shepherd` session monitors via a
+  fixing). When **several PRs in one repo** are all REBASE-only,
+  `classify.sh` **serializes** them — only the lowest-numbered keeps the live
+  `REBASE` flag, the rest become `REBASE-QUEUED (behind #n)` and are held — so
+  the shepherd rebases one at a time (each merge advances the base for the next)
+  instead of force-pushing N branches that immediately re-invalidate each other,
+  clearing the stack in O(n) rebases instead of O(n²). A `shepherd` session
+  monitors via a
   `shepherd-tick` automation; fixers are thurbox **tasks** (`fix #<n>: …`) that
   self-report with the same `===RESULT===` sentinel as flow. It is
   **forge-agnostic**: the only thing baked in is **git**; *how* to talk to a
@@ -894,8 +900,15 @@ sync, but the TUI editor never sets it.)
   passes `--branch`/`--checkout-cmd`/`--feedback-cmd`/`--comment-cmd` to
   `dispatch-fix.sh`). Because thurbox's `--worktree` always runs `git worktree
   add -b` (which fails on an existing branch), `dispatch-fix.sh` adopts the
-  request branch itself (git-universal) into a shepherd-owned worktree. Spec:
-  `SHEPHERD.md`.
+  request branch itself (git-universal) into a shepherd-owned worktree. It is
+  also **session-aware**: the snapshot joins each request's head branch against
+  the live `thurbox-cli session list` (`scripts/link-sessions.sh`, pure +
+  bats-tested). A request whose branch already has a **non-fixer** thurbox
+  session (the user/another agent working it by hand) is **not** dispatched (two
+  worktrees would force-push the same branch) but is **monitored and folded into
+  the merge ordering** — the live session counts as that repo's active worker,
+  so the other same-repo requests queue behind it rather than the shepherd
+  standing the request down. Spec: `SHEPHERD.md`.
 - **`extensions/renovate/`** *(experimental)* — keeps local repos on up-to-date
   dependencies. A `renovate` session sweeps a `repos.md` watch list on a weekly
   `renovate-tick` automation and dispatches a `renovate-worker` per eligible

@@ -18,6 +18,12 @@ WT_DIR="$HOME_DIR/worktrees"
 
 trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
 
+# Snapshot the live session list ONCE so each request can be cross-referenced
+# against any thurbox session already working on its head branch (link-sessions.sh).
+SESS_FILE="$(mktemp -t shepherd-sessions.XXXXXX)"
+trap 'rm -f "$SESS_FILE"' EXIT
+thurbox-cli session list --json 2>/dev/null > "$SESS_FILE" || echo '[]' > "$SESS_FILE"
+
 echo "## change requests (watched repos)"
 if [ ! -f "$REPOS_MD" ]; then
   echo "  (no repos.md — add your repos to $REPOS_MD)"
@@ -50,6 +56,9 @@ else
           || { echo "  (provider error: $(printf '%s' "$CRS" | head -1))"; continue; }
         printf '%s' "$CRS" | "$HERE/classify.sh" 2>/dev/null \
           || echo "  (could not parse provider output)"
+        # Flag any request whose head branch already has a live, non-fixer
+        # thurbox session — hands-on work the shepherd must not race.
+        printf '%s' "$CRS" | "$HERE/link-sessions.sh" "$SESS_FILE" 2>/dev/null || true
       done
 fi
 
@@ -69,11 +78,11 @@ echo
 echo "## sessions (shepherd / workers)"
 # Worker sessions are named "<title> · #<id>" (current) or "task-<id>[-…]"
 # (legacy) — mirror flow-snapshot.sh / Task::matches_spawn_session.
-thurbox-cli session list --json 2>/dev/null | jq -r '
+jq -r '
   .[] | select(.name == "shepherd"
                or (.name | startswith("task-"))
                or (.name | test(" · #[0-9]+$"))) |
-  "  \(.name)  \(.id)  agent=\(.agent)  cwd=\(.cwd)"' 2>/dev/null || true
+  "  \(.name)  \(.id)  agent=\(.agent)  cwd=\(.cwd)"' "$SESS_FILE" 2>/dev/null || true
 
 echo
 echo "## fixer worktrees ($WT_DIR)"

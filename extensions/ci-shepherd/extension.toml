@@ -55,6 +55,10 @@ path = "scripts/classify.sh"
 executable = true
 
 [[files]]
+path = "scripts/link-sessions.sh"
+executable = true
+
+[[files]]
 path = "scripts/rebase-check.sh"
 executable = true
 
