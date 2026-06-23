@@ -453,12 +453,22 @@ fn stable_repo_hash(input: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// The two load-bearing path segments of the worktree layout: the stable
+/// repo-path hash and the sanitized branch name. Both the local
+/// ([`worktree_subpath`]) and remote ([`worktree_subpath_posix`]) variants
+/// derive their `<repo-hash>/<sanitized-branch>` tail from this, so the
+/// hash+sanitize logic lives in one place.
+fn worktree_segments(repo_path: &Path, branch: &str) -> (String, String) {
+    let repo_hash = stable_repo_hash(&repo_path.display().to_string());
+    let sanitized = branch.replace('/', "-");
+    (repo_hash, sanitized)
+}
+
 /// The deterministic `<base>/<repo-hash>/<sanitized-branch>` worktree layout,
 /// shared by local ([`worktree_path`]) and remote ([`worktree_path_for`])
 /// resolution so both produce identical sub-paths under their own base.
 fn worktree_subpath(base: PathBuf, repo_path: &Path, branch: &str) -> PathBuf {
-    let repo_hash = stable_repo_hash(&repo_path.display().to_string());
-    let sanitized = branch.replace('/', "-");
+    let (repo_hash, sanitized) = worktree_segments(repo_path, branch);
     base.join(repo_hash).join(sanitized)
 }
 
@@ -467,8 +477,7 @@ fn worktree_subpath(base: PathBuf, repo_path: &Path, branch: &str) -> PathBuf {
 /// separate from the `PathBuf` form because on Windows `PathBuf::join` inserts
 /// `\`, which the remote login shell would not accept.
 fn worktree_subpath_posix(base: &str, repo_path: &Path, branch: &str) -> String {
-    let repo_hash = stable_repo_hash(&repo_path.display().to_string());
-    let sanitized = branch.replace('/', "-");
+    let (repo_hash, sanitized) = worktree_segments(repo_path, branch);
     format!("{}/{repo_hash}/{sanitized}", base.trim_end_matches('/'))
 }
 
@@ -706,15 +715,17 @@ fn stash_with_retry(worktree_path: &Path) -> Result<bool> {
     anyhow::bail!("transient error persisted after retries: {last_err}")
 }
 
-/// Resolve the ref a worktree should be rebased onto during a sync.
+/// Resolve the base ref a worktree should be compared/rebased against.
 ///
 /// Prefers the branch's configured upstream (`@{upstream}`), then the remote's
 /// advertised default branch (`origin/HEAD`, e.g. `origin/main` or
 /// `origin/master` — whatever the repo actually uses), then the conventional
 /// `origin/main` / `origin/master`. Returns `None` when none resolve, so the
 /// caller can surface a clear error instead of blindly rebasing onto a
-/// possibly-missing `origin/main`.
-fn resolve_sync_base_ref(worktree_path: &Path) -> Option<String> {
+/// possibly-missing `origin/main`. Shared by [`sync_worktree`] (the rebase
+/// target) and [`ahead_behind`] (the comparison base) so the "behind" count is
+/// always measured against the ref sync would rebase onto.
+fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
     // A branch with an explicit upstream rebases onto exactly that.
     if run_git_capture(
         &["rev-parse", "--verify", "--quiet", "@{upstream}"],
@@ -748,7 +759,7 @@ fn resolve_sync_base_ref(worktree_path: &Path) -> Option<String> {
 /// High-level sync: stash, fetch, rebase onto the base ref, pop stash.
 ///
 /// `base_ref` pins the ref to rebase onto; when `None` it is derived from the
-/// worktree via `resolve_sync_base_ref` (upstream → `origin/HEAD` →
+/// worktree via `resolve_base_ref` (upstream → `origin/HEAD` →
 /// `origin/main` → `origin/master`) rather than hardcoding `origin/main`.
 /// On conflict the rebase is aborted and any stash is restored.
 /// Retries `git stash` on transient index-lock errors.
@@ -775,7 +786,7 @@ pub fn sync_worktree(worktree_path: &Path, base_ref: Option<&str>) -> SyncResult
     // origin/main, …) reflect the just-fetched remote state.
     let base_ref = match base_ref
         .map(str::to_string)
-        .or_else(|| resolve_sync_base_ref(worktree_path))
+        .or_else(|| resolve_base_ref(worktree_path))
     {
         Some(r) => r,
         None => {
@@ -848,14 +859,13 @@ pub fn worktree_is_dirty(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Commits the worktree's HEAD is `(ahead, behind)` relative to its upstream
-/// (`@{upstream}`), falling back to `origin/main` then `origin/master`.
-/// Returns `(0, 0)` when no base can be resolved.
+/// Commits the worktree's HEAD is `(ahead, behind)` relative to its base ref,
+/// resolved by [`resolve_base_ref`] (upstream → `origin/HEAD` → `origin/main` →
+/// `origin/master`) — the same chain [`sync_worktree`] rebases onto, so the
+/// "behind" count is measured against the ref sync would use. Returns `(0, 0)`
+/// when no base can be resolved.
 pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
-    let base = ["@{upstream}", "origin/main", "origin/master"]
-        .into_iter()
-        .find(|r| run_git_capture(&["rev-parse", "--verify", "--quiet", r], cwd).is_some());
-    let Some(base) = base else {
+    let Some(base) = resolve_base_ref(cwd) else {
         return (0, 0);
     };
     // `--left-right --count <base>...HEAD` → "<behind>\t<ahead>".
@@ -1090,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_sync_base_ref_none_without_remote() {
+    fn resolve_base_ref_none_without_remote() {
         // A repo with no upstream and no remote refs resolves to no base ref,
         // so sync surfaces an error rather than rebasing onto a missing
         // `origin/main`.
@@ -1115,11 +1125,11 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
 
-        assert_eq!(resolve_sync_base_ref(repo), None);
+        assert_eq!(resolve_base_ref(repo), None);
     }
 
     #[test]
-    fn resolve_sync_base_ref_prefers_upstream() {
+    fn resolve_base_ref_prefers_upstream() {
         // A branch tracking an upstream resolves to `@{upstream}`, ahead of the
         // origin/HEAD and origin/main fallbacks.
         let tmp = tempfile::tempdir().unwrap();
@@ -1156,10 +1166,7 @@ mod tests {
         );
         run(&work, &["push", "-q", "-u", "origin", "HEAD"]);
 
-        assert_eq!(
-            resolve_sync_base_ref(&work),
-            Some("@{upstream}".to_string())
-        );
+        assert_eq!(resolve_base_ref(&work), Some("@{upstream}".to_string()));
     }
 
     #[test]
