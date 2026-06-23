@@ -42,16 +42,21 @@ pub fn run_exec_command(command: &str) -> (AutomationRunStatus, String) {
         Ok(out) => out,
         Err(e) => return (AutomationRunStatus::Error, format!("spawn failed: {e}")),
     };
-    // Keep the last ~500 chars of each stream.
+    // Keep the last 500 chars of each stream. Single pass via a capped ring so a
+    // huge stream isn't walked twice (count + skip) or materialized in full.
+    const TAIL_CHARS: usize = 500;
     let tail = |s: &[u8]| -> String {
         let t = String::from_utf8_lossy(s);
         let t = t.trim();
-        let n = t.chars().count();
-        if n > 500 {
-            t.chars().skip(n - 500).collect()
-        } else {
-            t.to_string()
+        let mut ring: std::collections::VecDeque<char> =
+            std::collections::VecDeque::with_capacity(TAIL_CHARS + 1);
+        for c in t.chars() {
+            if ring.len() == TAIL_CHARS {
+                ring.pop_front();
+            }
+            ring.push_back(c);
         }
+        ring.into_iter().collect()
     };
     let stdout = tail(&out.stdout);
     let stderr = tail(&out.stderr);
@@ -125,13 +130,16 @@ pub(crate) fn resume_trigger_for(
     resume_id_if_transcript_exists(agent_session_id, env)
 }
 
-/// Resolve the [`AgentDef`](crate::session::AgentDef) for an agent name from
-/// the on-disk registry, mirroring [`build_agent_invocation`]'s fallback chain
-/// (named agent → registry default → built-in default).
-pub(crate) fn resolve_agent_def(agent: &str) -> crate::session::AgentDef {
+/// Resolve the [`AgentDef`](crate::session::AgentDef) for a requested agent name
+/// from the on-disk registry. The single source of truth for the agent fallback
+/// chain (requested name → registry default → built-in default), so spawn and
+/// restart agree on both the launched def *and* its `.name` without re-running
+/// the seed. `None`/empty falls straight through to the registry default.
+pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::AgentDef {
     let registry = crate::agent::agent_config::load_or_seed();
-    registry
-        .get(agent)
+    requested
+        .filter(|n| !n.is_empty())
+        .and_then(|n| registry.get(n))
         .or_else(|| registry.default_agent())
         .cloned()
         .unwrap_or_else(|| {
@@ -142,14 +150,16 @@ pub(crate) fn resolve_agent_def(agent: &str) -> crate::session::AgentDef {
         })
 }
 
-/// Build the `(command, args)` invocation for the agent named by
-/// `config.agent`, looked up in the on-disk agent registry (falling back to
-/// the registry default, then to the built-in default).
+/// Build the `(command, args)` invocation for an already-resolved [`AgentDef`].
 ///
-/// Centralised here so headless spawn and restart agree on the args.
-fn build_agent_invocation(config: &SessionConfig) -> (String, Vec<String>) {
-    let def = resolve_agent_def(&config.agent);
-    let provider = crate::agent::GenericProvider::new(def);
+/// Centralised here so headless spawn and restart agree on the args, and so the
+/// `AgentDef` is resolved exactly once per operation (callers pass the def they
+/// already resolved rather than re-running [`resolve_agent_def`]).
+fn build_agent_invocation(
+    def: &crate::session::AgentDef,
+    config: &SessionConfig,
+) -> (String, Vec<String>) {
+    let provider = crate::agent::GenericProvider::new(def.clone());
     // Reach the provider trait methods via fully-qualified call syntax so this
     // module imports nothing from the agent module (architecture rule:
     // session_ops must stay free of agent-layer imports).

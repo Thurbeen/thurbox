@@ -45,7 +45,7 @@ fn build_restart_plan(session: &SharedSession) -> Result<RestartPlan, String> {
         ..SessionConfig::default()
     };
     super::inject_thurbox_env(&mut config, &agent_session_id, None);
-    let def = super::resolve_agent_def(&config.agent);
+    let def = super::resolve_agent_def(Some(&config.agent));
     config.resume_session_id = super::resume_trigger_for(&def, &agent_session_id, &config.env);
 
     // A multi-repo session (≥2 members) launches in its per-session symlink
@@ -60,7 +60,7 @@ fn build_restart_plan(session: &SharedSession) -> Result<RestartPlan, String> {
         ));
     }
 
-    let (command, args) = super::build_agent_invocation(&config);
+    let (command, args) = super::build_agent_invocation(&def, &config);
 
     Ok(RestartPlan {
         window_name: session.name.clone(),

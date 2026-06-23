@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::{ExtraRepo, HostDef, SessionConfig, SessionId, DEFAULT_AGENT_NAME};
+use crate::session::{ExtraRepo, HostDef, SessionConfig, SessionId};
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
 
@@ -64,10 +64,13 @@ pub struct SpawnResult {
 /// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
 /// shared SQLite database.
 pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
-    validate_session_name(&req.name)?;
+    crate::paths::validate_safe_name(&req.name)?;
     validate_parent_session(db, req.parent_session_id)?;
 
-    let agent_name = resolve_agent_name(req.agent.as_deref());
+    // Resolve the agent definition once; `agent_name` is derived from it so the
+    // persisted name always matches the def that's actually launched.
+    let agent_def = super::resolve_agent_def(req.agent.as_deref());
+    let agent_name = agent_def.name.clone();
 
     // Resolve the optional remote host. `backend_type` is `local-tmux` or
     // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
@@ -105,7 +108,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     };
     super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
 
-    let (command, args) = super::build_agent_invocation(&config);
+    let (command, args) = super::build_agent_invocation(&agent_def, &config);
 
     // Remote spawns drive the SSH backend's control mode to learn the real pane
     // id; local spawns leave `backend_id` empty for the TUI to resolve by name.
@@ -189,11 +192,6 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
     })
 }
 
-/// Validate a session name. Delegates to the shared `paths::validate_safe_name`.
-fn validate_session_name(name: &str) -> Result<(), String> {
-    crate::paths::validate_safe_name(name)
-}
-
 /// Validate that the requested parent session, if any, exists and is active.
 /// Runs before any side effects (worktree creation, tmux spawn).
 fn validate_parent_session(db: &Database, parent: Option<SessionId>) -> Result<(), String> {
@@ -204,21 +202,6 @@ fn validate_parent_session(db: &Database, parent: Option<SessionId>) -> Result<(
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(format!("Parent session not found: {parent}")),
         Err(e) => Err(format!("get_session_by_id: {e}")),
-    }
-}
-
-/// Resolve the agent name: explicit request wins, otherwise the registry's
-/// default agent, otherwise the built-in default.
-fn resolve_agent_name(requested: Option<&str>) -> String {
-    if let Some(name) = requested.filter(|n| !n.is_empty()) {
-        return name.to_string();
-    }
-    let registry = crate::agent::agent_config::load_or_seed();
-    let name = registry.default_name();
-    if name.is_empty() {
-        DEFAULT_AGENT_NAME.to_string()
-    } else {
-        name
     }
 }
 
@@ -364,6 +347,7 @@ fn resolve_host(host_name: Option<&str>) -> Result<(String, Option<HostDef>), St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::DEFAULT_AGENT_NAME;
     use crate::storage::Database;
 
     fn empty_db() -> Database {
@@ -438,9 +422,24 @@ mod tests {
     }
 
     #[test]
-    fn resolve_agent_name_uses_explicit() {
-        assert_eq!(resolve_agent_name(Some("codex")), "codex");
-        assert_eq!(resolve_agent_name(Some("")), DEFAULT_AGENT_NAME);
+    fn resolve_agent_def_derives_name_with_fallback() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        // An explicit, seeded agent wins and its name round-trips.
+        assert_eq!(super::super::resolve_agent_def(Some("codex")).name, "codex");
+        // Empty/None/unknown fall back to the registry default.
+        assert_eq!(
+            super::super::resolve_agent_def(Some("")).name,
+            DEFAULT_AGENT_NAME
+        );
+        assert_eq!(
+            super::super::resolve_agent_def(None).name,
+            DEFAULT_AGENT_NAME
+        );
+        assert_eq!(
+            super::super::resolve_agent_def(Some("no-such-agent")).name,
+            DEFAULT_AGENT_NAME
+        );
     }
 
     #[test]
