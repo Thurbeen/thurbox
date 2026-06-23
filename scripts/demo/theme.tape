@@ -5,6 +5,12 @@
 # in a sample repo, and exports $THURBOX_BIN.
 #
 # Ctrl+Y opens the theme picker; Down/Up move, Enter selects. (No F-keys.)
+# Moving the selection LIVE-PREVIEWS the palette (the whole TUI recolors), so
+# this clip walks through EVERY built-in theme to show the full range. The demo
+# starts in `doom` (the last entry, re-applied by record.sh before each tape),
+# so we step UP through the list: doom -> solarized-light -> gruvbox-light ->
+# tokyo-night-day -> catppuccin-latte -> gruvbox-dark -> tokyo-night ->
+# catppuccin-mocha -> default, alternating dark and light palettes.
 
 Output docs/media/thurbox-theme.gif
 Output docs/media/thurbox-theme.mp4
@@ -27,29 +33,33 @@ Show
 # Let the real agent CLIs finish booting.
 Sleep 2500ms
 
-# Open the theme picker (Ctrl+Y) and step through palettes — the TUI recolors live.
+# Open the theme picker (Ctrl+Y). It pre-selects the active theme — `doom`,
+# the last entry — so the list opens at the bottom.
 Ctrl+Y
-Sleep 1200ms
-Down
-Sleep 900ms
-Down
-Sleep 900ms
-Down
-Sleep 900ms
-Down
-Sleep 900ms
-Enter
-Sleep 1800ms
+Sleep 1400ms
 
-# Reopen and switch to a light palette to show the full range.
-Ctrl+Y
-Sleep 1s
+# Step UP through every built-in theme. Each move recolors the live TUI; pause
+# on each so the palette is clearly visible.
+Up
+Sleep 1100ms
+Up
+Sleep 1100ms
+Up
+Sleep 1100ms
+Up
+Sleep 1100ms
+Up
+Sleep 1100ms
+Up
+Sleep 1100ms
+Up
+Sleep 1100ms
+Up
+Sleep 1100ms
+
+# Now back down to a vibrant dark palette and commit it with Enter.
 Down
-Sleep 900ms
-Down
-Sleep 900ms
-Down
-Sleep 900ms
+Sleep 1000ms
 Enter
 Sleep 1800ms
 
