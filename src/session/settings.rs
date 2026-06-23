@@ -445,6 +445,76 @@ mod tests {
     }
 
     #[test]
+    fn every_feature_flag_is_classified_restart_or_live() {
+        // Destructuring WITHOUT `..` makes a newly-added feature flag fail to
+        // compile here until it is explicitly classified below — the safety net
+        // that stops a startup-wired flag from defaulting to "applies live" by
+        // omission in `restart_only_differs` (which would wrongly toast "applied
+        // live"). Each binding is consumed by `cases`, so none goes unused.
+        let FeatureFlags {
+            tasks,
+            automations,
+            file_viewer,
+            global_search,
+            info_panel,
+            shell_pane,
+            mouse,
+            notifications,
+            soft_delete,
+            version_check,
+            auto_update,
+        } = FeatureFlags::default();
+        // Consume every binding so the no-`..` destructure above stays a hard
+        // compile-time guard (an unused binding would otherwise be the only
+        // warning, not an error).
+        let _ = (
+            tasks,
+            automations,
+            file_viewer,
+            global_search,
+            info_panel,
+            shell_pane,
+            mouse,
+            notifications,
+            soft_delete,
+            version_check,
+            auto_update,
+        );
+
+        // `live` flags gate UI panels read from `App.features` every frame, so
+        // flipping one is NOT a restart-only difference; the rest are read once
+        // at startup and MUST register as one.
+        let live: [fn(&mut FeatureFlags); 6] = [
+            |f| f.tasks = !f.tasks,
+            |f| f.file_viewer = !f.file_viewer,
+            |f| f.global_search = !f.global_search,
+            |f| f.info_panel = !f.info_panel,
+            |f| f.shell_pane = !f.shell_pane,
+            |f| f.soft_delete = !f.soft_delete,
+        ];
+        let restart: [fn(&mut FeatureFlags); 5] = [
+            |f| f.automations = !f.automations,
+            |f| f.mouse = !f.mouse,
+            |f| f.notifications = !f.notifications,
+            |f| f.version_check = !f.version_check,
+            |f| f.auto_update = !f.auto_update,
+        ];
+
+        let base = Settings::default();
+        let check = |flip: fn(&mut FeatureFlags), expect_restart: bool| {
+            let mut other = base.clone();
+            flip(&mut other.features);
+            assert_eq!(
+                base.restart_only_differs(&other),
+                expect_restart,
+                "a feature flag's restart classification disagrees with restart_only_differs",
+            );
+        };
+        live.into_iter().for_each(|flip| check(flip, false));
+        restart.into_iter().for_each(|flip| check(flip, true));
+    }
+
+    #[test]
     fn global_defaults_when_uninitialized() {
         // Note: other tests may have init()'d already; both paths are default.
         assert_eq!(global().two_panel_min_cols, 80);

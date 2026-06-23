@@ -45,6 +45,11 @@ pub struct AutomationEditorState<'a> {
     /// preview), the active-field cursor/highlight is suppressed and the border
     /// is drawn unfocused.
     pub focused: bool,
+    /// The fields shown for the current trigger kind + action, in display and
+    /// navigation order. Projected from the single source of truth
+    /// ([`crate::app::modals::AutomationEditorModal::visible_fields`]) so render
+    /// order can't drift from the modal's cursor-navigation order.
+    pub visible_fields: Vec<AutomationField>,
 }
 
 impl<'a> AutomationEditorState<'a> {
@@ -77,35 +82,9 @@ impl<'a> AutomationEditorState<'a> {
             target_session: m.selected_target().map(|(_, name)| name.as_str()),
             preview,
             focused,
+            visible_fields: m.visible_fields(),
         }
     }
-}
-
-/// Fields shown for the current trigger kind + action, in order. Mirrors
-/// `AutomationEditorModal::visible_fields`.
-fn visible_fields(trigger: TriggerKind, action: AutomationActionKind) -> Vec<AutomationField> {
-    use AutomationField::*;
-    let mut fields = vec![Name, Trigger];
-    match trigger {
-        TriggerKind::Once => fields.push(Delay),
-        TriggerKind::Hourly => fields.push(Minute),
-        TriggerKind::Daily | TriggerKind::Weekdays => fields.extend([Hour, Minute]),
-        TriggerKind::Weekly => fields.extend([Weekday, Hour, Minute]),
-        TriggerKind::Cron => fields.push(CronExpr),
-    }
-    if trigger != TriggerKind::Once {
-        fields.push(Timezone);
-    }
-    fields.push(Action);
-    match action {
-        AutomationActionKind::Send => fields.push(Target),
-        AutomationActionKind::Spawn => fields.extend([Repo, Worktree, Agent]),
-        AutomationActionKind::Exec => fields.push(Command),
-    }
-    if action != AutomationActionKind::Exec {
-        fields.push(Prompt);
-    }
-    fields
 }
 
 /// One click hitbox per visible field, given each field's `(index, display_row,
@@ -130,7 +109,7 @@ pub fn render_automation_editor_modal(
     state: &AutomationEditorState<'_>,
 ) -> (Vec<super::RowHitbox>, super::ModalButtons) {
     let frame_area = frame.area();
-    let fields = visible_fields(state.trigger_kind, state.action);
+    let fields = &state.visible_fields;
     // One row per field + status + preview + spacing inside the modal frame.
     // The multi-line Prompt field spans more than one row, so grow the height by
     // its wrapped row count (the old `+ 5` already counted Prompt as one row).
@@ -253,11 +232,11 @@ fn editor_body_lines<'a>(
     state: &AutomationEditorState<'a>,
     width: u16,
 ) -> (Vec<Line<'a>>, Option<usize>, Vec<(usize, usize)>) {
-    let fields = visible_fields(state.trigger_kind, state.action);
+    let fields = &state.visible_fields;
     let mut lines: Vec<Line> = Vec::new();
     let mut active_row = None;
     let mut field_spans = Vec::with_capacity(fields.len());
-    for f in &fields {
+    for f in fields {
         let start = lines.len();
         let active = *f == state.field && state.focused;
         // The multi-line prompt expands into a label row + wrapped text rows;
@@ -597,63 +576,13 @@ mod tests {
             target_session: None,
             preview: "",
             focused: true,
+            // Matches the fixture's Daily + Send trigger/action. The field-order
+            // logic itself is tested against the canonical
+            // `AutomationEditorModal::visible_fields` in `app::modals`.
+            visible_fields: vec![
+                Name, Trigger, Hour, Minute, Timezone, Action, Target, Prompt,
+            ],
         }
-    }
-
-    #[test]
-    fn visible_fields_once_has_delay_and_no_timezone() {
-        let f = visible_fields(TriggerKind::Once, AutomationActionKind::Send);
-        assert_eq!(f, vec![Name, Trigger, Delay, Action, Target, Prompt]);
-        assert!(!f.contains(&Timezone), "Once never shows a timezone field");
-    }
-
-    #[test]
-    fn visible_fields_schedule_kinds_carry_timezone_and_time_steppers() {
-        assert_eq!(
-            visible_fields(TriggerKind::Hourly, AutomationActionKind::Send),
-            vec![Name, Trigger, Minute, Timezone, Action, Target, Prompt]
-        );
-        assert_eq!(
-            visible_fields(TriggerKind::Daily, AutomationActionKind::Send),
-            vec![Name, Trigger, Hour, Minute, Timezone, Action, Target, Prompt]
-        );
-        assert_eq!(
-            visible_fields(TriggerKind::Weekdays, AutomationActionKind::Send),
-            vec![Name, Trigger, Hour, Minute, Timezone, Action, Target, Prompt]
-        );
-        assert_eq!(
-            visible_fields(TriggerKind::Weekly, AutomationActionKind::Send),
-            vec![Name, Trigger, Weekday, Hour, Minute, Timezone, Action, Target, Prompt]
-        );
-    }
-
-    #[test]
-    fn visible_fields_cron_shows_cron_expr() {
-        let f = visible_fields(TriggerKind::Cron, AutomationActionKind::Send);
-        assert_eq!(
-            f,
-            vec![Name, Trigger, CronExpr, Timezone, Action, Target, Prompt]
-        );
-    }
-
-    #[test]
-    fn visible_fields_action_shapes_the_tail() {
-        // Send → Target + Prompt.
-        let send = visible_fields(TriggerKind::Daily, AutomationActionKind::Send);
-        assert_eq!(&send[send.len() - 2..], &[Target, Prompt]);
-
-        // Spawn → Repo/Worktree/Agent + Prompt.
-        let spawn = visible_fields(TriggerKind::Daily, AutomationActionKind::Spawn);
-        assert_eq!(&spawn[spawn.len() - 4..], &[Repo, Worktree, Agent, Prompt]);
-
-        // Exec → Command and NO Prompt.
-        let exec = visible_fields(TriggerKind::Daily, AutomationActionKind::Exec);
-        assert!(exec.contains(&Command));
-        assert!(
-            !exec.contains(&Prompt),
-            "Exec runs a shell command, never a prompt"
-        );
-        assert_eq!(*exec.last().unwrap(), Command);
     }
 
     #[test]

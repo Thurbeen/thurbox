@@ -1179,23 +1179,16 @@ fn repo_display_name(repo_path: &std::path::Path) -> String {
         .unwrap_or_else(|| repo_path.to_string_lossy().into_owned())
 }
 
-/// A task's agent action, decomposed into display-ready pieces. `target` is the
-/// short session id (Send) or the `repo[#branch]` (Spawn); `None` is a plain
-/// local todo. Lets the two label styles (details panel vs. panel summary) share
-/// one match over [`AutomationAction`](crate::session::AutomationAction).
-enum TaskActionParts {
-    Local,
-    Send { target: String },
-    Spawn { target: String },
-}
-
-fn task_action_parts(task: &crate::session::Task) -> TaskActionParts {
+/// One-line description of a task's agent linkage for the details panel.
+fn task_linkage(task: &crate::session::Task) -> String {
     use crate::session::AutomationAction;
     match &task.action {
-        None => TaskActionParts::Local,
-        Some(AutomationAction::Send { session_id }) => TaskActionParts::Send {
-            target: short_session_id(session_id),
-        },
+        // `None`, and the automation-only `Exec` (a task never carries one), are
+        // plain local todos with no agent linkage to show.
+        None | Some(AutomationAction::Exec { .. }) => "local todo".to_string(),
+        Some(AutomationAction::Send { session_id }) => {
+            format!("send → {}", short_session_id(session_id))
+        }
         Some(AutomationAction::Spawn {
             repo_path,
             worktree_branch,
@@ -1206,20 +1199,8 @@ fn task_action_parts(task: &crate::session::Task) -> TaskActionParts {
                 Some(b) => format!("{repo}#{b}"),
                 None => repo,
             };
-            TaskActionParts::Spawn { target }
+            format!("spawn → {target}")
         }
-        // Exec is an automation-only action; a task never carries one, so it has
-        // no agent linkage to show.
-        Some(AutomationAction::Exec { .. }) => TaskActionParts::Local,
-    }
-}
-
-/// One-line description of a task's agent linkage for the details panel.
-fn task_linkage(task: &crate::session::Task) -> String {
-    match task_action_parts(task) {
-        TaskActionParts::Local => "local todo".to_string(),
-        TaskActionParts::Send { target } => format!("send → {target}"),
-        TaskActionParts::Spawn { target } => format!("spawn → {target}"),
     }
 }
 
