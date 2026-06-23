@@ -49,12 +49,21 @@ fn highlight_style(base_style: Style) -> Style {
 /// Split `text` into highlighted/plain runs at the matched byte `positions`
 /// (UTF-8 offsets, as returned by [`crate::fuzzy::fuzzy_match`]). Out-of-range
 /// positions stop the scan; the trailing remainder is emitted as a plain run.
+///
+/// A position is skipped when it doesn't land on a char boundary of `text`. The
+/// match offsets are computed against the *full* label, but callers may pass a
+/// truncated one (e.g. a row clipped to the column width with a trailing `…`),
+/// so an offset can fall inside a multi-byte char that only exists in the
+/// truncated string. Slicing there would panic, so such positions are dropped.
 fn segments(text: &str, positions: &[usize]) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut last_end = 0;
     for &byte_pos in positions {
         if byte_pos > text.len() {
             break;
+        }
+        if !text.is_char_boundary(byte_pos) {
+            continue;
         }
         if let Some(ch) = text[byte_pos..].chars().next() {
             let char_len = ch.len_utf8();
@@ -180,6 +189,22 @@ mod tests {
         // The owned variant ignores them the same way.
         let owned = highlighted_spans_owned("ab", &[99], Style::default());
         assert_eq!(texts(&owned), vec!["ab"]);
+    }
+
+    #[test]
+    fn position_inside_a_multibyte_char_does_not_panic() {
+        // Regression: match offsets are computed on the full label but the
+        // caller passes a truncated one ending in '…' (a 3-byte char). A
+        // position landing *inside* the ellipsis must be dropped, not sliced.
+        // "abc…" => bytes: a=0 b=1 c=2 '…'=3..6, len 6. Position 4/5 is mid-'…'.
+        let text = "abc…";
+        assert!(!text.is_char_boundary(4));
+        let spans = highlighted_spans(text, &[0, 4], Style::default());
+        // 'a' highlighted, the mid-char position dropped, remainder plain.
+        assert_eq!(texts(&spans), vec!["a", "bc…"]);
+        // Owned variant is robust the same way.
+        let owned = highlighted_spans_owned(text, &[0, 4], Style::default());
+        assert_eq!(texts(&owned), vec!["a", "bc…"]);
     }
 
     #[test]
