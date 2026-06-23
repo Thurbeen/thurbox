@@ -334,25 +334,8 @@ fn resolve_signal_target(db: &Database, session: Option<&str>) -> Result<SharedS
     if let Some(uuid) = session {
         return resolve(db, uuid);
     }
-    if let Ok(raw) = std::env::var("THURBOX_SESSION") {
-        if let Ok(id) = raw.parse::<SessionId>() {
-            if let Some(s) = db
-                .get_session_by_id(id)
-                .map_err(|e| format!("get_session_by_id: {e}"))?
-            {
-                return Ok(s);
-            }
-        }
-    }
-    if let Ok(agent_sid) = std::env::var("THURBOX_SESSION_ID") {
-        if let Some(s) = db
-            .get_session_by_agent_session_id(&agent_sid)
-            .map_err(|e| format!("get_session_by_agent_session_id: {e}"))?
-        {
-            return Ok(s);
-        }
-    }
-    Err("not inside a thurbox session; pass --session <uuid>".into())
+    crate::cli::identity::calling_session_or_by_agent_id(db)?
+        .ok_or_else(|| "not inside a thurbox session; pass --session <uuid>".into())
 }
 
 /// Render the session list as an aligned table (or a friendly empty line).

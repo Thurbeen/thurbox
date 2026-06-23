@@ -8,15 +8,12 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::action::{self, SpawnDeliverError};
 use crate::cli::output::{self, CommandOutput};
-use crate::session::{AutomationAction, SessionId, Task, TaskStatus, SOURCE_LOCAL};
+use crate::session::{AutomationAction, Task, TaskStatus, SOURCE_LOCAL};
 use crate::session_ops::SpawnRequest;
 use crate::storage::tasks::NewTask;
 use crate::storage::Database;
-
-/// Seconds to wait after a headless spawn before delivering the task's title,
-/// giving the agent CLI time to start.
-const BOOT_DELAY_SECS: u64 = 3;
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
@@ -237,7 +234,7 @@ fn render_task_list(tasks: &[Task]) -> String {
                 t.id.to_string(),
                 status_glyph(t.status),
                 t.title.clone(),
-                task_action_label(&t.action),
+                action::action_label(t.action.as_ref()),
             ]
         })
         .collect();
@@ -250,7 +247,7 @@ fn render_task_detail(t: &Task) -> String {
         ("id", t.id.to_string()),
         ("title", t.title.clone()),
         ("status", t.status.as_str().to_string()),
-        ("action", task_action_label(&t.action)),
+        ("action", action::action_label(t.action.as_ref())),
         ("source", t.source.clone()),
     ];
     if let Some(url) = &t.external_url {
@@ -287,17 +284,6 @@ fn status_glyph(status: TaskStatus) -> String {
         TaskStatus::Todo => "☐ todo".to_string(),
         TaskStatus::InProgress => "◐ in-progress".to_string(),
         TaskStatus::Done => "☑ done".to_string(),
-    }
-}
-
-/// Human label for a task's optional agent action.
-fn task_action_label(action: &Option<AutomationAction>) -> String {
-    match action {
-        None => "-".to_string(),
-        Some(AutomationAction::Send { .. }) => "send".to_string(),
-        Some(AutomationAction::Spawn { .. }) => "spawn".to_string(),
-        // Exec is an automation-only action; tasks never carry one.
-        Some(AutomationAction::Exec { .. }) => "exec".to_string(),
     }
 }
 
@@ -361,9 +347,11 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 task_id: Some(task.id),
                 extra_repos: extra_repos.clone(),
             };
-            crate::session_ops::spawn_session_headless(db, req)?;
-            crate::agent::tmux::send_prompt_after_delay(&name, &prompt, BOOT_DELAY_SECS)
-                .map_err(|e| format!("spawned {name} but prompt delivery failed: {e}"))?;
+            action::spawn_and_deliver(db, &name, req, &prompt).map_err(|e| match e {
+                SpawnDeliverError::Spawn(msg) | SpawnDeliverError::Deliver { message: msg, .. } => {
+                    msg
+                }
+            })?;
             mark_in_progress(db, task)?;
             Ok(json!({ "spawned": name, "id": task.id }))
         }
@@ -441,15 +429,9 @@ fn resolve_action(
         (Some(_), None) if !extra_repos.is_empty() => {
             Err("--add-repo/--add-dir apply to --repo (spawn), not --session (send)".into())
         }
-        (Some(s), None) => {
-            let session_id: SessionId = s
-                .parse()
-                .map_err(|_| format!("invalid session UUID: {s}"))?;
-            db.get_session_by_id(session_id)
-                .map_err(|e| format!("get_session_by_id: {e}"))?
-                .ok_or_else(|| format!("Session not found: {s}"))?;
-            Ok(Some(AutomationAction::Send { session_id }))
-        }
+        (Some(s), None) => Ok(Some(AutomationAction::Send {
+            session_id: action::resolve_send_target(db, &s)?,
+        })),
         (None, Some(r)) => Ok(Some(AutomationAction::Spawn {
             repo_path: r.into(),
             worktree_branch: worktree,
@@ -461,31 +443,7 @@ fn resolve_action(
 }
 
 fn task_to_json(t: &Task) -> Value {
-    let action = match &t.action {
-        None => Value::Null,
-        Some(AutomationAction::Send { session_id }) => json!({
-            "kind": "send",
-            "session_id": session_id.to_string(),
-        }),
-        Some(AutomationAction::Spawn {
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos,
-        }) => json!({
-            "kind": "spawn",
-            "repo_path": repo_path.to_string_lossy(),
-            "worktree_branch": worktree_branch,
-            "base_branch": base_branch,
-            "agent": agent,
-            "extra_repos": serde_json::to_value(extra_repos).unwrap_or(Value::Null),
-        }),
-        Some(AutomationAction::Exec { command }) => json!({
-            "kind": "exec",
-            "command": command,
-        }),
-    };
+    let action = action::action_to_json(t.action.as_ref());
     json!({
         "id": t.id,
         "title": t.title,
@@ -503,6 +461,7 @@ fn task_to_json(t: &Task) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionId;
 
     /// Minimal local task for render tests.
     fn task(id: i64, title: &str, status: TaskStatus, action: Option<AutomationAction>) -> Task {
@@ -530,15 +489,15 @@ mod tests {
 
     #[test]
     fn action_label_distinguishes_send_spawn_and_none() {
-        assert_eq!(task_action_label(&None), "-");
+        assert_eq!(action::action_label(None), "-");
         assert_eq!(
-            task_action_label(&Some(AutomationAction::Send {
+            action::action_label(Some(&AutomationAction::Send {
                 session_id: SessionId::default(),
             })),
             "send"
         );
         assert_eq!(
-            task_action_label(&Some(AutomationAction::Spawn {
+            action::action_label(Some(&AutomationAction::Spawn {
                 repo_path: "/x".into(),
                 worktree_branch: None,
                 base_branch: None,

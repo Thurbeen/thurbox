@@ -7,6 +7,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::action::{self, SpawnDeliverError};
 use crate::cli::output::{self, CommandOutput};
 use crate::session::automation::parse_trigger;
 use crate::session::{Automation, AutomationAction, AutomationRun, AutomationRunStatus, SessionId};
@@ -14,10 +15,6 @@ use crate::session_ops::SpawnRequest;
 use crate::storage::automations::NewAutomation;
 use crate::storage::Database;
 use crate::sync::current_time_millis;
-
-/// Seconds to wait after a headless spawn before delivering the automation's
-/// prompt, giving the agent CLI time to start.
-const BOOT_DELAY_SECS: u64 = 3;
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
@@ -369,7 +366,7 @@ fn render_automation_list(autos: &[Automation]) -> String {
                 if a.enabled { "on" } else { "off" }.to_string(),
                 a.name.clone(),
                 a.schedule.kind().to_string(),
-                automation_action_label(&a.action),
+                action::action_label(Some(&a.action)),
             ]
         })
         .collect();
@@ -387,7 +384,7 @@ fn render_automation_detail(a: &Automation) -> String {
             format!("{} ({})", a.schedule.kind(), a.schedule.spec()),
         ),
         ("timezone", output::dash(a.timezone.as_deref())),
-        ("action", automation_action_label(&a.action)),
+        ("action", action::action_label(Some(&a.action))),
         ("prompt", a.prompt.clone()),
     ];
     output::kv(&pairs)
@@ -418,15 +415,6 @@ fn render_tick(v: &Value) -> String {
     let skipped = count("skipped");
     let healed = count("healed");
     format!("Tick: {fired} fired, {skipped} skipped, {healed} extension(s) healed.")
-}
-
-/// Human label for an automation's send/spawn action.
-fn automation_action_label(action: &AutomationAction) -> String {
-    match action {
-        AutomationAction::Send { .. } => "send".to_string(),
-        AutomationAction::Spawn { .. } => "spawn".to_string(),
-        AutomationAction::Exec { .. } => "exec".to_string(),
-    }
 }
 
 /// Fire every due automation headlessly: claim (atomic CAS, so this is safe to
@@ -462,8 +450,8 @@ fn tick(db: &Database) -> Result<Value, String> {
             .claim_due_automation(auto.id, auto.next_run_at.unwrap_or(0), next, now)
             .map_err(|e| format!("claim_due_automation: {e}"))?;
         if !claimed {
-            // Another firer (TUI / concurrent tick) won the claim. The CLI
-            // logs at WARN by default, so report it in the JSON too.
+            // Another firer (TUI / concurrent tick) won the claim. This logs at
+            // debug! (invisible at the default level), so report it in the JSON too.
             tracing::debug!(
                 automation_id = auto.id,
                 "automation claim lost to a concurrent firer"
@@ -597,24 +585,18 @@ fn fire_spawn(
         task_id: None,
         extra_repos: extra_repos.to_vec(),
     };
-    match crate::session_ops::spawn_session_headless(db, req) {
-        Ok(result) => {
-            let session_id = Some(result.session_id);
-            match crate::agent::tmux::send_prompt_after_delay(&name, &auto.prompt, BOOT_DELAY_SECS)
-            {
-                Ok(()) => (
-                    AutomationRunStatus::Success,
-                    format!("spawned {name}"),
-                    session_id,
-                ),
-                Err(e) => (
-                    AutomationRunStatus::Error,
-                    format!("spawned {name} but prompt delivery failed: {e}"),
-                    session_id,
-                ),
-            }
-        }
-        Err(e) => (AutomationRunStatus::Error, e, None),
+    match action::spawn_and_deliver(db, &name, req, &auto.prompt) {
+        Ok(session_id) => (
+            AutomationRunStatus::Success,
+            format!("spawned {name}"),
+            Some(session_id),
+        ),
+        // A spawned-but-undelivered run still records its session id.
+        Err(SpawnDeliverError::Deliver {
+            session_id,
+            message,
+        }) => (AutomationRunStatus::Error, message, Some(session_id)),
+        Err(SpawnDeliverError::Spawn(e)) => (AutomationRunStatus::Error, e, None),
     }
 }
 
@@ -651,15 +633,9 @@ fn resolve_action(
             Err("specify either --session (send) or --repo (spawn), not both".into())
         }
         (None, None) => Err("specify --session (send), --repo (spawn), or --command (exec)".into()),
-        (Some(s), None) => {
-            let session_id: SessionId = s
-                .parse()
-                .map_err(|_| format!("invalid session UUID: {s}"))?;
-            db.get_session_by_id(session_id)
-                .map_err(|e| format!("get_session_by_id: {e}"))?
-                .ok_or_else(|| format!("Session not found: {s}"))?;
-            Ok(AutomationAction::Send { session_id })
-        }
+        (Some(s), None) => Ok(AutomationAction::Send {
+            session_id: action::resolve_send_target(db, &s)?,
+        }),
         (None, Some(r)) => Ok(AutomationAction::Spawn {
             repo_path: r.into(),
             worktree_branch: worktree,
@@ -671,30 +647,7 @@ fn resolve_action(
 }
 
 fn automation_to_json(a: &Automation) -> Value {
-    let action = match &a.action {
-        AutomationAction::Send { session_id } => json!({
-            "kind": "send",
-            "session_id": session_id.to_string(),
-        }),
-        AutomationAction::Spawn {
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos,
-        } => json!({
-            "kind": "spawn",
-            "repo_path": repo_path.to_string_lossy(),
-            "worktree_branch": worktree_branch,
-            "base_branch": base_branch,
-            "agent": agent,
-            "extra_repos": serde_json::to_value(extra_repos).unwrap_or(Value::Null),
-        }),
-        AutomationAction::Exec { command } => json!({
-            "kind": "exec",
-            "command": command,
-        }),
-    };
+    let action = action::action_to_json(Some(&a.action));
     json!({
         "id": a.id,
         "name": a.name,
@@ -771,19 +724,19 @@ mod tests {
     #[test]
     fn action_label_distinguishes_send_and_spawn() {
         assert_eq!(
-            automation_action_label(&AutomationAction::Send {
+            action::action_label(Some(&AutomationAction::Send {
                 session_id: SessionId::default(),
-            }),
+            })),
             "send"
         );
         assert_eq!(
-            automation_action_label(&AutomationAction::Spawn {
+            action::action_label(Some(&AutomationAction::Spawn {
                 repo_path: "/x".into(),
                 worktree_branch: None,
                 base_branch: None,
                 agent: None,
                 extra_repos: Vec::new(),
-            }),
+            })),
             "spawn"
         );
     }

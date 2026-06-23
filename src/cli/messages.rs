@@ -7,6 +7,7 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::identity::calling_session;
 use crate::cli::output::{self, CommandOutput};
 use crate::session::{SessionId, SessionMessage};
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
@@ -324,15 +325,6 @@ fn enqueue_and_wake(
         }),
         human,
     ))
-}
-
-/// The calling session, resolved from the `THURBOX_SESSION` env var thurbox
-/// injects at spawn (the registry key). `None` when not running inside a thurbox
-/// session, or the id no longer maps to a live row.
-fn calling_session(db: &Database) -> Option<SharedSession> {
-    let raw = std::env::var("THURBOX_SESSION").ok()?;
-    let id: SessionId = raw.parse().ok()?;
-    db.get_session_by_id(id).ok().flatten()
 }
 
 /// The calling session's id from `THURBOX_SESSION` (used for provenance).

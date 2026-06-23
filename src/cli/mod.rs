@@ -13,10 +13,12 @@ use clap::{Parser, Subcommand};
 
 use crate::storage::Database;
 
+pub mod action;
 pub mod automations;
 pub mod config;
 pub mod editor;
 pub mod extensions;
+pub mod identity;
 pub mod messages;
 pub mod notify;
 pub mod output;
