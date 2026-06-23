@@ -89,7 +89,7 @@ const SECTIONS: [(&str, &[SettingsField]); 3] = [
 ];
 
 /// Renders the Settings modal. Returns its per-field click hitboxes (indexed by
-/// position in [`SettingsField::ORDER`]) plus the footer buttons.
+/// position in `SettingsField::ORDER`) plus the footer buttons.
 pub fn render_settings_modal(
     frame: &mut Frame,
     state: &SettingsModalState<'_>,

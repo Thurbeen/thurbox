@@ -82,7 +82,7 @@ pub struct FooterState<'a> {
 }
 
 /// The clickable footer buttons, in render order. `view.rs` maps each returned
-/// [`ButtonHit`]'s index back to the matching `Action`.
+/// [`ButtonHit`](super::ButtonHit)'s index back to the matching `Action`.
 pub const FOOTER_BUTTONS: [super::ButtonSpec<'static>; 4] = [
     super::ButtonSpec {
         label: "Help",
