@@ -96,3 +96,35 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_leaves_short_strings_untouched() {
+        assert_eq!(truncate("", 10), "");
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_keeps_string_at_exact_width() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_adds_ellipsis_when_over_width() {
+        // 7 chars, max 6 → keep 3 chars + "..." = 6 chars total.
+        let out = truncate("abcdefg", 6);
+        assert_eq!(out, "abc...");
+        assert_eq!(out.chars().count(), 6);
+    }
+
+    #[test]
+    fn truncate_counts_chars_not_bytes() {
+        // Multi-byte chars must not be split mid-byte.
+        let out = truncate("héllo wörld", 6);
+        assert_eq!(out, "hél...");
+        assert_eq!(out.chars().count(), 6);
+    }
+}

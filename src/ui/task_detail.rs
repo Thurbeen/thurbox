@@ -144,3 +144,69 @@ pub fn render_task_detail(
         scrollbar::render_into(frame, track, content_len, viewport, scroll as usize)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detail(description: &'static str) -> TaskDetail<'static> {
+        TaskDetail {
+            title: "Ship the feature",
+            linkage: "spawn → repo#feat/x".to_string(),
+            // Muted placeholder; deliberately free of the word "open" so the
+            // footer-hint assertion below can't be satisfied by this row.
+            sessions: "—".to_string(),
+            status: "in progress",
+            source: "local",
+            description,
+            created: "2d ago".to_string(),
+            updated: "5m ago".to_string(),
+        }
+    }
+
+    fn render(detail: &TaskDetail<'_>, scroll: u16) -> (String, Option<ScrollbarGeom>) {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut geom = None;
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                geom = render_task_detail(frame, area, detail, scroll, &[("o", "open")]);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let area = *buffer.area();
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        (text, geom)
+    }
+
+    #[test]
+    fn renders_title_metadata_and_hint() {
+        let (text, geom) = render(&detail("a short note"), 0);
+        assert!(text.contains("Ship the feature"), "title is the heading");
+        assert!(text.contains("in progress"), "status row is shown");
+        assert!(text.contains("repo#feat/x"), "linkage row is shown");
+        assert!(text.contains("a short note"), "description is rendered");
+        assert!(text.contains("open"), "footer hint is shown");
+        assert!(
+            geom.is_none(),
+            "a short description does not overflow → no scrollbar"
+        );
+    }
+
+    #[test]
+    fn long_description_overflows_and_draws_a_scrollbar() {
+        let long: &'static str = "line\n".repeat(80).leak();
+        let (_text, geom) = render(&detail(long), 0);
+        assert!(
+            geom.is_some(),
+            "a description taller than the viewport reserves a scrollbar track"
+        );
+    }
+}

@@ -111,3 +111,46 @@ impl GlobalSearchState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(label: &str) -> GlobalSearchResult {
+        GlobalSearchResult {
+            kind: SearchKind::Task,
+            label: label.to_string(),
+            snippet: None,
+            target: SearchTarget::Task { id: 1 },
+        }
+    }
+
+    fn state_with(results: usize, selected: usize) -> GlobalSearchState {
+        GlobalSearchState {
+            results: (0..results).map(|i| result(&format!("r{i}"))).collect(),
+            selected,
+            ..GlobalSearchState::default()
+        }
+    }
+
+    #[test]
+    fn clamp_resets_to_zero_when_empty() {
+        let mut s = state_with(0, 5);
+        s.clamp_selection();
+        assert_eq!(s.selected, 0);
+    }
+
+    #[test]
+    fn clamp_pins_to_last_when_out_of_range() {
+        let mut s = state_with(3, 9);
+        s.clamp_selection();
+        assert_eq!(s.selected, 2);
+    }
+
+    #[test]
+    fn clamp_leaves_in_range_selection_untouched() {
+        let mut s = state_with(3, 1);
+        s.clamp_selection();
+        assert_eq!(s.selected, 1);
+    }
+}

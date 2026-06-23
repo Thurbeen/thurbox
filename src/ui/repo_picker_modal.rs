@@ -341,3 +341,117 @@ fn footer_line(state: &RepoPickerState<'_>) -> Line<'static> {
         ]),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn accent_chars(spans: &[Span<'_>]) -> String {
+        spans
+            .iter()
+            .filter(|s| s.style.fg == Some(Theme::accent()))
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn highlighted_spans_no_match_keeps_display_in_base_style() {
+        let base = Style::default();
+        // "zzz" can't be a subsequence of "hello" → no highlights.
+        let spans = highlighted_spans("zzz", "[x] ", "hello", base);
+        assert_eq!(span_text(&spans), "[x] hello");
+        assert!(
+            accent_chars(&spans).is_empty(),
+            "no character should be accented on a miss"
+        );
+    }
+
+    #[test]
+    fn highlighted_spans_empty_query_highlights_nothing() {
+        let base = Style::default();
+        let spans = highlighted_spans("", "", "hello", base);
+        assert_eq!(span_text(&spans), "hello");
+        assert!(accent_chars(&spans).is_empty());
+    }
+
+    #[test]
+    fn highlighted_spans_accents_matched_characters() {
+        let base = Style::default();
+        let spans = highlighted_spans("ll", "", "hello", base);
+        // Whole display text is preserved across the interleaved spans.
+        assert_eq!(span_text(&spans), "hello");
+        // Exactly the two matched 'l' characters are accented.
+        assert_eq!(accent_chars(&spans), "ll");
+    }
+
+    #[test]
+    fn highlighted_spans_slices_multibyte_chars_correctly() {
+        let base = Style::default();
+        // 'é' is two bytes; the position slicing must use char width, not +1,
+        // or this would panic / corrupt the text (regression target).
+        let spans = highlighted_spans("é", "", "héllo", base);
+        assert_eq!(span_text(&spans), "héllo");
+        assert_eq!(accent_chars(&spans), "é");
+    }
+
+    fn picker_state(
+        focus: RepoPickerFocus,
+        suggestion: Option<&'static str>,
+    ) -> RepoPickerState<'static> {
+        static EMPTY_PATHS: &[PathBuf] = &[];
+        static EMPTY_BOOLS: &[bool] = &[];
+        static EMPTY_IDX: &[usize] = &[];
+        // Leaked once so the borrow is 'static — fine for a test fixture.
+        let collapsed: &'static HashSet<PathBuf> = Box::leak(Box::new(HashSet::new()));
+        RepoPickerState {
+            bookmarks: EMPTY_PATHS,
+            selected: EMPTY_BOOLS,
+            worktree: EMPTY_BOOLS,
+            is_header: EMPTY_BOOLS,
+            is_child: EMPTY_BOOLS,
+            collapsed,
+            list_index: 0,
+            path_input: "",
+            path_cursor: 0,
+            path_suggestion: suggestion,
+            focus,
+            search_query: "",
+            search_cursor: 0,
+            search_active: false,
+            filtered_indices: EMPTY_IDX,
+        }
+    }
+
+    #[test]
+    fn footer_line_list_focus_shows_navigation_hints() {
+        let s = picker_state(RepoPickerFocus::List, None);
+        let text = span_text(&footer_line(&s).spans);
+        assert!(text.contains("toggle/fold"));
+        assert!(text.contains("worktree"));
+    }
+
+    #[test]
+    fn footer_line_input_focus_tab_hint_depends_on_suggestion() {
+        let with = picker_state(RepoPickerFocus::Input, Some("/home/me/proj"));
+        let with_text = span_text(&footer_line(&with).spans);
+        assert!(with_text.contains("complete"));
+        assert!(with_text.contains("add repo"));
+
+        let without = picker_state(RepoPickerFocus::Input, None);
+        let without_text = span_text(&footer_line(&without).spans);
+        assert!(without_text.contains("list"));
+        assert!(!without_text.contains("complete"));
+    }
+
+    #[test]
+    fn footer_line_search_focus_shows_filter_hints() {
+        let s = picker_state(RepoPickerFocus::Search, None);
+        let text = span_text(&footer_line(&s).spans);
+        assert!(text.contains("keep filter"));
+        assert!(text.contains("clear"));
+    }
+}

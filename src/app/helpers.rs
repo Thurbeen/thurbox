@@ -77,3 +77,75 @@ pub(super) fn resolve_editor_command(db: &crate::storage::Database) -> Option<St
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_in_editor_rejects_empty_paths() {
+        let err = open_in_editor(&[], "vim").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn open_in_editor_rejects_blank_command() {
+        // Whitespace-only command splits to no program token.
+        let paths = [PathBuf::from("/tmp/x")];
+        let err = open_in_editor(&paths, "   ").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn open_in_editor_parses_program_then_fails_to_spawn_unknown_binary() {
+        // A non-blank command with flags gets past the empty-command guard
+        // (proving the whitespace-split parsing ran) and then fails at spawn
+        // because the program does not exist — deterministic and cross-platform.
+        let paths = [PathBuf::from("/tmp/x")];
+        let err =
+            open_in_editor(&paths, "thurbox-nonexistent-editor-xyz --wait --flag").unwrap_err();
+        // NOT the InvalidInput we return for an empty command: the spawn itself failed.
+        assert_ne!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn resolve_editor_command_prefers_trimmed_db_value() {
+        let db = crate::storage::Database::open_in_memory().unwrap();
+        db.set_editor_command("  code --wait  ").unwrap();
+        assert_eq!(resolve_editor_command(&db), Some("code --wait".to_string()));
+    }
+
+    #[test]
+    fn resolve_editor_command_falls_back_to_env_when_db_blank() {
+        // All env mutation lives in this one test so it can't race a parallel
+        // test reading the same vars; originals are restored before returning.
+        let saved_visual = std::env::var("VISUAL").ok();
+        let saved_editor = std::env::var("EDITOR").ok();
+
+        let db = crate::storage::Database::open_in_memory().unwrap();
+        db.set_editor_command("   ").unwrap(); // blank DB value is ignored
+
+        // VISUAL wins over EDITOR.
+        std::env::set_var("VISUAL", "  helix  ");
+        std::env::set_var("EDITOR", "nano");
+        assert_eq!(resolve_editor_command(&db), Some("helix".to_string()));
+
+        // Falls through to EDITOR when VISUAL is blank.
+        std::env::set_var("VISUAL", "  ");
+        assert_eq!(resolve_editor_command(&db), Some("nano".to_string()));
+
+        // None of them set (and DB blank) → None.
+        std::env::remove_var("VISUAL");
+        std::env::remove_var("EDITOR");
+        assert_eq!(resolve_editor_command(&db), None);
+
+        match saved_visual {
+            Some(v) => std::env::set_var("VISUAL", v),
+            None => std::env::remove_var("VISUAL"),
+        }
+        match saved_editor {
+            Some(v) => std::env::set_var("EDITOR", v),
+            None => std::env::remove_var("EDITOR"),
+        }
+    }
+}

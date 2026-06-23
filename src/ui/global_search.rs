@@ -256,3 +256,73 @@ fn scope_word(kind: SearchKind, n: usize) -> &'static str {
         plural
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::search::SearchTarget;
+
+    fn results(n: usize) -> Vec<GlobalSearchResult> {
+        (0..n)
+            .map(|i| GlobalSearchResult {
+                kind: SearchKind::Task,
+                label: format!("task-{i}"),
+                snippet: None,
+                target: SearchTarget::Task { id: i as i64 },
+            })
+            .collect()
+    }
+
+    fn rendered_text(view: &GlobalSearchView<'_>) -> String {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_global_search(frame, area, view);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let area = *buffer.area();
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn renders_query_and_results() {
+        let list = results(3);
+        // Query text is distinct from the result labels (`task-N`) so each
+        // assertion isolates one concern: the query line vs. the result rows.
+        let view = GlobalSearchView {
+            query: "needle",
+            cursor: 6,
+            results: &list,
+            selected: 0,
+        };
+        let text = rendered_text(&view);
+        assert!(text.contains("needle"), "query echoes into the strip");
+        assert!(text.contains("task-0"), "first result is listed");
+    }
+
+    #[test]
+    fn selection_beyond_first_page_is_scrolled_into_view() {
+        let list = results(40);
+        let view = GlobalSearchView {
+            query: "task",
+            cursor: 4,
+            results: &list,
+            selected: 39,
+        };
+        let text = rendered_text(&view);
+        assert!(
+            text.contains("task-39"),
+            "the selected result must scroll into view:\n{text}"
+        );
+    }
+}

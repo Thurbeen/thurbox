@@ -250,3 +250,118 @@ fn target_display(state: &AutomationEditorState<'_>) -> String {
         .unwrap_or("(no running sessions)")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use AutomationField::*;
+
+    fn state() -> AutomationEditorState<'static> {
+        AutomationEditorState {
+            editing: false,
+            field: AutomationField::Name,
+            trigger_kind: TriggerKind::Daily,
+            action: AutomationActionKind::Send,
+            enabled: true,
+            name: "",
+            delay: "",
+            weekday: 0,
+            hour: 0,
+            minute: 0,
+            cron_expr: "",
+            timezone: "",
+            repo: "",
+            worktree: "",
+            agent: "",
+            command: "",
+            prompt: "",
+            target_session: None,
+            preview: "",
+            focused: true,
+        }
+    }
+
+    #[test]
+    fn visible_fields_once_has_delay_and_no_timezone() {
+        let f = visible_fields(TriggerKind::Once, AutomationActionKind::Send);
+        assert_eq!(f, vec![Name, Trigger, Delay, Action, Target, Prompt]);
+        assert!(!f.contains(&Timezone), "Once never shows a timezone field");
+    }
+
+    #[test]
+    fn visible_fields_schedule_kinds_carry_timezone_and_time_steppers() {
+        assert_eq!(
+            visible_fields(TriggerKind::Hourly, AutomationActionKind::Send),
+            vec![Name, Trigger, Minute, Timezone, Action, Target, Prompt]
+        );
+        assert_eq!(
+            visible_fields(TriggerKind::Daily, AutomationActionKind::Send),
+            vec![Name, Trigger, Hour, Minute, Timezone, Action, Target, Prompt]
+        );
+        assert_eq!(
+            visible_fields(TriggerKind::Weekdays, AutomationActionKind::Send),
+            vec![Name, Trigger, Hour, Minute, Timezone, Action, Target, Prompt]
+        );
+        assert_eq!(
+            visible_fields(TriggerKind::Weekly, AutomationActionKind::Send),
+            vec![Name, Trigger, Weekday, Hour, Minute, Timezone, Action, Target, Prompt]
+        );
+    }
+
+    #[test]
+    fn visible_fields_cron_shows_cron_expr() {
+        let f = visible_fields(TriggerKind::Cron, AutomationActionKind::Send);
+        assert_eq!(
+            f,
+            vec![Name, Trigger, CronExpr, Timezone, Action, Target, Prompt]
+        );
+    }
+
+    #[test]
+    fn visible_fields_action_shapes_the_tail() {
+        // Send → Target + Prompt.
+        let send = visible_fields(TriggerKind::Daily, AutomationActionKind::Send);
+        assert_eq!(&send[send.len() - 2..], &[Target, Prompt]);
+
+        // Spawn → Repo/Worktree/Agent + Prompt.
+        let spawn = visible_fields(TriggerKind::Daily, AutomationActionKind::Spawn);
+        assert_eq!(&spawn[spawn.len() - 4..], &[Repo, Worktree, Agent, Prompt]);
+
+        // Exec → Command and NO Prompt.
+        let exec = visible_fields(TriggerKind::Daily, AutomationActionKind::Exec);
+        assert!(exec.contains(&Command));
+        assert!(
+            !exec.contains(&Prompt),
+            "Exec runs a shell command, never a prompt"
+        );
+        assert_eq!(*exec.last().unwrap(), Command);
+    }
+
+    #[test]
+    fn formatters_show_placeholder_when_empty() {
+        assert_eq!(delay_display(""), "(e.g. 30m, 2h, 1h30m)");
+        assert_eq!(cron_display(""), "(e.g. 0 9 * * 1-5)");
+        assert_eq!(tz_display(""), "(local)");
+        assert_eq!(optional_display(""), "(none)");
+    }
+
+    #[test]
+    fn formatters_pass_through_non_empty_values() {
+        assert_eq!(delay_display("30m"), "30m");
+        assert_eq!(cron_display("0 9 * * 1-5"), "0 9 * * 1-5");
+        assert_eq!(tz_display("Europe/Zurich"), "Europe/Zurich");
+        assert_eq!(optional_display("main"), "main");
+    }
+
+    #[test]
+    fn action_and_target_display() {
+        let mut s = state();
+        s.action = AutomationActionKind::Exec;
+        assert_eq!(action_display(&s), "exec");
+
+        // No running sessions → hint.
+        assert_eq!(target_display(&s), "(no running sessions)");
+        s.target_session = Some("backend");
+        assert_eq!(target_display(&s), "backend");
+    }
+}

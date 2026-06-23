@@ -43,3 +43,60 @@ pub(crate) fn keybindings_mtime() -> Option<SystemTime> {
 pub(crate) fn settings_mtime() -> Option<SystemTime> {
     mtime(crate::agent::settings_config::settings_config_path().as_deref())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::TestPathGuard;
+
+    #[test]
+    fn mtime_is_none_for_none_and_missing_paths() {
+        assert!(mtime(None).is_none());
+        let missing = std::path::Path::new("/nonexistent/thurbox/does-not-exist.toml");
+        assert!(mtime(Some(missing)).is_none());
+    }
+
+    #[test]
+    fn mtime_is_some_for_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "x").unwrap();
+        assert!(mtime(Some(&file)).is_some());
+    }
+
+    #[test]
+    fn config_wrappers_are_none_before_files_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = TestPathGuard::new(dir.path());
+        // Fresh sandbox: none of the live-reloadable config files exist yet.
+        assert!(agents_mtime().is_none());
+        assert!(keybindings_mtime().is_none());
+        assert!(settings_mtime().is_none());
+    }
+
+    #[test]
+    fn config_wrappers_report_some_once_their_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = TestPathGuard::new(dir.path());
+
+        // Materialize each config file at its own resolved path, then confirm
+        // the matching wrapper observes it.
+        for path in [
+            crate::agent::agent_config::agents_config_path(),
+            crate::paths::keybindings_file(),
+            crate::agent::settings_config::settings_config_path(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, "x").unwrap();
+        }
+
+        assert!(agents_mtime().is_some());
+        assert!(keybindings_mtime().is_some());
+        assert!(settings_mtime().is_some());
+    }
+}
