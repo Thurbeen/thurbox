@@ -691,6 +691,12 @@ impl KeyBindings {
     /// active in `context` — i.e. global actions plus those scoped to
     /// `context`. The keypress is normalized first so Shift+letter encodings
     /// match regardless of how the terminal delivered them.
+    ///
+    /// When a hand-edited config binds one chord to several overlapping actions
+    /// the match is resolved **deterministically**: a context-scoped action
+    /// wins over a global one (more specific intent), ties broken by the
+    /// earliest position in [`Action::all`]. Iterating the `HashMap` and
+    /// returning the first hit would otherwise pick nondeterministically.
     pub fn lookup_in(
         &self,
         context: KeyContext,
@@ -698,6 +704,17 @@ impl KeyBindings {
         mods: KeyModifiers,
     ) -> Option<Action> {
         let target = KeyChord::normalized(mods, code);
+        // Lower sort key wins: scoped (0) before global (1), then earliest in
+        // `Action::all()`.
+        let sort_key = |action: &Action| -> (u8, usize) {
+            let is_global = (action.context() == KeyContext::Global) as u8;
+            let idx = Action::all()
+                .iter()
+                .position(|a| a == action)
+                .unwrap_or(usize::MAX);
+            (is_global, idx)
+        };
+        let mut best: Option<Action> = None;
         for (action, chords) in &self.map {
             let ctx = action.context();
             if ctx != KeyContext::Global && ctx != context {
@@ -707,10 +724,16 @@ impl KeyBindings {
                 .iter()
                 .any(|c| c.code == target.code && c.mods == target.mods)
             {
-                return Some(*action);
+                let wins = match best {
+                    None => true,
+                    Some(b) => sort_key(action) < sort_key(&b),
+                };
+                if wins {
+                    best = Some(*action);
+                }
             }
         }
-        None
+        best
     }
 
     /// Replace all chords for `action` with the single `chord`. If the chord
@@ -1224,6 +1247,49 @@ mod tests {
             ),
             Some(Action::QuitApp)
         );
+    }
+
+    #[test]
+    fn lookup_in_resolves_overlapping_bindings_deterministically() {
+        // A hand-edited config can bind one chord to several actions whose
+        // scopes overlap (e.g. a global and a session-list action). The lookup
+        // must pick a stable winner regardless of HashMap iteration order.
+        let mut kb = KeyBindings::default();
+        let chord = KeyChord::ctrl('x');
+        // Bind ctrl+x to a global action and a session-list action directly in
+        // the map, bypassing `rebind`'s conflict resolution.
+        kb.map.insert(Action::ToggleHelp, vec![chord]); // global
+        kb.map.insert(Action::SessionListNext, vec![chord]); // scoped
+
+        // In the session list both match; the scoped action wins over global.
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::SessionList,
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL
+            ),
+            Some(Action::SessionListNext)
+        );
+        // Outside its scope only the global action is eligible.
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::Terminal,
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL
+            ),
+            Some(Action::ToggleHelp)
+        );
+        // Repeated lookups never flip (no nondeterminism).
+        for _ in 0..50 {
+            assert_eq!(
+                kb.lookup_in(
+                    KeyContext::SessionList,
+                    KeyCode::Char('x'),
+                    KeyModifiers::CONTROL
+                ),
+                Some(Action::SessionListNext)
+            );
+        }
     }
 
     #[test]
