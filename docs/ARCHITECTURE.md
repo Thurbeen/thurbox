@@ -201,7 +201,10 @@ all editing UI — there is no need for a human-editable config file.
 Every connection sets a **5 s busy_timeout** (the DB is shared by
 the TUI, `thurbox-cli`, and the automation heartbeat; writes are
 short single-row upserts, so a bounded wait beats an immediate
-`SQLITE_BUSY` error or an unbounded freeze). The append-only
+`SQLITE_BUSY` error or an unbounded freeze) plus the WAL-friendly
+performance pragmas `synchronous = NORMAL`, `cache_size`, `mmap_size`,
+and `temp_store = MEMORY` (`storage::schema::initialize`; rationale in
+`docs/PERFORMANCE.md` ADR-P6). The append-only
 **audit log is pruned to 90 days** on `Database::open` — entries
 are debugging breadcrumbs, not compliance data, and unbounded
 growth would bloat the database over months of use.

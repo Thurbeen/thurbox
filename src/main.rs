@@ -106,12 +106,25 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    // Coarse, always-cheap startup phase marks (a handful of one-shot
+    // `Instant::now()` calls, never in a loop). The breakdown is only *emitted*
+    // when THURBOX_PERF_LOG is set; capturing it unconditionally keeps the code
+    // simple at no measurable cost. See docs/PERFORMANCE.md (ADR-P5).
+    let mut startup = StartupTimings::default();
+
     // Initialize session backends, load every config file, and open the DB.
     // `agents` is reloaded after the extension heal below (which may patch
     // agents.toml), so the initial copy here is only used for its warnings.
+    let t_phase = std::time::Instant::now();
     let (backends, _agents, hosts, mut config_warnings) = init_backends_and_config()?;
+    startup.config_init_ms = t_phase.elapsed().as_millis();
+
+    let t_phase = std::time::Instant::now();
     let db = open_database();
+    startup.db_open_ms = t_phase.elapsed().as_millis();
     activate_persisted_theme(&db);
+
+    let t_phase = std::time::Instant::now();
 
     // Self-heal active extensions: re-create any session/automation a managed
     // extension declares but that has since been deleted. Runs before the
@@ -144,6 +157,7 @@ async fn main() -> Result<()> {
     // (otherwise a freshly-seeded profile would spawn agents without their hooks
     // and statuses would be stuck until the next launch).
     let agents = thurbox::agent::agent_config::load_or_seed();
+    startup.extension_heal_ms = t_phase.elapsed().as_millis();
 
     // Silent auto-update (opt-in via [features] auto_update). Kicked off on a
     // background thread *before* the TUI starts so a slow download never blocks
@@ -172,13 +186,15 @@ async fn main() -> Result<()> {
     app.report_config_warnings(config_warnings);
 
     // Load session state from DB and restore
+    let t_phase = std::time::Instant::now();
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
         app.restore_sessions(sessions, counter);
     }
+    startup.restore_ms = t_phase.elapsed().as_millis();
 
     arm_automation_heartbeat();
 
-    let res = run_loop(&mut terminal, &mut app, process_start).await;
+    let res = run_loop(&mut terminal, &mut app, process_start, startup).await;
 
     app.shutdown();
     // `_terminal_guard` restores the terminal as it drops here (and on any early
@@ -368,15 +384,33 @@ fn run_auto_update(tx: &std::sync::mpsc::Sender<String>) {
     }
 }
 
+/// Coarse one-shot startup phase durations (milliseconds), captured in `main`
+/// and logged once after the first paint when `THURBOX_PERF_LOG` is set. The
+/// phases sum to roughly `first_frame_ms`, so a slow boot can be attributed to
+/// config/backend init, DB open, extension heal, or session restore rather than
+/// guessed at. See docs/PERFORMANCE.md (ADR-P5).
+#[derive(Default, Clone, Copy)]
+struct StartupTimings {
+    /// `init_backends_and_config`: config-file loads + local backend ready.
+    config_init_ms: u128,
+    /// `Database::open` (schema migrations included).
+    db_open_ms: u128,
+    /// Extension self-heal + built-in hooks wiring + agents.toml reload.
+    extension_heal_ms: u128,
+    /// `load_persisted_state_from_db` + `restore_sessions` (sequential adopt).
+    restore_ms: u128,
+}
+
 async fn run_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     process_start: std::time::Instant,
+    startup: StartupTimings,
 ) -> Result<()> {
     // Opt-in (THURBOX_PERF_LOG) time-to-first-frame measurement: logged once,
     // right after the first paint, so it never affects normal runs or the smoke
-    // test. Read `~/.local/share/thurbox/thurbox.log` for the `first_frame_ms`
-    // line. See docs/PERFORMANCE.md.
+    // test. Read `~/.local/share/thurbox/thurbox.log` for the `startup` line
+    // (phase breakdown + `first_frame_ms`). See docs/PERFORMANCE.md.
     let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
     let mut first_frame_logged = false;
 
@@ -390,7 +424,14 @@ async fn run_loop(
             app.mark_redrawn();
 
             if perf_log && !first_frame_logged {
-                tracing::info!(first_frame_ms = process_start.elapsed().as_millis() as u64);
+                tracing::info!(
+                    config_init_ms = startup.config_init_ms as u64,
+                    db_open_ms = startup.db_open_ms as u64,
+                    extension_heal_ms = startup.extension_heal_ms as u64,
+                    restore_ms = startup.restore_ms as u64,
+                    first_frame_ms = process_start.elapsed().as_millis() as u64,
+                    "startup"
+                );
                 first_frame_logged = true;
             }
         } else {

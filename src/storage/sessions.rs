@@ -427,9 +427,14 @@ impl Database {
     }
 
     /// Load the hook-status columns for every active session in one indexed
-    /// scan, keyed by id. Called once per tick by the TUI to derive statuses.
+    /// scan, keyed by id. The TUI derives statuses from this but reloads only
+    /// when `data_version` moves (see `App::refresh_session_statuses`), so it
+    /// is not run on every tick.
     pub fn load_hook_states(&self) -> rusqlite::Result<HashMap<SessionId, HookRow>> {
-        let mut stmt = self.conn.prepare(
+        // `prepare_cached` keeps the compiled statement across reloads — this is
+        // a hot query (the TUI's status refresh), so skipping the re-parse on
+        // every reload is worthwhile.
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, hook_state, hook_state_at, seen_at \
              FROM sessions WHERE deleted_at IS NULL",
         )?;

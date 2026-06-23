@@ -28,6 +28,22 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // Performance pragmas (safe under WAL):
+    // - `synchronous = NORMAL` is the WAL-recommended setting: a crash can't
+    //   corrupt the DB, only lose the last few un-checkpointed commits — fine
+    //   for this advisory session/automation state, and it avoids an fsync per
+    //   commit.
+    // - `cache_size = -8000` gives each connection an 8 MB page cache (negative
+    //   = KiB), comfortably holding the small working set in memory.
+    // - `mmap_size` memory-maps reads, skipping a copy through the page cache
+    //   for the read-heavy polling workload.
+    // - `temp_store = MEMORY` keeps transient indexes/sorts off disk.
+    conn.execute_batch(
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -8000;
+         PRAGMA mmap_size = 67108864;
+         PRAGMA temp_store = MEMORY;",
+    )?;
 
     conn.execute_batch(
         "

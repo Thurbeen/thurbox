@@ -977,13 +977,31 @@ impl SessionBackend for TmuxBackend {
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to adopt invalid pane id: {backend_id:?}");
         }
+        // Opt-in split timing (THURBOX_PERF_LOG): `capture_history_seed` is an
+        // independent `tmux capture-pane` subprocess (parallelizable), while
+        // `connect_pane` drives the serialized control-mode connection. Knowing
+        // their ratio decides whether parallelizing the capture half is worth it.
+        let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
+
         // Capture before connecting so seeded history can't duplicate live
         // output. Best-effort: adoption must survive a failed capture.
+        let capture_start = perf_log.then(std::time::Instant::now);
         let seed = self.capture_history_seed(backend_id).unwrap_or_else(|e| {
             warn!("Failed to capture history for pane {backend_id}: {e}");
             Vec::new()
         });
+        let capture_ms = capture_start.map(|s| s.elapsed().as_millis() as u64);
+
+        let connect_start = perf_log.then(std::time::Instant::now);
         let connected = self.connect_pane(backend_id, rows, cols)?;
+        if let (Some(capture_ms), Some(start)) = (capture_ms, connect_start) {
+            tracing::info!(
+                pane = %backend_id,
+                capture_ms,
+                connect_ms = start.elapsed().as_millis() as u64,
+                "adopt_split"
+            );
+        }
         if seed.is_empty() {
             return Ok(connected);
         }

@@ -8,6 +8,7 @@ onThisPage:
   - { id: 'rendering', label: 'Demand-Driven Rendering' }
   - { id: 'counters', label: 'Perf Counters' }
   - { id: 'caching', label: 'Session-Order Cache' }
+  - { id: 'status-cache', label: 'Session-Status Cache' }
   - { id: 'not-optimized', label: 'Deliberately Not Optimized' }
   - { id: 'measuring', label: 'Measuring Performance' }
 ---
@@ -88,6 +89,14 @@ onThisPage:
       <td><code>status_refreshes</code> / <code>automation_entries_built</code></td>
       <td>per-tick status pass, automations-pane builds</td>
     </tr>
+    <tr>
+      <td><code>hook_state_loads</code></td>
+      <td>the session-status rows were actually reloaded from the DB (gated on a <code>data_version</code> change &mdash; stays flat while idle)</td>
+    </tr>
+    <tr>
+      <td><code>external_poll_checks</code> / <code>external_poll_reloads</code></td>
+      <td>the cross-instance <code>PRAGMA data_version</code> poll ran / found a change and reloaded shared state</td>
+    </tr>
   </tbody>
 </table>
 
@@ -108,6 +117,68 @@ onThisPage:
   order alters the hash, so there is no manual &ldquo;mark dirty&rdquo; call site to forget. This
   matters most while an agent streams output and the screen repaints every frame.
 </p>
+
+<h2 id="status-cache">
+  Session-Status Cache
+  <a href="#status-cache" class="heading-anchor">#</a>
+</h2>
+<p>
+  Session status (working / blocked / done / idle) is driven by agent hooks persisted in SQLite.
+  Deriving it used to re-scan the <code>sessions</code> table on <em>every</em> tick (~100&times;/s),
+  even on an idle screen where nothing changed. The rows are now <strong>cached</strong> and reloaded
+  only when the database's <code>PRAGMA data_version</code> moves &mdash; a single in-memory counter
+  read, far cheaper than an indexed scan plus row mapping. The per-tick <em>derivation</em> (the
+  Working spinner, the output-quiescence fallback, the done/seen logic) still runs every tick against
+  the cache, so status latency is unchanged.
+</p>
+<p>
+  An external <code>thurbox-cli session signal</code> commits on another connection, which bumps
+  <code>data_version</code> and is picked up on the next tick. The two writes that don't move
+  <em>this</em> connection's version &mdash; marking a <code>done</code> session
+  <code>seen</code>, and clearing state on restart &mdash; are handled explicitly (write-through and
+  cache invalidation), so the cache can never serve a stale status. The
+  <code>hook_state_loads</code> counter proves it: flat while idle, +1 per external signal.
+</p>
+
+<figure class="perf-figure">
+  <svg viewBox="0 0 660 250" role="img" aria-labelledby="idle-title idle-desc">
+    <title id="idle-title">Idle work per second, before vs. after</title>
+    <desc id="idle-desc">
+      On a fully idle screen, frame paints drop from about 100 to 4 per second, and session-status
+      table scans drop from about 100 to near zero per second.
+    </desc>
+    <!-- gridlines + y-axis -->
+    <line class="perf-grid" x1="56" y1="40" x2="620" y2="40" />
+    <line class="perf-grid" x1="56" y1="120" x2="620" y2="120" />
+    <line class="perf-grid" x1="56" y1="200" x2="620" y2="200" />
+    <text class="perf-axis" x="48" y="44" text-anchor="end">100</text>
+    <text class="perf-axis" x="48" y="124" text-anchor="end">50</text>
+    <text class="perf-axis" x="48" y="204" text-anchor="end">0</text>
+    <!-- legend -->
+    <rect x="430" y="6" width="12" height="12" fill="var(--text-muted)" />
+    <text class="perf-axis" x="448" y="16">before</text>
+    <rect x="520" y="6" width="12" height="12" fill="var(--green)" />
+    <text class="perf-axis" x="538" y="16">after (idle)</text>
+    <!-- group 1: frame paints -->
+    <rect x="120" y="40" width="80" height="160" fill="var(--text-muted)" />
+    <rect x="220" y="194" width="80" height="6" fill="var(--green)" />
+    <text class="perf-value" x="160" y="34" text-anchor="middle">100</text>
+    <text class="perf-value" x="260" y="188" text-anchor="middle">~4</text>
+    <text class="perf-axis" x="210" y="222" text-anchor="middle">frame paints / s</text>
+    <!-- group 2: status scans -->
+    <rect x="400" y="40" width="80" height="160" fill="var(--text-muted)" />
+    <rect x="500" y="197" width="80" height="3" fill="var(--green)" />
+    <text class="perf-value" x="440" y="34" text-anchor="middle">100</text>
+    <text class="perf-value" x="540" y="191" text-anchor="middle">&#8776;0</text>
+    <text class="perf-axis" x="490" y="222" text-anchor="middle">DB status scans / s</text>
+  </svg>
+  <figcaption>
+    Idle-screen work per second. Demand-driven rendering (ADR-P1) takes paints from ~100&nbsp;fps to
+    the 4&nbsp;fps forced-redraw floor; the session-status cache (ADR-P6) takes the per-tick
+    <code>sessions</code>-table scan to near zero. Input and output latency are unchanged &mdash; the
+    loop still wakes every &le;10&nbsp;ms, it just does less.
+  </figcaption>
+</figure>
 
 <h2 id="not-optimized">
   Deliberately Not Optimized
@@ -141,8 +212,12 @@ onThisPage:
 </p>
 <ul>
   <li>
-    <strong>Startup</strong> &mdash; launch with <code>THURBOX_PERF_LOG=1</code>; one
-    <code>first_frame_ms</code> line is logged to <code>thurbox.log</code>.
+    <strong>Startup</strong> &mdash; launch with <code>THURBOX_PERF_LOG=1</code>; a
+    <code>startup</code> line is logged to <code>thurbox.log</code> with a phase breakdown
+    (<code>config_init_ms</code> / <code>db_open_ms</code> / <code>extension_heal_ms</code> /
+    <code>restore_ms</code>) that sums to <code>first_frame_ms</code>, plus per-backend
+    <code>restore_discover</code> and per-session <code>restore_adopt</code> / <code>adopt_split</code>
+    lines when session restore is the long pole.
   </li>
   <li>
     <strong>Binary size</strong> &mdash; a non-gating CI job records the release
@@ -155,3 +230,39 @@ onThisPage:
     neither is a project dependency.
   </li>
 </ul>
+<figure class="perf-figure">
+  <svg viewBox="0 0 660 210" role="img" aria-labelledby="startup-title startup-desc">
+    <title id="startup-title">Startup time to first frame, by phase</title>
+    <desc id="startup-desc">
+      A representative cold start restoring five sessions reaches the first frame in about 226
+      milliseconds; session restore is roughly 71 percent of it, while config load, database open,
+      and extension heal are a few milliseconds each.
+    </desc>
+    <!-- stacked bar: config | db | heal | restore | init+paint -->
+    <rect x="20" y="30" width="82" height="40" fill="var(--yellow)" />
+    <rect x="102" y="30" width="3" height="40" fill="var(--purple)" />
+    <rect x="105" y="30" width="5" height="40" fill="var(--cyan)" />
+    <rect x="110" y="30" width="439" height="40" fill="var(--blue)" />
+    <rect x="549" y="30" width="91" height="40" fill="var(--text-muted)" />
+    <text class="perf-value" x="329" y="55" text-anchor="middle" fill="var(--bg-primary)">
+      restore &#8776; 71%
+    </text>
+    <!-- legend -->
+    <rect x="20" y="96" width="11" height="11" fill="var(--yellow)" />
+    <text class="perf-axis" x="37" y="105">config load &#8212; 30 ms</text>
+    <rect x="20" y="114" width="11" height="11" fill="var(--purple)" />
+    <text class="perf-axis" x="37" y="123">db open &#8212; 1 ms</text>
+    <rect x="20" y="132" width="11" height="11" fill="var(--cyan)" />
+    <text class="perf-axis" x="37" y="141">extension heal &#8212; 2 ms</text>
+    <rect x="20" y="150" width="11" height="11" fill="var(--blue)" />
+    <text class="perf-axis" x="37" y="159">session restore &#8212; 160 ms</text>
+    <rect x="20" y="168" width="11" height="11" fill="var(--text-muted)" />
+    <text class="perf-axis" x="37" y="177">init + first paint &#8212; 33 ms</text>
+  </svg>
+  <figcaption>
+    Where startup time goes, from a real <code>THURBOX_PERF_LOG=1</code> run restoring five sessions
+    (~226&nbsp;ms to first frame). The breakdown is what motivated measuring restore before any
+    parallelization &mdash; and what showed it is bounded by tmux's serialized control-mode
+    connection rather than by parallelizable work. Numbers vary with session count and scrollback.
+  </figcaption>
+</figure>

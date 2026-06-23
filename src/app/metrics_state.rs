@@ -34,6 +34,18 @@ pub(crate) struct PerfCounters {
     /// Times the automations-pane entry list was built (once per render of the
     /// pane; cheap for the typical handful of automations).
     pub(crate) automation_entries_built: u64,
+    /// Times `refresh_session_statuses` actually reloaded the persisted hook
+    /// columns from the DB (`Database::load_hook_states`). Gated on a
+    /// `data_version` change (ADR-P6), so it stays flat while idle and ticks up
+    /// once per external `session signal` — not once per tick.
+    pub(crate) hook_state_loads: u64,
+    /// Times `poll_external_changes` ran its cheap `PRAGMA data_version` check
+    /// (throttled to the poll interval, not per tick).
+    pub(crate) external_poll_checks: u64,
+    /// Subset of `external_poll_checks` where the version actually changed and a
+    /// full shared-state reload ran. The ratio of reloads to checks shows how
+    /// often the poll does real work vs. spins.
+    pub(crate) external_poll_reloads: u64,
 }
 
 /// CPU/RAM metrics collection plus the app-wide tick counter that paces the

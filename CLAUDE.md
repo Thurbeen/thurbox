@@ -106,9 +106,13 @@ atomic); `refresh_session_statuses` marks dirty on a status change; the floor
 covers time-driven UI (clock/metrics/cursor blink). Idle paints drop ~100 fps →
 ~4 fps with input/output latency unchanged. The session-list ordering is cached
 keyed by a content signature (`App::session_order_signature`), rebuilt only when
-its grouping/nesting inputs change. Launch with `THURBOX_PERF_LOG=1` to log one
-`first_frame_ms` startup line to `thurbox.log`. Full rationale +
-intentionally-skipped optimizations: `docs/PERFORMANCE.md`.
+its grouping/nesting inputs change. The per-tick session-status read is likewise
+cached (`App::cached_hook_states`), reloaded only when `PRAGMA data_version`
+moves — so an idle `tick` no longer rescans the `sessions` table (ADR-P6). Launch
+with `THURBOX_PERF_LOG=1` to log a `startup` line (phase breakdown +
+`first_frame_ms`, plus `restore_discover`/`restore_adopt`/`adopt_split`) to
+`thurbox.log`. Full rationale + intentionally-skipped optimizations:
+`docs/PERFORMANCE.md`.
 
 ### Windows test environment (VM)
 
@@ -1154,9 +1158,14 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   fresh spawn seeds **nothing** — a never-reported session is `Idle`, and the
   agent's hooks drive it from there (so an idle, just-booted agent doesn't look
   stuck working).
-- **Derivation.** `App::refresh_session_statuses` (`src/app/mod.rs`) reads
-  all hook rows once per tick: exited → `Idle`; else the persisted state
-  (`working`/`blocked`; `idle`/none → `Idle`). `done` shows as `Done` (blue)
+- **Derivation.** `App::refresh_session_statuses` (`src/app/mod.rs`) derives
+  each session's status every tick from the hook rows — exited → `Idle`; else
+  the persisted state (`working`/`blocked`; `idle`/none → `Idle`). The rows are
+  **cached** (`App::cached_hook_states`) and reloaded from the DB only when
+  `PRAGMA data_version` moves (an external `session signal`), not on every tick;
+  same-connection writes (`seen_at`, restart's `clear_hook_state`) are applied
+  write-through / via `invalidate_hook_state_cache` (see `docs/PERFORMANCE.md`
+  ADR-P6). `done` shows as `Done` (blue)
   **whether focused or not** — so a turn you're watching visibly completes — and
   becomes `Idle` only when you **move focus off it** (acknowledge it): the focus
   change vs. `last_active_session_id` marks the just-left `done` session `seen`

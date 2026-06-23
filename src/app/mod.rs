@@ -613,6 +613,16 @@ pub struct App {
     /// moves off a `done` session, that session is marked "seen" (→ `Idle`), so
     /// the blue `Done` state stays visible until you actually switch away.
     last_active_session_id: Option<crate::session::SessionId>,
+    /// Cached persisted hook-status rows (`session signal` state). Reloaded only
+    /// when the DB's `data_version` moves (an *external* signal), not on every
+    /// tick — the per-tick `data_version` read is far cheaper than the
+    /// sessions-table scan it replaces. This process's own `seen_at` writes
+    /// don't bump our `data_version`, so they're applied write-through in
+    /// [`Self::refresh_session_statuses`]. See `docs/PERFORMANCE.md`.
+    cached_hook_states: HashMap<crate::session::SessionId, crate::storage::HookRow>,
+    /// `data_version` observed at the last [`Self::cached_hook_states`] reload
+    /// (`None` = never loaded, which forces the first load).
+    hook_states_version: Option<i64>,
     /// When the last frame was painted, for the forced-redraw floor.
     last_draw_at: std::time::Instant,
     /// Cheap rolling signature of agent output across all sessions (sum of each
@@ -834,6 +844,8 @@ impl App {
             needs_redraw: true,
             spinner_frame: 0,
             last_active_session_id: None,
+            cached_hook_states: HashMap::new(),
+            hook_states_version: None,
             last_draw_at: std::time::Instant::now(),
             last_output_gen: 0,
             cached_session_order: None,
@@ -1291,6 +1303,9 @@ impl App {
                 // resumed agent may not re-fire its boot hook). Mirrors the
                 // headless `restart_session_headless` path.
                 let _ = self.db.clear_hook_state(session_id);
+                // Our own write doesn't move this connection's `data_version`,
+                // so force the status cache to reload and pick up the cleared row.
+                self.invalidate_hook_state_cache();
                 self.save_state();
                 self.set_status(StatusLevel::Info, "Session restarted");
             }
@@ -3399,8 +3414,18 @@ impl App {
     fn refresh_session_statuses(&mut self) {
         self.metrics.bump(|p| &mut p.status_refreshes);
         let active_index = self.active_index;
-        // One indexed scan per tick for the persisted hook columns.
-        let hooks = self.db.load_hook_states().unwrap_or_default();
+        // Reload the persisted hook columns only when the DB actually changed —
+        // an *external* `session signal` bumps `data_version`, but our own
+        // `seen_at` writes (below) do not — otherwise reuse the cached map. This
+        // replaces a full sessions-table scan on every (~10 ms) tick with a
+        // cheap in-memory `PRAGMA data_version` read on idle ticks. See
+        // `docs/PERFORMANCE.md`.
+        let version = self.db.data_version().ok();
+        if self.hook_states_version.is_none() || version != self.hook_states_version {
+            self.metrics.bump(|p| &mut p.hook_state_loads);
+            self.cached_hook_states = self.db.load_hook_states().unwrap_or_default();
+            self.hook_states_version = version;
+        }
         // "Seen" writes are deferred past the &mut self.sessions borrow below.
         let mut seen_writes: Vec<(crate::session::SessionId, i64)> = Vec::new();
 
@@ -3411,7 +3436,9 @@ impl App {
         // an unseen `done`.
         let active_id = self.sessions.get(active_index).map(|s| s.info.id);
         if active_id != self.last_active_session_id {
-            if let Some((prev, state_at)) = self.unseen_done_on_focus_leave(&hooks) {
+            if let Some((prev, state_at)) =
+                self.unseen_done_on_focus_leave(&self.cached_hook_states)
+            {
                 seen_writes.push((prev, state_at));
             }
             self.last_active_session_id = active_id;
@@ -3420,13 +3447,23 @@ impl App {
         // Track whether any visible field changed so a quiet transition (no new
         // output, so the output detector won't catch it) still repaints promptly
         // instead of waiting for the forced-redraw floor.
-        let changed = Self::apply_session_status_fields(&mut self.sessions, &hooks, &seen_writes);
+        let changed = Self::apply_session_status_fields(
+            &mut self.sessions,
+            &self.cached_hook_states,
+            &seen_writes,
+        );
 
-        // Persist the seen marks now that the sessions borrow is released. Done
-        // only on the transition (guarded above by `seen_at < state_at`), so the
-        // focused session doesn't bump `data_version` every tick.
+        // Persist the seen marks now that the sessions borrow is released, and
+        // mirror them into the cache write-through: our own write doesn't move
+        // `data_version`, so without this the next tick would reload nothing and
+        // re-derive the just-acknowledged `done` session back to `Done`.
+        // Guarded above by `seen_at < state_at`, so the focused session doesn't
+        // bump `data_version` every tick.
         for (id, state_at) in seen_writes {
             let _ = self.db.mark_session_seen(id, state_at);
+            if let Some(hook) = self.cached_hook_states.get_mut(&id) {
+                hook.seen_at = Some(state_at);
+            }
         }
 
         // Advance the spinner unconditionally (it must tick every call, not just
@@ -3437,6 +3474,14 @@ impl App {
             self.request_redraw();
         }
         self.dispatch_status_notifications();
+    }
+
+    /// Force [`Self::cached_hook_states`] to reload on the next status refresh.
+    /// Needed after this process writes hook columns on its *own* DB connection
+    /// (e.g. clearing state on restart): such writes don't move our connection's
+    /// `data_version`, so the version gate wouldn't otherwise notice them.
+    fn invalidate_hook_state_cache(&mut self) {
+        self.hook_states_version = None;
     }
 
     /// If the just-left session (`last_active_session_id`) is an unseen `done`,
@@ -3552,13 +3597,19 @@ impl App {
     /// and apply any theme change / session delta they produced.
     fn poll_external_changes(&mut self) {
         let Ok(Some(result)) = sync::poll_for_changes(&mut self.sync_state, &mut self.db) else {
-            // Even with no broader DB change, a notification click may have
-            // landed: it writes a single row and the sync layer doesn't
-            // distinguish, so we always check.
+            // Throttled (or errored): no `data_version` check ran this tick, so
+            // it isn't counted. Even with no broader DB change, a notification
+            // click may have landed: it writes a single row and the sync layer
+            // doesn't distinguish, so we always check.
             self.apply_pending_focus_request();
             return;
         };
+        // A `Some` result means the cheap `PRAGMA data_version` check actually
+        // ran; `db_changed` further means it found a change and did the full
+        // shared-state reload.
+        self.metrics.bump(|p| &mut p.external_poll_checks);
         if result.db_changed {
+            self.metrics.bump(|p| &mut p.external_poll_reloads);
             self.apply_external_theme_change();
             self.apply_pending_focus_request();
         }
@@ -4272,6 +4323,12 @@ impl App {
     /// startup.
     pub fn restore_sessions(&mut self, sessions: Vec<sync::SharedSession>, session_counter: usize) {
         self.session_counter = session_counter;
+        // Opt-in startup-restore breakdown (THURBOX_PERF_LOG). Restore is
+        // sequential — backends are discovered one by one and each session is
+        // adopted with a blocking `capture_pane_text` — so per-backend
+        // discover and per-session adopt timings show whether (and how much)
+        // parallelizing this would pay off. Read once here, never per tick.
+        let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
 
         // Only sessions with an agent_session_id are resumable.
         let resumable: Vec<sync::SharedSession> = sessions
@@ -4279,14 +4336,23 @@ impl App {
             .filter(|s| s.agent_session_id.is_some())
             .collect();
 
-        let discovered_by_backend = self.discover_windows_by_backend(&resumable);
+        let discovered_by_backend = self.discover_windows_by_backend(&resumable, perf_log);
 
         for shared in resumable {
             let discovered = discovered_by_backend
                 .get(&shared.backend_type)
                 .cloned()
                 .unwrap_or_default();
+            let adopt_start = perf_log.then(std::time::Instant::now);
+            let name = perf_log.then(|| shared.name.clone());
             self.restore_single_session(shared, &discovered);
+            if let (Some(start), Some(name)) = (adopt_start, name) {
+                tracing::info!(
+                    session = %name,
+                    adopt_ms = start.elapsed().as_millis() as u64,
+                    "restore_adopt"
+                );
+            }
         }
 
         // Claim ownership of restored sessions in the shared state
@@ -4302,6 +4368,7 @@ impl App {
     fn discover_windows_by_backend(
         &self,
         resumable: &[sync::SharedSession],
+        perf_log: bool,
     ) -> HashMap<String, Vec<crate::agent::backend::DiscoveredSession>> {
         let mut discovered_by_backend: HashMap<
             String,
@@ -4311,7 +4378,16 @@ impl App {
             if discovered_by_backend.contains_key(&shared.backend_type) {
                 continue;
             }
+            let discover_start = perf_log.then(std::time::Instant::now);
             let disc = self.discover_windows_for_backend(&shared.backend_type);
+            if let Some(start) = discover_start {
+                tracing::info!(
+                    backend = %shared.backend_type,
+                    windows = disc.len() as u64,
+                    discover_ms = start.elapsed().as_millis() as u64,
+                    "restore_discover"
+                );
+            }
             discovered_by_backend.insert(shared.backend_type.clone(), disc);
         }
         discovered_by_backend
@@ -6410,6 +6486,15 @@ mod tests {
         shared.id
     }
 
+    /// Simulate an external `session signal`: write the hook state, then
+    /// invalidate the status cache the way a real out-of-process signal would
+    /// (its commit bumps this connection's `data_version`). The tests share one
+    /// in-memory connection, so the bump must be emulated explicitly.
+    fn signal_hook(app: &mut App, id: crate::session::SessionId, state: &str) {
+        app.db.set_hook_state(id, state).unwrap();
+        app.invalidate_hook_state_cache();
+    }
+
     #[test]
     fn restored_session_config_injects_identity_env() {
         // Regression: a restored/undeleted session must carry `THURBOX_SESSION`
@@ -6545,7 +6630,7 @@ mod tests {
             ("working", SessionStatus::Working),
             ("blocked", SessionStatus::Blocked),
         ] {
-            app.db.set_hook_state(id, state).unwrap();
+            signal_hook(&mut app, id, state);
             app.refresh_session_statuses();
             assert_eq!(
                 app.sessions[0].info.status, expected,
@@ -6562,7 +6647,7 @@ mod tests {
         // falls back to Idle. While output is still fresh it stays Working.
         let mut app = app_with_sessions(1);
         let id = persist_session(&app, 0);
-        app.db.set_hook_state(id, "working").unwrap();
+        signal_hook(&mut app, id, "working");
 
         // Fresh output → genuinely working.
         app.refresh_session_statuses();
@@ -6592,7 +6677,7 @@ mod tests {
         // you should see the blue "done" for the session you're watching.
         app.active_index = 1;
         app.refresh_session_statuses(); // focus moves to 1 (baseline update)
-        app.db.set_hook_state(id1, "done").unwrap();
+        signal_hook(&mut app, id1, "done");
         app.refresh_session_statuses();
         assert_eq!(
             app.sessions[1].info.status,
@@ -6613,13 +6698,54 @@ mod tests {
     }
 
     #[test]
+    fn refresh_seen_done_stays_idle_without_reload() {
+        // Regression for the status-cache write-through (ADR-P6): once a `done`
+        // session is acknowledged (focus left → seen), it must stay Idle on
+        // later ticks even when nothing reloads the cache. Marking it seen is a
+        // same-connection write that does NOT bump `data_version`, so without
+        // mirroring `seen_at` into the cached row the next derive would see a
+        // stale `seen_at < state_at` and flip it back to Done.
+        let mut app = app_with_sessions(2);
+        persist_session(&app, 0);
+        let id1 = persist_session(&app, 1);
+        app.active_index = 0;
+        app.refresh_session_statuses(); // baseline focus on 0
+
+        app.active_index = 1;
+        app.refresh_session_statuses(); // focus → 1
+        signal_hook(&mut app, id1, "done");
+        app.refresh_session_statuses();
+        assert_eq!(app.sessions[1].info.status, SessionStatus::Done);
+
+        // Acknowledge by leaving focus: seen_at written + mirrored into cache.
+        app.active_index = 0;
+        app.refresh_session_statuses();
+        assert_eq!(app.sessions[1].info.status, SessionStatus::Idle);
+
+        // A further refresh with no external change must NOT reload the cache,
+        // yet the session stays Idle (proves the write-through, not a reload).
+        let loads_before = app.perf_counters().hook_state_loads;
+        app.refresh_session_statuses();
+        assert_eq!(
+            app.perf_counters().hook_state_loads,
+            loads_before,
+            "no external change ⇒ no cache reload on the follow-up tick"
+        );
+        assert_eq!(
+            app.sessions[1].info.status,
+            SessionStatus::Idle,
+            "an acknowledged done session must stay Idle via the seen_at write-through"
+        );
+    }
+
+    #[test]
     fn refresh_done_unfocused_shows_done() {
         // A background session that finishes shows Done (blue) until visited.
         let mut app = app_with_sessions(2);
         persist_session(&app, 0);
         let id1 = persist_session(&app, 1);
         app.active_index = 0;
-        app.db.set_hook_state(id1, "done").unwrap();
+        signal_hook(&mut app, id1, "done");
         app.refresh_session_statuses();
         assert_eq!(app.sessions[1].info.status, SessionStatus::Done);
     }
@@ -6633,7 +6759,7 @@ mod tests {
         assert!(!app.should_redraw(), "quiescent after a redraw");
 
         // An external hook write must make the next refresh repaint.
-        app.db.set_hook_state(id, "blocked").unwrap();
+        signal_hook(&mut app, id, "blocked");
         app.refresh_session_statuses();
         assert!(
             app.should_redraw(),
@@ -6645,7 +6771,7 @@ mod tests {
     fn working_session_animates_spinner_and_repaints() {
         let mut app = app_with_sessions(1);
         let id = persist_session(&app, 0);
-        app.db.set_hook_state(id, "working").unwrap();
+        signal_hook(&mut app, id, "working");
 
         // Advance enough ticks to cross a spinner-frame boundary and confirm the
         // frame moves and the UI is marked dirty (so the live list animates).
@@ -6678,7 +6804,7 @@ mod tests {
         let mut app = app_with_sessions(2);
         let id0 = persist_session(&app, 0);
         let id1 = persist_session(&app, 1);
-        app.db.set_hook_state(id0, "working").unwrap();
+        signal_hook(&mut app, id0, "working");
 
         app.metrics.tick_count = 0;
         app.refresh_session_statuses();
@@ -6686,7 +6812,7 @@ mod tests {
 
         // Cross a spinner-frame boundary AND change session 1's status together.
         app.metrics.tick_count = SPINNER_TICKS_PER_FRAME;
-        app.db.set_hook_state(id1, "blocked").unwrap();
+        signal_hook(&mut app, id1, "blocked");
         app.refresh_session_statuses();
 
         assert_eq!(app.sessions[1].info.status, SessionStatus::Blocked);
@@ -6716,7 +6842,7 @@ mod tests {
     fn refresh_exited_session_is_idle_regardless_of_hook() {
         let mut app = app_with_sessions(1);
         let id = persist_session(&app, 0);
-        app.db.set_hook_state(id, "blocked").unwrap();
+        signal_hook(&mut app, id, "blocked");
         app.sessions[0].mark_exited_for_test();
         app.refresh_session_statuses();
         assert_eq!(app.sessions[0].info.status, SessionStatus::Idle);
@@ -10290,6 +10416,76 @@ mod tests {
         assert_eq!(app.metrics.tick_count, 1);
         app.tick();
         assert_eq!(app.metrics.tick_count, 2);
+    }
+
+    #[test]
+    fn perf_hook_states_cached_across_idle_ticks() {
+        // `refresh_session_statuses` reloads the persisted hook columns only
+        // when the DB's `data_version` moves. With no external writer, the first
+        // tick loads and every subsequent idle tick reuses the cache — so the
+        // expensive sessions-table scan no longer runs ~100×/s. See
+        // docs/PERFORMANCE.md (ADR-P2).
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        assert_eq!(app.perf_counters().hook_state_loads, 0);
+        for _ in 0..5 {
+            app.tick();
+        }
+        assert_eq!(
+            app.perf_counters().hook_state_loads,
+            1,
+            "only the first tick loads; idle ticks reuse the cache"
+        );
+    }
+
+    #[test]
+    fn perf_hook_states_reload_on_external_change() {
+        // An *external* `session signal` commits on another connection, bumping
+        // this connection's `data_version` — which must invalidate the cache and
+        // trigger exactly one fresh load. A file-backed DB is required so a
+        // second connection shares the same database.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::open(tmp.path()).unwrap();
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), db);
+
+        app.tick();
+        let after_first = app.perf_counters().hook_state_loads;
+        assert_eq!(after_first, 1);
+
+        // No external write yet: another idle tick stays cached.
+        app.tick();
+        assert_eq!(app.perf_counters().hook_state_loads, 1);
+
+        // A different connection commits → `data_version` moves.
+        let db2 = Database::open(tmp.path()).unwrap();
+        db2.set_session_counter(7).unwrap();
+
+        app.tick();
+        assert_eq!(
+            app.perf_counters().hook_state_loads,
+            2,
+            "an external commit must invalidate the cache exactly once"
+        );
+    }
+
+    #[test]
+    fn perf_external_poll_never_reloads_without_external_writes() {
+        // With no *other* connection writing, `PRAGMA data_version` never moves,
+        // so the cheap poll never escalates to a full shared-state reload. The
+        // ratio of reloads to checks is the "is the poll doing real work?"
+        // signal; here it must be zero.
+        let mut app = App::new(24, 80, stub_backend(), stub_agents(), test_db());
+        for _ in 0..8 {
+            app.tick();
+        }
+        assert_eq!(
+            app.perf_counters().external_poll_reloads,
+            0,
+            "no external writes ⇒ no shared-state reload"
+        );
+        assert!(
+            app.perf_counters().external_poll_reloads <= app.perf_counters().external_poll_checks,
+            "reloads are a subset of checks"
+        );
     }
 
     #[test]

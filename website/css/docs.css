@@ -300,3 +300,38 @@ h3:hover .heading-anchor {
     grid-template-columns: repeat(3, 1fr);
   }
 }
+
+/* ---- Performance charts (inline SVG) ---- */
+.perf-figure {
+  margin: var(--space-xl) 0;
+}
+
+.perf-figure svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 660px;
+}
+
+.perf-figure .perf-axis {
+  fill: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.perf-figure .perf-value {
+  fill: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.perf-figure .perf-grid {
+  stroke: var(--border-light);
+  stroke-width: 1;
+}
+
+.perf-figure figcaption {
+  margin-top: var(--space-sm);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}

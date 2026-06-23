@@ -74,6 +74,17 @@ wall-clock-free `u64` counters bumped at the render/tick hot paths:
 | `ordered_sessions_rebuilds` | session-list order rebuilt vs. served from cache |
 | `parser_locks_render` | central pane locked a vt100 parser to render (one per terminal frame) |
 | `automation_entries_built` | automations-pane entry list built |
+| `hook_state_loads` | `refresh_session_statuses` actually reloaded the persisted hook columns (`load_hook_states`) — gated on a `data_version` change (ADR-P6), so it stays flat while idle |
+| `external_poll_checks` / `external_poll_reloads` | `poll_external_changes` ran its cheap `PRAGMA data_version` check / found a change and did a full shared-state reload |
+
+`hook_state_loads` is the regression gate for ADR-P6: it climbs once at startup
+and then only when an external `session signal` commits, instead of ~1 per tick.
+`external_poll_reloads` stays 0 with no other writer. Tick-driven counters are
+asserted in the `#[test]` units in `super::tests`
+(`perf_hook_states_cached_across_idle_ticks`,
+`perf_hook_states_reload_on_external_change`,
+`perf_external_poll_never_reloads_without_external_writes`), not the render-path
+acceptance harness (which skips `tick`).
 
 The acceptance harness (`src/app/acceptance.rs`) asserts on
 `App::perf_counters()` — e.g. *idle iterations skip the paint*, *the session
@@ -156,9 +167,26 @@ won't pay off.
 (ADR-P2). Heavier measurement is **opt-in and local**:
 
 - **Time-to-first-frame**: launch with `THURBOX_PERF_LOG=1`; `run_loop` logs one
-  `first_frame_ms=…` line (covering config load, DB open, and session restore)
-  to `~/.local/share/thurbox/thurbox.log`. Off by default — never affects normal
-  runs or the smoke test.
+  `startup …` line to `~/.local/share/thurbox/thurbox.log` with a **phase
+  breakdown** that sums to roughly `first_frame_ms` —
+  `config_init_ms` (config-file loads + local backend ready), `db_open_ms`,
+  `extension_heal_ms` (self-heal + built-in hooks wiring + agents reload),
+  `restore_ms` (session restore), and `first_frame_ms` (total to first paint).
+  When restore is the long pole, the same flag also emits per-backend
+  `restore_discover` lines (`discover_ms`) and per-session `restore_adopt` lines
+  (`adopt_ms`) so the *sequential* restore can be attributed. Note `restore_adopt`
+  covers both restore paths — **adopt** (a live tmux pane is re-attached) and
+  **respawn** (no live pane matched, so a fresh agent is launched); on a cold
+  socket (e.g. after a reboot) every session respawns. For the adopt path, an
+  `adopt_split` line (in `TmuxBackend::adopt`) further breaks `adopt_ms` into
+  `capture_ms` (the independent `tmux capture-pane` subprocess — the only part
+  that could run in parallel across sessions) and `connect_ms` (the
+  control-mode attach). This split is the deciding measurement for parallelizing
+  restore: the control-mode connection is serialized by a single mutex held
+  across each command's full round-trip (`TmuxBackend::with_control`), so
+  `connect_ms` is inherently sequential and only `capture_ms` can be overlapped.
+  Off by default — never affects normal runs or the smoke test; the timing reads
+  are gated on the flag so there is zero overhead otherwise.
 - **Binary size**: the non-gating `binary-size` CI job
   (`.github/workflows/ci.yml`) builds `--release` and records `thurbox` /
   `thurbox-cli` sizes to the job summary + an artifact. It is intentionally
@@ -186,11 +214,58 @@ regressions without flakiness or new dependencies.
 
 ---
 
+## ADR-P6: Reload the session-status hooks only on a `data_version` change
+
+**Choice**: `refresh_session_statuses` (`src/app/mod.rs`) used to run
+`Database::load_hook_states` — an indexed scan of the `sessions` table — on
+*every* tick (~100×/s) to derive each session's status. It now caches the hook
+rows (`App::cached_hook_states`) and reloads them only when the DB's
+`PRAGMA data_version` moves since the last load (`App::hook_states_version`).
+The pragma is an in-memory counter read (no table access), so the per-tick cost
+drops from a full scan + row mapping + UUID parsing + HashMap build to a single
+integer compare. The per-tick *derivation* (spinner, the output-quiescence
+`working → Idle` fallback, done/seen logic) still runs every tick against the
+cache, so status latency is unchanged. `load_hook_states` itself uses
+`prepare_cached` so the reload, when it happens, skips the SQL re-parse.
+
+Two writers don't move *this* connection's `data_version`, so they're handled
+explicitly: the deferred `seen_at` marks are applied **write-through** into the
+cache (otherwise a just-acknowledged `done` session would re-derive to `Done`
+next tick), and the restart path's `clear_hook_state` calls
+`App::invalidate_hook_state_cache` (forces a reload). External
+`thurbox-cli session signal` writes come from another connection and *do* bump
+`data_version`, so they're picked up on the next tick as before.
+
+Alongside this, `Database::initialize` (`src/storage/schema.rs`) sets the
+WAL-friendly performance pragmas `synchronous = NORMAL`, `cache_size = -8000`
+(8 MB), `mmap_size = 64 MB`, and `temp_store = MEMORY`.
+
+**Why**: ADR-P1 made *rendering* demand-driven, but `tick` still ran every
+≤10 ms and re-scanned the sessions table for hook state each time — pure waste
+on the overwhelmingly common idle tick where nothing signalled. The
+content-derived `data_version` gate is self-invalidating for cross-process
+writes (the common case) and can't miss them; the two same-connection writers
+are few and explicitly handled.
+
+**Rejected**:
+
+- *Tie the reload to the 250 ms sync poll* (`poll_external_changes`) — would add
+  up to 250 ms of latency to a status change (blocked/working/done), a visible
+  regression; the dedicated per-tick `data_version` read keeps ~10 ms latency.
+- *A second `has_external_changes`-style cursor* — that method mutates the
+  shared `last_data_version` used by the sync poll; reusing it would make the
+  two consumers steal each other's change edges. A read-only `data_version()`
+  avoids the coupling.
+
+---
+
 ## Quick reference
 
 | I want to… | Do this |
 | --- | --- |
-| Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read `first_frame_ms` in `thurbox.log` |
+| Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
+| Break down startup time | Read the `startup` phase fields (`config_init_ms`/`db_open_ms`/`extension_heal_ms`/`restore_ms`) + the `restore_discover`/`restore_adopt` lines |
+| Verify the status-hook cache (ADR-P6) | `cargo nextest run -E 'test(perf_hook_states)'`; `hook_state_loads` stays flat while idle, +1 per external `session signal` |
 | See binary size | Check the `Binary Size` CI job summary, or `cargo bloat --release --crates` |
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |
 | Verify no perf regression | `cargo nextest run -E 'test(perf_)'` |

@@ -5,9 +5,7 @@ use super::Database;
 impl Database {
     /// Check if another instance has modified the database since our last check.
     pub fn has_external_changes(&mut self) -> rusqlite::Result<bool> {
-        let current: i64 = self
-            .conn
-            .query_row("PRAGMA data_version", [], |row| row.get(0))?;
+        let current = self.data_version()?;
 
         if current != self.last_data_version {
             self.last_data_version = current;
@@ -15,6 +13,18 @@ impl Database {
         } else {
             Ok(false)
         }
+    }
+
+    /// Read `PRAGMA data_version` without advancing the
+    /// [`Self::has_external_changes`] cursor. The value changes whenever
+    /// *another* connection commits (never for this connection's own writes),
+    /// so a caller can cheaply gate a per-tick cache reload on it — independent
+    /// of, and without disturbing, the sync poll's own change tracking. The
+    /// pragma reads an in-memory counter (no table access), so it is far cheaper
+    /// than re-running a query.
+    pub fn data_version(&self) -> rusqlite::Result<i64> {
+        self.conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
     }
 
     /// Build a SharedState snapshot from the current database contents.
