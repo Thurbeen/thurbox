@@ -49,7 +49,7 @@ pub struct AutomationEditorState<'a> {
 
 impl<'a> AutomationEditorState<'a> {
     /// Borrow view data from an editor modal. Shared by the centered-overlay and
-    /// in-pane render paths so the 18-field projection lives in one place.
+    /// in-pane render paths so the field projection lives in one place.
     pub fn from_modal(
         m: &'a crate::app::modals::AutomationEditorModal,
         preview: &'a str,
