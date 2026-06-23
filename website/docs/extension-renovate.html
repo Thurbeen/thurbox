@@ -173,10 +173,10 @@ onThisPage:
             manifest):
           </p>
           <pre><code class="language-bash">thurbox-cli extension install renovate    # or ./extensions/renovate
-thurbox-cli extension uninstall renovate  # --purge also deletes ~/renovate</code></pre>
+thurbox-cli extension uninstall renovate  # --purge also deletes ~/.config/thurbox/extensions/renovate</code></pre>
           <p>
             Installing lays down the renovate home (
-            <code>~/renovate</code>
+            <code>~/.config/thurbox/extensions/renovate</code>
             ; override with
             <code>--home</code>
             ), registers the
@@ -199,7 +199,7 @@ thurbox-cli extension uninstall renovate  # --purge also deletes ~/renovate</cod
           <ul>
             <li>
               Add the repos to keep current to
-              <code>~/renovate/repos.md</code>
+              <code>~/.config/thurbox/extensions/renovate/repos.md</code>
               (one row each;
               <code>strategy</code>
               defaults to

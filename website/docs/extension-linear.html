@@ -135,9 +135,9 @@ onThisPage:
             <code>sync.sh</code>
             sources it before running:
           </p>
-          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">mkdir</span> -p ~/linear
-<span class="syn-prompt">$</span> <span class="syn-cmd">printf</span> 'LINEAR_API_KEY=lin_api_xxxxxxxx\n' &gt; ~/linear/credentials.env
-<span class="syn-prompt">$</span> <span class="syn-cmd">chmod</span> 600 ~/linear/credentials.env</code></pre>
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">mkdir</span> -p ~/.config/thurbox/extensions/linear
+<span class="syn-prompt">$</span> <span class="syn-cmd">printf</span> 'LINEAR_API_KEY=lin_api_xxxxxxxx\n' &gt; ~/.config/thurbox/extensions/linear/credentials.env
+<span class="syn-prompt">$</span> <span class="syn-cmd">chmod</span> 600 ~/.config/thurbox/extensions/linear/credentials.env</code></pre>
           <p>
             (Exporting
             <code>LINEAR_API_KEY</code>
@@ -173,10 +173,10 @@ onThisPage:
             manifest):
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install linear       <span class="syn-comment"># or ./extensions/linear</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall linear     <span class="syn-comment"># --purge also deletes ~/linear</span></code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall linear     <span class="syn-comment"># --purge also deletes ~/.config/thurbox/extensions/linear</span></code></pre>
           <p>
             Installing lays down the
-            <code>~/linear/</code>
+            <code>~/.config/thurbox/extensions/linear/</code>
             home (override with
             <code>--home</code>
             ; it holds
@@ -196,7 +196,7 @@ onThisPage:
           </h2>
           <p>
             Edit
-            <code>~/linear/trackers.md</code>
+            <code>~/.config/thurbox/extensions/linear/trackers.md</code>
             &mdash; one row per Linear team. The
             <strong>query</strong>
             is a Linear
@@ -228,7 +228,7 @@ onThisPage:
             ) or headless:
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> automation run &lt;id&gt;     <span class="syn-comment"># id from: thurbox-cli automation list</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">~/linear/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">~/.config/thurbox/extensions/linear/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
           <p>Then inspect the imported tasks:</p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> task list --json | jq -c '.[] | select(.source=="linear") | {id,status,external_id,title}'</code></pre>
           <p>

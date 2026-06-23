@@ -49,9 +49,9 @@ onThisPage:
             <code>forge</code>
             session. Each scan clusters your tasks/sessions/automations by intent and, where a
             pattern repeats, writes a proposal to
-            <code>~/forge/proposals.jsonl</code>
+            <code>~/.config/thurbox/extensions/forge/proposals.jsonl</code>
             (rendered for humans into
-            <code>~/forge/proposals.md</code>
+            <code>~/.config/thurbox/extensions/forge/proposals.md</code>
             ). Like Thurbox itself, forge is
             <strong>agent-agnostic</strong>
             : the analyst is a plain
@@ -73,10 +73,10 @@ onThisPage:
             manifest):
           </p>
           <pre><code class="language-bash">thurbox-cli extension install forge      # or ./extensions/forge from a checkout
-thurbox-cli extension uninstall forge    # --purge also deletes ~/forge</code></pre>
+thurbox-cli extension uninstall forge    # --purge also deletes ~/.config/thurbox/extensions/forge</code></pre>
           <p>
             Installing lays down the forge home (
-            <code>~/forge</code>
+            <code>~/.config/thurbox/extensions/forge</code>
             ; override with
             <code>--home</code>
             ), registers the
@@ -105,7 +105,7 @@ thurbox-cli extension uninstall forge    # --purge also deletes ~/forge</code></
             <li>
               <code>status</code>
               for a one-screen list of open proposals; review the rendered backlog in
-              <code>~/forge/proposals.md</code>
+              <code>~/.config/thurbox/extensions/forge/proposals.md</code>
               .
             </li>
             <li>

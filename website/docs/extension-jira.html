@@ -143,13 +143,13 @@ onThisPage:
             <code>sync.sh</code>
             sources it before running:
           </p>
-          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">mkdir</span> -p ~/jira
-<span class="syn-prompt">$</span> <span class="syn-cmd">cat</span> &gt; ~/jira/credentials.env &lt;&lt;'EOF'
+          <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">mkdir</span> -p ~/.config/thurbox/extensions/jira
+<span class="syn-prompt">$</span> <span class="syn-cmd">cat</span> &gt; ~/.config/thurbox/extensions/jira/credentials.env &lt;&lt;'EOF'
 JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-atlassian-api-token
 EOF
-<span class="syn-prompt">$</span> <span class="syn-cmd">chmod</span> 600 ~/jira/credentials.env</code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">chmod</span> 600 ~/.config/thurbox/extensions/jira/credentials.env</code></pre>
           <p>
             (Exporting the three vars from your shell profile is an alternative, but it only reaches
             the headless run if the scheduler inherits your profile &mdash; so
@@ -172,10 +172,10 @@ EOF
             manifest):
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install jira       <span class="syn-comment"># or ./extensions/jira</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall jira     <span class="syn-comment"># --purge also deletes ~/jira</span></code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall jira     <span class="syn-comment"># --purge also deletes ~/.config/thurbox/extensions/jira</span></code></pre>
           <p>
             Installing lays down the
-            <code>~/jira/</code>
+            <code>~/.config/thurbox/extensions/jira/</code>
             home (override with
             <code>--home</code>
             ; it holds
@@ -195,7 +195,7 @@ EOF
           </h2>
           <p>
             Edit
-            <code>~/jira/trackers.md</code>
+            <code>~/.config/thurbox/extensions/jira/trackers.md</code>
             &mdash; one row per filter. The
             <strong>query</strong>
             is a
@@ -229,7 +229,7 @@ EOF
             ) or headless:
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> automation run &lt;id&gt;     <span class="syn-comment"># id from: thurbox-cli automation list</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">~/jira/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">~/.config/thurbox/extensions/jira/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
           <p>Then inspect the imported tasks:</p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> task list --json | jq -c '.[] | select(.source=="jira") | {id,status,external_id,title}'</code></pre>
           <p>

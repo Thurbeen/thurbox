@@ -123,10 +123,10 @@ onThisPage:
             manifest):
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension install github-issues       <span class="syn-comment"># or ./extensions/github-issues</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall github-issues     <span class="syn-comment"># --purge also deletes ~/github-issues</span></code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> extension uninstall github-issues     <span class="syn-comment"># --purge also deletes ~/.config/thurbox/extensions/github-issues</span></code></pre>
           <p>
             Installing lays down the
-            <code>~/github-issues/</code>
+            <code>~/.config/thurbox/extensions/github-issues/</code>
             home (override with
             <code>--home</code>
             ; it holds
@@ -146,7 +146,7 @@ onThisPage:
           </h2>
           <p>
             Edit
-            <code>~/github-issues/trackers.md</code>
+            <code>~/.config/thurbox/extensions/github-issues/trackers.md</code>
             &mdash; one row per repo or saved filter. The
             <strong>query</strong>
             is
@@ -188,7 +188,7 @@ onThisPage:
             ) or headless:
           </p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> automation run &lt;id&gt;     <span class="syn-comment"># id from: thurbox-cli automation list</span>
-<span class="syn-prompt">$</span> <span class="syn-cmd">~/github-issues/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
+<span class="syn-prompt">$</span> <span class="syn-cmd">~/.config/thurbox/extensions/github-issues/scripts/sync.sh</span>     <span class="syn-comment"># or run the script directly</span></code></pre>
           <p>Then inspect the imported tasks:</p>
           <pre><code><span class="syn-prompt">$</span> <span class="syn-cmd">thurbox-cli</span> task list --json | jq -c '.[] | select(.source=="github") | {id,status,external_id,title}'</code></pre>
           <p>

@@ -186,10 +186,10 @@ onThisPage:
             manifest):
           </p>
           <pre><code class="language-bash">thurbox-cli extension install ci-shepherd    # or ./extensions/ci-shepherd
-thurbox-cli extension uninstall ci-shepherd  # --purge also deletes ~/ci-shepherd</code></pre>
+thurbox-cli extension uninstall ci-shepherd  # --purge also deletes ~/.config/thurbox/extensions/ci-shepherd</code></pre>
           <p>
             Installing lays down the shepherd home (
-            <code>~/ci-shepherd</code>
+            <code>~/.config/thurbox/extensions/ci-shepherd</code>
             ; override with
             <code>--home</code>
             ), registers the
@@ -212,7 +212,7 @@ thurbox-cli extension uninstall ci-shepherd  # --purge also deletes ~/ci-shepher
           <ul>
             <li>
               Add the repos to watch to
-              <code>~/ci-shepherd/repos.md</code>
+              <code>~/.config/thurbox/extensions/ci-shepherd/repos.md</code>
               (one row each;
               <code>author</code>
               defaults to
@@ -249,7 +249,7 @@ thurbox-cli extension uninstall ci-shepherd  # --purge also deletes ~/ci-shepher
             does. So
             <code>dispatch-fix.sh</code>
             adopts the branch itself into a shepherd-owned worktree under
-            <code>~/ci-shepherd/worktrees/&lt;repo&gt;-&lt;provider&gt;-&lt;n&gt;</code>
+            <code>~/.config/thurbox/extensions/ci-shepherd/worktrees/&lt;repo&gt;-&lt;provider&gt;-&lt;n&gt;</code>
             , then spawns the fixer there. The checkout is git-universal: a built-in forge uses the
             provider's checkout (
             <code>gh pr checkout</code>
