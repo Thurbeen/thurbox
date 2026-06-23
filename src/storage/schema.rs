@@ -999,13 +999,12 @@ fn migrate_v33_action_extra_repos(conn: &Connection) -> rusqlite::Result<()> {
 /// identically to the pre-hooks behaviour.
 ///
 /// Fresh v34 databases already have the columns from `initialize` and skip this
-/// step; existing databases get them via the ALTERs. `let _` swallows the
-/// "duplicate column" error so a re-run is a no-op.
+/// step; existing databases get them via the ALTERs, guarded so a re-run is a
+/// no-op.
 fn migrate_v34_hook_status(conn: &Connection) -> rusqlite::Result<()> {
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN hook_state TEXT", []);
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN hook_state_at INTEGER", []);
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN seen_at INTEGER", []);
-    Ok(())
+    add_column_if_absent(conn, "sessions", "hook_state", "TEXT")?;
+    add_column_if_absent(conn, "sessions", "hook_state_at", "INTEGER")?;
+    add_column_if_absent(conn, "sessions", "seen_at", "INTEGER")
 }
 
 /// v34 → v35: index `tasks(source, external_id)` for external-tracker sync.
