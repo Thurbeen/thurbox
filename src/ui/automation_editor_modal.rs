@@ -47,8 +47,8 @@ pub struct AutomationEditorState<'a> {
     pub focused: bool,
     /// The fields shown for the current trigger kind + action, in display and
     /// navigation order. Projected from the single source of truth
-    /// ([`crate::app::modals::AutomationEditorModal::visible_fields`]) so render
-    /// order can't drift from the modal's cursor-navigation order.
+    /// (`AutomationEditorModal::visible_fields`) so render order can't drift from
+    /// the modal's cursor-navigation order.
     pub visible_fields: Vec<AutomationField>,
 }
 
