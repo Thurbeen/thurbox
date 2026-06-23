@@ -1098,3 +1098,19 @@ fn perf_idle_iterations_skip_the_paint() {
     assert_eq!(skipped, 4, "idle iterations skip the expensive draw");
     assert_eq!(h.app.perf_counters().redraws_skipped, 4);
 }
+
+/// `dispatch_action` partitions `Action` across several sub-dispatchers whose
+/// final arm (`dispatch_scoped_pane_action`) is `unreachable!()`. A new `Action`
+/// variant that isn't wired into any dispatcher would therefore panic at runtime
+/// instead of failing to compile — this exercises every variant through the real
+/// dispatch path so an unrouted action fails the suite loudly. A fresh harness
+/// per action keeps the routing decision independent of accumulated side effects.
+#[tokio::test]
+async fn every_action_is_routed_by_dispatch_action() {
+    for &action in crate::session::Action::all() {
+        let mut h = Harness::standard(1);
+        // The assertion is simply that this does not hit the `unreachable!()` in
+        // `dispatch_scoped_pane_action` (or otherwise panic).
+        let _ = h.app.dispatch_action(action);
+    }
+}

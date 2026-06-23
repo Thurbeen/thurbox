@@ -430,6 +430,30 @@ fn apply_ctrl_line_edit(field: &mut impl LineEdit, code: KeyCode, mods: KeyModif
     true
 }
 
+/// Apply a key to a multi-line [`TextArea`] field: `Enter` inserts a newline,
+/// `Up`/`Down` move within the text, and the rest edit / move the cursor.
+/// Returns `true` when the key was consumed. `Esc` (cancel) and `Tab`/`BackTab`
+/// (field navigation) are deliberately *not* handled here — they belong to the
+/// owning editor — and `Ctrl` chords should be routed through
+/// [`apply_ctrl_line_edit`] first. Shared by the automation `Prompt` and task
+/// `Description` fields so their editing behavior can't drift apart.
+fn handle_textarea_key(area: &mut TextArea, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Enter => area.insert_newline(),
+        KeyCode::Up => area.move_up(),
+        KeyCode::Down => area.move_down(),
+        KeyCode::Char(c) => area.insert(c),
+        KeyCode::Backspace => area.backspace(),
+        KeyCode::Delete => area.delete(),
+        KeyCode::Left => area.move_left(),
+        KeyCode::Right => area.move_right(),
+        KeyCode::Home => area.home(),
+        KeyCode::End => area.end(),
+        _ => return false,
+    }
+    true
+}
+
 /// Apply a text-editing key (insert/backspace/delete/cursor move + readline
 /// `Ctrl+W`/`Ctrl+U`) to the currently focused field, if any. Returns `true`
 /// when `code`+`mods` was a text-editing key (whether or not a field was
@@ -833,17 +857,9 @@ impl AutomationEditorModal {
                 KeyCode::Esc => return EditorOutcome::Cancel,
                 KeyCode::Tab => self.next_field(),
                 KeyCode::BackTab => self.prev_field(),
-                KeyCode::Enter => self.prompt.insert_newline(),
-                KeyCode::Up => self.prompt.move_up(),
-                KeyCode::Down => self.prompt.move_down(),
-                KeyCode::Char(c) => self.prompt.insert(c),
-                KeyCode::Backspace => self.prompt.backspace(),
-                KeyCode::Delete => self.prompt.delete(),
-                KeyCode::Left => self.prompt.move_left(),
-                KeyCode::Right => self.prompt.move_right(),
-                KeyCode::Home => self.prompt.home(),
-                KeyCode::End => self.prompt.end(),
-                _ => {}
+                _ => {
+                    handle_textarea_key(&mut self.prompt, code);
+                }
             }
             return EditorOutcome::Continue;
         }
@@ -1364,17 +1380,9 @@ impl TaskEditorModal {
                 KeyCode::Esc => return EditorOutcome::Cancel,
                 KeyCode::Tab => self.next_field(),
                 KeyCode::BackTab => self.prev_field(),
-                KeyCode::Enter => self.description.insert_newline(),
-                KeyCode::Up => self.description.move_up(),
-                KeyCode::Down => self.description.move_down(),
-                KeyCode::Char(c) => self.description.insert(c),
-                KeyCode::Backspace => self.description.backspace(),
-                KeyCode::Delete => self.description.delete(),
-                KeyCode::Left => self.description.move_left(),
-                KeyCode::Right => self.description.move_right(),
-                KeyCode::Home => self.description.home(),
-                KeyCode::End => self.description.end(),
-                _ => {}
+                _ => {
+                    handle_textarea_key(&mut self.description, code);
+                }
             }
             return EditorOutcome::Continue;
         }
@@ -1548,17 +1556,21 @@ impl SettingsField {
     /// flags that gate UI panels (read from `App.features` every frame) apply
     /// live; everything else is read once at startup from `settings::global()`,
     /// which is a write-once value that can't be re-applied in-process.
+    ///
+    /// Derived from the canonical
+    /// [`crate::session::settings::Settings::restart_only_differs`] rather than
+    /// a second hand-maintained list: flip just this field on a default draft
+    /// and ask whether that single change registers as restart-only. So the UI
+    /// `⟳` marker can never disagree with the toast/reload partition.
     pub fn restart_required(self) -> bool {
-        use SettingsField::*;
-        !matches!(
-            self,
-            FeatTasks
-                | FeatFileViewer
-                | FeatGlobalSearch
-                | FeatInfoPanel
-                | FeatShellPane
-                | FeatSoftDelete
-        )
+        let mut modal = SettingsModal::new(crate::session::settings::Settings::default());
+        modal.field = self;
+        if self.is_scalar() {
+            modal.adjust(1);
+        } else {
+            modal.toggle();
+        }
+        modal.restart_required_changed()
     }
 }
 
@@ -1751,6 +1763,29 @@ impl Modal {
 
     pub fn is_open(&self) -> bool {
         !matches!(self, Modal::None)
+    }
+
+    /// For a modal with a selectable list, a mutable handle to its selection
+    /// cursor plus the key a row-click replays to activate that row (`Enter` for
+    /// the selectors and the F1 editor, `Space` for the repo picker — where a
+    /// row's action is toggle/fold and `Enter` would confirm the whole modal on
+    /// a misclick). This is the **single** match over the selector modals, so the
+    /// read path (`App::modal_selected_index`) and the write path
+    /// (`App::select_modal_row`) can never drift onto different modal sets — a new
+    /// selectable modal is wired into both at once by adding one arm here.
+    pub(super) fn list_selection(&mut self) -> Option<(&mut usize, KeyCode)> {
+        match self {
+            Modal::Help(h) => Some((&mut h.selected, KeyCode::Enter)),
+            Modal::ThemePicker(tp) => Some((&mut tp.index, KeyCode::Enter)),
+            Modal::AgentPicker(ap) => Some((&mut ap.selected_index, KeyCode::Enter)),
+            Modal::HostPicker(hp) => Some((&mut hp.selected_index, KeyCode::Enter)),
+            Modal::BranchSelector(bs) => Some((&mut bs.index, KeyCode::Enter)),
+            Modal::TaskActionPicker(p) => Some((&mut p.selected, KeyCode::Enter)),
+            Modal::AutomationsList(al) => Some((&mut al.index, KeyCode::Enter)),
+            Modal::RestoreSessions(rs) => Some((&mut rs.index, KeyCode::Enter)),
+            Modal::RepoPicker(rp) => Some((&mut rp.list_index, KeyCode::Char(' '))),
+            _ => None,
+        }
     }
 }
 
@@ -2253,6 +2288,46 @@ mod tests {
         modal.toggle_action();
         assert_eq!(modal.action, AutomationActionKind::Send);
         assert!(!modal.visible_fields().contains(&AutomationField::Repo));
+    }
+
+    #[test]
+    fn visible_fields_track_trigger_kind() {
+        use AutomationField::*;
+        let fields = |trigger| {
+            AutomationEditorModal {
+                trigger_kind: trigger,
+                action: AutomationActionKind::Send,
+                ..Default::default()
+            }
+            .visible_fields()
+        };
+        // A one-shot delay never shows a wall-clock timezone field.
+        assert_eq!(
+            fields(TriggerKind::Once),
+            vec![Name, Trigger, Delay, Action, Target, Prompt]
+        );
+        assert!(!fields(TriggerKind::Once).contains(&Timezone));
+        // Wall-clock schedules carry a timezone and their time steppers.
+        assert_eq!(
+            fields(TriggerKind::Hourly),
+            vec![Name, Trigger, Minute, Timezone, Action, Target, Prompt]
+        );
+        assert_eq!(
+            fields(TriggerKind::Daily),
+            vec![Name, Trigger, Hour, Minute, Timezone, Action, Target, Prompt]
+        );
+        assert_eq!(
+            fields(TriggerKind::Weekdays),
+            vec![Name, Trigger, Hour, Minute, Timezone, Action, Target, Prompt]
+        );
+        assert_eq!(
+            fields(TriggerKind::Weekly),
+            vec![Name, Trigger, Weekday, Hour, Minute, Timezone, Action, Target, Prompt]
+        );
+        assert_eq!(
+            fields(TriggerKind::Cron),
+            vec![Name, Trigger, CronExpr, Timezone, Action, Target, Prompt]
+        );
     }
 
     #[test]

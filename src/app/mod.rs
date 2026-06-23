@@ -111,6 +111,9 @@ struct PendingSessionSpawn {
     /// A task-initiated spawn's `(task_id, title)`, captured at kickoff so the
     /// prompt is delivered + the task advanced when the session comes up.
     task_prompt: Option<(i64, String)>,
+    /// Agent name for the spawn, captured so a failure toast names the real
+    /// agent (codex/aider/…) rather than hardcoding "claude".
+    agent: String,
 }
 
 /// Continuation for a backgrounded worktree-creation: the wizard inputs needed
@@ -2049,50 +2052,16 @@ impl App {
 
     /// Move the open modal's selection to `row` (a row index recorded by this
     /// frame's renderer, so it is always in bounds) and return the key that
-    /// activates a row there: `Enter` for the selectors and the F1 editor,
-    /// `Space` for the repo picker — where a row's action is toggle/fold and
-    /// `Enter` would confirm the whole modal on a misclick.
+    /// activates a row there (see [`modals::Modal::list_selection`]).
     fn select_modal_row(&mut self, row: usize) -> Option<KeyCode> {
-        match &mut self.modal {
-            modals::Modal::Help(h) => {
-                h.selected = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::ThemePicker(tp) => {
-                tp.index = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::AgentPicker(ap) => {
-                ap.selected_index = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::HostPicker(hp) => {
-                hp.selected_index = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::BranchSelector(bs) => {
-                bs.index = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::TaskActionPicker(p) => {
-                p.selected = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::AutomationsList(al) => {
-                al.index = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::RestoreSessions(rs) => {
-                rs.index = row;
-                Some(KeyCode::Enter)
-            }
-            modals::Modal::RepoPicker(rp) => {
-                rp.focus = modals::RepoPickerFocus::List;
-                rp.list_index = row;
-                Some(KeyCode::Char(' '))
-            }
-            _ => None,
+        // The repo picker routes keys by its internal focus; a row click always
+        // means the list (mirrors the keyboard path), so force it before moving.
+        if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.focus = modals::RepoPickerFocus::List;
         }
+        let (index, activation_key) = self.modal.list_selection()?;
+        *index = row;
+        Some(activation_key)
     }
 
     /// Select the index-th field of the active editor modal (its position in
@@ -2358,19 +2327,10 @@ impl App {
     }
 
     /// The open modal's current selection index, when it has a selectable list.
-    fn modal_selected_index(&self) -> Option<usize> {
-        match &self.modal {
-            modals::Modal::Help(h) => Some(h.selected),
-            modals::Modal::ThemePicker(tp) => Some(tp.index),
-            modals::Modal::AgentPicker(ap) => Some(ap.selected_index),
-            modals::Modal::HostPicker(hp) => Some(hp.selected_index),
-            modals::Modal::BranchSelector(bs) => Some(bs.index),
-            modals::Modal::TaskActionPicker(p) => Some(p.selected),
-            modals::Modal::AutomationsList(al) => Some(al.index),
-            modals::Modal::RestoreSessions(rs) => Some(rs.index),
-            modals::Modal::RepoPicker(rp) => Some(rp.list_index),
-            _ => None,
-        }
+    /// Shares [`modals::Modal::list_selection`] with [`Self::select_modal_row`]
+    /// (hence `&mut self`) so the two can't drift onto different modal sets.
+    fn modal_selected_index(&mut self) -> Option<usize> {
+        self.modal.list_selection().map(|(index, _)| *index)
     }
 
     /// Route a mouse-wheel tick to whichever pane is under the cursor, so the
@@ -2906,9 +2866,10 @@ impl App {
         if config.agent.is_empty() {
             config.agent = self.agents.default_name();
         }
-        if config.agent_session_id.is_none() {
-            config.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
-        }
+        let agent_session_id = config
+            .agent_session_id
+            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+            .clone();
         // Mint the thurbox SessionId up front (unless a respawn supplied one) so
         // it can be injected as `THURBOX_SESSION` before launch and `Session::spawn`
         // reuses it. Stable across restarts.
@@ -2916,45 +2877,10 @@ impl App {
             config.session_id = Some(SessionId::default());
         }
 
-        // Inject identity + statusline env vars (kept in sync with the headless
-        // `session_ops::inject_thurbox_env`). `THURBOX_SESSION` is the thurbox
-        // session key (read by the mailbox CLI); `THURBOX_SESSION_ID` is the
-        // agent's conversation id (read by the metrics script) — kept distinct.
-        // `THURBOX_TASK` is not set here: TUI task spawns track the task↔session
-        // link in-memory (`task_session_links`); only the headless `task run`
-        // path auto-tags messages with it.
-        if let Some(id) = config.session_id {
-            config.env.insert("THURBOX_SESSION".into(), id.to_string());
-        }
-        if let Some(ref sid) = config.agent_session_id {
-            config.env.insert("THURBOX_SESSION_ID".into(), sid.clone());
-        }
-        if let Some(metrics_dir) = crate::paths::metrics_directory() {
-            config.env.insert(
-                "THURBOX_METRICS_DIR".into(),
-                metrics_dir.to_string_lossy().into(),
-            );
-        }
-        // Pin the agent's `thurbox-cli` (status hook) to this thurbox's resolved
-        // config/data dirs, so a `session signal` lands in the DB the TUI reads
-        // regardless of XDG / PATH / stale tmux-server env. Mirrors
-        // `session_ops::inject_thurbox_env`.
-        if let Some(dir) =
-            crate::paths::config_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        {
-            config.env.insert(
-                crate::paths::CONFIG_DIR_OVERRIDE_ENV.into(),
-                dir.to_string_lossy().into(),
-            );
-        }
-        if let Some(dir) =
-            crate::paths::database_file().and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        {
-            config.env.insert(
-                crate::paths::DATA_DIR_OVERRIDE_ENV.into(),
-                dir.to_string_lossy().into(),
-            );
-        }
+        // Inject identity + statusline env vars. `THURBOX_TASK` is left unset: TUI
+        // task spawns track the task↔session link in-memory (`task_session_links`),
+        // so only the headless `task run` path auto-tags messages with it.
+        crate::session_ops::inject_thurbox_env(&mut config, &agent_session_id, None);
 
         // For a multi-repo session, launch the agent in a symlink workspace that
         // gathers every member dir; `info.cwd` keeps the primary repo (restored
@@ -3076,7 +3002,7 @@ impl App {
             }
             Err(e) => {
                 error!("Failed to spawn session: {e}");
-                self.set_error(format!("Failed to start claude: {e:#}"));
+                self.set_error(format!("Failed to start {}: {e:#}", inputs.config.agent));
             }
         }
     }
@@ -3113,6 +3039,7 @@ impl App {
             cols,
         } = inputs;
 
+        let agent = config.agent.clone();
         let tx = self.session_spawn.start();
         self.pending_session_spawn = Some(PendingSessionSpawn {
             primary_cwd,
@@ -3120,6 +3047,7 @@ impl App {
             additional_dirs,
             parent_session_id,
             task_prompt,
+            agent,
         });
         self.set_status(StatusLevel::Info, format!("Spawning {name}…"));
 
@@ -3156,7 +3084,7 @@ impl App {
             ),
             Err(e) => {
                 error!("Failed to spawn session: {e}");
-                self.set_error(format!("Failed to start claude: {e}"));
+                self.set_error(format!("Failed to start {}: {e}", pending.agent));
             }
         }
     }
@@ -11062,6 +10990,7 @@ mod tests {
             additional_dirs: vec![],
             parent_session_id: None,
             task_prompt: None,
+            agent: "codex".into(),
         });
 
         app.poll_session_spawn();
@@ -11069,6 +10998,8 @@ mod tests {
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, StatusLevel::Error);
         assert!(msg.text.contains("tmux exploded"));
+        // The toast names the real agent, not a hardcoded "claude".
+        assert!(msg.text.contains("codex"), "got {}", msg.text);
         assert!(app.sessions.is_empty());
         assert!(!app.session_spawn.in_progress());
         assert!(app.pending_session_spawn.is_none());
@@ -11084,6 +11015,7 @@ mod tests {
             additional_dirs: vec![],
             parent_session_id: None,
             task_prompt: None,
+            agent: "claude".into(),
         });
 
         app.poll_session_spawn();
