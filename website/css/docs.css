@@ -47,6 +47,21 @@
   margin: 0;
 }
 
+.docs-sidebar li.nav-subheading {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  opacity: 0.75;
+  padding: 0.35rem 0.75rem 0.15rem;
+  margin-top: var(--space-xs);
+}
+
+.docs-sidebar li.nav-subheading:first-child {
+  margin-top: 0;
+}
+
 .docs-sidebar a {
   display: block;
   padding: 0.35rem 0.75rem;

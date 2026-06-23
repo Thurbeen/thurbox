@@ -25,11 +25,15 @@
   ]},
   { heading: "Extensions", links: [
     { slug: "extensions", href: "extensions.html", label: "Overview" },
+    { subheading: "Built in" },
     { slug: "agent-hooks", href: "agent-hooks.html", label: "Agent hooks" },
+    { subheading: "Triage & workflow" },
     { slug: "extension-flow", href: "extension-flow.html", label: "Flow" },
     { slug: "extension-forge", href: "extension-forge.html", label: "Forge" },
+    { subheading: "Repository automation" },
     { slug: "extension-ci-shepherd", href: "extension-ci-shepherd.html", label: "CI-shepherd" },
     { slug: "extension-renovate", href: "extension-renovate.html", label: "Renovate" },
+    { subheading: "Issue tracker sync" },
     { slug: "extension-github-issues", href: "extension-github-issues.html", label: "GitHub issues" },
     { slug: "extension-gitlab-issues", href: "extension-gitlab-issues.html", label: "GitLab issues" },
     { slug: "extension-linear", href: "extension-linear.html", label: "Linear" },
@@ -52,6 +56,9 @@
   <h4>{{ section.heading }}</h4>
   <ul>
     {%- for link in section.links %}
+    {%- if link.subheading %}
+    <li class="nav-subheading">{{ link.subheading }}</li>
+    {%- else %}
     <li>
       <a
         href="{{ link.href }}"
@@ -59,6 +66,7 @@
         >{{ link.label }}</a
       >
     </li>
+    {%- endif %}
     {%- endfor %}
   </ul>
   {%- endfor %}
