@@ -2,20 +2,11 @@ use std::path::PathBuf;
 
 use crate::session::SessionId;
 
-/// Current shared state format version.
-const SHARED_STATE_VERSION: u32 = 1;
-
 /// In-memory snapshot of shared state across all thurbox instances.
 ///
 /// Used for computing deltas between local and database state.
 #[derive(Debug, Clone)]
 pub struct SharedState {
-    /// Version of the shared state format.
-    pub version: u32,
-
-    /// Timestamp (millis since epoch) when this snapshot was taken.
-    pub last_modified: u64,
-
     /// Session counter for unique naming across instances.
     pub session_counter: usize,
 
@@ -27,8 +18,6 @@ impl SharedState {
     /// Create a new empty shared state.
     pub fn new() -> Self {
         Self {
-            version: SHARED_STATE_VERSION,
-            last_modified: current_time_millis(),
             session_counter: 0,
             sessions: Vec::new(),
         }
@@ -145,17 +134,14 @@ mod tests {
     #[test]
     fn new_shared_state_is_empty_and_valid() {
         let state = SharedState::new();
-        assert_eq!(state.version, SHARED_STATE_VERSION);
         assert_eq!(state.session_counter, 0);
         assert!(state.sessions.is_empty());
-        assert!(state.last_modified > 0);
     }
 
     #[test]
     fn default_state_equals_new() {
         let new_state = SharedState::new();
         let default_state = SharedState::default();
-        assert_eq!(new_state.version, default_state.version);
         assert_eq!(new_state.session_counter, default_state.session_counter);
     }
 

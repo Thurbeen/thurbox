@@ -33,8 +33,6 @@ impl Database {
         let counter = self.get_session_counter()?;
 
         Ok(SharedState {
-            version: 1,
-            last_modified: crate::sync::current_time_millis(),
             session_counter: counter,
             sessions,
         })

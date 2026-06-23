@@ -99,9 +99,11 @@ impl Default for SyncState {
 pub struct PollResult {
     /// Delta between local and DB state (may be empty).
     pub delta: StateDelta,
-    /// Whether the database was modified externally (e.g. by the MCP server).
-    /// True even when the delta is empty, indicating that non-tracked state
-    /// (such as global roles or MCP servers) may have changed.
+    /// Whether the database was modified externally (another thurbox instance,
+    /// the headless CLI, or an automation tick). True even when the delta is
+    /// empty, indicating that state not carried by `delta` may have changed —
+    /// the active theme, session hook-states, automation/task/message rows, or
+    /// a pending-focus request.
     pub db_changed: bool,
 }
 
