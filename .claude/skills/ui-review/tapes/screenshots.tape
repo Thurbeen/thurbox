@@ -8,7 +8,9 @@
 # VHS has no function-key commands, so this uses thurbox's Ctrl aliases:
 #   Ctrl+B = info panel, Ctrl+E = file viewer, Ctrl+W = tasks, Ctrl+P = automations,
 #   Ctrl+A = global search, Ctrl+Y = theme picker, Ctrl+N = new session,
-#   Ctrl+G = keybindings help, Ctrl+J = next session.
+#   Ctrl+G = keybindings help, Ctrl+J = next session, Ctrl+X = settings.
+# Ctrl+A (global search) and Ctrl+X (settings) are remapped by capture.sh via a
+# seeded keybindings.json, because VHS cannot type their real chords (Ctrl+/, Ctrl+,).
 
 # VHS still requires at least one Output; we use a throwaway one and rely on
 # Screenshot for the real artifacts.
@@ -34,12 +36,21 @@ Sleep 3s
 # 01 — default view: session list + terminal
 Screenshot "__SHOT_DIR__/01-session-list.png"
 
-# 02 — select a different session
+# 02 — select a different session (terminal still focused)
 Ctrl+J
 Sleep 1500ms
 Screenshot "__SHOT_DIR__/02-second-session.png"
 
-# 03 — info panel
+# Focus the session list. The panel-toggle chords below (Ctrl+B/E/W/P) are
+# terminal-PASSTHROUGH actions: while a session terminal is focused they are
+# forwarded to the agent CLI instead of running the thurbox command, so they
+# must be issued from the session list. Ctrl+H (focus previous pane) is NOT a
+# passthrough, so it reliably moves focus Terminal -> session list. Each toggle
+# below returns focus to the session list when closed, so one Ctrl+H suffices.
+Ctrl+H
+Sleep 700ms
+
+# 03 — info panel (toggle leaves focus on the session list)
 Ctrl+B
 Sleep 1500ms
 Screenshot "__SHOT_DIR__/03-info-panel.png"
@@ -96,6 +107,34 @@ Sleep 1500ms
 Screenshot "__SHOT_DIR__/10-keybindings.png"
 Escape
 Sleep 500ms
+
+# 11 — settings panel. Default chord is Ctrl+, / F6, neither typeable by VHS;
+# capture.sh remaps OpenSettings -> Ctrl+X for the tape.
+Ctrl+X
+Sleep 1500ms
+Screenshot "__SHOT_DIR__/11-settings-panel.png"
+Escape
+Sleep 700ms
+
+# 12 — automation editor (multi-line wrapping prompt + modal button footer).
+# Ctrl+P opens the automations list; Enter edits the seeded "nightly-triage".
+Ctrl+P
+Sleep 900ms
+Enter
+Sleep 1500ms
+Screenshot "__SHOT_DIR__/12-automation-editor.png"
+Escape
+Sleep 700ms
+
+# 13 — task editor (in-pane, central-pane). Ctrl+W focuses the tasks panel;
+# Enter opens the editor for the selected task.
+Ctrl+W
+Sleep 900ms
+Enter
+Sleep 1500ms
+Screenshot "__SHOT_DIR__/13-task-editor.png"
+Escape
+Sleep 700ms
 
 # Quit cleanly.
 Ctrl+Q

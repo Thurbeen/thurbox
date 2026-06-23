@@ -41,8 +41,13 @@ cd "$REPO_ROOT"
 # --- Args -------------------------------------------------------------------
 OUT_DIR=""
 DEMO_THEME="${DEMO_THEME:-doom}"
-WIDTH=1920
-HEIGHT=1080
+# Keep the viewport at/under ~1568px on the long edge: image inputs are
+# downscaled to that cap, so a 1920x1080 capture is resampled and the TUI's fine
+# detail (status glyphs, tree markers, swatches) blurs into illegibility for the
+# analyze phase. 1500x940 with FontSize 18 yields ~135 cols (>= the 120-col
+# threshold for the 3-panel layout) and renders 1:1, so text stays readable.
+WIDTH=1500
+HEIGHT=940
 while [ $# -gt 0 ]; do
     case "$1" in
         --theme)  DEMO_THEME="${2:?--theme needs a value}"; shift 2 ;;
@@ -94,23 +99,27 @@ if [ -z "$AGENTS" ]; then
     STUB=1
 fi
 
-# --- Isolated environment ----------------------------------------------------
-SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/thurbox-ui-review.XXXXXX")
-export HOME="$SANDBOX/home"
-export XDG_DATA_HOME="$SANDBOX/data"
-export XDG_CONFIG_HOME="$SANDBOX/config"
-export XDG_STATE_HOME="$SANDBOX/state"
-export XDG_CACHE_HOME="$SANDBOX/cache"
-export TMUX_TMPDIR="$SANDBOX/tmux"
+# --- Isolated environment (reuse the repo's single source of truth) ----------
+# Don't hand-roll isolation: scripts/dev/lib/sandbox-env.sh is the shared
+# dev-sandbox helper already used by the demo recorder + TUI smoke test.
+# `tbx_sandbox_init_full fresh` gives FULL hermetic isolation — a throwaway
+# mktemp root with fresh HOME + XDG_* — and crucially UNSETS any inherited
+# THURBOX_CONFIG_DIR / THURBOX_DATA_DIR. paths.rs honors those ahead of XDG, so an
+# inherited override (e.g. from a thurbox-dev direnv/sandbox shell) would silently
+# defeat XDG isolation and make the dev binary read/WRITE your REAL db + config.
+# `fresh` => the root is removed on teardown. Build the binaries BEFORE this (done
+# above) so cargo still resolves your real ~/.cargo before HOME is overridden.
+# shellcheck source=scripts/dev/lib/sandbox-env.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/dev/lib/sandbox-env.sh"
+tbx_sandbox_init_full fresh
+
+SANDBOX="$TBX_SANDBOX_ROOT"
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
 DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"
-mkdir -p "$HOME" "$CFG_DIR" "$XDG_DATA_HOME" "$XDG_STATE_HOME" \
-    "$XDG_CACHE_HOME" "$TMUX_TMPDIR"
+mkdir -p "$CFG_DIR" "$(dirname "$DB_FILE")"
 
-cleanup() {
-    tmux -L thurbox-dev kill-server >/dev/null 2>&1 || true
-    rm -rf "$SANDBOX"
-}
+cleanup() { tbx_sandbox_teardown; }
 trap cleanup EXIT INT TERM
 
 # --- Agent registry ----------------------------------------------------------
@@ -127,6 +136,18 @@ trap cleanup EXIT INT TERM
         done
     fi
 } > "$CFG_DIR/agents.toml"
+
+# --- Keybindings override (VHS can't type Ctrl+, or F-keys) ------------------
+# Remap the two actions whose default chords VHS cannot emit to free, typeable
+# Ctrl+<letter> chords so the tape can open them. The rendered panels are
+# identical regardless of which key opens them.
+#   GlobalSearch: default Ctrl+/ -> Ctrl+A   OpenSettings: default Ctrl+, -> Ctrl+X
+cat > "$CFG_DIR/keybindings.json" <<'EOF'
+{
+  "GlobalSearch": ["ctrl+a"],
+  "OpenSettings": ["ctrl+x"]
+}
+EOF
 
 # --- Throwaway sample repo (so the file viewer shows a realistic tree) --------
 DEMO_REPO="$SANDBOX/sample-project"
@@ -166,6 +187,26 @@ log "Seeding sessions for:$AGENTS"
 for a in $AGENTS; do
     "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
 done
+
+# Isolation tripwire: at this point (CLI-only, no TUI yet) the sandbox DB must
+# hold EXACTLY the sessions we just seeded, all rooted under $SANDBOX. If the
+# count is off or any cwd escapes the sandbox, isolation has broken — abort
+# LOUDLY rather than read/pollute the caller's real thurbox database.
+# shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
+want=$(printf '%s\n' $AGENTS | grep -c .)
+got=$(sqlite3 "$DB_FILE" "SELECT count(*) FROM sessions WHERE deleted_at IS NULL" 2>/dev/null || echo "?")
+escaped=$(sqlite3 "$DB_FILE" \
+    "SELECT cwd FROM sessions WHERE deleted_at IS NULL AND cwd NOT LIKE '$SANDBOX%'" \
+    2>/dev/null || true)
+if [ "$got" != "$want" ] || [ -n "$escaped" ]; then
+    die "sandbox isolation breach — refusing to continue.
+  DB:       $DB_FILE
+  expected: $want session(s), all under $SANDBOX
+  found:    $got session(s)${escaped:+, incl. cwd(s) OUTSIDE the sandbox:
+$escaped}
+This means THURBOX_DATA_DIR/THURBOX_CONFIG_DIR (or similar) pointed the dev
+binary at your real data. Aborting before any further writes."
+fi
 
 log "Seeding tasks + an automation"
 "$CLI_BIN" task create --title "Write integration tests" >/dev/null 2>&1 || true
@@ -225,6 +266,9 @@ emit() { # file label screen keys
 08-theme-picker.png|Theme picker|theme|Ctrl+Y
 09-repo-picker.png|New-session / repo picker|new-session|Ctrl+N
 10-keybindings.png|Keybindings help + editor|keybindings|Ctrl+G
+11-settings-panel.png|Settings panel|settings|Ctrl+,
+12-automation-editor.png|Automation editor (multi-line prompt)|automation-editor|Ctrl+P then Enter
+13-task-editor.png|Task editor (in-pane)|task-editor|Ctrl+W then Enter
 MANIFEST
     printf '\n]\n'
 } > "$OUT_DIR/manifest.json"
