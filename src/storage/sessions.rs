@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 use crate::session::SessionId;
 use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
@@ -40,50 +40,63 @@ pub struct DeletedSessionInfo {
 
 impl Database {
     /// Insert or update a session.
+    ///
+    /// Deliberately a single atomic `INSERT … ON CONFLICT(id) DO UPDATE` and
+    /// never lists the hook columns (`hook_state`/`hook_state_at`/`seen_at`), so
+    /// the TUI's full-row write-back can't clobber a state a headless hook just
+    /// set (see [`set_hook_state`](Self::set_hook_state)). `created_at` is set
+    /// only on insert; a conflict revives a soft-deleted row (`deleted_at =
+    /// NULL`). The pre-write existence check decides only the audit label and
+    /// can't make the write race — the UPSERT handles both cases regardless.
     pub fn upsert_session(&self, session: &SharedSession) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
 
-        let existing: Option<String> = self
+        let existed = self
             .conn
             .query_row(
-                "SELECT id FROM sessions WHERE id = ?1",
+                "SELECT 1 FROM sessions WHERE id = ?1",
                 params![id_str],
-                |row| row.get(0),
+                |_| Ok(()),
             )
-            .ok();
+            .optional()?
+            .is_some();
 
-        let additional_dirs_str: String = session
-            .additional_dirs
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+        self.conn.execute(
+            "INSERT INTO sessions (id, name, agent, backend_id, backend_type, \
+             agent_session_id, cwd, additional_dirs, shell_backend_id, \
+             parent_session_id, display_order, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12) \
+             ON CONFLICT(id) DO UPDATE SET \
+                 name = excluded.name, agent = excluded.agent, \
+                 backend_id = excluded.backend_id, \
+                 backend_type = excluded.backend_type, \
+                 agent_session_id = excluded.agent_session_id, \
+                 cwd = excluded.cwd, additional_dirs = excluded.additional_dirs, \
+                 shell_backend_id = excluded.shell_backend_id, \
+                 parent_session_id = excluded.parent_session_id, \
+                 display_order = excluded.display_order, \
+                 updated_at = excluded.updated_at, deleted_at = NULL",
+            params![
+                id_str,
+                session.name,
+                session.agent,
+                session.backend_id,
+                session.backend_type,
+                session.agent_session_id,
+                session
+                    .cwd
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                additional_dirs_to_db(&session.additional_dirs),
+                session.shell_backend_id,
+                session.parent_session_id.map(|id| id.to_string()),
+                session.display_order,
+                now,
+            ],
+        )?;
 
-        if existing.is_some() {
-            self.conn.execute(
-                "UPDATE sessions SET name = ?1, agent = ?2, \
-                 backend_id = ?3, backend_type = ?4, agent_session_id = ?5, \
-                 cwd = ?6, additional_dirs = ?7, shell_backend_id = ?8, \
-                 parent_session_id = ?9, display_order = ?10, updated_at = ?11, \
-                 deleted_at = NULL \
-                 WHERE id = ?12",
-                params![
-                    session.name,
-                    session.agent,
-                    session.backend_id,
-                    session.backend_type,
-                    session.agent_session_id,
-                    session.cwd.as_ref().map(|p| p.display().to_string()),
-                    additional_dirs_str,
-                    session.shell_backend_id,
-                    session.parent_session_id.map(|id| id.to_string()),
-                    session.display_order,
-                    now,
-                    id_str,
-                ],
-            )?;
-
+        if existed {
             self.log_audit(
                 EntityType::Session,
                 &id_str,
@@ -93,28 +106,6 @@ impl Database {
                 None,
             )?;
         } else {
-            self.conn.execute(
-                "INSERT INTO sessions (id, name, agent, backend_id, backend_type, \
-                 agent_session_id, cwd, additional_dirs, shell_backend_id, \
-                 parent_session_id, display_order, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    id_str,
-                    session.name,
-                    session.agent,
-                    session.backend_id,
-                    session.backend_type,
-                    session.agent_session_id,
-                    session.cwd.as_ref().map(|p| p.display().to_string()),
-                    additional_dirs_str,
-                    session.shell_backend_id,
-                    session.parent_session_id.map(|id| id.to_string()),
-                    session.display_order,
-                    now,
-                    now,
-                ],
-            )?;
-
             self.log_audit(
                 EntityType::Session,
                 &id_str,
@@ -125,7 +116,6 @@ impl Database {
             )?;
         }
 
-        // Upsert worktrees if present
         if !session.worktrees.is_empty() {
             self.upsert_worktrees(session.id, &session.worktrees)?;
         }
@@ -461,6 +451,34 @@ impl Database {
     }
 }
 
+/// Encode a session's `additional_dirs` for the column: a JSON array of path
+/// strings (empty list → `''`, satisfying the `NOT NULL` column). JSON keeps a
+/// path containing a newline from round-tripping as two separate dirs, which the
+/// previous `\n`-joined encoding could not.
+fn additional_dirs_to_db(dirs: &[PathBuf]) -> String {
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let strs: Vec<String> = dirs
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    // A `Vec<String>` always serializes; the fallback is unreachable.
+    serde_json::to_string(&strs).unwrap_or_default()
+}
+
+/// Decode the `additional_dirs` column. New rows store a JSON array; legacy rows
+/// are newline-delimited, so a failed JSON parse falls back to splitting on `\n`.
+fn additional_dirs_from_db(raw: &str) -> Vec<PathBuf> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_str::<Vec<String>>(raw) {
+        Ok(list) => list.into_iter().map(PathBuf::from).collect(),
+        Err(_) => raw.split('\n').map(PathBuf::from).collect(),
+    }
+}
+
 /// Build an optional [`SharedWorktree`] from the three nullable worktree
 /// columns of a joined row. Returns `None` unless all three are present.
 fn worktree_from_cols(
@@ -493,11 +511,7 @@ fn row_to_shared_session(
     let wt_path: Option<String> = row.get(12)?;
     let wt_branch: Option<String> = row.get(13)?;
 
-    let additional_dirs: Vec<PathBuf> = if dirs_str.is_empty() {
-        Vec::new()
-    } else {
-        dirs_str.split('\n').map(PathBuf::from).collect()
-    };
+    let additional_dirs = additional_dirs_from_db(&dirs_str);
 
     let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
 
@@ -760,6 +774,37 @@ mod tests {
 
         let sessions = db.list_active_sessions().unwrap();
         assert_eq!(sessions[0].additional_dirs.len(), 2);
+    }
+
+    #[test]
+    fn additional_dirs_with_newline_roundtrips_as_one_dir() {
+        // A path containing a newline must survive as a single dir — the old
+        // `\n`-joined encoding split it into two.
+        let db = Database::open_in_memory().unwrap();
+        let mut session = make_session("Session 1");
+        let weird = PathBuf::from("/home/user/odd\nname");
+        session.additional_dirs = vec![weird.clone()];
+
+        db.upsert_session(&session).unwrap();
+
+        let sessions = db.list_active_sessions().unwrap();
+        assert_eq!(sessions[0].additional_dirs, vec![weird]);
+    }
+
+    #[test]
+    fn additional_dirs_reads_legacy_newline_rows() {
+        // Rows written before the JSON encoding are newline-delimited; they must
+        // still decode (best-effort, no migration).
+        let dirs = additional_dirs_from_db("/a\n/b\n/c");
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/c")
+            ]
+        );
+        assert!(additional_dirs_from_db("").is_empty());
     }
 
     #[test]
