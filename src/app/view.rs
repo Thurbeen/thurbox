@@ -611,10 +611,10 @@ impl App {
         }
     }
 
-    /// Render any active modal overlay on top of everything else. Selector
-    /// modals report their row hitboxes, recorded as `ModalRow` click
-    /// targets; text-input modals report none, so every click on them is
-    /// swallowed.
+    /// Render any active modal overlay on top of everything else and record its
+    /// click targets: selector rows as `ModalRow`, editor fields as `ModalField`,
+    /// footer buttons as `ModalButton`. Anything not recorded is swallowed while
+    /// the modal is open.
     fn render_modals(&mut self, frame: &mut Frame) {
         // Text-input modals report footer buttons (Confirm/Delete/Cancel) but
         // no row hitboxes (every other click is swallowed).

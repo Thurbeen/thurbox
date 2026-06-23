@@ -14,7 +14,7 @@ use ratatui::{
 use crate::app::modals::SettingsField;
 
 use super::theme::Theme;
-use super::{key_hint_line, modal_button_keys, render_button_bar, render_modal_frame, ButtonSpec};
+use super::{key_hint_line, render_action_footer, render_modal_frame};
 
 /// Preferred modal width. Sized to fit the longest description plus the value
 /// column with a tidy gap, so values aren't flung to the far edge of a wide
@@ -147,24 +147,15 @@ pub fn render_settings_modal(
         inner.width,
         1,
     );
-    let hits = render_button_bar(
+    let buttons = render_action_footer(
         frame,
         footer_row,
-        &[ButtonSpec::primary("Save"), ButtonSpec::secondary("Cancel")],
-        true,
-    );
-    let buttons = modal_button_keys(
-        hits,
-        &[
-            (
-                crossterm::event::KeyCode::Char('s'),
-                crossterm::event::KeyModifiers::CONTROL,
-            ),
-            (
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ],
+        (
+            "Save",
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        "Cancel",
     );
     (field_hits, buttons)
 }

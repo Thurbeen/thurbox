@@ -76,27 +76,15 @@ pub fn render_restore_sessions_modal(
         ])),
         footer_area,
     );
-    let button_hits = super::render_button_bar(
+    let buttons = super::render_action_footer(
         frame,
         footer_area,
-        &[
-            super::ButtonSpec::primary("Restore"),
-            super::ButtonSpec::secondary("Close"),
-        ],
-        true,
-    );
-    let buttons = super::modal_button_keys(
-        button_hits,
-        &[
-            (
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            (
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ],
+        (
+            "Restore",
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        "Close",
     );
     (hits, buttons)
 }

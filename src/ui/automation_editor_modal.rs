@@ -156,27 +156,15 @@ pub fn render_automation_editor_modal(
         inner.width,
         1,
     );
-    let hits = super::render_button_bar(
+    let buttons = super::render_action_footer(
         frame,
         footer_row,
-        &[
-            super::ButtonSpec::primary("Save"),
-            super::ButtonSpec::secondary("Cancel"),
-        ],
-        true,
-    );
-    let buttons = super::modal_button_keys(
-        hits,
-        &[
-            (
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            (
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ],
+        (
+            "Save",
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        "Cancel",
     );
     (field_hits, buttons)
 }
@@ -231,7 +219,10 @@ fn windowed_editor_lines<'a>(
         let active = active_row.unwrap_or(0);
         let start = active.saturating_sub(visible / 2).min(body_len - visible);
         (
-            body.into_iter().skip(start).take(visible).collect::<Vec<_>>(),
+            body.into_iter()
+                .skip(start)
+                .take(visible)
+                .collect::<Vec<_>>(),
             start,
         )
     };

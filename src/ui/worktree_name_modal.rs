@@ -38,26 +38,14 @@ pub fn render_worktree_name_modal(
         true,
     );
 
-    let hits = super::render_button_bar(
+    super::render_action_footer(
         frame,
         chunks[1],
-        &[
-            super::ButtonSpec::primary("Confirm"),
-            super::ButtonSpec::secondary("Cancel"),
-        ],
-        true,
-    );
-    super::modal_button_keys(
-        hits,
-        &[
-            (
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            (
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ],
+        (
+            "Confirm",
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        "Cancel",
     )
 }

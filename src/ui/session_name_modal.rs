@@ -29,26 +29,14 @@ pub fn render_session_name_modal(
 
     super::render_text_field(frame, chunks[0], "Name", state.name, state.cursor, true);
 
-    let hits = super::render_button_bar(
+    super::render_action_footer(
         frame,
         chunks[1],
-        &[
-            super::ButtonSpec::primary("Confirm"),
-            super::ButtonSpec::secondary("Cancel"),
-        ],
-        true,
-    );
-    super::modal_button_keys(
-        hits,
-        &[
-            (
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            (
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ],
+        (
+            "Confirm",
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        "Cancel",
     )
 }

@@ -52,26 +52,14 @@ pub fn render_confirm_delete_modal(
     ));
     frame.render_widget(Paragraph::new(warning), chunks[2]);
 
-    let hits = super::render_button_bar(
+    super::render_action_footer(
         frame,
         chunks[3],
-        &[
-            super::ButtonSpec::primary("Delete"),
-            super::ButtonSpec::secondary("Cancel"),
-        ],
-        true,
-    );
-    super::modal_button_keys(
-        hits,
-        &[
-            (
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            (
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ],
+        (
+            "Delete",
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        "Cancel",
     )
 }

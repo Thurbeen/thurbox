@@ -104,27 +104,15 @@ pub fn render_repo_picker_modal(
     // Footer: focus-dependent key hints on the left, clickable `[ Done ]`
     // (Enter) / `[ Cancel ]` (Esc) buttons on the right.
     frame.render_widget(Paragraph::new(footer_line(state)), footer_area);
-    let button_hits = super::render_button_bar(
+    let buttons = super::render_action_footer(
         frame,
         footer_area,
-        &[
-            super::ButtonSpec::primary("Done"),
-            super::ButtonSpec::secondary("Cancel"),
-        ],
-        true,
-    );
-    let buttons = super::modal_button_keys(
-        button_hits,
-        &[
-            (
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            (
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ],
+        (
+            "Done",
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        "Cancel",
     );
     (
         (hitboxes, buttons),

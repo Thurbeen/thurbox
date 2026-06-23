@@ -239,13 +239,41 @@ pub fn modal_button_keys(
         .collect()
 }
 
+/// Render a right-aligned two-button modal footer into the single-row `area`:
+/// a `primary` action `(label, key)` plus a secondary Cancel/Close button that
+/// always replays `Esc`. Returns the buttons paired with their replay keys (see
+/// [`ModalButtons`]) — the shared shape behind every editor/confirm/name modal
+/// footer.
+pub fn render_action_footer(
+    frame: &mut Frame,
+    area: Rect,
+    primary: (
+        &str,
+        crossterm::event::KeyCode,
+        crossterm::event::KeyModifiers,
+    ),
+    secondary_label: &str,
+) -> ModalButtons {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (primary_label, code, mods) = primary;
+    let hits = render_button_bar(
+        frame,
+        area,
+        &[
+            ButtonSpec::primary(primary_label),
+            ButtonSpec::secondary(secondary_label),
+        ],
+        true,
+    );
+    modal_button_keys(hits, &[(code, mods), (KeyCode::Esc, KeyModifiers::NONE)])
+}
+
 /// Render the standard selector-modal footer into the single-row `area`: a
 /// left-aligned `j/k navigate` hint plus right-aligned `[ Select ]` (Enter) /
 /// `[ Cancel ]` (Esc) buttons. Returns the buttons paired with their replay
 /// keys (see [`ModalButtons`]). Shared by the picker modals so their clickable
 /// footer reads identically.
 pub fn render_selector_footer(frame: &mut Frame, area: Rect) -> ModalButtons {
-    use crossterm::event::{KeyCode, KeyModifiers};
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("j/k", Theme::keybind()),
@@ -253,21 +281,15 @@ pub fn render_selector_footer(frame: &mut Frame, area: Rect) -> ModalButtons {
         ])),
         area,
     );
-    let hits = render_button_bar(
+    render_action_footer(
         frame,
         area,
-        &[
-            ButtonSpec::primary("Select"),
-            ButtonSpec::secondary("Cancel"),
-        ],
-        true,
-    );
-    modal_button_keys(
-        hits,
-        &[
-            (KeyCode::Enter, KeyModifiers::NONE),
-            (KeyCode::Esc, KeyModifiers::NONE),
-        ],
+        (
+            "Select",
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        "Cancel",
     )
 }
 
