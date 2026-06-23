@@ -6,8 +6,6 @@
 //! via `deleted_at` mirrors sessions/worktrees. Mutations are recorded in the
 //! audit log under [`EntityType::Task`].
 
-use std::path::PathBuf;
-
 use rusqlite::{params, OptionalExtension};
 
 use crate::session::{AutomationAction, Task, TaskStatus, SOURCE_LOCAL};
@@ -48,16 +46,12 @@ impl Database {
     /// Insert a new task, returning its row id.
     pub fn create_task(&self, new: &NewTask) -> rusqlite::Result<i64> {
         let now = current_time_millis() as i64;
-        let (
-            action_kind,
-            target_session,
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra,
-            command,
-        ) = action_columns(new.action.as_ref());
+        let action_kind = new.action.as_ref().map(|a| a.kind());
+        let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) = new
+            .action
+            .as_ref()
+            .map(super::action_to_columns)
+            .unwrap_or_default();
         self.conn.execute(
             "INSERT INTO tasks
                 (title, status, action_kind, target_session, repo_path,
@@ -139,16 +133,12 @@ impl Database {
 
     /// Replace a task's definition (everything except id/created_at/deleted_at).
     pub fn update_task(&self, task: &Task) -> rusqlite::Result<()> {
-        let (
-            action_kind,
-            target_session,
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra,
-            command,
-        ) = action_columns(task.action.as_ref());
+        let action_kind = task.action.as_ref().map(|a| a.kind());
+        let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) = task
+            .action
+            .as_ref()
+            .map(super::action_to_columns)
+            .unwrap_or_default();
         let now = current_time_millis() as i64;
         self.conn.execute(
             "UPDATE tasks SET
@@ -234,93 +224,24 @@ const COLS: &str = "id, title, status, action_kind, target_session, repo_path, \
     created_at, updated_at, deleted_at, description, action_extra_repos, \
     action_command";
 
-/// Decompose an optional action into its persisted columns. All `None` when the
-/// task is unconnected (`action_kind` is then NULL). The final element is the
-/// JSON-encoded extra-repo list (`None` for single-repo spawns / non-spawns).
-type ActionColumns = (
-    Option<String>, // action_kind
-    Option<String>, // target_session
-    Option<String>, // repo_path
-    Option<String>, // worktree_branch
-    Option<String>, // base_branch
-    Option<String>, // agent
-    Option<String>, // action_extra_repos (JSON)
-    Option<String>, // action_command
-);
-
-fn action_columns(action: Option<&AutomationAction>) -> ActionColumns {
-    match action {
-        None => (None, None, None, None, None, None, None, None),
-        Some(AutomationAction::Send { session_id }) => (
-            Some("send".to_string()),
-            Some(session_id.to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        Some(AutomationAction::Spawn {
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos,
-        }) => (
-            Some("spawn".to_string()),
-            None,
-            Some(repo_path.to_string_lossy().into_owned()),
-            worktree_branch.clone(),
-            base_branch.clone(),
-            agent.clone(),
-            super::extra_repos_to_json(extra_repos),
-            None,
-        ),
-        // Exec is an automation-only action; a task never carries one in
-        // practice, but the shared enum means we round-trip it for completeness.
-        Some(AutomationAction::Exec { command }) => (
-            Some("exec".to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(command.clone()),
-        ),
-    }
-}
-
 fn map_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
     let action_kind: Option<String> = row.get(3)?;
-    let target_session: Option<String> = row.get(4)?;
-    let repo_path: Option<String> = row.get(5)?;
-    let worktree_branch: Option<String> = row.get(6)?;
-    let base_branch: Option<String> = row.get(7)?;
-    let agent: Option<String> = row.get(8)?;
-    let extra_repos_json: Option<String> = row.get(16)?;
-    let action_command: Option<String> = row.get(17)?;
+    let cols: super::ActionColumns = (
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(16)?,
+        row.get(17)?,
+    );
 
-    let action = match action_kind.as_deref() {
-        Some("send") => Some(AutomationAction::Send {
-            session_id: target_session
-                .unwrap_or_default()
-                .parse()
-                .unwrap_or_default(),
-        }),
-        Some("spawn") => Some(AutomationAction::Spawn {
-            repo_path: PathBuf::from(repo_path.unwrap_or_default()),
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos: super::extra_repos_from_json(extra_repos_json),
-        }),
-        Some("exec") => Some(AutomationAction::Exec {
-            command: action_command.unwrap_or_default(),
-        }),
-        _ => None,
-    };
+    // An action-less local todo has a NULL `action_kind`; only a present
+    // discriminant decodes to an action (Exec round-trips even though the TUI
+    // never authors one onto a task).
+    let action = action_kind
+        .as_deref()
+        .map(|kind| super::action_from_columns(kind, cols));
 
     Ok(Task {
         id: row.get(0)?,
@@ -339,6 +260,8 @@ fn map_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::session::SessionId;
 

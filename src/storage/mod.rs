@@ -23,10 +23,12 @@ pub mod sync;
 pub mod tasks;
 mod worktrees;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use uuid::Uuid;
+
+use crate::session::AutomationAction;
 
 /// Serialize a `Spawn` action's extra-repo list for the `action_extra_repos`
 /// column. An empty list (the single-repo common case) stores `NULL`, so old
@@ -46,6 +48,80 @@ pub(super) fn extra_repos_from_json(raw: Option<String>) -> Vec<crate::session::
     raw.filter(|s| !s.is_empty())
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
+}
+
+/// The action-specific columns an [`AutomationAction`] is stored as, shared by
+/// the `tasks` and `automations` tables (both carry an identical group). The
+/// `action_kind` discriminant is stored separately (`AutomationAction::kind`).
+pub(super) type ActionColumns = (
+    Option<String>, // target_session
+    Option<String>, // repo_path
+    Option<String>, // worktree_branch
+    Option<String>, // base_branch
+    Option<String>, // agent
+    Option<String>, // action_extra_repos (JSON)
+    Option<String>, // action_command
+);
+
+/// Encode an action into its persisted columns (sans the `action_kind`
+/// discriminant, which the caller derives via [`AutomationAction::kind`]).
+pub(super) fn action_to_columns(action: &AutomationAction) -> ActionColumns {
+    match action {
+        AutomationAction::Send { session_id } => (
+            Some(session_id.to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        AutomationAction::Spawn {
+            repo_path,
+            worktree_branch,
+            base_branch,
+            agent,
+            extra_repos,
+        } => (
+            None,
+            Some(repo_path.to_string_lossy().into_owned()),
+            worktree_branch.clone(),
+            base_branch.clone(),
+            agent.clone(),
+            extra_repos_to_json(extra_repos),
+            None,
+        ),
+        AutomationAction::Exec { command } => {
+            (None, None, None, None, None, None, Some(command.clone()))
+        }
+    }
+}
+
+/// Reconstruct an action from its `action_kind` discriminant + persisted
+/// columns. An unrecognized `kind` decodes to `Spawn` (the automations
+/// catch-all); callers that allow an action-less row (tasks) gate this on a
+/// non-NULL `action_kind` themselves.
+pub(super) fn action_from_columns(kind: &str, cols: ActionColumns) -> AutomationAction {
+    let (target_session, repo_path, worktree_branch, base_branch, agent, extra_repos_json, command) =
+        cols;
+    match kind {
+        "send" => AutomationAction::Send {
+            session_id: target_session
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or_default(),
+        },
+        "exec" => AutomationAction::Exec {
+            command: command.unwrap_or_default(),
+        },
+        _ => AutomationAction::Spawn {
+            repo_path: PathBuf::from(repo_path.unwrap_or_default()),
+            worktree_branch,
+            base_branch,
+            agent,
+            extra_repos: extra_repos_from_json(extra_repos_json),
+        },
+    }
 }
 
 /// SQLite-backed database for application state.

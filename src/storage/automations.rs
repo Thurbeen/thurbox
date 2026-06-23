@@ -4,8 +4,6 @@
 //! `(action_kind, …)` with the action-specific columns. The `next_run_at`
 //! column is the dispatcher's scan key — see `app::process_automations`.
 
-use std::path::PathBuf;
-
 use rusqlite::{params, OptionalExtension};
 
 use crate::session::{
@@ -32,7 +30,7 @@ impl Database {
     pub fn create_automation(&self, new: &NewAutomation) -> rusqlite::Result<i64> {
         let now = current_time_millis() as i64;
         let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
-            action_columns(&new.action);
+            super::action_to_columns(&new.action);
         self.conn.execute(
             "INSERT INTO automations
                 (name, enabled, schedule_kind, schedule_spec, timezone,
@@ -96,7 +94,7 @@ impl Database {
     /// Replace an automation's definition (everything except id/created_at).
     pub fn update_automation(&self, auto: &Automation) -> rusqlite::Result<()> {
         let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
-            action_columns(&auto.action);
+            super::action_to_columns(&auto.action);
         let now = current_time_millis() as i64;
         self.conn.execute(
             "UPDATE automations SET
@@ -302,63 +300,20 @@ const COLS: &str = "id, name, enabled, schedule_kind, schedule_spec, timezone, \
     prompt, created_at, updated_at, last_run_at, next_run_at, action_extra_repos, \
     action_command";
 
-/// Decompose an action into its persisted columns. The extra-repo element is the
-/// JSON-encoded extra-repo list (`None` for single-repo spawns / `Send`); the
-/// final element is the shell command (`Some` only for `Exec`).
-type ActionColumns = (
-    Option<String>, // target_session
-    Option<String>, // repo_path
-    Option<String>, // worktree_branch
-    Option<String>, // base_branch
-    Option<String>, // agent
-    Option<String>, // action_extra_repos (JSON)
-    Option<String>, // action_command
-);
-
-fn action_columns(action: &AutomationAction) -> ActionColumns {
-    match action {
-        AutomationAction::Send { session_id } => (
-            Some(session_id.to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        AutomationAction::Spawn {
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos,
-        } => (
-            None,
-            Some(repo_path.to_string_lossy().into_owned()),
-            worktree_branch.clone(),
-            base_branch.clone(),
-            agent.clone(),
-            super::extra_repos_to_json(extra_repos),
-            None,
-        ),
-        AutomationAction::Exec { command } => {
-            (None, None, None, None, None, None, Some(command.clone()))
-        }
-    }
-}
-
 fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
     let id: i64 = row.get(0)?;
     let schedule_kind: String = row.get(3)?;
     let schedule_spec: String = row.get(4)?;
     let action_kind: String = row.get(6)?;
-    let target_session: Option<String> = row.get(7)?;
-    let repo_path: Option<String> = row.get(8)?;
-    let worktree_branch: Option<String> = row.get(9)?;
-    let base_branch: Option<String> = row.get(10)?;
-    let agent: Option<String> = row.get(11)?;
-    let extra_repos_json: Option<String> = row.get(17)?;
-    let action_command: Option<String> = row.get(18)?;
+    let cols: super::ActionColumns = (
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
+        row.get(17)?,
+        row.get(18)?,
+    );
 
     let schedule =
         AutomationSchedule::from_parts(&schedule_kind, &schedule_spec).ok_or_else(|| {
@@ -369,24 +324,7 @@ fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
             )
         })?;
 
-    let action = match action_kind.as_str() {
-        "send" => AutomationAction::Send {
-            session_id: target_session
-                .unwrap_or_default()
-                .parse()
-                .unwrap_or_default(),
-        },
-        "exec" => AutomationAction::Exec {
-            command: action_command.unwrap_or_default(),
-        },
-        _ => AutomationAction::Spawn {
-            repo_path: PathBuf::from(repo_path.unwrap_or_default()),
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos: super::extra_repos_from_json(extra_repos_json),
-        },
-    };
+    let action = super::action_from_columns(&action_kind, cols);
 
     Ok(Automation {
         id,
@@ -405,6 +343,8 @@ fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn send_automation(name: &str, next: Option<u64>) -> NewAutomation {
