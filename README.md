@@ -126,320 +126,137 @@ adds:
   worktree; `Ctrl+S` syncs them with their base branch and asks the
   agent to resolve rebase conflicts automatically.
 
-## Main Features
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="middle">
 
 ### Sessions
 
-- Persistent tmux-backed panes, parallel agents, per-session
-  working dirs.
-- Each session runs one coding agent; nothing else is configured
-  per session. Each agent runs with its own default config.
-- `Ctrl+R` restart preserves the conversation when the agent
-  supports resume; `Ctrl+F` forks a session; `Ctrl+T` toggles a
-  shell pane.
-- Order the list by hand with `Shift+J`/`Shift+K` (move the
-  selected session and its children), or `Shift+S` to sort
-  alphabetically within each repo group. Manual order wins over
-  status and survives restarts.
-- Sessions can carry a **parent** (lead/worker): `Ctrl+F` records
-  one automatically, and `thurbox-cli session create --parent
-  <uuid>` sets it headlessly. The link is informational only —
-  deleting a lead never cascades to its workers.
-- Global search (`Ctrl+/`), full mouse navigation, clickable URLs,
-  automations (`Ctrl+P`), soft-delete with undo (`Ctrl+Z`) and
-  restore (`Ctrl+U`).
+Many coding agents side-by-side, each in its own tmux-backed pane that survives crashes, restarts, and reboots. Pick the agent and repo(s) at `Ctrl+N`; reattach from any terminal with `tmux -L thurbox attach`. Reorder by hand (`Shift+J`/`Shift+K`), sort (`Shift+S`), restart with resume (`Ctrl+R`), or soft-delete with undo.
 
-> **Note:** The session list display is not yet perfect and will
-> keep improving. What it can show is heavily dependent on the
-> signals each agent CLI exposes.
+[Getting started →](#getting-started)
 
-Create one with `Ctrl+N` — pick a repo, name it, choose an agent:
+</td>
+<td width="50%">
+  <img src="./docs/media/thurbox-session-creation.gif" alt="Session creation workflow" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
-![Session creation workflow](./docs/media/thurbox-session-creation.gif)
+### Fork & Lead/Worker
 
-Fork one with `Ctrl+F` — the copy records the source as its
-**parent**, and children nest under their parent in the session
-list:
+`Ctrl+F` forks a session and records the source as its **parent**; children nest under their lead in the list. Build lead → worker trees by hand or headlessly with `--parent`. The link is informational — deleting a lead never cascades to its workers.
 
-![Session forking](./docs/media/thurbox-fork.gif)
+[CLI →](#sessions)
+
+</td>
+<td width="50%">
+  <img src="./docs/media/thurbox-fork.gif" alt="Session forking" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
 ### Automations
 
-- Named, scheduled agent runs — one-shot or recurring (cron, with
-  friendly `hourly`/`daily`/`weekdays`/`weekly` presets). When one
-  fires it either **sends** a prompt to a running session or
-  **spawns** a fresh session (optionally on a new worktree) and
-  prompts it.
-- A dedicated **Automations pane** sits below the session list;
-  focus it and press `Ctrl+N` to create (or `Space`/`r`/`e`/`d` to
-  toggle/run/edit/delete). The editor needs no cron knowledge — the
-  trigger is a selector and the time is set with steppers, with a
-  live "next fire" preview.
-- Fires even when the TUI is closed via a tmux heartbeat keeper
-  (with opt-in systemd/launchd units for reboot-proof firing), and
-  is fully scriptable headless: `thurbox-cli automation
-  create/list/edit/run/tick`.
+Named, scheduled agent runs — one-shot or recurring (cron, with `hourly`/`daily`/`weekdays`/`weekly` presets) that **send** a prompt to a running session or **spawn** a fresh one. The editor needs no cron knowledge, and they fire even when the TUI is closed via a tmux heartbeat keeper.
 
-> **Note:** Automations are stable and good enough for daily use
-> today, but the feature may still evolve.
+[CLI →](#automations-alias-auto)
 
-![Automations demo](./docs/media/automations-demo.gif)
+</td>
+<td width="50%">
+  <img src="./docs/media/automations-demo.gif" alt="Automations demo" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
 ### Tasks
 
-- A built-in **todo list** whose items can be **connected to a
-  coding agent** with the same Send/Spawn model as automations:
-  **Send** pastes the task title into an existing session,
-  **Spawn** creates a fresh session (optionally on a new worktree)
-  seeded with the title, and an unconnected task is a plain local
-  todo. Triggering a task (`r`) runs its action and advances it to
-  *in progress*.
-- Tasks live in a **toggleable right-side column** (`Ctrl+W` /
-  `F5`) that behaves like the file viewer. Focus it and press `n`
-  to create, `e`/`Enter` to edit (an in-pane editor, no popup),
-  `Space` to cycle status (☐ todo · ◐ in progress · ☑ done), and
-  `d` to delete.
-- Fully scriptable headless: `thurbox-cli task` (alias `todo`) —
-  `create`/`list`/`show`/`edit`/`remove`/`run`. External
-  issue-tracker sync (Jira, GitHub Issues) is scaffolded for a
-  later release.
+A built-in todo list whose items can be handed to a coding agent with the same Send/Spawn model — or stay plain local todos. Lives in a toggleable side column (`Ctrl+W` / `F5`); triggering a task (`r`) runs its action and advances it to *in progress*.
 
-> **Note:** Tasks are a new feature — expect the UX and UI to keep
-> evolving in upcoming releases.
+[CLI →](#tasks-alias-todo)
 
-![Tasks demo](./docs/media/tasks-demo.gif)
+</td>
+<td width="50%">
+  <img src="./docs/media/tasks-demo.gif" alt="Tasks demo" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
-### Inter-session messages
+### Global Search
 
-- A general, agent-neutral **message queue** lets one session hand
-  another a **structured payload** — addressed to a session, with a
-  free-form `kind` tag, a body, and optional sender/task provenance —
-  instead of scraping its rendered terminal. It is the channel
-  extensions use for agent↔agent coordination.
-- A worker **pushes** a clean payload with `thurbox-cli message send`;
-  a wake nudge types a short `inbox` token into the recipient's pane
-  so it drains immediately. `message inbox --claim` is an atomic,
-  exactly-once drain, so the TUI, a cron tick, and a wake nudge can
-  read the same inbox concurrently without double-processing.
-- Thurbox injects a stable `THURBOX_SESSION` (and `THURBOX_TASK` for
-  task-spawned sessions) into each agent, so a CLI call *inside* a
-  session sends and reads its own mail passing no ids, and `message
-  reply <id>` routes back to a message's original sender. See
-  [Headless CLI](#headless-cli-thurbox-cli).
+One key (`Ctrl+/`) searches every scope at once — sessions (including live terminal-buffer content), tasks, automations, and the file tree — highlighting matches live in the panels themselves. `Enter` jumps to a result; `Esc` restores exactly what you had.
 
-### Extensions
+[Keybindings →](#keybindings)
 
-- Opt-in, **agent-agnostic** add-ons that build on `thurbox-cli`
-  without touching the core binary. Each extension is **data, not
-  code**: it ships an `extension.toml` manifest declaring the agents,
-  sessions, automations, and payload files it needs, so thurbox
-  installs and **self-heals** it without knowing anything specific
-  about it. The agents it registers are plain `agents.toml` aliases
-  you can map to claude, codex, antigravity, opencode, vibe, or anything
-  else; the behavior lives in a plain context file surfaced to
-  whichever CLI you pick.
-- One command installs, activates, and (on every TUI start / headless
-  tick) re-ensures each extension's resources — idempotent and
-  self-healing:
+</td>
+<td width="50%">
+  <img src="./docs/media/search-demo.gif" alt="Global search demo" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
-  ```bash
-  thurbox-cli extension install <name>     # install + activate
-  thurbox-cli extension list               # what's installed
-  thurbox-cli extension available          # the built-ins, with install commands
-  thurbox-cli extension uninstall <name>   # add --purge to delete its home dir too
-  ```
+### Info Panel & Live Metrics
 
-- **Built-in extensions** (fetched, pinned to your binary's release,
-  from the official source — `thurbox-cli extension available` lists
-  them):
-  - **`flow`** — a focus-protecting triage agent. Brain-dump at a
-    dedicated cheap **flow session** and it captures everything into
-    tasks, dispatches the dispatchable ones to worker sessions (each
-    on its own `flow/<slug>` worktree branch, plan-first), monitors
-    them via a tick automation, and ends every reply with the single
-    next thing to focus on.
-  - **`forge`** — a workflow analyst that mines your tasks, sessions,
-    and automations for **recurring patterns** and writes
-    ready-to-apply `thurbox-cli automation` proposals. It proposes,
-    never imposes: nothing is created until you `apply` a proposal.
-  - **`ci-shepherd`** — watches your open change requests (GitHub
-    PRs / GitLab MRs / Bitbucket PRs) and dispatches a fixer for each
-    one with **failing CI**, a **changes-requested review**, or a
-    branch that is **behind its target**. Forge-agnostic — the only
-    thing baked in is git.
-  - **`renovate`** — keeps local repos on up-to-date dependencies.
-    Sweeps a watch list, runs **Renovate's `local` platform** (no
-    hosted bot, no token), tests the result, and opens a review PR
-    per eligible repo.
-  - **Task integrations** — `github-issues`, `gitlab-issues`,
-    `linear`, `jira`: one extension per provider that **bidirectionally**
-    syncs an external issue tracker with the thurbox task list. Issues
-    show up as tasks; marking a task done closes/completes the issue
-    (and reopens it on revert). A `*-tick` automation runs a deterministic
-    sync script over a `trackers.md` watch list every 15 min (no agent,
-    no tokens), dedup'd by `(source, external_id)`.
+`Ctrl+B` (`F2`) shows per-session details with live CPU/RAM and agent metrics, right beside the terminal.
 
-> **Note:** Extensions are a brand-new, **experimental** capability
-> under active testing — expect their behavior, specs, and manifests
-> to change between releases.
+[Keybindings →](#keybindings)
 
-See the [Extensions guide](https://thurbeen.github.io/thurbox/docs/extensions.html)
-and each extension's README under
-[`extensions/`](./extensions/) ([flow](./extensions/flow/README.md),
-[forge](./extensions/forge/README.md),
-[ci-shepherd](./extensions/ci-shepherd/README.md),
-[renovate](./extensions/renovate/README.md),
-[github-issues](./extensions/github-issues/README.md),
-[gitlab-issues](./extensions/gitlab-issues/README.md),
-[linear](./extensions/linear/README.md),
-[jira](./extensions/jira/README.md)).
+</td>
+<td width="50%">
+  <img src="./docs/media/thurbox-info-panel.gif" alt="Info panel" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
-### Global search
+### File Viewer
 
-- One key (`Ctrl+/`) opens a **non-modal search strip** that
-  searches **every scope at once** — sessions (name/agent/branch
-  **and** live terminal-buffer content), tasks, automations, and
-  the active session's file tree.
-- Matches **highlight live in the panels themselves** (matching
-  rows accented, the rest dimmed), with per-scope match counts and
-  a grouped result list. `Enter` jumps to the selected result and
-  focuses its pane; `Esc` restores exactly what you had before
-  searching.
+`Ctrl+E` (`F3`) browses the session's worktree tree with fuzzy search and in-file text search.
 
-![Global search demo](./docs/media/search-demo.gif)
+[Keybindings →](#keybindings)
 
-### Agent definitions
+</td>
+<td width="50%">
+  <img src="./docs/media/thurbox-file-manager.gif" alt="File manager" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
-- Agents are declared as data in `~/.config/thurbox/agents.toml`,
-  seeded with built-ins on first run and user-extensible. Each
-  agent has a `command`, `args` (always passed — bake in flags
-  like a model here if you want), and argument-template groups
-  (`resume_args`, `fork_args`, `new_session_args`). Each group is
-  appended only when its value is present, with `{id}`
-  substituted.
+### Themes
 
-### Git worktrees
+Nine palettes (five dark, four light) plus user-defined custom themes, switched live with `Ctrl+Y` (or `F4`) and persisted across restarts.
 
-- Pick "Worktree" in the new-session flow to branch off a base and
-  launch the agent inside the worktree. Closing the session removes
-  it. `Ctrl+S` syncs all worktree sessions with their base branch.
+[Config →](docs/CONFIG.md)
 
-### Remote SSH sessions
+</td>
+<td width="50%">
+  <img src="./docs/media/thurbox-theme.gif" alt="Theme switcher" width="100%" />
+</td>
+</tr>
+</table>
 
-- Run an agent on a **remote machine** over SSH while the TUI stays
-  local. Declare hosts in `~/.config/thurbox/hosts.toml` (seeded
-  commented-out, so a fresh install has none); each entry becomes a
-  selectable backend named `ssh:<name>`. The new-session flow shows a
-  **host picker** first, and remote sessions are marked with a `☁`
-  glyph in the list.
-- The agent process, its tmux window, and any git worktrees all live
-  on the remote host. thurbox shells out to your system `ssh`, so
-  authentication, keys, and multiplexing come from `~/.ssh/config` —
-  thurbox never handles credentials. Remote sessions get the same
-  persistence, multi-instance sharing, and restore-on-startup as
-  local ones.
+**Also in the box:**
 
-  ```toml
-  # ~/.config/thurbox/hosts.toml
-  [[hosts]]
-  name = "devbox"            # backend "ssh:devbox"; what --host expects
-  destination = "me@devbox"  # ssh target or a ~/.ssh/config alias
-  ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
-  # socket / session  — optional remote tmux -L / session-name overrides
-  # worktrees_dir      — optional absolute remote worktrees dir
-  ```
+- **[Extensions](https://thurbeen.github.io/thurbox/docs/extensions.html)** *(experimental)* — opt-in, agent-agnostic add-ons that are **data, not code**: `flow`, `forge`, `ci-shepherd`, `renovate`, and bidirectional task-integration for GitHub Issues / GitLab / Linear / Jira. One command installs, activates, and self-heals each.
+- **[Inter-session messages](#features)** — an agent-neutral mailbox queue for structured agent↔agent coordination, with atomic exactly-once `--claim` drains and wake nudges. Agents pass no ids — thurbox injects a stable identity.
+- **[Agent definitions](#agents)** — every launchable agent is declared as data in `agents.toml` (seeded with claude, codex, antigravity, opencode, aider, vibe); add your own with no recompile.
+- **[Git worktree isolation](#common-workflows)** — spawn a session on a fresh worktree branch; `Ctrl+S` syncs them with their base branch and asks the agent to resolve rebase conflicts.
+- **[Remote SSH sessions](docs/CONFIG.md)** — run an agent on a remote box over SSH while the TUI stays local; declare hosts in `hosts.toml` and they become `ssh:<name>` backends with the same persistence and restore as local ones.
+- **[OS notifications](docs/CONFIG.md)** — desktop alerts when a session needs you, with click-to-focus on Linux.
+- **Mouse navigation** — the whole TUI is clickable: select rows, confirm picker entries in one click, wheel-scroll, drag-select text, `Ctrl+Click` URLs. Toggle with `mouse` in `settings.toml`.
+- **[Feature flags](docs/CONFIG.md)** — switch whole panels off in `settings.toml`; a disabled feature hides its UI but keeps its data and CLI surface, so flipping it back on is lossless.
+- **Responsive layout** — `< 80` cols: terminal only · `>= 80`: + sidebar · `>= 120`: + info panel. Vim-inspired keys throughout.
 
-  Spawn remotely from the CLI with `thurbox-cli session create
-  --host devbox …` (see [Headless CLI](#headless-cli-thurbox-cli)).
-  The remote host needs **tmux >= 3.2** and **git**.
-
-### Responsive UI
-
-- `< 80` cols: terminal only · `>= 80`: sidebar + terminal ·
-  `>= 120`: sidebar + terminal + info panel. Vim-inspired keys
-  throughout. Pick a theme with `Ctrl+Y` (or `F4`).
-
-The **info panel** (`Ctrl+B`) shows per-session details and live
-CPU/RAM and agent metrics:
-
-![Info panel](./docs/media/thurbox-info-panel.gif)
-
-The **file viewer** (`Ctrl+E`) browses the session's worktree
-tree with fuzzy search:
-
-![File manager](./docs/media/thurbox-file-manager.gif)
-
-Nine themes (five dark, four light) switch live with `Ctrl+Y`:
-
-![Theme switcher](./docs/media/thurbox-theme.gif)
-
-### Mouse navigation
-
-The whole TUI is clickable (enabled by default; see
-[Feature flags](#feature-flags) to turn it off):
-
-- **Click a row** in the session list, tasks panel, automations
-  pane, or file viewer to select it and focus that pane. A file row
-  also opens the file / toggles the directory; a session-list group
-  header selects that group's first session.
-- **Click a picker row** (theme, agent, host, branch, …) to select
-  **and confirm** it in one click. Modals swallow stray clicks, so a
-  misclick can never discard typed input.
-- **Hover** underlines the row under the pointer; the **mouse
-  wheel** scrolls the focused terminal (and steps the selection
-  while a modal is open, with a draggable scrollbar on long lists).
-- **Drag** selects text in the terminal; `Ctrl+C` copies it.
-  `Ctrl+Click` opens a URL.
-
-Set `mouse = false` in `settings.toml` to skip mouse capture
-entirely and keep your terminal's native selection / URL handling.
-
-### OS notifications
-
-- When a session crosses into a **needs-you** state — the agent rang
-  the terminal bell or emitted an OSC 9 / OSC 777 notification — thurbox
-  fires an OS desktop notification so you can react without watching the
-  TUI. The body is the agent's last OSC message, or `Waiting for input`.
-- On **Linux** the banner is **click-to-focus** (clicking it switches
-  the TUI to that session); **macOS** shows the banner but ignores
-  clicks. It fires only while the TUI is open, is deduplicated per
-  session, and skips the session you are currently viewing by default.
-- Tune it in the `[notifications]` block of `settings.toml`
-  (`also_on_waiting` / `suppress_for_active` / `sound` /
-  `min_interval_secs`), or turn it off with `notifications = false` —
-  see [docs/CONFIG.md](docs/CONFIG.md).
-
-### Feature flags
-
-Whole TUI features can be switched off in
-`~/.config/thurbox/settings.toml` under `[features]` (seeded
-commented-out; everything defaults to `true` except `version_check`
-and `auto_update`, which are opt-in because they reach the network). A
-disabled feature
-hides its pane and turns its keybinding into an explanatory toast,
-but its data and the `thurbox-cli` surface keep working — so
-flipping a flag back on is lossless.
-
-```toml
-[features]
-tasks = true          # F5/Ctrl+W tasks panel
-automations = true    # automations pane, Ctrl+P, schedule firing
-file_viewer = true    # F3/Ctrl+E file viewer
-global_search = true  # Ctrl+/ search strip
-info_panel = true     # F2/Ctrl+B info panel
-shell_pane = true     # Ctrl+T per-session shell
-mouse = true          # mouse capture: clicks, wheel, drag-select, hover
-notifications = true  # OS desktop alerts when a session needs attention
-version_check = false # opt-in GitHub update check (makes a network call)
-auto_update = false   # opt-in: silently download+verify+replace binaries on startup
-```
-
-`automations = false` is the one flag with teeth beyond the UI: it
-also stops the TUI from firing due schedules and arming the tmux
-heartbeat at startup (explicit `thurbox-cli automation` commands
-still work). The same `settings.toml` holds scalar knobs
-(scrollback, layout breakpoints, audit retention) — see
-[docs/CONFIG.md](docs/CONFIG.md) for every config file in one place.
+> **Note:** Some features (tasks, extensions, the session-list display) are
+> new and still evolving — expect their UX to keep improving release to release.
 
 ## Prerequisites
 
@@ -849,7 +666,7 @@ it to a coding agent like an automation.
 
 ### Messages (alias `msg`)
 
-The [inter-session message queue](#inter-session-messages).
+The [inter-session message queue](#features).
 
 ```bash
 thurbox-cli message send --to flow --kind questions --body "scope?"
@@ -865,7 +682,7 @@ and `reply` wake the recipient by default (`--no-wake` to suppress).
 
 ### Extensions (alias `ext`)
 
-Manage opt-in add-ons (see [Extensions](#extensions) for the model).
+Manage opt-in add-ons (see [Extensions](#features) for the model).
 Every subcommand prints a JSON result with a human-readable `summary`.
 
 ```bash
