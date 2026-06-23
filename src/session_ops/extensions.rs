@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use crate::session::automation::parse_trigger;
 use crate::session::extension_def::HOME_TOKEN;
-use crate::session::{AutomationAction, ExtensionAutomation, ExtensionDef, SessionId};
+use crate::session::{Automation, AutomationAction, ExtensionAutomation, ExtensionDef, SessionId};
 use crate::storage::automations::NewAutomation;
 use crate::storage::Database;
 use crate::sync::current_time_millis;
@@ -691,9 +691,6 @@ pub fn uninstall_extension(
     Ok(report)
 }
 
-/// Refuse to recursively delete obviously-dangerous paths (root, `$HOME`
-/// itself, or a shallow path) — a guard before `remove_dir_all` on a
-/// manifest-supplied home.
 /// Remove a directory tree. On Windows a just-written payload file can be held
 /// transiently by the search indexer / antivirus, so `remove_dir_all` fails with
 /// `ERROR_SHARING_VIOLATION` (os error 32); retry with a short backoff until the
@@ -724,6 +721,9 @@ fn remove_dir_all_resilient(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Refuse to recursively delete obviously-dangerous paths (root, `$HOME`
+/// itself, or a shallow path) — a guard before `remove_dir_all` on a
+/// manifest-supplied home.
 fn guard_removable_dir(path: &Path) -> Result<(), String> {
     let depth = path
         .components()
@@ -862,14 +862,25 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
     let mut report = EnsureReport::default();
     let mut session_ids: HashMap<String, SessionId> = HashMap::new();
 
+    // Snapshot existing rows once instead of re-listing per declared resource:
+    // self-heal runs this on every heartbeat tick. Declared names are unique, so
+    // a pre-loop snapshot is correct for the existence lookups below.
+    let existing_sessions: HashMap<String, SessionId> = db
+        .list_active_sessions()
+        .map_err(|e| format!("list_active_sessions: {e}"))?
+        .into_iter()
+        .map(|row| (row.name, row.id))
+        .collect();
+    let existing_automations: HashMap<String, Automation> = db
+        .list_automations()
+        .map_err(|e| format!("list_automations: {e}"))?
+        .into_iter()
+        .map(|row| (row.name.clone(), row))
+        .collect();
+
     for sess in &def.sessions {
-        let existing = db
-            .list_active_sessions()
-            .map_err(|e| format!("list_active_sessions: {e}"))?
-            .into_iter()
-            .find(|row| row.name == sess.name);
-        let id = match existing {
-            Some(row) => row.id,
+        let id = match existing_sessions.get(&sess.name) {
+            Some(id) => *id,
             None => {
                 let result = super::spawn_session_headless(
                     db,
@@ -894,6 +905,7 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
     }
 
     for auto in &def.automations {
+        auto.validate()?;
         // An exec automation has no session; a send one resolves its target.
         let target = if auto.command.is_some() {
             None
@@ -911,7 +923,13 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
                 )
             })?)
         };
-        ensure_automation(db, auto, target, &mut report)?;
+        ensure_automation(
+            db,
+            auto,
+            target,
+            existing_automations.get(&auto.name),
+            &mut report,
+        )?;
     }
 
     Ok(report)
@@ -925,6 +943,7 @@ fn ensure_automation(
     db: &Database,
     auto: &ExtensionAutomation,
     target: Option<SessionId>,
+    existing: Option<&Automation>,
     report: &mut EnsureReport,
 ) -> Result<(), String> {
     // Desired action: a command wins (exec); otherwise send to the target.
@@ -940,15 +959,11 @@ fn ensure_automation(
             ))
         }
     };
-    let existing = db
-        .list_automations()
-        .map_err(|e| format!("list_automations: {e}"))?
-        .into_iter()
-        .find(|row| row.name == auto.name);
-    if let Some(mut row) = existing {
+    if let Some(row) = existing {
         // Re-link a send automation whose target session was recreated (a new id).
         if let (AutomationAction::Send { session_id }, Some(t)) = (&row.action, target) {
             if *session_id != t {
+                let mut row = row.clone();
                 row.action = AutomationAction::Send { session_id: t };
                 db.update_automation(&row)
                     .map_err(|e| format!("update_automation: {e}"))?;
@@ -998,28 +1013,29 @@ pub fn deactivate_extension(
 ) -> Result<DeactivateReport, String> {
     let mut report = DeactivateReport::default();
 
+    // Snapshot existing rows once rather than re-listing per declared resource.
+    let automation_ids: HashMap<String, i64> = db
+        .list_automations()
+        .map_err(|e| format!("list_automations: {e}"))?
+        .into_iter()
+        .map(|row| (row.name, row.id))
+        .collect();
     for auto in &def.automations {
-        let id = db
-            .list_automations()
-            .map_err(|e| format!("list_automations: {e}"))?
-            .into_iter()
-            .find(|row| row.name == auto.name)
-            .map(|row| row.id);
-        if let Some(id) = id {
+        if let Some(&id) = automation_ids.get(&auto.name) {
             db.delete_automation(id)
                 .map_err(|e| format!("delete_automation: {e}"))?;
             report.automations_deleted.push(auto.name.clone());
         }
     }
 
+    let session_ids: HashMap<String, SessionId> = db
+        .list_active_sessions()
+        .map_err(|e| format!("list_active_sessions: {e}"))?
+        .into_iter()
+        .map(|row| (row.name, row.id))
+        .collect();
     for sess in &def.sessions {
-        let id = db
-            .list_active_sessions()
-            .map_err(|e| format!("list_active_sessions: {e}"))?
-            .into_iter()
-            .find(|row| row.name == sess.name)
-            .map(|row| row.id);
-        if let Some(id) = id {
+        if let Some(&id) = session_ids.get(&sess.name) {
             super::delete_session_headless(db, id, force)?;
             report.sessions_deleted.push(sess.name.clone());
         }
