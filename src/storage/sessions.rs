@@ -35,6 +35,10 @@ pub struct DeletedSessionInfo {
     /// a remote session re-spawns against its own host, not the local default.
     pub backend_type: String,
     pub deleted_at: u64,
+    /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
+    /// force-deleted session is shown in the restore list but cannot be restored
+    /// — its worktrees (and any uncommitted work) are gone. See schema v37.
+    pub force_deleted: bool,
     pub worktrees: Vec<SharedWorktree>,
 }
 
@@ -145,13 +149,26 @@ impl Database {
         Ok(())
     }
 
+    /// Mark a soft-deleted session as force-deleted: its tmux window + worktrees
+    /// were torn down, so it can't be restored (schema v37). Safe to call after
+    /// [`soft_delete_session`](Self::soft_delete_session); idempotent.
+    pub fn mark_session_force_deleted(&self, id: SessionId) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET force_deleted = 1 WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
     /// Restore a soft-deleted session.
     pub fn restore_session(&self, id: SessionId) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
+        // Clear `force_deleted` defensively — the app layer blocks restoring a
+        // force-deleted row, so this only matters if a future caller revives one.
         self.conn.execute(
-            "UPDATE sessions SET deleted_at = NULL, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL",
+            "UPDATE sessions SET deleted_at = NULL, force_deleted = 0, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL",
             params![now, id_str],
         )?;
 
@@ -300,6 +317,7 @@ impl Database {
         let sql = format!(
             "SELECT s.id, s.name, s.agent, s.agent_session_id, \
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
+             s.force_deleted, \
              w.repo_path, w.worktree_path, w.branch \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
@@ -314,9 +332,10 @@ impl Database {
             let parent_str: Option<String> = row.get(5)?;
             let deleted_at: i64 = row.get(6)?;
             let backend_type: String = row.get(7)?;
-            let wt_repo: Option<String> = row.get(8)?;
-            let wt_path: Option<String> = row.get(9)?;
-            let wt_branch: Option<String> = row.get(10)?;
+            let force_deleted: i64 = row.get(8)?;
+            let wt_repo: Option<String> = row.get(9)?;
+            let wt_path: Option<String> = row.get(10)?;
+            let wt_branch: Option<String> = row.get(11)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch);
 
@@ -330,6 +349,7 @@ impl Database {
                     parent_session_id: parent_str.and_then(|s| s.parse().ok()),
                     backend_type,
                     deleted_at: deleted_at as u64,
+                    force_deleted: force_deleted != 0,
                     worktrees: Vec::new(),
                 },
                 worktree,

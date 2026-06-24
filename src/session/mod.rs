@@ -149,10 +149,13 @@ pub struct AgentMetrics {
 /// worktrees. Agent-neutral (derived from git, not the agent CLI).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitStats {
+    /// Tracked files with staged/unstaged changes vs HEAD (excludes untracked).
     pub files_changed: usize,
     pub insertions: usize,
     pub deletions: usize,
-    /// Whether the worktree has uncommitted changes.
+    /// Untracked files (git status `??`), which a worktree removal would lose.
+    pub untracked: usize,
+    /// Whether the worktree has uncommitted changes (tracked or untracked).
     pub dirty: bool,
     /// Commits ahead of the upstream/base branch.
     pub ahead: usize,

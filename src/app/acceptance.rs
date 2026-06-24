@@ -40,6 +40,31 @@ const STD_ROWS: u16 = 40;
 const SNAP_COLS: u16 = 100;
 const SNAP_ROWS: u16 = 30;
 
+/// Initialize a git repo at `dir` with one committed file, leaving an
+/// uncommitted edit when `dirty`. Used by the hard-delete tests to give a
+/// session a worktree whose state `git::worktree_stats` can read.
+fn init_git_repo(dir: &Path, dirty: bool) {
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "thurbox-test"]);
+    std::fs::write(dir.join("f.txt"), "hello\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "init"]);
+    if dirty {
+        std::fs::write(dir.join("f.txt"), "changed\n").unwrap();
+    }
+}
+
 /// Backend stand-in for the harness. Inert by default: `spawn`/`adopt` error,
 /// so a test proves no accidental spawn while the session still has a real
 /// vt100 parser (the session list draws). With `spawnable = true` they succeed,
@@ -207,6 +232,18 @@ impl Harness {
             session.info.agent_session_id = Some(format!("agent-{i}"));
         }
         h
+    }
+
+    /// Point the active session at a freshly-created git repo (clean, or
+    /// `dirty` with one uncommitted change) so a `soft_delete`-off delete sees —
+    /// or doesn't see — work at risk. Returns the backing `TempDir`, which the
+    /// caller must keep alive for the repo to exist on disk.
+    fn set_active_git_cwd(&mut self, dirty: bool) -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo(repo.path(), dirty);
+        let idx = self.app.active_index;
+        self.app.sessions[idx].info.cwd = Some(repo.path().to_path_buf());
+        repo
     }
 
     /// Feed one key event, exactly as the real event loop converts a crossterm
@@ -524,6 +561,8 @@ fn ctrl_d_soft_deletes_and_ctrl_z_undoes() {
 fn ctrl_d_hard_delete_confirms_when_soft_delete_disabled() {
     let mut h = Harness::standard(2);
     h.app.features.soft_delete = false;
+    // The active session has uncommitted work, so a hard delete must confirm.
+    let _repo = h.set_active_git_cwd(true);
 
     // Ctrl+D now opens a confirmation prompt instead of deleting immediately.
     h.ctrl('d');
@@ -557,6 +596,7 @@ fn ctrl_d_hard_delete_confirms_when_soft_delete_disabled() {
 fn hard_delete_confirmation_accepts_y_and_n_keys() {
     let mut h = Harness::standard(2);
     h.app.features.soft_delete = false;
+    let _repo = h.set_active_git_cwd(true);
 
     // 'n' cancels, like Esc.
     h.ctrl('d');
@@ -569,6 +609,43 @@ fn hard_delete_confirmation_accepts_y_and_n_keys() {
     h.key(KeyCode::Char('y'), KeyModifiers::NONE);
     assert!(!h.app.modal.is_open(), "'y' closes the confirmation");
     assert_eq!(h.app.sessions.len(), 1, "'y' confirms the delete");
+}
+
+#[test]
+fn ctrl_d_hard_deletes_clean_session_without_confirmation() {
+    let mut h = Harness::standard(2);
+    h.app.features.soft_delete = false;
+    // A clean git worktree has no work at risk → delete straight away.
+    let _repo = h.set_active_git_cwd(false);
+
+    h.ctrl('d');
+    assert!(
+        !h.app.modal.is_open(),
+        "a clean session is hard-deleted without a confirmation prompt"
+    );
+    assert_eq!(h.app.sessions.len(), 1, "the clean session is removed");
+    assert!(
+        h.app.pending_delete.is_none(),
+        "a hard delete offers no Ctrl+Z undo"
+    );
+}
+
+#[test]
+fn ctrl_d_confirms_dirty_session_and_lists_risk() {
+    let mut h = Harness::standard(2);
+    h.app.features.soft_delete = false;
+    let _repo = h.set_active_git_cwd(true);
+
+    h.ctrl('d');
+    let modals::Modal::ConfirmDelete(ref cd) = h.app.modal else {
+        panic!("a dirty session opens the hard-delete confirmation");
+    };
+    assert!(
+        cd.risk.dirty && cd.risk.files_changed > 0,
+        "the risk reflects the uncommitted change: {:?}",
+        cd.risk
+    );
+    assert!(!cd.risk.unknown, "a local git worktree is inspectable");
 }
 
 // ── Pane focus cycling ───────────────────────────────────────────────────────

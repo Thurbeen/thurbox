@@ -1455,12 +1455,20 @@ impl App {
 
         // When soft-delete is disabled, a TUI delete is a destructive hard
         // delete (kills the tmux window, removes worktrees) with no Ctrl+Z
-        // undo — confirm before tearing anything down.
+        // undo. Confirm before tearing anything down only when the session has
+        // work at risk (uncommitted changes / unmerged commits, or a state we
+        // can't verify); a known-clean session is deleted straight away.
         if !self.features.soft_delete {
-            self.modal = modals::Modal::ConfirmDelete(modals::ConfirmDeleteModal {
-                session_id,
-                session_name: session.info.name.clone(),
-            });
+            match self.assess_delete_risk(session) {
+                Some(risk) => {
+                    self.modal = modals::Modal::ConfirmDelete(modals::ConfirmDeleteModal {
+                        session_id,
+                        session_name: session.info.name.clone(),
+                        risk,
+                    });
+                }
+                None => self.confirm_hard_delete_session(session_id),
+            }
             return;
         }
 
@@ -1495,6 +1503,36 @@ impl App {
         self.save_state();
     }
 
+    /// Assess what a hard delete of `session` would destroy, so a clean session
+    /// can skip the confirmation prompt. Returns `None` when the session is
+    /// known-clean (delete silently) or `Some(risk)` describing the uncommitted
+    /// changes / unmerged commits to confirm. Remote-host sessions can't be
+    /// inspected cheaply, so they always confirm (`DeleteRisk::unknown`).
+    fn assess_delete_risk(&self, session: &Session) -> Option<modals::DeleteRisk> {
+        if session.info.remote_host.is_some() {
+            return Some(modals::DeleteRisk::unknown());
+        }
+
+        // Inspect each worktree thurbox would tear down; for a non-worktree
+        // session fall back to its cwd (the live agent's working dir).
+        let paths: Vec<std::path::PathBuf> = if session.info.worktrees.is_empty() {
+            session.info.cwd.iter().cloned().collect()
+        } else {
+            session
+                .info
+                .worktrees
+                .iter()
+                .map(|w| w.worktree_path.clone())
+                .collect()
+        };
+
+        let stats: Vec<_> = paths
+            .iter()
+            .map(|p| crate::git::worktree_stats(p))
+            .collect();
+        modals::DeleteRisk::from_stats(&stats)
+    }
+
     /// Hard-delete a session after the confirmation prompt (soft_delete off):
     /// soft-delete the row + disable pending sends on the UI thread (fast
     /// SQLite writes) so the modal closes and the row vanishes immediately,
@@ -1522,6 +1560,12 @@ impl App {
         }
         if let Err(e) = self.db.soft_delete_session(session_id) {
             error!("Failed to soft-delete session {session_id}: {e}");
+        }
+        // Flag as force-deleted so the Ctrl+U restore list tags + blocks it —
+        // its worktrees (and any uncommitted work) are gone with the teardown
+        // below, so it can't be coherently restored.
+        if let Err(e) = self.db.mark_session_force_deleted(session_id) {
+            error!("Failed to mark session {session_id} force-deleted: {e}");
         }
 
         let removed_session = self.sessions.remove(idx);
@@ -1684,6 +1728,16 @@ impl App {
 
     /// Restore a soft-deleted session: un-delete in DB, recreate worktrees, and spawn.
     fn restore_deleted_session(&mut self, deleted: DeletedSessionInfo) {
+        // A force-deleted session had its worktrees + tmux window torn down (and
+        // any uncommitted work lost), so there's nothing coherent to restore.
+        if deleted.force_deleted {
+            self.set_error(format!(
+                "'{}' was force-deleted; its worktrees were removed and it can't be restored",
+                deleted.name
+            ));
+            return;
+        }
+
         if let Err(e) = self.db.restore_session(deleted.id) {
             error!("Failed to restore session in DB: {e}");
             self.set_error("Failed to restore session");
@@ -9559,6 +9613,7 @@ mod tests {
             files_changed: 3,
             insertions: 10,
             deletions: 2,
+            untracked: 0,
             dirty: true,
             ahead: 1,
             behind: 0,

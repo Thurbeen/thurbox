@@ -684,6 +684,7 @@ impl App {
                 frame,
                 &crate::ui::confirm_delete_modal::ConfirmDeleteState {
                     session_name: &cd.session_name,
+                    risk: &cd.risk,
                 },
             );
         }
@@ -816,6 +817,7 @@ impl App {
                 agent: d.agent.clone(),
                 deleted_ago: format_time_ago(d.deleted_at),
                 has_worktrees: !d.worktrees.is_empty(),
+                force_deleted: d.force_deleted,
             })
             .collect();
         restore_sessions_modal::render_restore_sessions_modal(

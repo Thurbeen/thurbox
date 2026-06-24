@@ -570,17 +570,26 @@ on its next sync), and `session restore` revives it. Pass `--force`
 window, remove worktrees + the symlink workspace, and disable
 `send` automations targeting the session — for headless cleanup
 when no TUI is running. Teardown is best-effort (failures land in
-the JSON report); the row is always soft-deleted last, so even a
-forced delete stays restorable.
+the JSON report); the row is always soft-deleted last. A `--force`
+delete also stamps the `sessions.force_deleted` column (schema v37):
+the row still appears in the restore list **tagged `force-deleted`**,
+but `restore` refuses it (its worktrees + any uncommitted work are
+gone). A plain soft delete stays restorable.
 
 The **TUI** `Ctrl+D` soft-deletes by default too (with a `Ctrl+Z` undo
 window). The `[features] soft_delete` flag (settings.toml, default
 `true`) governs only this TUI path: set it `false` and `Ctrl+D` becomes
 a hard delete — the same `delete_session_headless(.., force=true)`
-teardown — gated behind a confirmation modal
-(`Modal::ConfirmDeleteSession`, rendered by `ui::confirm_delete_modal`),
-since there is no `Ctrl+Z` for it. The flag never changes
-`thurbox-cli session delete`, which stays soft unless `--force`.
+teardown — since there is no `Ctrl+Z` for it. That hard delete is
+**conditional**: a confirmation modal (`Modal::ConfirmDelete`, rendered
+by `ui::confirm_delete_modal`) appears **only when the session has work
+at risk** — uncommitted/untracked files or unmerged commits, or a state
+that can't be verified (remote host / git error → confirm to be safe;
+`App::assess_delete_risk` + `modals::DeleteRisk::from_stats` over
+`git::worktree_stats`). The modal itemizes what would be lost; a
+known-clean session is deleted with no prompt. A force-deleted session
+is then tagged + blocked in the restore list (above). The flag never
+changes `thurbox-cli session delete`, which stays soft unless `--force`.
 
 ### Parent sessions (lead/worker)
 

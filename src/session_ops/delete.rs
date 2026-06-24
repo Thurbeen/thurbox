@@ -45,6 +45,13 @@ pub fn delete_session_headless(
     db.soft_delete_session(session_id)
         .map_err(|e| format!("soft_delete_session: {e}"))?;
 
+    // Record that this delete tore down the worktrees/tmux so the restore list
+    // can tag + block it (a force-delete is not restorable).
+    if force {
+        db.mark_session_force_deleted(session_id)
+            .map_err(|e| format!("mark_session_force_deleted: {e}"))?;
+    }
+
     Ok(report)
 }
 
@@ -211,6 +218,31 @@ mod tests {
         assert_eq!(report.disabled_automations, 2);
         assert!(!db.get_automation(a).unwrap().unwrap().enabled);
         assert!(!db.get_automation(b).unwrap().unwrap().enabled);
+    }
+
+    #[test]
+    fn force_delete_marks_force_deleted_but_soft_does_not() {
+        let db = Database::open_in_memory().unwrap();
+
+        let soft = insert_session(&db, "soft");
+        delete_session_headless(&db, soft, false).unwrap();
+        assert!(
+            !db.get_deleted_session_by_id(soft)
+                .unwrap()
+                .unwrap()
+                .force_deleted,
+            "a soft delete stays restorable"
+        );
+
+        let hard = insert_session(&db, "hard");
+        delete_session_headless(&db, hard, true).unwrap();
+        assert!(
+            db.get_deleted_session_by_id(hard)
+                .unwrap()
+                .unwrap()
+                .force_deleted,
+            "a force delete is flagged as not restorable"
+        );
     }
 
     #[test]

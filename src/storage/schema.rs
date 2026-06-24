@@ -10,9 +10,11 @@ use rusqlite::Connection;
 /// v34 adds `hook_state` / `hook_state_at` / `seen_at` to `sessions`
 /// (hooks-driven session status); v35 adds `idx_tasks_external` on
 /// `tasks(source, external_id)` (external-tracker sync lookup); v36 adds
-/// `action_command` to `tasks` + `automations` (the `Exec` automation action).
+/// `action_command` to `tasks` + `automations` (the `Exec` automation action);
+/// v37 adds `force_deleted` to `sessions` (a hard delete tore down its
+/// worktrees/tmux, so it can't be restored — the restore list tags + blocks it).
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 36;
+pub const SCHEMA_VERSION: u32 = 37;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -67,6 +69,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             hook_state        TEXT,
             hook_state_at     INTEGER,
             seen_at           INTEGER,
+            force_deleted     INTEGER NOT NULL DEFAULT 0,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -249,6 +252,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (34, migrate_v34_hook_status),
         (35, migrate_v35_tasks_external_index),
         (36, migrate_v36_action_command),
+        (37, migrate_v37_force_deleted),
     ];
 
     for &(target, step) in steps {
@@ -1037,6 +1041,22 @@ fn migrate_v36_action_command(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_absent(conn, "tasks", "action_command", "TEXT")
 }
 
+/// v36 → v37: add `force_deleted` to `sessions`.
+///
+/// Marks a soft-deleted row whose runtime resources (tmux window + worktrees)
+/// were torn down by a hard delete, so the `Ctrl+U` restore list can tag it and
+/// refuse to restore it (its worktrees — and any uncommitted work — are gone).
+/// `0` on every existing row, so prior soft-deletes stay restorable. Fresh v37
+/// databases already have the column from `initialize` and skip this step.
+fn migrate_v37_force_deleted(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(
+        conn,
+        "sessions",
+        "force_deleted",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1191,6 +1211,39 @@ mod tests {
             .exists([])
             .unwrap();
         assert!(has_description, "description column should be added at v26");
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v36_adds_force_deleted_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v36 state: a sessions table without the force_deleted column.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '36');
+             CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let has_col: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='force_deleted'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_col, "force_deleted column should be added at v37");
 
         let version: String = conn
             .query_row(

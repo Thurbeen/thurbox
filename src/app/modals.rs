@@ -540,13 +540,68 @@ pub struct ThemePickerModal {
     pub original: crate::session::ThemePalette,
 }
 
+/// What a hard delete would destroy: uncommitted changes and/or unmerged
+/// commits across a session's worktree(s). `unknown` means the state could not
+/// be determined (a remote-host session or a failed git query), in which case
+/// we confirm anyway. Drives whether the confirmation prompt is shown at all
+/// and what it lists. See [`DeleteRisk::from_stats`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeleteRisk {
+    pub dirty: bool,
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+    pub untracked: usize,
+    pub ahead: usize,
+    pub unknown: bool,
+}
+
+impl DeleteRisk {
+    /// Risk could not be determined (remote session / git error) → confirm.
+    pub fn unknown() -> Self {
+        DeleteRisk {
+            unknown: true,
+            ..Default::default()
+        }
+    }
+
+    /// Reduce per-worktree git stats into a delete risk. `stats[i]` is `None`
+    /// when worktree `i` could not be inspected (not a git worktree / git
+    /// failed) — any such entry forces `unknown`. Returns `None` (delete
+    /// silently) only when every worktree is known-clean: no dirty tree, no
+    /// untracked files, no commits ahead, nothing unknown.
+    pub fn from_stats(stats: &[Option<crate::session::GitStats>]) -> Option<DeleteRisk> {
+        let mut risk = DeleteRisk::default();
+        for entry in stats {
+            match entry {
+                None => risk.unknown = true,
+                Some(s) => {
+                    risk.dirty |= s.dirty;
+                    risk.files_changed += s.files_changed;
+                    risk.insertions += s.insertions;
+                    risk.deletions += s.deletions;
+                    risk.untracked += s.untracked;
+                    risk.ahead += s.ahead;
+                }
+            }
+        }
+        if risk.unknown || risk.dirty || risk.untracked > 0 || risk.ahead > 0 {
+            Some(risk)
+        } else {
+            None
+        }
+    }
+}
+
 /// Confirmation prompt for a destructive (hard) session delete, shown only when
-/// the `soft_delete` feature flag is off. Carries the target session so the
-/// confirm handler can tear it down without re-resolving the active index.
+/// the `soft_delete` feature flag is off **and** the session has work at risk
+/// (see [`DeleteRisk`]). Carries the target session so the confirm handler can
+/// tear it down without re-resolving the active index.
 #[derive(Debug, Clone)]
 pub struct ConfirmDeleteModal {
     pub session_id: crate::session::SessionId,
     pub session_name: String,
+    pub risk: DeleteRisk,
 }
 
 // ── RestoreSessionsModal ─────────────────────────────────────────────────
@@ -1822,6 +1877,80 @@ pub struct TaskActionPickerModal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::GitStats;
+
+    fn stats(dirty: bool, files: usize, ins: usize, dels: usize, ahead: usize) -> GitStats {
+        GitStats {
+            files_changed: files,
+            insertions: ins,
+            deletions: dels,
+            untracked: 0,
+            dirty,
+            ahead,
+            behind: 0,
+        }
+    }
+
+    #[test]
+    fn delete_risk_clean_known_is_none() {
+        // A single known-clean worktree → delete silently.
+        assert_eq!(
+            DeleteRisk::from_stats(&[Some(stats(false, 0, 0, 0, 0))]),
+            None
+        );
+        // No worktrees at all is also "nothing at risk".
+        assert_eq!(DeleteRisk::from_stats(&[]), None);
+    }
+
+    #[test]
+    fn delete_risk_dirty_triggers() {
+        let risk = DeleteRisk::from_stats(&[Some(stats(true, 2, 5, 1, 0))]).unwrap();
+        assert!(risk.dirty);
+        assert_eq!(risk.files_changed, 2);
+        assert!(!risk.unknown);
+    }
+
+    #[test]
+    fn delete_risk_ahead_triggers_even_when_clean() {
+        let risk = DeleteRisk::from_stats(&[Some(stats(false, 0, 0, 0, 3))]).unwrap();
+        assert_eq!(risk.ahead, 3);
+        assert!(!risk.dirty);
+    }
+
+    #[test]
+    fn delete_risk_untracked_only_triggers() {
+        // Untracked files don't show in `diff HEAD` (files_changed == 0), so
+        // exercise the untracked count as the sole trigger (dirty == false).
+        let mut s = stats(false, 0, 0, 0, 0);
+        s.untracked = 2;
+        let risk = DeleteRisk::from_stats(&[Some(s)]).unwrap();
+        assert_eq!(risk.untracked, 2);
+        assert_eq!(risk.files_changed, 0);
+        assert!(!risk.dirty, "untracked alone triggers even without dirty");
+    }
+
+    #[test]
+    fn delete_risk_none_entry_forces_unknown() {
+        // An uninspectable worktree (None) is treated as "can't prove clean".
+        let risk = DeleteRisk::from_stats(&[None]).unwrap();
+        assert!(risk.unknown);
+        assert_eq!(DeleteRisk::unknown(), risk);
+    }
+
+    #[test]
+    fn delete_risk_accumulates_across_worktrees() {
+        let risk = DeleteRisk::from_stats(&[
+            Some(stats(true, 1, 10, 2, 1)),
+            Some(stats(false, 2, 30, 5, 4)),
+        ])
+        .unwrap();
+        assert!(risk.dirty);
+        assert_eq!(risk.files_changed, 3);
+        assert_eq!(risk.insertions, 40);
+        assert_eq!(risk.deletions, 7);
+        assert_eq!(risk.ahead, 5);
+        assert!(!risk.unknown);
+    }
 
     #[test]
     fn test_text_input_basic() {

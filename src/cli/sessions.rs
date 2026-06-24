@@ -240,6 +240,12 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .get_deleted_session_by_id(id)
                 .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
+            if deleted.force_deleted {
+                return Err(format!(
+                    "Session '{}' was force-deleted; its worktrees were removed and it can't be restored",
+                    deleted.name
+                ));
+            }
             db.restore_session(deleted.id)
                 .map_err(|e| format!("restore_session: {e}"))?;
             Ok(CommandOutput::new(

@@ -848,14 +848,6 @@ fn parse_numstat(out: &str) -> (usize, usize, usize) {
     (files, ins, dels)
 }
 
-/// Whether the worktree has any uncommitted changes (staged, unstaged, or
-/// untracked). Returns `false` if git cannot be queried.
-pub fn worktree_is_dirty(cwd: &Path) -> bool {
-    run_git_capture(&["status", "--porcelain"], cwd)
-        .map(|o| !o.trim().is_empty())
-        .unwrap_or(false)
-}
-
 /// Commits the worktree's HEAD is `(ahead, behind)` relative to its base ref,
 /// resolved by `resolve_base_ref` (upstream → `origin/HEAD` → `origin/main` →
 /// `origin/master`) — the same chain [`sync_worktree`] rebases onto, so the
@@ -883,12 +875,19 @@ pub fn worktree_stats(cwd: &Path) -> Option<crate::session::GitStats> {
     run_git_capture(&["rev-parse", "--is-inside-work-tree"], cwd)?;
     let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
     let (files_changed, insertions, deletions) = parse_numstat(&numstat);
+    // One `status --porcelain` drives both dirty (any output) and the untracked
+    // count (`??` entries) — files a worktree removal would lose but that `diff
+    // HEAD` never reports.
+    let status = run_git_capture(&["status", "--porcelain"], cwd).unwrap_or_default();
+    let dirty = !status.trim().is_empty();
+    let untracked = status.lines().filter(|l| l.starts_with("??")).count();
     let (ahead, behind) = ahead_behind(cwd);
     Some(crate::session::GitStats {
         files_changed,
         insertions,
         deletions,
-        dirty: worktree_is_dirty(cwd),
+        untracked,
+        dirty,
         ahead,
         behind,
     })

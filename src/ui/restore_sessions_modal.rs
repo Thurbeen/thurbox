@@ -14,6 +14,9 @@ pub struct DeletedSessionEntry {
     pub agent: String,
     pub deleted_ago: String,
     pub has_worktrees: bool,
+    /// Hard-deleted: worktrees + tmux were torn down, so it can't be restored.
+    /// Rendered with a danger `force-deleted` tag and dimmed.
+    pub force_deleted: bool,
 }
 
 pub struct RestoreSessionsModalState<'a> {
@@ -55,14 +58,22 @@ pub fn render_restore_sessions_modal(
                 " {} ({}) {}{} ",
                 entry.name, entry.agent, entry.deleted_ago, wt_indicator
             );
-            if selected {
-                Line::from(Span::styled(text, Theme::selected_item()))
+            // A force-deleted row is dimmed (it can't be restored) and tagged.
+            let base_style = if selected {
+                Theme::selected_item()
+            } else if entry.force_deleted {
+                Style::default().fg(Theme::text_muted())
             } else {
-                Line::from(Span::styled(
-                    text,
-                    Style::default().fg(Theme::text_secondary()),
-                ))
+                Style::default().fg(Theme::text_secondary())
+            };
+            let mut spans = vec![Span::styled(text, base_style)];
+            if entry.force_deleted {
+                spans.push(Span::styled(
+                    "force-deleted ",
+                    Style::default().fg(Theme::danger()),
+                ));
             }
+            Line::from(spans)
         })
         .collect();
 
@@ -100,6 +111,7 @@ mod tests {
                 agent: "claude".into(),
                 deleted_ago: "1m ago".into(),
                 has_worktrees: false,
+                force_deleted: false,
             })
             .collect()
     }
@@ -167,6 +179,22 @@ mod tests {
         assert!(
             rows.iter().any(|r| r.index == 39),
             "the selected row stays clickable"
+        );
+    }
+
+    #[test]
+    fn force_deleted_entry_renders_tag() {
+        let list = vec![DeletedSessionEntry {
+            name: "gone".into(),
+            agent: "claude".into(),
+            deleted_ago: "1m ago".into(),
+            has_worktrees: false,
+            force_deleted: true,
+        }];
+        let text = rendered_text(&list, 0);
+        assert!(
+            text.contains("force-deleted"),
+            "force-deleted row should be tagged:\n{text}"
         );
     }
 
