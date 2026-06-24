@@ -84,6 +84,23 @@ impl Read for ControlModeReader {
     }
 }
 
+/// Max input bytes encoded into a single `send-keys -H` command. Each byte
+/// becomes 3 chars (` XX`), so the command line stays ≈ `prefix + 3·512` ≈ 1.6
+/// KB — well under tmux's per-command line limit (which would truncate a longer
+/// line). `send_keys_commands` splits larger writes across multiple commands.
+const SEND_KEYS_CHUNK_BYTES: usize = 512;
+
+/// Split `buf` into the ordered `send-keys -H` command lines for `pane_id`, each
+/// encoding at most `SEND_KEYS_CHUNK_BYTES` bytes. Chunking keeps a large paste
+/// from becoming one over-long control-mode line (which tmux truncates); the
+/// raw bytes — including the bracketed-paste markers — span the chunks and the
+/// receiving pane reassembles them transparently.
+fn send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
+    buf.chunks(SEND_KEYS_CHUNK_BYTES)
+        .map(|chunk| format_send_keys(pane_id, chunk))
+        .collect()
+}
+
 /// Per-pane writer that sends input via `send-keys -H` through the shared control stdin.
 pub struct ControlModeWriter {
     pub stdin: Arc<Mutex<std::process::ChildStdin>>,
@@ -95,12 +112,13 @@ impl Write for ControlModeWriter {
         if buf.is_empty() {
             return Ok(0);
         }
-        let cmd = format_send_keys(&self.pane_id, buf);
         let mut stdin = self
             .stdin
             .lock()
             .map_err(|e| std::io::Error::other(format!("stdin lock: {e}")))?;
-        stdin.write_all(cmd.as_bytes())?;
+        for cmd in send_keys_commands(&self.pane_id, buf) {
+            stdin.write_all(cmd.as_bytes())?;
+        }
         stdin.flush()?;
         Ok(buf.len())
     }
@@ -512,6 +530,60 @@ mod tests {
             format_send_keys("%1", &[0x1b, b'[', b'A']),
             "send-keys -t %1 -H 1b 5b 41\n"
         );
+    }
+
+    // --- send_keys_commands chunking tests ---
+
+    #[test]
+    fn send_keys_commands_short_input_is_one_command() {
+        let cmds = send_keys_commands("%1", b"ABC");
+        assert_eq!(cmds, vec!["send-keys -t %1 -H 41 42 43\n".to_string()]);
+    }
+
+    #[test]
+    fn send_keys_commands_empty_input_is_no_commands() {
+        assert!(send_keys_commands("%1", &[]).is_empty());
+    }
+
+    /// A large paste is split into multiple bounded `send-keys` commands whose
+    /// concatenated bytes equal the original input — the property that keeps a
+    /// big paste from being truncated by tmux's per-command line limit.
+    #[test]
+    fn send_keys_commands_chunks_large_input_losslessly() {
+        // 5 KB of bracketed-paste-wrapped content, like `send_paste_to_session`.
+        let mut input = b"\x1b[200~".to_vec();
+        input.extend((0..5000u32).map(|i| (i % 256) as u8));
+        input.extend_from_slice(b"\x1b[201~");
+
+        let cmds = send_keys_commands("%1", &input);
+
+        assert!(
+            cmds.len() > 1,
+            "expected the large input to span multiple commands, got {}",
+            cmds.len()
+        );
+
+        // Parse each `send-keys -t %1 -H XX XX …\n` back into its bytes.
+        let decode = |cmd: &str| -> Vec<u8> {
+            cmd.trim_end()
+                .strip_prefix("send-keys -t %1 -H")
+                .expect("send-keys prefix")
+                .split_whitespace()
+                .map(|h| u8::from_str_radix(h, 16).expect("hex byte"))
+                .collect()
+        };
+
+        let mut reassembled = Vec::new();
+        for cmd in &cmds {
+            let bytes = decode(cmd);
+            assert!(
+                bytes.len() <= SEND_KEYS_CHUNK_BYTES,
+                "chunk encodes {} bytes, exceeds bound {SEND_KEYS_CHUNK_BYTES}",
+                bytes.len()
+            );
+            reassembled.extend(bytes);
+        }
+        assert_eq!(reassembled, input);
     }
 
     // --- ControlModeReader tests ---
