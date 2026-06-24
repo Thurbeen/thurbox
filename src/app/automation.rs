@@ -76,7 +76,7 @@ impl App {
 
     /// Execute a single automation's action, returning its run status, detail,
     /// and the session it sent to / spawned (when one exists).
-    pub(crate) fn fire_automation(
+    fn fire_automation(
         &mut self,
         auto: &Automation,
     ) -> (AutomationRunStatus, String, Option<SessionId>) {
@@ -133,7 +133,7 @@ impl App {
     /// prompt. Each automation owns one session named `auto-<id>`; a recurring
     /// automation reuses that session on later fires (and after a TUI restart,
     /// where it is restored from the database by name).
-    pub(crate) fn spawn_for_automation(
+    fn spawn_for_automation(
         &mut self,
         auto: &Automation,
         repo_path: &std::path::Path,
@@ -191,7 +191,7 @@ impl App {
 
     /// A blank editor for a new automation, with its Send target list populated
     /// from the running sessions and defaulting to the active one.
-    pub(crate) fn blank_automation_editor(&self) -> modals::AutomationEditorModal {
+    fn blank_automation_editor(&self) -> modals::AutomationEditorModal {
         let mut m = modals::AutomationEditorModal::default();
         let active = self.sessions.get(self.active_index).map(|s| s.info.id);
         m.set_target_sessions(self.session_target_choices(), active);
@@ -200,7 +200,7 @@ impl App {
 
     /// Open the centered-overlay editor pre-filled for an existing automation
     /// (the Ctrl+P list path).
-    pub(crate) fn open_edit_automation(&mut self, id: i64) {
+    fn open_edit_automation(&mut self, id: i64) {
         let Some(auto) = self
             .automation_ui
             .cached_automations
@@ -215,10 +215,7 @@ impl App {
 
     /// Build an editor pre-filled from an existing automation, with its Send
     /// target list populated from the running sessions.
-    pub(crate) fn build_automation_editor(
-        &self,
-        auto: &Automation,
-    ) -> modals::AutomationEditorModal {
+    fn build_automation_editor(&self, auto: &Automation) -> modals::AutomationEditorModal {
         let mut m = modals::AutomationEditorModal::from_automation(auto);
         let selected = match &auto.action {
             AutomationAction::Send { session_id } => Some(*session_id),
@@ -332,7 +329,7 @@ impl App {
     /// on failure sets an error status and returns `false` (leaving the editor
     /// open). Refreshes the cached automations on success. Shared by the overlay
     /// and in-pane editors.
-    pub(crate) fn save_automation(&mut self, m: &modals::AutomationEditorModal) -> bool {
+    fn save_automation(&mut self, m: &modals::AutomationEditorModal) -> bool {
         let name = m.name.value().trim().to_string();
         if name.is_empty() {
             self.set_error("Name cannot be empty");
@@ -389,7 +386,7 @@ impl App {
 
     /// Build the [`AutomationAction`] from the editor's action fields. Returns
     /// `None` (after setting an error status) when a required field is missing.
-    pub(crate) fn build_automation_action(
+    fn build_automation_action(
         &mut self,
         m: &modals::AutomationEditorModal,
     ) -> Option<AutomationAction> {
@@ -437,7 +434,7 @@ impl App {
     /// Persist the automation: update the existing row (`editing_id`) or create
     /// a new one. Returns the DB result, or `None` (after an error status) when
     /// editing a row that no longer exists.
-    pub(crate) fn persist_automation(
+    fn persist_automation(
         &mut self,
         editing_id: Option<i64>,
         new: crate::storage::automations::NewAutomation,
@@ -533,7 +530,7 @@ impl App {
     }
 
     /// Toggle an automation's enabled state, recomputing `next_run_at` on enable.
-    pub(crate) fn toggle_automation_by_id(&mut self, id: i64) {
+    fn toggle_automation_by_id(&mut self, id: i64) {
         let Ok(Some(mut auto)) = self.db.get_automation(id) else {
             return;
         };
@@ -551,7 +548,7 @@ impl App {
     }
 
     /// Mark an automation due so the next tick fires it.
-    pub(crate) fn run_automation_by_id(&mut self, id: i64) {
+    fn run_automation_by_id(&mut self, id: i64) {
         match self.db.trigger_automation_now(id) {
             Ok(true) => {
                 self.refresh_automations();
@@ -566,7 +563,7 @@ impl App {
     }
 
     /// Delete an automation by ID and refresh the cache.
-    pub(crate) fn delete_automation_by_id(&mut self, id: i64) {
+    fn delete_automation_by_id(&mut self, id: i64) {
         match self.db.delete_automation(id) {
             Ok(true) => {
                 self.refresh_automations();
@@ -674,7 +671,7 @@ impl App {
 
     /// `Enter`/`e` in the automations pane: open the editor for the selection,
     /// or start a new automation on an empty pane.
-    pub(crate) fn enter_automation_editor_in_pane(&mut self, count: usize) {
+    fn enter_automation_editor_in_pane(&mut self, count: usize) {
         if count == 0 {
             self.new_automation_in_pane();
         } else {
@@ -685,7 +682,7 @@ impl App {
 
     /// Clamp the selection and run the toggle/run/delete action for the row
     /// under the cursor (caller guarantees a non-empty pane).
-    pub(crate) fn dispatch_automation_pane_action(&mut self, code: KeyCode, count: usize) {
+    fn dispatch_automation_pane_action(&mut self, code: KeyCode, count: usize) {
         if self.automation_ui.automation_panel_index >= count {
             self.automation_ui.automation_panel_index = count - 1;
         }
@@ -696,7 +693,7 @@ impl App {
 
     /// `k`/Up in the automations pane: step up, or hand focus back to the
     /// session list (last row) at the top / when empty.
-    pub(crate) fn automations_pane_move_up(&mut self, count: usize) {
+    fn automations_pane_move_up(&mut self, count: usize) {
         if self.automation_ui.automation_panel_index == 0 || count == 0 {
             self.focus = InputFocus::SessionList;
             self.select_last_session();
@@ -708,7 +705,7 @@ impl App {
 
     /// `j`/Down in the automations pane: step down, or loop focus to the top of
     /// the session list past the last row / when empty.
-    pub(crate) fn automations_pane_move_down(&mut self, count: usize) {
+    fn automations_pane_move_down(&mut self, count: usize) {
         if count == 0 || self.automation_ui.automation_panel_index + 1 >= count {
             self.focus = InputFocus::SessionList;
             self.select_first_session();
@@ -719,7 +716,7 @@ impl App {
     }
 
     /// Toggle / run / delete the selected automation (`Space`/`r`/`d`).
-    pub(crate) fn handle_automation_pane_action(&mut self, code: KeyCode, id: i64) {
+    fn handle_automation_pane_action(&mut self, code: KeyCode, id: i64) {
         match code {
             KeyCode::Char(' ') => {
                 self.toggle_automation_by_id(id);
@@ -753,8 +750,8 @@ impl App {
             return;
         };
         match editor.handle_key(code, mods) {
-            super::modals::EditorOutcome::Continue => {}
-            super::modals::EditorOutcome::Save => {
+            modals::EditorOutcome::Continue => {}
+            modals::EditorOutcome::Save => {
                 let Some(editor) = self.automation_ui.automation_editor.clone() else {
                     return;
                 };
@@ -767,7 +764,7 @@ impl App {
                     self.refresh_automation_view();
                 }
             }
-            super::modals::EditorOutcome::Cancel => {
+            modals::EditorOutcome::Cancel => {
                 // Discard edits and restore the preview for the selection.
                 self.focus = InputFocus::Automations;
                 self.refresh_automation_view();
@@ -811,13 +808,13 @@ impl App {
     /// Field navigation is shared with the in-pane editor via
     /// [`AutomationEditorModal::handle_key`].
     pub(crate) fn handle_automation_editor_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        let super::modals::Modal::AutomationEditor(ref mut m) = self.modal else {
+        let modals::Modal::AutomationEditor(ref mut m) = self.modal else {
             return;
         };
         match m.handle_key(code, mods) {
-            super::modals::EditorOutcome::Continue => {}
-            super::modals::EditorOutcome::Save => self.submit_automation_editor(),
-            super::modals::EditorOutcome::Cancel => self.modal.close(),
+            modals::EditorOutcome::Continue => {}
+            modals::EditorOutcome::Save => self.submit_automation_editor(),
+            modals::EditorOutcome::Cancel => self.modal.close(),
         }
     }
 
@@ -830,8 +827,8 @@ impl App {
 
     /// Close/select navigation for the automations list modal. Returns `true`
     /// when the key was consumed as navigation.
-    pub(crate) fn handle_automations_list_nav(&mut self, code: KeyCode) -> bool {
-        let super::modals::Modal::AutomationsList(ref mut al) = self.modal else {
+    fn handle_automations_list_nav(&mut self, code: KeyCode) -> bool {
+        let modals::Modal::AutomationsList(ref mut al) = self.modal else {
             return false;
         };
         match code {
@@ -850,7 +847,7 @@ impl App {
     }
 
     /// Action keys (new/edit/toggle/run/delete) for the automations list modal.
-    pub(crate) fn handle_automations_list_action(&mut self, code: KeyCode) {
+    fn handle_automations_list_action(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('n') => {
                 self.modal.close();
@@ -884,21 +881,21 @@ impl App {
     }
 
     /// The id of the selected automation in the list modal, if any.
-    pub(crate) fn selected_automation_id(&self) -> Option<i64> {
-        let super::modals::Modal::AutomationsList(ref al) = self.modal else {
+    fn selected_automation_id(&self) -> Option<i64> {
+        let modals::Modal::AutomationsList(ref al) = self.modal else {
             return None;
         };
         al.entries.get(al.index).map(|e| e.id)
     }
 
     /// Rebuild the list modal entries after a mutation, preserving selection.
-    pub(crate) fn refresh_automations_list_modal(&mut self) {
+    fn refresh_automations_list_modal(&mut self) {
         let index = match self.modal {
-            super::modals::Modal::AutomationsList(ref al) => al.index,
+            modals::Modal::AutomationsList(ref al) => al.index,
             _ => return,
         };
         self.open_automations_list();
-        if let super::modals::Modal::AutomationsList(ref mut al) = self.modal {
+        if let modals::Modal::AutomationsList(ref mut al) = self.modal {
             al.index = index.min(al.entries.len().saturating_sub(1));
             if al.entries.is_empty() {
                 self.modal.close();
