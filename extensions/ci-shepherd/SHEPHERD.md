@@ -79,12 +79,39 @@ That means a thurbox session **other than a fixer** (not `shepherd`, not a
 `task-*` / `… · #<id>` worker) is already on that request's head branch — the
 user, or another agent, is working it by hand. **This is a worker, not a
 blocker.** Don't dispatch your own fixer (you'd duplicate the work and race
-their force-push), but don't park it either: **monitor it and fold it into the
-merge ordering**. The live session counts as that repo's active worker exactly
-like one of your in-flight fixers — so it holds the repo's rebase slot (see
-*Rebase serialization*): keep the **other** same-repo requests queued behind it,
-and report it as **in progress**, not under "Needs you" (it's advancing, the
-user is on it). You're sequencing merges, not standing down.
+their force-push), but don't park it either: **monitor it, nudge it, and fold
+it into the merge ordering**. The live session counts as that repo's active
+worker exactly like one of your in-flight fixers — so it holds the repo's rebase
+slot (see *Rebase serialization*): keep the **other** same-repo requests queued
+behind it, and report it as **in progress**, not under "Needs you" (it's
+advancing, the user is on it). You're sequencing merges, not standing down.
+
+**Proactively ask the live session to do the work.** When such a request is
+actionable — most often `REBASE` (behind its base) but also `CI-FAIL` /
+`CHANGES-REQ` — don't just wait on it: send that session a message over the
+thurbox inter-session message queue asking for the specific next step, since it
+holds the slot the other same-repo requests are queued behind:
+
+```bash
+thurbox-cli message send --to <session-id> --kind shepherd \
+  --body "ci-shepherd: PR #<n> in <repo> is behind <base> — please rebase onto <base> and force-push so it can merge (the other rebases in this repo are queued behind it)."
+```
+
+(Use the `<id>` from the `⮑` link as `--to`. Phrase the body for the actual flag:
+REBASE → rebase onto `<base>` + force-push; CI-FAIL → the failing checks;
+CHANGES-REQ → the requested changes.) The send wakes the session.
+
+**Nudge once, don't spam.** Every tick re-reads the same `REBASE` flag, so guard
+against re-messaging: peek the session's unread inbox first and skip if a
+shepherd nudge for this request is already pending —
+
+```bash
+thurbox-cli message inbox --for <session-id> --limit 20 \
+  | grep -q "PR #<n>" && echo "already nudged" || <send the message>
+```
+
+Only send a fresh nudge once the prior one was consumed (no longer unread) **and**
+the request is still actionable.
 
 **Action flags** (precedence, highest first): `draft` (skip) → `CHANGES-REQ` →
 `CI-FAIL` → `REBASE` → `REBASE-QUEUED` → `ok`. **`REBASE`** means the request is
@@ -188,12 +215,15 @@ The forge's own value is kept only as a fallback for heads that aren't on
        permission prompt, or a question addressed to the user → "Needs you".
      - Exit 2 → malformed; treat as still working, flag if it repeats.
 
-3. **Monitor each live-session request** (the `⮑` links) the same way — but you
-   own none of these, so just watch state, never touch the worktree: note its
-   flag (still `CI-FAIL`/`REBASE`, or now `ok`/merged), and keep its same-repo
-   followers `REBASE-QUEUED` behind it. Surface it only if it's stuck (its
-   session vanished while the request is still actionable → the hand-off
-   stalled; "Needs you") — otherwise it's silent in-progress.
+3. **Monitor + nudge each live-session request** (the `⮑` links) — you own none
+   of these, so never touch the worktree: note its flag (still `CI-FAIL`/`REBASE`,
+   or now `ok`/merged), and keep its same-repo followers `REBASE-QUEUED` behind
+   it. If it's still actionable, **proactively message the session** to do the
+   required rebase/merge (see *Live-session links* → *Proactively ask the live
+   session* for the exact `message send` call and the nudge-once guard). Surface
+   it only if it's stuck (its session vanished while the request is still
+   actionable → the hand-off stalled; "Needs you") — otherwise it's silent
+   in-progress.
 
 4. Output: if nothing needs the user, reply EXACTLY
    `tick: all quiet (N fixing, M actionable)` — nothing else. Otherwise emit

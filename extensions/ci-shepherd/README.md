@@ -96,7 +96,11 @@ extension list` / `status ci-shepherd` show what's active.
   **won't** dispatch a duplicate fixer there (the two would fight over the same
   branch) — instead it **monitors** that request and folds it into the merge
   ordering, treating your session as that repo's active worker so the other
-  same-repo PRs queue behind it.
+  same-repo PRs queue behind it. When that request still needs work (a rebase,
+  a CI fix, a review change), the shepherd **proactively messages your session**
+  over the thurbox inter-session message queue (`thurbox-cli message send`)
+  asking for the specific next step — once per pending ask, not every tick — so
+  the rebase others are queued behind actually gets done.
 - When several PRs in the **same repo** only need a rebase (branch protection
   requires up-to-date branches), the shepherd rebases them **one at a time**
   (lowest number first) instead of all at once — each merge advances the base

@@ -912,7 +912,11 @@ sync, but the TUI editor never sets it.)
   worktrees would force-push the same branch) but is **monitored and folded into
   the merge ordering** — the live session counts as that repo's active worker,
   so the other same-repo requests queue behind it rather than the shepherd
-  standing the request down. Spec: `SHEPHERD.md`.
+  standing the request down. When that request is still actionable the shepherd
+  **proactively nudges the live session** over the inter-session message queue
+  (`thurbox-cli message send`) to do the required rebase/merge — once per pending
+  ask (guarded by peeking the session's unread inbox), not every tick — so the
+  slot the others wait behind actually clears. Spec: `SHEPHERD.md`.
 - **`extensions/renovate/`** *(experimental)* — keeps local repos on up-to-date
   dependencies. A `renovate` session sweeps a `repos.md` watch list on a weekly
   `renovate-tick` automation and dispatches a `renovate-worker` per eligible
