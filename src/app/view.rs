@@ -271,7 +271,7 @@ impl App {
                 let m = search.and_then(|q| crate::fuzzy::fuzzy_match(q, &a.name));
                 automations_panel::AutomationPaneEntry {
                     name: a.name.clone(),
-                    summary: super::format_automation_summary(a, now),
+                    summary: super::automation::format_automation_summary(a, now),
                     enabled: a.enabled,
                     match_positions: m.as_ref().map(|m| m.positions.clone()).unwrap_or_default(),
                     // When searching, rows that didn't match are dimmed.
