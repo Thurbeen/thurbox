@@ -506,53 +506,6 @@ impl App {
         }
     }
 
-    /// Handle keys while the global-search strip is focused. Typed characters
-    /// edit the query (so plain `j`/`k` insert, like the other search inputs);
-    /// `Up`/`Down` and `Ctrl+P`/`Ctrl+N` move the selection; `Enter` activates
-    /// the selected result; `Esc` closes the strip.
-    fn handle_global_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        let ctrl = mods.contains(KeyModifiers::CONTROL);
-        match code {
-            KeyCode::Esc => self.close_global_search(),
-            KeyCode::Enter => self.activate_global_search_result(),
-            KeyCode::Down => self.move_global_search_selection(1),
-            KeyCode::Up => self.move_global_search_selection(-1),
-            KeyCode::Char('n') if ctrl => self.move_global_search_selection(1),
-            KeyCode::Char('p') if ctrl => self.move_global_search_selection(-1),
-            KeyCode::Backspace => {
-                self.global_search.query.backspace();
-                self.on_global_search_query_changed();
-            }
-            KeyCode::Delete => {
-                self.global_search.query.delete();
-                self.on_global_search_query_changed();
-            }
-            KeyCode::Left => self.global_search.query.move_left(),
-            KeyCode::Right => self.global_search.query.move_right(),
-            KeyCode::Home => self.global_search.query.home(),
-            KeyCode::End => self.global_search.query.end(),
-            // Plain chars edit the query; ignore other Ctrl-chords.
-            KeyCode::Char(c) if !ctrl => {
-                self.global_search.query.insert(c);
-                self.on_global_search_query_changed();
-            }
-            _ => {}
-        }
-    }
-
-    /// Move the global-search selection by `delta`, clamped to the result range,
-    /// and live-preview the newly selected result.
-    fn move_global_search_selection(&mut self, delta: i32) {
-        let len = self.global_search.results.len();
-        if len == 0 {
-            self.global_search.selected = 0;
-            return;
-        }
-        let next = (self.global_search.selected as i32 + delta).clamp(0, len as i32 - 1);
-        self.global_search.selected = next as usize;
-        self.preview_global_search_result();
-    }
-
     fn handle_file_viewer_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         if self.file_viewer.search_active {
             self.handle_file_viewer_search_key(code, mods);
