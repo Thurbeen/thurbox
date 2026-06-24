@@ -1,8 +1,8 @@
-<p align="center">
-  <img src="./website/assets/logo.svg" alt="thurbox" width="340">
-</p>
-
 # Thurbox
+
+<div align="center">
+  <img src="./website/assets/logo.svg" alt="thurbox" width="340">
+</div>
 
 Run any coding-agent CLI in persistent terminal sessions.
 Thurbox is a multi-session TUI orchestrator that launches
