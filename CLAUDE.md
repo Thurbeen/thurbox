@@ -1464,7 +1464,9 @@ backend dependency stays visible at each call site.
   that key through the modal's own handler so a click matches the keyboard
   path. **Clicking a field** selects it: editor modals (Settings / Automation)
   ship per-field hitboxes recorded as `ClickAction::ModalField(i)` (→
-  `select_modal_field`, sets the active field like Tab/↑↓); the in-pane
+  `select_modal_field`, sets the active field like Tab/↑↓) — and in **Settings**
+  a click on a boolean row also **toggles** it (its whole point is the on/off
+  switch; scalar rows only select, so a stray click never changes a number); the in-pane
   automation/task editors record `ClickAction::PaneField { focus, index }` (→
   focus the editor + `select_pane_field`); the repo picker records
   `ClickAction::RepoFocus(..)` for its path-input / search sub-fields. Hovering

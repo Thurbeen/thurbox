@@ -2093,12 +2093,20 @@ impl App {
         }
 
         // Editor-field clicks select that field (no key replay — the user then
-        // adjusts/types with the keyboard, exactly as after Tab/↑↓).
+        // adjusts/types with the keyboard, exactly as after Tab/↑↓). The one
+        // exception is a Settings boolean row, whose whole point is the on/off
+        // switch: clicking it both selects and toggles it (scalar rows just
+        // select, so a stray click can't silently change a numeric value).
         if let Some(index) = self.click_targets.iter().find_map(|t| match t.action {
             ClickAction::ModalField(i) if t.rect.contains(pos) => Some(i),
             _ => None,
         }) {
             self.select_modal_field(index);
+            if let modals::Modal::Settings(s) = &mut self.modal {
+                if !s.field.is_scalar() {
+                    s.toggle();
+                }
+            }
             return;
         }
 

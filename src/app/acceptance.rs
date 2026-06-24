@@ -290,6 +290,32 @@ impl Harness {
         }
         out
     }
+
+    /// Click the open Settings panel's row for `field`. Renders first so this
+    /// frame's `ModalField` hitboxes exist, locates the one carrying `field`'s
+    /// `ORDER` index, and dispatches a click at its left edge.
+    fn click_settings_field(&mut self, field: modals::SettingsField) -> &mut Self {
+        self.render();
+        let index = modals::SettingsField::ORDER
+            .iter()
+            .position(|f| *f == field)
+            .expect("field in ORDER");
+        let rect = self
+            .app
+            .click_targets
+            .iter()
+            .find_map(|t| match t.action {
+                ClickAction::ModalField(i) if i == index => Some(t.rect),
+                _ => None,
+            })
+            .expect("settings field hitbox recorded");
+        self.app.update(AppMessage::MouseClick {
+            x: rect.x + 1,
+            y: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        self
+    }
 }
 
 // ── Snapshot tests: stable, deterministic screens ────────────────────────────
@@ -430,6 +456,61 @@ fn settings_panel_live_toggle_applies_on_save() {
     assert!(
         !h.app.features.tasks,
         "a live feature flag applies immediately on save"
+    );
+}
+
+#[test]
+fn settings_panel_click_toggles_boolean_field() {
+    let mut h = Harness::standard(1);
+    assert!(h.app.features.mouse, "mouse on by default");
+    assert!(h.app.features.info_panel, "info_panel default on");
+
+    h.ctrl(','); // OpenSettings — opens on the `tasks` field
+                 // Click a *different* field than the one focused on open, so the click must
+                 // both select the row and toggle its boolean.
+    h.click_settings_field(modals::SettingsField::FeatInfoPanel);
+
+    let modals::Modal::Settings(s) = &h.app.modal else {
+        panic!("settings panel still open after the click");
+    };
+    assert_eq!(
+        s.field,
+        modals::SettingsField::FeatInfoPanel,
+        "the click selected the clicked row"
+    );
+    assert!(
+        !s.draft.features.info_panel,
+        "the click also toggled the boolean off in the draft"
+    );
+    assert!(
+        h.app.features.info_panel,
+        "draft edits don't apply until save"
+    );
+}
+
+#[test]
+fn settings_panel_click_does_not_change_scalar() {
+    let mut h = Harness::standard(1);
+    h.ctrl(','); // OpenSettings
+    h.render();
+    let before = match &h.app.modal {
+        modals::Modal::Settings(s) => s.draft.scrollback_lines,
+        _ => unreachable!(),
+    };
+
+    h.click_settings_field(modals::SettingsField::ScrollbackLines);
+
+    let modals::Modal::Settings(s) = &h.app.modal else {
+        panic!("settings panel still open");
+    };
+    assert_eq!(
+        s.field,
+        modals::SettingsField::ScrollbackLines,
+        "the click selected the scalar row"
+    );
+    assert_eq!(
+        s.draft.scrollback_lines, before,
+        "a click never steps a scalar value — only selects it"
     );
 }
 

@@ -182,7 +182,7 @@ fn footer_lines<'a>(state: &SettingsModalState<'_>) -> Vec<Line<'a>> {
     footer.push(key_hint_line(&[
         ("Tab/↑↓", " move  "),
         ("←→", " adjust  "),
-        ("Space", " toggle"),
+        ("Space/click", " toggle"),
     ]));
     footer
 }
