@@ -600,13 +600,14 @@ impl App {
                     0
                 },
                 file_viewer_open: self.show_file_viewer,
+                tasks_enabled: self.features.tasks,
+                file_viewer_enabled: self.features.file_viewer,
             },
         );
-        // Map each rendered footer button back to the Action it dispatches.
-        for hit in button_hits {
-            if let Some(action) = footer_button_action(hit.index) {
-                self.record_click(hit.rect, ClickAction::Global(action));
-            }
+        // The renderer pairs each surviving button with its Action, so the
+        // click map can't drift from the (feature-filtered) render.
+        for (hit, action) in button_hits {
+            self.record_click(hit.rect, ClickAction::Global(action));
         }
     }
 
@@ -1291,19 +1292,6 @@ fn help_action_hitboxes(
             })
         })
         .collect()
-}
-
-/// Map a footer button index (the order in [`status_bar::FOOTER_BUTTONS`]) to
-/// the `Action` a click dispatches.
-fn footer_button_action(index: usize) -> Option<crate::session::Action> {
-    use crate::session::Action;
-    match index {
-        0 => Some(Action::ToggleHelp),
-        1 => Some(Action::OpenSettings),
-        2 => Some(Action::OpenThemePicker),
-        3 => Some(Action::QuitApp),
-        _ => None,
-    }
 }
 
 fn render_help_overlay(

@@ -8,6 +8,7 @@ use ratatui::{
 
 use super::theme::Theme;
 use crate::app::{StatusLevel, StatusMessage};
+use crate::session::Action;
 
 fn brand_style() -> Style {
     Style::default()
@@ -79,39 +80,49 @@ pub struct FooterState<'a> {
     pub tick_count: u64,
     pub automation_count: usize,
     pub file_viewer_open: bool,
+    /// Feature flags gating the panel buttons (hidden when off).
+    pub tasks_enabled: bool,
+    pub file_viewer_enabled: bool,
 }
 
-/// The clickable footer buttons, in render order. `view.rs` maps each returned
-/// [`ButtonHit`](super::ButtonHit)'s index back to the matching `Action`.
-pub const FOOTER_BUTTONS: [super::ButtonSpec<'static>; 4] = [
-    super::ButtonSpec {
-        label: "Help",
-        primary: false,
-    },
-    super::ButtonSpec {
-        label: "Settings",
-        primary: false,
-    },
-    super::ButtonSpec {
-        label: "Theme",
-        primary: false,
-    },
-    super::ButtonSpec {
-        label: "Quit",
-        primary: false,
-    },
+/// The clickable footer buttons, in render order, paired with the `Action` each
+/// dispatches. `render_footer` filters this by feature flags and returns the
+/// surviving `(ButtonHit, Action)` pairs so the click map can't drift from the
+/// render.
+const FOOTER_BUTTONS: &[(&str, Action)] = &[
+    ("Help", Action::ToggleHelp),
+    ("Tasks", Action::FocusTasks),
+    ("Files", Action::ToggleFileViewer),
+    ("Settings", Action::OpenSettings),
+    ("Theme", Action::OpenThemePicker),
+    ("Quit", Action::QuitApp),
 ];
 
-/// Render the footer bar and return the clickable button hitboxes (Help /
-/// Settings / Theme / Quit), packed against the right edge. The buttons are
-/// **always** drawn; when the file viewer is open its navigation hints fill
-/// the space to the *left* of the buttons (right-aligned there) so both stay
-/// visible.
+/// The footer buttons that survive the current feature flags, in render order.
+/// Tasks/Files are dropped when their panel feature is off (clicking a button
+/// that just toasts "disabled" would be noise).
+fn footer_entries(tasks_enabled: bool, file_viewer_enabled: bool) -> Vec<(&'static str, Action)> {
+    FOOTER_BUTTONS
+        .iter()
+        .copied()
+        .filter(|(_, action)| match action {
+            Action::FocusTasks => tasks_enabled,
+            Action::ToggleFileViewer => file_viewer_enabled,
+            _ => true,
+        })
+        .collect()
+}
+
+/// Render the footer bar and return each clickable button's hitbox paired with
+/// the `Action` it dispatches, packed against the right edge. Tasks/Files are
+/// gated by their feature flags. When the file viewer is open its navigation
+/// hints fill the space to the *left* of the buttons (right-aligned there) so
+/// both stay visible.
 pub fn render_footer(
     frame: &mut Frame,
     area: Rect,
     state: &FooterState<'_>,
-) -> Vec<super::ButtonHit> {
+) -> Vec<(super::ButtonHit, Action)> {
     let mut spans = vec![Span::styled(
         format!(" {} ", state.focus_label),
         Theme::focused_title(),
@@ -121,7 +132,12 @@ pub fn render_footer(
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 
-    let hits = super::render_button_bar(frame, area, &FOOTER_BUTTONS, true);
+    let entries = footer_entries(state.tasks_enabled, state.file_viewer_enabled);
+    let specs: Vec<super::ButtonSpec<'_>> = entries
+        .iter()
+        .map(|(label, _)| super::ButtonSpec::secondary(label))
+        .collect();
+    let hits = super::render_button_bar(frame, area, &specs, true);
 
     // File-viewer hints fill whatever room is left of the buttons.
     if state.file_viewer_open {
@@ -142,7 +158,14 @@ pub fn render_footer(
         }
     }
 
-    hits
+    // Each placed hit keeps its index into `entries`, so the click→action map
+    // follows the same feature-filtered list that was rendered.
+    hits.into_iter()
+        .map(|hit| {
+            let action = entries[hit.index].1;
+            (hit, action)
+        })
+        .collect()
 }
 
 fn push_status_section<'a>(spans: &mut Vec<Span<'a>>, state: &'a FooterState<'a>) {
@@ -194,8 +217,9 @@ fn push_idle_counts<'a>(spans: &mut Vec<Span<'a>>, state: &FooterState<'a>) {
 }
 
 fn push_shortcut_hints(spans: &mut Vec<Span<'_>>) {
-    // Focus stays an informational hint (no single click target); Help /
-    // Settings / Theme / Quit are rendered as right-aligned clickable buttons.
+    // Focus stays an informational hint (no single click target); the footer
+    // buttons (Help / Tasks / Files / Settings / Theme / Quit) are rendered as
+    // right-aligned clickable pills.
     let bold_key = Theme::keybind().add_modifier(Modifier::BOLD);
     let desc = Theme::keybind_desc();
     spans.extend([
@@ -291,18 +315,21 @@ mod tests {
             tick_count: 0,
             automation_count: 0,
             file_viewer_open,
+            tasks_enabled: true,
+            file_viewer_enabled: true,
         }
     }
 
-    /// Render the footer into a 120×1 buffer and return (button hits, line text).
-    fn footer_render(file_viewer_open: bool) -> (Vec<super::super::ButtonHit>, String) {
+    /// Render the given state into a 120×1 buffer and return (button+action
+    /// hits, line text).
+    fn render_footer_state(
+        state: &FooterState<'_>,
+    ) -> (Vec<(super::super::ButtonHit, Action)>, String) {
         let backend = TestBackend::new(120, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = Vec::new();
         terminal
-            .draw(|f| {
-                hits = render_footer(f, Rect::new(0, 0, 120, 1), &footer_state(file_viewer_open));
-            })
+            .draw(|f| hits = render_footer(f, Rect::new(0, 0, 120, 1), state))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let line: String = (0..buffer.area.width)
@@ -311,13 +338,69 @@ mod tests {
         (hits, line)
     }
 
+    /// Render a default footer (all features on) with the given file-viewer
+    /// visibility.
+    fn footer_render(file_viewer_open: bool) -> (Vec<(super::super::ButtonHit, Action)>, String) {
+        render_footer_state(&footer_state(file_viewer_open))
+    }
+
+    fn hit_actions(hits: &[(super::super::ButtonHit, Action)]) -> Vec<Action> {
+        hits.iter().map(|(_, a)| *a).collect()
+    }
+
     #[test]
-    fn footer_renders_four_buttons() {
+    fn footer_renders_all_buttons() {
         let (hits, line) = footer_render(false);
-        assert_eq!(hits.len(), 4, "Help/Settings/Theme/Quit");
-        for label in ["Help", "Settings", "Theme", "Quit"] {
+        for label in ["Help", "Tasks", "Files", "Settings", "Theme", "Quit"] {
             assert!(line.contains(label), "missing {label} in footer: {line:?}");
         }
+        // Every button maps back to its Action, in render order — guards the
+        // index→action remapping in `render_footer`.
+        assert_eq!(
+            hit_actions(&hits),
+            vec![
+                Action::ToggleHelp,
+                Action::FocusTasks,
+                Action::ToggleFileViewer,
+                Action::OpenSettings,
+                Action::OpenThemePicker,
+                Action::QuitApp,
+            ]
+        );
+    }
+
+    /// Tasks/Files buttons are dropped when their feature is off.
+    #[test]
+    fn footer_hides_panel_buttons_when_features_off() {
+        let mut state = footer_state(false);
+        state.tasks_enabled = false;
+        state.file_viewer_enabled = false;
+        let (hits, _) = render_footer_state(&state);
+        assert_eq!(
+            hit_actions(&hits),
+            vec![
+                Action::ToggleHelp,
+                Action::OpenSettings,
+                Action::OpenThemePicker,
+                Action::QuitApp,
+            ],
+            "only the non-panel buttons remain"
+        );
+    }
+
+    /// The two panel buttons gate independently — a swapped flag in
+    /// `footer_entries` would surface here.
+    #[test]
+    fn footer_panel_buttons_gate_independently() {
+        let mut state = footer_state(false);
+        state.tasks_enabled = false;
+        state.file_viewer_enabled = true;
+        let actions = hit_actions(&render_footer_state(&state).0);
+        assert!(!actions.contains(&Action::FocusTasks), "Tasks gated off");
+        assert!(
+            actions.contains(&Action::ToggleFileViewer),
+            "Files still shown"
+        );
     }
 
     /// The buttons stay visible with the file viewer open; its hints share the
@@ -327,7 +410,7 @@ mod tests {
         let (hits, line) = footer_render(true);
         assert_eq!(
             hits.len(),
-            4,
+            6,
             "buttons must remain when the file viewer is open"
         );
         assert!(line.contains("Quit"), "buttons still rendered: {line:?}");
@@ -336,7 +419,7 @@ mod tests {
             "file-viewer hints share the row: {line:?}"
         );
         // The rightmost button ends at the footer's right edge.
-        let last = hits.iter().max_by_key(|h| h.rect.x).unwrap().rect;
+        let last = hits.iter().max_by_key(|(h, _)| h.rect.x).unwrap().0.rect;
         assert_eq!(last.x + last.width, 120);
     }
 }
