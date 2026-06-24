@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 252 64" role="img" aria-label="thurbox">
+  <!-- mark: shell box orchestrating a worker tree -->
+  <g>
+    <rect x="6" y="7" width="52" height="27" rx="8" fill="#1a080a"/>
+    <rect x="7.25" y="8.25" width="49.5" height="24.5" rx="6.75" fill="none" stroke="#ff5c54" stroke-width="2.5"/>
+    <text x="13" y="28" font-family="'JetBrains Mono','DejaVu Sans Mono',monospace" font-size="15" font-weight="700" fill="#6eff6e">$</text>
+    <rect x="31" y="20.5" width="12" height="5.5" rx="1" fill="#6eff6e"/>
+    <g stroke="#ff5c54" stroke-width="1.8" fill="none" stroke-linecap="round">
+      <path d="M32 34 V40"/>
+      <path d="M14 40 H50"/>
+      <path d="M14 40 V44"/>
+      <path d="M32 40 V44"/>
+      <path d="M50 40 V44"/>
+    </g>
+    <circle cx="14" cy="50" r="5" fill="#1a080a" stroke="#6eff6e" stroke-width="2.2"/>
+    <circle cx="32" cy="50" r="5" fill="#1a080a" stroke="#ffb627" stroke-width="2.2"/>
+    <circle cx="50" cy="50" r="5" fill="#1a080a" stroke="#ff5c54" stroke-width="2.2"/>
+  </g>
+  <!-- wordmark -->
+  <text x="76" y="44" font-family="'JetBrains Mono','DejaVu Sans Mono',monospace" font-size="34" font-weight="700" letter-spacing="-1">
+    <tspan fill="#f5e6e0">thur</tspan><tspan fill="#ff5c54">box</tspan>
+  </text>
+  <!-- trailing cursor echoing the shell -->
+  <rect x="234" y="22" width="11" height="26" rx="1.5" fill="#6eff6e"/>
+</svg>
