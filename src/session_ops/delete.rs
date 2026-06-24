@@ -36,7 +36,10 @@ pub fn delete_session_headless(
     let mut report = ForceDeleteReport::default();
 
     if force {
-        force_teardown(db, session_id, &session, &mut report)?;
+        teardown_runtime_resources(&session, &mut report);
+        report.disabled_automations = db
+            .disable_send_automations_for_session(session_id)
+            .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
     }
 
     db.soft_delete_session(session_id)
@@ -45,16 +48,16 @@ pub fn delete_session_headless(
     Ok(report)
 }
 
-/// Tear down a session's runtime resources for a force-delete: kill the tmux
-/// window, remove worktrees + the symlink workspace, and disable any pending
-/// `Send` automations. Best-effort cleanup is recorded in `report`; only the
-/// automation-disable failure (a DB error) aborts.
-fn force_teardown(
-    db: &Database,
-    session_id: SessionId,
+/// Tear down a session's slow runtime resources: kill the tmux window, remove
+/// worktrees + the symlink workspace. Touches no SQLite — safe to call from a
+/// background thread after the row has been soft-deleted on the UI thread, so
+/// the TUI's hard-delete confirmation can close without blocking on a remote
+/// `kill-window` or a `git worktree remove`. Best-effort: failures are logged
+/// into `report` (or `tracing::warn`), never abort.
+pub fn teardown_runtime_resources(
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
-) -> Result<(), String> {
+) {
     // Capture the pane's OS pid *before* the kill so we can reap the pane's child
     // process below. Windows refuses to remove a directory that is a live
     // process's cwd, and a session's agent runs with cwd = its worktree /
@@ -93,12 +96,6 @@ fn force_teardown(
             tracing::warn!("remove_workspace({asid}) failed: {e}");
         }
     }
-
-    report.disabled_automations = db
-        .disable_send_automations_for_session(session_id)
-        .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
-
-    Ok(())
 }
 
 /// Wait (≈5s) for a killed pane's child process to exit, force-terminating it as

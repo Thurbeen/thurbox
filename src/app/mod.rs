@@ -1496,21 +1496,32 @@ impl App {
     }
 
     /// Hard-delete a session after the confirmation prompt (soft_delete off):
-    /// tear down the tmux window, worktrees, symlink workspace, and pending
-    /// send automations, then drop the live session. There is no Ctrl+Z undo
-    /// (the row stays restorable via Ctrl+U, which re-spawns fresh) — the
-    /// confirmation modal is the safety net instead.
+    /// soft-delete the row + disable pending sends on the UI thread (fast
+    /// SQLite writes) so the modal closes and the row vanishes immediately,
+    /// then defer the slow tmux `kill-window` + `git worktree remove` +
+    /// symlink-workspace cleanup to a background task. There is no Ctrl+Z
+    /// undo (the row stays restorable via Ctrl+U, which re-spawns fresh) —
+    /// the confirmation modal is the safety net instead.
     fn confirm_hard_delete_session(&mut self, session_id: SessionId) {
         let Some(idx) = self.sessions.iter().position(|s| s.info.id == session_id) else {
             return;
         };
 
-        // Reuse the headless teardown so the destructive logic stays in one
-        // place. Best-effort: failures are logged, never abort the delete.
-        if let Err(e) =
-            crate::session_ops::delete::delete_session_headless(&self.db, session_id, true)
-        {
-            error!("Hard-delete of session {session_id} failed: {e}");
+        // Snapshot the shared row before the soft-delete so the background
+        // teardown still has the window name + worktrees + agent_session_id.
+        let shared = match self.db.get_session_by_id(session_id) {
+            Ok(opt) => opt,
+            Err(e) => {
+                error!("Hard-delete lookup for session {session_id} failed: {e}");
+                None
+            }
+        };
+
+        if let Err(e) = self.db.disable_send_automations_for_session(session_id) {
+            error!("Failed to disable pending sends for session {session_id}: {e}");
+        }
+        if let Err(e) = self.db.soft_delete_session(session_id) {
+            error!("Failed to soft-delete session {session_id}: {e}");
         }
 
         let removed_session = self.sessions.remove(idx);
@@ -1522,9 +1533,16 @@ impl App {
         }
         self.sync_active_session_to_project();
 
-        // Drop the live PTY connection (the tmux window was already killed by
-        // the teardown above).
+        // Drop the live PTY connection; the tmux window itself is killed by
+        // the background teardown below.
         removed_session.kill();
+
+        if let Some(shared) = shared {
+            tokio::task::spawn_blocking(move || {
+                let mut report = crate::session_ops::delete::ForceDeleteReport::default();
+                crate::session_ops::delete::teardown_runtime_resources(&shared, &mut report);
+            });
+        }
 
         self.set_status(
             StatusLevel::Info,
