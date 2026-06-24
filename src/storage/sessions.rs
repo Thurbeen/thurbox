@@ -200,14 +200,12 @@ impl Database {
             let (session, worktree) = row?;
             if let Some(last) = sessions.last_mut() {
                 if last.id == session.id {
-                    // Same session — just append the worktree
                     if let Some(wt) = worktree {
                         last.worktrees.push(wt);
                     }
                     continue;
                 }
             }
-            // New session
             let mut s = session;
             if let Some(wt) = worktree {
                 s.worktrees.push(wt);

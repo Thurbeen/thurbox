@@ -108,7 +108,7 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     match std::os::windows::fs::symlink_dir(target, link) {
         Ok(()) => Ok(()),
         Err(_) => {
-            // `mklink` is a cmd.exe builtin; `/J` makes a directory junction.
+            // `mklink` is a cmd.exe builtin, so it runs via `cmd /C`.
             let status = std::process::Command::new("cmd")
                 .args(["/C", "mklink", "/J"])
                 .arg(link)
@@ -253,7 +253,6 @@ mod tests {
 
         remove_workspace("s").unwrap();
         assert!(!ws.exists());
-        // Target survived.
         assert!(repo.join("file.txt").exists());
     }
 

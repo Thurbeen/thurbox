@@ -282,15 +282,12 @@ mod tests {
             .all(|s| s.style.add_modifier.contains(Modifier::BOLD)
                 && s.style.fg == Some(Theme::border_focused())));
 
-        // Bold span exists somewhere in the paragraph.
         assert!(lines.iter().any(|l| l.spans.iter().any(
             |s| s.content.as_ref() == "bold" && s.style.add_modifier.contains(Modifier::BOLD)
         )));
 
-        // Bullets are rendered with a marker.
         assert!(texts.iter().any(|t| t == "• one"));
         assert!(texts.iter().any(|t| t == "• two"));
-        // Code-block content is preserved.
         assert!(texts.iter().any(|t| t == "code"));
     }
 

@@ -55,7 +55,7 @@ fn remote_home(host: &HostDef) -> Result<String> {
         }
     }
     let mut cmd = ssh_command(&host.destination, &host.ssh_opts);
-    // The remote shell expands $HOME; we pass it literally.
+    // Pass `$HOME` literally; the remote shell expands it.
     cmd.arg("echo").arg("$HOME");
     let output = cmd
         .stderr(Stdio::piped())
@@ -342,7 +342,6 @@ pub fn default_branch_on(
         }
     }
 
-    // Fallback: prefer "main", then "master"
     for candidate in ["main", "master"] {
         if local_branches.iter().any(|b| b == candidate) {
             return Some(candidate.to_string());
@@ -506,7 +505,6 @@ fn git_stash(worktree_path: &Path) -> Result<bool> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // "No local changes to save" means nothing was stashed
     Ok(!stdout.contains("No local changes to save"))
 }
 
@@ -539,7 +537,6 @@ fn git_rebase_onto(worktree_path: &Path, base_ref: &str) -> Result<()> {
         .context("failed to run git rebase")?;
 
     if !output.status.success() {
-        // Abort the failed rebase
         let _ = Command::new("git")
             .args(["rebase", "--abort"])
             .current_dir(worktree_path)
@@ -643,7 +640,7 @@ fn try_remove_by_pid(lock_path: &Path) -> bool {
     };
 
     if Path::new(&format!("/proc/{pid}")).exists() {
-        return true; // process still alive
+        return true;
     }
 
     if std::fs::remove_file(lock_path).is_ok() {
@@ -984,10 +981,8 @@ mod tests {
 
         let _guard = TestPathGuard::new(tmp.path().join("data"));
 
-        // First fire: creates the branch + worktree.
         let p1 = create_or_attach_worktree(&repo, "feat/x", &base).expect("first creates");
         assert!(p1.exists());
-        // Second fire: branch + dir already exist — must reuse, not fail.
         let p2 = create_or_attach_worktree(&repo, "feat/x", &base).expect("second reuses");
         assert_eq!(p1, p2);
         // Worktree dir gone but branch remains: re-attach a worktree to it.
@@ -1075,7 +1070,6 @@ mod tests {
         let path_a = worktree_path(Path::new("/repo/a"), "main").unwrap();
         let path_b = worktree_path(Path::new("/repo/b"), "main").unwrap();
         assert_ne!(path_a, path_b);
-        // Both end with the same branch name
         assert_eq!(path_a.file_name(), path_b.file_name());
     }
 
@@ -1346,7 +1340,6 @@ mod tests {
     fn worktree_path_for_remote_uses_configured_dir() {
         let h = host("me@box", Some("/data/wt"));
         let path = worktree_path_for(Some(&h), Path::new("/srv/repo"), "feature/foo").unwrap();
-        // base / <repo-hash> / <sanitized-branch>
         let s = path.display().to_string();
         assert!(s.starts_with("/data/wt/"), "got {s}");
         assert!(s.ends_with("/feature-foo"), "got {s}");

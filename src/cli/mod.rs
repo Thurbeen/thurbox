@@ -186,7 +186,6 @@ mod tests {
 
         assert_eq!(extra.len(), 5);
 
-        // PATH@BASE — straightforward.
         assert_eq!(extra[0].repo_path, std::path::PathBuf::from("/srv/repo"));
         assert_eq!(extra[0].base_branch.as_deref(), Some("main"));
         assert!(extra[0].worktree);
@@ -198,16 +197,13 @@ mod tests {
         );
         assert_eq!(extra[1].base_branch.as_deref(), Some("develop"));
 
-        // No '@' — taken verbatim, no base.
         assert_eq!(extra[2].repo_path, std::path::PathBuf::from("/srv/plain"));
         assert_eq!(extra[2].base_branch, None);
 
-        // Empty path before '@' — the guard rejects the split and the token is
-        // taken verbatim (no base).
+        // Empty path before '@' — the guard rejects the split, token taken verbatim.
         assert_eq!(extra[3].repo_path, std::path::PathBuf::from("@onlybase"));
         assert_eq!(extra[3].base_branch, None);
 
-        // --add-dir is attached as-is, never a worktree.
         assert_eq!(extra[4].repo_path, std::path::PathBuf::from("/reference"));
         assert_eq!(extra[4].base_branch, None);
         assert!(!extra[4].worktree);
@@ -237,10 +233,8 @@ mod tests {
 
     #[test]
     fn parse_session_create_requires_name_and_repo() {
-        // Missing required args fails.
         assert!(Cli::try_parse_from(["thurbox-cli", "session", "create"]).is_err());
 
-        // Full happy path.
         let cli = Cli::try_parse_from([
             "thurbox-cli",
             "session",
@@ -325,8 +319,7 @@ mod tests {
         assert_eq!(uuid, "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a");
         assert_eq!(text, "hello");
 
-        // Same subcommand, with the global `--text` flag set — the original
-        // collision-triggering invocation. Must still parse and set both.
+        // The original collision-triggering invocation: global `--text` flag set.
         let cli = Cli::try_parse_from([
             "thurbox-cli",
             "--text",
@@ -363,7 +356,6 @@ mod tests {
         };
         assert_eq!(uuid, "0f4dec1e-9d4b-4c4f-9d05-3a3a3a3a3a3a");
 
-        // No UUID arg fails.
         assert!(Cli::try_parse_from(["thurbox-cli", "session", "focus"]).is_err());
     }
 
@@ -486,7 +478,6 @@ mod tests {
             Cli::try_parse_from(["thurbox-cli", "task", "create"]).is_err(),
             "missing --title should fail"
         );
-        // A plain local todo needs only a title.
         let cli =
             Cli::try_parse_from(["thurbox-cli", "task", "create", "--title", "Fix bug"]).unwrap();
         let Command::Task {
@@ -703,7 +694,6 @@ mod tests {
         };
         assert!(query.is_none());
 
-        // `search` is an alias and accepts a filter query.
         let cli = Cli::try_parse_from(["thurbox-cli", "ext", "search", "deps"]).unwrap();
         let Command::Extension {
             action: extensions::Action::Available { query },

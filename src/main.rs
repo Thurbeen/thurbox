@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     // covers config load, DB open, and session restore.
     let process_start = std::time::Instant::now();
 
-    // Set up panic hook that restores terminal before printing the panic
+    // Restore the terminal before the panic message prints (else it garbles).
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         restore_terminal();
@@ -185,7 +185,6 @@ async fn main() -> Result<()> {
     // tracing::warn above only reaches the log file the TUI hides.
     app.report_config_warnings(config_warnings);
 
-    // Load session state from DB and restore
     let t_phase = std::time::Instant::now();
     if let Some((sessions, counter)) = app.load_persisted_state_from_db() {
         app.restore_sessions(sessions, counter);
@@ -213,7 +212,6 @@ fn init_backends_and_config() -> Result<(
     thurbox::session::HostRegistry,
     Vec<String>,
 )> {
-    // Initialize session backends and agent provider.
     let local_tmux: Arc<dyn SessionBackend> = Arc::new(LocalTmuxBackend::new());
     local_tmux.check_available()?;
     local_tmux.ensure_ready()?;

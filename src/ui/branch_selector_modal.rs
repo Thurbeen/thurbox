@@ -24,14 +24,11 @@ pub fn render_branch_selector_modal(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),    // Branch list
-            Constraint::Length(1), // Footer
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    // Windowed around the selection with a scrollbar when more branches than
-    // fit (the modal caps at 15 visible).
+    // render_selector_rows windows these around the selection (with a scrollbar)
+    // when there are more than the 15-line cap fit.
     let lines: Vec<Line<'_>> = state
         .branches
         .iter()
@@ -55,7 +52,7 @@ mod tests {
         let height = |n: usize| (n.min(15) + 4) as u16;
         assert_eq!(height(1), 5);
         assert_eq!(height(15), 19);
-        assert_eq!(height(30), 19); // capped
+        assert_eq!(height(30), 19);
         assert_eq!(height(0), 4);
     }
 

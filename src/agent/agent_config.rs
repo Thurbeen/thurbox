@@ -210,8 +210,7 @@ const KNOWN_TOP_LEVEL_KEYS: [&str; 3] = ["config_version", "default", "agents"];
 /// that tells you to fix the file, while the TUI degrades gracefully so a
 /// single typo never strands you on the built-ins.
 fn parse_agents_toml(contents: &str) -> (AgentRegistry, Vec<String>) {
-    // A genuine syntax error can't be recovered per entry — there are no
-    // well-formed entries to keep — so fall back to built-ins as before.
+    // A genuine syntax error can't be recovered per entry — fall back to built-ins.
     let table: toml::Table = match contents.parse() {
         Ok(table) => table,
         Err(e) => {

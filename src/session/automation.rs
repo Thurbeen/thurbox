@@ -332,7 +332,7 @@ pub fn parse_duration(s: &str) -> Option<u64> {
 /// unit, or arithmetic overflow.
 fn duration_token_ms(digits: &str, unit: char) -> Option<u64> {
     if digits.is_empty() {
-        return None; // unit with no preceding number
+        return None;
     }
     let n: u64 = digits.parse().ok()?;
     let unit_ms: u64 = match unit.to_ascii_lowercase() {

@@ -66,8 +66,8 @@ pub fn render_task_editor_into(
     frame.render_widget(Paragraph::new(editor_lines(state)), inner);
 
     // Row layout (matches `editor_lines`): Title=1 row, Description=1 header +
-    // one row per newline-separated line, Status=1 row. Build a hitbox per
-    // field, clipped to the inner area.
+    // one row per newline-separated line, Status=1 row. Hitboxes are clipped to
+    // the inner area.
     let desc_rows = 1 + state.description.split('\n').count() as u16;
     let mut y = 0u16;
     let mut hits = Vec::new();

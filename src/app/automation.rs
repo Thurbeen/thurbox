@@ -17,12 +17,6 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use tracing::{debug, error, info};
 
 impl App {
-    /// Process due scheduled commands from the database (fallback).
-    ///
-    /// The primary dispatch is via `tmux run-shell -b -d` timers set at
-    /// scheduling time. This tick-loop catches commands whose tmux timer
-    /// failed or was never set (e.g., scheduled while Thurbox was down).
-    /// Throttled to once per second (~100 ticks at 10ms each).
     /// Fire any due automations. Called once per ~second from `tick()`; pass
     /// `force = true` for the one-shot startup catch-up pass (ignores cadence).
     pub(crate) fn process_automations(&mut self, force: bool) {

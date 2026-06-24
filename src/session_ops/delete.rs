@@ -198,9 +198,7 @@ mod tests {
         assert!(report.removed_worktrees.is_empty());
         assert_eq!(report.disabled_automations, 0);
 
-        // Row is soft-deleted.
         assert!(db.get_session_by_id(id).unwrap().is_none());
-        // The automation is still enabled.
         assert!(db.get_automation(auto).unwrap().unwrap().enabled);
     }
 

@@ -23,10 +23,7 @@ pub fn render_worktree_name_modal(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Name field
-            Constraint::Min(1),    // Footer
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(inner);
 
     super::render_text_field(

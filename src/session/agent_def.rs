@@ -19,9 +19,9 @@ const ID_PLACEHOLDER: &str = "{id}";
 /// One coding-agent CLI definition.
 ///
 /// Each `*_args` group is appended to the final argument list **only** when its
-/// driving value is present (a model is selected, the session is being resumed,
-/// etc.), with `{model}` / `{id}` substituted token-by-token. This avoids any
-/// "unresolved placeholder" heuristics: a group with no value is simply omitted.
+/// driving value is present (the session is being resumed/forked, etc.), with
+/// `{id}` substituted token-by-token. This avoids any "unresolved placeholder"
+/// heuristics: a group with no value is simply omitted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentDef {
     /// Display + lookup name (e.g. `"claude"`). Unique within a registry.

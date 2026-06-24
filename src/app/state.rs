@@ -1,6 +1,5 @@
-// Safe state accessors for App struct.
-// This module provides bounds-safe accessors to replace direct array indexing,
-// preventing panics from out-of-bounds access.
+// Bounds-safe accessors for the active session, replacing direct array
+// indexing so an out-of-range `active_index` returns None instead of panicking.
 
 use crate::agent::Session;
 
@@ -8,13 +7,11 @@ use super::App;
 
 impl App {
     /// Get the currently active session, or None if index is out of bounds.
-    /// Replaces: `&self.sessions[self.active_index]`
     pub fn active_session(&self) -> Option<&Session> {
         self.sessions.get(self.active_index)
     }
 
     /// Get a mutable reference to the currently active session, or None if out of bounds.
-    /// Replaces: `&mut self.sessions[self.active_index]`
     pub fn active_session_mut(&mut self) -> Option<&mut Session> {
         self.sessions.get_mut(self.active_index)
     }
@@ -125,7 +122,6 @@ mod tests {
     fn active_session_returns_the_session_at_active_index() {
         let (mut app, _g, _t) = app_with_sessions(3);
 
-        // Default selection points at the first session.
         assert_eq!(
             app.active_session().map(|s| s.info.name.as_str()),
             Some("session-0")
@@ -158,7 +154,6 @@ mod tests {
         let (mut app, _g, _t) = app_with_sessions(2);
         app.active_index = 1;
 
-        // The mutable accessor reaches the same session and allows mutation.
         let session = app.active_session_mut().expect("session-1 is active");
         session.info.name = "renamed".to_string();
 
@@ -188,7 +183,6 @@ mod tests {
     fn has_active_session_reflects_index_validity() {
         let (mut app, _g, _t) = app_with_sessions(2);
 
-        // In-bounds index → valid.
         app.active_index = 0;
         assert!(app.has_active_session());
         app.active_index = 1;

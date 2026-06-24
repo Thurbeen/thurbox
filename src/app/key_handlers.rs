@@ -563,7 +563,6 @@ impl App {
         // actions in `handle_key` before this runs; everything else snaps to
         // the bottom and is forwarded to the PTY.
 
-        // Snap to bottom on any non-scroll key when scrolled up
         self.with_active_parser(|parser| {
             if parser.screen().scrollback() > 0 {
                 parser.screen_mut().set_scrollback(0);
@@ -1440,7 +1439,6 @@ impl App {
             return;
         };
         *wt = !*wt;
-        // Auto-select when toggling worktree on
         if *wt {
             if let Some(sel) = rp.selected.get_mut(real_idx) {
                 *sel = true;
@@ -1572,11 +1570,9 @@ impl App {
         rp: &mut super::modals::RepoPickerModal,
         expanded: &std::path::Path,
     ) -> bool {
-        // If the path is already represented, just select it (no duplicate row
-        // and no duplicate DB entry). A path already shown as a parent's child
-        // must NOT also be persisted as a standalone bookmark.
+        // If already represented, just select it (no duplicate row or DB entry).
         let Some(idx) = rp.bookmarks.iter().position(|p| p == expanded) else {
-            rp.push_row(expanded.to_path_buf(), true, false, false); // auto-select newly added
+            rp.push_row(expanded.to_path_buf(), true, false, false);
             return true;
         };
         let is_child = rp.is_child_row(idx);
@@ -1584,8 +1580,6 @@ impl App {
         if !is_header {
             rp.selected[idx] = true;
         }
-        // Only (re)persist standalone repos; children/headers are covered by
-        // their parent bookmark already.
         !is_child && !is_header
     }
 

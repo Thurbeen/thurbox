@@ -168,19 +168,12 @@ mod tests {
     fn should_poll_respects_interval() {
         let mut sync = SyncState::with_interval(Duration::from_millis(100));
 
-        // First check should not poll (too soon)
         assert!(!sync.should_poll());
 
-        // Wait for interval to pass
         std::thread::sleep(Duration::from_millis(110));
-
-        // Now should poll
         assert!(sync.should_poll());
 
-        // Update poll time
         sync.last_poll_time = Instant::now();
-
-        // Should not poll again immediately
         assert!(!sync.should_poll());
     }
 

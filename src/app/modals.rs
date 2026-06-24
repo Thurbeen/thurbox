@@ -1,6 +1,5 @@
-// Modal state management for Thurbox TUI.
-// This module consolidates all modal-related state into type-safe enums,
-// replacing boolean flags with a single discriminated union.
+// Modal state management for Thurbox TUI: a single discriminated `Modal` enum
+// makes invalid states (two modals open at once) unrepresentable.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -233,7 +232,7 @@ impl TextArea {
             if l == line {
                 return idx + col.min(len);
             }
-            idx += len + 1; // +1 for the consumed '\n'
+            idx += len + 1;
         }
         self.char_count()
     }
@@ -2113,7 +2112,6 @@ mod tests {
     #[test]
     fn test_text_input_with_unicode() {
         let mut input = TextInput::new();
-        // Test with multi-byte UTF-8 characters
         input.insert('ñ');
         input.insert('é');
         assert_eq!(input.cursor_pos(), 2);

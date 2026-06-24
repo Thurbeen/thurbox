@@ -177,7 +177,6 @@ mod tests {
     fn owned_variant_matches_borrowed() {
         let owned = highlighted_spans_owned("foo-bar", &[0, 4], Style::default());
         assert_eq!(texts(&owned), vec!["f", "oo-", "b", "ar"]);
-        // Empty positions → one span.
         let owned = highlighted_spans_owned("hi", &[], Style::default());
         assert_eq!(texts(&owned), vec!["hi"]);
     }
@@ -186,7 +185,6 @@ mod tests {
     fn out_of_range_positions_are_ignored() {
         let spans = highlighted_spans("ab", &[99], Style::default());
         assert_eq!(texts(&spans), vec!["ab"]);
-        // The owned variant ignores them the same way.
         let owned = highlighted_spans_owned("ab", &[99], Style::default());
         assert_eq!(texts(&owned), vec!["ab"]);
     }
@@ -200,9 +198,7 @@ mod tests {
         let text = "abc…";
         assert!(!text.is_char_boundary(4));
         let spans = highlighted_spans(text, &[0, 4], Style::default());
-        // 'a' highlighted, the mid-char position dropped, remainder plain.
         assert_eq!(texts(&spans), vec!["a", "bc…"]);
-        // Owned variant is robust the same way.
         let owned = highlighted_spans_owned(text, &[0, 4], Style::default());
         assert_eq!(texts(&owned), vec!["a", "bc…"]);
     }
@@ -213,11 +209,9 @@ mod tests {
         // Selected wins regardless of dimmed.
         assert_eq!(row_base_style(true, true, normal), Theme::selected_item());
         assert_eq!(row_base_style(true, false, normal), Theme::selected_item());
-        // Dimmed (but not selected) is the muted+DIM style, not `normal`.
         let dimmed = row_base_style(false, true, normal);
         assert_eq!(dimmed.fg, Some(Theme::text_muted()));
         assert!(dimmed.add_modifier.contains(Modifier::DIM));
-        // Otherwise the caller's resting style passes through unchanged.
         assert_eq!(row_base_style(false, false, normal), normal);
     }
 }

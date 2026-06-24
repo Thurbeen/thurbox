@@ -694,7 +694,6 @@ mod tests {
         let (tx, rx) = mpsc::channel::<Notification>();
         drop(rx);
         let sender = NotificationSender { tx };
-        // No receiver — silently dropped, no panic.
         sender.send(Notification {
             session_id: SessionId::default(),
             title: "t".into(),

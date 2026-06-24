@@ -1458,19 +1458,16 @@ prompt = "tick"
         let target = src.path().to_string_lossy().to_string();
         let report = install_extension(&db, &target, None, false).unwrap();
 
-        // Files laid down under home.
         assert!(home.join("FLOW.md").exists());
         assert!(home.join("scripts/do.sh").exists());
         assert!(home.join("repos.md").exists());
         // {home} substituted in the settings template.
         let settings = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
         assert_eq!(settings, format!("perm {}/x", home.display()));
-        // Symlink created.
         assert!(std::fs::symlink_metadata(home.join("CLAUDE.md"))
             .unwrap()
             .file_type()
             .is_symlink());
-        // executable bit set.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1481,7 +1478,6 @@ prompt = "tick"
             assert_eq!(mode & 0o100, 0o100, "do.sh should be executable");
         }
 
-        // Agent registered, manifest written + active, automation created.
         assert_eq!(report.agents_added, ["flow"]);
         let reg = crate::agent::agent_config::load_or_seed();
         assert_eq!(reg.get("flow").unwrap().args, ["--model", "haiku"]);

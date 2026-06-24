@@ -110,7 +110,7 @@ fn group_display(info: &SessionInfo) -> String {
 ///
 /// The order is intentionally a pure function of *manual order*
 /// (`display_order`, set by the user via move up/down) and *stable insertion
-/// order* — never of status or live recency. A status change (→`Attention`,
+/// order* — never of status or live recency. A status change (→`Blocked`,
 /// →`Idle`) only recolors the dot; rows stay exactly where the user put them.
 pub struct SessionOrder {
     /// Input indices in render order.
@@ -857,17 +857,6 @@ const AGENT_STATUS_SEPARATOR: &str = "  ";
 /// Minimum columns the inline agent status needs to be worth showing.
 const AGENT_STATUS_MIN_WIDTH: usize = 4;
 
-/// Build the single line of a session entry:
-/// `<status-dot> [└] [↳] [☁] [⑂] <name> [<agent-status>]`.
-///
-/// The active row is signalled by the list's highlight background, so no extra
-/// pointer glyph is needed. A child session nested under its parent (`depth >
-/// 0`) gets a muted `└` tree prefix; a child whose parent renders in another
-/// repo group gets a `↳` mark instead. Remote (`ssh:<host>`) sessions get a
-/// `☁` mark and sessions running in a git worktree get a `⑂` mark, all between
-/// the status dot and the name. The agent-reported status (see
-/// [`agent_status_text`]) is appended after the name, truncated with `…` to
-/// fit `inner_width`.
 /// Style for the session name span.
 fn name_span_style(is_active: bool, is_dimmed: bool) -> Style {
     if is_dimmed {
@@ -1089,7 +1078,6 @@ mod tests {
     fn highlighted_spans_basic() {
         let style = Style::default().fg(Theme::text_primary());
         let spans = build_highlighted_spans("foo-bar", &[0, 4], style);
-        // Should produce: "f" (highlighted), "oo-" (normal), "b" (highlighted), "ar" (normal)
         assert_eq!(spans.len(), 4);
         assert_eq!(spans[0].content, "f");
         assert_eq!(spans[1].content, "oo-");
@@ -1141,7 +1129,6 @@ mod tests {
         let style = Style::default().fg(Theme::text_primary());
         let mut spans = vec![Span::raw("prefix ")];
         append_name_spans(&mut spans, "foo-bar", Some(&[0, 4]), style);
-        // prefix + "f" (highlighted) + "oo-" (normal) + "b" (highlighted) + "ar" (normal)
         assert_eq!(spans.len(), 5);
         assert_eq!(spans[0].content, "prefix ");
         assert_eq!(spans[1].content, "f");
@@ -1494,7 +1481,7 @@ mod tests {
 
     #[test]
     fn status_never_reorders_groups() {
-        // Manual order wins: an Attention session recolors its dot but never
+        // Manual order wins: a Blocked session recolors its dot but never
         // bubbles its group. Groups stay in label order ("infra" < "webapp").
         let waiting = info_repo("infra-1", "infra", SessionStatus::Done);
         let attn = info_repo("web-attn", "webapp", SessionStatus::Blocked);
@@ -1539,7 +1526,7 @@ mod tests {
         let sessions = vec![&a, &b, &c];
         assert_eq!(order_names(&sessions), vec!["a", "b", "c"]);
 
-        // Flip a→Attention and b→Idle: order is unchanged.
+        // Flip a→Blocked and b→Idle: order is unchanged.
         let a2 = info_repo("a", "webapp", SessionStatus::Blocked);
         let b2 = info_repo("b", "webapp", SessionStatus::Idle);
         let flipped = vec![&a2, &b2, &c];
@@ -1869,7 +1856,7 @@ mod tests {
         let worker = info_child("worker", "webapp", SessionStatus::Blocked, &lead);
         let busy = info_repo("busy", "infra", SessionStatus::Working);
         let sessions = vec![&busy, &lead, &worker];
-        // The child's Attention status doesn't bubble its group: groups stay
+        // The child's Blocked status doesn't bubble its group: groups stay
         // in label order ("infra" < "webapp"); the child stays nested.
         assert_eq!(
             order_names_depths(&sessions),

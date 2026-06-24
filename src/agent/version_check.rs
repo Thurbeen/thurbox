@@ -61,8 +61,8 @@ struct CachedCheck {
 /// - `latest` is empty / not parseable as newer, or
 /// - `latest` is not strictly greater than `current`.
 ///
-/// Otherwise returns a populated [`UpdateStatus`] with `update_available =
-/// true`. Pure: no IO, fully unit-testable.
+/// Otherwise returns a populated [`UpdateStatus`]. Pure: no IO, fully
+/// unit-testable.
 pub fn decide_update(current: &str, latest: &str) -> Option<UpdateStatus> {
     let current = current.trim();
     let latest = latest.trim().trim_start_matches('v');

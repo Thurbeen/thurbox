@@ -252,7 +252,6 @@ mod tests {
             themes[0].palette.accent,
             ratatui::style::Color::Rgb(0xff, 0x00, 0xff)
         );
-        // Untouched colours inherit from the base.
         assert_eq!(
             themes[0].palette.text_primary,
             ThemePreset::CatppuccinMocha.palette().text_primary
@@ -281,7 +280,6 @@ mod tests {
         assert_eq!(themes[0].name, "ok");
         assert!(warnings.iter().any(|w| w.contains("shadows a built-in")));
         assert!(warnings.iter().any(|w| w.contains("not-a-colour")));
-        // The bad colour kept the base value.
         assert_eq!(
             themes[0].palette.accent,
             ThemePreset::Default.palette().accent

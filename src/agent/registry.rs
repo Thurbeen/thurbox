@@ -154,7 +154,6 @@ mod tests {
             registry.get("extra-backend").unwrap().name(),
             "extra-backend"
         );
-        // Default is still local-tmux
         assert_eq!(registry.default_name(), "local-tmux");
     }
 

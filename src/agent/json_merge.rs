@@ -175,8 +175,8 @@ mod tests {
         // Old payload merged schema A; later payload ships schema B. Prune by the
         // shared marker removes BOTH (no orphans), leaving only the user's entry.
         let mut doc = json!({"hooks": {"Stop": [{"command": "user"}]}});
-        merge(&mut doc, &json!({"hooks": {"OldEvent": [ours("done")]}})); // vA
-        merge(&mut doc, &json!({"hooks": {"NewEvent": [ours("done")]}})); // vB
+        merge(&mut doc, &json!({"hooks": {"OldEvent": [ours("done")]}}));
+        merge(&mut doc, &json!({"hooks": {"NewEvent": [ours("done")]}}));
         prune_marked(&mut doc, M);
         assert_eq!(doc, json!({"hooks": {"Stop": [{"command": "user"}]}}));
     }

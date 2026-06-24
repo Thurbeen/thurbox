@@ -30,7 +30,6 @@ pub fn run(args: VersionArgs) -> CommandOutput {
         return CommandOutput::new(json!({ "version": current }), format!("thurbox {current}"));
     }
 
-    // --check is opt-in behind the feature flag.
     if !settings::global().features.version_check {
         let hint = "version --check is disabled. Enable it by setting \
                     `[features] version_check = true` in settings.toml.";

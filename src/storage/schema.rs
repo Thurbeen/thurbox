@@ -187,7 +187,6 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         ",
     )?;
 
-    // Seed metadata if not present
     conn.execute(
         "INSERT OR IGNORE INTO metadata (key, value) VALUES ('schema_version', ?1)",
         [SCHEMA_VERSION.to_string()],
@@ -772,7 +771,6 @@ fn migrate_v20_profiles(conn: &Connection) -> rusqlite::Result<()> {
 /// removed from the product — the agent picks its own model now. The
 /// drop is guarded so a re-run (column already gone) is a no-op.
 fn migrate_v21_drop_model(conn: &Connection) -> rusqlite::Result<()> {
-    // Already gone (re-run) is a no-op; a real failure propagates.
     drop_column_if_present(conn, "sessions", "model")
 }
 
@@ -871,9 +869,7 @@ fn migrate_v24_automations(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// v24 → v25: add the `tasks` table (todo list with agent-action linkage).
-///
-/// Idempotent CREATE: fresh v25 databases already have the table from
-/// `initialize`; existing v24 databases get it here. No data backfill.
+/// Idempotent CREATE; no data backfill.
 fn migrate_v25_tasks(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tasks (
@@ -1564,7 +1560,7 @@ mod tests {
     fn schema_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
-        initialize(&conn).unwrap(); // Should not error
+        initialize(&conn).unwrap();
     }
 
     #[test]

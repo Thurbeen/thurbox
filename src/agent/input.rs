@@ -22,7 +22,6 @@ pub fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    // F-keys
     if let KeyCode::F(n) = code {
         return f_key_bytes(n, modifier_param);
     }
@@ -323,7 +322,6 @@ mod tests {
 
     #[test]
     fn alt_ctrl_letter() {
-        // Ctrl+Alt+C = ESC + 0x03
         assert_eq!(
             key_to_bytes(
                 KeyCode::Char('c'),

@@ -127,7 +127,6 @@ fn run_line<'a>(run: &AutomationRunRow<'_>, is_selected: bool) -> Line<'a> {
             format!("{pointer}{glyph} {word:<7}"),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        // Absolute clock time, then the relative age.
         Span::styled(
             format!("{:<11} ", run.at),
             Style::default().fg(Theme::text_secondary()),

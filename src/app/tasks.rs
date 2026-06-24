@@ -61,8 +61,6 @@ impl App {
     /// Deduplicated. Empty when nothing related is open right now. This is the
     /// single source of truth for both the details panel and the *open* key.
     pub(crate) fn task_related_session_indices(&self, task: &crate::session::Task) -> Vec<usize> {
-        // Persisted `Send` action target (CLI-authored), plus the in-memory link
-        // recorded when this task was triggered from the TUI this run.
         let send_target = match &task.action {
             Some(crate::session::AutomationAction::Send { session_id }) => Some(*session_id),
             _ => None,
@@ -268,17 +266,12 @@ impl App {
                 self.focus = InputFocus::SessionList;
                 self.task_ui.task_editor = None;
             }
-            // Open the central-pane editor for the selected task. On an empty
-            // panel, start a new task instead.
             KeyCode::Char('e') | KeyCode::Enter => self.enter_task_editor_or_new(count),
             // Scroll the full-screen preview (the list itself uses j/k).
             KeyCode::PageDown => self.scroll_task_preview(5),
             KeyCode::PageUp => self.scroll_task_preview(-5),
             KeyCode::Char(' ') => self.cycle_selected_task_status(),
-            // Open the trigger-time action picker (Send → session / Spawn new).
             KeyCode::Char('r') => self.open_selected_task_action_picker(),
-            // Jump to the task's related session terminal (the spawned
-            // `<title> · #<id>` window, or a persisted Send target).
             KeyCode::Char('o') => self.open_task_related_session(),
             KeyCode::Char('d') => self.delete_selected_task(),
             _ => {}

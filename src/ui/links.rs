@@ -231,7 +231,7 @@ mod tests {
         let rows = vec!["• https://example.com".to_string()];
         let links = detect_urls(&rows);
         assert_eq!(links.len(), 1);
-        assert_eq!(links[0].start_col, 2); // char position, not byte position
+        assert_eq!(links[0].start_col, 2);
         assert_eq!(links[0].end_col, 21);
         assert_eq!(url_at_position(&links, 0, 2), Some("https://example.com"));
         assert_eq!(url_at_position(&links, 0, 1), None);

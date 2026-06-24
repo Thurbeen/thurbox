@@ -134,7 +134,6 @@ mod tests {
 
         let _ = db1.has_external_changes().unwrap();
 
-        // db2 makes a change
         let session = make_session("S1");
         db2.upsert_session(&session).unwrap();
 

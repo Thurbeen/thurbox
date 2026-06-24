@@ -216,7 +216,7 @@ pub fn render_button_bar(
             rect,
         );
         hits.push(ButtonHit { rect, index });
-        x += width + 1; // advance past the button + separator
+        x += width + 1;
     }
     hits
 }

@@ -48,21 +48,18 @@ impl StateDelta {
 
         let mut delta = StateDelta::default();
 
-        // Sessions: Added (in new but not in old)
         for (id, session) in &new_session_map {
             if !old_session_map.contains_key(id) {
                 delta.added_sessions.push((*session).clone());
             }
         }
 
-        // Sessions: Removed (in old but not in new or tombstoned in new)
         for id in old_session_map.keys() {
             if !new_session_map.contains_key(id) {
                 delta.removed_sessions.push(*id);
             }
         }
 
-        // Sessions: Updated (in both but key fields changed)
         for (id, new_session) in &new_session_map {
             if let Some(old_session) = old_session_map.get(id) {
                 if session_changed(old_session, new_session) {

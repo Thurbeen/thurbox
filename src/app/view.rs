@@ -173,7 +173,6 @@ impl App {
             self.cached_session_order = Some((sig, order));
         }
 
-        // Build flat session list: all sessions, with tag names from projects
         let all_sessions: Vec<&SessionInfo> = self.sessions.iter().map(|s| &s.info).collect();
 
         // While the global-search strip is open, highlight the session list from
@@ -1604,8 +1603,6 @@ fn session_fuzzy(query: &str, info: &SessionInfo) -> Option<project_list::Sessio
 mod tests {
     use super::*;
 
-    // ── format_countdown tests ──
-
     #[test]
     fn format_countdown_zero() {
         assert_eq!(format_countdown(0), "due");
@@ -1633,8 +1630,6 @@ mod tests {
         assert_eq!(format_countdown(5_400_000), "in 1h 30m");
         assert_eq!(format_countdown(7_200_000), "in 2h");
     }
-
-    // ── truncate_str tests ──
 
     #[test]
     fn truncate_str_short() {

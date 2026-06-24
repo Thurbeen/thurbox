@@ -377,7 +377,6 @@ mod tests {
                 .unwrap();
         assert!(s.notifications.also_on_waiting);
         assert_eq!(s.notifications.min_interval_secs, 30);
-        // Untouched fields stay on defaults.
         assert!(s.notifications.suppress_for_active);
         assert!(s.notifications.sound);
     }

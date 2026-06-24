@@ -27,7 +27,6 @@ pub struct UpdateArgs {
 pub fn run(args: UpdateArgs) -> CommandOutput {
     let current = crate::agent::version_check::current_version();
 
-    // Auto-update is opt-in behind the feature flag.
     if !settings::global().features.auto_update {
         let hint = "update is disabled. Enable it by setting \
                     `[features] auto_update = true` in settings.toml.";

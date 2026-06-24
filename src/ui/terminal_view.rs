@@ -58,7 +58,6 @@ pub fn render_terminal(
         .block(block)
         .style(Style::default().fg(Theme::text_primary()).bg(Color::Reset));
 
-    // Hide cursor when scrolled up
     if scroll_offset > 0 {
         let mut cursor = Cursor::default();
         cursor.hide();
@@ -67,7 +66,6 @@ pub fn render_terminal(
 
     frame.render_widget(pseudo_term, area);
 
-    // Render scrollbar when there's scrollback content.
     if total_scrollback == 0 {
         return None;
     }
@@ -100,7 +98,6 @@ pub fn render_empty_terminal(frame: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Centered hint box
     let box_width: u16 = 33;
     let box_height: u16 = 6;
 

@@ -530,7 +530,6 @@ mod tests {
     #[test]
     fn create_and_edit_reject_blank_title() {
         let db = Database::open_in_memory().unwrap();
-        // Whitespace-only title is rejected at create.
         let err = run(
             Action::Create {
                 title: "   ".into(),
@@ -672,7 +671,6 @@ mod tests {
 
     #[test]
     fn create_blank_source_falls_back_to_local() {
-        // A whitespace-only --source is treated as "not given" → local.
         let db = Database::open_in_memory().unwrap();
         let out = run(create_action("plain", Some("   "), None, None), &db).unwrap();
         assert_eq!(out["source"], SOURCE_LOCAL);
@@ -699,7 +697,6 @@ mod tests {
             )
             .unwrap()
         };
-        // A real value re-points the source.
         assert_eq!(edit(Some("gitlab"))["source"], "gitlab");
         // A blank value is ignored (source is NOT NULL) — left unchanged.
         assert_eq!(edit(Some("  "))["source"], "gitlab");
@@ -720,7 +717,6 @@ mod tests {
         .unwrap();
         let id = created["id"].as_i64().unwrap();
 
-        // Edit re-points the external link and status.
         let edited = run(
             Action::Edit {
                 id,
@@ -736,13 +732,12 @@ mod tests {
         .unwrap();
         assert_eq!(edited["status"], "done");
         assert_eq!(edited["source"], "github"); // untouched (flag omitted)
-        assert_eq!(edited["external_id"], "42"); // untouched
+        assert_eq!(edited["external_id"], "42");
         assert_eq!(
             edited["external_url"],
             "https://example.com/issues/42#closed"
         );
 
-        // Passing an empty --external-url clears it to null.
         let cleared = run(
             Action::Edit {
                 id,

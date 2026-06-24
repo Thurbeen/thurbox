@@ -13,8 +13,7 @@ use std::sync::{Arc, Mutex};
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
 pub const PANE_CHANNEL_CAPACITY: usize = 4096;
 
-/// Type alias for pane sender broadcast map.
-/// Maps pane IDs to vectors of sync senders for multi-instance output broadcast.
+/// Maps pane IDs to sync senders for multi-instance output broadcast.
 pub type PaneSendersMap = HashMap<String, Vec<SyncSender<Vec<u8>>>>;
 pub type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
 
@@ -312,7 +311,7 @@ mod tests {
 
     #[test]
     fn decode_octal_esc() {
-        assert_eq!(decode_octal("\\033"), vec![27]); // ESC
+        assert_eq!(decode_octal("\\033"), vec![27]);
     }
 
     #[test]
@@ -536,7 +535,7 @@ mod tests {
         drop(tx);
         let mut buf = [0u8; 16];
         let n = reader.read(&mut buf).unwrap();
-        assert_eq!(n, 0); // EOF
+        assert_eq!(n, 0);
     }
 
     #[test]
@@ -604,7 +603,7 @@ mod tests {
         tx.send(b"first".to_vec()).unwrap();
 
         match tx.try_send(b"second".to_vec()) {
-            Err(std::sync::mpsc::TrySendError::Full(_)) => {} // expected
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {}
             other => panic!("Expected TrySendError::Full, got: {other:?}"),
         }
     }

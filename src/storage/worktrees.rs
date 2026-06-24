@@ -18,13 +18,11 @@ impl Database {
         let now = current_time_millis() as i64;
         let sid = session_id.to_string();
 
-        // Delete existing active rows for this session
         self.conn.execute(
             "DELETE FROM worktrees WHERE session_id = ?1 AND deleted_at IS NULL",
             params![sid],
         )?;
 
-        // Insert all new rows
         for wt in worktrees {
             self.conn.execute(
                 "INSERT INTO worktrees (session_id, repo_path, worktree_path, branch, created_at, deleted_at) \

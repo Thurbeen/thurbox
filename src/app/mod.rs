@@ -485,7 +485,7 @@ struct PendingDelete {
     created_at: std::time::Instant,
 }
 
-/// Result sent by a background container/VM restore thread on completion.
+/// The TEA model: owns all session/UI state and coordinates side effects.
 pub struct App {
     pub(crate) sessions: Vec<Session>,
     pub(crate) active_index: usize,
@@ -513,7 +513,6 @@ pub struct App {
     pub(crate) show_file_viewer: bool,
     pub(crate) file_viewer: crate::ui::file_viewer::FileViewerState,
     pub(crate) modal: modals::Modal,
-    // (Delete project, add project, edit project modal state is now in self.modal)
     /// In-progress new-session wizard (also drives fork/restart re-spawns).
     pub(crate) new_session: new_session_state::NewSessionWizardState,
     /// Inter-instance DB sync (polls for changes from other thurbox instances).
@@ -557,7 +556,6 @@ pub struct App {
     session_terminal_views: HashMap<SessionId, TerminalView>,
     /// Recently deleted session awaiting finalization or undo (Ctrl+Z).
     pending_delete: Option<PendingDelete>,
-    // (Restore sessions modal state is now in self.modal)
     /// Active text selection (click+drag), uses screen-absolute coordinates.
     pub(crate) text_selection: Option<Selection>,
     /// Scrollbars rendered this frame, with the scroll state each drives.
@@ -586,9 +584,9 @@ pub struct App {
     pub(crate) task_ui: task_state::TaskUiState,
     /// Global search strip (`Ctrl+/`): cross-scope search docked at the bottom.
     pub(crate) global_search: search::GlobalSearchState,
-    /// Currently active theme preset, cached so the header doesn't hit SQLite
-    /// every render. Kept in sync with `db.set_active_theme` writes.
-    /// Currently active theme (built-in preset or custom from themes.toml).
+    /// Currently active theme (built-in preset or custom from themes.toml),
+    /// cached so the header doesn't hit SQLite every render. Kept in sync with
+    /// `db.set_active_theme` writes.
     pub(crate) active_theme: crate::session::theme_config::ThemeEntry,
     /// User-customizable global keybindings. Loaded from
     /// `~/.config/thurbox/keybindings.json` on startup, falling back to defaults
@@ -786,7 +784,6 @@ impl App {
             tracing::warn!("{w}");
         }
 
-        // Load session counter from DB
         let session_counter = db.get_session_counter().unwrap_or(0);
 
         let mut sync_state = SyncState::new();
@@ -1467,21 +1464,20 @@ impl App {
             return;
         }
 
-        // Soft-delete in DB
         if let Err(e) = self.db.soft_delete_session(session_id) {
             error!("Failed to soft-delete session in DB: {e}");
         }
 
-        // Remove from the session list (do NOT kill backend or remove worktrees yet)
+        // Remove from the list only — do NOT kill the backend or remove
+        // worktrees yet (Ctrl+Z undo / Ctrl+U restore reuse them).
         let removed_session = self.sessions.remove(self.active_index);
         let session_name = removed_session.info.name.clone();
 
-        // Clean up terminal view state
         self.session_terminal_views.remove(&session_id);
 
         self.sync_active_session_to_project();
 
-        // Finalize any existing pending delete before storing the new one
+        // Finalize any existing pending delete before storing the new one.
         self.finalize_pending_delete();
 
         self.pending_delete = Some(PendingDelete {
@@ -1602,7 +1598,6 @@ impl App {
         self.set_status(StatusLevel::Success, format!("Restored '{session_name}'"));
     }
 
-    /// Open the restore deleted sessions modal (Ctrl+U).
     /// Open the theme picker, pre-selecting the currently active theme
     /// (built-in preset or custom from themes.toml).
     fn open_theme_picker(&mut self) {
@@ -3063,8 +3058,6 @@ impl App {
         }
     }
 
-    /// Sync `active_index` to the active project's first session, or invalidate
-    /// it when the project has no sessions.
     /// Clamp the active session index to the valid range after a session is removed.
     pub(crate) fn sync_active_session_to_project(&mut self) {
         if self.sessions.is_empty() {
@@ -3941,7 +3934,6 @@ impl App {
 
     /// Handle external state changes detected from other instances.
     fn handle_external_state_change(&mut self, delta: StateDelta) {
-        // Update session counter to avoid conflicts
         self.session_counter = self.session_counter.max(delta.counter_increment);
         self.apply_removed_sessions(delta.removed_sessions);
         self.apply_updated_sessions(delta.updated_sessions);
@@ -4002,7 +3994,6 @@ impl App {
             Vec<crate::agent::backend::DiscoveredSession>,
         > = HashMap::new();
         for shared_session in added {
-            // Skip if we already have this session
             if self.sessions.iter().any(|s| s.info.id == shared_session.id) {
                 continue;
             }
@@ -4206,7 +4197,6 @@ impl App {
     /// is bounded by the SQLite busy_timeout, after which upsert errors are
     /// logged and detach still runs.
     pub fn shutdown(mut self) {
-        // Finalize any pending delete before shutting down
         self.finalize_pending_delete();
         self.save_state();
         // Do NOT remove worktrees — they persist for resume.
@@ -4250,12 +4240,10 @@ impl App {
     /// (add/edit/delete) write to the DB at their point of change, avoiding
     /// race conditions where a blanket re-write overwrites another instance's edits.
     fn save_state(&self) {
-        // Sync session counter
         if let Err(e) = self.db.set_session_counter(self.session_counter) {
             error!("Failed to save session counter to DB: {e}");
         }
 
-        // Upsert all sessions
         for session in &self.sessions {
             let shared_session = self.session_to_shared(session);
             if let Err(e) = self.db.upsert_session(&shared_session) {
@@ -4300,7 +4288,7 @@ impl App {
             return None;
         }
 
-        // Only restore sessions that have a agent_session_id (resumable)
+        // Only sessions with an agent_session_id are resumable.
         let resumable: Vec<sync::SharedSession> = sessions
             .into_iter()
             .filter(|s| s.agent_session_id.is_some())
@@ -4944,11 +4932,8 @@ mod tests {
     use crate::agent::SessionBackend;
     use crate::session::{Automation, AutomationAction, AutomationRunStatus, AutomationSchedule};
 
-    // --- TextInput tests ---
-
     // --- Session switching tests ---
 
-    /// Stub backend that does nothing — for unit tests only.
     /// Inert backend for unit tests. `detached` counts `detach` calls so
     /// lifecycle tests can assert pane I/O teardown.
     #[derive(Default)]
@@ -5885,7 +5870,6 @@ mod tests {
 
     fn parser_with_scrollback() -> vt100::Parser {
         let mut parser = vt100::Parser::new(24, 80, 100);
-        // Fill screen and scrollback by writing many lines
         for i in 0..50 {
             parser.process(format!("line {i}\r\n").as_bytes());
         }
@@ -6111,7 +6095,6 @@ mod tests {
     #[test]
     fn any_key_clears_text_selection() {
         let mut app = app_with_sessions(1);
-        // Set up a fake selection
         app.text_selection = Some(Selection::new(
             TermPos { row: 0, col: 0 },
             PaneBounds::from_rect(ratatui::layout::Rect::new(0, 0, 80, 24)),

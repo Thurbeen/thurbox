@@ -542,7 +542,6 @@ mod tests {
         let id = db
             .create_automation(&send_automation("x", Some(100)))
             .unwrap();
-        // expected != stored next_run_at → no claim, no mutation.
         assert!(!db.claim_due_automation(id, 999, Some(5000), 200).unwrap());
         let got = db.get_automation(id).unwrap().unwrap();
         assert_eq!(got.next_run_at, Some(100));
@@ -574,7 +573,6 @@ mod tests {
             .unwrap();
         let runs = db.list_automation_runs(id, 10).unwrap();
         assert_eq!(runs.len(), 2);
-        // Newest first.
         assert_eq!(runs[0].status, AutomationRunStatus::Skipped);
     }
 

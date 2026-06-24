@@ -15,12 +15,10 @@ use crate::session::SessionId;
 /// a channel polled in `tick`.
 #[derive(Default)]
 pub(crate) struct WorktreeSyncState {
-    /// Whether a sync run is currently in flight.
     pub(crate) in_progress: bool,
-    /// Receives `(session_id, result)` from the background sync thread.
+    /// Receives results from the background sync thread.
     pub(crate) rx: Option<mpsc::Receiver<(SessionId, git::SyncResult)>>,
     /// Number of sessions the in-flight run is syncing.
     pub(crate) pending: usize,
-    /// Results collected so far for the in-flight run.
     pub(crate) completed: Vec<(SessionId, git::SyncResult)>,
 }

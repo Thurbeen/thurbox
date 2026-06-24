@@ -257,11 +257,10 @@ mod tests {
     #[test]
     fn pending_focus_session_id_round_trip() {
         let db = Database::open_in_memory().unwrap();
-        // Nothing pending initially.
         assert_eq!(db.take_pending_focus_session_id().unwrap(), None);
 
-        // The notifications module writes via raw SQL using the same key
-        // (`FOCUS_REQUEST_KEY`); this mirrors what the click handler does.
+        // The notifications click handler writes via raw SQL using the same
+        // `PENDING_FOCUS_SESSION_ID_KEY`; this mirrors that.
         db.conn
             .execute(
                 "INSERT INTO metadata (key, value) VALUES (?1, ?2)",

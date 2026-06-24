@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn blocked_to_done_never_fires_even_with_also_on_done() {
-        // `also_on_done` fires only on the Working → Done edge; a Blocked → Done
+        // `also_on_waiting` fires only on the Working → Done edge; a Blocked → Done
         // slide is not a fresh completion worth re-notifying.
         let mut s = test_state(true, true, 0);
         let id = SessionId::default();

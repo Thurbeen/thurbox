@@ -29,10 +29,10 @@ pub fn render_confirm_delete_modal(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Prompt
-            Constraint::Length(1), // Spacer
-            Constraint::Length(1), // Warning
-            Constraint::Min(1),    // Footer
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
         ])
         .split(inner);
 

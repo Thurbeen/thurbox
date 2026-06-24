@@ -472,17 +472,15 @@ prompt = "tick"
                 command: command.map(str::to_string),
             }
         };
-        // Valid: a pure send, or a pure exec.
         assert!(auto(Some("flow"), Some("tick"), None).validate().is_ok());
         assert!(auto(None, None, Some("sync.sh")).validate().is_ok());
-        // Invalid: both flavours (exec would silently win, dropping the send fields).
+        // Both flavours set: exec would silently win, dropping the send fields.
         assert!(auto(Some("flow"), Some("tick"), Some("sync.sh"))
             .validate()
             .is_err());
         assert!(auto(None, Some("tick"), Some("sync.sh"))
             .validate()
             .is_err());
-        // Invalid: neither flavour.
         assert!(auto(None, None, None).validate().is_err());
         assert!(auto(None, Some("tick"), None).validate().is_err());
     }
@@ -550,7 +548,6 @@ prompt = "tick"
 
     #[test]
     fn config_merge_source_path_defaults_to_dest_filename() {
-        // Explicit source wins.
         let explicit = ConfigMerge {
             path: "~/.gemini/settings.json".into(),
             source: Some("gemini-hooks.json".into()),

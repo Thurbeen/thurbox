@@ -219,7 +219,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
     doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
 
-    // [features] table — create if missing.
     if !doc.contains_key("features") {
         doc["features"] = toml_edit::table();
     }
@@ -238,7 +237,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         set_table_bool(features, "auto_update", f.auto_update);
     }
 
-    // [notifications] table — create if missing.
     if !doc.contains_key("notifications") {
         doc["notifications"] = toml_edit::table();
     }

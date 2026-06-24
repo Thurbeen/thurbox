@@ -122,7 +122,7 @@ fn three_panel_layout(
     show_automations_pane: bool,
     automation_count: usize,
 ) -> PanelAreas {
-    let mut constraints: Vec<Constraint> = vec![Constraint::Percentage(18)]; // list
+    let mut constraints: Vec<Constraint> = vec![Constraint::Percentage(18)];
     if show_info_panel {
         constraints.push(Constraint::Percentage(15));
     }
@@ -306,7 +306,6 @@ mod tests {
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_some());
         assert!(areas.file_viewer.is_some());
-        // file viewer should be to the right of terminal
         let term = areas.terminal;
         let fv = areas.file_viewer.unwrap();
         assert!(fv.x >= term.x + term.width);
@@ -319,7 +318,6 @@ mod tests {
         assert!(areas.info_panel.is_none());
         assert!(areas.tasks_panel.is_some());
         assert!(areas.file_viewer.is_none());
-        // Tasks panel sits to the right of the terminal.
         let term = areas.terminal;
         let tp = areas.tasks_panel.unwrap();
         assert!(tp.x >= term.x + term.width);
@@ -331,7 +329,6 @@ mod tests {
         let term = areas.terminal;
         let tp = areas.tasks_panel.expect("tasks panel shown");
         let fv = areas.file_viewer.expect("file viewer shown");
-        // Order: terminal → tasks → file viewer (both on the right).
         assert!(tp.x >= term.x + term.width, "tasks right of terminal");
         assert!(fv.x >= tp.x + tp.width, "file viewer right of tasks");
     }
@@ -451,7 +448,6 @@ mod tests {
         let areas = compute_layout(area(100, 30), false, false, false, false, true, 2);
         let sessions = areas.left_panel.unwrap();
         let autos = areas.automations_panel.expect("automations pane shown");
-        // Same column, automations stacked beneath the session list.
         assert_eq!(sessions.x, autos.x);
         assert_eq!(sessions.width, autos.width);
         assert_eq!(autos.y, sessions.y + sessions.height);

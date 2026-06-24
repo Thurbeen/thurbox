@@ -170,7 +170,6 @@ mod tests {
         let before = db.list_repo_bookmarks().unwrap()[0].use_count;
         assert!(db.touch_repo_bookmark(Path::new("/repo/a")).unwrap());
         let after = db.list_repo_bookmarks().unwrap()[0].use_count;
-        // touch doesn't increment use_count
         assert_eq!(before, after);
     }
 

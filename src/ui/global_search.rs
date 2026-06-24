@@ -39,7 +39,6 @@ pub(crate) fn render_global_search(frame: &mut Frame, area: Rect, state: &Global
         return;
     }
 
-    // Query line, per-scope summary, the result list (flexible), then key hints.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

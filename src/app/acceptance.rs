@@ -290,13 +290,12 @@ fn theme_picker_lists_palettes() {
 #[test]
 fn ctrl_n_opens_repo_picker() {
     let mut h = Harness::standard(0);
-    h.render(); // first frame
+    h.render();
     h.ctrl('n'); // Ctrl+N → NewSession
     assert!(
         matches!(h.app.modal, modals::Modal::RepoPicker(_)),
         "Ctrl+N should open the repo picker (no hosts configured)"
     );
-    // Esc closes it again.
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(!h.app.modal.is_open(), "Esc should dismiss the modal");
 }
@@ -387,7 +386,6 @@ fn settings_panel_live_toggle_applies_on_save() {
 
     h.ctrl(','); // OpenSettings — starts on the `tasks` field
     h.key(KeyCode::Char(' '), KeyModifiers::NONE); // toggle tasks off in the draft
-                                                   // Not applied until save.
     assert!(h.app.features.tasks, "draft edits don't apply until save");
 
     h.ctrl('s'); // Save
@@ -804,7 +802,7 @@ fn task_editor_creates_task_and_space_cycles_status() {
     h.key(KeyCode::Char('n'), KeyModifiers::NONE); // new-task editor
 
     for ch in "Demo task".chars() {
-        h.key(KeyCode::Char(ch), KeyModifiers::NONE); // type the title
+        h.key(KeyCode::Char(ch), KeyModifiers::NONE);
     }
     h.ctrl('s'); // save from any field
 

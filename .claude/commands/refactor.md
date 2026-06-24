@@ -41,8 +41,16 @@ Re-read all identified files from disk, then:
    - Ensure consistent formatting and code style with the
      rest of the project.
    - Structure code so it reads top-down.
-   - Let the code be self-documenting; only add comments for
-     non-obvious "why", never for "what".
+   - **Optimize comments aggressively** (full rubric: the
+     "Comments" section in `CLAUDE.md`). Let the code be
+     self-documenting: keep only comments that convey "why" /
+     rationale / non-obvious constraints / cross-references
+     (`ADR-*`, `schema vNN`, `see fn_x`). Cut restatements,
+     obvious trailing labels (`// list`, `// EOF`), and obvious
+     test-step narration — if an LLM could infer it from the
+     code, delete it. Tighten verbose doc comments, but never
+     delete a public doc that carries intra-doc links or
+     examples.
 
 Apply fixes, then summarize what was changed in Pass 1.
 
@@ -62,7 +70,13 @@ not rely on memory from Pass 1), then:
 3. **Logic review**: Look for contradictory logic, redundant
    conditions, unreachable branches, or mismatched
    assumptions between modules.
-4. **Import & dependency hygiene**: Ensure no circular
+4. **Comment accuracy**: Re-read every comment in the changed
+   files against the code it describes. Any comment that
+   describes a prior implementation, a wrong signature, or
+   behavior the code no longer has must be rewritten to match
+   or deleted. A stale comment is worse than none — it
+   anchors readers (and LLM agents) on the wrong intent.
+5. **Import & dependency hygiene**: Ensure no circular
    dependencies, unused imports, or misplaced
    responsibilities were introduced.
 

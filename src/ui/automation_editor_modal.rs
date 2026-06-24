@@ -110,9 +110,9 @@ pub fn render_automation_editor_modal(
 ) -> (Vec<super::RowHitbox>, super::ModalButtons) {
     let frame_area = frame.area();
     let fields = &state.visible_fields;
-    // One row per field + status + preview + spacing inside the modal frame.
-    // The multi-line Prompt field spans more than one row, so grow the height by
-    // its wrapped row count (the old `+ 5` already counted Prompt as one row).
+    // Height = one row per field + 5 (status/preview/spacing); the multi-line
+    // Prompt field grows it by its wrapped row count beyond the one already
+    // counted in the per-field tally.
     let extra = if fields.contains(&AutomationField::Prompt) {
         // Inner text width of the 60%-wide overlay (minus the 1-col borders).
         let inner_w = (frame_area.width * 60 / 100).saturating_sub(2);
@@ -629,9 +629,7 @@ mod tests {
 
     #[test]
     fn wrapped_cursor_maps_logical_col_to_display() {
-        // start
         assert_eq!(wrapped_cursor(0, 10, 1), (0, 0));
-        // mid-row
         assert_eq!(wrapped_cursor(5, 10, 1), (0, 5));
         // exactly on a wrap boundary moves to the next row's start
         assert_eq!(wrapped_cursor(10, 10, 2), (1, 0));

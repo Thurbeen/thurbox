@@ -415,7 +415,6 @@ mod tests {
         assert_eq!(sent["enqueued"], true);
         assert_eq!(sent["woke"], false);
 
-        // Peek (unread) without consuming.
         let peek = run(
             Action::Inbox {
                 for_session: Some("flow".into()),
@@ -640,7 +639,6 @@ mod tests {
         .unwrap();
         send("second");
 
-        // Default peek shows only the unread one...
         let unread = run(
             Action::Inbox {
                 for_session: Some("flow".into()),
@@ -654,7 +652,6 @@ mod tests {
         assert_eq!(unread.as_array().unwrap().len(), 1);
         assert_eq!(unread[0]["body"], "second");
 
-        // ...--all shows both (read + unread).
         let all = run(
             Action::Inbox {
                 for_session: Some("flow".into()),

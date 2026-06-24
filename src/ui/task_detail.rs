@@ -117,7 +117,6 @@ pub fn render_task_detail(
         return None;
     }
 
-    // Split: fixed metadata rows on top, the rendered markdown below.
     let meta_h = (meta_lines.len() as u16 + 1).min(inner.height);
     let parts = Layout::default()
         .direction(Direction::Vertical)

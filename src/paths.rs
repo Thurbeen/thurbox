@@ -475,7 +475,6 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
         return None;
     }
 
-    // Expand tilde for filesystem operations
     let expanded = expand_tilde(input);
     let expanded_str = expanded.to_str().unwrap_or(input);
     let path = Path::new(expanded_str);
@@ -490,7 +489,6 @@ pub fn complete_directory_path(input: &str) -> Option<String> {
     let (parent, prefix) = if ends_with_sep {
         (path.to_path_buf(), String::new())
     } else {
-        // Split into parent + partial filename
         let parent = path.parent()?.to_path_buf();
         let file_name = path.file_name()?.to_str()?;
         (parent, file_name.to_string())
@@ -572,9 +570,7 @@ mod tests {
 
     #[test]
     fn default_strategy_is_xdg() {
-        reset_to_xdg(); // Ensure clean state
-                        // We can't easily test XDG without mocking env vars,
-                        // but we can verify the strategy exists.
+        reset_to_xdg();
         PATH_STRATEGY.with(|s| {
             assert_eq!(*s.borrow(), PathStrategy::Xdg);
         });
@@ -599,7 +595,6 @@ mod tests {
             let _guard = TestPathGuard::new(&base);
             assert_eq!(config_file(), Some(base.join("config.toml")));
         }
-        // After drop, should be reset to Xdg
         PATH_STRATEGY.with(|s| {
             assert_eq!(*s.borrow(), PathStrategy::Xdg);
         });
@@ -607,21 +602,17 @@ mod tests {
 
     #[test]
     fn thread_local_isolation() {
-        // Set override in main thread
         let base1 = PathBuf::from("/test/base1");
         set_test_dir(&base1);
 
         assert_eq!(config_file(), Some(base1.join("config.toml")));
 
-        // Spawn another thread and verify it has independent state
-        let handle = std::thread::spawn(|| {
-            // New thread should start with Xdg (default)
-            PATH_STRATEGY.with(|s| matches!(*s.borrow(), PathStrategy::Xdg))
-        });
+        // A fresh thread starts with the Xdg default, unaffected by this one.
+        let handle =
+            std::thread::spawn(|| PATH_STRATEGY.with(|s| matches!(*s.borrow(), PathStrategy::Xdg)));
 
         assert!(handle.join().unwrap());
 
-        // Main thread should still have override
         assert_eq!(config_file(), Some(base1.join("config.toml")));
 
         reset_to_xdg();
@@ -692,7 +683,6 @@ mod tests {
 
         reset_to_xdg();
 
-        // After reset, should use Xdg again
         PATH_STRATEGY.with(|s| {
             assert_eq!(*s.borrow(), PathStrategy::Xdg);
         });
@@ -703,7 +693,6 @@ mod tests {
         let base = PathBuf::from("/persistent");
         set_test_dir(&base);
 
-        // Multiple calls should use the same override
         for _ in 0..3 {
             assert_eq!(config_file(), Some(base.join("config.toml")));
         }
@@ -725,12 +714,9 @@ mod tests {
                 assert_eq!(config_file(), Some(base2.join("config.toml")));
             }
 
-            // After inner guard drops, should still use base2's strategy
-            // (because nested set_test_dir overwrites the strategy)
             PATH_STRATEGY.with(|s| matches!(*s.borrow(), PathStrategy::Xdg));
         }
 
-        // After outer guard drops, should be Xdg
         PATH_STRATEGY.with(|s| {
             assert_eq!(*s.borrow(), PathStrategy::Xdg);
         });
@@ -834,8 +820,6 @@ mod tests {
 
     #[test]
     fn complete_directory_path_with_real_dir() {
-        // Build the scenario from a real temp dir so it's platform-independent
-        // (no reliance on `/tmp` existing).
         let temp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir(temp.path().join("uniquedir")).unwrap();
         let input = format!("{}/uniqued", temp.path().display());
@@ -844,8 +828,7 @@ mod tests {
 
     #[test]
     fn complete_directory_path_trailing_slash() {
-        // A real directory with a trailing slash lists children — result depends
-        // on contents, but it must not panic.
+        // A real directory with a trailing slash lists children — must not panic.
         let temp = tempfile::TempDir::new().unwrap();
         let result = complete_directory_path(&format!("{}/", temp.path().display()));
         assert!(result.is_some() || result.is_none());
@@ -853,8 +836,6 @@ mod tests {
 
     #[test]
     fn complete_directory_path_exact_match() {
-        // An existing directory path (no trailing slash) completes with the
-        // separator the function appends.
         let temp = tempfile::TempDir::new().unwrap();
         let inner = temp.path().join("exact");
         std::fs::create_dir(&inner).unwrap();
@@ -864,9 +845,8 @@ mod tests {
 
     #[test]
     fn complete_directory_path_root() {
-        // "/" is a valid directory — shouldn't panic
+        // "/" is a valid directory — shouldn't panic.
         let result = complete_directory_path("/");
-        // Root has children, so we expect Some or None depending on common prefix
         assert!(result.is_some() || result.is_none());
     }
 
@@ -875,23 +855,19 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let base = temp.path();
 
-        // Create two subdirectories with a common prefix
         std::fs::create_dir(base.join("project_alpha")).unwrap();
         std::fs::create_dir(base.join("project_beta")).unwrap();
         std::fs::create_dir(base.join("other")).unwrap();
 
-        // Completing "project_" should find common prefix "project_"
+        // Two matches, no completion beyond the typed prefix → None.
         let input = format!("{}/project_", base.display());
         let result = complete_directory_path(&input);
-        // Two matches: project_alpha, project_beta — common prefix beyond typed is empty
         assert_eq!(result, None);
 
-        // Completing "project_a" should complete to "project_alpha/"
         let input = format!("{}/project_a", base.display());
         let result = complete_directory_path(&input);
         assert_eq!(result, Some("lpha/".to_string()));
 
-        // Completing "oth" should complete to "other/"
         let input = format!("{}/oth", base.display());
         let result = complete_directory_path(&input);
         assert_eq!(result, Some("er/".to_string()));
@@ -905,7 +881,6 @@ mod tests {
         std::fs::create_dir(base.join(".hidden")).unwrap();
         std::fs::create_dir(base.join("visible")).unwrap();
 
-        // Without dot prefix, hidden dirs are skipped
         let input = format!("{}/", base.display());
         let result = complete_directory_path(&input);
         assert_eq!(result, Some("visible/".to_string()));
@@ -919,7 +894,6 @@ mod tests {
         std::fs::create_dir(base.join(".hidden")).unwrap();
         std::fs::create_dir(base.join("visible")).unwrap();
 
-        // With dot prefix, hidden dirs are included
         let input = format!("{}/.hid", base.display());
         let result = complete_directory_path(&input);
         assert_eq!(result, Some("den/".to_string()));
@@ -933,7 +907,6 @@ mod tests {
         std::fs::write(base.join("readme.md"), "content").unwrap();
         std::fs::create_dir(base.join("src")).unwrap();
 
-        // Only directories should match, not files
         let input = format!("{}/rea", base.display());
         let result = complete_directory_path(&input);
         assert_eq!(result, None);
@@ -1007,7 +980,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_other_user() {
-        // ~otheruser should NOT be expanded — only ~ and ~/ are handled
+        // ~otheruser is NOT expanded — only ~ and ~/ are handled.
         assert_eq!(expand_tilde("~otheruser"), PathBuf::from("~otheruser"));
     }
 
@@ -1037,7 +1010,6 @@ mod tests {
         let base = temp.path();
         std::fs::create_dir(base.join("mydir")).unwrap();
 
-        // Use expanded path to simulate what tilde expansion produces
         let input = format!("{}/my", base.display());
         let result = complete_directory_path(&input);
         assert_eq!(result, Some("dir/".to_string()));
@@ -1045,8 +1017,7 @@ mod tests {
 
     #[test]
     fn complete_directory_path_tilde_trailing_slash() {
-        // "~/" should produce completions from the home directory
-        // The result (if any) should be a relative suffix, not start with '/'
+        // "~/" completions are relative suffixes, never absolute.
         if let Some(s) = complete_directory_path("~/") {
             assert!(!s.starts_with('/'));
         }

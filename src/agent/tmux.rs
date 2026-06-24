@@ -107,7 +107,6 @@ const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 /// Parse a `tmux -V` version string (e.g. `"tmux 3.4"`, `"tmux 3.3a"`) into a
 /// `(major, minor)` pair. Shared by the local and remote backends.
 fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
-    // Parse "tmux X.Y" or "tmux X.Ya" (e.g., "tmux 3.4" or "tmux 3.3a").
     let version_part = version_str.strip_prefix("tmux ").unwrap_or(version_str);
 
     let parts: Vec<&str> = version_part.split('.').collect();
@@ -288,14 +287,13 @@ impl ControlMode {
         loop {
             line_buf.clear();
             match reader.read_until(b'\n', &mut line_buf) {
-                Ok(0) => break, // EOF
+                Ok(0) => break,
                 Ok(_) => {}
                 Err(e) => {
                     debug!("Control reader I/O error: {e}");
                     break;
                 }
             }
-            // Strip trailing newline.
             if line_buf.last() == Some(&b'\n') {
                 line_buf.pop();
             }
@@ -358,9 +356,6 @@ impl ControlMode {
             match tx.try_send(chunk) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_dropped)) => {
-                    // Channel full — drop this chunk rather than blocking.
-                    // The reader thread MUST stay unblocked to handle
-                    // %pause notifications and avoid deadlock.
                     debug!(pane_id = %pane_id, "Pane output channel full, dropping chunk");
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
@@ -809,7 +804,6 @@ impl TmuxBackend {
                 .pane_senders
                 .lock()
                 .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?;
-            // Remove all senders for this pane (all instances lose the pane)
             senders.remove(pane_id);
             Ok(())
         })
@@ -1090,7 +1084,6 @@ impl SessionBackend for TmuxBackend {
             "resize-window -t {backend_id} -x {cols} -y {rows}"
         ))?;
 
-        // Then resize the pane within the window.
         self.ctrl_command(&format!("resize-pane -t {backend_id} -x {cols} -y {rows}"))?;
 
         Ok(())

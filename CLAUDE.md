@@ -218,6 +218,31 @@ rumdl check .                        # Markdown lint (.rumdl.toml)
 rumdl fmt .                          # Markdown auto-fix
 ```
 
+## Comments
+
+Comments are context for the next reader — human or LLM agent. Each one must earn
+its tokens; a redundant or wrong comment makes agents *less* accurate, not more.
+
+- **Why, not what.** Explain rationale, tradeoffs, non-obvious constraints, and
+  invariants the code can't show. Never restate what the code plainly does.
+- **Accuracy is non-negotiable.** A stale comment (describes a prior impl, a wrong
+  signature, or behavior the code no longer has) is *worse than no comment* — it
+  anchors readers on the wrong intent. When you touch code, fix or delete the
+  comments around it; never leave one contradicting the code.
+- **Keep** design rationale, cross-references (`see fn_x`, `mirrors Y`), and
+  `ADR-*` / `schema vNN` anchors (they point at `docs/ARCHITECTURE.md` /
+  `docs/PERFORMANCE.md`). **Cut** restatements, obvious trailing labels (`// list`,
+  `// EOF`), and obvious test-step narration. If an LLM could infer it from the
+  code, it doesn't belong.
+- **Doc comments** (`///`/`//!`) document the public contract. Tighten verbose
+  ones, but never delete a doc that carries intra-doc links (`` [`Item`] ``) or a
+  ` ``` ` example without re-running `RUSTDOCFLAGS="-D warnings" cargo doc`
+  (CI fails on a broken link/example).
+- **Formatting is automatic** — `rustfmt` wraps comments at 80 cols
+  (`wrap_comments`); write content, let `cargo fmt` handle width.
+- This repo uses **no `TODO`/`FIXME`/`HACK` markers** and keeps **no commented-out
+  code** — track work in issues, delete dead code.
+
 ## Website Linting
 
 ```bash

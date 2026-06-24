@@ -54,7 +54,6 @@ pub struct SharedSession {
     /// The underlying agent session ID (if started).
     pub agent_session_id: Option<String>,
 
-    /// Working directory (if specified).
     pub cwd: Option<PathBuf>,
 
     /// Extra directories (beyond `cwd`) this session spans. When a session has
@@ -63,7 +62,6 @@ pub struct SharedSession {
     /// not just those with an `--add-dir`-style flag — can reach them.
     pub additional_dirs: Vec<PathBuf>,
 
-    /// Worktree information (if session uses git worktrees).
     pub worktrees: Vec<SharedWorktree>,
 
     /// Backend ID of the companion shell pane (if spawned).
@@ -92,10 +90,8 @@ pub struct SharedWorktree {
     /// Path to the git repository root.
     pub repo_path: PathBuf,
 
-    /// Path to the git worktree.
     pub worktree_path: PathBuf,
 
-    /// Branch name for this worktree.
     pub branch: String,
 }
 

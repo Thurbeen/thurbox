@@ -121,7 +121,6 @@ pub fn render_footer(
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 
-    // Buttons always sit on the far right.
     let hits = super::render_button_bar(frame, area, &FOOTER_BUTTONS, true);
 
     // File-viewer hints fill whatever room is left of the buttons.

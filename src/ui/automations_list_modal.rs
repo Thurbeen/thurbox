@@ -120,7 +120,6 @@ mod tests {
 
     #[test]
     fn truncate_adds_ellipsis_when_over_width() {
-        // 7 chars, max 6 → keep 3 chars + "..." = 6 chars total.
         let out = truncate("abcdefg", 6);
         assert_eq!(out, "abc...");
         assert_eq!(out.chars().count(), 6);

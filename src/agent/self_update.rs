@@ -454,7 +454,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             Ok(()) => {
                 // Compare is case-insensitive.
                 assert!(verify_sha256(&file, &empty.to_uppercase()).is_ok());
-                // A wrong digest is rejected.
                 let err = verify_sha256(&file, &"0".repeat(64)).unwrap_err();
                 assert!(err.contains("mismatch"), "got: {err}");
             }

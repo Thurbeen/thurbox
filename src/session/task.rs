@@ -6,9 +6,10 @@
 //! git worktree — and prompts it (`Spawn`). A task with no action is a plain
 //! local todo (triggering is a no-op until it is connected to an agent).
 //!
-//! The `source`/`external_id`/`external_url` fields scaffold future sync with
-//! external issue trackers (Jira, GitHub Issues, …); local tasks use
-//! `source = "local"` and leave the external fields empty.
+//! The `source`/`external_id`/`external_url` fields back bidirectional sync with
+//! external issue trackers (Jira, GitHub Issues, …) via the task-integration
+//! extensions; local tasks use `source = "local"` and leave the external fields
+//! empty.
 //!
 //! This module is pure data (no local crate imports beyond `super`), matching
 //! the architecture rule for `session`. Persistence lives in `storage::tasks`;
@@ -81,8 +82,8 @@ pub struct Task {
     pub status: TaskStatus,
     /// How the task connects to an agent. `None` = an unconnected local todo.
     pub action: Option<AutomationAction>,
-    /// Origin of the task (`"local"` or an external tracker name). Scaffolding
-    /// for future external sync.
+    /// Origin of the task (`"local"` or an external tracker name); the
+    /// `(source, external_id)` pair is the external-sync dedup key.
     pub source: String,
     /// Identifier in the external tracker, when `source` is not `"local"`.
     pub external_id: Option<String>,
@@ -249,14 +250,12 @@ mod tests {
         assert!(prompt.contains("Thurbox task #42"));
         assert!(prompt.contains("# Wire up SSH backend"));
         assert!(prompt.contains("Implement `SshTmuxBackend`."));
-        // Self-service context: how to read more and how to close it out.
         assert!(prompt.contains("thurbox-cli task show 42"));
         assert!(prompt.contains("thurbox-cli task edit 42 --status done"));
     }
 
     #[test]
     fn spawn_session_name_keeps_the_title_verbatim() {
-        // The human title is preserved (casing + spacing), tagged with the id.
         assert_eq!(
             sample_task(None).spawn_session_name(),
             "Wire up SSH backend · #42"
@@ -267,7 +266,6 @@ mod tests {
     fn spawn_session_name_collapses_whitespace() {
         let mut task = sample_task(None);
         task.title = "  Fix   TUI\tcrash  ".to_string();
-        // Internal runs collapse to single spaces; ends are trimmed.
         assert_eq!(task.spawn_session_name(), "Fix TUI crash · #42");
     }
 
@@ -303,13 +301,12 @@ mod tests {
     #[test]
     fn matches_spawn_session_accepts_current_and_legacy_names() {
         let task = sample_task(None);
-        // Current convention: trailing " · #<id>" tag.
         assert!(task.matches_spawn_session("Wire up SSH backend · #42"));
         assert!(task.matches_spawn_session("Some since-edited title · #42"));
         // Legacy forms still relink after a restart.
         assert!(task.matches_spawn_session("task-42-wire-up-ssh-backend"));
-        assert!(task.matches_spawn_session("task-42")); // legacy bare convention
-                                                        // Different task ids never match — including the tricky #4 vs #42 boundary.
+        assert!(task.matches_spawn_session("task-42"));
+        // Different task ids never match — including the tricky #4 vs #42 boundary.
         assert!(!task.matches_spawn_session("Wire up SSH backend · #421"));
         assert!(!task.matches_spawn_session("Wire up SSH backend · #4"));
         assert!(!task.matches_spawn_session("task-421"));

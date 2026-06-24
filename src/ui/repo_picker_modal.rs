@@ -64,33 +64,29 @@ pub fn render_repo_picker_modal(
 
     let mut constraints = Vec::new();
     if state.search_active {
-        constraints.push(Constraint::Length(3)); // Search bar
+        constraints.push(Constraint::Length(3));
     }
-    constraints.push(Constraint::Length(list_height)); // Bookmark list
-    constraints.push(Constraint::Length(3)); // Path input
-    constraints.push(Constraint::Min(1)); // Footer
+    constraints.push(Constraint::Length(list_height));
+    constraints.push(Constraint::Length(3));
+    constraints.push(Constraint::Min(1));
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
 
-    // Assign named chunk areas based on whether search bar is visible.
     let (search_area, list_area, input_area, footer_area) = if state.search_active {
         (Some(chunks[0]), chunks[1], chunks[2], chunks[3])
     } else {
         (None, chunks[0], chunks[1], chunks[2])
     };
 
-    // Search bar (when active)
     if let Some(area) = search_area {
         render_search_bar(frame, area, state);
     }
 
-    // Bookmark list with checkboxes
     let hitboxes = render_bookmark_list(frame, list_area, state);
 
-    // Path input
     render_text_field_with_suggestion(
         frame,
         input_area,
@@ -406,9 +402,7 @@ mod tests {
     fn highlighted_spans_accents_matched_characters() {
         let base = Style::default();
         let spans = highlighted_spans("ll", "", "hello", base);
-        // Whole display text is preserved across the interleaved spans.
         assert_eq!(span_text(&spans), "hello");
-        // Exactly the two matched 'l' characters are accented.
         assert_eq!(accent_chars(&spans), "ll");
     }
 

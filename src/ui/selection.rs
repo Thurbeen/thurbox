@@ -211,18 +211,14 @@ mod tests {
             dragging: false,
             pane: test_pane(),
         };
-        // First row: col >= 5
         assert!(sel.contains(1, 5));
         assert!(sel.contains(1, 80));
         assert!(!sel.contains(1, 4));
-        // Middle row: all cols
         assert!(sel.contains(2, 0));
         assert!(sel.contains(2, 999));
-        // Last row: col <= 10
         assert!(sel.contains(3, 0));
         assert!(sel.contains(3, 10));
         assert!(!sel.contains(3, 11));
-        // Outside rows
         assert!(!sel.contains(0, 5));
         assert!(!sel.contains(4, 5));
     }
@@ -328,7 +324,6 @@ mod tests {
 
         highlight_buffer(&mut buf, &sel, style);
 
-        // Cells 2..5 should have the style, others should not
         assert_eq!(buf.cell(Position::new(1, 0)).unwrap().fg, Color::Reset);
         assert_eq!(buf.cell(Position::new(2, 0)).unwrap().fg, Color::Red);
         assert_eq!(buf.cell(Position::new(4, 0)).unwrap().fg, Color::Red);
@@ -361,8 +356,8 @@ mod tests {
     fn pane_bounds_clamp() {
         let pane = PaneBounds::from_rect(Rect::new(10, 5, 20, 10));
         assert_eq!(pane.clamp(15, 8), (15, 8)); // inside
-        assert_eq!(pane.clamp(5, 3), (10, 5)); // top-left
-        assert_eq!(pane.clamp(50, 20), (29, 14)); // bottom-right
+        assert_eq!(pane.clamp(5, 3), (10, 5)); // clamped to top-left
+        assert_eq!(pane.clamp(50, 20), (29, 14)); // clamped to bottom-right
     }
 
     #[test]

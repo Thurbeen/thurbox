@@ -245,12 +245,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_exec_command_reports_success_and_failure() {
-        // A zero-exit command → Success, with stdout captured.
         let (status, detail) = run_exec_command("printf hello");
         assert_eq!(status, AutomationRunStatus::Success);
         assert!(detail.contains("hello"), "got {detail}");
 
-        // A non-zero exit → Error, with the exit code in the detail.
         let (status, detail) = run_exec_command("exit 3");
         assert_eq!(status, AutomationRunStatus::Error);
         assert!(detail.contains('3'), "got {detail}");
@@ -298,7 +296,6 @@ mod tests {
             .env
             .get(crate::paths::DATA_DIR_OVERRIDE_ENV)
             .expect("data dir injected");
-        // They match the parents of the resolved config/db files.
         assert_eq!(
             Some(std::path::Path::new(cfg_dir)),
             crate::paths::config_file()
@@ -377,10 +374,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut env = HashMap::new();
         env.insert("CLAUDE_CONFIG_DIR".into(), tmp.path().display().to_string());
-        // No transcript yet -> no resume.
         assert_eq!(resume_trigger_for(&claude, "missing", &env), None);
 
-        // With a transcript -> resume by the pinned id.
         let sid = "11111111-2222-3333-4444-555555555555";
         let proj = tmp.path().join("projects").join("-slug");
         std::fs::create_dir_all(&proj).unwrap();

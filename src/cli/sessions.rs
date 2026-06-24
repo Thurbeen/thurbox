@@ -200,7 +200,6 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
             let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
             if force {
-                // Aligned, two-space-indented detail under the header line.
                 let mut detail: Vec<(&str, String)> = vec![
                     ("killed window", report.killed_window.to_string()),
                     (
@@ -284,7 +283,6 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             let session = resolve(db, &uuid)?;
             let output = crate::agent::tmux::capture_pane_text(&session.name, lines)
                 .map_err(|e| format!("capture_pane_text: {e}"))?;
-            // The pane text itself is the useful human payload.
             let human = output.clone();
             Ok(CommandOutput::new(
                 json!({
@@ -437,7 +435,6 @@ mod tests {
         let v = run(Action::List { parent: None }, &db).unwrap();
         assert!(v.is_array(), "got {v}");
         assert_eq!(v.as_array().unwrap().len(), 0);
-        // The human rendering for an empty list is a friendly line, not a table.
         assert_eq!(v.human, "No active sessions.");
     }
 
@@ -672,14 +669,13 @@ mod tests {
 
     #[test]
     fn soft_delete_leaves_session_recoverable() {
-        // Bug #3: `session delete` without --force only soft-deletes the
-        // DB row, leaving pending scheduled commands and the metadata
-        // restorable.
+        // `session delete` without --force only soft-deletes the DB row,
+        // leaving its automations enabled and the session restorable.
         let db = db();
         let id = SessionId::default();
         let shared = SharedSession {
             id,
-            name: "Foo Bar".into(), // exercise bug #1 sanitization path too
+            name: "Foo Bar".into(),
             agent: "dev".into(),
             backend_id: String::new(),
             backend_type: "local-tmux".into(),

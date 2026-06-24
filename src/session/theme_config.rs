@@ -1,17 +1,12 @@
 //! Theme palettes for the Thurbox TUI.
 //!
-//! A `ThemePalette` is the runtime, swappable counterpart to the static colour
-//! constants that used to live in `src/ui/theme.rs`. Widgets read the active
+//! A `ThemePalette` is the runtime, swappable palette. Widgets read the active
 //! palette via `crate::ui::theme::current()`; users pick one via the theme
 //! picker modal or by setting `active_theme` in the SQLite metadata table.
 
 use ratatui::style::Color;
 
 /// Colour values + glyph preferences for the entire TUI.
-///
-/// Field names match the former `Theme::*` constants one-to-one so the
-/// existing widget code translates cleanly to function calls
-/// (`Theme::accent()` etc.).
 ///
 /// Palettes are never persisted directly — only the preset *name* is stored
 /// in the SQLite `metadata.active_theme` row. The runtime palette is

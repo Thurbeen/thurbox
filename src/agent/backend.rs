@@ -772,9 +772,9 @@ impl Session {
     /// `cwd` is the directory the shell starts in — the caller passes the
     /// session's *launch* cwd (the multi-repo symlink workspace when there is
     /// one, so the shell lands where the agent does), falling back to the
-    /// primary repo (`info.cwd`) when `None`. Uses `$SHELL` (fallback `/bin/sh`)
-    /// as the command. The window name uses the `tbs-` prefix to distinguish
-    /// from the agent's `tb-` windows.
+    /// primary repo (`info.cwd`) when `None`. The command is the backend's
+    /// [`SessionBackend::default_shell`]. The window name uses the `tbs-` prefix
+    /// to distinguish from the agent's `tb-` windows.
     pub fn ensure_shell_pane(
         &mut self,
         rows: u16,
@@ -1143,7 +1143,6 @@ mod tests {
             },
         );
 
-        // No signal yet.
         assert_eq!(attention_at.load(Ordering::Relaxed), 0);
 
         // Terminal bell → attention, no message.

@@ -246,7 +246,6 @@ fn field_line<'a>(
 ) -> Line<'a> {
     let active = field == m.field;
 
-    // ── Left: pointer + description ─────────────────────────────────────────
     let pointer = if active { "▸ " } else { "  " };
     let desc_style = if active {
         Style::default()
@@ -256,7 +255,6 @@ fn field_line<'a>(
         Style::default().fg(Theme::text_secondary())
     };
 
-    // ── Right: value column + a reserved 2-col marker column ────────────────
     let value = m.value_string(field);
     let value_str = value_text(m, field);
     let value_style = if field.is_scalar() {

@@ -144,7 +144,6 @@ mod tests {
     #[test]
     fn position_for_y_endpoints() {
         let g = geom(5, 10, 100);
-        // Top of the track maps to 0, bottom maps to the last index.
         assert_eq!(g.position_for_y(5), 0);
         assert_eq!(g.position_for_y(14), 99);
     }
@@ -152,14 +151,12 @@ mod tests {
     #[test]
     fn position_for_y_midpoint() {
         let g = geom(0, 11, 101);
-        // Exact middle row → exact middle position.
         assert_eq!(g.position_for_y(5), 50);
     }
 
     #[test]
     fn position_for_y_clamps_out_of_range() {
         let g = geom(5, 10, 100);
-        // Above the track clamps to 0, below clamps to the max.
         assert_eq!(g.position_for_y(0), 0);
         assert_eq!(g.position_for_y(255), 99);
     }
@@ -188,7 +185,6 @@ mod tests {
     fn reserve_track_splits_when_overflowing() {
         let area = Rect::new(4, 2, 20, 10);
         let (content, track) = reserve_track(area, 100, 10);
-        // Content loses its rightmost column; the track claims it.
         assert_eq!(content, Rect::new(4, 2, 19, 10));
         assert_eq!(track, Some(Rect::new(23, 2, 1, 10)));
     }

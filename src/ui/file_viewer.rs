@@ -252,7 +252,6 @@ impl FileViewerState {
     /// the global search to jump to a file/dir result. Best-effort: silently
     /// no-ops if `target` isn't under any current root.
     pub fn reveal_path(&mut self, target: &Path) {
-        // Find the root that contains `target`, then expand each ancestor dir.
         for root_idx in 0..self.roots.len() {
             let root_path = self.roots[root_idx].path.clone();
             let Ok(rel) = target.strip_prefix(&root_path) else {
@@ -385,7 +384,6 @@ impl FileViewerState {
                 return;
             }
         }
-        // Else: move selection up one level (parent)
         if index_path.len() > 1 {
             let parent_path = &index_path[..index_path.len() - 1];
             let new_rows = self.flatten();
@@ -414,7 +412,6 @@ fn push_flat(
     is_root: bool,
 ) {
     let label = if is_root {
-        // Show a shortened path for roots (last 2 components)
         short_root_label(&node.path)
     } else {
         node.path

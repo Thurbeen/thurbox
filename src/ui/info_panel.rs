@@ -47,40 +47,31 @@ pub fn render_info_panel(
 
     let mut lines = Vec::new();
 
-    // ── Session section (most relevant: "what am I looking at") ──
     append_session_section(&mut lines, info, parent_name);
-
-    // ── Repos ──
     append_repos_section(&mut lines, info);
 
-    // ── Git change summary (real git state of the worktree) ──
     if let Some(ref git) = info.git_stats {
         append_git_section(&mut lines, git);
     }
 
-    // ── Session CPU/RAM ──
     if let Some(m) = metrics {
         append_session_resources(&mut lines, m, inner_width);
     }
 
-    // ── Agent section (Claude CLI metrics) ──
     if let Some(ref metrics) = info.agent_metrics {
         append_agent_section(&mut lines, metrics, inner_width);
     }
 
-    // ── Usage / rate-limits (account-level, the `/usage` equivalent) ──
     if let Some(u) = usage {
         if !u.is_empty() {
             append_usage_section(&mut lines, u, inner_width);
         }
     }
 
-    // ── System Resources section (global CPU/RAM) ──
     if let Some(m) = metrics {
         append_system_section(&mut lines, m, inner_width);
     }
 
-    // ── Automations section ──
     append_automations_section(&mut lines, automations, inner_width);
 
     let paragraph = Paragraph::new(lines)
@@ -700,7 +691,7 @@ mod tests {
         assert!(header.contains("CPU"));
         assert!(header.contains("0%"));
         let bar: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
-        // bar_width = 20 - 2 = 18, all empty
+        // bar_width = 20 - 2 = 18
         assert!(bar.contains(&"░".repeat(18)));
         assert!(!bar.contains('█'));
     }
@@ -711,7 +702,7 @@ mod tests {
         let header: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header.contains("100%"));
         let bar: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
-        // bar_width = 18, all filled
+        // bar_width = 18
         assert!(bar.contains(&"█".repeat(18)));
         assert!(!bar.contains('░'));
     }
@@ -750,9 +741,9 @@ mod tests {
         let inner_width = 16;
         let lines = render_gauge_lines("CPU", 42.0, None, inner_width);
         let bar: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
-        // bar should be [<filled><empty>] with total bar_width = inner_width - 2
         let bar_content_len = bar.chars().count();
-        assert_eq!(bar_content_len, inner_width); // [ + bar_width + ]
+        // [ + bar_width + ] == inner_width
+        assert_eq!(bar_content_len, inner_width);
     }
 
     // ── separator tests ──

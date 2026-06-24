@@ -30,8 +30,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             if failed.is_empty() {
                 Ok(CommandOutput::new(report, human))
             } else {
-                // Print the full report (human or JSON), then exit non-zero so
-                // this is usable as a dotfiles CI gate.
+                // Exit non-zero so this is usable as a dotfiles CI gate.
                 Ok(CommandOutput::failed(
                     report,
                     human,
