@@ -8,7 +8,7 @@
 //! [`crate::ui::global_search`].
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::modals::TextInput;
 use super::{App, InputFocus};
@@ -164,7 +164,7 @@ impl App {
         self.recompute_global_search_metadata();
         self.preview_global_search_result();
         self.global_search.content_dirty = true;
-        self.global_search.query_changed_at = Some(std::time::Instant::now());
+        self.global_search.query_changed_at = Some(Instant::now());
     }
 
     /// Rebuild the metadata results (sessions/tasks/automations/files) — fast
@@ -529,7 +529,7 @@ impl App {
         let settled = self
             .global_search
             .query_changed_at
-            .map(|t| t.elapsed() >= std::time::Duration::from_millis(CONTENT_DEBOUNCE_MS))
+            .map(|t| t.elapsed() >= Duration::from_millis(CONTENT_DEBOUNCE_MS))
             .unwrap_or(false);
         if settled {
             self.recompute_global_search_content();
