@@ -7670,10 +7670,10 @@ mod tests {
         assert_eq!(rp.focus, modals::RepoPickerFocus::Input);
     }
 
-    /// Hovering a footer button reverses its cells (a button-like hover),
-    /// distinct from the underline a list row gets.
+    /// Hovering a footer button brightens its fill to `accent_bright` (a
+    /// button-like hover), distinct from the background band a list row gets.
     #[test]
-    fn hovering_footer_button_reverses_it() {
+    fn hovering_footer_button_brightens_it() {
         let mut app = app_with_sessions(1);
         let backend = ratatui::backend::TestBackend::new(120, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -7687,11 +7687,10 @@ mod tests {
         app.update(AppMessage::MouseMove { x: r.x, y: r.y });
         terminal.draw(|f| app.view(f)).unwrap();
         let buf = terminal.backend().buffer();
-        assert!(
-            buf[(r.x, r.y)]
-                .modifier
-                .contains(ratatui::style::Modifier::REVERSED),
-            "hovered footer button should be reversed"
+        assert_eq!(
+            buf[(r.x, r.y)].bg,
+            crate::ui::theme::Theme::accent_bright(),
+            "hovered footer button should brighten to accent_bright"
         );
     }
 
@@ -7930,9 +7929,9 @@ mod tests {
         assert!(rx.try_recv().is_err(), "legacy encoding must not forward");
     }
 
-    /// The hovered clickable row is underlined in the rendered frame.
+    /// The hovered clickable row gets a background band in the rendered frame.
     #[test]
-    fn hovered_session_row_is_underlined() {
+    fn hovered_session_row_gets_background_band() {
         let mut app = app_with_sessions(2);
         let backend = ratatui::backend::TestBackend::new(120, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -7948,17 +7947,15 @@ mod tests {
         app.update(AppMessage::MouseMove { x: row.x, y: row.y });
         terminal.draw(|f| app.view(f)).unwrap();
 
+        let band = crate::ui::theme::Theme::selection_bg();
         let buffer = terminal.backend().buffer();
-        assert!(
-            buffer[(row.x, row.y)]
-                .modifier
-                .contains(ratatui::style::Modifier::UNDERLINED),
-            "hovered row cell must be underlined"
+        assert_eq!(
+            buffer[(row.x, row.y)].bg,
+            band,
+            "hovered row cell must get the selection_bg band"
         );
-        // A cell outside any clickable row stays plain.
-        assert!(!buffer[(0, 0)]
-            .modifier
-            .contains(ratatui::style::Modifier::UNDERLINED));
+        // A cell outside any clickable row keeps its non-band background.
+        assert_ne!(buffer[(0, 0)].bg, band);
     }
 
     #[test]

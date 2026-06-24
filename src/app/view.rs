@@ -6,7 +6,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -63,10 +63,12 @@ impl App {
         self.apply_selection_highlight(frame);
     }
 
-    /// Underline the clickable row under the mouse pointer (list panes and
-    /// selector-modal rows) so what a click would hit is visible before
-    /// clicking. Runs on the recorded click targets, after all rendering;
-    /// the selection highlight is applied later and wins on overlap.
+    /// Highlight the clickable element under the mouse pointer so what a click
+    /// would hit is visible before clicking. List/selector rows get a subtle
+    /// background band (the theme's `selection_bg`); buttons brighten their
+    /// fill to `accent_bright`. Runs on the recorded click targets, after all
+    /// rendering; the text selection highlight is applied later and wins on
+    /// overlap.
     fn apply_hover_highlight(&self, frame: &mut Frame) {
         let Some((hx, hy)) = self.mouse_hover else {
             return;
@@ -105,24 +107,25 @@ impl App {
         let Some(target) = hovered else {
             return;
         };
-        // Buttons (footer + modal) get a stronger, button-like hover — reverse
-        // the styled cell so an accent chip lights up — while list rows just
-        // underline to mark what a click would hit.
+        // Buttons (footer + modal) get a stronger, button-like hover — brighten
+        // their fill to the accent so the chip lights up — while list rows get a
+        // subtle background band to mark what a click would hit. Either way we
+        // tint the background only, leaving each cell's fg/modifiers intact.
         let is_button = matches!(
             target.action,
             ClickAction::Global(_) | ClickAction::ModalButton { .. }
         );
-        let hover_mod = if is_button {
-            Modifier::REVERSED
+        let hover_bg = if is_button {
+            Theme::accent_bright()
         } else {
-            Modifier::UNDERLINED
+            Theme::selection_bg()
         };
         let buf = frame.buffer_mut();
         let rect = target.rect;
         for y in rect.y..rect.y + rect.height {
             for x in rect.x..rect.x + rect.width {
                 if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
-                    cell.modifier |= hover_mod;
+                    cell.set_bg(hover_bg);
                 }
             }
         }
