@@ -724,3 +724,87 @@ in sync with the binary that reads it.
 - *Re-serializing `agents.toml` to add/remove agents* — would drop user
   comments/formatting; the installer edits text (append on install,
   block-removal by name on uninstall) instead.
+
+## ADR-22: `App` decomposition — coordinator + per-domain sub-modules
+
+**Choice**: Keep the single `App` model (ADR-1, TEA) but split its
+~11.7k-line `app/mod.rs` into per-domain sub-files under `src/app/`,
+relocating cohesive `impl App` method clusters out of `mod.rs` while the
+state they own lives in small per-cluster sub-structs. `app` stays one
+**EXEMPT** module in `tests/architecture_rules.rs` (the coordinator that
+imports every layer), and governance is directory-level, so the new
+`app/*.rs` files introduce **no** new cross-layer edges and need no
+allowlist entries — the split is entirely intra-`app`.
+
+Two halves:
+
+- *State* — already mostly done: `task_ui: TaskUiState`, `automation_ui:
+  AutomationUiState`, `new_session: NewSessionWizardState`,
+  `global_search: GlobalSearchState`, `worktree_sync: WorktreeSyncState`,
+  `metrics`, `notification_state`. Two remain to extract: a new
+  `PointerState` (text-selection / click-target / scrollbar / hover
+  registries) and a `SpawnController` holding **only** the
+  background-task machinery (`worktree_create`/`session_spawn` + their
+  `pending_*`).
+- *Behavior* — relocate the method clusters into domain files:
+  `app/tasks.rs`, `app/automation.rs`, finish `app/search.rs`,
+  `app/mouse.rs`, `app/worktree_sync.rs` + `app/git_stats.rs`, and
+  `app/spawn.rs`. Methods stay `impl App` (they coordinate side effects);
+  only pure state/logic lands on the sub-structs.
+
+**The spine stays on `App`** (clusters borrow it, never own it): the
+session vector + selection cursor (`sessions`, `active_index`), the
+backend registry (`backends`), per-session render views
+(`session_terminal_views`), the render-loop flags (`needs_redraw`,
+`last_draw_at`, `last_output_gen`), the status/order caches
+(`cached_hook_states`/`hook_states_version`, `cached_session_order`,
+`last_active_session_id`, `spinner_frame`), and
+`metrics`/`db`/`session_counter`/`terminal_rows`. The TEA methods
+(`update`, `tick`, `view`, `handle_key`/`dispatch_action`, `new`,
+`shutdown`), session restore/adopt, and all navigation/status/ordering
+stay too — navigation *is* manipulation of the shared cursor. Two
+cross-cluster handoff slots stay explicit and `pub(crate)`:
+`pending_task_prompt` (tasks↔spawn) and `deferred_inputs`
+(spawn/sync/paste).
+
+**The spawn boundary**: `SpawnController` owns only its background tasks
+and exposes `poll() -> SpawnEvent` (`WorktreesReady`/`Spawned`/`Failed`);
+`App` applies the event via the existing `finalize_spawned_session`. The
+controller never owns session *adoption* — that body touches `sessions`,
+`active_index`, `focus`, `db`, `deferred_inputs`, `metrics`, and
+`task_ui` in one place, and pushing it into a sub-struct would re-create
+the god-object through a `&mut App` parameter.
+
+**Order** (each its own PR, green throughout; `app/acceptance.rs` is the
+safety net): (1) tasks → (2) automations → (3) search — the safe
+relocations, state already extracted — then (4) mouse (first new
+sub-struct), (5) sync, (6) spawn (machinery only; last and hardest).
+Because all relocations carve from the same `mod.rs`/`key_handlers.rs`,
+they are **sequenced**, not run in parallel, so each rebases onto the
+prior cleanly.
+
+**Why**: `mod.rs` is the repo's hottest merge-conflict file and
+interleaves spawn/mouse/task/automation/sync/metrics, so no single flow
+can be read without scrolling past four others. The split shrinks
+`mod.rs` toward a coordinator + spine (~5–6k lines) with each domain's
+invariants local, and *strengthens* the TEA spirit — side effects stay
+concentrated at the coordinator, pure state/logic gets isolated — rather
+than bending it. The state half is already underway, so most of the work
+is mechanical relocation against existing tests: low risk, high
+readability gain.
+
+**Rejected**:
+
+- *Splitting `App` into multiple models / TEA loops* — breaks ADR-1's
+  single `update`/`view` and the `data_version`-driven redraw; the
+  coupling is real (every cluster reads the selection cursor), so one
+  model with a borrowed spine is correct.
+- *Owning the spine in sub-controllers* (e.g. a `SessionController`
+  owning `sessions`/`active_index`) — every other cluster borrows it, so
+  this merely relocates the god-object and forces `&mut App`-style
+  params everywhere.
+- *Pushing side-effecting methods onto the sub-structs* — would drag
+  `db`/`sessions`/`deferred_inputs` into each cluster and reintroduce the
+  coupling; behavior stays `impl App`, only pure logic moves.
+- *One big relocation PR* — unreviewable and merge-hostile; the value is
+  in independently-reviewable, test-green increments.
