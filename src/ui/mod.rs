@@ -5,6 +5,7 @@ pub mod automations_list_modal;
 pub mod automations_panel;
 pub mod branch_selector_modal;
 pub mod confirm_delete_modal;
+pub mod confirm_restore_modal;
 pub mod file_viewer;
 pub mod global_search;
 pub mod highlight;
@@ -570,6 +571,45 @@ pub fn render_modal_frame_danger(frame: &mut Frame, area: Rect, title: &str) -> 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner
+}
+
+/// Render a centered yes/no confirmation modal: the `body` lines, a blank
+/// spacer, and an action footer (`confirm` label/key + a `Cancel` button).
+/// `danger` picks the red-bordered frame. Returns the footer buttons. Shared by
+/// the delete / restore confirmations so their scaffold reads identically.
+pub fn render_confirm_modal(
+    frame: &mut Frame,
+    width_pct: u16,
+    title: &str,
+    danger: bool,
+    body: Vec<Line>,
+    confirm: (
+        &str,
+        crossterm::event::KeyCode,
+        crossterm::event::KeyModifiers,
+    ),
+) -> ModalButtons {
+    // Outer height: the body lines + a blank spacer + the footer row, plus the
+    // top/bottom border (2).
+    let height = body.len() as u16 + 2 + 2;
+    let area = centered_fixed_height_rect(width_pct, height, frame.area());
+    let inner = if danger {
+        render_modal_frame_danger(frame, area, title)
+    } else {
+        render_modal_frame(frame, area, title)
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(body.len() as u16),
+            Constraint::Length(1), // blank spacer
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    frame.render_widget(Paragraph::new(body), chunks[0]);
+    render_action_footer(frame, chunks[2], confirm, "Cancel")
 }
 
 /// Set up a list modal with dim overlay, styled border, and list + footer split.

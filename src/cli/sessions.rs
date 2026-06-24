@@ -78,6 +78,10 @@ pub enum Action {
     Restore {
         /// Session UUID.
         uuid: String,
+        /// Recover a force-deleted session best-effort: only committed branch
+        /// state comes back (uncommitted/untracked work was lost on delete).
+        #[arg(long)]
+        best_effort: bool,
     },
     /// Restart a session in-place (kills the window, re-spawns with --resume).
     Restart {
@@ -232,7 +236,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 human,
             ))
         }
-        Action::Restore { uuid } => {
+        Action::Restore { uuid, best_effort } => {
             let id: SessionId = uuid
                 .parse()
                 .map_err(|_| format!("Invalid session UUID: {uuid}"))?;
@@ -240,21 +244,35 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
                 .get_deleted_session_by_id(id)
                 .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Deleted session not found: {uuid}"))?;
-            if deleted.force_deleted {
+            // A force-deleted session lost its uncommitted work; restoring it only
+            // recovers committed branch state, so require an explicit opt-in.
+            if deleted.force_deleted && !best_effort {
                 return Err(format!(
-                    "Session '{}' was force-deleted; its worktrees were removed and it can't be restored",
+                    "Session '{}' was force-deleted; pass --best-effort to recover committed work (uncommitted/untracked changes are gone)",
                     deleted.name
                 ));
             }
+            // `restore_session` clears `deleted_at` and `force_deleted`; a running
+            // TUI re-creates worktrees + the tmux window on its next sync.
             db.restore_session(deleted.id)
                 .map_err(|e| format!("restore_session: {e}"))?;
+            let best_effort_recovery = deleted.force_deleted;
+            let human = if best_effort_recovery {
+                format!(
+                    "Restored session '{}' ({}) — best-effort: uncommitted work was not recovered",
+                    deleted.name, deleted.id
+                )
+            } else {
+                format!("Restored session '{}' ({})", deleted.name, deleted.id)
+            };
             Ok(CommandOutput::new(
                 json!({
                     "restored": true,
                     "id": deleted.id.to_string(),
                     "name": deleted.name,
+                    "best_effort": best_effort_recovery,
                 }),
-                format!("Restored session '{}' ({})", deleted.name, deleted.id),
+                human,
             ))
         }
         Action::Restart { uuid } => {
@@ -726,11 +744,55 @@ mod tests {
         let restored = run(
             Action::Restore {
                 uuid: id.to_string(),
+                best_effort: false,
             },
             &db,
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
+        assert_eq!(restored["best_effort"], false);
+        assert!(db.get_session_by_id(id).unwrap().is_some());
+    }
+
+    #[test]
+    fn restore_force_deleted_requires_best_effort_flag() {
+        let db = db();
+        let shared = make_test_session("forced");
+        let id = shared.id;
+        db.upsert_session(&shared).unwrap();
+
+        // Force-delete marks the row force_deleted; restore must then opt in.
+        run(
+            Action::Delete {
+                uuid: id.to_string(),
+                force: true,
+            },
+            &db,
+        )
+        .unwrap();
+
+        let err = run(
+            Action::Restore {
+                uuid: id.to_string(),
+                best_effort: false,
+            },
+            &db,
+        )
+        .unwrap_err();
+        assert!(err.contains("--best-effort"), "{err}");
+        // Still soft-deleted (refused).
+        assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
+
+        let restored = run(
+            Action::Restore {
+                uuid: id.to_string(),
+                best_effort: true,
+            },
+            &db,
+        )
+        .unwrap();
+        assert_eq!(restored["restored"], true);
+        assert_eq!(restored["best_effort"], true);
         assert!(db.get_session_by_id(id).unwrap().is_some());
     }
 }

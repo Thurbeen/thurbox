@@ -572,9 +572,15 @@ window, remove worktrees + the symlink workspace, and disable
 when no TUI is running. Teardown is best-effort (failures land in
 the JSON report); the row is always soft-deleted last. A `--force`
 delete also stamps the `sessions.force_deleted` column (schema v37):
-the row still appears in the restore list **tagged `force-deleted`**,
-but `restore` refuses it (its worktrees + any uncommitted work are
-gone). A plain soft delete stays restorable.
+the row still appears in the restore list **tagged `force-deleted`** and
+is restorable **best-effort** — force-delete removes the worktree
+*directory* but not the git branch, so restore reattaches each surviving
+branch's committed work (`App::recreate_worktrees`); only uncommitted/
+untracked changes are gone. Because that recovery is lossy, the headless
+`session restore` **refuses a force-deleted row unless `--best-effort`**
+is passed (its JSON then carries `best_effort: true`); a plain soft delete
+restores with no flag. `restore_session` clears both `deleted_at` and
+`force_deleted`.
 
 The **TUI** `Ctrl+D` soft-deletes by default too (with a `Ctrl+Z` undo
 window). The `[features] soft_delete` flag (settings.toml, default
@@ -588,8 +594,12 @@ that can't be verified (remote host / git error → confirm to be safe;
 `App::assess_delete_risk` + `modals::DeleteRisk::from_stats` over
 `git::worktree_stats`). The modal itemizes what would be lost; a
 known-clean session is deleted with no prompt. A force-deleted session
-is then tagged + blocked in the restore list (above). The flag never
-changes `thurbox-cli session delete`, which stays soft unless `--force`.
+is then tagged in the restore list (above); restoring one via `Ctrl+U`
+(`Enter`) first asks for confirmation (`Modal::ConfirmRestore`, rendered
+by `ui::confirm_restore_modal`) since the recovery is best-effort
+(committed branch state only), then runs the normal restore path. The
+flag never changes `thurbox-cli session delete`, which stays soft unless
+`--force`.
 
 ### Parent sessions (lead/worker)
 

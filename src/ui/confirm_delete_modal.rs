@@ -1,13 +1,9 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
     Frame,
 };
 
-use super::centered_fixed_height_rect;
-use super::render_modal_frame_danger;
 use super::theme::Theme;
 use crate::app::modals::DeleteRisk;
 
@@ -103,32 +99,17 @@ pub fn render_confirm_delete_modal(
         Style::default().fg(Theme::danger()),
     )));
 
-    // Outer height: the body lines + a blank spacer + the footer row (2), plus
-    // the top/bottom border (2).
-    let height = body.len() as u16 + 2 + 2;
-    let area = centered_fixed_height_rect(MODAL_WIDTH_PCT, height, frame.area());
-    let inner = render_modal_frame_danger(frame, area, "Delete session");
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(body.len() as u16),
-            Constraint::Length(1), // blank spacer
-            Constraint::Length(1), // footer
-        ])
-        .split(inner);
-
-    frame.render_widget(Paragraph::new(body), chunks[0]);
-
-    super::render_action_footer(
+    super::render_confirm_modal(
         frame,
-        chunks[2],
+        MODAL_WIDTH_PCT,
+        "Delete session",
+        true,
+        body,
         (
             "Delete",
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ),
-        "Cancel",
     )
 }
 

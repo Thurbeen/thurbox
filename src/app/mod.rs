@@ -1727,16 +1727,15 @@ impl App {
     }
 
     /// Restore a soft-deleted session: un-delete in DB, recreate worktrees, and spawn.
+    ///
+    /// Works for force-deleted sessions too, on a best-effort basis: force-delete
+    /// removed the worktree directory but not the git branch, so
+    /// [`Self::recreate_worktrees`] reattaches each branch that still exists
+    /// (uncommitted work was lost on delete). `restore_session` also clears the
+    /// `force_deleted` flag. The TUI gates this behind a confirm modal.
     fn restore_deleted_session(&mut self, deleted: DeletedSessionInfo) {
-        // A force-deleted session had its worktrees + tmux window torn down (and
-        // any uncommitted work lost), so there's nothing coherent to restore.
-        if deleted.force_deleted {
-            self.set_error(format!(
-                "'{}' was force-deleted; its worktrees were removed and it can't be restored",
-                deleted.name
-            ));
-            return;
-        }
+        let was_force_deleted = deleted.force_deleted;
+        let wanted_worktrees = deleted.worktrees.len();
 
         if let Err(e) = self.db.restore_session(deleted.id) {
             error!("Failed to restore session in DB: {e}");
@@ -1745,6 +1744,7 @@ impl App {
         }
 
         let worktree_infos = Self::recreate_worktrees(&deleted.worktrees);
+        let recovered_worktrees = worktree_infos.len();
         let cwd = worktree_infos
             .first()
             .map(|wt| wt.worktree_path.clone())
@@ -1803,7 +1803,21 @@ impl App {
 
                 self.save_state();
 
-                self.set_status(StatusLevel::Success, format!("Restored '{session_name}'"));
+                if was_force_deleted {
+                    // Recovery is lossy: note it, and flag any worktree whose
+                    // branch was gone (so couldn't be reattached).
+                    let mut msg =
+                        format!("Restored '{session_name}' (best-effort: uncommitted work lost");
+                    if recovered_worktrees < wanted_worktrees {
+                        msg.push_str(&format!(
+                            ", {recovered_worktrees} of {wanted_worktrees} worktrees recovered"
+                        ));
+                    }
+                    msg.push(')');
+                    self.set_status(StatusLevel::Info, msg);
+                } else {
+                    self.set_status(StatusLevel::Success, format!("Restored '{session_name}'"));
+                }
             }
             Err(e) => {
                 error!("Failed to spawn restored session: {e}");

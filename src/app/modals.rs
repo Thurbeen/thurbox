@@ -604,6 +604,16 @@ pub struct ConfirmDeleteModal {
     pub risk: DeleteRisk,
 }
 
+/// Confirmation prompt for a **best-effort** restore of a force-deleted session.
+/// Force-delete tore down the worktree directory + tmux window (and any
+/// uncommitted work), but the git branch — and its committed history — survives,
+/// so restore can reattach it. This modal warns that only committed state is
+/// recovered, then restores the carried session on confirm.
+#[derive(Debug, Clone)]
+pub struct ConfirmRestoreModal {
+    pub deleted: DeletedSessionInfo,
+}
+
 // ── RestoreSessionsModal ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -1807,6 +1817,7 @@ pub enum Modal {
     ThemePicker(ThemePickerModal),
     TaskActionPicker(TaskActionPickerModal),
     ConfirmDelete(ConfirmDeleteModal),
+    ConfirmRestore(ConfirmRestoreModal),
     Settings(SettingsModal),
 }
 

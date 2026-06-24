@@ -297,6 +297,7 @@ impl App {
             Modal::RepoPicker(_) => self.handle_repo_picker_key(code, mods),
             Modal::TaskActionPicker(_) => self.handle_task_action_picker_key(code),
             Modal::ConfirmDelete(_) => self.handle_confirm_delete_key(code),
+            Modal::ConfirmRestore(_) => self.handle_confirm_restore_key(code),
             Modal::Settings(_) => self.handle_settings_key(code, mods),
             _ => return false,
         }
@@ -327,6 +328,25 @@ impl App {
                 let session_id = cd.session_id;
                 self.modal.close();
                 self.confirm_hard_delete_session(session_id);
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.modal.close();
+            }
+            _ => {}
+        }
+    }
+
+    /// Drive the best-effort restore confirmation for a force-deleted session:
+    /// `Enter`/`y` restores (committed branch state only), `Esc`/`n` cancels.
+    fn handle_confirm_restore_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::ConfirmRestore(ref cr) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let deleted = cr.deleted.clone();
+                self.modal.close();
+                self.restore_deleted_session(deleted);
             }
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.modal.close();
@@ -609,8 +629,17 @@ impl App {
                 if rs.index >= rs.list.len() && rs.index > 0 {
                     rs.index -= 1;
                 }
-                self.modal.close();
-                self.restore_deleted_session(deleted);
+                // A force-deleted session lost its uncommitted work; confirm the
+                // best-effort recovery first. Plain soft-deletes restore directly.
+                if deleted.force_deleted {
+                    self.modal =
+                        super::modals::Modal::ConfirmRestore(super::modals::ConfirmRestoreModal {
+                            deleted,
+                        });
+                } else {
+                    self.modal.close();
+                    self.restore_deleted_session(deleted);
+                }
             }
             _ => {}
         }

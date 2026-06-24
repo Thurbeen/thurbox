@@ -690,6 +690,16 @@ impl App {
             );
         }
 
+        // Best-effort restore confirmation (a force-deleted session)
+        if let super::modals::Modal::ConfirmRestore(ref cr) = self.modal {
+            return crate::ui::confirm_restore_modal::render_confirm_restore_modal(
+                frame,
+                &crate::ui::confirm_restore_modal::ConfirmRestoreState {
+                    session_name: &cr.deleted.name,
+                },
+            );
+        }
+
         Vec::new()
     }
 

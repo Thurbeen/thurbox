@@ -58,7 +58,8 @@ pub fn render_restore_sessions_modal(
                 " {} ({}) {}{} ",
                 entry.name, entry.agent, entry.deleted_ago, wt_indicator
             );
-            // A force-deleted row is dimmed (it can't be restored) and tagged.
+            // A force-deleted row is dimmed + tagged: it restores best-effort
+            // (committed branch state only — uncommitted work was lost on delete).
             let base_style = if selected {
                 Theme::selected_item()
             } else if entry.force_deleted {

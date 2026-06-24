@@ -531,6 +531,50 @@ fn restore_sessions_modal_empty() {
     insta::assert_snapshot!(h.render());
 }
 
+#[test]
+fn force_deleted_restore_confirms_then_best_effort_restores() {
+    let mut h = Harness::standard(1);
+
+    // Persist the stub session, then force-delete it — the soft-deleted +
+    // force-deleted DB row a best-effort recovery acts on (no worktrees → no
+    // on-disk teardown needed).
+    let id = h.app.sessions[0].info.id;
+    let shared = h.app.session_to_shared(&h.app.sessions[0]);
+    h.app.db.upsert_session(&shared).unwrap();
+    crate::session_ops::delete_session_headless(&h.app.db, id, true).unwrap();
+    assert!(
+        h.app.db.get_deleted_session_by_id(id).unwrap().is_some(),
+        "row is soft-deleted + force-deleted"
+    );
+
+    // Ctrl+U lists it; Enter on a force-deleted row opens the confirm prompt
+    // rather than restoring immediately.
+    h.ctrl('u');
+    assert!(matches!(h.app.modal, modals::Modal::RestoreSessions(_)));
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        matches!(h.app.modal, modals::Modal::ConfirmRestore(_)),
+        "Enter on a force-deleted row asks for confirmation"
+    );
+    assert!(
+        h.app.db.get_deleted_session_by_id(id).unwrap().is_some(),
+        "nothing restored before confirmation"
+    );
+
+    // Confirm → `restore_session` clears `deleted_at` + `force_deleted`, so the
+    // row leaves the deleted list and is an active session again.
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!h.app.modal.is_open(), "confirm closes the prompt");
+    assert!(
+        h.app.db.get_deleted_session_by_id(id).unwrap().is_none(),
+        "the session is no longer in the deleted list"
+    );
+    assert!(
+        h.app.db.get_session_by_id(id).unwrap().is_some(),
+        "the row is an active session again"
+    );
+}
+
 // ── Delete + undo ────────────────────────────────────────────────────────────
 
 #[test]
