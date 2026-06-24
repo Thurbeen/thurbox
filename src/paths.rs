@@ -50,7 +50,7 @@ fn app_dir_name() -> &'static str {
 }
 
 /// The user's home directory: `$HOME` on Unix, `%USERPROFILE%` on Windows.
-pub(crate) fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(var).map(PathBuf::from)
 }

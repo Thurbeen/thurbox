@@ -289,7 +289,7 @@ fn fallback_database_path() -> std::path::PathBuf {
             }
             #[cfg(not(windows))]
             {
-                let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                let mut p = thurbox::paths::home_dir().unwrap_or_default();
                 p.push(".local");
                 p.push("share");
                 p

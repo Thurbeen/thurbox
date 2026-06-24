@@ -2123,8 +2123,8 @@ impl App {
     fn spawn_repo_picker_no_repos(&mut self) {
         let mut config = SessionConfig::default();
         if self.new_session.backend.is_none() {
-            if let Some(home) = std::env::var_os("HOME") {
-                config.cwd = Some(std::path::PathBuf::from(home));
+            if let Some(home) = crate::paths::home_dir() {
+                config.cwd = Some(home);
             }
         }
         self.spawn_session_with_config(&config);
