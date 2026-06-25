@@ -27,6 +27,14 @@ Show
 # Let the real agent CLIs finish booting.
 Sleep 2500ms
 
+# On launch the active session's TERMINAL is focused (session restore focuses
+# it), and Ctrl+B (ToggleInfoPanel) is a terminal-passthrough chord — so from
+# the terminal it would be sent to the agent's PTY instead of toggling the
+# panel. Ctrl+H (focus previous pane) is a navigation chord that is never passed
+# through, so it reliably moves focus to the session list first.
+Ctrl+H
+Sleep 600ms
+
 # Open the info panel (Ctrl+B = alias for F2): name/status/agent + CPU/RAM gauges.
 Ctrl+B
 Sleep 3s
