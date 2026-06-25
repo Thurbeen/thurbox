@@ -73,7 +73,7 @@ clap = { version = "4", features = ["derive"] }
 # Date/time + cron scheduling (automations)
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
-cron = "0.16"
+cron = "0.17"
 serde_ignored = "0.1.14"
 
 # OS notifications. Linux-only: dbus with action callbacks (click-to-focus
