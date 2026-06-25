@@ -1,0 +1,187 @@
+---
+layout: docs.njk
+title: 'Comparison — Thurbox Docs'
+description: 'How Thurbox compares to other parallel coding-agent tools (Conductor, Herdr, 1Code, Orca, Claude Squad, Vibe Kanban, Cursor): real tmux vs custom multiplexer, TUI vs Electron, native vendor CLI vs own models, and multi-repo sessions.'
+currentPage: 'comparison'
+breadcrumb: 'Comparison'
+---
+<h1>Comparison</h1>
+          <p>
+            Lots of tools now &ldquo;run coding agents in parallel, each in its own git
+            worktree.&rdquo; They mostly differ on what&rsquo;s underneath: whether the session
+            backend is
+            <strong>real tmux</strong>
+            or a re-implemented multiplexer, whether the UI is a lightweight
+            <strong>TUI</strong>
+            or an Electron/native app, whether they launch the
+            <strong>unmodified vendor CLI</strong>
+            or their own model, and whether one session can span several repos. Thurbox optimizes
+            the boring-but-load-bearing end of that list.
+          </p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Interface</th>
+                <th>Session backend</th>
+                <th>Agents</th>
+                <th>Multi-repo session</th>
+                <th>Platforms</th>
+                <th>Remote / SSH</th>
+                <th>License</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Thurbox</strong></td>
+                <td>TUI</td>
+                <td><strong>Real tmux</strong> (+ psmux on Windows)</td>
+                <td>
+                  <strong>Any CLI</strong>
+                  &mdash; data in
+                  <code>agents.toml</code>
+                </td>
+                <td><strong>&#x2713;</strong> (one session, many repos)</td>
+                <td>Linux &middot; macOS &middot; Windows</td>
+                <td><strong>&#x2713;</strong> (SSH hosts)</td>
+                <td>MIT</td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="https://www.conductor.build/" target="_blank" rel="noopener">Conductor</a>
+                </td>
+                <td>Native GUI</td>
+                <td>App-managed PTY</td>
+                <td>Claude, Codex, Cursor</td>
+                <td>&#x2717;</td>
+                <td>macOS only</td>
+                <td>&#x2717;</td>
+                <td>Free (closed source)</td>
+              </tr>
+              <tr>
+                <td><a href="https://herdr.dev/" target="_blank" rel="noopener">Herdr</a></td>
+                <td>TUI</td>
+                <td><strong>Own</strong> multiplexer (Rust)</td>
+                <td>Claude, Codex, Gemini</td>
+                <td>&#x2717;</td>
+                <td>Linux &middot; macOS</td>
+                <td>Runs on a remote box</td>
+                <td>AGPL-3.0</td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="https://github.com/21st-dev/1code" target="_blank" rel="noopener">1Code</a>
+                </td>
+                <td>Desktop GUI</td>
+                <td>App-managed PTY</td>
+                <td>Claude, Codex</td>
+                <td>&#x2717;</td>
+                <td>macOS</td>
+                <td>Cloud agents</td>
+                <td>Apache-2.0</td>
+              </tr>
+              <tr>
+                <td><a href="https://www.onorca.dev/" target="_blank" rel="noopener">Orca</a></td>
+                <td>Desktop GUI (Electron)</td>
+                <td>App-managed PTY</td>
+                <td>Claude, Codex, Gemini, Cursor + 30 more</td>
+                <td>&#x2717;</td>
+                <td>macOS &middot; Windows &middot; Linux</td>
+                <td>Remote Orca servers</td>
+                <td>MIT</td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>
+                </td>
+                <td>TUI</td>
+                <td><strong>Real tmux</strong></td>
+                <td>Claude, Codex, OpenCode, Aider, Amp</td>
+                <td>&#x2717;</td>
+                <td>Linux &middot; macOS (no Windows)</td>
+                <td>&#x2717;</td>
+                <td>AGPL-3.0</td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="https://github.com/BloopAI/vibe-kanban" target="_blank" rel="noopener">Vibe Kanban</a>
+                </td>
+                <td>Web (kanban)</td>
+                <td>App-managed PTY</td>
+                <td>Claude, Codex, Cursor, Gemini + more</td>
+                <td>&#x2717;</td>
+                <td>Cross-platform</td>
+                <td>&#x2717;</td>
+                <td>Apache-2.0 (community-maintained)</td>
+              </tr>
+              <tr>
+                <td><a href="https://cursor.com/" target="_blank" rel="noopener">Cursor</a></td>
+                <td>IDE + cloud</td>
+                <td>App-managed (its <strong>own</strong> models)</td>
+                <td>Composer + frontier models</td>
+                <td>&#x2717;</td>
+                <td>macOS &middot; Windows &middot; Linux</td>
+                <td>Cloud VMs + SSH</td>
+                <td>Proprietary (paid)</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="what-makes-thurbox-different">
+            What makes Thurbox different
+            <a href="#what-makes-thurbox-different" class="heading-anchor">#</a>
+          </h2>
+          <p>Some of these are shared &mdash; the combination is the point.</p>
+          <ul>
+            <li>
+              <strong>Real tmux, not a re-implemented multiplexer.</strong>
+              Sessions live in the same battle-tested mux that already survives crashes, restarts,
+              and reboots &mdash; reattach from any terminal with
+              <code>tmux -L thurbox attach</code>
+              . A custom multiplexer is one more thing that can lose your session. (Of the tools
+              above, only Claude Squad shares this.)
+            </li>
+            <li>
+              <strong>A TUI, not an Electron app.</strong>
+              Tiny footprint; runs in a plain terminal, over SSH, on a headless server &mdash; no
+              desktop, no GPU, no per-window browser.
+            </li>
+            <li>
+              <strong>Launches the unmodified vendor CLI.</strong>
+              Thurbox knows nothing about the agent&rsquo;s model, prompts, or tools &mdash; it just
+              runs
+              <code>command + args</code>
+              &mdash; so you get the newest agent features the day the CLI ships them, with no
+              wrapper in the way (vs Cursor, which runs its own models).
+            </li>
+            <li>
+              <strong>Any agent CLI as data</strong>
+              (
+              <code>~/.config/thurbox/agents.toml</code>
+              ) &mdash; add your own with no recompile; Thurbox is deliberately agent-neutral.
+            </li>
+            <li>
+              <strong>Multi-repo sessions.</strong>
+              One session can span several repos at once (a per-session symlink workspace), not just
+              one worktree per task.
+            </li>
+          </ul>
+          <p>
+            On top of that, Thurbox is the only entry here that is terminal-native
+            <strong>and</strong>
+            runs on Windows
+            <strong>and</strong>
+            over SSH, and it ships a full headless CLI (
+            <code>thurbox-cli</code>
+            ) plus cron-like automations to drive and schedule fleets of agents with no GUI at all.
+            The GUI tools trade footprint and that scriptability for click-to-review visual diffs and
+            a gentler on-ramp.
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>Note:</strong>
+              Feature accuracy as of June 2026; these projects move fast, so check each one for the
+              latest.
+            </p>
+          </div>

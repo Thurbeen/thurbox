@@ -130,6 +130,52 @@ adds:
   worktree; `Ctrl+S` syncs them with their base branch and asks the
   agent to resolve rebase conflicts automatically.
 
+## Comparison
+
+Lots of tools now "run coding agents in parallel, each in its own git
+worktree". They mostly differ on what's underneath: whether the session
+backend is **real tmux** or a re-implemented multiplexer, whether the UI is a
+lightweight **TUI** or an Electron/native app, whether they launch the
+**unmodified vendor CLI** or their own model, and whether one session can span
+several repos. Thurbox optimizes the boring-but-load-bearing end of that list.
+
+| Tool | Interface | Session backend | Agents | Multi-repo session | Platforms | Remote / SSH | License |
+|------|-----------|-----------------|--------|--------------------|-----------|--------------|---------|
+| **Thurbox** | TUI | **Real tmux** (+ psmux on Windows) | **Any CLI** — data in `agents.toml` | **✓** (one session, many repos) | Linux · macOS · Windows | **✓** (SSH hosts) | MIT |
+| [Conductor](https://www.conductor.build/) | Native GUI | App-managed PTY | Claude, Codex, Cursor | ✗ | macOS only | ✗ | Free (closed source) |
+| [Herdr](https://herdr.dev/) | TUI | **Own** multiplexer (Rust) | Claude, Codex, Gemini | ✗ | Linux · macOS | Runs on a remote box | AGPL-3.0 |
+| [1Code](https://github.com/21st-dev/1code) | Desktop GUI | App-managed PTY | Claude, Codex | ✗ | macOS | Cloud agents | Apache-2.0 |
+| [Orca](https://www.onorca.dev/) | Desktop GUI (Electron) | App-managed PTY | Claude, Codex, Gemini, Cursor + 30 more | ✗ | macOS · Windows · Linux | Remote Orca servers | MIT |
+| [Claude Squad](https://github.com/smtg-ai/claude-squad) | TUI | **Real tmux** | Claude, Codex, OpenCode, Aider, Amp | ✗ | Linux · macOS (no Windows) | ✗ | AGPL-3.0 |
+| [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) | Web (kanban) | App-managed PTY | Claude, Codex, Cursor, Gemini + more | ✗ | Cross-platform | ✗ | Apache-2.0 (community-maintained) |
+| [Cursor](https://cursor.com/) | IDE + cloud | App-managed (its **own** models) | Composer + frontier models | ✗ | macOS · Windows · Linux | Cloud VMs + SSH | Proprietary (paid) |
+
+What makes Thurbox different (some of these are shared — the combination is the
+point):
+
+- **Real tmux, not a re-implemented multiplexer.** Sessions live in the same
+  battle-tested mux that already survives crashes, restarts, and reboots —
+  reattach from any terminal with `tmux -L thurbox attach`. A custom multiplexer
+  is one more thing that can lose your session. (Of the tools above, only Claude
+  Squad shares this.)
+- **A TUI, not an Electron app.** Tiny footprint; runs in a plain terminal,
+  over SSH, on a headless server — no desktop, no GPU, no per-window browser.
+- **Launches the unmodified vendor CLI.** Thurbox knows nothing about the
+  agent's model, prompts, or tools — it just runs `command + args` — so you get
+  the newest agent features the day the CLI ships them, with no wrapper in the
+  way (vs Cursor, which runs its own models).
+- **Any agent CLI as data** (`~/.config/thurbox/agents.toml`) — add your own with
+  no recompile; Thurbox is deliberately agent-neutral.
+- **Multi-repo sessions.** One session can span several repos at once (a
+  per-session symlink workspace), not just one worktree per task.
+
+On top of that, Thurbox is the only entry here that is terminal-native **and**
+runs on Windows **and** over SSH, and it ships a full headless CLI
+(`thurbox-cli`) plus cron-like automations to drive and schedule fleets of
+agents with no GUI at all. The GUI tools trade footprint and that scriptability
+for click-to-review visual diffs and a gentler on-ramp. Feature accuracy as of
+June 2026; check each project for the latest.
+
 ## Features
 
 <table>
