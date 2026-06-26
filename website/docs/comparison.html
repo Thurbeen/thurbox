@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Comparison — Thurbox Docs'
-description: 'How Thurbox compares to other parallel coding-agent tools (Conductor, Herdr, 1Code, Orca, Claude Squad, Vibe Kanban, Cursor): real tmux vs custom multiplexer, TUI vs Electron, native vendor CLI vs own models, and multi-repo sessions.'
+description: 'How Thurbox compares to other parallel coding-agent tools (Conductor, Herdr, 1Code, Orca, Claude Squad, Cursor): real tmux vs custom multiplexer, TUI vs Electron, native vendor CLI vs own models, and multi-repo sessions.'
 currentPage: 'comparison'
 breadcrumb: 'Comparison'
 ---
@@ -56,14 +56,14 @@ breadcrumb: 'Comparison'
                 <td>Claude, Codex, Cursor</td>
                 <td>&#x2717;</td>
                 <td>macOS only</td>
-                <td>&#x2717;</td>
+                <td>Cloud Workspaces</td>
                 <td>Free (closed source)</td>
               </tr>
               <tr>
                 <td><a href="https://herdr.dev/" target="_blank" rel="noopener">Herdr</a></td>
                 <td>TUI</td>
                 <td><strong>Own</strong> multiplexer (Rust)</td>
-                <td>Claude, Codex, Gemini</td>
+                <td>Claude, Codex + many (any CLI)</td>
                 <td>&#x2717;</td>
                 <td>Linux &middot; macOS</td>
                 <td>Runs on a remote box</td>
@@ -77,7 +77,7 @@ breadcrumb: 'Comparison'
                 <td>App-managed PTY</td>
                 <td>Claude, Codex</td>
                 <td>&#x2717;</td>
-                <td>macOS</td>
+                <td>macOS &middot; Windows &middot; Linux</td>
                 <td>Cloud agents</td>
                 <td>Apache-2.0</td>
               </tr>
@@ -85,7 +85,7 @@ breadcrumb: 'Comparison'
                 <td><a href="https://www.onorca.dev/" target="_blank" rel="noopener">Orca</a></td>
                 <td>Desktop GUI (Electron)</td>
                 <td>App-managed PTY</td>
-                <td>Claude, Codex, Gemini, Cursor + 30 more</td>
+                <td>Claude, Codex, Gemini, Cursor + many (any CLI)</td>
                 <td>&#x2717;</td>
                 <td>macOS &middot; Windows &middot; Linux</td>
                 <td>Remote Orca servers</td>
@@ -102,18 +102,6 @@ breadcrumb: 'Comparison'
                 <td>Linux &middot; macOS (no Windows)</td>
                 <td>&#x2717;</td>
                 <td>AGPL-3.0</td>
-              </tr>
-              <tr>
-                <td>
-                  <a href="https://github.com/BloopAI/vibe-kanban" target="_blank" rel="noopener">Vibe Kanban</a>
-                </td>
-                <td>Web (kanban)</td>
-                <td>App-managed PTY</td>
-                <td>Claude, Codex, Cursor, Gemini + more</td>
-                <td>&#x2717;</td>
-                <td>Cross-platform</td>
-                <td>&#x2717;</td>
-                <td>Apache-2.0 (community-maintained)</td>
               </tr>
               <tr>
                 <td><a href="https://cursor.com/" target="_blank" rel="noopener">Cursor</a></td>
@@ -163,8 +151,25 @@ breadcrumb: 'Comparison'
             </li>
             <li>
               <strong>Multi-repo sessions.</strong>
-              One session can span several repos at once (a per-session symlink workspace), not just
-              one worktree per task.
+              One session can span several repos at once &mdash; each repo in its
+              <strong>own git worktree</strong>
+              on a shared branch, gathered into a per-session symlink workspace &mdash; not just one
+              worktree per task. (Of the GUI tools above, the closest is Conductor&rsquo;s
+              <code>/add-dir</code>
+              , which links separate pre-made workspaces rather than spawning one session across
+              repos; Cursor&rsquo;s multi-root/cloud path is folders-in-one-window, not
+              worktree-per-repo.) Thurbox also runs agents in
+              <strong>plain non-git directories</strong>
+              (and attaches them as-is with
+              <code>--add-dir</code>
+              ); worktree-only tools like Claude Squad require a git repo.
+            </li>
+            <li>
+              <strong>Mouse support in the terminal.</strong>
+              Clickable session rows, buttons, and scrollbars, plus drag-to-select &mdash; a gentler
+              on-ramp than most TUIs, while staying fully keyboard-first (and toggleable via
+              <code>[features] mouse</code>
+              ).
             </li>
           </ul>
           <p>

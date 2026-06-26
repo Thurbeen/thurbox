@@ -142,12 +142,11 @@ several repos. Thurbox optimizes the boring-but-load-bearing end of that list.
 | Tool | Interface | Session backend | Agents | Multi-repo session | Platforms | Remote / SSH | License |
 |------|-----------|-----------------|--------|--------------------|-----------|--------------|---------|
 | **Thurbox** | TUI | **Real tmux** (+ psmux on Windows) | **Any CLI** — data in `agents.toml` | **✓** (one session, many repos) | Linux · macOS · Windows | **✓** (SSH hosts) | MIT |
-| [Conductor](https://www.conductor.build/) | Native GUI | App-managed PTY | Claude, Codex, Cursor | ✗ | macOS only | ✗ | Free (closed source) |
-| [Herdr](https://herdr.dev/) | TUI | **Own** multiplexer (Rust) | Claude, Codex, Gemini | ✗ | Linux · macOS | Runs on a remote box | AGPL-3.0 |
-| [1Code](https://github.com/21st-dev/1code) | Desktop GUI | App-managed PTY | Claude, Codex | ✗ | macOS | Cloud agents | Apache-2.0 |
-| [Orca](https://www.onorca.dev/) | Desktop GUI (Electron) | App-managed PTY | Claude, Codex, Gemini, Cursor + 30 more | ✗ | macOS · Windows · Linux | Remote Orca servers | MIT |
+| [Conductor](https://www.conductor.build/) | Native GUI | App-managed PTY | Claude, Codex, Cursor | ✗ | macOS only | Cloud Workspaces | Free (closed source) |
+| [Herdr](https://herdr.dev/) | TUI | **Own** multiplexer (Rust) | Claude, Codex + many (any CLI) | ✗ | Linux · macOS | Runs on a remote box | AGPL-3.0 |
+| [1Code](https://github.com/21st-dev/1code) | Desktop GUI | App-managed PTY | Claude, Codex | ✗ | macOS · Windows · Linux | Cloud agents | Apache-2.0 |
+| [Orca](https://www.onorca.dev/) | Desktop GUI (Electron) | App-managed PTY | Claude, Codex, Gemini, Cursor + many (any CLI) | ✗ | macOS · Windows · Linux | Remote Orca servers | MIT |
 | [Claude Squad](https://github.com/smtg-ai/claude-squad) | TUI | **Real tmux** | Claude, Codex, OpenCode, Aider, Amp | ✗ | Linux · macOS (no Windows) | ✗ | AGPL-3.0 |
-| [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) | Web (kanban) | App-managed PTY | Claude, Codex, Cursor, Gemini + more | ✗ | Cross-platform | ✗ | Apache-2.0 (community-maintained) |
 | [Cursor](https://cursor.com/) | IDE + cloud | App-managed (its **own** models) | Composer + frontier models | ✗ | macOS · Windows · Linux | Cloud VMs + SSH | Proprietary (paid) |
 
 What makes Thurbox different (some of these are shared — the combination is the
@@ -166,8 +165,17 @@ point):
   way (vs Cursor, which runs its own models).
 - **Any agent CLI as data** (`~/.config/thurbox/agents.toml`) — add your own with
   no recompile; Thurbox is deliberately agent-neutral.
-- **Multi-repo sessions.** One session can span several repos at once (a
-  per-session symlink workspace), not just one worktree per task.
+- **Multi-repo sessions.** One session can span several repos at once — each
+  repo in its **own git worktree** on a shared branch, gathered into a
+  per-session symlink workspace — not just one worktree per task. (Of the GUI
+  tools above, the closest is Conductor's `/add-dir`, which links separate
+  pre-made workspaces rather than spawning one session across repos; Cursor's
+  multi-root/cloud path is folders-in-one-window, not worktree-per-repo.) Thurbox
+  also runs agents in **plain non-git directories** (and attaches them as-is with
+  `--add-dir`); worktree-only tools like Claude Squad require a git repo.
+- **Mouse support in the terminal.** Clickable session rows, buttons, and
+  scrollbars, plus drag-to-select — a gentler on-ramp than most TUIs, while
+  staying fully keyboard-first (and toggleable via `[features] mouse`).
 
 On top of that, Thurbox is the only entry here that is terminal-native **and**
 runs on Windows **and** over SSH, and it ships a full headless CLI
