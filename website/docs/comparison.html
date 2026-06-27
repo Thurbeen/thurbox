@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Comparison — Thurbox Docs'
-description: 'How Thurbox compares to other parallel coding-agent tools (Conductor, Herdr, 1Code, Orca, Claude Squad, Cursor): real tmux vs custom multiplexer, TUI vs Electron, native vendor CLI vs own models, and multi-repo sessions.'
+description: 'How Thurbox compares to other parallel coding-agent tools (Conductor, Herdr, 1Code, Orca, Claude Squad, Cursor): real tmux vs custom multiplexer, TUI vs Electron, native vendor CLI vs own models, native code review, and multi-repo sessions.'
 currentPage: 'comparison'
 breadcrumb: 'Comparison'
 ---
@@ -27,6 +27,7 @@ breadcrumb: 'Comparison'
                 <th>Session backend</th>
                 <th>Agents</th>
                 <th>Multi-repo session</th>
+                <th>Code review</th>
                 <th>Platforms</th>
                 <th>Remote / SSH</th>
                 <th>License</th>
@@ -43,6 +44,7 @@ breadcrumb: 'Comparison'
                   <code>agents.toml</code>
                 </td>
                 <td><strong>&#x2713;</strong> (one session, many repos)</td>
+                <td><strong>&#x2713;</strong> (native in-TUI diff)</td>
                 <td>Linux &middot; macOS &middot; Windows</td>
                 <td><strong>&#x2713;</strong> (SSH hosts)</td>
                 <td>MIT</td>
@@ -55,6 +57,7 @@ breadcrumb: 'Comparison'
                 <td>App-managed PTY</td>
                 <td>Claude, Codex, Cursor</td>
                 <td>&#x2717;</td>
+                <td>Visual diff (GUI)</td>
                 <td>macOS only</td>
                 <td>Cloud Workspaces</td>
                 <td>Free (closed source)</td>
@@ -64,6 +67,7 @@ breadcrumb: 'Comparison'
                 <td>TUI</td>
                 <td><strong>Own</strong> multiplexer (Rust)</td>
                 <td>Claude, Codex + many (any CLI)</td>
+                <td>&#x2717;</td>
                 <td>&#x2717;</td>
                 <td>Linux &middot; macOS</td>
                 <td>Runs on a remote box</td>
@@ -77,6 +81,7 @@ breadcrumb: 'Comparison'
                 <td>App-managed PTY</td>
                 <td>Claude, Codex</td>
                 <td>&#x2717;</td>
+                <td>Visual diff (GUI)</td>
                 <td>macOS &middot; Windows &middot; Linux</td>
                 <td>Cloud agents</td>
                 <td>Apache-2.0</td>
@@ -87,6 +92,7 @@ breadcrumb: 'Comparison'
                 <td>App-managed PTY</td>
                 <td>Claude, Codex, Gemini, Cursor + many (any CLI)</td>
                 <td>&#x2717;</td>
+                <td>Visual diff (GUI)</td>
                 <td>macOS &middot; Windows &middot; Linux</td>
                 <td>Remote Orca servers</td>
                 <td>MIT</td>
@@ -99,6 +105,7 @@ breadcrumb: 'Comparison'
                 <td><strong>Real tmux</strong></td>
                 <td>Claude, Codex, OpenCode, Aider, Amp</td>
                 <td>&#x2717;</td>
+                <td>Git diff view</td>
                 <td>Linux &middot; macOS (no Windows)</td>
                 <td>&#x2717;</td>
                 <td>AGPL-3.0</td>
@@ -109,6 +116,7 @@ breadcrumb: 'Comparison'
                 <td>App-managed (its <strong>own</strong> models)</td>
                 <td>Composer + frontier models</td>
                 <td>&#x2717;</td>
+                <td>IDE review</td>
                 <td>macOS &middot; Windows &middot; Linux</td>
                 <td>Cloud VMs + SSH</td>
                 <td>Proprietary (paid)</td>
@@ -171,6 +179,15 @@ breadcrumb: 'Comparison'
               <code>[features] mouse</code>
               ).
             </li>
+            <li>
+              <strong>Native code review, in the terminal.</strong>
+              A built-in, GitHub-style diff reviewer (
+              <code>F7</code>
+              ) &mdash; browse the branch, a commit, or working changes in a folder tree, leave
+              classified comments, fold reviewed files, then send the review back to the agent to
+              address. The click-to-review visual diff that used to be a GUI-only perk, without
+              leaving the TUI.
+            </li>
           </ul>
           <p>
             On top of that, Thurbox is the only entry here that is terminal-native
@@ -179,9 +196,10 @@ breadcrumb: 'Comparison'
             <strong>and</strong>
             over SSH, and it ships a full headless CLI (
             <code>thurbox-cli</code>
-            ) plus cron-like automations to drive and schedule fleets of agents with no GUI at all.
-            The GUI tools trade footprint and that scriptability for click-to-review visual diffs and
-            a gentler on-ramp.
+            ) plus cron-like automations to drive and schedule fleets of agents with no GUI at all
+            &mdash; now with its own native code-review view, so the click-to-review visual diff is no
+            longer a GUI-only trade-off. The GUI tools still trade footprint and that scriptability
+            for a gentler on-ramp.
           </p>
           <div class="info-box">
             <p>
