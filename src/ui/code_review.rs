@@ -511,7 +511,7 @@ pub(crate) fn render_files_list(
     let hint_row = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            truncate(" ↑↓ move · {} file · [] hunk", inner.width as usize),
+            truncate(" ↑↓ move · ↵ open · r seen", inner.width as usize),
             Style::default().fg(Theme::text_muted()),
         ))),
         hint_row,

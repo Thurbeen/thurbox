@@ -450,7 +450,7 @@ impl App {
         if let Some(sid) = self.active_session_id() {
             self.code_reviews.remove(&sid);
         }
-        if self.focus == InputFocus::CodeReview {
+        if matches!(self.focus, InputFocus::CodeReview | InputFocus::ReviewFiles) {
             self.focus = InputFocus::Terminal;
         }
     }
@@ -951,21 +951,15 @@ impl App {
         }
     }
 
-    /// Key capture for the code-review view (called before the global keybinding
-    /// lookup). Returns `true` when consumed. Focus/quit chords pass through so
-    /// the user can always leave.
-    pub(crate) fn handle_code_review_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
-        if self.focus != InputFocus::CodeReview {
-            return false;
-        }
-        // Let global chords through to the global path: the focus cycle, quit,
-        // the review toggle itself (so its key closes the pane, like every other
-        // toggleable pane), and the overlay openers (help, settings, theme,
-        // search) so those modals are reachable while a review is open. None of
-        // these collide with the review's own keys (which are plain letters +
-        // nav). The review's `Ctrl+D`/`Ctrl+U` paging is deliberately NOT here,
-        // so it keeps paging rather than deleting/restoring sessions.
-        if matches!(
+    /// Whether `code`/`mods` is a global chord the review panes must let through
+    /// to the global path so the user can always leave: the focus cycle, quit,
+    /// the review toggle itself (so its key closes the pane like every other
+    /// toggleable pane), and the overlay openers (help, settings, theme, search)
+    /// so those modals stay reachable while a review is open. None collide with
+    /// the panes' own keys (plain letters + nav). Shared by the diff pane and the
+    /// changed-files pane so the two never drift.
+    fn review_escape_chord(&self, code: KeyCode, mods: KeyModifiers) -> bool {
+        matches!(
             self.keybindings.lookup(code, mods),
             Some(
                 crate::session::Action::FocusForward
@@ -978,7 +972,19 @@ impl App {
                     | crate::session::Action::ToggleInfoPanel
                     | crate::session::Action::GlobalSearch
             )
-        ) {
+        )
+    }
+
+    /// Key capture for the code-review view (called before the global keybinding
+    /// lookup). Returns `true` when consumed. Focus/quit chords pass through so
+    /// the user can always leave.
+    pub(crate) fn handle_code_review_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        if self.focus != InputFocus::CodeReview {
+            return false;
+        }
+        // The review's `Ctrl+D`/`Ctrl+U` paging is deliberately not an escape
+        // chord, so it keeps paging rather than deleting/restoring sessions.
+        if self.review_escape_chord(code, mods) {
             return false;
         }
 
@@ -1038,6 +1044,65 @@ impl App {
             KeyCode::Char('e') => self.cr_send_to_agent(),
             KeyCode::Char('x') | KeyCode::Delete => self.cr_delete_selected(),
             KeyCode::Enter => self.cr_enter(),
+            _ => {}
+        }
+        true
+    }
+
+    /// Handle keys while the review's **changed-files list** (file-viewer column)
+    /// is focused. Mirrors the file viewer's options over the diff's files: `j`/`k`
+    /// (and arrows) walk file to file with the diff following, `g`/`G` jump to the
+    /// first/last file, `Enter`/`l` drop into the diff at the selected file, and
+    /// `r`/`R` toggle the file/hunk reviewed mark. Returns `true` when consumed;
+    /// focus/quit chords fall through (like [`Self::handle_code_review_key`]) so
+    /// the user can always leave.
+    pub(crate) fn handle_review_files_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        if self.focus != InputFocus::ReviewFiles {
+            return false;
+        }
+        if self.review_escape_chord(code, mods) {
+            return false;
+        }
+
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        if ctrl {
+            // Half-page paging, matching the diff pane's `Ctrl+D`/`Ctrl+U`.
+            match code {
+                KeyCode::Char('d') => self.cr_page(true),
+                KeyCode::Char('u') => self.cr_page(false),
+                _ => {}
+            }
+            return true;
+        }
+        // Swallow any other Ctrl/Alt chord so it can't leak to the PTY or trip a
+        // plain-letter command (the global escape chords already fell through).
+        if mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return true;
+        }
+        match code {
+            KeyCode::Esc => self.close_code_review(),
+            KeyCode::Down | KeyCode::Char('j') => self.cr_jump_file(true),
+            KeyCode::Up | KeyCode::Char('k') => self.cr_jump_file(false),
+            KeyCode::PageDown => self.cr_page(true),
+            KeyCode::PageUp => self.cr_page(false),
+            // First / last *file* (not the trailing summary row, which the diff
+            // pane's `g`/`G` would land on).
+            KeyCode::Home | KeyCode::Char('g') => self.cr_jump_to_file(0),
+            KeyCode::End | KeyCode::Char('G') => {
+                if let Some(last) = self
+                    .active_review()
+                    .map(|cr| cr.files.len().saturating_sub(1))
+                {
+                    self.cr_jump_to_file(last);
+                }
+            }
+            // Open the selected file: drop focus into the diff, which is already
+            // scrolled to that file (mirrors the file viewer's "open" on a file).
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                self.focus = InputFocus::CodeReview;
+            }
+            KeyCode::Char('r') => self.cr_toggle_reviewed(false),
+            KeyCode::Char('R') => self.cr_toggle_reviewed(true),
             _ => {}
         }
         true
@@ -1230,6 +1295,59 @@ impl CodeReviewState {
         }
         // The lower bound is enforced by the renderer (which knows the height);
         // it clamps `scroll` so `selected` stays visible.
+    }
+}
+
+#[cfg(test)]
+impl CodeReviewState {
+    /// Build a minimal review with `n` modified files (`src/f0.rs`…) for
+    /// App-level acceptance tests that need an open review without a real git
+    /// worktree. Selection starts on the first file header.
+    pub(crate) fn for_test(session_id: SessionId, n: usize) -> Self {
+        use crate::session::review::{DiffFile, DiffHunk, DiffLine, DiffLineKind, FileStatus};
+        let files = (0..n)
+            .map(|i| DiffFile {
+                path: format!("src/f{i}.rs"),
+                old_path: None,
+                status: FileStatus::Modified,
+                hunks: vec![DiffHunk {
+                    old_start: 1,
+                    new_start: 1,
+                    header: String::new(),
+                    lines: vec![DiffLine {
+                        kind: DiffLineKind::Add,
+                        old_no: None,
+                        new_no: Some(1),
+                        text: "x".into(),
+                    }],
+                }],
+            })
+            .collect();
+        let mut s = CodeReviewState {
+            session_id,
+            repos: vec![ReviewRepo {
+                label: String::new(),
+                dir: PathBuf::from("/tmp"),
+                base: Some("main".into()),
+            }],
+            multi: false,
+            files,
+            comments: Vec::new(),
+            reviewed_files: HashSet::new(),
+            reviewed_hunks: HashSet::new(),
+            fold_override: HashSet::new(),
+            rows: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            compose: None,
+            side_by_side: false,
+            target: ReviewTarget::Branch,
+            commits: Vec::new(),
+            host: None,
+            target_picker: None,
+        };
+        s.rebuild_rows();
+        s
     }
 }
 

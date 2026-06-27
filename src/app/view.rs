@@ -447,19 +447,22 @@ impl App {
         // While a review is open, this column shows the review's changed-files
         // list (the navigation aid) instead of the working-tree file viewer.
         if self.active_review().is_some() {
-            let rows = self.active_review().map(|cr| {
-                crate::ui::code_review::render_files_list(
-                    frame,
-                    fv_area,
-                    cr,
-                    crate::ui::FocusLevel::Active,
-                )
-            });
+            let level = if self.focus == InputFocus::ReviewFiles {
+                crate::ui::FocusLevel::Focused
+            } else {
+                crate::ui::FocusLevel::Active
+            };
+            let rows = self
+                .active_review()
+                .map(|cr| crate::ui::code_review::render_files_list(frame, fv_area, cr, level));
             if let Some(rows) = rows {
                 for h in rows {
                     self.record_click(h.rect, ClickAction::ReviewFile(h.index));
                 }
             }
+            // A click anywhere in the column focuses the changed-files pane (rows
+            // also jump the diff, recorded above and hit-tested first).
+            self.record_click(fv_area, ClickAction::FocusPane(InputFocus::ReviewFiles));
             return;
         }
         if let Some(session) = self.sessions.get(self.active_index) {
@@ -639,6 +642,7 @@ impl App {
             InputFocus::FileViewer => "Files",
             InputFocus::GlobalSearch => "Search",
             InputFocus::CodeReview => "Review",
+            InputFocus::ReviewFiles => "Changed files",
         };
         let button_hits = status_bar::render_footer(
             frame,

@@ -822,6 +822,85 @@ fn focus_ring_includes_file_viewer_when_shown() {
     );
 }
 
+// ── Code review: focusable changed-files pane ────────────────────────────────
+
+/// Open a synthetic review with `n` files on the active session and focus the
+/// diff pane, without needing a real git worktree.
+fn open_review(h: &mut Harness, n: usize) {
+    let sid = h.app.active_session_id().unwrap();
+    h.app
+        .code_reviews
+        .insert(sid, super::code_review::CodeReviewState::for_test(sid, n));
+    h.app.focus = InputFocus::CodeReview;
+}
+
+#[test]
+fn review_files_pane_joins_focus_ring_and_replaces_file_viewer() {
+    let mut h = Harness::standard(1);
+    h.func(3); // show the file viewer too — the review must still take the column
+    open_review(&mut h, 3);
+
+    // Cycling forward from the diff reaches the changed-files pane, never the
+    // plain file viewer while a review owns the column.
+    let mut saw_review_files = false;
+    for _ in 0..4 {
+        h.ctrl('l');
+        assert!(
+            !matches!(h.app.focus, InputFocus::FileViewer),
+            "the file viewer is not a ring stop while a review is open"
+        );
+        if matches!(h.app.focus, InputFocus::ReviewFiles) {
+            saw_review_files = true;
+            break;
+        }
+    }
+    assert!(
+        saw_review_files,
+        "the focus ring visits the changed-files pane"
+    );
+}
+
+#[test]
+fn review_files_pane_navigates_and_opens_into_diff() {
+    let mut h = Harness::standard(1);
+    open_review(&mut h, 3);
+    h.app.focus = InputFocus::ReviewFiles;
+
+    // The diff starts on the first file.
+    assert_eq!(h.app.active_review().unwrap().current_file(), Some(0));
+
+    // `j` walks to the next file (the diff follows).
+    h.key(KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(h.app.active_review().unwrap().current_file(), Some(1));
+    h.key(KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(h.app.active_review().unwrap().current_file(), Some(0));
+
+    // `G` jumps to the last file.
+    h.key(KeyCode::Char('G'), KeyModifiers::SHIFT);
+    assert_eq!(h.app.active_review().unwrap().current_file(), Some(2));
+
+    // `r` marks the current file reviewed.
+    h.key(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert!(!h.app.active_review().unwrap().reviewed_files.is_empty());
+
+    // `Enter` drops focus into the diff at the selected file.
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(h.app.focus, InputFocus::CodeReview));
+}
+
+#[test]
+fn review_files_pane_demoted_to_terminal_when_review_closes() {
+    let mut h = Harness::standard(1);
+    open_review(&mut h, 2);
+    h.app.focus = InputFocus::ReviewFiles;
+
+    // Esc from the changed-files pane closes the review and drops focus back to
+    // the terminal (no review owns the central pane anymore).
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.active_review().is_none());
+    assert!(matches!(h.app.focus, InputFocus::Terminal));
+}
+
 // ── Manual session ordering ──────────────────────────────────────────────────
 
 #[test]

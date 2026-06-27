@@ -87,6 +87,13 @@ impl App {
             return;
         }
 
+        // The review's changed-files list (file-viewer column) likewise captures
+        // its navigation keys before the global lookup, with the same fall-through
+        // for focus/quit chords.
+        if self.handle_review_files_key(code, mods) {
+            return;
+        }
+
         // Keybinding lookup, scoped to the focused pane: global actions plus
         // any scoped to the current context (file viewer, session list,
         // terminal). Some readline/shell chords (Ctrl+A/E/W/U/R/D/…) defer to
@@ -142,9 +149,10 @@ impl App {
             InputFocus::GlobalSearch => self.handle_global_search_key(code, mods),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
             InputFocus::FileViewer => self.handle_file_viewer_key(code, mods),
-            // The code-review view captures input earlier (before the global
-            // keybinding lookup), so this arm is effectively unreachable.
-            InputFocus::CodeReview => {}
+            // The code-review view and its changed-files list capture input
+            // earlier (before the global keybinding lookup), so these arms are
+            // effectively unreachable.
+            InputFocus::CodeReview | InputFocus::ReviewFiles => {}
         }
     }
 
@@ -446,23 +454,26 @@ impl App {
             // in and out of it like any other pane (it lives in the right column,
             // not the left-column circular list). `Esc` still drops straight back
             // to the session list.
-            SessionList | Terminal | FileViewer | TaskList | CodeReview => {
+            SessionList | Terminal | FileViewer | TaskList | CodeReview | ReviewFiles => {
                 // Order mirrors the on-screen columns: central → tasks → files.
                 // The central pane is the code review when the active session has
                 // one open (persisted per session, like the shell view), else the
                 // terminal — so `Ctrl+L`/`Ctrl+H` move in and out of the review
                 // just like the terminal, and `Ctrl+H` to the session list keeps
                 // the review open.
-                let central = if self.active_review().is_some() {
-                    CodeReview
-                } else {
-                    Terminal
-                };
+                let review = self.active_review().is_some();
+                let central = if review { CodeReview } else { Terminal };
                 let mut ring = vec![SessionList, central];
                 if self.show_tasks_panel {
                     ring.push(TaskList);
                 }
-                if self.show_file_viewer {
+                // While a review is open the file-viewer column shows the
+                // changed-files list (forced visible, see `layout_for`), so its
+                // ring stop is `ReviewFiles`; otherwise it's the file viewer when
+                // that panel is toggled on.
+                if review {
+                    ring.push(ReviewFiles);
+                } else if self.show_file_viewer {
                     ring.push(FileViewer);
                 }
                 ring
@@ -1186,6 +1197,7 @@ impl App {
             | InputFocus::AutomationRunHistory
             | InputFocus::TaskEditor
             | InputFocus::CodeReview
+            | InputFocus::ReviewFiles
             | InputFocus::GlobalSearch => false,
             InputFocus::Terminal => false, // forward to PTY
         }

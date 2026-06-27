@@ -492,6 +492,11 @@ pub enum InputFocus {
     /// The native code-review view occupying the central pane (toggled like the
     /// shell). Captures keys for its own navigation / commenting.
     CodeReview,
+    /// The review's **changed-files list** in the file-viewer column (the
+    /// navigation aid shown while a review is open). Focusable like the file
+    /// viewer: `j`/`k` walk the files (the diff follows), `Enter` drops into the
+    /// diff at the selected file, `r`/`R` toggle reviewed.
+    ReviewFiles,
 }
 
 /// Which pane the terminal view is showing for a given session.
@@ -1942,7 +1947,9 @@ impl App {
     pub(crate) fn sync_review_focus(&mut self) {
         let has_review = self.active_review().is_some();
         match self.focus {
-            InputFocus::CodeReview if !has_review => self.focus = InputFocus::Terminal,
+            InputFocus::CodeReview | InputFocus::ReviewFiles if !has_review => {
+                self.focus = InputFocus::Terminal
+            }
             InputFocus::Terminal if has_review => self.focus = InputFocus::CodeReview,
             _ => {}
         }
@@ -2341,6 +2348,7 @@ impl App {
                 true
             }
             ClickAction::ReviewFile(fi) => {
+                self.focus = InputFocus::ReviewFiles;
                 self.cr_jump_to_file(fi);
                 true
             }

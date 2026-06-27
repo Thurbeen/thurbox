@@ -1346,7 +1346,15 @@ code_review`.
   column** (forced visible while a review is open via `layout_for`): it tracks the
   current file and clicking a row jumps the diff to that file
   (`ui::code_review::render_files_list` → `ClickAction::ReviewFile` →
-  `cr_jump_to_file`). While open it owns the central pane; `Esc`/`F7` close it.
+  `cr_jump_to_file`). That changed-files list is itself a **focusable pane**
+  (`InputFocus::ReviewFiles`, its ring stop while a review owns the column,
+  replacing the plain `FileViewer`): focus it via `Ctrl+L`/`Ctrl+H` or a click,
+  then `j`/`k` (+ arrows) walk file→file with the diff following, `g`/`G` jump to
+  the first/last *file*, `Ctrl+D`/`U` + PageUp/Down half-page, `Enter`/`l` drop
+  into the diff at the selected file (the file viewer's "open"), `r`/`R` toggle
+  the file/hunk reviewed mark, and `Esc` closes the review
+  (`App::handle_review_files_key`, captured before the global lookup like the diff
+  pane). While open it owns the central pane; `Esc`/`F7` close it.
   Rendered by `ui::code_review`, reusing `scrollbar`/`focus_block`/
   `render_button_bar`/theme. **Unified or side-by-side** diff layout, toggled with
   `v` / the footer button (`side_by_side`). **Mouse-first** (no vim modal): click a
