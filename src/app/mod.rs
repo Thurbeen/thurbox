@@ -1916,16 +1916,20 @@ impl App {
             .unwrap_or(TerminalView::Claude)
     }
 
+    /// The id of the currently selected session, if any.
+    pub(crate) fn active_session_id(&self) -> Option<SessionId> {
+        self.sessions.get(self.active_index).map(|s| s.info.id)
+    }
+
     /// The active session's open code-review view, if any. The review is stored
     /// per session in [`Self::code_reviews`] so it persists across switches.
     pub(crate) fn active_review(&self) -> Option<&code_review::CodeReviewState> {
-        let sid = self.sessions.get(self.active_index)?.info.id;
-        self.code_reviews.get(&sid)
+        self.code_reviews.get(&self.active_session_id()?)
     }
 
     /// Mutable [`Self::active_review`].
     pub(crate) fn active_review_mut(&mut self) -> Option<&mut code_review::CodeReviewState> {
-        let sid = self.sessions.get(self.active_index)?.info.id;
+        let sid = self.active_session_id()?;
         self.code_reviews.get_mut(&sid)
     }
 

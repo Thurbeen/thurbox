@@ -212,6 +212,30 @@ impl CodeReviewState {
         }
     }
 
+    /// The file path the selected row belongs to (a line/hunk/header, or a
+    /// comment anchored to a file) — so file-scoped actions (mark reviewed,
+    /// fold) work from anywhere inside the file, not just its header.
+    pub(crate) fn selected_file_path(&self) -> Option<String> {
+        match self.rows.get(self.selected)? {
+            ReviewRow::FileHeader(fi)
+            | ReviewRow::HunkHeader(fi, _)
+            | ReviewRow::Line(fi, _, _) => self.files.get(*fi).map(|f| f.path.clone()),
+            ReviewRow::Comment(id) => self
+                .comment(*id)
+                .and_then(|c| c.anchor.file().map(str::to_string)),
+            _ => None,
+        }
+    }
+
+    /// The hunk index the selected row belongs to (a line or hunk header), for
+    /// hunk-level reviewed marks.
+    pub(crate) fn selected_hunk_index(&self) -> Option<usize> {
+        match self.rows.get(self.selected)? {
+            ReviewRow::Line(_, hi, _) | ReviewRow::HunkHeader(_, hi) => Some(*hi),
+            _ => None,
+        }
+    }
+
     /// Whether `path`'s diff is folded (collapsed to just its header). A file
     /// folds once reviewed; [`Self::fold_override`] flips that per file so the
     /// user can peek at a reviewed file (or collapse an unreviewed one) without
@@ -416,7 +440,7 @@ impl App {
     }
 
     pub(crate) fn close_code_review(&mut self) {
-        if let Some(sid) = self.sessions.get(self.active_index).map(|s| s.info.id) {
+        if let Some(sid) = self.active_session_id() {
             self.code_reviews.remove(&sid);
         }
         if self.focus == InputFocus::CodeReview {
@@ -794,26 +818,18 @@ impl App {
 
     // ── Reviewed marks ─────────────────────────────────────────────────────────
 
-    /// Toggle the "reviewed" mark for the selected file (or its hunk).
+    /// Toggle the "reviewed" mark for the selected file (or its hunk). Resolves
+    /// the file from whatever row is selected (line, hunk header, file header, or
+    /// a comment within the file) so it works anywhere inside the file.
     pub(crate) fn cr_toggle_reviewed(&mut self, hunk_level: bool) {
         let Some(cr) = self.active_review() else {
             return;
         };
-        // Resolve the file from whatever row is selected — a line, a hunk
-        // header, the file header, or a comment within the file — so "mark
-        // reviewed" works anywhere inside the file, not just on its header.
-        let (file, hunk) = match cr.rows.get(cr.selected) {
-            Some(ReviewRow::Line(fi, hi, _)) | Some(ReviewRow::HunkHeader(fi, hi)) => {
-                let f = cr.files.get(*fi).map(|f| f.path.clone());
-                (f, if hunk_level { Some(*hi) } else { None })
-            }
-            Some(ReviewRow::FileHeader(fi)) => (cr.files.get(*fi).map(|f| f.path.clone()), None),
-            Some(ReviewRow::Comment(id)) => (
-                cr.comment(*id)
-                    .and_then(|c| c.anchor.file().map(str::to_string)),
-                None,
-            ),
-            _ => (None, None),
+        let file = cr.selected_file_path();
+        let hunk = if hunk_level {
+            cr.selected_hunk_index()
+        } else {
+            None
         };
         let Some(file) = file else {
             return;
@@ -855,25 +871,13 @@ impl App {
     /// collapse). Works from any row inside the file; keeps the cursor on the
     /// file header.
     pub(crate) fn cr_toggle_fold(&mut self) {
-        let Some(cr) = self.active_review() else {
-            return;
-        };
-        let file = match cr.rows.get(cr.selected) {
-            Some(ReviewRow::FileHeader(fi))
-            | Some(ReviewRow::HunkHeader(fi, _))
-            | Some(ReviewRow::Line(fi, _, _)) => cr.files.get(*fi).map(|f| f.path.clone()),
-            Some(ReviewRow::Comment(id)) => cr
-                .comment(*id)
-                .and_then(|c| c.anchor.file().map(str::to_string)),
-            _ => None,
-        };
-        let Some(file) = file else {
+        let Some(file) = self.active_review().and_then(|cr| cr.selected_file_path()) else {
             return;
         };
         if let Some(cr) = self.active_review_mut() {
-            if cr.fold_override.contains(&file) {
-                cr.fold_override.remove(&file);
-            } else {
+            // Flip the fold override: `remove` returns whether it was present, so
+            // a failed remove means it wasn't folded → insert it.
+            if !cr.fold_override.remove(&file) {
                 cr.fold_override.insert(file.clone());
             }
             cr.rebuild_rows();
@@ -1557,6 +1561,32 @@ mod tests {
         // A diff line row is not a comment.
         s.selected = 2;
         assert_eq!(s.selected_comment_id(), None);
+    }
+
+    #[test]
+    fn selected_file_path_and_hunk_resolve_from_any_row() {
+        // Rows: [FileHeader(0), HunkHeader(0,0), Line(0,0,0), Line(0,0,1), SummaryHeader].
+        let mut s = state_with(vec![sample_file()], vec![]);
+
+        // File header → file path, no hunk.
+        s.selected = 0;
+        assert_eq!(s.selected_file_path().as_deref(), Some("src/foo.rs"));
+        assert_eq!(s.selected_hunk_index(), None);
+
+        // Hunk header → file path + hunk index.
+        s.selected = 1;
+        assert_eq!(s.selected_file_path().as_deref(), Some("src/foo.rs"));
+        assert_eq!(s.selected_hunk_index(), Some(0));
+
+        // A diff line → file path + its hunk index.
+        s.selected = 2;
+        assert_eq!(s.selected_file_path().as_deref(), Some("src/foo.rs"));
+        assert_eq!(s.selected_hunk_index(), Some(0));
+
+        // The summary section belongs to no file/hunk.
+        s.selected = s.rows.len() - 1;
+        assert_eq!(s.selected_file_path(), None);
+        assert_eq!(s.selected_hunk_index(), None);
     }
 
     #[test]
