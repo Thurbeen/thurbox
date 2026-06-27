@@ -1401,28 +1401,11 @@ fn render_help_overlay(
     ));
     help_lines.push(help_line(
         "j/k/Enter/Esc".into(),
-        "Automations & tasks panes, and modal selectors",
+        "Modal selectors & automation run-history (the automations/tasks panes are rebindable above)",
     ));
     help_lines.push(help_line(
-        "n / e".into(),
-        "Tasks: new task / edit selected (central-pane editor)",
-    ));
-    help_lines.push(help_line(
-        "r".into(),
-        "Tasks: run — Send to a session or Spawn a new one",
-    ));
-    help_lines.push(help_line(
-        "Space".into(),
-        "Tasks: cycle status (todo → in progress → done)",
-    ));
-    help_lines.push(help_line("d".into(), "Tasks: delete selected"));
-    help_lines.push(help_line(
-        "PgUp/PgDn".into(),
-        "Tasks: scroll the description preview",
-    ));
-    help_lines.push(help_line(
-        "j/k {} []".into(),
-        "Code review: move · {}/[] jump file/hunk · g/G top/bottom · v split view",
+        "j/k {}/[]".into(),
+        "Code review: move · { } prev/next file · [ ] prev/next hunk · g/G top/bottom · v split view",
     ));
     help_lines.push(help_line(
         "c/f/s".into(),

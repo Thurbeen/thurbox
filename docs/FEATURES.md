@@ -372,7 +372,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+P` | Global | Automations (scheduled agent runs) | **P**rogram |
 | `Ctrl+W` / `F5` | Global | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global | Global search across every scope | **/** = search |
-| `Ctrl+T` | Global | Toggle shell pane alongside the agent session | **T**erminal |
+| `Ctrl+T` / `F8` | Global | Toggle shell pane alongside the agent session | **T**erminal |
 | `F7` | Global | Toggle the native code-review view | Review |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
@@ -437,14 +437,15 @@ and a status toast reports the move. Changes persist immediately to
 restart. The file can also be hand-edited directly.
 
 **Context-scoped keys.** Each action belongs to a scope — `Global`,
-`SessionList`, `FileViewer`, or `Terminal`. Global actions fire anywhere;
-scoped actions fire only while their pane is focused, so the same single-letter
-key (e.g. `j`) can drive both the file viewer and the session list while the
-terminal still forwards it to the shell. Conflicts are only flagged between
-actions whose scopes overlap. A handful of stateful keys stay fixed (shown in
-the F1 panel under *Fixed (not rebindable)*): modal selectors
-(`j`/`k`/`Enter`/`Esc`), the automations/tasks panes, the file-viewer search
-sub-mode, and the terminal's catch-all PTY forwarding.
+`SessionList`, `Automations`, `Tasks`, `FileViewer`, or `Terminal`. Global
+actions fire anywhere; scoped actions fire only while their pane is focused, so
+the same single-letter key (e.g. `j`) can drive the file viewer, session list,
+automations pane, and tasks pane independently while the terminal still forwards
+it to the shell. Conflicts are only flagged between actions whose scopes
+overlap. A handful of stateful keys stay fixed (shown in the F1 panel under
+*Fixed (not rebindable)*): modal selectors (`j`/`k`/`Enter`/`Esc`), the
+automation run-history sub-mode, the file-viewer search sub-mode, and the
+terminal's catch-all PTY forwarding.
 
 **Readline editing in modal text fields.** Thurbox's own text inputs
 (session / branch name, repo-picker path & search, automation editor,
@@ -1756,9 +1757,16 @@ the terminal keeps its native mouse behavior.
 
 ## Shell Pane Toggle
 
-`Ctrl+T` toggles between the agent session and a shell pane
+`Ctrl+T` (or `F8`) toggles between the agent session and a shell pane
 (plain bash/zsh) for the active session. The shell runs in a
 separate tmux pane alongside the agent pane.
+
+Unlike the other readline-shadowing `Ctrl+<letter>` chords (`Ctrl+B`/`D`/`E`/
+`F`/`O`/`P`/`R`/`S`/`U`/`W`), `Ctrl+T` is **not** passed through to the agent PTY
+when a terminal is focused: it still toggles the shell. This is a deliberate
+exception — readline's transpose-chars (`Ctrl+T`) is rarely used, and the
+convenient shell toggle wins. `F8` is the equivalent alternate, matching the
+other panel toggles' F-keys.
 
 - **Status bar**: Shows "Shell" label when viewing the shell pane.
 - **Per-session state**: Each session tracks its own `TerminalView`

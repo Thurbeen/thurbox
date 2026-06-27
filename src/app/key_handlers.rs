@@ -166,8 +166,12 @@ impl App {
         use crate::session::KeyContext;
         match self.focus {
             InputFocus::SessionList => KeyContext::SessionList,
+            InputFocus::Automations => KeyContext::Automations,
+            InputFocus::TaskList => KeyContext::Tasks,
             InputFocus::FileViewer if !self.file_viewer.search_active => KeyContext::FileViewer,
             InputFocus::Terminal => KeyContext::Terminal,
+            // The editor / run-history focuses are capture sub-modes handled
+            // before the lookup, so they stay on Global here.
             _ => KeyContext::Global,
         }
     }
@@ -1108,6 +1112,23 @@ impl App {
     fn dispatch_scoped_pane_action(&mut self, action: crate::session::Action) -> bool {
         use crate::session::Action;
         match action {
+            Action::AutomationsNew
+            | Action::AutomationsNext
+            | Action::AutomationsPrev
+            | Action::AutomationsOpen
+            | Action::AutomationsToggle
+            | Action::AutomationsRun
+            | Action::AutomationsDelete => self.dispatch_automations_pane_action(action),
+            Action::TasksNew
+            | Action::TasksNext
+            | Action::TasksPrev
+            | Action::TasksOpen
+            | Action::TasksCycleStatus
+            | Action::TasksRun
+            | Action::TasksOpenRelated
+            | Action::TasksDelete
+            | Action::TasksPreviewDown
+            | Action::TasksPreviewUp => self.dispatch_tasks_pane_action(action),
             Action::FileViewerDown
             | Action::FileViewerUp
             | Action::FileViewerCollapse
@@ -1186,12 +1207,10 @@ impl App {
                 true
             }
             InputFocus::Automations => {
-                self.handle_automations_pane_key(KeyCode::Char('d'));
-                true
+                self.dispatch_automations_pane_action(crate::session::Action::AutomationsDelete)
             }
             InputFocus::TaskList => {
-                self.handle_task_list_key(KeyCode::Char('d'));
-                true
+                self.dispatch_tasks_pane_action(crate::session::Action::TasksDelete)
             }
             InputFocus::AutomationEditor
             | InputFocus::AutomationRunHistory

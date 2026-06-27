@@ -6234,16 +6234,18 @@ mod tests {
 
         // j/k navigate within the pane; past either end they loop out into the
         // session list (the column is circular).
+        // Keys route through the real pipeline: focus = Automations scopes the
+        // lookup to `KeyContext::Automations`, resolving j/k to the pane actions.
         app.automation_ui.cached_automations = vec![make(1, "a"), make(2, "b")];
         app.focus = InputFocus::Automations;
         app.automation_ui.automation_panel_index = 0;
-        app.handle_automations_pane_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(app.automation_ui.automation_panel_index, 1);
-        app.handle_automations_pane_key(KeyCode::Char('k'));
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(app.automation_ui.automation_panel_index, 0);
         // j past the last automation loops out to the session list.
         app.automation_ui.automation_panel_index = 1;
-        app.handle_automations_pane_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::SessionList);
     }
 
@@ -6276,9 +6278,9 @@ mod tests {
         assert_eq!(app.automation_ui.automation_panel_index, 0);
 
         // Down past the last automation loops to the TOP session.
-        app.handle_automations_pane_key(KeyCode::Char('j')); // a → b
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE); // a → b
         assert_eq!(app.automation_ui.automation_panel_index, 1);
-        app.handle_automations_pane_key(KeyCode::Char('j')); // past last → top session
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE); // past last → top session
         assert_eq!(app.focus, InputFocus::SessionList);
         assert_eq!(app.active_index, 0, "looped to first session");
 
@@ -6292,7 +6294,7 @@ mod tests {
 
         // And k at the top automation hands back up to the last session.
         app.automation_ui.automation_panel_index = 0;
-        app.handle_automations_pane_key(KeyCode::Char('k'));
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(app.focus, InputFocus::SessionList);
         assert_eq!(app.active_index, 1, "back to last session");
     }
@@ -6527,7 +6529,7 @@ mod tests {
 
         // `j` past the end clamps to the last rebindable action.
         let last = crate::session::Action::rebindable_in_order().len() - 1;
-        for _ in 0..50 {
+        for _ in 0..(last + 5) {
             app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
         }
         let modals::Modal::Help(ref h) = app.modal else {
@@ -6676,8 +6678,18 @@ mod tests {
         assert_eq!(app.focus_key_context(), KeyContext::Global);
         app.file_viewer.search_active = false;
 
-        // Automations / tasks / editors are not a scoped keybinding context.
+        // The automations and tasks panes are their own scoped contexts, so
+        // single letters (j/k/n/r/d/…) resolve there without leaking to the PTY.
         app.focus = InputFocus::Automations;
+        assert_eq!(app.focus_key_context(), KeyContext::Automations);
+        app.focus = InputFocus::TaskList;
+        assert_eq!(app.focus_key_context(), KeyContext::Tasks);
+
+        // The in-pane editors / run-history are capture sub-modes handled before
+        // the lookup, so they stay on Global.
+        app.focus = InputFocus::AutomationEditor;
+        assert_eq!(app.focus_key_context(), KeyContext::Global);
+        app.focus = InputFocus::TaskEditor;
         assert_eq!(app.focus_key_context(), KeyContext::Global);
     }
 

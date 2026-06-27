@@ -237,45 +237,48 @@ impl App {
         }
     }
 
-    /// Handle keys while the tasks panel is focused: `j`/`k` select (and preview
-    /// the selected task in the central pane), `PageUp`/`PageDown` scroll that
-    /// preview, `n` create, `e`/`Enter` open the central-pane editor, `Space`
-    /// cycles status, `r` opens the trigger-time action picker, `d` deletes,
-    /// `Esc` leaves. Searching is handled by the global `Ctrl+/`.
+    /// Fallback for keys the tasks panel doesn't bind. Navigation and actions
+    /// resolve through the keybinding lookup (`KeyContext::Tasks`) →
+    /// [`Self::dispatch_tasks_pane_action`]; only the unbound `Esc` (leave the
+    /// panel) is handled here.
     pub(crate) fn handle_task_list_key(&mut self, code: KeyCode) {
-        // Creating works regardless of whether the panel has entries.
-        if matches!(code, KeyCode::Char('n')) {
-            self.new_task_in_pane();
-            return;
+        if matches!(code, KeyCode::Esc) {
+            self.focus = InputFocus::SessionList;
+            self.task_ui.task_editor = None;
         }
+    }
 
+    /// Run a `Tasks`-scoped action resolved from the keybinding lookup: `j`/`k`
+    /// select (and preview the task in the central pane), `PageUp`/`PageDown`
+    /// scroll that preview, `n` create, `e`/`Enter` open the editor, `Space`
+    /// cycles status, `r` opens the trigger-time action picker, `o` opens the
+    /// related session, `d` deletes. Returns `true` (consumed). Creating /
+    /// opening work on an empty panel (count == 0).
+    pub(crate) fn dispatch_tasks_pane_action(&mut self, action: crate::session::Action) -> bool {
+        use crate::session::Action;
         let count = self.task_ui.filtered_task_indices.len();
-        match code {
-            KeyCode::Char('j') | KeyCode::Down
-                if count > 0 && self.task_ui.task_panel_index + 1 < count =>
-            {
-                self.task_ui.task_panel_index += 1;
-                self.refresh_task_view();
+        match action {
+            Action::TasksNew => self.new_task_in_pane(),
+            Action::TasksNext => {
+                if count > 0 && self.task_ui.task_panel_index + 1 < count {
+                    self.task_ui.task_panel_index += 1;
+                    self.refresh_task_view();
+                }
             }
-            KeyCode::Char('j') | KeyCode::Down => {}
-            KeyCode::Char('k') | KeyCode::Up => {
+            Action::TasksPrev => {
                 self.task_ui.task_panel_index = self.task_ui.task_panel_index.saturating_sub(1);
                 self.refresh_task_view();
             }
-            KeyCode::Esc => {
-                self.focus = InputFocus::SessionList;
-                self.task_ui.task_editor = None;
-            }
-            KeyCode::Char('e') | KeyCode::Enter => self.enter_task_editor_or_new(count),
-            // Scroll the full-screen preview (the list itself uses j/k).
-            KeyCode::PageDown => self.scroll_task_preview(5),
-            KeyCode::PageUp => self.scroll_task_preview(-5),
-            KeyCode::Char(' ') => self.cycle_selected_task_status(),
-            KeyCode::Char('r') => self.open_selected_task_action_picker(),
-            KeyCode::Char('o') => self.open_task_related_session(),
-            KeyCode::Char('d') => self.delete_selected_task(),
+            Action::TasksOpen => self.enter_task_editor_or_new(count),
+            Action::TasksPreviewDown => self.scroll_task_preview(5),
+            Action::TasksPreviewUp => self.scroll_task_preview(-5),
+            Action::TasksCycleStatus => self.cycle_selected_task_status(),
+            Action::TasksRun => self.open_selected_task_action_picker(),
+            Action::TasksOpenRelated => self.open_task_related_session(),
+            Action::TasksDelete => self.delete_selected_task(),
             _ => {}
         }
+        true
     }
 
     /// `e`/`Enter` on the tasks panel: open the central-pane editor for the

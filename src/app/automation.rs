@@ -639,28 +639,40 @@ impl App {
         true
     }
 
-    /// Handle keys while the automations pane is focused: navigate and drive the
-    /// same toggle/run/edit/delete actions as the Ctrl+P modal. (Ctrl+N to
-    /// create is handled globally in `dispatch_action`, so it works here too,
-    /// including on an empty pane.)
-    pub(crate) fn handle_automations_pane_key(&mut self, code: KeyCode) {
+    /// Fallback for keys the automations pane doesn't bind. All navigation and
+    /// actions resolve through the keybinding lookup (`KeyContext::Automations`)
+    /// → [`Self::dispatch_automations_pane_action`]; nothing unbound is handled
+    /// here (the pane has no `Esc` behavior).
+    pub(crate) fn handle_automations_pane_key(&mut self, _code: KeyCode) {}
+
+    /// Run an `Automations`-scoped action resolved from the keybinding lookup.
+    /// The circular-nav glue (j past the last automation loops to the session
+    /// list, k at the top hands focus back) lives in the reused move helpers, so
+    /// rebinding a key never changes that behavior. Returns `true` (consumed).
+    ///
+    /// `New`/`Open`/`Next`/`Prev` work on an empty pane (count == 0) — the
+    /// helpers handle that — while toggle/run/delete are no-ops without a row.
+    pub(crate) fn dispatch_automations_pane_action(
+        &mut self,
+        action: crate::session::Action,
+    ) -> bool {
+        use crate::session::Action;
         let count = self.automation_ui.cached_automations.len();
-        match code {
-            // Creating works regardless of whether the pane has entries.
-            KeyCode::Char('n') => self.new_automation_in_pane(),
-            // `k`/Up at the top row (or empty pane) flows focus back up into the
-            // session list; `j`/Down past the last loops to the top of it — so
-            // the left column behaves as one circular vertical list.
-            KeyCode::Char('k') | KeyCode::Up => self.automations_pane_move_up(count),
-            KeyCode::Char('j') | KeyCode::Down => self.automations_pane_move_down(count),
-            // `Enter`/`e` focuses the central-pane editor (like `Enter` on a
-            // session focuses its terminal); on an empty pane it starts a new
-            // automation.
-            KeyCode::Enter | KeyCode::Char('e') => self.enter_automation_editor_in_pane(count),
-            // Remaining nav/actions are no-ops on an empty pane.
-            _ if count > 0 => self.dispatch_automation_pane_action(code, count),
+        match action {
+            Action::AutomationsNew => self.new_automation_in_pane(),
+            Action::AutomationsPrev => self.automations_pane_move_up(count),
+            Action::AutomationsNext => self.automations_pane_move_down(count),
+            Action::AutomationsOpen => self.enter_automation_editor_in_pane(count),
+            // Toggle / run / delete act on the row under the cursor — no-ops on
+            // an empty pane.
+            Action::AutomationsToggle | Action::AutomationsRun | Action::AutomationsDelete
+                if count > 0 =>
+            {
+                self.run_selected_automation_action(action, count)
+            }
             _ => {}
         }
+        true
     }
 
     /// `Enter`/`e` in the automations pane: open the editor for the selection,
@@ -674,15 +686,31 @@ impl App {
         self.refresh_selected_automation_runs();
     }
 
-    /// Clamp the selection and run the toggle/run/delete action for the row
-    /// under the cursor (caller guarantees a non-empty pane).
-    fn dispatch_automation_pane_action(&mut self, code: KeyCode, count: usize) {
+    /// Clamp the selection and toggle/run/delete the automation under the cursor
+    /// (caller guarantees a non-empty pane).
+    fn run_selected_automation_action(&mut self, action: crate::session::Action, count: usize) {
+        use crate::session::Action;
         if self.automation_ui.automation_panel_index >= count {
             self.automation_ui.automation_panel_index = count - 1;
         }
         let id =
             self.automation_ui.cached_automations[self.automation_ui.automation_panel_index].id;
-        self.handle_automation_pane_action(code, id);
+        match action {
+            Action::AutomationsToggle => {
+                self.toggle_automation_by_id(id);
+                self.sync_automation_editor();
+            }
+            Action::AutomationsRun => self.run_automation_by_id(id),
+            Action::AutomationsDelete => {
+                self.delete_automation_by_id(id);
+                let new_count = self.automation_ui.cached_automations.len();
+                if new_count > 0 && self.automation_ui.automation_panel_index >= new_count {
+                    self.automation_ui.automation_panel_index = new_count - 1;
+                }
+                self.refresh_automation_view();
+            }
+            _ => {}
+        }
     }
 
     /// `k`/Up in the automations pane: step up, or hand focus back to the
@@ -707,26 +735,6 @@ impl App {
             self.automation_ui.automation_panel_index += 1;
         }
         self.refresh_automation_view();
-    }
-
-    /// Toggle / run / delete the selected automation (`Space`/`r`/`d`).
-    fn handle_automation_pane_action(&mut self, code: KeyCode, id: i64) {
-        match code {
-            KeyCode::Char(' ') => {
-                self.toggle_automation_by_id(id);
-                self.sync_automation_editor();
-            }
-            KeyCode::Char('r') => self.run_automation_by_id(id),
-            KeyCode::Char('d') => {
-                self.delete_automation_by_id(id);
-                let new_count = self.automation_ui.cached_automations.len();
-                if new_count > 0 && self.automation_ui.automation_panel_index >= new_count {
-                    self.automation_ui.automation_panel_index = new_count - 1;
-                }
-                self.refresh_automation_view();
-            }
-            _ => {}
-        }
     }
 
     /// Handle keys while editing the scoped automation in the central pane.

@@ -69,6 +69,32 @@ pub enum Action {
     /// Sort sessions alphabetically by name within each repo group, preserving
     /// group order and parent/child nesting (children sort among siblings).
     SessionListSortAlphabetically,
+    // ── Automations pane (scoped) ───────────────────────────────────────
+    AutomationsNew,
+    AutomationsNext,
+    AutomationsPrev,
+    /// Open the central-pane editor for the selected automation.
+    AutomationsOpen,
+    /// Toggle the selected automation enabled/disabled.
+    AutomationsToggle,
+    /// Run the selected automation now.
+    AutomationsRun,
+    AutomationsDelete,
+    // ── Tasks pane (scoped) ─────────────────────────────────────────────
+    TasksNew,
+    TasksNext,
+    TasksPrev,
+    /// Open the central-pane editor for the selected task.
+    TasksOpen,
+    /// Cycle the selected task's status (Todo → InProgress → Done).
+    TasksCycleStatus,
+    /// Open the trigger-time action picker (Send → session / Spawn new).
+    TasksRun,
+    /// Open the selected task's related session.
+    TasksOpenRelated,
+    TasksDelete,
+    TasksPreviewDown,
+    TasksPreviewUp,
     // ── File viewer (scoped) ────────────────────────────────────────────
     FileViewerDown,
     FileViewerUp,
@@ -92,6 +118,8 @@ pub enum Action {
 pub enum KeyContext {
     Global,
     SessionList,
+    Automations,
+    Tasks,
     FileViewer,
     Terminal,
 }
@@ -131,6 +159,23 @@ impl Action {
             Action::SessionListMoveDown,
             Action::SessionListMoveUp,
             Action::SessionListSortAlphabetically,
+            Action::AutomationsNew,
+            Action::AutomationsNext,
+            Action::AutomationsPrev,
+            Action::AutomationsOpen,
+            Action::AutomationsToggle,
+            Action::AutomationsRun,
+            Action::AutomationsDelete,
+            Action::TasksNew,
+            Action::TasksNext,
+            Action::TasksPrev,
+            Action::TasksOpen,
+            Action::TasksCycleStatus,
+            Action::TasksRun,
+            Action::TasksOpenRelated,
+            Action::TasksDelete,
+            Action::TasksPreviewDown,
+            Action::TasksPreviewUp,
             Action::FileViewerDown,
             Action::FileViewerUp,
             Action::FileViewerCollapse,
@@ -179,6 +224,23 @@ impl Action {
             Action::SessionListMoveDown => "Move session down",
             Action::SessionListMoveUp => "Move session up",
             Action::SessionListSortAlphabetically => "Sort sessions A→Z",
+            Action::AutomationsNew => "New automation",
+            Action::AutomationsNext => "Next item",
+            Action::AutomationsPrev => "Previous item",
+            Action::AutomationsOpen => "Edit automation",
+            Action::AutomationsToggle => "Toggle enabled",
+            Action::AutomationsRun => "Run now",
+            Action::AutomationsDelete => "Delete automation",
+            Action::TasksNew => "New task",
+            Action::TasksNext => "Next item",
+            Action::TasksPrev => "Previous item",
+            Action::TasksOpen => "Edit task",
+            Action::TasksCycleStatus => "Cycle status",
+            Action::TasksRun => "Run (Send / Spawn)",
+            Action::TasksOpenRelated => "Open related session",
+            Action::TasksDelete => "Delete task",
+            Action::TasksPreviewDown => "Scroll preview down",
+            Action::TasksPreviewUp => "Scroll preview up",
             Action::FileViewerDown => "Move down",
             Action::FileViewerUp => "Move up",
             Action::FileViewerCollapse => "Collapse / parent",
@@ -206,6 +268,23 @@ impl Action {
             | Action::SessionListMoveDown
             | Action::SessionListMoveUp
             | Action::SessionListSortAlphabetically => KeyContext::SessionList,
+            Action::AutomationsNew
+            | Action::AutomationsNext
+            | Action::AutomationsPrev
+            | Action::AutomationsOpen
+            | Action::AutomationsToggle
+            | Action::AutomationsRun
+            | Action::AutomationsDelete => KeyContext::Automations,
+            Action::TasksNew
+            | Action::TasksNext
+            | Action::TasksPrev
+            | Action::TasksOpen
+            | Action::TasksCycleStatus
+            | Action::TasksRun
+            | Action::TasksOpenRelated
+            | Action::TasksDelete
+            | Action::TasksPreviewDown
+            | Action::TasksPreviewUp => KeyContext::Tasks,
             Action::FileViewerDown
             | Action::FileViewerUp
             | Action::FileViewerCollapse
@@ -241,6 +320,12 @@ impl Action {
     /// `Ctrl+Q` quit, `Ctrl+N` new, …) are deliberately **not** deferred: they
     /// are the keyboard escape route out of the terminal, so they must keep
     /// working there even though some collide with readline.
+    ///
+    /// `Ctrl+T` (`ToggleShell`) is a deliberate exception that is **not** in
+    /// this list even though it shadows readline's transpose-chars: transpose is
+    /// rarely used and the convenient shell toggle wins. It also carries an `F8`
+    /// alternate, so this is a considered choice — do not "fix" it by adding it
+    /// here.
     pub fn terminal_passthrough(self) -> bool {
         matches!(
             self,
@@ -285,7 +370,10 @@ impl Action {
             Action::OpenInEditor => vec![KeyChord::ctrl('o')],
             Action::OpenAutomations => vec![KeyChord::ctrl('p')],
             Action::StartSync => vec![KeyChord::ctrl('s')],
-            Action::ToggleShell => vec![KeyChord::ctrl('t')],
+            // Ctrl+T primary, F8 alternate (the only panel toggle that lacked
+            // one; F1–F7 are taken). Stays a shell toggle in the terminal — see
+            // the `terminal_passthrough` exception note.
+            Action::ToggleShell => vec![KeyChord::ctrl('t'), KeyChord::function(8)],
             // F7 — the Ctrl+<letter> namespace is full and F-keys never collide
             // with the PTY's readline chords. Fully rebindable.
             Action::ToggleReview => vec![KeyChord::function(7)],
@@ -338,6 +426,26 @@ impl Action {
             Action::SessionListSortAlphabetically => {
                 vec![KeyChord::normalized(KeyModifiers::NONE, KeyCode::Char('S'))]
             }
+            // Automations pane (scoped) — same letters as the session list,
+            // safe because the context lookup keeps them apart.
+            Action::AutomationsNew => vec![KeyChord::plain('n')],
+            Action::AutomationsNext => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
+            Action::AutomationsPrev => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
+            Action::AutomationsOpen => vec![KeyChord::key(KeyCode::Enter), KeyChord::plain('e')],
+            Action::AutomationsToggle => vec![KeyChord::plain(' ')],
+            Action::AutomationsRun => vec![KeyChord::plain('r')],
+            Action::AutomationsDelete => vec![KeyChord::plain('d')],
+            // Tasks pane (scoped).
+            Action::TasksNew => vec![KeyChord::plain('n')],
+            Action::TasksNext => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
+            Action::TasksPrev => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
+            Action::TasksOpen => vec![KeyChord::key(KeyCode::Enter), KeyChord::plain('e')],
+            Action::TasksCycleStatus => vec![KeyChord::plain(' ')],
+            Action::TasksRun => vec![KeyChord::plain('r')],
+            Action::TasksOpenRelated => vec![KeyChord::plain('o')],
+            Action::TasksDelete => vec![KeyChord::plain('d')],
+            Action::TasksPreviewDown => vec![KeyChord::key(KeyCode::PageDown)],
+            Action::TasksPreviewUp => vec![KeyChord::key(KeyCode::PageUp)],
             Action::FileViewerDown => vec![KeyChord::plain('j'), KeyChord::key(KeyCode::Down)],
             Action::FileViewerUp => vec![KeyChord::plain('k'), KeyChord::key(KeyCode::Up)],
             Action::FileViewerCollapse => vec![KeyChord::plain('h'), KeyChord::key(KeyCode::Left)],
@@ -447,6 +555,33 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
                 SessionListMoveDown,
                 SessionListMoveUp,
                 SessionListSortAlphabetically,
+            ],
+        ),
+        (
+            "Automations (when focused)",
+            vec![
+                AutomationsNew,
+                AutomationsNext,
+                AutomationsPrev,
+                AutomationsOpen,
+                AutomationsToggle,
+                AutomationsRun,
+                AutomationsDelete,
+            ],
+        ),
+        (
+            "Tasks (when focused)",
+            vec![
+                TasksNew,
+                TasksNext,
+                TasksPrev,
+                TasksOpen,
+                TasksCycleStatus,
+                TasksRun,
+                TasksOpenRelated,
+                TasksDelete,
+                TasksPreviewDown,
+                TasksPreviewUp,
             ],
         ),
         (
@@ -972,6 +1107,21 @@ mod tests {
     }
 
     #[test]
+    fn toggle_shell_has_dual_ctrl_and_f8_chord() {
+        // Ctrl+T is the only panel toggle that historically lacked an F-key
+        // alternate; F8 was the first free function key.
+        let kb = KeyBindings::default();
+        assert_eq!(
+            kb.lookup(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            Some(Action::ToggleShell)
+        );
+        assert_eq!(
+            kb.lookup(KeyCode::F(8), KeyModifiers::NONE),
+            Some(Action::ToggleShell)
+        );
+    }
+
+    #[test]
     fn lookup_finds_default_chord() {
         let kb = KeyBindings::default();
         assert_eq!(
@@ -1138,6 +1288,23 @@ mod tests {
                 Action::SessionListMoveDown => 0,
                 Action::SessionListMoveUp => 0,
                 Action::SessionListSortAlphabetically => 0,
+                Action::AutomationsNew => 0,
+                Action::AutomationsNext => 0,
+                Action::AutomationsPrev => 0,
+                Action::AutomationsOpen => 0,
+                Action::AutomationsToggle => 0,
+                Action::AutomationsRun => 0,
+                Action::AutomationsDelete => 0,
+                Action::TasksNew => 0,
+                Action::TasksNext => 0,
+                Action::TasksPrev => 0,
+                Action::TasksOpen => 0,
+                Action::TasksCycleStatus => 0,
+                Action::TasksRun => 0,
+                Action::TasksOpenRelated => 0,
+                Action::TasksDelete => 0,
+                Action::TasksPreviewDown => 0,
+                Action::TasksPreviewUp => 0,
                 Action::FileViewerDown => 0,
                 Action::FileViewerUp => 0,
                 Action::FileViewerCollapse => 0,
@@ -1153,7 +1320,7 @@ mod tests {
         }
         // The listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 42;
+        const EXPECTED: usize = 59;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);
@@ -1241,6 +1408,33 @@ mod tests {
                 KeyModifiers::NONE
             ),
             Some(Action::SessionListNext)
+        );
+        // The same `j` drives the automations and tasks panes, each scoped to
+        // its own context — no collision with the session list / file viewer.
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::Automations,
+                KeyCode::Char('j'),
+                KeyModifiers::NONE
+            ),
+            Some(Action::AutomationsNext)
+        );
+        assert_eq!(
+            kb.lookup_in(KeyContext::Tasks, KeyCode::Char('j'), KeyModifiers::NONE),
+            Some(Action::TasksNext)
+        );
+        // A bare letter unique to one pane resolves only there.
+        assert_eq!(
+            kb.lookup_in(KeyContext::Tasks, KeyCode::Char('o'), KeyModifiers::NONE),
+            Some(Action::TasksOpenRelated)
+        );
+        assert_eq!(
+            kb.lookup_in(
+                KeyContext::SessionList,
+                KeyCode::Char('o'),
+                KeyModifiers::NONE
+            ),
+            None
         );
         // The terminal never resolves `j` — it forwards it to the PTY.
         assert_eq!(

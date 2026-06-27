@@ -1630,7 +1630,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+P` | Automations (list/new/edit/toggle/run/delete) | **P**rogram |
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
-| `Ctrl+T` | Toggle shell pane | **T**erminal |
+| `Ctrl+T` / `F8` | Toggle shell pane | **T**erminal |
 | `F7` | Toggle native code-review view | Review |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
@@ -1683,10 +1683,11 @@ chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`):
   (mtime poll — see `docs/CONFIG.md`).
 
 **Context-scoped bindings.** Each `Action` has a `KeyContext` (`Global`,
-`SessionList`, `FileViewer`, `Terminal`). Global actions are active
-everywhere; scoped actions fire only while their pane is focused, so a
-single-letter key like `j` can drive both the file viewer and the session
-list (and the terminal still forwards it to the PTY). `handle_key` resolves
+`SessionList`, `Automations`, `Tasks`, `FileViewer`, `Terminal`). Global
+actions are active everywhere; scoped actions fire only while their pane is
+focused, so a single-letter key like `j` can drive the file viewer, session
+list, automations pane, and tasks pane independently (and the terminal still
+forwards it to the PTY). `handle_key` resolves
 keys via `KeyBindings::lookup_in(App::focus_key_context(), …)`, dispatched
 through `dispatch_action`. Conflict detection (`KeyBindings::rebind`) only
 steals a chord between actions whose scopes overlap (`contexts_overlap`) —
@@ -1729,8 +1730,10 @@ falls through to normal cursor handling.
 
 A few stateful keys stay literal (the F1 panel lists them under
 **Fixed (not rebindable)**): modal selectors (j/k/Enter/Esc), the
-automations/tasks panes, the file-viewer **search sub-mode**, and the
-terminal's catch-all PTY forwarding.
+automation **run-history** sub-mode, the file-viewer **search sub-mode**, and
+the terminal's catch-all PTY forwarding. The automations and tasks panes
+themselves are **rebindable** scoped contexts (`KeyContext::Automations` /
+`KeyContext::Tasks`), mirroring the session list.
 
 ### macOS
 
