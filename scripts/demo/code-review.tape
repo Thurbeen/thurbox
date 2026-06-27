@@ -27,10 +27,11 @@ Enter
 Sleep 2s
 Show
 
-# The "review" session is seeded first, so it's selected on launch with its
-# terminal focused. Ctrl+X (rebound ToggleReview) opens the native code-review
-# view: a continuous diff of the branch (<base>..HEAD) in the centre, the
-# changed-files list in the right column, an action bar across the bottom.
+# The worktree "review" session is seeded LAST, so restore leaves it selected on
+# launch with its terminal focused. Ctrl+X (rebound ToggleReview) opens the
+# native code-review view: a continuous diff of the branch (<base>..HEAD) in the
+# centre, the changed-files list in the right column, an action bar across the
+# bottom.
 Sleep 2500ms
 Ctrl+X
 Sleep 2600ms

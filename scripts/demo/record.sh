@@ -300,11 +300,12 @@ done
 
 # --- Code-review demo: a worktree session with a real committed diff ---------
 # The review view diffs <base>..HEAD of a session's worktree, so the code-review
-# tape needs a session whose branch actually has changes. Create it LAST so it's
-# the session the TUI selects on launch (restore makes the most-recently-created
-# session active), on a worktree off the sample repo, then commit a small
-# multi-file change into that worktree so the Branch target shows a colourful
-# diff. Gated on the code-review tape so other clips stay fast / unchanged.
+# tape needs a session whose branch actually has changes. Create it LAST so
+# restore leaves it selected on launch (finish_adopted_session makes the
+# last-restored session active), on a worktree off the sample repo, then commit a
+# small multi-file change into that worktree so the Branch target shows a
+# colourful diff. Gated on the code-review tape so other clips stay fast /
+# unchanged.
 # shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
 if printf '%s ' $TAPES | grep -Eq '(^| )code-review( |$)'; then
     echo "==> Seeding a worktree review session with a committed diff"
