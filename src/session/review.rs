@@ -270,38 +270,7 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
             continue;
         };
 
-        if line.starts_with("new file mode") {
-            f.status = FileStatus::Added;
-        } else if line.starts_with("deleted file mode") {
-            f.status = FileStatus::Deleted;
-        } else if let Some(p) = line.strip_prefix("rename from ") {
-            f.status = FileStatus::Renamed;
-            f.old_path = Some(p.to_string());
-        } else if let Some(p) = line.strip_prefix("rename to ") {
-            f.status = FileStatus::Renamed;
-            f.path = p.to_string();
-        } else if let Some(p) = line.strip_prefix("--- ").filter(|_| hunk.is_none()) {
-            // `hunk.is_none()` gates this to the pre-hunk header region: inside a
-            // hunk a removed line whose *content* starts with `-- ` (SQL/Lua/
-            // Haskell comment, signature delimiter) renders as `--- …` and must
-            // stay a Del body line, not be mistaken for the old-path header.
-            let p = p.trim();
-            if p != "/dev/null" {
-                let old = p.strip_prefix("a/").unwrap_or(p).to_string();
-                // Only record as old_path when it differs from the new path
-                // (renames already set it; identical paths leave it None).
-                if f.old_path.is_none() && f.path != old {
-                    f.old_path = Some(old);
-                }
-            }
-        } else if let Some(p) = line.strip_prefix("+++ ").filter(|_| hunk.is_none()) {
-            // Same guard: an added line whose content starts `++ ` renders as
-            // `+++ …` and must stay an Add body line.
-            let p = p.trim();
-            if p != "/dev/null" {
-                f.path = p.strip_prefix("b/").unwrap_or(p).to_string();
-            }
-        } else if line.starts_with("@@") {
+        if line.starts_with("@@") {
             push_hunk(&mut cur, &mut hunk);
             let (os, ns, header) = parse_hunk_header(line);
             old_no = os;
@@ -312,39 +281,10 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
                 header,
                 lines: Vec::new(),
             });
+        } else if apply_file_metadata(f, line, hunk.is_some()) {
+            // A header/metadata line (mode / rename / `---` / `+++`) was consumed.
         } else if let Some(h) = hunk.as_mut() {
-            match line.as_bytes().first() {
-                Some(b'+') => {
-                    h.lines.push(DiffLine {
-                        kind: DiffLineKind::Add,
-                        old_no: None,
-                        new_no: Some(new_no),
-                        text: line[1..].to_string(),
-                    });
-                    new_no += 1;
-                }
-                Some(b'-') => {
-                    h.lines.push(DiffLine {
-                        kind: DiffLineKind::Del,
-                        old_no: Some(old_no),
-                        new_no: None,
-                        text: line[1..].to_string(),
-                    });
-                    old_no += 1;
-                }
-                Some(b' ') => {
-                    h.lines.push(DiffLine {
-                        kind: DiffLineKind::Context,
-                        old_no: Some(old_no),
-                        new_no: Some(new_no),
-                        text: line[1..].to_string(),
-                    });
-                    old_no += 1;
-                    new_no += 1;
-                }
-                // `\ No newline at end of file` and any stray metadata: ignore.
-                _ => {}
-            }
+            push_body_line(h, line, &mut old_no, &mut new_no);
         }
     }
 
@@ -359,6 +299,66 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 fn push_hunk(cur: &mut Option<DiffFile>, hunk: &mut Option<DiffHunk>) {
     if let (Some(f), Some(h)) = (cur.as_mut(), hunk.take()) {
         f.hunks.push(h);
+    }
+}
+
+/// Apply a file-header metadata line (mode / rename / `---` / `+++`) to `f`,
+/// returning whether it was consumed. `in_hunk` gates the `---`/`+++` arms to
+/// the pre-hunk region: inside a hunk a removed/added line whose *content*
+/// starts with `-- `/`++ ` (SQL/Lua/Haskell comment, signature delimiter)
+/// renders as `--- …`/`+++ …` and must stay a Del/Add body line.
+fn apply_file_metadata(f: &mut DiffFile, line: &str, in_hunk: bool) -> bool {
+    if line.starts_with("new file mode") {
+        f.status = FileStatus::Added;
+    } else if line.starts_with("deleted file mode") {
+        f.status = FileStatus::Deleted;
+    } else if let Some(p) = line.strip_prefix("rename from ") {
+        f.status = FileStatus::Renamed;
+        f.old_path = Some(p.to_string());
+    } else if let Some(p) = line.strip_prefix("rename to ") {
+        f.status = FileStatus::Renamed;
+        f.path = p.to_string();
+    } else if let Some(p) = line.strip_prefix("--- ").filter(|_| !in_hunk) {
+        let p = p.trim();
+        if p != "/dev/null" {
+            let old = p.strip_prefix("a/").unwrap_or(p).to_string();
+            // Only record as old_path when it differs from the new path
+            // (renames already set it; identical paths leave it None).
+            if f.old_path.is_none() && f.path != old {
+                f.old_path = Some(old);
+            }
+        }
+    } else if let Some(p) = line.strip_prefix("+++ ").filter(|_| !in_hunk) {
+        let p = p.trim();
+        if p != "/dev/null" {
+            f.path = p.strip_prefix("b/").unwrap_or(p).to_string();
+        }
+    } else {
+        return false;
+    }
+    true
+}
+
+/// Append a hunk body line (`+`/`-`/` `-prefixed) to `hunk`, advancing the
+/// per-side line counters. `\ No newline …` and stray metadata are ignored.
+fn push_body_line(hunk: &mut DiffHunk, line: &str, old_no: &mut u32, new_no: &mut u32) {
+    let (kind, old, new) = match line.as_bytes().first() {
+        Some(b'+') => (DiffLineKind::Add, None, Some(*new_no)),
+        Some(b'-') => (DiffLineKind::Del, Some(*old_no), None),
+        Some(b' ') => (DiffLineKind::Context, Some(*old_no), Some(*new_no)),
+        _ => return,
+    };
+    hunk.lines.push(DiffLine {
+        kind,
+        old_no: old,
+        new_no: new,
+        text: line[1..].to_string(),
+    });
+    if old.is_some() {
+        *old_no += 1;
+    }
+    if new.is_some() {
+        *new_no += 1;
     }
 }
 

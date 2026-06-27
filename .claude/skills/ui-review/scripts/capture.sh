@@ -214,6 +214,7 @@ fi
 # A worktree session with a committed multi-file diff, created LAST so the TUI
 # selects it on launch — the code-review view (F7 / Ctrl+R here) diffs
 # <base>..HEAD of this worktree, so the review screenshots show a real diff.
+# shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
 review_agent=$(printf '%s\n' $AGENTS | head -n1)
 "$CLI_BIN" session create --name "review" --repo-path "$DEMO_REPO" \
     --agent "$review_agent" --worktree-branch "review/demo" \

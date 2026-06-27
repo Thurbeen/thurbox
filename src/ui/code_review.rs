@@ -9,7 +9,7 @@ use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::code_review::{CodeReviewState, ComposeState, ReviewButton, ReviewRow};
-use crate::session::review::{Classification, CommentAnchor, DiffLine, DiffLineKind};
+use crate::session::review::{Classification, CommentAnchor, DiffFile, DiffLine, DiffLineKind};
 use crate::ui::scrollbar::{self, ScrollbarGeom};
 use crate::ui::theme::Theme;
 use crate::ui::{focus_block, render_button_bar, ButtonSpec, FocusLevel, RowHitbox};
@@ -209,138 +209,15 @@ fn row_line<'a>(state: &CodeReviewState, i: usize, width: usize, num_w: usize) -
     };
 
     match &state.rows[i] {
-        ReviewRow::FileHeader(fi) => {
-            let f = &state.files[*fi];
-            let reviewed = state.reviewed_files.contains(&f.path);
-            // Fold chevron (tree node): ▸ collapsed, ▾ expanded.
-            let chevron = if state.is_file_folded(&f.path) {
-                "▸"
-            } else {
-                "▾"
-            };
-            // A prominent full-width rule with the path embedded (tuicr-style
-            // file separator), the status glyph + add/remove counts tinted with
-            // the diff colors so the status reads at a glance.
-            let header = Style::default()
-                .fg(Theme::accent_bright())
-                .add_modifier(Modifier::BOLD);
-            let lead = format!("{chevron} ");
-            let glyph = f.status.glyph().to_string();
-            let mid = format!(" {}  ", f.path);
-            let adds = format!("+{}", f.added_count());
-            let dels = format!(" -{}", f.deleted_count());
-            let mark = if reviewed { " ✓" } else { "" };
-            let used = lead.chars().count()
-                + glyph.chars().count()
-                + mid.chars().count()
-                + adds.chars().count()
-                + dels.chars().count()
-                + mark.chars().count()
-                + 1; // trailing space before the rule
-            let pad = if used < width {
-                "─".repeat(width - used)
-            } else {
-                String::new()
-            };
-            let mut spans = vec![
-                Span::styled(lead, sel_style(header)),
-                Span::styled(
-                    glyph,
-                    sel_style(
-                        Style::default()
-                            .fg(status_color(f.status))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ),
-                Span::styled(mid, sel_style(header)),
-                Span::styled(adds, sel_style(Style::default().fg(Theme::diff_added()))),
-                Span::styled(dels, sel_style(Style::default().fg(Theme::diff_removed()))),
-            ];
-            if !mark.is_empty() {
-                spans.push(Span::styled(
-                    mark.to_string(),
-                    sel_style(Style::default().fg(Theme::status_done())),
-                ));
-            }
-            spans.push(Span::styled(format!(" {pad}"), sel_style(header)));
-            Line::from(spans)
-        }
-        ReviewRow::HunkHeader(fi, hi) => {
-            let f = &state.files[*fi];
-            let h = &f.hunks[*hi];
-            let reviewed = state.reviewed_hunks.contains(&(f.path.clone(), *hi));
-            let mark = if reviewed { " ✓" } else { "" };
-            // Old-side span = lines present on the old side (context + deletions);
-            // new-side span = lines present on the new side (context + additions).
-            let old_span = h.lines.iter().filter(|l| l.old_no.is_some()).count();
-            let new_span = h.lines.iter().filter(|l| l.new_no.is_some()).count();
-            let text = format!(
-                "  @@ -{},{} +{},{} @@ {}{}",
-                h.old_start, old_span, h.new_start, new_span, h.header, mark
-            );
-            Line::from(Span::styled(
-                truncate(&text, width),
-                sel_style(
-                    Style::default()
-                        .fg(Theme::accent())
-                        .add_modifier(Modifier::DIM),
-                ),
-            ))
-        }
+        ReviewRow::FileHeader(fi) => file_header_line(state, *fi, width, &sel_style),
+        ReviewRow::HunkHeader(fi, hi) => hunk_header_line(state, *fi, *hi, width, &sel_style),
         ReviewRow::Line(fi, hi, li) => {
             let f = &state.files[*fi];
             let l = &f.hunks[*hi].lines[*li];
             if state.side_by_side {
                 side_by_side_line(l, width, num_w, &sel_style)
             } else {
-                // Add/remove is signalled by the gutter `+`/`-` and the row tint;
-                // the code text itself is syntax-highlighted (GitHub-style).
-                let (sign, row_bg) = match l.kind {
-                    DiffLineKind::Add => ('+', Some(Theme::diff_added_bg())),
-                    DiffLineKind::Del => ('-', Some(Theme::diff_removed_bg())),
-                    DiffLineKind::Context => (' ', None),
-                };
-                // Row tint under everything (selection wins on the cursor row).
-                let bg = |s: Style| match row_bg {
-                    Some(c) if !selected => s.bg(c),
-                    _ => s,
-                };
-                let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
-                let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
-                let gutter = format!("{old:>num_w$} {new:>num_w$} {sign} ");
-                let avail = width.saturating_sub(gutter.chars().count());
-
-                let mut spans = vec![Span::styled(
-                    gutter,
-                    sel_style(bg(Style::default().fg(Theme::text_muted()))),
-                )];
-                // Syntax-highlight the body, truncating to the available width.
-                let lang = crate::ui::syntax::lang_for(&f.path);
-                let mut used = 0usize;
-                for (tok, tcolor) in crate::ui::syntax::highlight(&l.text, &lang) {
-                    if used >= avail {
-                        break;
-                    }
-                    let remaining = avail - used;
-                    let tok = if tok.chars().count() > remaining {
-                        tok.chars().take(remaining).collect::<String>()
-                    } else {
-                        tok
-                    };
-                    used += tok.chars().count();
-                    spans.push(Span::styled(
-                        tok,
-                        sel_style(bg(Style::default().fg(tcolor))),
-                    ));
-                }
-                // Pad so the row tint fills the full width.
-                if used < avail {
-                    spans.push(Span::styled(
-                        " ".repeat(avail - used),
-                        sel_style(bg(Style::default())),
-                    ));
-                }
-                Line::from(spans)
+                unified_diff_line(f, l, width, num_w, selected, &sel_style)
             }
         }
         ReviewRow::Comment(id) | ReviewRow::Summary(id) => {
@@ -359,6 +236,157 @@ fn row_line<'a>(state: &CodeReviewState, i: usize, width: usize, num_w: usize) -
             Style::default().fg(Theme::text_muted()),
         )),
     }
+}
+
+/// A file header: a full-width rule with the path embedded (tuicr-style file
+/// separator), a fold chevron, and the status glyph + add/remove counts tinted
+/// with the diff colors so the status reads at a glance.
+fn file_header_line<'a>(
+    state: &CodeReviewState,
+    fi: usize,
+    width: usize,
+    sel_style: &impl Fn(Style) -> Style,
+) -> Line<'a> {
+    let f = &state.files[fi];
+    let chevron = if state.is_file_folded(&f.path) {
+        "▸"
+    } else {
+        "▾"
+    };
+    let header = Style::default()
+        .fg(Theme::accent_bright())
+        .add_modifier(Modifier::BOLD);
+    let lead = format!("{chevron} ");
+    let glyph = f.status.glyph().to_string();
+    let mid = format!(" {}  ", f.path);
+    let adds = format!("+{}", f.added_count());
+    let dels = format!(" -{}", f.deleted_count());
+    let mark = if state.reviewed_files.contains(&f.path) {
+        " ✓"
+    } else {
+        ""
+    };
+    let used = lead.chars().count()
+        + glyph.chars().count()
+        + mid.chars().count()
+        + adds.chars().count()
+        + dels.chars().count()
+        + mark.chars().count()
+        + 1; // trailing space before the rule
+    let pad = if used < width {
+        "─".repeat(width - used)
+    } else {
+        String::new()
+    };
+    let mut spans = vec![
+        Span::styled(lead, sel_style(header)),
+        Span::styled(
+            glyph,
+            sel_style(
+                Style::default()
+                    .fg(status_color(f.status))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ),
+        Span::styled(mid, sel_style(header)),
+        Span::styled(adds, sel_style(Style::default().fg(Theme::diff_added()))),
+        Span::styled(dels, sel_style(Style::default().fg(Theme::diff_removed()))),
+    ];
+    if !mark.is_empty() {
+        spans.push(Span::styled(
+            mark.to_string(),
+            sel_style(Style::default().fg(Theme::status_done())),
+        ));
+    }
+    spans.push(Span::styled(format!(" {pad}"), sel_style(header)));
+    Line::from(spans)
+}
+
+/// A hunk header: the `@@ -a,b +c,d @@` ranges (recomputed from the lines) + the
+/// section heading, with a `✓` when the hunk is marked reviewed.
+fn hunk_header_line<'a>(
+    state: &CodeReviewState,
+    fi: usize,
+    hi: usize,
+    width: usize,
+    sel_style: &impl Fn(Style) -> Style,
+) -> Line<'a> {
+    let f = &state.files[fi];
+    let h = &f.hunks[hi];
+    let mark = if state.reviewed_hunks.contains(&(f.path.clone(), hi)) {
+        " ✓"
+    } else {
+        ""
+    };
+    // Old-side span = lines present on the old side (context + deletions);
+    // new-side span = lines present on the new side (context + additions).
+    let old_span = h.lines.iter().filter(|l| l.old_no.is_some()).count();
+    let new_span = h.lines.iter().filter(|l| l.new_no.is_some()).count();
+    let text = format!(
+        "  @@ -{},{} +{},{} @@ {}{}",
+        h.old_start, old_span, h.new_start, new_span, h.header, mark
+    );
+    Line::from(Span::styled(
+        truncate(&text, width),
+        sel_style(
+            Style::default()
+                .fg(Theme::accent())
+                .add_modifier(Modifier::DIM),
+        ),
+    ))
+}
+
+/// A unified-diff line: a `old new ±` gutter plus the syntax-highlighted body,
+/// with the add/remove row tint (the gutter sign + tint carry the +/-, leaving
+/// the text free for syntax colour). Truncated/padded to `width`.
+fn unified_diff_line<'a>(
+    f: &DiffFile,
+    l: &DiffLine,
+    width: usize,
+    num_w: usize,
+    selected: bool,
+    sel_style: &impl Fn(Style) -> Style,
+) -> Line<'a> {
+    let (sign, row_bg) = match l.kind {
+        DiffLineKind::Add => ('+', Some(Theme::diff_added_bg())),
+        DiffLineKind::Del => ('-', Some(Theme::diff_removed_bg())),
+        DiffLineKind::Context => (' ', None),
+    };
+    // Row tint under everything (selection wins on the cursor row).
+    let bg = |s: Style| match row_bg {
+        Some(c) if !selected => s.bg(c),
+        _ => s,
+    };
+    let old = l.old_no.map(|n| n.to_string()).unwrap_or_default();
+    let new = l.new_no.map(|n| n.to_string()).unwrap_or_default();
+    let gutter = format!("{old:>num_w$} {new:>num_w$} {sign} ");
+    let avail = width.saturating_sub(gutter.chars().count());
+
+    let mut spans = vec![Span::styled(
+        gutter,
+        sel_style(bg(Style::default().fg(Theme::text_muted()))),
+    )];
+    let lang = crate::ui::syntax::lang_for(&f.path);
+    let mut used = 0usize;
+    for (tok, tcolor) in crate::ui::syntax::highlight(&l.text, &lang) {
+        if used >= avail {
+            break;
+        }
+        let tok: String = tok.chars().take(avail - used).collect();
+        used += tok.chars().count();
+        spans.push(Span::styled(
+            tok,
+            sel_style(bg(Style::default().fg(tcolor))),
+        ));
+    }
+    // Pad so the row tint fills the full width.
+    if used < avail {
+        spans.push(Span::styled(
+            " ".repeat(avail - used),
+            sel_style(bg(Style::default())),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn comment_line<'a>(
@@ -514,52 +542,69 @@ pub(crate) fn render_files_list(
     let mut lines: Vec<Line> = Vec::with_capacity(end - start);
     let mut hitboxes: Vec<RowHitbox> = Vec::new();
     for (row, ti) in (start..end).enumerate() {
-        match &tree[ti] {
-            TreeRow::Folder { depth, name } => {
-                let text = format!("{}{name}/", "  ".repeat(*depth));
-                lines.push(Line::from(Span::styled(
-                    truncate(&text, w),
-                    Style::default()
-                        .fg(Theme::text_muted())
-                        .add_modifier(Modifier::BOLD),
-                )));
-            }
+        let line = match &tree[ti] {
+            TreeRow::Folder { depth, name } => folder_row_line(*depth, name, w),
             TreeRow::File { depth, index } => {
-                let f = &state.files[*index];
-                let cur = current_opt == Some(*index);
-                let reviewed = state.reviewed_files.contains(&f.path);
-                let mark = if reviewed { "✓ " } else { "  " };
-                let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
-                let base = if cur {
-                    Style::default()
-                        .fg(Theme::selection_fg())
-                        .bg(Theme::selection_bg())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Theme::text_primary())
-                };
-                // Tint the glyph + counts with diff colors, except on the selected
-                // row where the highlight bg owns the line.
-                let tint = |c: Color| if cur { base } else { base.fg(c) };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{}{mark}", "  ".repeat(*depth)), base),
-                    Span::styled(f.status.glyph().to_string(), tint(status_color(f.status))),
-                    Span::styled(format!(" {name}  "), base),
-                    Span::styled(format!("+{}", f.added_count()), tint(Theme::diff_added())),
-                    Span::styled(
-                        format!(" -{}", f.deleted_count()),
-                        tint(Theme::diff_removed()),
-                    ),
-                ]));
                 hitboxes.push(RowHitbox {
                     rect: Rect::new(list.x, list.y + row as u16, list.width, 1),
                     index: *index,
                 });
+                file_row_line(state, *index, *depth, current_opt == Some(*index))
             }
-        }
+        };
+        lines.push(line);
     }
     frame.render_widget(Paragraph::new(lines), list);
     hitboxes
+}
+
+/// A directory header row in the changed-files tree.
+fn folder_row_line<'a>(depth: usize, name: &str, width: usize) -> Line<'a> {
+    let text = format!("{}{name}/", "  ".repeat(depth));
+    Line::from(Span::styled(
+        truncate(&text, width),
+        Style::default()
+            .fg(Theme::text_muted())
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// A file row in the changed-files tree: indented name + colored status glyph
+/// and `+`/`-` counts (dimmed under the selection highlight on the current row).
+fn file_row_line<'a>(
+    state: &CodeReviewState,
+    index: usize,
+    depth: usize,
+    current: bool,
+) -> Line<'a> {
+    let f = &state.files[index];
+    let mark = if state.reviewed_files.contains(&f.path) {
+        "✓ "
+    } else {
+        "  "
+    };
+    let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+    let base = if current {
+        Style::default()
+            .fg(Theme::selection_fg())
+            .bg(Theme::selection_bg())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Theme::text_primary())
+    };
+    // Tint the glyph + counts with diff colors, except on the selected row where
+    // the highlight bg owns the line.
+    let tint = |c: Color| if current { base } else { base.fg(c) };
+    Line::from(vec![
+        Span::styled(format!("{}{mark}", "  ".repeat(depth)), base),
+        Span::styled(f.status.glyph().to_string(), tint(status_color(f.status))),
+        Span::styled(format!(" {name}  "), base),
+        Span::styled(format!("+{}", f.added_count()), tint(Theme::diff_added())),
+        Span::styled(
+            format!(" -{}", f.deleted_count()),
+            tint(Theme::diff_removed()),
+        ),
+    ])
 }
 
 /// A row in the changed-files folder tree: a directory header or a file leaf

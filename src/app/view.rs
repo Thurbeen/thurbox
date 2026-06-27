@@ -537,43 +537,49 @@ impl App {
 
         // The native code-review view takes over the central pane whenever the
         // active session has one open — persisted per session like the shell
-        // view, so it survives session switches. It renders even when not the
-        // focused pane (dimmed), exactly like the shell view stays visible.
+        // view, so it survives session switches.
         if self.active_review().is_some() {
-            let level = if self.focus == InputFocus::CodeReview {
-                crate::ui::FocusLevel::Focused
-            } else {
-                crate::ui::FocusLevel::Active
-            };
-            let hits = self
-                .active_review_mut()
-                .map(|cr| crate::ui::code_review::render(frame, terminal, cr, level));
-            if let Some(hits) = hits {
-                // Row + button targets first (first match wins), then the
-                // whole-pane focus fallback.
-                for h in hits.rows {
-                    self.record_click(h.rect, ClickAction::ReviewRow(h.index));
-                }
-                for (h, action) in hits.buttons {
-                    self.record_click(h.rect, ClickAction::ReviewButton(action));
-                }
-                self.record_click(terminal, ClickAction::FocusPane(InputFocus::CodeReview));
-                self.record_scrollbar(hits.scrollbar, ScrollTarget::CodeReview);
-            }
+            self.render_code_review_pane(frame, terminal);
             return;
         }
 
-        let terminal_focus = match self.focus {
-            InputFocus::Terminal => crate::ui::FocusLevel::Focused,
-            InputFocus::SessionList
-            | InputFocus::Automations
-            | InputFocus::AutomationEditor
-            | InputFocus::AutomationRunHistory
-            | InputFocus::TaskList
-            | InputFocus::TaskEditor
-            | InputFocus::GlobalSearch
-            | InputFocus::CodeReview
-            | InputFocus::FileViewer => crate::ui::FocusLevel::Active,
+        self.render_terminal_pane(frame, terminal);
+    }
+
+    /// Render the open code-review view into the central pane (dimmed when not
+    /// the focused pane, like the shell view) and record its click/scroll
+    /// targets.
+    fn render_code_review_pane(&mut self, frame: &mut Frame, terminal: Rect) {
+        let level = if self.focus == InputFocus::CodeReview {
+            crate::ui::FocusLevel::Focused
+        } else {
+            crate::ui::FocusLevel::Active
+        };
+        let Some(hits) = self
+            .active_review_mut()
+            .map(|cr| crate::ui::code_review::render(frame, terminal, cr, level))
+        else {
+            return;
+        };
+        // Row + button targets first (first match wins), then the whole-pane
+        // focus fallback.
+        for h in hits.rows {
+            self.record_click(h.rect, ClickAction::ReviewRow(h.index));
+        }
+        for (h, action) in hits.buttons {
+            self.record_click(h.rect, ClickAction::ReviewButton(action));
+        }
+        self.record_click(terminal, ClickAction::FocusPane(InputFocus::CodeReview));
+        self.record_scrollbar(hits.scrollbar, ScrollTarget::CodeReview);
+    }
+
+    /// Render the active session's terminal (or shell view) into the central
+    /// pane — the default when no overlay/review owns it.
+    fn render_terminal_pane(&mut self, frame: &mut Frame, terminal: Rect) {
+        let terminal_focus = if self.focus == InputFocus::Terminal {
+            crate::ui::FocusLevel::Focused
+        } else {
+            crate::ui::FocusLevel::Active
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
 

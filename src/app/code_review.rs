@@ -255,39 +255,46 @@ impl CodeReviewState {
             ));
         }
         for (fi, file) in self.files.iter().enumerate() {
-            rows.push(ReviewRow::FileHeader(fi));
-            if self.is_file_folded(&file.path) {
-                continue;
-            }
-            // File-level comments directly under the header.
-            for c in &self.comments {
-                if c.anchor.anchors_file(&file.path) {
-                    rows.push(ReviewRow::Comment(c.id));
-                }
-            }
-            for (hi, hunk) in file.hunks.iter().enumerate() {
-                rows.push(ReviewRow::HunkHeader(fi, hi));
-                for (li, line) in hunk.lines.iter().enumerate() {
-                    rows.push(ReviewRow::Line(fi, hi, li));
-                    // Line comments anchored to this line (either side).
-                    for c in &self.comments {
-                        if c.anchor.anchors_line(&file.path, line.old_no, line.new_no) {
-                            rows.push(ReviewRow::Comment(c.id));
-                        }
-                    }
-                }
-            }
+            self.push_file_rows(&mut rows, fi, file);
         }
         // Summary section (always present so a summary can be added).
         rows.push(ReviewRow::SummaryHeader);
         for c in &self.comments {
-            if matches!(c.anchor, CommentAnchor::Review) {
+            if c.anchor == CommentAnchor::Review {
                 rows.push(ReviewRow::Summary(c.id));
             }
         }
         self.rows = rows;
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
+        }
+    }
+
+    /// Append one file's rows: the header, then (unless folded) its file-level
+    /// comments and each hunk's header + lines with their interleaved line
+    /// comments.
+    fn push_file_rows(&self, rows: &mut Vec<ReviewRow>, fi: usize, file: &DiffFile) {
+        rows.push(ReviewRow::FileHeader(fi));
+        if self.is_file_folded(&file.path) {
+            return;
+        }
+        // File-level comments directly under the header.
+        for c in &self.comments {
+            if c.anchor.anchors_file(&file.path) {
+                rows.push(ReviewRow::Comment(c.id));
+            }
+        }
+        for (hi, hunk) in file.hunks.iter().enumerate() {
+            rows.push(ReviewRow::HunkHeader(fi, hi));
+            for (li, line) in hunk.lines.iter().enumerate() {
+                rows.push(ReviewRow::Line(fi, hi, li));
+                // Line comments anchored to this line (either side).
+                for c in &self.comments {
+                    if c.anchor.anchors_line(&file.path, line.old_no, line.new_no) {
+                        rows.push(ReviewRow::Comment(c.id));
+                    }
+                }
+            }
         }
     }
 

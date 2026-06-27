@@ -2137,57 +2137,77 @@ impl App {
             return;
         }
 
+        // Each `try_*` block filters the click registry to its own action type
+        // (the registry also holds pane targets beneath the overlay; a plain
+        // first-match would hit those and swallow the click). Their rects never
+        // overlap, so the order is priority-for-clarity. First one to consume the
+        // click wins.
         let pos = Position::new(x, y);
+        if self.try_modal_button_click(pos) {
+            return;
+        }
+        if self.try_modal_field_click(pos) {
+            return;
+        }
+        if self.try_repo_focus_click(pos) {
+            return;
+        }
+        self.try_modal_row_click(pos);
+    }
 
-        // Footer buttons (`[ Save ]` / `[ Cancel ]` / …) replay their key
-        // through the modal's own handler, so a click is identical to the
-        // keypress. Checked before rows (their rects never overlap, so order
-        // is for clarity).
-        if let Some((code, mods)) = self.click_targets.iter().find_map(|t| match t.action {
+    /// Footer buttons (`[ Save ]` / `[ Cancel ]` / …) replay their key through
+    /// the modal's own handler, so a click is identical to the keypress.
+    fn try_modal_button_click(&mut self, pos: Position) -> bool {
+        let Some((code, mods)) = self.click_targets.iter().find_map(|t| match t.action {
             ClickAction::ModalButton { code, mods } if t.rect.contains(pos) => Some((code, mods)),
             _ => None,
-        }) {
-            if matches!(self.modal, modals::Modal::Help(_)) {
-                self.handle_help_key(code, mods);
-            } else {
-                self.handle_modal_key_if_open(code, mods);
-            }
-            return;
+        }) else {
+            return false;
+        };
+        if matches!(self.modal, modals::Modal::Help(_)) {
+            self.handle_help_key(code, mods);
+        } else {
+            self.handle_modal_key_if_open(code, mods);
         }
+        true
+    }
 
-        // Editor-field clicks select that field (no key replay — the user then
-        // adjusts/types with the keyboard, exactly as after Tab/↑↓). The one
-        // exception is a Settings boolean row, whose whole point is the on/off
-        // switch: clicking it both selects and toggles it (scalar rows just
-        // select, so a stray click can't silently change a numeric value).
-        if let Some(index) = self.click_targets.iter().find_map(|t| match t.action {
+    /// Editor-field clicks select that field (no key replay — the user then
+    /// adjusts/types with the keyboard, exactly as after Tab/↑↓). A Settings
+    /// boolean row also toggles on click (its whole point is the on/off switch;
+    /// scalar rows only select, so a stray click can't change a number).
+    fn try_modal_field_click(&mut self, pos: Position) -> bool {
+        let Some(index) = self.click_targets.iter().find_map(|t| match t.action {
             ClickAction::ModalField(i) if t.rect.contains(pos) => Some(i),
             _ => None,
-        }) {
-            self.select_modal_field(index);
-            if let modals::Modal::Settings(s) = &mut self.modal {
-                if !s.field.is_scalar() {
-                    s.toggle();
-                }
+        }) else {
+            return false;
+        };
+        self.select_modal_field(index);
+        if let modals::Modal::Settings(s) = &mut self.modal {
+            if !s.field.is_scalar() {
+                s.toggle();
             }
-            return;
         }
+        true
+    }
 
-        // Repo picker: clicking the path-input / search field focuses it.
-        if let Some(focus) = self.click_targets.iter().find_map(|t| match t.action {
+    /// Repo picker: clicking the path-input / search field focuses it.
+    fn try_repo_focus_click(&mut self, pos: Position) -> bool {
+        let Some(focus) = self.click_targets.iter().find_map(|t| match t.action {
             ClickAction::RepoFocus(focus) if t.rect.contains(pos) => Some(focus),
             _ => None,
-        }) {
-            if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
-                rp.focus = focus;
-            }
-            return;
+        }) else {
+            return false;
+        };
+        if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.focus = focus;
         }
+        true
+    }
 
-        // Only `ModalRow` targets count here: the registry also holds the
-        // pane targets recorded beneath the overlay (panes render first), and
-        // a plain first-match lookup would hit those instead and swallow the
-        // click.
+    /// A list-row click selects the row and replays its activation key.
+    fn try_modal_row_click(&mut self, pos: Position) {
         let Some(row) = self.click_targets.iter().find_map(|t| match t.action {
             ClickAction::ModalRow(row) if t.rect.contains(pos) => Some(row),
             _ => None,

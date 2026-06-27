@@ -133,89 +133,101 @@ pub(crate) fn highlight(text: &str, lang: &Lang) -> Vec<(String, Color)> {
     let mut out: Vec<(String, Color)> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        let c = chars[i];
-
-        // Line comment: the marker and everything after it.
+        // Line comment: the marker and everything after it ends the line.
         if starts_with_at(&chars, i, lang.line_comment) {
             out.push((chars[i..].iter().collect(), Theme::text_muted()));
             break;
         }
-
-        // String literal (handles `\`-escapes); covers ", ', and backtick.
-        if c == '"' || c == '\'' || c == '`' {
-            let mut j = i + 1;
-            while j < chars.len() {
-                if chars[j] == '\\' {
-                    j += 2;
-                    continue;
-                }
-                if chars[j] == c {
-                    j += 1;
-                    break;
-                }
-                j += 1;
-            }
-            let end = j.min(chars.len());
-            out.push((chars[i..end].iter().collect(), Theme::branch_name()));
-            i = end;
-            continue;
-        }
-
-        // Number (incl. hex `0x…`, floats, digit separators).
-        if c.is_ascii_digit() {
-            let mut j = i;
-            while j < chars.len()
-                && (chars[j].is_ascii_alphanumeric() || chars[j] == '.' || chars[j] == '_')
-            {
-                j += 1;
-            }
-            out.push((chars[i..j].iter().collect(), Theme::status_working()));
-            i = j;
-            continue;
-        }
-
-        // Identifier / keyword / type.
-        if c.is_alphabetic() || c == '_' {
-            let mut j = i;
-            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
-                j += 1;
-            }
-            let word: String = chars[i..j].iter().collect();
-            let color = if KEYWORDS.contains(&word.as_str()) {
-                Theme::accent()
-            } else if word.chars().next().is_some_and(char::is_uppercase) {
-                Theme::accent_bright()
-            } else {
-                Theme::text_primary()
-            };
-            out.push((word, color));
-            i = j;
-            continue;
-        }
-
-        // A run of "plain" characters (operators, punctuation, whitespace) up to
-        // the next token start.
-        let mut j = i;
-        while j < chars.len() {
-            let cj = chars[j];
-            if cj == '"'
-                || cj == '\''
-                || cj == '`'
-                || cj.is_alphanumeric()
-                || cj == '_'
-                || starts_with_at(&chars, j, lang.line_comment)
-            {
-                break;
-            }
-            j += 1;
-        }
-        if j == i {
-            j = i + 1;
-        }
-        out.push((chars[i..j].iter().collect(), Theme::text_primary()));
-        i = j;
+        // Each remaining token type scans its own run; dispatch by the first
+        // char and collect `[i..end]` with the matching colour.
+        let c = chars[i];
+        let (end, color) = if is_quote(c) {
+            (scan_string(&chars, i), Theme::branch_name())
+        } else if c.is_ascii_digit() {
+            (scan_number(&chars, i), Theme::status_working())
+        } else if c.is_alphabetic() || c == '_' {
+            let end = scan_word(&chars, i);
+            (end, word_color(&chars[i..end]))
+        } else {
+            (scan_plain(&chars, i, lang), Theme::text_primary())
+        };
+        out.push((chars[i..end].iter().collect(), color));
+        i = end;
     }
     out
+}
+
+fn is_quote(c: char) -> bool {
+    c == '"' || c == '\'' || c == '`'
+}
+
+/// End index (exclusive) of a string literal opened at `i`, honoring
+/// `\`-escapes; clamped to the line end on an unterminated string.
+fn scan_string(chars: &[char], i: usize) -> usize {
+    let quote = chars[i];
+    let mut j = i + 1;
+    while j < chars.len() {
+        match chars[j] {
+            '\\' => j += 2,
+            c if c == quote => return (j + 1).min(chars.len()),
+            _ => j += 1,
+        }
+    }
+    chars.len()
+}
+
+/// End index of a number run at `i` (hex `0x…`, floats, digit separators).
+fn scan_number(chars: &[char], i: usize) -> usize {
+    let mut j = i;
+    while j < chars.len()
+        && (chars[j].is_ascii_alphanumeric() || chars[j] == '.' || chars[j] == '_')
+    {
+        j += 1;
+    }
+    j
+}
+
+/// End index of an identifier/keyword run at `i`.
+fn scan_word(chars: &[char], i: usize) -> usize {
+    let mut j = i;
+    while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+        j += 1;
+    }
+    j
+}
+
+/// Colour for an identifier: keyword, capitalised type, or plain ident.
+fn word_color(word: &[char]) -> Color {
+    let s: String = word.iter().collect();
+    if KEYWORDS.contains(&s.as_str()) {
+        Theme::accent()
+    } else if word.first().is_some_and(|c| c.is_uppercase()) {
+        Theme::accent_bright()
+    } else {
+        Theme::text_primary()
+    }
+}
+
+/// End index of a run of "plain" chars (operators, punctuation, whitespace) at
+/// `i`, stopping at the next token start. Always advances at least one char.
+fn scan_plain(chars: &[char], i: usize, lang: &Lang) -> usize {
+    let mut j = i;
+    while j < chars.len() {
+        let cj = chars[j];
+        if is_quote(cj)
+            || cj.is_alphanumeric()
+            || cj == '_'
+            || starts_with_at(chars, j, lang.line_comment)
+        {
+            break;
+        }
+        j += 1;
+    }
+    if j == i {
+        i + 1
+    } else {
+        j
+    }
 }
 
 /// Whether `chars[i..]` starts with `pat`.
