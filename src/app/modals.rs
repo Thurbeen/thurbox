@@ -303,7 +303,7 @@ fn word_start_before(chars: &[char], cursor: usize) -> usize {
 /// multi-line [`TextArea`], so the Ctrl-chord dispatch lives in one place. The
 /// cursor-move and single-char delete chords delegate to each widget's existing
 /// inherent methods; only the word/line kills carry their own logic.
-trait LineEdit {
+pub(crate) trait LineEdit {
     /// Delete the word before the cursor (readline `Ctrl+W`).
     fn delete_word_before(&mut self);
     /// Delete from the cursor to the start of the current line (readline `Ctrl+U`).
@@ -407,7 +407,11 @@ impl LineEdit for TextArea {
 /// (any unmapped letter) — so the caller treats it as consumed and never
 /// inserts the bare letter as text. `Ctrl` with a non-letter key (arrows,
 /// Home/End) returns `false` so normal cursor handling still applies.
-fn apply_ctrl_line_edit(field: &mut impl LineEdit, code: KeyCode, mods: KeyModifiers) -> bool {
+pub(crate) fn apply_ctrl_line_edit(
+    field: &mut impl LineEdit,
+    code: KeyCode,
+    mods: KeyModifiers,
+) -> bool {
     if !mods.contains(KeyModifiers::CONTROL) {
         return false;
     }
@@ -1500,6 +1504,7 @@ pub enum SettingsField {
     FeatGlobalSearch,
     FeatInfoPanel,
     FeatShellPane,
+    FeatCodeReview,
     FeatMouse,
     FeatNotifications,
     FeatSoftDelete,
@@ -1520,13 +1525,14 @@ pub enum SettingsField {
 impl SettingsField {
     /// Field nav order — also the render order (headers are interleaved by the
     /// renderer). Used by [`cycle_field`] and the scroll-windowing logic.
-    pub const ORDER: [SettingsField; 19] = [
+    pub const ORDER: [SettingsField; 20] = [
         SettingsField::FeatTasks,
         SettingsField::FeatAutomations,
         SettingsField::FeatFileViewer,
         SettingsField::FeatGlobalSearch,
         SettingsField::FeatInfoPanel,
         SettingsField::FeatShellPane,
+        SettingsField::FeatCodeReview,
         SettingsField::FeatMouse,
         SettingsField::FeatNotifications,
         SettingsField::FeatSoftDelete,
@@ -1560,6 +1566,11 @@ impl SettingsField {
             FeatGlobalSearch => ("global_search", "Global search", "Global search strip"),
             FeatInfoPanel => ("info_panel", "Info panel", "Info panel column"),
             FeatShellPane => ("shell_pane", "Shell pane", "Per-session shell pane"),
+            FeatCodeReview => (
+                "code_review",
+                "Code review",
+                "Native code-review view (diff + comments)",
+            ),
             FeatMouse => ("mouse", "Mouse", "Mouse: clicks, wheel, drag-select, hover"),
             FeatNotifications => (
                 "notifications",
@@ -1712,6 +1723,7 @@ impl SettingsModal {
             FeatGlobalSearch => f.global_search = !f.global_search,
             FeatInfoPanel => f.info_panel = !f.info_panel,
             FeatShellPane => f.shell_pane = !f.shell_pane,
+            FeatCodeReview => f.code_review = !f.code_review,
             FeatMouse => f.mouse = !f.mouse,
             FeatNotifications => f.notifications = !f.notifications,
             FeatSoftDelete => f.soft_delete = !f.soft_delete,
@@ -1768,6 +1780,7 @@ impl SettingsModal {
             FeatGlobalSearch => on(f.global_search),
             FeatInfoPanel => on(f.info_panel),
             FeatShellPane => on(f.shell_pane),
+            FeatCodeReview => on(f.code_review),
             FeatMouse => on(f.mouse),
             FeatNotifications => on(f.notifications),
             FeatSoftDelete => on(f.soft_delete),
@@ -3185,7 +3198,7 @@ mod tests {
 
     #[test]
     fn settings_order_lists_every_field_once() {
-        assert_eq!(SettingsField::ORDER.len(), 19);
+        assert_eq!(SettingsField::ORDER.len(), 20);
         for f in SettingsField::ORDER {
             assert_eq!(
                 SettingsField::ORDER.iter().filter(|x| **x == f).count(),
@@ -3259,6 +3272,7 @@ mod tests {
             FeatGlobalSearch,
             FeatInfoPanel,
             FeatShellPane,
+            FeatCodeReview,
             FeatSoftDelete,
         ] {
             assert!(!f.restart_required(), "{f:?} should be live");

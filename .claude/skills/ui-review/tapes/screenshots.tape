@@ -36,6 +36,43 @@ Sleep 3s
 # 01 — default view: session list + terminal
 Screenshot "__SHOT_DIR__/01-session-list.png"
 
+# 11-14 — the native code-review view. The "review" session is seeded last, so
+# it's the one selected on launch; Ctrl+R (rebound ToggleReview) opens the diff.
+Ctrl+R
+Sleep 1800ms
+# Move onto a changed line so the comment anchors to it.
+Type "j"
+Sleep 300ms
+Type "j"
+Sleep 300ms
+Type "j"
+Sleep 900ms
+Screenshot "__SHOT_DIR__/11-code-review.png"
+# Inline comment compose + classification badge (Tab cycles the type).
+Type "c"
+Sleep 1000ms
+Type "Use checked_add to surface overflow"
+Sleep 600ms
+Tab
+Sleep 800ms
+Screenshot "__SHOT_DIR__/12-code-review-comment.png"
+Ctrl+S
+Sleep 1200ms
+# Side-by-side layout.
+Type "v"
+Sleep 1200ms
+Screenshot "__SHOT_DIR__/13-code-review-sidebyside.png"
+Type "v"
+Sleep 600ms
+# Target picker (branch / working / per-commit).
+Type "t"
+Sleep 1200ms
+Screenshot "__SHOT_DIR__/14-code-review-targets.png"
+Escape
+Sleep 500ms
+Escape
+Sleep 800ms
+
 # 02 — select a different session (terminal still focused)
 Ctrl+J
 Sleep 1500ms

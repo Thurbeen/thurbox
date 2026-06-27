@@ -28,7 +28,8 @@ pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/t
 # text_primary, text_secondary, text_muted,
 # border_focused, border_unfocused, role_name, branch_name, search_bar,
 # keybind_hint, tool_allowed, tool_disallowed, danger, selection_bg,
-# selection_fg, modal_dim_bg, modal_bg, modal_border, inverted_fg, app_bg.
+# selection_fg, modal_dim_bg, modal_bg, modal_border, inverted_fg,
+# diff_added, diff_removed, diff_added_bg, diff_removed_bg, app_bg.
 # Plus: display_name (string), light (bool), nerd_font (bool).
 #
 # Unknown keys are reported on startup (and fail `thurbox-cli config
@@ -205,6 +206,10 @@ mod tests {
             "modal_bg",
             "modal_border",
             "inverted_fg",
+            "diff_added",
+            "diff_removed",
+            "diff_added_bg",
+            "diff_removed_bg",
             "app_bg",
             "display_name",
             "light",

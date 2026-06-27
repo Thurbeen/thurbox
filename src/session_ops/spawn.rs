@@ -176,6 +176,16 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
         return Err(format!("Failed to persist session: {e}"));
     }
 
+    // Record the worktree's fork point so the code-review view can scope its
+    // diff to `<base>..HEAD`. Only meaningful for worktree sessions; a bare-repo
+    // session leaves it NULL (review falls back to the repo's default branch).
+    if req.worktree_branch.is_some() {
+        let base = req.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
+        if let Err(e) = db.set_session_base_branch(session_id, base) {
+            tracing::warn!("Failed to record session base branch: {e}");
+        }
+    }
+
     // No spawn-time status seed: a fresh session is `Idle` (the hooks-driven
     // default) until the agent's hooks report otherwise — e.g. claude's
     // SessionStart → idle on boot, then working/blocked/done through the turn.

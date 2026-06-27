@@ -1314,3 +1314,116 @@ async fn every_action_is_routed_by_dispatch_action() {
         let _ = h.app.dispatch_action(action);
     }
 }
+
+/// Install a minimal open+focused review on the harness (no git worktree
+/// needed), for testing the view's key fall-through behavior.
+fn open_minimal_review(h: &mut Harness) {
+    use std::collections::HashSet;
+    let sid = h.app.sessions[0].info.id;
+    h.app.code_reviews.insert(
+        sid,
+        crate::app::code_review::CodeReviewState {
+            session_id: sid,
+            repos: Vec::new(),
+            multi: false,
+            files: Vec::new(),
+            comments: Vec::new(),
+            reviewed_files: HashSet::new(),
+            reviewed_hunks: HashSet::new(),
+            fold_override: HashSet::new(),
+            rows: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            compose: None,
+            side_by_side: false,
+            target: crate::app::code_review::ReviewTarget::Working,
+            commits: Vec::new(),
+            host: None,
+            target_picker: None,
+        },
+    );
+    h.app.focus = InputFocus::CodeReview;
+}
+
+/// The review pane toggles shut on its own key, like every other pane: with a
+/// review open and focused, pressing the bound chord (F7) again closes it and
+/// moves focus away. Regression for the key being swallowed by the review's
+/// own capture handler.
+#[test]
+fn review_toggle_key_closes_open_review() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    open_minimal_review(&mut h);
+
+    h.key(KeyCode::F(7), KeyModifiers::NONE);
+
+    assert!(
+        h.app.active_review().is_none(),
+        "pressing the review toggle again closes the open review"
+    );
+    assert_ne!(
+        h.app.focus,
+        InputFocus::CodeReview,
+        "focus leaves the review when it closes"
+    );
+}
+
+/// A review is per-session like the shell view: switching to another session
+/// hides it (and demotes the central focus), and switching back shows it again
+/// — the state is preserved, not torn down.
+#[test]
+fn review_persists_per_session_across_switches() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 2);
+    h.app.active_index = 0;
+    open_minimal_review(&mut h); // review open + focused on session 0
+    h.render();
+    assert!(h.app.active_review().is_some());
+    assert_eq!(h.app.focus, InputFocus::CodeReview);
+
+    // Switch to session 1 (no review): it's hidden and focus drops off the
+    // review (synced on render).
+    h.app.active_index = 1;
+    h.render();
+    assert!(
+        h.app.active_review().is_none(),
+        "the other session has no review"
+    );
+    assert_ne!(
+        h.app.focus,
+        InputFocus::CodeReview,
+        "focus leaves the review when its session isn't active"
+    );
+
+    // Switch back to session 0: the review is still there and re-focused.
+    h.app.active_index = 0;
+    h.render();
+    assert!(
+        h.app.active_review().is_some(),
+        "session 0's review is preserved across the round-trip"
+    );
+    assert_eq!(
+        h.app.focus,
+        InputFocus::CodeReview,
+        "returning to the review session re-focuses it"
+    );
+}
+
+/// Global overlay/panel toggles fall through the review's key capture so they
+/// stay reachable while a review is open (regression: the capture handler
+/// swallowed them). The review itself stays open.
+#[test]
+fn info_panel_toggles_while_review_is_open() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    open_minimal_review(&mut h);
+    assert!(!h.app.show_info_panel);
+
+    h.key(KeyCode::F(2), KeyModifiers::NONE);
+
+    assert!(
+        h.app.show_info_panel,
+        "F2 toggles the info panel even while the review is focused"
+    );
+    assert!(
+        h.app.active_review().is_some(),
+        "toggling the info panel leaves the review open"
+    );
+}

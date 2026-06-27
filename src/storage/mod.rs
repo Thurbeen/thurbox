@@ -15,6 +15,7 @@ pub mod automations;
 pub mod keybindings;
 pub mod messages;
 pub mod repo_bookmarks;
+pub mod review;
 mod schema;
 mod sessions;
 mod settings;

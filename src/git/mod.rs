@@ -222,6 +222,69 @@ pub fn list_branches_on(host: Option<&HostDef>, repo_path: &Path) -> Result<Vec<
     Ok(branches)
 }
 
+/// Raw unified `git diff <base>..HEAD` output for a worktree, for the native
+/// code-review view, optionally on a remote `host` (via `ssh <dest> git …`).
+/// Returns `None` on failure (not a git dir, bad base, …); the caller falls
+/// back to a narrower range or surfaces a status.
+///
+/// `--no-color` keeps the output parseable; the result is fed to
+/// [`crate::session::parse_unified_diff`].
+pub fn diff_against_on(host: Option<&HostDef>, worktree: &Path, base: &str) -> Option<String> {
+    let range = format!("{base}..HEAD");
+    run_diff(host, worktree, &["diff", "--no-color", &range])
+}
+
+/// Raw unified diff of the worktree's **uncommitted** changes vs `HEAD`
+/// (staged + unstaged), for the review view's "working changes" target.
+pub fn diff_working_on(host: Option<&HostDef>, worktree: &Path) -> Option<String> {
+    run_diff(host, worktree, &["diff", "--no-color", "HEAD"])
+}
+
+/// Raw unified diff of a single commit (`git show`), for the review view's
+/// per-commit target. `--format=` suppresses the log message, leaving the patch.
+pub fn show_commit_on(host: Option<&HostDef>, worktree: &Path, sha: &str) -> Option<String> {
+    run_diff(host, worktree, &["show", "--no-color", "--format=", sha])
+}
+
+/// List the commits in `<base>..HEAD` as `(short-sha, subject)`, newest first —
+/// the choices for the review view's per-commit target picker.
+pub fn list_commits_on(
+    host: Option<&HostDef>,
+    worktree: &Path,
+    base: &str,
+) -> Vec<(String, String)> {
+    let range = format!("{base}..HEAD");
+    let Some(out) = run_diff(
+        host,
+        worktree,
+        &["log", "--no-color", "--format=%h%x09%s", &range],
+    ) else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(sha, subj)| (sha.to_string(), subj.to_string()))
+        .collect()
+}
+
+/// Run a `git` command and capture stdout, logging + returning `None` on
+/// failure. Shared by the review-view diff/log helpers.
+///
+/// `core.quotepath=false` keeps non-ASCII paths verbatim (git otherwise
+/// C-quotes them, e.g. `"caf\303\251.rs"`), so the parser keys comments/marks on
+/// the real UTF-8 path.
+fn run_diff(host: Option<&HostDef>, worktree: &Path, args: &[&str]) -> Option<String> {
+    let mut full = vec!["-c", "core.quotepath=false"];
+    full.extend_from_slice(args);
+    let output = git_command(host, worktree, &full).output().ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("git {args:?} failed: {}", stderr.trim());
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Create a git worktree on a new branch and return the worktree directory path.
 ///
 /// Creates `new_branch` starting from `base_branch`.

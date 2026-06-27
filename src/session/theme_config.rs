@@ -48,6 +48,14 @@ pub struct ThemePalette {
 
     pub inverted_fg: Color,
 
+    /// Code-review diff colours: foreground for added / removed lines and a
+    /// subtle full-row background tint for each (GitHub-style). Used by the
+    /// native review view (`ui::code_review`).
+    pub diff_added: Color,
+    pub diff_removed: Color,
+    pub diff_added_bg: Color,
+    pub diff_removed_bg: Color,
+
     /// Background colour painted under the entire app (chrome + PTY cells
     /// that don't set their own bg). Use `Color::Reset` to keep the
     /// terminal's native background — required for the `Default` preset
@@ -270,6 +278,14 @@ pub struct CustomThemeDef {
     #[serde(default)]
     pub inverted_fg: Option<String>,
     #[serde(default)]
+    pub diff_added: Option<String>,
+    #[serde(default)]
+    pub diff_removed: Option<String>,
+    #[serde(default)]
+    pub diff_added_bg: Option<String>,
+    #[serde(default)]
+    pub diff_removed_bg: Option<String>,
+    #[serde(default)]
     pub app_bg: Option<String>,
 }
 
@@ -307,7 +323,7 @@ impl CustomThemeDef {
     /// (`override_array_covers_every_color_field`) asserts it matches the
     /// struct's colour-field count, so a forgotten row can't silently make a
     /// colour un-overridable.
-    const COLOR_OVERRIDE_COUNT: usize = 26;
+    const COLOR_OVERRIDE_COUNT: usize = 30;
 
     /// Materialise the theme: base preset palette + overrides. Unparsable
     /// colours and an unknown base degrade to warnings, never to a hard
@@ -415,6 +431,22 @@ impl CustomThemeDef {
                 &mut palette.modal_border,
             ),
             ("inverted_fg", &self.inverted_fg, &mut palette.inverted_fg),
+            ("diff_added", &self.diff_added, &mut palette.diff_added),
+            (
+                "diff_removed",
+                &self.diff_removed,
+                &mut palette.diff_removed,
+            ),
+            (
+                "diff_added_bg",
+                &self.diff_added_bg,
+                &mut palette.diff_added_bg,
+            ),
+            (
+                "diff_removed_bg",
+                &self.diff_removed_bg,
+                &mut palette.diff_removed_bg,
+            ),
             ("app_bg", &self.app_bg, &mut palette.app_bg),
         ];
         for (field, value, slot) in fields {
@@ -470,6 +502,13 @@ fn default_palette() -> ThemePalette {
         modal_border: Color::Cyan,
 
         inverted_fg: Color::Black,
+
+        // Named-colour preset: green/red fg with dim Indexed backgrounds that
+        // read on a dark terminal (the Default preset keeps app_bg = Reset).
+        diff_added: Color::Green,
+        diff_removed: Color::Red,
+        diff_added_bg: Color::Indexed(22),
+        diff_removed_bg: Color::Indexed(52),
 
         app_bg: Color::Reset,
 
@@ -534,9 +573,30 @@ impl PaletteSlots {
             modal_bg: self.modal_bg,
             modal_border: self.modal_border,
             inverted_fg: self.base_bg,
+            // Diff fg = the theme's green/red; bg = that hue blended ~82% toward
+            // the app background for a subtle full-row tint that works on both
+            // dark and light presets (these all use RGB base colours).
+            diff_added: self.green,
+            diff_removed: self.red,
+            diff_added_bg: blend_rgb(self.green, self.base_bg, 0.82),
+            diff_removed_bg: blend_rgb(self.red, self.base_bg, 0.82),
             app_bg: self.base_bg,
             nerd_font_enabled: false,
         }
+    }
+}
+
+/// Linear-blend `a` toward `b` by `t` (0.0 = all `a`, 1.0 = all `b`). Only
+/// meaningful for `Color::Rgb`; if either side isn't RGB it returns `a`
+/// unchanged (the `Default` preset, which is named-colour, sets diff bgs
+/// explicitly instead).
+fn blend_rgb(a: Color, b: Color, t: f32) -> Color {
+    match (a, b) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            let mix = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t).round() as u8;
+            Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+        }
+        _ => a,
     }
 }
 
@@ -933,5 +993,43 @@ mod tests {
         let total = json.as_object().unwrap().len();
         const META_FIELDS: usize = 5; // name, display_name, base, light, nerd_font
         assert_eq!(total - META_FIELDS, CustomThemeDef::COLOR_OVERRIDE_COUNT);
+    }
+
+    #[test]
+    fn every_preset_defines_review_diff_colours() {
+        // The native code-review view relies on these, so no preset may leave
+        // them unset (the build()-derived presets get them from green/red).
+        for preset in ThemePreset::all() {
+            let p = preset.palette();
+            assert_ne!(p.diff_added, p.diff_removed, "{preset:?}");
+            // The RGB presets blend the bg toward the base; it must differ from
+            // the plain fg so the tint reads as a background.
+            if let Color::Rgb(..) = p.diff_added {
+                assert_ne!(p.diff_added, p.diff_added_bg, "{preset:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn blend_rgb_mixes_and_passes_through_named() {
+        let mid = blend_rgb(Color::Rgb(0, 0, 0), Color::Rgb(100, 100, 100), 0.5);
+        assert_eq!(mid, Color::Rgb(50, 50, 50));
+        // Non-RGB inputs return the first colour unchanged.
+        assert_eq!(
+            blend_rgb(Color::Green, Color::Rgb(0, 0, 0), 0.5),
+            Color::Green
+        );
+    }
+
+    #[test]
+    fn custom_theme_overrides_diff_colour() {
+        let def = CustomThemeDef {
+            name: "x".into(),
+            diff_added: Some("#00ff00".into()),
+            ..Default::default()
+        };
+        let (entry, warnings) = def.resolve();
+        assert!(warnings.is_empty());
+        assert_eq!(entry.palette.diff_added, Color::Rgb(0, 0xff, 0));
     }
 }

@@ -27,7 +27,7 @@ development checkout never touches your real setup.
 the TUI polls their mtime (~1/s) and applies edits with a confirmation
 toast — no restart. For `settings.toml` only the **feature flags that
 gate UI panels** (`tasks`, `file_viewer`, `info_panel`, `global_search`,
-`shell_pane`, `soft_delete`) apply live; the restart-only values stay
+`shell_pane`, `code_review`, `soft_delete`) apply live; the restart-only values stay
 published through a write-once global (so they can't drift mid-frame),
 and the reload toast says when a restart is needed. `hosts.toml` (SSH
 backends register at startup) and `themes.toml` need a restart.
@@ -181,6 +181,7 @@ file_viewer   = true
 global_search = true
 info_panel    = true
 shell_pane    = true
+code_review   = true
 mouse         = true
 notifications = true
 version_check = false          # opt-in: makes a network call
@@ -211,6 +212,7 @@ no results. Data is never touched, so re-enabling a flag is lossless.
 | `global_search` | `true` | global search strip (`Ctrl+/`) |
 | `info_panel` | `true` | info panel column (`F2`) |
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
+| `code_review` | `true` | native code-review view (diff + comments, `F7`) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
@@ -377,8 +379,11 @@ app_bg = "reset"             # keep the terminal's native background
 
 Colours accept anything ratatui parses: `#rrggbb`, ANSI names (`red`,
 `lightcyan`), indexed (`14`), or `reset`. The seeded file lists every
-overridable key. Bad colours and built-in name collisions degrade to
-startup warnings (the base colour / the built-in stays in effect).
+overridable key — including the code-review diff colours `diff_added` /
+`diff_removed` (added/removed line foreground) and `diff_added_bg` /
+`diff_removed_bg` (the subtle full-row tint). Bad colours and built-in name
+collisions degrade to startup warnings (the base colour / the built-in stays in
+effect).
 
 ## keybindings.json
 

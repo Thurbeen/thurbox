@@ -1,6 +1,7 @@
 mod automation;
 mod automation_state;
 mod background;
+pub(crate) mod code_review;
 mod config_reload;
 mod helpers;
 mod key_handlers;
@@ -116,6 +117,10 @@ struct PendingSessionSpawn {
     /// Agent name for the spawn, captured so a failure toast names the real
     /// agent (codex/aider/…) rather than hardcoding "claude".
     agent: String,
+    /// Base branch the worktree was forked from (worktree spawns only),
+    /// persisted once the session is live so the code-review view can scope its
+    /// diff to `<base>..HEAD`. `None` for bare-repo / fork spawns.
+    base_branch: Option<String>,
 }
 
 /// Continuation for a backgrounded worktree-creation: the wizard inputs needed
@@ -129,6 +134,9 @@ struct PendingWorktreeCreate {
     /// Session name when already known (worktree flow); `None` routes through
     /// the name modal.
     session_name: Option<String>,
+    /// Base branch the worktrees were forked from, carried through to the spawn
+    /// so it can be persisted for the code-review view.
+    base_branch: String,
 }
 
 /// Create one worktree per repo off the UI thread, rolling back any already
@@ -367,6 +375,8 @@ pub(crate) enum ScrollTarget {
     TaskPreview,
     FileViewer,
     RunHistory,
+    /// The code-review view's diff scrollbar.
+    CodeReview,
     /// The active modal's list scrollbar — position is the selection index.
     Modal,
 }
@@ -414,6 +424,13 @@ pub(crate) enum ClickAction {
     /// Focus an **in-pane editor** (automation / task) and select its index-th
     /// visible field. Dispatched by `activate_click_target`.
     PaneField { focus: InputFocus, index: usize },
+    /// Select the code-review row at this index in `code_review.rows`.
+    ReviewRow(usize),
+    /// A code-review footer button.
+    ReviewButton(code_review::ReviewButton),
+    /// Jump the diff to the changed-file at this diff-file index (clicked in the
+    /// changed-files list).
+    ReviewFile(usize),
 }
 
 /// One clickable region rendered this frame: its rect plus what a click on it
@@ -437,6 +454,9 @@ enum ScrollPane {
     SessionList,
     TasksList,
     Automations,
+    CodeReview,
+    /// The changed-files list shown in the file-viewer column during a review.
+    ReviewFiles,
 }
 
 #[derive(Debug, Clone)]
@@ -469,6 +489,9 @@ pub enum InputFocus {
     GlobalSearch,
     Terminal,
     FileViewer,
+    /// The native code-review view occupying the central pane (toggled like the
+    /// shell). Captures keys for its own navigation / commenting.
+    CodeReview,
 }
 
 /// Which pane the terminal view is showing for a given session.
@@ -512,6 +535,11 @@ pub struct App {
     pub(crate) show_tasks_panel: bool,
     pub(crate) show_file_viewer: bool,
     pub(crate) file_viewer: crate::ui::file_viewer::FileViewerState,
+    /// Open native code-review views, keyed by session — persisted per session
+    /// like [`Self::session_terminal_views`] (the shell view), so switching
+    /// sessions and returning keeps the review open. The active session's entry
+    /// (if any) is reached via [`Self::active_review`] / [`Self::active_review_mut`].
+    pub(crate) code_reviews: std::collections::HashMap<SessionId, code_review::CodeReviewState>,
     pub(crate) modal: modals::Modal,
     /// In-progress new-session wizard (also drives fork/restart re-spawns).
     pub(crate) new_session: new_session_state::NewSessionWizardState,
@@ -814,6 +842,7 @@ impl App {
             show_tasks_panel: false,
             show_file_viewer: false,
             file_viewer: crate::ui::file_viewer::FileViewerState::new(),
+            code_reviews: std::collections::HashMap::new(),
             modal: modals::Modal::None,
             new_session: new_session_state::NewSessionWizardState::default(),
             sync_state,
@@ -1482,6 +1511,7 @@ impl App {
         let session_name = removed_session.info.name.clone();
 
         self.session_terminal_views.remove(&session_id);
+        self.code_reviews.remove(&session_id);
 
         self.sync_active_session_to_project();
 
@@ -1571,6 +1601,7 @@ impl App {
         let removed_session = self.sessions.remove(idx);
         let session_name = removed_session.info.name.clone();
         self.session_terminal_views.remove(&session_id);
+        self.code_reviews.remove(&session_id);
 
         if self.active_index >= self.sessions.len() {
             self.active_index = self.sessions.len().saturating_sub(1);
@@ -1883,6 +1914,34 @@ impl App {
             .and_then(|s| self.session_terminal_views.get(&s.info.id))
             .copied()
             .unwrap_or(TerminalView::Claude)
+    }
+
+    /// The active session's open code-review view, if any. The review is stored
+    /// per session in [`Self::code_reviews`] so it persists across switches.
+    pub(crate) fn active_review(&self) -> Option<&code_review::CodeReviewState> {
+        let sid = self.sessions.get(self.active_index)?.info.id;
+        self.code_reviews.get(&sid)
+    }
+
+    /// Mutable [`Self::active_review`].
+    pub(crate) fn active_review_mut(&mut self) -> Option<&mut code_review::CodeReviewState> {
+        let sid = self.sessions.get(self.active_index)?.info.id;
+        self.code_reviews.get_mut(&sid)
+    }
+
+    /// Keep the central-pane focus consistent with the active session's review:
+    /// promote `Terminal`→`CodeReview` when that session has a review open (the
+    /// review owns the central pane, so terminal focus is meaningless there), and
+    /// demote `CodeReview`→`Terminal` when it doesn't (after switching to a
+    /// non-review session). Mirrors how the shell view follows the session; other
+    /// focuses (session list, file viewer, …) are left untouched.
+    pub(crate) fn sync_review_focus(&mut self) {
+        let has_review = self.active_review().is_some();
+        match self.focus {
+            InputFocus::CodeReview if !has_review => self.focus = InputFocus::Terminal,
+            InputFocus::Terminal if has_review => self.focus = InputFocus::CodeReview,
+            _ => {}
+        }
     }
 
     pub(crate) fn with_active_parser(&self, f: impl FnOnce(&mut crate::agent::SessionParser)) {
@@ -2249,6 +2308,18 @@ impl App {
                 self.select_pane_field(focus, index);
                 true
             }
+            ClickAction::ReviewRow(i) => {
+                self.cr_select_row(i);
+                true
+            }
+            ClickAction::ReviewButton(button) => {
+                self.cr_button(button);
+                true
+            }
+            ClickAction::ReviewFile(fi) => {
+                self.cr_jump_to_file(fi);
+                true
+            }
         }
     }
 
@@ -2370,6 +2441,13 @@ impl App {
                     .saturating_sub(1);
                 self.automation_ui.automation_run_index = pos.min(max);
             }
+            ScrollTarget::CodeReview => {
+                // The review is selection-primary: `render_rows` derives `scroll`
+                // from `selected` every frame, so setting `scroll` directly here
+                // would snap back. Move the selection instead (matching the wheel
+                // + keyboard paths); the scroll offset follows on render.
+                self.cr_select_row(pos);
+            }
             ScrollTarget::Modal => self.step_modal_selection_to(pos),
         }
     }
@@ -2478,6 +2556,8 @@ impl App {
             }
             Some(ScrollPane::TasksList) => self.move_task_selection(step),
             Some(ScrollPane::Automations) => self.move_automation_selection(step),
+            Some(ScrollPane::CodeReview) => self.cr_move(step as isize),
+            Some(ScrollPane::ReviewFiles) => self.cr_jump_file(!up),
         }
     }
 
@@ -2503,6 +2583,10 @@ impl App {
         let hit = |r: Option<Rect>| r.map(|r| r.contains(pos)).unwrap_or(false);
 
         if hit(areas.file_viewer) {
+            // During a review this column hosts the changed-files list.
+            if self.active_review().is_some() {
+                return Some(ScrollPane::ReviewFiles);
+            }
             return Some(ScrollPane::FileViewer);
         }
         if hit(areas.tasks_panel) {
@@ -2520,6 +2604,7 @@ impl App {
             return Some(match self.focus {
                 InputFocus::TaskList | InputFocus::TaskEditor => ScrollPane::TaskPreview,
                 InputFocus::AutomationRunHistory => ScrollPane::RunHistory,
+                InputFocus::CodeReview => ScrollPane::CodeReview,
                 _ => ScrollPane::Terminal,
             });
         }
@@ -2781,6 +2866,7 @@ impl App {
             backend,
             normal_repos,
             session_name,
+            base_branch: base_branch.clone(),
         });
         self.set_status(StatusLevel::Info, "Creating worktree(s)…");
         tokio::task::spawn_blocking(move || {
@@ -2831,6 +2917,9 @@ impl App {
             .collect();
         additional_dirs.extend(pending.normal_repos);
         self.new_session.additional_dirs = additional_dirs;
+        // Carry the fork point to the spawn so it can be persisted for the
+        // code-review view (scopes the diff to `<base>..HEAD`).
+        self.new_session.spawn_base_branch = Some(pending.base_branch);
 
         let config = SessionConfig {
             cwd: Some(primary_path),
@@ -2979,6 +3068,7 @@ impl App {
     /// Adopt a freshly spawned [`Session`] into the app: attach its metadata,
     /// select + focus it, persist, and run any task-initiated follow-up. Shared
     /// by the synchronous and backgrounded spawn paths.
+    #[allow(clippy::too_many_arguments)]
     fn finalize_spawned_session(
         &mut self,
         mut session: Session,
@@ -2987,6 +3077,7 @@ impl App {
         additional_dirs: Vec<PathBuf>,
         parent_session_id: Option<SessionId>,
         task_prompt: Option<(i64, String)>,
+        base_branch: Option<String>,
     ) {
         session.info.cwd = primary_cwd;
         session.info.worktrees = worktrees;
@@ -2994,12 +3085,22 @@ impl App {
         session.info.parent_session_id = parent_session_id;
 
         resolve_repo_display_names(&mut session.info);
+        let session_id = session.info.id;
         self.sessions.push(session);
         self.active_index = self.sessions.len() - 1;
         self.focus = InputFocus::Terminal;
         self.status_message = None;
 
         self.save_state();
+
+        // Persist the worktree's fork point (write-once, like the hook columns)
+        // so the code-review view can scope its diff to `<base>..HEAD`. Runs
+        // after `save_state` so the row exists; `upsert_session` never lists it.
+        if let Some(base) = base_branch {
+            if let Err(e) = self.db.set_session_base_branch(session_id, &base) {
+                tracing::warn!("Failed to record session base branch: {e}");
+            }
+        }
         // No spawn-time status seed: a fresh session is `Idle` until the agent's
         // hooks report otherwise (claude's SessionStart → idle on boot, then
         // working/blocked/done). Seeding `working` made an idle session look
@@ -3040,6 +3141,7 @@ impl App {
     ) {
         let additional_dirs = std::mem::take(&mut self.new_session.additional_dirs);
         let parent_session_id = self.new_session.parent_session_id.take();
+        let base_branch = self.new_session.spawn_base_branch.take();
         let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
             return;
         };
@@ -3061,6 +3163,7 @@ impl App {
                     additional_dirs,
                     parent_session_id,
                     task_prompt,
+                    base_branch,
                 );
             }
             Err(e) => {
@@ -3088,6 +3191,7 @@ impl App {
 
         let additional_dirs = std::mem::take(&mut self.new_session.additional_dirs);
         let parent_session_id = self.new_session.parent_session_id.take();
+        let base_branch = self.new_session.spawn_base_branch.take();
         let Some(inputs) = self.build_spawn_inputs(config, &worktrees, &additional_dirs) else {
             return;
         };
@@ -3111,6 +3215,7 @@ impl App {
             parent_session_id,
             task_prompt,
             agent,
+            base_branch,
         });
         self.set_status(StatusLevel::Info, format!("Spawning {name}…"));
 
@@ -3144,6 +3249,7 @@ impl App {
                 pending.additional_dirs,
                 pending.parent_session_id,
                 pending.task_prompt,
+                pending.base_branch,
             ),
             Err(e) => {
                 error!("Failed to spawn session: {e}");
@@ -4890,7 +4996,9 @@ impl App {
             area,
             self.show_info_panel,
             self.show_tasks_panel,
-            self.show_file_viewer,
+            // The review's changed-files list lives in the file-viewer column, so
+            // force that column present while a review is open.
+            self.show_file_viewer || self.active_review().is_some(),
             self.global_search.active,
             self.features.automations,
             self.automation_ui.cached_automations.len(),
@@ -6668,6 +6776,7 @@ mod tests {
             global_search: false,
             info_panel: false,
             shell_pane: false,
+            code_review: false,
             mouse: true,
             notifications: false,
             soft_delete: true,
@@ -6699,6 +6808,12 @@ mod tests {
 
         app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
         assert_eq!(app.active_terminal_view(), TerminalView::Claude);
+        assert!(app.status_message.take().unwrap().text.contains("disabled"));
+
+        // F7 (ToggleReview) is gated by the code_review flag.
+        app.handle_key(KeyCode::F(7), KeyModifiers::NONE);
+        assert!(app.active_review().is_none());
+        assert_ne!(app.focus, InputFocus::CodeReview);
         assert!(app.status_message.take().unwrap().text.contains("disabled"));
     }
 
@@ -9736,6 +9851,7 @@ mod tests {
             backend: None,
             normal_repos: vec![PathBuf::from("/other")],
             session_name: None, // no name yet → routes through the name modal
+            base_branch: "main".into(),
         });
 
         app.poll_worktree_create();
@@ -9760,6 +9876,7 @@ mod tests {
             backend: None,
             normal_repos: vec![],
             session_name: None,
+            base_branch: "main".into(),
         });
 
         app.poll_worktree_create();
@@ -9779,6 +9896,7 @@ mod tests {
             backend: None,
             normal_repos: vec![],
             session_name: None,
+            base_branch: "main".into(),
         });
 
         app.poll_worktree_create();
@@ -9799,6 +9917,7 @@ mod tests {
             parent_session_id: None,
             task_prompt: None,
             agent: "codex".into(),
+            base_branch: None,
         });
 
         app.poll_session_spawn();
@@ -9824,6 +9943,7 @@ mod tests {
             parent_session_id: None,
             task_prompt: None,
             agent: "claude".into(),
+            base_branch: None,
         });
 
         app.poll_session_spawn();

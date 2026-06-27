@@ -34,6 +34,10 @@ impl App {
         self.scrollbar_hits.clear();
         self.click_targets.clear();
 
+        // Keep the central-pane focus aligned with the active session's review
+        // (it may have changed under us via a session switch) before laying out.
+        self.sync_review_focus();
+
         let areas = self.layout_for(frame.area());
 
         self.render_header(frame, areas.header);
@@ -440,6 +444,24 @@ impl App {
         let Some(fv_area) = fv_area else {
             return;
         };
+        // While a review is open, this column shows the review's changed-files
+        // list (the navigation aid) instead of the working-tree file viewer.
+        if self.active_review().is_some() {
+            let rows = self.active_review().map(|cr| {
+                crate::ui::code_review::render_files_list(
+                    frame,
+                    fv_area,
+                    cr,
+                    crate::ui::FocusLevel::Active,
+                )
+            });
+            if let Some(rows) = rows {
+                for h in rows {
+                    self.record_click(h.rect, ClickAction::ReviewFile(h.index));
+                }
+            }
+            return;
+        }
         if let Some(session) = self.sessions.get(self.active_index) {
             if self.file_viewer.needs_rebuild_for(&session.info) {
                 self.file_viewer.rebuild_from_session(&session.info);
@@ -513,6 +535,34 @@ impl App {
             return;
         }
 
+        // The native code-review view takes over the central pane whenever the
+        // active session has one open — persisted per session like the shell
+        // view, so it survives session switches. It renders even when not the
+        // focused pane (dimmed), exactly like the shell view stays visible.
+        if self.active_review().is_some() {
+            let level = if self.focus == InputFocus::CodeReview {
+                crate::ui::FocusLevel::Focused
+            } else {
+                crate::ui::FocusLevel::Active
+            };
+            let hits = self
+                .active_review_mut()
+                .map(|cr| crate::ui::code_review::render(frame, terminal, cr, level));
+            if let Some(hits) = hits {
+                // Row + button targets first (first match wins), then the
+                // whole-pane focus fallback.
+                for h in hits.rows {
+                    self.record_click(h.rect, ClickAction::ReviewRow(h.index));
+                }
+                for (h, action) in hits.buttons {
+                    self.record_click(h.rect, ClickAction::ReviewButton(action));
+                }
+                self.record_click(terminal, ClickAction::FocusPane(InputFocus::CodeReview));
+                self.record_scrollbar(hits.scrollbar, ScrollTarget::CodeReview);
+            }
+            return;
+        }
+
         let terminal_focus = match self.focus {
             InputFocus::Terminal => crate::ui::FocusLevel::Focused,
             InputFocus::SessionList
@@ -522,6 +572,7 @@ impl App {
             | InputFocus::TaskList
             | InputFocus::TaskEditor
             | InputFocus::GlobalSearch
+            | InputFocus::CodeReview
             | InputFocus::FileViewer => crate::ui::FocusLevel::Active,
         };
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
@@ -581,6 +632,7 @@ impl App {
             InputFocus::Terminal => "Terminal",
             InputFocus::FileViewer => "Files",
             InputFocus::GlobalSearch => "Search",
+            InputFocus::CodeReview => "Review",
         };
         let button_hits = status_bar::render_footer(
             frame,
@@ -1357,6 +1409,18 @@ fn render_help_overlay(
     help_lines.push(help_line(
         "PgUp/PgDn".into(),
         "Tasks: scroll the description preview",
+    ));
+    help_lines.push(help_line(
+        "j/k {} []".into(),
+        "Code review: move · {}/[] jump file/hunk · g/G top/bottom · v split view",
+    ));
+    help_lines.push(help_line(
+        "c/f/s".into(),
+        "Code review: comment line/file/summary · r/R mark file/hunk reviewed (folds file)",
+    ));
+    help_lines.push(help_line(
+        "Enter · x · y/e · t".into(),
+        "Code review: fold/unfold file (edit comment on a comment row) · delete · copy/send · target",
     ));
     help_lines.push(help_line(
         "Mouse wheel".into(),

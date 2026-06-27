@@ -35,6 +35,8 @@ pub enum Action {
     OpenAutomations,
     StartSync,
     ToggleShell,
+    /// Toggle the native code-review view for the active session.
+    ToggleReview,
     ForkSession,
     RestartSession,
     UndoDelete,
@@ -105,6 +107,7 @@ impl Action {
             Action::OpenAutomations,
             Action::StartSync,
             Action::ToggleShell,
+            Action::ToggleReview,
             Action::ForkSession,
             Action::RestartSession,
             Action::UndoDelete,
@@ -152,6 +155,7 @@ impl Action {
             Action::OpenAutomations => "Automations",
             Action::StartSync => "Sync worktrees",
             Action::ToggleShell => "Toggle shell view",
+            Action::ToggleReview => "Toggle code review",
             Action::ForkSession => "Fork session",
             Action::RestartSession => "Restart session",
             Action::UndoDelete => "Undo delete",
@@ -282,6 +286,9 @@ impl Action {
             Action::OpenAutomations => vec![KeyChord::ctrl('p')],
             Action::StartSync => vec![KeyChord::ctrl('s')],
             Action::ToggleShell => vec![KeyChord::ctrl('t')],
+            // F7 — the Ctrl+<letter> namespace is full and F-keys never collide
+            // with the PTY's readline chords. Fully rebindable.
+            Action::ToggleReview => vec![KeyChord::function(7)],
             Action::ForkSession => vec![KeyChord::ctrl('f')],
             Action::RestartSession => vec![KeyChord::ctrl('r')],
             Action::UndoDelete => vec![KeyChord::ctrl('z')],
@@ -421,6 +428,7 @@ pub fn help_sections() -> Vec<(&'static str, Vec<Action>)> {
             vec![
                 QuitApp,
                 ToggleShell,
+                ToggleReview,
                 ToggleHelp,
                 ToggleInfoPanel,
                 ToggleFileViewer,
@@ -1106,6 +1114,7 @@ mod tests {
                 Action::OpenAutomations => 0,
                 Action::StartSync => 0,
                 Action::ToggleShell => 0,
+                Action::ToggleReview => 0,
                 Action::ForkSession => 0,
                 Action::RestartSession => 0,
                 Action::UndoDelete => 0,
@@ -1144,7 +1153,7 @@ mod tests {
         }
         // The listed variants must equal Action::all().len(). If you add
         // a variant, update both `Action::all()` and the match above.
-        const EXPECTED: usize = 41;
+        const EXPECTED: usize = 42;
         assert_eq!(Action::all().len(), EXPECTED);
         for a in Action::all() {
             classify(*a);

@@ -373,6 +373,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+W` / `F5` | Global | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global | Global search across every scope | **/** = search |
 | `Ctrl+T` | Global | Toggle shell pane alongside the agent session | **T**erminal |
+| `F7` | Global | Toggle the native code-review view | Review |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Global | Select previous session | Vim: **k** = up |
@@ -549,6 +550,87 @@ environment.
 several directories at once; opening only the cwd would hide the
 rest. The editor command receives every working path so the user's
 editor of choice can open them as a workspace.
+
+---
+
+## Code Review (native)
+
+Thurbox ships a **native, built-in** tuicr-like review view (`F7`): a
+GitHub-style continuous diff of the active session's worktree
+(`<base>..HEAD`) with classified comments (issue / suggestion / note /
+praise), per-file/hunk "reviewed" marks, and a review summary — rendered
+directly by thurbox and persisted in SQLite.
+
+**Why native, not the external `tuicr` binary?** An earlier attempt
+launched `tuicr` inside a tmux pane. Nesting a full ratatui TUI inside
+thurbox's vt100 parser is janky (double-render, input quirks), needs the
+binary installed, and the feedback loop was clunky. Rendering the diff
+ourselves makes it a first-class panel: instant toggle, real mouse
+support, and direct access to the session's git state and agent.
+
+**Why a central-pane view with its own focus (not a `TerminalView` like
+the shell)?** The shell pane forwards keystrokes to a PTY; a review view
+must *capture* keys (navigation, commenting). So it gets its own
+`InputFocus::CodeReview` and owns the central pane while open, modeled on
+the file-viewer/task panels rather than the shell toggle.
+
+**Why a changed-files list in the file-viewer column?** A large diff is
+hard to navigate as one stream, so the file-viewer column lists the
+changed files (forced visible while a review is open); it tracks the file
+under the cursor and clicking a row jumps the diff to that file. The
+diff stays a single continuous stream (closest to tuicr) — the list is a
+jump aid, not a separate per-file view. `{`/`}` jump files and `[`/`]`
+jump hunks, matching tuicr.
+
+**Why selectable review targets?** Like tuicr (`-r`/`-w`/a commit), the
+diff can show the whole branch (`<base>..HEAD`), the uncommitted working
+changes (`git diff HEAD`), or a single commit (`git show`). `t` opens an
+in-view picker listing Working, Branch, and each commit in the range;
+selecting one recomputes the diff. A session with no resolvable base
+defaults to the working-changes target, so even a bare checkout reviews.
+
+**Why review all repos at once?** A thurbox session can span several
+repositories (and flow opens a PR per repo), so a review that only saw the
+primary repo would miss most of the change. A multi-repo session reviews
+every worktree in one stream: each repo's diff is built and concatenated,
+with file paths namespaced `<repo>/<path>` so files, comments, and
+reviewed-marks never collide across repos. Each repo resolves its own base
+(the session base if that branch exists there, else its own default
+branch); the commit target lists commits across all repos, repo-tagged.
+
+**Why unified *and* side-by-side?** tuicr offers both (its `diff_view`);
+`v` toggles them. v1's side-by-side is split-column (one source line per
+row — context on both sides, additions/deletions on their own side) so
+selection + comment anchoring (1 row = 1 line) stay intact; true paired
+side-by-side is a follow-up.
+
+**Why syntax highlighting?** Plain diffs are hard to skim. A small,
+dependency-free lexer (`ui::syntax`) colours comments / strings / numbers
+/ keywords / type names from the theme palette, so code reads like code.
+Add/remove stays on the gutter `+`/`-` and the row tint, leaving the text
+free to carry syntax colour. It's heuristic + language-agnostic (no
+grammar engine, no heavy dependency); a grammar-aware upgrade is a
+follow-up.
+
+**Why mouse-first, no vim modal?** To match thurbox's own interaction
+model (clicks, buttons, scrollbars, wheel) rather than tuicr's heavy vim
+modes — though the tuicr movement keys (`j`/`k`, `{`/`}`, `[`/`]`,
+`g`/`G`) work too. A comment is composed in an in-view box that **floats
+inline at the line** being commented (not pinned to the bottom), so the
+edit happens where you're looking; "mark reviewed" works from any row in
+the file, not just its header.
+
+**Why persist a base branch?** Reviewing `<base>..HEAD` needs the fork
+point, which thurbox didn't store. A write-once `sessions.base_branch`
+column (schema v37, like the hook columns) records it at spawn; legacy
+rows fall back to the repo's default branch.
+
+**Export is the agent, not GitHub.** GitHub/GitLab submit is out of
+scope; the payoff of reviewing *inside* an orchestrator is closing the
+loop — `Send→Agent` pastes the compiled review into the session's agent
+to address, and `Copy` yields markdown. Diff data types + the unified-diff
+parser live in `session::review` (pure, so `ui` renders them without
+importing `git`); persistence in `storage::review`.
 
 ---
 

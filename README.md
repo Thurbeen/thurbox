@@ -278,6 +278,24 @@ result; `Esc` restores exactly what you had.
 <tr>
 <td width="50%" valign="middle">
 
+### Code Review
+
+A native, GitHub-style diff reviewer (`F7`) — no external tool. Browse the
+branch (`<base>..HEAD`), a single commit, or the uncommitted changes; leave
+classified comments (issue / suggestion / note / praise) and a summary; mark
+files reviewed; then send the whole review back to the agent to address.
+Mouse- and keyboard-driven, with unified or side-by-side layout.
+
+[Keybindings →](#keybindings)
+
+</td>
+<td width="50%">
+  <img src="./docs/media/code-review-demo.gif" alt="Code review demo" width="100%" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
+
 ### Info Panel & Live Metrics
 
 `Ctrl+B` (`F2`) shows per-session details with live CPU/RAM and agent

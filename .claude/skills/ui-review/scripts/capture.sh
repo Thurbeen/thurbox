@@ -137,15 +137,17 @@ trap cleanup EXIT INT TERM
     fi
 } > "$CFG_DIR/agents.toml"
 
-# --- Keybindings override (VHS can't type Ctrl+, or F-keys) ------------------
-# Remap the two actions whose default chords VHS cannot emit to free, typeable
+# --- Keybindings override (VHS can't type Ctrl+, , Ctrl+/, or F-keys) --------
+# Remap the actions whose default chords VHS cannot emit to free, typeable
 # Ctrl+<letter> chords so the tape can open them. The rendered panels are
 # identical regardless of which key opens them.
-#   GlobalSearch: default Ctrl+/ -> Ctrl+A   OpenSettings: default Ctrl+, -> Ctrl+X
+#   GlobalSearch: Ctrl+/ -> Ctrl+A   OpenSettings: Ctrl+, -> Ctrl+X
+#   ToggleReview: F7     -> Ctrl+R   (code-review view)
 cat > "$CFG_DIR/keybindings.json" <<'EOF'
 {
   "GlobalSearch": ["ctrl+a"],
-  "OpenSettings": ["ctrl+x"]
+  "OpenSettings": ["ctrl+x"],
+  "ToggleReview": ["ctrl+r"]
 }
 EOF
 
@@ -181,6 +183,7 @@ EOF
 git init -q "$DEMO_REPO"
 git -C "$DEMO_REPO" -c user.email=ui@thurbox -c user.name=ui add -A
 git -C "$DEMO_REPO" -c user.email=ui@thurbox -c user.name=ui commit -q -m "init sample project"
+DEMO_BASE_BRANCH=$(git -C "$DEMO_REPO" symbolic-ref --short HEAD)
 
 # --- Seed sessions + tasks + an automation ----------------------------------
 log "Seeding sessions for:$AGENTS"
@@ -206,6 +209,42 @@ if [ "$got" != "$want" ] || [ -n "$escaped" ]; then
 $escaped}
 This means THURBOX_DATA_DIR/THURBOX_CONFIG_DIR (or similar) pointed the dev
 binary at your real data. Aborting before any further writes."
+fi
+
+# A worktree session with a committed multi-file diff, created LAST so the TUI
+# selects it on launch — the code-review view (F7 / Ctrl+R here) diffs
+# <base>..HEAD of this worktree, so the review screenshots show a real diff.
+review_agent=$(printf '%s\n' $AGENTS | head -n1)
+"$CLI_BIN" session create --name "review" --repo-path "$DEMO_REPO" \
+    --agent "$review_agent" --worktree-branch "review/demo" \
+    --base-branch "$DEMO_BASE_BRANCH" >/dev/null
+REVIEW_WT=$(git -C "$DEMO_REPO" worktree list --porcelain \
+    | awk '/^worktree /{p=substr($0,10)} $0=="branch refs/heads/review/demo"{print p}')
+if [ -n "$REVIEW_WT" ]; then
+    cat > "$REVIEW_WT/src/lib.rs" <<'EOF'
+pub fn add(a: i64, b: i64) -> i64 {
+    a.wrapping_add(b)
+}
+
+pub fn mul(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
+EOF
+    cat > "$REVIEW_WT/src/greet.rs" <<'EOF'
+pub fn greet(name: &str) -> String {
+    format!("hello, {name}!")
+}
+EOF
+    cat > "$REVIEW_WT/src/main.rs" <<'EOF'
+mod greet;
+
+fn main() {
+    println!("{}", greet::greet("sample-project"));
+}
+EOF
+    git -C "$REVIEW_WT" -c user.email=ui@thurbox -c user.name=ui add -A
+    git -C "$REVIEW_WT" -c user.email=ui@thurbox -c user.name=ui \
+        commit -q -m "feat: add greeting + checked arithmetic"
 fi
 
 log "Seeding tasks + an automation"
@@ -257,6 +296,10 @@ emit() { # file label screen keys
         printf '%s' "$entry"
     done <<'MANIFEST'
 01-session-list.png|Session list + terminal (default view)|session-list|launch
+11-code-review.png|Code-review view: diff + changed-files column|code-review|Ctrl+X
+12-code-review-comment.png|Code review: inline comment compose + classification|code-review|c
+13-code-review-sidebyside.png|Code review: side-by-side diff layout|code-review|v
+14-code-review-targets.png|Code review: target picker (branch/working/commit)|code-review|t
 02-second-session.png|A different session selected|session-list|Ctrl+J
 03-info-panel.png|Session info panel|info-panel|Ctrl+B
 04-file-viewer.png|File viewer (repo tree)|file-viewer|Ctrl+E

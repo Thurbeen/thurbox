@@ -169,6 +169,21 @@ impl Theme {
         current().danger
     }
 
+    // ── Code-review diff ──────────────────────────────────────────────────────
+
+    pub fn diff_added() -> Color {
+        current().diff_added
+    }
+    pub fn diff_removed() -> Color {
+        current().diff_removed
+    }
+    pub fn diff_added_bg() -> Color {
+        current().diff_added_bg
+    }
+    pub fn diff_removed_bg() -> Color {
+        current().diff_removed_bg
+    }
+
     // ── Selection ───────────────────────────────────────────────────────────
 
     pub fn selection_bg() -> Color {

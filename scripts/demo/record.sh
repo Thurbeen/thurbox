@@ -12,6 +12,7 @@
 #   * automations-demo.{gif,mp4}        (automations.tape)
 #   * tasks-demo.{gif,mp4}              (tasks.tape)
 #   * search-demo.{gif,mp4}             (search.tape)
+#   * code-review-demo.{gif,mp4}        (code-review.tape)
 #
 # Every clip drives the actual `claude`, `opencode`, `codex` and `antigravity` CLIs —
 # one per thurbox session — to showcase real multi-agent orchestration. No prompt
@@ -48,7 +49,7 @@ set -eu
 # the combined hero demo (docs/media/thurbox-demo.*); the rest are per-feature
 # clips (`automations` -> automations-demo.*, `tasks` -> tasks-demo.*, `search`
 # -> search-demo.*, others -> thurbox-<stem>.*).
-ALL_TAPES="agents file-manager info-panel theme session-creation fork automations tasks search"
+ALL_TAPES="agents file-manager info-panel theme session-creation fork automations tasks search code-review"
 TAPES="${*:-$ALL_TAPES}"
 
 # thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
@@ -162,7 +163,11 @@ trap cleanup EXIT INT TERM
 # The search.tape opens the strip with Ctrl+A — an unambiguous chord every
 # terminal sends — so seed a keybindings.json that maps it. Only GlobalSearch is
 # overridden; every other action keeps its built-in default.
-printf '{\n  "GlobalSearch": ["ctrl+a"]\n}\n' > "$CFG_DIR/keybindings.json"
+# The code-review view toggles with F7 by default, which VHS also can't send, so
+# it is rebound to Ctrl+X for the code-review tape. Both overrides are harmless
+# for the other tapes.
+printf '{\n  "GlobalSearch": ["ctrl+a"],\n  "ToggleReview": ["ctrl+x"]\n}\n' \
+    > "$CFG_DIR/keybindings.json"
 
 # --- A throwaway sample repo so the file viewer shows a realistic tree --------
 DEMO_REPO="$DEMO_HOME/sample-project"
@@ -197,6 +202,9 @@ git init -q "$DEMO_REPO"
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo add -A
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo \
     commit -q -m "init sample project"
+# The branch the initial commit landed on (master or main, per the host's git
+# config) — used as the code-review demo's worktree base.
+DEMO_BASE_BRANCH=$(git -C "$DEMO_REPO" symbolic-ref --short HEAD)
 
 # --- A parent folder of several repos, for the "import as parent" demo --------
 # Lives under $HOME so the session-creation tape can type `~/projects` and have
@@ -290,6 +298,51 @@ for a in $AGENTS; do
     "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
 done
 
+# --- Code-review demo: a worktree session with a real committed diff ---------
+# The review view diffs <base>..HEAD of a session's worktree, so the code-review
+# tape needs a session whose branch actually has changes. Create it LAST so it's
+# the session the TUI selects on launch (restore makes the most-recently-created
+# session active), on a worktree off the sample repo, then commit a small
+# multi-file change into that worktree so the Branch target shows a colourful
+# diff. Gated on the code-review tape so other clips stay fast / unchanged.
+# shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
+if printf '%s ' $TAPES | grep -Eq '(^| )code-review( |$)'; then
+    echo "==> Seeding a worktree review session with a committed diff"
+    review_agent=$(printf '%s\n' $AGENTS | head -n1)
+    "$CLI_BIN" session create --name "review" --repo-path "$DEMO_REPO" \
+        --agent "$review_agent" --worktree-branch "review/demo" \
+        --base-branch "$DEMO_BASE_BRANCH" >/dev/null
+    # Resolve the worktree path thurbox created for branch review/demo.
+    REVIEW_WT=$(git -C "$DEMO_REPO" worktree list --porcelain \
+        | awk '/^worktree /{p=substr($0,10)} $0=="branch refs/heads/review/demo"{print p}')
+    if [ -n "$REVIEW_WT" ]; then
+        cat > "$REVIEW_WT/src/lib.rs" <<'EOF'
+pub fn add(a: i64, b: i64) -> i64 {
+    a.wrapping_add(b)
+}
+
+pub fn mul(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
+EOF
+        cat > "$REVIEW_WT/src/greet.rs" <<'EOF'
+pub fn greet(name: &str) -> String {
+    format!("hello, {name}!")
+}
+EOF
+        cat > "$REVIEW_WT/src/main.rs" <<'EOF'
+mod greet;
+
+fn main() {
+    println!("{}", greet::greet("sample-project"));
+}
+EOF
+        git -C "$REVIEW_WT" -c user.email=demo@thurbox -c user.name=demo add -A
+        git -C "$REVIEW_WT" -c user.email=demo@thurbox -c user.name=demo \
+            commit -q -m "feat: add greeting + checked arithmetic"
+    fi
+fi
+
 # --- Pre-seed a few tasks + an automation -----------------------------------
 # These give the `tasks` and `search` clips real content to render (the search
 # strip searches across sessions, tasks AND automations at once). Only needed
@@ -346,6 +399,7 @@ for tape in $TAPES; do
         automations) echo "    automations-demo.{gif,mp4}" ;;
         tasks)       echo "    tasks-demo.{gif,mp4}" ;;
         search)      echo "    search-demo.{gif,mp4}" ;;
+        code-review) echo "    code-review-demo.{gif,mp4}" ;;
         *)           echo "    thurbox-$tape.{gif,mp4}" ;;
     esac
 done

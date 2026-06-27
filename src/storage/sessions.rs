@@ -409,6 +409,33 @@ impl Database {
         Ok(())
     }
 
+    /// Record the base branch a session's worktree was forked from. A targeted
+    /// UPDATE that [`upsert_session`](Self::upsert_session) never lists (base
+    /// branch is write-once at spawn), so the TUI's periodic full-row write-back
+    /// can't clobber it — same pattern as the hook columns. Scopes the
+    /// code-review view to `<base>..HEAD`.
+    pub fn set_session_base_branch(&self, id: SessionId, base: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET base_branch = ?1 WHERE id = ?2",
+            params![base, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Read a session's persisted base branch (the fork point of its worktree),
+    /// or `None` when never recorded (legacy rows / non-worktree sessions).
+    pub fn get_session_base_branch(&self, id: SessionId) -> rusqlite::Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        self.conn
+            .query_row(
+                "SELECT base_branch FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+    }
+
     /// Mark a session as "seen" at `at_least` (epoch ms), so a `done` session
     /// the user has looked at renders `Idle` instead of `Done`. The TUI calls
     /// this once, on the transition (when `seen_at < hook_state_at`), never

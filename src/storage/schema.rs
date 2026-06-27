@@ -12,9 +12,11 @@ use rusqlite::Connection;
 /// `tasks(source, external_id)` (external-tracker sync lookup); v36 adds
 /// `action_command` to `tasks` + `automations` (the `Exec` automation action);
 /// v37 adds `force_deleted` to `sessions` (a hard delete tore down its
-/// worktrees/tmux, so it can't be restored — the restore list tags + blocks it).
+/// worktrees/tmux, so it can't be restored — the restore list tags + blocks it);
+/// v38 adds `base_branch` to `sessions` plus the `review_comments` /
+/// `review_marks` tables (the native code-review view).
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 37;
+pub const SCHEMA_VERSION: u32 = 38;
 
 /// A single migration step: applied when the stored version is below `target`.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>);
@@ -70,9 +72,34 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             hook_state_at     INTEGER,
             seen_at           INTEGER,
             force_deleted     INTEGER NOT NULL DEFAULT 0,
+            base_branch       TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS review_comments (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     TEXT NOT NULL,
+            file_path      TEXT,
+            side           TEXT,
+            line_no        INTEGER,
+            classification TEXT NOT NULL DEFAULT 'note',
+            body           TEXT NOT NULL,
+            created_at     INTEGER NOT NULL,
+            updated_at     INTEGER NOT NULL,
+            deleted_at     INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_comments_session
+            ON review_comments(session_id) WHERE deleted_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS review_marks (
+            session_id  TEXT NOT NULL,
+            file_path   TEXT NOT NULL,
+            hunk_index  INTEGER NOT NULL DEFAULT -1,
+            created_at  INTEGER NOT NULL,
+            PRIMARY KEY (session_id, file_path, hunk_index)
         );
 
         CREATE TABLE IF NOT EXISTS worktrees (
@@ -253,6 +280,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (35, migrate_v35_tasks_external_index),
         (36, migrate_v36_action_command),
         (37, migrate_v37_force_deleted),
+        (38, migrate_v38_code_review),
     ];
 
     for &(target, step) in steps {
@@ -1055,6 +1083,39 @@ fn migrate_v37_force_deleted(conn: &Connection) -> rusqlite::Result<()> {
         "force_deleted",
         "INTEGER NOT NULL DEFAULT 0",
     )
+}
+
+/// v37 → v38: the native code-review view. Adds `sessions.base_branch` (the
+/// branch a worktree was forked from, so the review scopes to `<base>..HEAD`;
+/// NULL on existing rows → review falls back to the repo's default branch) and
+/// the `review_comments` / `review_marks` tables. Fresh v38 databases already
+/// have all three from `initialize` and skip this step.
+fn migrate_v38_code_review(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "sessions", "base_branch", "TEXT")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS review_comments (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     TEXT NOT NULL,
+            file_path      TEXT,
+            side           TEXT,
+            line_no        INTEGER,
+            classification TEXT NOT NULL DEFAULT 'note',
+            body           TEXT NOT NULL,
+            created_at     INTEGER NOT NULL,
+            updated_at     INTEGER NOT NULL,
+            deleted_at     INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_comments_session
+            ON review_comments(session_id) WHERE deleted_at IS NULL;
+        CREATE TABLE IF NOT EXISTS review_marks (
+            session_id  TEXT NOT NULL,
+            file_path   TEXT NOT NULL,
+            hunk_index  INTEGER NOT NULL DEFAULT -1,
+            created_at  INTEGER NOT NULL,
+            PRIMARY KEY (session_id, file_path, hunk_index)
+        );",
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1330,6 +1330,86 @@ when the target session is the one in focus (`suppress_for_active`).
   escaping, and body truncation are all pure functions with table-driven
   tests.
 
+## Code review (native, tuicr-like)
+
+Thurbox has a **built-in, natively-rendered** code-review view (no external
+binary, no nested TUI) — a tuicr-like GitHub-style continuous diff with
+classified comments and a review summary. It targets the active session's
+worktree (`<base>..HEAD`), which maps cleanly onto thurbox's model (every
+session is a worktree on a branch forked from a base). Toggle with `F7`
+(rebindable `Action::ToggleReview`), like the shell pane; gated by `[features]
+code_review`.
+
+- **Surface (tuicr-like).** A continuous diff stream in the central pane (its own
+  `InputFocus::CodeReview` — unlike the shell pane, a `TerminalView` that forwards
+  to a PTY, it *captures* keys), plus a **changed-files list in the file-viewer
+  column** (forced visible while a review is open via `layout_for`): it tracks the
+  current file and clicking a row jumps the diff to that file
+  (`ui::code_review::render_files_list` → `ClickAction::ReviewFile` →
+  `cr_jump_to_file`). While open it owns the central pane; `Esc`/`F7` close it.
+  Rendered by `ui::code_review`, reusing `scrollbar`/`focus_block`/
+  `render_button_bar`/theme. **Unified or side-by-side** diff layout, toggled with
+  `v` / the footer button (`side_by_side`). **Mouse-first** (no vim modal): click a
+  diff line to select/comment, click footer buttons, drag the scrollbar,
+  wheel-scroll. **tuicr nav keys**: `j`/`k` + arrows, PageUp/Down + `Ctrl+D`/`U`,
+  `g`/`G`, `{`/`}` (or Tab) next/prev file, `[`/`]` next/prev hunk. Every footer
+  button is labelled with its key (`Comment·c`, `Send→Agent·e`, …) so the
+  shortcuts are discoverable; the changed-files column shows a nav-key legend.
+- **Colours.** Dedicated theme keys `diff_added`/`diff_removed` (line fg) and
+  `diff_added_bg`/`diff_removed_bg` (a subtle full-row tint) — added to
+  `ThemePalette` (all 9 presets derive them; bg blended toward `app_bg` via
+  `blend_rgb`) and overridable per custom theme. Classification badges reuse the
+  status/accent/danger palette colours, so the whole view is theme-aware.
+- **Review targets** (`t` / the Target footer button). The diff can show the
+  whole branch (`<base>..HEAD`, the default), the **uncommitted working changes**
+  (`git diff HEAD`), or a **single commit** (`git show`) — mirroring tuicr's
+  `-r`/`-w`/commit targets. An in-view picker lists Working, Branch, and each
+  commit in `<base>..HEAD` (`git log`); selecting one recomputes the diff
+  (`ReviewTarget`, `build_target_diff`, `git::{diff_working_on,show_commit_on,
+  list_commits_on}`). A session with no resolvable base defaults to the
+  working-changes target.
+- **Multi-repo sessions.** A multi-repo session reviews **all** its worktrees at
+  once: the diff is built per repo and concatenated, with each file path
+  namespaced `"<repo>/<path>"` so files, comments, and "reviewed" marks stay
+  unambiguous; the changed-files column shows the repo-qualified paths. Each repo
+  resolves its own base (the session base if that branch exists there, else that
+  repo's default branch); the commit picker lists commits across every repo,
+  repo-tagged. A commit target scopes to its one repo. State is
+  `Vec<ReviewRepo>` on `CodeReviewState`; the diff is assembled by `build_files`.
+- **Diff model + parser.** Pure data in `session::review` (`DiffFile`/`DiffHunk`/
+  `DiffLine`, `Classification`, `CommentAnchor`, `ReviewComment`) with a
+  unit-tested `parse_unified_diff`. `git::diff_against{,_on}` runs `git diff`
+  (local or over SSH). The diff types live in `session` so `ui` can render them
+  without importing `git` (architecture rule).
+- **Syntax highlighting.** The unified diff body is syntax-highlighted by a
+  small dependency-free lexer (`ui::syntax`: comments / strings / numbers /
+  keywords / capitalised types), themed from the palette. Add/remove stays on the
+  gutter `+`/`-` sign + the row tint, so the code text itself carries the syntax
+  colours (GitHub-style). Side-by-side keeps plain add/remove colouring.
+- **Comments.** Line / file / review-summary level, each with a classification
+  (issue / suggestion / note / praise, colored badges). Composed in an **in-view
+  box that floats inline at the selected line** (`render_compose_inline` anchors
+  it to the line's screen row, falling back above/below as room allows) — a
+  `ComposeState` sub-mode, not a separate modal. State lives in
+  `app::code_review::CodeReviewState`.
+- **Reviewed marks.** `r` / `R` toggle a file / hunk as reviewed (`✓`); `r`
+  resolves the file from **any** row inside it (line, hunk, header, or a comment),
+  not just the file header.
+- **Persistence.** `review_comments` + `review_marks` tables (schema v38) keyed by
+  session id (`storage::review`); the worktree's fork point is the write-once
+  `sessions.base_branch` column (targeted accessors, like `hook_state`), set at
+  spawn. Reviews are kept open per session across switches (like the shell view).
+  Legacy/NULL base falls back to the repo's default branch.
+- **Export.** No GitHub/GitLab submit (intentionally out of scope). Instead:
+  `y` copies the review as markdown to the clipboard, and `e` (Send→Agent) pastes
+  the compiled review into the session's agent as a prompt to address it — the
+  review → agent → re-review loop, the orchestrator-native equivalent of submit.
+- **v1 follow-ups** (named, not silently dropped): range/multi-line comments,
+  *true* paired side-by-side (v1's side-by-side is split-column — one source line
+  per row, context on both sides, add/del on their own side), async diff build for
+  huge repos (v1 builds synchronously on toggle), and grammar-aware syntax
+  highlighting (v1's lexer is heuristic + language-agnostic).
+
 ## Demo Video
 
 The demo media is **generated**, not hand-recorded. A single
@@ -1543,6 +1623,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
+| `F7` | Toggle native code-review view | Review |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Select previous session | Vim: **k** = up |

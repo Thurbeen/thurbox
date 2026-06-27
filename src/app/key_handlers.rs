@@ -80,6 +80,13 @@ impl App {
             return;
         }
 
+        // The native code-review view captures keys (nav / comment / compose)
+        // before the global lookup; focus/quit chords fall through so the user
+        // can always leave.
+        if self.handle_code_review_key(code, mods) {
+            return;
+        }
+
         // Keybinding lookup, scoped to the focused pane: global actions plus
         // any scoped to the current context (file viewer, session list,
         // terminal). Some readline/shell chords (Ctrl+A/E/W/U/R/D/…) defer to
@@ -135,6 +142,9 @@ impl App {
             InputFocus::GlobalSearch => self.handle_global_search_key(code, mods),
             InputFocus::Terminal => self.handle_terminal_key(code, mods),
             InputFocus::FileViewer => self.handle_file_viewer_key(code, mods),
+            // The code-review view captures input earlier (before the global
+            // keybinding lookup), so this arm is effectively unreachable.
+            InputFocus::CodeReview => {}
         }
     }
 
@@ -436,9 +446,19 @@ impl App {
             // in and out of it like any other pane (it lives in the right column,
             // not the left-column circular list). `Esc` still drops straight back
             // to the session list.
-            SessionList | Terminal | FileViewer | TaskList => {
-                // Order mirrors the on-screen columns: terminal → tasks → files.
-                let mut ring = vec![SessionList, Terminal];
+            SessionList | Terminal | FileViewer | TaskList | CodeReview => {
+                // Order mirrors the on-screen columns: central → tasks → files.
+                // The central pane is the code review when the active session has
+                // one open (persisted per session, like the shell view), else the
+                // terminal — so `Ctrl+L`/`Ctrl+H` move in and out of the review
+                // just like the terminal, and `Ctrl+H` to the session list keeps
+                // the review open.
+                let central = if self.active_review().is_some() {
+                    CodeReview
+                } else {
+                    Terminal
+                };
+                let mut ring = vec![SessionList, central];
                 if self.show_tasks_panel {
                     ring.push(TaskList);
                 }
@@ -999,6 +1019,11 @@ impl App {
                 "Shell pane",
                 Self::toggle_shell_view,
             ),
+            Action::ToggleReview => self.gated(
+                self.features.code_review,
+                "Code review",
+                Self::toggle_code_review,
+            ),
             Action::OpenAutomations => self.gated(
                 self.features.automations,
                 "Automations",
@@ -1160,6 +1185,7 @@ impl App {
             InputFocus::AutomationEditor
             | InputFocus::AutomationRunHistory
             | InputFocus::TaskEditor
+            | InputFocus::CodeReview
             | InputFocus::GlobalSearch => false,
             InputFocus::Terminal => false, // forward to PTY
         }
