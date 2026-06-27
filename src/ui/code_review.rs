@@ -173,7 +173,12 @@ fn render_rows(
     }
     frame.render_widget(Paragraph::new(lines), content);
 
-    let geom = track.and_then(|t| scrollbar::render_into(frame, t, total, height, state.scroll));
+    // The view is selection-primary: the thumb tracks `selected` (which reaches
+    // the last row, `total - 1`), not `scroll` (which caps at `total - height`,
+    // so a thumb driven by it could never reach the bottom of the track). This
+    // also matches the drag mapping — `position_for_y` returns a `0..total`
+    // index that `apply_scrollbar_position` feeds straight to `cr_select_row`.
+    let geom = track.and_then(|t| scrollbar::render_into(frame, t, total, height, state.selected));
 
     let hitboxes = (start..end)
         .enumerate()
