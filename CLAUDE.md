@@ -1720,9 +1720,11 @@ via the same `apply_live_settings` and toasts (noting a restart when
 `Settings::restart_only_differs` vs the global). The panel's own write calls
 `mark_settings_saved` so the poll doesn't re-toast it.
 
-`SettingsField` (in `app/modals.rs`) owns the field order, labels,
-descriptions (which avoid naming key chords, since those are rebindable),
-scalar-vs-bool/step logic (`adjust` with per-field clamping), and the
+`SettingsField` (in `app/modals.rs`) owns the field order, labels, short
+scannable keywords and descriptions (both avoid naming key chords, since those
+are rebindable; each row renders the bold `keyword` then the dimmed
+`description`, via the single `meta()` table so the parallel lookups never
+drift), scalar-vs-bool/step logic (`adjust` with per-field clamping), and the
 per-row live/restart marker (`restart_required`); the canonical
 live/restart comparison is `Settings::restart_only_differs`
 (`session/settings.rs`), reused by both the panel toast and the reload path.

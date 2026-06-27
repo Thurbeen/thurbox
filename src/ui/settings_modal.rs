@@ -201,6 +201,13 @@ fn build_rows<'a>(
         .map(|f| value_text(m, *f).chars().count())
         .max()
         .unwrap_or(3);
+    // Width of the keyword column: the widest keyword, so the descriptions that
+    // follow all start at the same column.
+    let keyword_width = SettingsField::ORDER
+        .iter()
+        .map(|f| f.keyword().chars().count())
+        .max()
+        .unwrap_or(0);
 
     let mut rows: Vec<(Line<'a>, Option<SettingsField>)> = Vec::new();
     for (section_idx, (title, fields)) in SECTIONS.iter().enumerate() {
@@ -219,7 +226,10 @@ fn build_rows<'a>(
             None,
         ));
         for field in *fields {
-            rows.push((field_line(m, *field, width, value_width), Some(*field)));
+            rows.push((
+                field_line(m, *field, width, keyword_width, value_width),
+                Some(*field),
+            ));
         }
     }
     rows
@@ -237,22 +247,35 @@ fn value_text(m: &crate::app::modals::SettingsModal, field: SettingsField) -> St
 }
 
 /// One field row laid out in fixed columns so values and markers align:
-/// `▸ <description> … <value right-justified in value_width><⟳ marker>`.
+/// `▸ <keyword (bold)> <description (dimmed)> … <value right-justified in
+/// value_width><⟳ marker>`. The bold keyword carries the "what" at a glance; the
+/// dimmer description is the supporting detail.
 fn field_line<'a>(
     m: &crate::app::modals::SettingsModal,
     field: SettingsField,
     width: usize,
+    keyword_width: usize,
     value_width: usize,
 ) -> Line<'a> {
     let active = field == m.field;
 
     let pointer = if active { "▸ " } else { "  " };
-    let desc_style = if active {
+    // Keyword: bold, brighter than the description so the hierarchy reads
+    // keyword > description.
+    let keyword_style = if active {
         Style::default()
             .fg(Theme::accent_bright())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Theme::text_secondary())
+        Style::default()
+            .fg(Theme::text_secondary())
+            .add_modifier(Modifier::BOLD)
+    };
+    // Description: non-bold and dimmer, recedes behind the keyword.
+    let desc_style = if active {
+        Style::default().fg(Theme::accent())
+    } else {
+        Style::default().fg(Theme::text_muted())
     };
 
     let value = m.value_string(field);
@@ -278,21 +301,31 @@ fn field_line<'a>(
         "  "
     };
 
-    // Columns: pointer(2) + desc + pad + value(value_width) + marker(2).
+    // Columns: pointer(2) + keyword(keyword_width) + gap(1) + desc + pad +
+    // value(value_width) + marker(2). The keyword is padded to a fixed width so
+    // every description starts in the same column.
+    let keyword = field.keyword();
+    let keyword_pad = keyword_width.saturating_sub(keyword.chars().count());
+    let keyword_block = keyword_width + 1; // +1 gap after the keyword
     let right_block = value_width + marker.chars().count();
     let mut desc = field.description().to_string();
-    let left_budget = width.saturating_sub(2 + right_block + 1); // +1 minimum gap
+    // +1 minimum gap before the value column.
+    let left_budget = width.saturating_sub(2 + keyword_block + right_block + 1);
     if desc.chars().count() > left_budget {
         desc = desc.chars().take(left_budget.saturating_sub(1)).collect();
         desc.push('…');
     }
     let pad = width
-        .saturating_sub(2 + desc.chars().count() + right_block)
+        .saturating_sub(2 + keyword_block + desc.chars().count() + right_block)
         .max(1);
     let value_pad = value_width.saturating_sub(value_str.chars().count());
 
     Line::from(vec![
-        Span::styled(format!("{pointer}{desc}"), desc_style),
+        Span::styled(
+            format!("{pointer}{keyword}{}", " ".repeat(keyword_pad + 1)),
+            keyword_style,
+        ),
+        Span::styled(desc, desc_style),
         Span::raw(" ".repeat(pad + value_pad)),
         Span::styled(value_str, value_style),
         Span::styled(marker, Style::default().fg(Theme::text_muted())),

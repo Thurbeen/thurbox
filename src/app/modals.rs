@@ -1542,53 +1542,81 @@ impl SettingsField {
         SettingsField::AuditRetentionDays,
     ];
 
-    /// The field's `settings.toml` key and one-line help, in a single table so
-    /// the two parallel lookups never drift (and stay one match, not two).
-    /// The help avoids naming key chords — those are user-configurable, so a
-    /// hard-coded hint would drift from the actual binding.
-    fn meta(self) -> (&'static str, &'static str) {
+    /// The field's `settings.toml` key, a short scannable keyword, and one-line
+    /// help, in a single table so the three parallel lookups never drift (and
+    /// stay one match, not three). Both keyword and help avoid naming key chords
+    /// — those are user-configurable, so a hard-coded hint would drift from the
+    /// actual binding.
+    fn meta(self) -> (&'static str, &'static str, &'static str) {
         use SettingsField::*;
         match self {
-            FeatTasks => ("tasks", "Tasks panel and task search"),
-            FeatAutomations => ("automations", "Automations pane and schedule firing"),
-            FeatFileViewer => ("file_viewer", "File viewer column"),
-            FeatGlobalSearch => ("global_search", "Global search strip"),
-            FeatInfoPanel => ("info_panel", "Info panel column"),
-            FeatShellPane => ("shell_pane", "Per-session shell pane"),
-            FeatMouse => ("mouse", "Mouse: clicks, wheel, drag-select, hover"),
-            FeatNotifications => ("notifications", "OS desktop notifications on attention"),
-            FeatSoftDelete => ("soft_delete", "Soft-delete sessions with an undo window"),
-            FeatVersionCheck => ("version_check", "Check GitHub for updates (network call)"),
+            FeatTasks => ("tasks", "Tasks", "Tasks panel and task search"),
+            FeatAutomations => (
+                "automations",
+                "Automations",
+                "Automations pane and schedule firing",
+            ),
+            FeatFileViewer => ("file_viewer", "File viewer", "File viewer column"),
+            FeatGlobalSearch => ("global_search", "Global search", "Global search strip"),
+            FeatInfoPanel => ("info_panel", "Info panel", "Info panel column"),
+            FeatShellPane => ("shell_pane", "Shell pane", "Per-session shell pane"),
+            FeatMouse => ("mouse", "Mouse", "Mouse: clicks, wheel, drag-select, hover"),
+            FeatNotifications => (
+                "notifications",
+                "Notifications",
+                "OS desktop notifications on attention",
+            ),
+            FeatSoftDelete => (
+                "soft_delete",
+                "Soft delete",
+                "Soft-delete sessions with an undo window",
+            ),
+            FeatVersionCheck => (
+                "version_check",
+                "Version check",
+                "Check GitHub for updates (network call)",
+            ),
             FeatAutoUpdate => (
                 "auto_update",
+                "Auto-update",
                 "Silently self-update on launch (network call)",
             ),
             NotifAlsoOnWaiting => (
                 "also_on_waiting",
+                "Notify done",
                 "Also notify when a session finishes (Done)",
             ),
             NotifSuppressForActive => (
                 "suppress_for_active",
+                "Skip active",
                 "Skip the session you're already viewing",
             ),
-            NotifSound => ("sound", "Play the OS notification sound"),
+            NotifSound => ("sound", "Sound", "Play the OS notification sound"),
             NotifMinInterval => (
                 "min_interval_secs",
+                "Min interval",
                 "Min seconds between notifications per session",
             ),
             ScrollbackLines => (
                 "scrollback_lines",
+                "Scrollback",
                 "Terminal history lines kept per session",
             ),
             TwoPanelMinCols => (
                 "two_panel_min_cols",
+                "2-panel width",
                 "Min width (cols) to show the 2nd panel",
             ),
             ThreePanelMinCols => (
                 "three_panel_min_cols",
+                "3-panel width",
                 "Min width (cols) to show the 3rd panel",
             ),
-            AuditRetentionDays => ("audit_retention_days", "Days of audit-log history kept"),
+            AuditRetentionDays => (
+                "audit_retention_days",
+                "Audit days",
+                "Days of audit-log history kept",
+            ),
         }
     }
 
@@ -1597,9 +1625,15 @@ impl SettingsField {
         self.meta().0
     }
 
-    /// One-line help shown for the selected field in the panel footer.
-    pub fn description(self) -> &'static str {
+    /// A short, scannable keyword shown as the bold left column of each row.
+    pub fn keyword(self) -> &'static str {
         self.meta().1
+    }
+
+    /// One-line help shown next to the keyword (and for the selected field in
+    /// the panel footer context).
+    pub fn description(self) -> &'static str {
+        self.meta().2
     }
 
     /// Whether the field holds a boolean (toggled with Space/Enter) vs. a
