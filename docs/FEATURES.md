@@ -622,8 +622,23 @@ the file, not just its header.
 
 **Why persist a base branch?** Reviewing `<base>..HEAD` needs the fork
 point, which thurbox didn't store. A write-once `sessions.base_branch`
-column (schema v37, like the hook columns) records it at spawn; legacy
+column (schema v38, like the hook columns) records it at spawn; legacy
 rows fall back to the repo's default branch.
+
+**Why a folder tree + fold-on-reviewed?** A flat changed-files list
+buries structure in a large diff, so the file-viewer column renders the
+changes as a **folder tree** (directories as headers, files indented,
+grouped by path; multi-repo nests the repo as the top folder) with
+colored status glyphs (`M`/`A`/`D`/`R`) and `+`/`-` counts. Marking a
+file reviewed (`r`) **folds** its diff to just the header — tree-style —
+so reviewed code collapses out of the way; `Enter` expands/collapses any
+file manually (`is_file_folded` = `reviewed XOR fold_override`).
+
+**Why keep reviews open per session?** A review is per-session state
+(`App::code_reviews`, keyed by `SessionId`), exactly like the shell
+view: switching to another session hides it and switching back restores
+it open + focused (`sync_review_focus` keeps the central-pane focus
+aligned). The file-viewer column toggles with it.
 
 **Export is the agent, not GitHub.** GitHub/GitLab submit is out of
 scope; the payoff of reviewing *inside* an orchestrator is closing the

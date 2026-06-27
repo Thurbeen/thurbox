@@ -281,10 +281,13 @@ result; `Esc` restores exactly what you had.
 ### Code Review
 
 A native, GitHub-style diff reviewer (`F7`) — no external tool. Browse the
-branch (`<base>..HEAD`), a single commit, or the uncommitted changes; leave
-classified comments (issue / suggestion / note / praise) and a summary; mark
-files reviewed; then send the whole review back to the agent to address.
-Mouse- and keyboard-driven, with unified or side-by-side layout.
+branch (`<base>..HEAD`), a single commit, or the uncommitted changes; the
+changed files show as a **folder tree** with colored statuses, and the diff is
+syntax-highlighted. Leave classified comments (issue / suggestion / note /
+praise) and a summary, mark files reviewed (which **folds** them away
+tree-style), then send the whole review back to the agent to address. Reviews
+stay open **per session** as you switch around, like the shell view. Mouse- and
+keyboard-driven, with unified or side-by-side layout.
 
 [Keybindings →](#keybindings)
 
@@ -610,6 +613,7 @@ repos? Add `--add-repo PATH@main` (its own worktree per repo) or
 | `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | **W**ork items |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
+| `F7` | Toggle code-review pane (native diff reviewer) | Review |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Select previous session | Vim: **k** = up |

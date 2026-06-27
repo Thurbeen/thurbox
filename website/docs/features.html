@@ -619,6 +619,95 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             </li>
           </ul>
 
+          <h2 id="code-review">
+            Code Review
+            <a href="#code-review" class="heading-anchor">#</a>
+          </h2>
+          <figure class="video-card">
+            <div class="terminal-frame">
+              <div class="terminal-body">
+                <video
+                  src="../assets/code-review-demo.mp4"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  A native diff reviewer: browse changes, leave classified comments, mark files
+                  reviewed, and send the review back to the agent
+                </video>
+              </div>
+            </div>
+            <figcaption>
+              A native, GitHub-style review pane &mdash;
+              <code>F7</code>
+              , no external tool.
+            </figcaption>
+          </figure>
+          <p>
+            Every session is a git worktree on a branch forked from a base, so &ldquo;review what
+            this agent built&rdquo; maps cleanly onto the session model. Press
+            <code>F7</code>
+            to open a native diff reviewer in the central pane &mdash; rendered by Thurbox itself,
+            with no external binary.
+          </p>
+          <ul>
+            <li>
+              <strong>What to review.</strong>
+              The whole branch (<code>&lt;base&gt;..HEAD</code>), a single commit, or the uncommitted
+              working changes &mdash; switch targets with
+              <code>t</code>
+              .
+            </li>
+            <li>
+              <strong>Changed-files tree.</strong>
+              The file-viewer column lists changes as a
+              <strong>folder tree</strong>
+              with colored status glyphs (<code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>)
+              and per-file
+              <code>+</code>/<code>-</code>
+              counts; the diff body is syntax-highlighted, unified or
+              <strong>side-by-side</strong>
+              (<code>v</code>).
+            </li>
+            <li>
+              <strong>Comments.</strong>
+              Leave line, file, or review-summary comments classified as
+              <em>issue / suggestion / note / praise</em>
+              , composed inline at the line.
+            </li>
+            <li>
+              <strong>Mark reviewed &amp; fold.</strong>
+              Mark a file (or hunk) reviewed with
+              <code>r</code>
+              /
+              <code>R</code>
+              ; a reviewed file
+              <strong>folds</strong>
+              to just its header, tree-style (<code>Enter</code> expands/collapses any file).
+            </li>
+            <li>
+              <strong>Persistent per session.</strong>
+              An open review stays open as you switch sessions and come back &mdash; exactly like the
+              shell view.
+            </li>
+            <li>
+              <strong>Feedback loop.</strong>
+              <code>y</code>
+              copies the review as markdown;
+              <code>e</code>
+              sends the whole review back into the agent as a prompt to address it. (Submitting to
+              GitHub/GitLab is intentionally out of scope.)
+            </li>
+          </ul>
+          <p>
+            Comments and reviewed-marks persist in SQLite, keyed per session. The review command is
+            native; gate the whole feature with
+            <code>[features] code_review</code>
+            .
+          </p>
+
           <h2 id="responsive-ui">
             Responsive UI
             <a href="#responsive-ui" class="heading-anchor">#</a>
