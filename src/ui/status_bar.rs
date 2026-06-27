@@ -6,9 +6,11 @@ use ratatui::{
     Frame,
 };
 
+use crossterm::event::{KeyCode, KeyModifiers};
+
 use super::theme::Theme;
 use crate::app::{StatusLevel, StatusMessage};
-use crate::session::Action;
+use crate::session::{Action, KeyBindings, KeyChord};
 
 fn brand_style() -> Style {
     Style::default()
@@ -83,6 +85,8 @@ pub struct FooterState<'a> {
     /// Feature flags gating the panel buttons (hidden when off).
     pub tasks_enabled: bool,
     pub file_viewer_enabled: bool,
+    /// Live keybindings, so each footer pill can show its (rebindable) shortcut.
+    pub keybindings: &'a KeyBindings,
 }
 
 /// The clickable footer buttons, in render order, paired with the `Action` each
@@ -113,6 +117,30 @@ fn footer_entries(tasks_enabled: bool, file_viewer_enabled: bool) -> Vec<(&'stat
         .collect()
 }
 
+/// Compact shortcut hint for a footer pill. Prefers an F-key alternate (`F1`)
+/// since it's the narrowest in the tight footer, else the first chord in caret
+/// form (`^Q`). `None` when the action has no binding.
+fn footer_shortcut(chords: &[KeyChord]) -> Option<String> {
+    chords
+        .iter()
+        .find_map(|c| match c.code {
+            KeyCode::F(n) if c.mods.is_empty() => Some(format!("F{n}")),
+            _ => None,
+        })
+        .or_else(|| chords.first().map(caret_form))
+}
+
+/// Render a chord compactly for the footer: `ctrl+<char>` → `^Q` / `^,`;
+/// anything else falls back to the full `KeyChord::display()` notation.
+fn caret_form(chord: &KeyChord) -> String {
+    if chord.mods == KeyModifiers::CONTROL {
+        if let KeyCode::Char(c) = chord.code {
+            return format!("^{}", c.to_ascii_uppercase());
+        }
+    }
+    chord.display()
+}
+
 /// Render the footer bar and return each clickable button's hitbox paired with
 /// the `Action` it dispatches, packed against the right edge. Tasks/Files are
 /// gated by their feature flags. When the file viewer is open its navigation
@@ -133,9 +161,20 @@ pub fn render_footer(
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 
     let entries = footer_entries(state.tasks_enabled, state.file_viewer_enabled);
-    let specs: Vec<super::ButtonSpec<'_>> = entries
+    // Suffix each pill with its live shortcut (`Help · F1`); own the strings so
+    // the borrowed `ButtonSpec`s can reference them.
+    let labels: Vec<String> = entries
         .iter()
-        .map(|(label, _)| super::ButtonSpec::secondary(label))
+        .map(
+            |(label, action)| match footer_shortcut(state.keybindings.chords_for(*action)) {
+                Some(sc) => format!("{label} · {sc}"),
+                None => label.to_string(),
+            },
+        )
+        .collect();
+    let specs: Vec<super::ButtonSpec<'_>> = labels
+        .iter()
+        .map(|l| super::ButtonSpec::secondary(l))
         .collect();
     let hits = super::render_button_bar(frame, area, &specs, true);
 
@@ -306,6 +345,11 @@ mod tests {
         );
     }
 
+    fn test_keybindings() -> &'static KeyBindings {
+        static KB: std::sync::OnceLock<KeyBindings> = std::sync::OnceLock::new();
+        KB.get_or_init(KeyBindings::default)
+    }
+
     fn footer_state(file_viewer_open: bool) -> FooterState<'static> {
         FooterState {
             session_count: 1,
@@ -317,6 +361,7 @@ mod tests {
             file_viewer_open,
             tasks_enabled: true,
             file_viewer_enabled: true,
+            keybindings: test_keybindings(),
         }
     }
 
@@ -353,6 +398,14 @@ mod tests {
         let (hits, line) = footer_render(false);
         for label in ["Help", "Tasks", "Files", "Settings", "Theme", "Quit"] {
             assert!(line.contains(label), "missing {label} in footer: {line:?}");
+        }
+        // Each pill carries its live shortcut: an F-key alternate where one
+        // exists (Help · F1), else the caret-ctrl chord (Quit · ^Q).
+        for shortcut in ["F1", "^Q"] {
+            assert!(
+                line.contains(shortcut),
+                "missing shortcut {shortcut} in footer: {line:?}"
+            );
         }
         // Every button maps back to its Action, in render order — guards the
         // index→action remapping in `render_footer`.

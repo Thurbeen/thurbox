@@ -605,6 +605,7 @@ impl App {
                 file_viewer_open: self.show_file_viewer,
                 tasks_enabled: self.features.tasks,
                 file_viewer_enabled: self.features.file_viewer,
+                keybindings: &self.keybindings,
             },
         );
         // The renderer pairs each surviving button with its Action, so the
