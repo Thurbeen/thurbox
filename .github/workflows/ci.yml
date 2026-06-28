@@ -35,8 +35,8 @@ jobs:
       - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         id: filter
         with:
-          # Each filter includes `.github/workflows/ci.yml` where relevant so a
-          # CI edit re-runs the broad jobs it could affect.
+          # Every filter includes `.github/workflows/ci.yml` so editing the
+          # workflow re-runs all jobs — any job's definition may have changed.
           filters: |
             rust:
               - 'src/**'
@@ -55,16 +55,20 @@ jobs:
             markdown:
               - '**/*.md'
               - '.rumdl.toml'
+              - '.github/workflows/ci.yml'
             website:
               - 'website/**'
               - 'package.json'
               - 'package-lock.json'
+              - '.github/workflows/ci.yml'
             install_sh:
               - 'scripts/install.sh'
               - 'scripts/install.bats'
+              - '.github/workflows/ci.yml'
             install_ps:
               - 'scripts/install.ps1'
               - 'scripts/install.Tests.ps1'
+              - '.github/workflows/ci.yml'
 
   check:
     name: Check
