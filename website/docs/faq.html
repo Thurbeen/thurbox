@@ -1,0 +1,157 @@
+---
+layout: docs.njk
+title: 'FAQ — Thurbox Docs'
+description: 'Frequently asked questions about Thurbox: what it is, how it compares to other parallel coding-agent tools, which agents and platforms it supports, how to install it, session persistence, license, and headless use.'
+currentPage: 'faq'
+breadcrumb: 'FAQ'
+---
+<h1>Frequently Asked Questions</h1>
+<p>
+  Short answers to the most common questions about Thurbox. For depth, follow
+  the links into the rest of the docs.
+</p>
+
+<h2 id="what-is-thurbox">What is Thurbox?</h2>
+<p>
+  Thurbox is a multi-session TUI orchestrator that runs any coding-agent CLI
+  — Claude Code, Codex, Antigravity, opencode, aider, Vibe, or any CLI you
+  define — inside persistent tmux panes. Sessions, agents, and git worktrees
+  are first-class citizens, and sessions survive crashes, restarts, and
+  reboots because tmux keeps the processes alive.
+</p>
+
+<h2 id="how-different">
+  How is Thurbox different from other parallel coding-agent tools?
+</h2>
+<p>
+  Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses real
+  tmux as its session backend rather than a re-implemented multiplexer, runs
+  as a lightweight terminal UI rather than an Electron or native desktop app,
+  and launches the unmodified vendor CLI rather than its own model. A single
+  session can span multiple repositories, and it ships a native in-TUI
+  code-review view. Agents are defined as data, so any CLI works with no
+  recompile. See the <a href="comparison.html">comparison</a> for the full
+  breakdown.
+</p>
+
+<h2 id="supported-agents">Which coding agents does Thurbox support?</h2>
+<p>
+  Thurbox is agent-neutral. It ships built-in definitions for Claude Code,
+  Codex, Antigravity, opencode, aider, and Vibe, and you can add any other CLI
+  by editing agents.toml — no recompile required. Thurbox only knows how to
+  launch each CLI with the right command and arguments; it never touches the
+  agent's model, prompts, or permissions.
+</p>
+
+<h2 id="install">How do I install Thurbox?</h2>
+<p>
+  On Linux or macOS, run
+  <code>curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code>.
+  It is also available via Homebrew
+  (<code>brew install thurbeen/thurbox/thurbox</code>), the AUR (<code>thurbox</code>
+  or <code>thurbox-bin</code>), and on Windows via PowerShell or Chocolatey
+  (<code>choco install thurbox</code>). You can also build from source with
+  <code>cargo build --release</code>. See
+  <a href="installation.html">installation</a> for details.
+</p>
+
+<h2 id="platforms">
+  Which platforms does Thurbox run on? Does it support remote machines?
+</h2>
+<p>
+  Thurbox runs on Linux, macOS, and Windows. It requires tmux 3.2+ on
+  Linux/macOS and psmux on Windows. It can also run sessions on a remote host
+  over SSH while the TUI runs locally — remote hosts are declared in
+  hosts.toml.
+</p>
+
+<h2 id="persistence">Do my sessions survive a crash or restart?</h2>
+<p>
+  Yes. Each session runs inside a persistent tmux session, so the agent
+  processes keep running even if Thurbox crashes or you close and reopen it.
+  Session state is stored in SQLite and re-adopted on restart.
+</p>
+
+<h2 id="license">Is Thurbox free and open source?</h2>
+<p>Yes. Thurbox is open source under the MIT license and free to use.</p>
+
+<h2 id="headless">Can I use Thurbox without the TUI, headlessly?</h2>
+<p>
+  Yes. A second binary, thurbox-cli, drives the same SQLite-backed,
+  tmux-hosted sessions headlessly — create, list, send to, capture, restart,
+  and delete sessions, plus automations and tasks — sharing the database with
+  the TUI. This makes Thurbox scriptable for automation and CI.
+</p>
+
+<script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Thurbox?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Thurbox is a multi-session TUI orchestrator that runs any coding-agent CLI — Claude Code, Codex, Antigravity, opencode, aider, Vibe, or any CLI you define — inside persistent tmux panes. Sessions, agents, and git worktrees are first-class citizens, and sessions survive crashes, restarts, and reboots because tmux keeps the processes alive."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How is Thurbox different from other parallel coding-agent tools?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses real tmux as its session backend rather than a re-implemented multiplexer, runs as a lightweight terminal UI rather than an Electron or native desktop app, and launches the unmodified vendor CLI rather than its own model. A single session can span multiple repositories, and it ships a native in-TUI code-review view. Agents are defined as data, so any CLI works with no recompile."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which coding agents does Thurbox support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Thurbox is agent-neutral. It ships built-in definitions for Claude Code, Codex, Antigravity, opencode, aider, and Vibe, and you can add any other CLI by editing agents.toml — no recompile required. Thurbox only knows how to launch each CLI with the right command and arguments; it never touches the agent's model, prompts, or permissions."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I install Thurbox?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "On Linux or macOS, run: curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh. It is also available via Homebrew (brew install thurbeen/thurbox/thurbox), the AUR (thurbox or thurbox-bin), and on Windows via PowerShell or Chocolatey (choco install thurbox). You can also build from source with cargo build --release."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which platforms does Thurbox run on? Does it support remote machines?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Thurbox runs on Linux, macOS, and Windows. It requires tmux 3.2+ on Linux/macOS and psmux on Windows. It can also run sessions on a remote host over SSH while the TUI runs locally — remote hosts are declared in hosts.toml."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Do my sessions survive a crash or restart?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Each session runs inside a persistent tmux session, so the agent processes keep running even if Thurbox crashes or you close and reopen it. Session state is stored in SQLite and re-adopted on restart."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Thurbox free and open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Thurbox is open source under the MIT license and free to use."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use Thurbox without the TUI, headlessly?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. A second binary, thurbox-cli, drives the same SQLite-backed, tmux-hosted sessions headlessly — create, list, send to, capture, restart, and delete sessions, plus automations and tasks — sharing the database with the TUI. This makes Thurbox scriptable for automation and CI."
+        }
+      }
+    ]
+  }
+</script>

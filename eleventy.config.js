@@ -99,9 +99,11 @@ export default function (eleventyConfig) {
   eleventyConfig.addPassthroughCopy('website/js');
   eleventyConfig.addPassthroughCopy('website/assets');
   // robots.txt (crawler discovery) + CNAME (the GitHub Pages custom domain,
-  // tracked so a redeploy can't drop it). Same prefix-stripping as above.
+  // tracked so a redeploy can't drop it) + llms.txt (curated entry point for
+  // LLM-based engines and coding agents). Same prefix-stripping as above.
   eleventyConfig.addPassthroughCopy('website/robots.txt');
   eleventyConfig.addPassthroughCopy('website/CNAME');
+  eleventyConfig.addPassthroughCopy('website/llms.txt');
 
   // Build-time syntax highlighting. Runs on rendered HTML output only, so the
   // page bodies stay verbatim in source. Blocks without a `language-*` class
