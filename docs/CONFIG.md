@@ -357,9 +357,32 @@ no id. A finished turn shows `Done` (blue) — for the session you're watching t
 
 The hooks are wired up automatically by the built-in **hooks** extension
 (auto-activated on first run). Opt out with `thurbox-cli extension deactivate
-hooks`. See `extensions/hooks/README.md`. The status colours are tunable theme
-keys (`status_working` / `status_blocked` / `status_done` / `status_idle` /
-`status_error` — see `themes.toml`).
+hooks`. The status colours are tunable theme keys (`status_working` /
+`status_blocked` / `status_done` / `status_idle` / `status_error` — see
+`themes.toml`).
+
+The wiring is applied **only to agents thurbox launches** — it never edits your
+own global agent config (e.g. your personal `~/.claude/settings.json`). thurbox's
+managed hook config lives per agent, applied by injecting a flag into
+`agents.toml` or by a reversible merge into / managed file in the agent's own
+config dir:
+
+| Agent | On-disk location | How it's applied |
+|-------|------------------|------------------|
+| claude | `~/.config/thurbox/hooks/claude.json` | `--settings` flag (claude merges it with your own settings) |
+| aider | — (no file) | `--notifications-command` flag |
+| opencode | `~/.config/opencode/plugin/thurbox-status.js` | managed plugin file |
+| codex | `~/.codex/hooks.json` | reversible JSON-merge of thurbox's entries |
+| vibe | `~/.vibe/hooks.toml` | managed file (refused if you already have one) |
+| antigravity | `~/.gemini/settings.json` | reversible JSON-merge of thurbox's entries |
+
+The home dir is `~/.config/thurbox/hooks` on a release build and
+`~/.config/thurbox-dev/hooks` on a dev build. Because claude *merges* the
+`--settings` file, your own hooks still fire inside a thurbox session — both run.
+Hand-edits to a managed file are rewritten from the embedded payload on the next
+TUI start / heartbeat tick; to customize, deactivate the extension and wire the
+hook yourself, or edit the payload under `extensions/hooks/` and reinstall. Full
+per-agent detail: `extensions/hooks/README.md`.
 
 ## themes.toml
 

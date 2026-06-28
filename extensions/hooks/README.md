@@ -80,6 +80,37 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   fail-open no-op. If a future `agy` changes the hook schema, edit
   `antigravity-hooks.json` (no code change).
 
+## Where the config lives
+
+The wiring is applied **only to agents thurbox launches** — it never edits your
+own global agent config (e.g. your personal `~/.claude/settings.json`). For
+claude the managed hooks file is passed with `--settings`, which claude **merges
+on top of** your own settings: inside a thurbox session both your hooks and
+thurbox's fire, while a plain `claude` outside thurbox sees only your own. The
+other agents are wired by a reversible merge into — or a managed file dropped in
+— their own config dir.
+
+| Agent | On-disk location | How it's applied |
+|-------|------------------|------------------|
+| claude | `~/.config/thurbox/hooks/claude.json` | `--settings` flag on the `claude` agent (claude merges it) |
+| aider | — (no file) | `--notifications-command` flag on the `aider` agent |
+| opencode | `~/.config/opencode/plugin/thurbox-status.js` | managed plugin file (`requires_dir`) |
+| codex | `~/.codex/hooks.json` | reversible JSON-merge of our entries |
+| vibe | `~/.vibe/hooks.toml` | managed file (refused if you already have one) |
+| antigravity | `~/.gemini/settings.json` | reversible JSON-merge of our entries |
+
+The home dir is `~/.config/thurbox/hooks` for a release build and
+`~/.config/thurbox-dev/hooks` for a dev build, so the two stay isolated.
+
+**Inspect or customize.** To see exactly what thurbox installed, read the file
+for the agent above (e.g. `cat ~/.config/thurbox/hooks/claude.json`). The
+injected `--settings` / `--notifications-command` flags themselves live in the
+`claude` / `aider` entries of `~/.config/thurbox/agents.toml`. You can hand-edit
+a managed file, but self-heal rewrites it from the embedded payload on the next
+TUI start / heartbeat tick — so to keep a change, either deactivate the extension
+(`thurbox-cli extension deactivate hooks`) and wire the hook yourself, or edit
+the payload source under `extensions/hooks/` and reinstall.
+
 ## Mechanism
 
 This extension exercises two extension-manifest capabilities (see

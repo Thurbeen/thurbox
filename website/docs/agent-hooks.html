@@ -9,6 +9,7 @@ onThisPage:
   - { id: 'states', label: 'The five states' }
   - { id: 'coverage', label: 'Per-agent coverage' }
   - { id: 'wiring', label: 'How each agent is wired' }
+  - { id: 'config', label: 'Where the config lives' }
   - { id: 'optout', label: 'Opt out' }
   - { id: 'files', label: 'Files' }
 ---
@@ -316,6 +317,106 @@ onThisPage:
             <code>session signal</code>
             marker.
           </p>
+
+          <h2 id="config">
+            Where the config lives
+            <a href="#config" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The wiring is applied
+            <strong>only to agents Thurbox launches</strong>
+            &mdash; it never edits your own global agent config (e.g. your personal
+            <code>~/.claude/settings.json</code>
+            ). For claude the managed hooks file is passed with
+            <code>--settings</code>
+            , which claude
+            <strong>merges on top of</strong>
+            your own settings: inside a Thurbox session both your hooks and Thurbox's fire, while a
+            plain
+            <code>claude</code>
+            outside Thurbox sees only your own. The other agents are wired by a reversible merge
+            into &mdash; or a managed file dropped in &mdash; their own config dir.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>On-disk location</th>
+                <th>How it's applied</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>claude</td>
+                <td><code>~/.config/thurbox/hooks/claude.json</code></td>
+                <td>
+                  <code>--settings</code>
+                  flag on the
+                  <code>claude</code>
+                  agent (claude merges it)
+                </td>
+              </tr>
+              <tr>
+                <td>aider</td>
+                <td>&mdash; (no file)</td>
+                <td>
+                  <code>--notifications-command</code>
+                  flag on the
+                  <code>aider</code>
+                  agent
+                </td>
+              </tr>
+              <tr>
+                <td>opencode</td>
+                <td><code>~/.config/opencode/plugin/thurbox-status.js</code></td>
+                <td>managed plugin file</td>
+              </tr>
+              <tr>
+                <td>codex</td>
+                <td><code>~/.codex/hooks.json</code></td>
+                <td>reversible JSON-merge of our entries</td>
+              </tr>
+              <tr>
+                <td>vibe</td>
+                <td><code>~/.vibe/hooks.toml</code></td>
+                <td>managed file (refused if you already have one)</td>
+              </tr>
+              <tr>
+                <td>antigravity</td>
+                <td><code>~/.gemini/settings.json</code></td>
+                <td>reversible JSON-merge of our entries</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The home dir is
+            <code>~/.config/thurbox/hooks</code>
+            for a release build and
+            <code>~/.config/thurbox-dev/hooks</code>
+            for a dev build, so the two stay isolated.
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>Inspect or customize.</strong>
+              To see exactly what Thurbox installed, read the file for the agent above (e.g.
+              <code>cat ~/.config/thurbox/hooks/claude.json</code>
+              ). The injected
+              <code>--settings</code>
+              /
+              <code>--notifications-command</code>
+              flags themselves live in the
+              <code>claude</code>
+              /
+              <code>aider</code>
+              entries of
+              <code>~/.config/thurbox/agents.toml</code>
+              . You can hand-edit a managed file, but self-heal rewrites it from the embedded payload
+              on the next TUI start / heartbeat tick &mdash; so to keep a change, either deactivate
+              the extension and wire the hook yourself, or edit the payload source under
+              <code>extensions/hooks/</code>
+              and reinstall.
+            </p>
+          </div>
 
           <h2 id="optout">
             Opt out
