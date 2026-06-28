@@ -139,15 +139,15 @@ lightweight **TUI** or an Electron/native app, whether they launch the
 **unmodified vendor CLI** or their own model, and whether one session can span
 several repos. Thurbox optimizes the boring-but-load-bearing end of that list.
 
-| Tool | Interface | Session backend | Agents | Multi-repo session | Platforms | Remote / SSH | License |
-|------|-----------|-----------------|--------|--------------------|-----------|--------------|---------|
-| **Thurbox** | TUI | **Real tmux** (+ psmux on Windows) | **Any CLI** — data in `agents.toml` | **✓** (one session, many repos) | Linux · macOS · Windows | **✓** (SSH hosts) | MIT |
-| [Conductor](https://www.conductor.build/) | Native GUI | App-managed PTY | Claude, Codex, Cursor | ✗ | macOS only | Cloud Workspaces | Free (closed source) |
-| [Herdr](https://herdr.dev/) | TUI | **Own** multiplexer (Rust) | Claude, Codex + many (any CLI) | ✗ | Linux · macOS | Runs on a remote box | AGPL-3.0 |
-| [1Code](https://github.com/21st-dev/1code) | Desktop GUI | App-managed PTY | Claude, Codex | ✗ | macOS · Windows · Linux | Cloud agents | Apache-2.0 |
-| [Orca](https://www.onorca.dev/) | Desktop GUI (Electron) | App-managed PTY | Claude, Codex, Gemini, Cursor + many (any CLI) | ✗ | macOS · Windows · Linux | Remote Orca servers | MIT |
-| [Claude Squad](https://github.com/smtg-ai/claude-squad) | TUI | **Real tmux** | Claude, Codex, OpenCode, Aider, Amp | ✗ | Linux · macOS (no Windows) | ✗ | AGPL-3.0 |
-| [Cursor](https://cursor.com/) | IDE + cloud | App-managed (its **own** models) | Composer + frontier models | ✗ | macOS · Windows · Linux | Cloud VMs + SSH | Proprietary (paid) |
+| Tool | Interface | Session backend | Agents | Multi-repo session | Code review | Platforms | Remote / SSH | License |
+|------|-----------|-----------------|--------|--------------------|-------------|-----------|--------------|---------|
+| **Thurbox** | TUI | **Real tmux** (+ psmux on Windows) | **Any CLI** — data in `agents.toml` | **✓** (one session, many repos) | **✓** (native in-TUI diff) | Linux · macOS · Windows | **✓** (SSH hosts) | MIT |
+| [Conductor](https://www.conductor.build/) | Native GUI | App-managed PTY | Claude, Codex, Cursor | ✗ | Visual diff (GUI) | macOS only | Cloud Workspaces | Free (closed source) |
+| [Herdr](https://herdr.dev/) | TUI | **Own** multiplexer (Rust) | Claude, Codex + many (any CLI) | ✗ | ✗ | Linux · macOS | Runs on a remote box | AGPL-3.0 |
+| [1Code](https://github.com/21st-dev/1code) | Desktop GUI | App-managed PTY | Claude, Codex | ✗ | Visual diff (GUI) | macOS · Windows · Linux | Cloud agents | Apache-2.0 |
+| [Orca](https://www.onorca.dev/) | Desktop GUI (Electron) | App-managed PTY | Claude, Codex, Gemini, Cursor + many (any CLI) | ✗ | Visual diff (GUI) | macOS · Windows · Linux | Remote Orca servers | MIT |
+| [Claude Squad](https://github.com/smtg-ai/claude-squad) | TUI | **Real tmux** | Claude, Codex, OpenCode, Aider, Amp | ✗ | Git diff view | Linux · macOS (no Windows) | ✗ | AGPL-3.0 |
+| [Cursor](https://cursor.com/) | IDE + cloud | App-managed (its **own** models) | Composer + frontier models | ✗ | IDE review | macOS · Windows · Linux | Cloud VMs + SSH | Proprietary (paid) |
 
 What makes Thurbox different (some of these are shared — the combination is the
 point):
@@ -176,13 +176,19 @@ point):
 - **Mouse support in the terminal.** Clickable session rows, buttons, and
   scrollbars, plus drag-to-select — a gentler on-ramp than most TUIs, while
   staying fully keyboard-first (and toggleable via `[features] mouse`).
+- **Native code review, in the terminal.** A built-in, GitHub-style diff
+  reviewer (`F7`) — browse the branch, a commit, or working changes in a folder
+  tree, leave classified comments, fold reviewed files, then send the review
+  back to the agent to address. The click-to-review visual diff that used to be
+  a GUI-only perk, without leaving the TUI.
 
 On top of that, Thurbox is the only entry here that is terminal-native **and**
 runs on Windows **and** over SSH, and it ships a full headless CLI
 (`thurbox-cli`) plus cron-like automations to drive and schedule fleets of
-agents with no GUI at all. The GUI tools trade footprint and that scriptability
-for click-to-review visual diffs and a gentler on-ramp. Feature accuracy as of
-June 2026; check each project for the latest.
+agents with no GUI at all — now with its own native code-review view, so the
+click-to-review visual diff is no longer a GUI-only trade-off. The GUI tools
+still trade footprint and that scriptability for a gentler on-ramp. Feature
+accuracy as of June 2026; check each project for the latest.
 
 ## Features
 
