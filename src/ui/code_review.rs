@@ -755,19 +755,17 @@ fn render_footer(
     composing: bool,
     side_by_side: bool,
 ) -> Vec<(crate::ui::ButtonHit, ReviewButton)> {
-    // Labels carry their keyboard shortcut (`label·key`) so every button is also
-    // a discoverable shortcut.
-    let view_label = if side_by_side {
-        "Unified·v"
-    } else {
-        "Split·v"
-    };
+    // Each button carries its keyboard shortcut as a dimmed hint (`label·key`)
+    // so it stays discoverable. The non-composing bar leads with the essential
+    // actions (Comment, Send→Agent, Close) so they survive a narrow footer —
+    // `render_button_bar` drops overflow from the right and marks it with `…`.
+    let view_label = if side_by_side { "Unified" } else { "Split" };
     let (specs, actions): (Vec<ButtonSpec>, Vec<ReviewButton>) = if composing {
         (
             vec![
-                ButtonSpec::primary("Save·^S"),
-                ButtonSpec::secondary("Cancel·esc"),
-                ButtonSpec::secondary("Class·tab"),
+                ButtonSpec::primary("Save").with_hint("·^S"),
+                ButtonSpec::secondary("Cancel").with_hint("·esc"),
+                ButtonSpec::secondary("Class").with_hint("·tab"),
             ],
             vec![
                 ReviewButton::Save,
@@ -778,26 +776,26 @@ fn render_footer(
     } else {
         (
             vec![
-                ButtonSpec::primary("Comment·c"),
-                ButtonSpec::secondary("File·f"),
-                ButtonSpec::secondary("Summary·s"),
-                ButtonSpec::secondary("Reviewed·r"),
-                ButtonSpec::secondary("Target·t"),
-                ButtonSpec::secondary(view_label),
-                ButtonSpec::secondary("Copy·y"),
-                ButtonSpec::primary("Send→Agent·e"),
-                ButtonSpec::secondary("Close·esc"),
+                ButtonSpec::primary("Comment").with_hint("·c"),
+                ButtonSpec::primary("Send→Agent").with_hint("·e"),
+                ButtonSpec::secondary("Close").with_hint("·esc"),
+                ButtonSpec::secondary("File").with_hint("·f"),
+                ButtonSpec::secondary("Summary").with_hint("·s"),
+                ButtonSpec::secondary("Reviewed").with_hint("·r"),
+                ButtonSpec::secondary("Target").with_hint("·t"),
+                ButtonSpec::secondary(view_label).with_hint("·v"),
+                ButtonSpec::secondary("Copy").with_hint("·y"),
             ],
             vec![
                 ReviewButton::Comment,
+                ReviewButton::SendToAgent,
+                ReviewButton::Close,
                 ReviewButton::FileComment,
                 ReviewButton::Summary,
                 ReviewButton::MarkReviewed,
                 ReviewButton::Target,
                 ReviewButton::ToggleView,
                 ReviewButton::Copy,
-                ReviewButton::SendToAgent,
-                ReviewButton::Close,
             ],
         )
     };
@@ -897,6 +895,36 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    #[test]
+    fn footer_leads_with_essentials_and_marks_overflow_when_narrow() {
+        // 40 cols fits exactly Comment·c (11) + Send→Agent·e (14) + Close·esc
+        // (11) with separators (11+1+14+1+11 = 38); the rest overflow.
+        let mut term = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        let mut actions = Vec::new();
+        term.draw(|f| {
+            actions = render_footer(f, Rect::new(0, 0, 40, 1), false, false)
+                .into_iter()
+                .map(|(_, a)| a)
+                .collect();
+        })
+        .unwrap();
+        assert_eq!(
+            actions,
+            vec![
+                ReviewButton::Comment,
+                ReviewButton::SendToAgent,
+                ReviewButton::Close,
+            ],
+            "the essential actions lead and survive a narrow footer"
+        );
+        let buf = term.backend().buffer();
+        let row: String = (0..40).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            row.contains('…'),
+            "dropped buttons are marked with an ellipsis"
+        );
     }
 
     #[test]

@@ -103,6 +103,7 @@ impl App {
                         | ClickAction::SelectAutomation(_)
                         | ClickAction::SelectFileRow(_)
                         | ClickAction::Global(_)
+                        | ClickAction::ReviewButton(_)
                         | ClickAction::PaneField { .. }
                 )
             };
@@ -111,13 +112,17 @@ impl App {
         let Some(target) = hovered else {
             return;
         };
-        // Buttons (footer + modal) get a stronger, button-like hover — brighten
-        // their fill to the accent so the chip lights up — while list rows get a
-        // subtle background band to mark what a click would hit. Either way we
-        // tint the background only, leaving each cell's fg/modifiers intact.
+        // Buttons (footer + modal + code-review) get a stronger, button-like
+        // hover — brighten their fill to the accent so the chip lights up — while
+        // list rows get a subtle background band to mark what a click would hit.
+        // For a button we also force the fg to `inverted_fg` so the brightened
+        // chip stays legible regardless of the resting style (primary's accent
+        // fill and the neutral selection-filled secondary chip carry different fg
+        // colours); for rows we tint only the background, leaving each cell's
+        // fg/modifiers intact.
         let is_button = matches!(
             target.action,
-            ClickAction::Global(_) | ClickAction::ModalButton { .. }
+            ClickAction::Global(_) | ClickAction::ModalButton { .. } | ClickAction::ReviewButton(_)
         );
         let hover_bg = if is_button {
             Theme::accent_bright()
@@ -130,6 +135,9 @@ impl App {
             for x in rect.x..rect.x + rect.width {
                 if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
                     cell.set_bg(hover_bg);
+                    if is_button {
+                        cell.set_fg(Theme::inverted_fg());
+                    }
                 }
             }
         }

@@ -105,14 +105,17 @@ pub fn render_selector_rows(
     (hitboxes, geom)
 }
 
-/// One button to render in a [`render_button_bar`] row: its visible `label`
-/// and whether it is the primary/affirmative action (an accent-filled pill vs a
-/// muted gray pill). Pure presentation — the app layer maps the rendered
-/// hitbox's index back to an action/key.
+/// One button to render in a [`render_button_bar`] row: its visible `label`,
+/// whether it is the primary/affirmative action (an accent-filled pill vs the
+/// neutral selection-filled pill), and an optional `hint` — a keyboard shortcut
+/// suffix (e.g. `·c`) rendered dimmed within the same chip so the key reads as a
+/// subordinate annotation, not part of the label. Pure presentation — the app
+/// layer maps the rendered hitbox's index back to an action/key.
 #[derive(Debug, Clone, Copy)]
 pub struct ButtonSpec<'a> {
     pub label: &'a str,
     pub primary: bool,
+    pub hint: Option<&'a str>,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -120,6 +123,7 @@ impl<'a> ButtonSpec<'a> {
         Self {
             label,
             primary: true,
+            hint: None,
         }
     }
 
@@ -127,7 +131,14 @@ impl<'a> ButtonSpec<'a> {
         Self {
             label,
             primary: false,
+            hint: None,
         }
+    }
+
+    /// Attach a dimmed keyboard-shortcut suffix to this button (e.g. `"·c"`).
+    pub fn with_hint(mut self, hint: &'a str) -> Self {
+        self.hint = Some(hint);
+        self
     }
 }
 
@@ -149,16 +160,22 @@ pub type ModalButtons = Vec<(
     crossterm::event::KeyModifiers,
 )>;
 
-/// Width (display columns) the button for `label` occupies when rendered as a
-/// pill chip (one space of padding on each side: ` label `).
-fn button_width(label: &str) -> u16 {
-    label.chars().count() as u16 + 2
+/// Width (display columns) a button occupies when rendered as a pill chip: the
+/// label plus its optional hint suffix, with one space of padding on each side
+/// (` label·key `).
+fn button_width(spec: &ButtonSpec<'_>) -> u16 {
+    let hint = spec.hint.map_or(0, |h| h.chars().count());
+    (spec.label.chars().count() + hint) as u16 + 2
 }
 
 /// The resting fill style for a button — a filled "pill" chip. Primary actions
-/// use the accent colour (a focused-badge look); secondary actions a muted gray
-/// fill. The space-padded label on a solid background reads as a button without
-/// brackets, and the fill is what the hover highlight reverses.
+/// use the accent colour (a focused-badge look); secondary actions the
+/// neutral, contrast-tuned selection pair (`selection_fg` on `selection_bg`),
+/// which every palette guarantees is legible — unlike the old `inverted_fg` on
+/// `text_muted`, where `inverted_fg` tracks the app background and so collapsed
+/// to dark-on-dark (dark themes) / light-on-light (light themes) over the muted
+/// mid-gray. The space-padded label on a solid background reads as a button
+/// without brackets, and the fill is what the hover highlight brightens.
 fn button_style(primary: bool) -> Style {
     if primary {
         Style::default()
@@ -167,18 +184,18 @@ fn button_style(primary: bool) -> Style {
             .add_modifier(ratatui::style::Modifier::BOLD)
     } else {
         Style::default()
-            .fg(Theme::inverted_fg())
-            .bg(Theme::text_muted())
+            .fg(Theme::selection_fg())
+            .bg(Theme::selection_bg())
             .add_modifier(ratatui::style::Modifier::BOLD)
     }
 }
 
 /// Render a row of filled "pill" buttons (` label `, padded, on a solid accent
-/// or gray fill) into the single-row `area`, returning one [`ButtonHit`] per
-/// *placed* button (index = position in `specs`). Buttons are separated by one
-/// space. When `right_align` is set the row is packed against the right edge of
-/// `area` (the convention for modal Save/Cancel and the global footer);
-/// otherwise it starts at the left edge.
+/// or neutral selection fill) into the single-row `area`, returning one
+/// [`ButtonHit`] per *placed* button (index = position in `specs`). Buttons are
+/// separated by one space. When `right_align` is set the row is packed against
+/// the right edge of `area` (the convention for modal Save/Cancel and the global
+/// footer); otherwise it starts at the left edge.
 ///
 /// Responsive by design: a button that would overflow `area` is dropped rather
 /// than wrapped or clipped mid-glyph, so a narrow footer simply shows fewer
@@ -194,8 +211,8 @@ pub fn render_button_bar(
         return Vec::new();
     }
     // Total width of every button plus single-space separators.
-    let total: u16 = specs.iter().map(|s| button_width(s.label)).sum::<u16>()
-        + specs.len().saturating_sub(1) as u16;
+    let total: u16 =
+        specs.iter().map(button_width).sum::<u16>() + specs.len().saturating_sub(1) as u16;
 
     let mut x = if right_align && total <= area.width {
         area.x + area.width - total
@@ -205,21 +222,46 @@ pub fn render_button_bar(
     let limit = area.x + area.width;
 
     let mut hits = Vec::with_capacity(specs.len());
+    let mut dropped = false;
     for (index, spec) in specs.iter().enumerate() {
-        let width = button_width(spec.label);
+        let width = button_width(spec);
         if x + width > limit {
-            break; // out of room — drop the rest rather than corrupt the row
+            dropped = true; // out of room — drop the rest rather than corrupt the row
+            break;
         }
         let rect = Rect::new(x, area.y, width, 1);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!(" {} ", spec.label),
-                button_style(spec.primary),
-            ))),
-            rect,
-        );
+        let base = button_style(spec.primary);
+        // The chip is ` label ` (no hint) or ` label·key ` with the hint dimmed
+        // on the same fill so the shortcut reads as a subordinate annotation.
+        let line = match spec.hint {
+            Some(hint) => Line::from(vec![
+                Span::styled(format!(" {}", spec.label), base),
+                Span::styled(
+                    format!("{hint} "),
+                    base.add_modifier(ratatui::style::Modifier::DIM),
+                ),
+            ]),
+            None => Line::from(Span::styled(format!(" {} ", spec.label), base)),
+        };
+        frame.render_widget(Paragraph::new(line), rect);
         hits.push(ButtonHit { rect, index });
         x += width + 1;
+    }
+    // When a left-aligned bar (the review/global footer) drops buttons, mark the
+    // overflow with a muted `…` in the leftover space so the hidden actions are
+    // discoverable rather than silently gone. Right-aligned modal footers pack
+    // one or two buttons and effectively never overflow, so they keep their
+    // clean trailing edge.
+    if dropped && !right_align && x < limit {
+        let avail = limit - x;
+        let marker = if avail >= 3 { " … " } else { "…" };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                marker,
+                Style::default().fg(Theme::text_muted()),
+            ))),
+            Rect::new(x, area.y, avail.min(marker.chars().count() as u16), 1),
+        );
     }
     hits
 }
@@ -1003,6 +1045,66 @@ mod tests {
                 assert_eq!(hits[0].index, 0);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn render_button_bar_left_overflow_shows_ellipsis() {
+        let backend = ratatui::backend::TestBackend::new(40, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                // " Save " = 6 fits; " Cancel " = 8 needs 6+1+8 = 15 > 12, so it
+                // is dropped, leaving room for the ` … ` overflow marker.
+                let area = Rect::new(0, 0, 12, 1);
+                let specs = [ButtonSpec::primary("Save"), ButtonSpec::secondary("Cancel")];
+                let hits = render_button_bar(f, area, &specs, false);
+                assert_eq!(hits.len(), 1);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..12).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            row.contains('…'),
+            "left-aligned overflow marks dropped buttons with an ellipsis, got {row:?}"
+        );
+    }
+
+    #[test]
+    fn render_button_bar_right_overflow_has_no_ellipsis() {
+        let backend = ratatui::backend::TestBackend::new(40, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 12, 1);
+                let specs = [ButtonSpec::primary("Save"), ButtonSpec::secondary("Cancel")];
+                let _ = render_button_bar(f, area, &specs, true);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..12).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            !row.contains('…'),
+            "right-aligned modal footers don't draw the overflow marker, got {row:?}"
+        );
+    }
+
+    #[test]
+    fn button_with_hint_widens_chip_and_renders_suffix() {
+        let backend = ratatui::backend::TestBackend::new(40, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 40, 1);
+                let specs = [ButtonSpec::primary("Comment").with_hint("·c")];
+                let hits = render_button_bar(f, area, &specs, false);
+                assert_eq!(hits.len(), 1);
+                // " Comment·c ": label 7 + hint 2 + 2 padding = 11 cols.
+                assert_eq!(hits[0].rect.width, 11);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..11).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(row, " Comment·c ");
     }
 
     #[test]

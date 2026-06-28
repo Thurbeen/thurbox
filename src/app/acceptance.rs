@@ -1486,6 +1486,32 @@ fn review_persists_per_session_across_switches() {
     );
 }
 
+/// Hovering a code-review footer button brightens its fill to `accent_bright`,
+/// exactly like the global footer and modal buttons. Regression: review footer
+/// buttons (recorded as `ClickAction::ReviewButton`) were left out of the hover
+/// highlight, so they never lit up under the pointer.
+#[test]
+fn hovering_review_footer_button_brightens_it() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    open_minimal_review(&mut h);
+    h.render();
+    let r = h
+        .app
+        .click_targets
+        .iter()
+        .find(|t| matches!(t.action, ClickAction::ReviewButton(_)))
+        .map(|t| t.rect)
+        .expect("review footer buttons recorded");
+    h.app.update(AppMessage::MouseMove { x: r.x, y: r.y });
+    h.render();
+    let buf = h.terminal.backend().buffer();
+    assert_eq!(
+        buf[(r.x, r.y)].bg,
+        crate::ui::theme::Theme::accent_bright(),
+        "hovered review footer button should brighten to accent_bright"
+    );
+}
+
 /// Global overlay/panel toggles fall through the review's key capture so they
 /// stay reachable while a review is open (regression: the capture handler
 /// swallowed them). The review itself stays open.
