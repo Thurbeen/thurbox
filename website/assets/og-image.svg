@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Thurbox — TUI Agentic IDE">
+  <!-- Source for assets/og-image.png (1200x630 social preview). Rasterize with
+       scripts/dev/render-og-image.sh after editing. Brand colors mirror
+       website/css/variables.css. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#15120f"/>
+      <stop offset="1" stop-color="#1e1a16"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="6" fill="#ff5c54"/>
+
+  <!-- logo mark (from website/assets/logo-mark.svg), scaled and centered top -->
+  <g transform="translate(540 70) scale(2.0)">
+    <rect x="6" y="7" width="52" height="27" rx="8" fill="#1a080a"/>
+    <rect x="7.25" y="8.25" width="49.5" height="24.5" rx="6.75" fill="none" stroke="#ff5c54" stroke-width="2.5"/>
+    <text x="13" y="28" font-family="'JetBrains Mono','DejaVu Sans Mono',monospace" font-size="15" font-weight="700" fill="#6eff6e">$</text>
+    <rect x="31" y="20.5" width="12" height="5.5" rx="1" fill="#6eff6e"/>
+    <g stroke="#ff5c54" stroke-width="1.8" fill="none" stroke-linecap="round">
+      <path d="M32 34 V40"/>
+      <path d="M14 40 H50"/>
+      <path d="M14 40 V44"/>
+      <path d="M32 40 V44"/>
+      <path d="M50 40 V44"/>
+    </g>
+    <circle cx="14" cy="50" r="5" fill="#1a080a" stroke="#6eff6e" stroke-width="2.2"/>
+    <circle cx="32" cy="50" r="5" fill="#1a080a" stroke="#ffb627" stroke-width="2.2"/>
+    <circle cx="50" cy="50" r="5" fill="#1a080a" stroke="#ff5c54" stroke-width="2.2"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="600" y="360" text-anchor="middle" font-family="'JetBrains Mono','DejaVu Sans Mono',monospace" font-size="96" font-weight="700" letter-spacing="-2">
+    <tspan fill="#f5e6e0">thur</tspan><tspan fill="#ff5c54">box</tspan>
+  </text>
+
+  <!-- tagline -->
+  <text x="600" y="430" text-anchor="middle" font-family="'JetBrains Mono','DejaVu Sans Mono',monospace" font-size="40" font-weight="700" fill="#6eff6e">TUI Agentic IDE</text>
+
+  <!-- subtitle -->
+  <text x="600" y="500" text-anchor="middle" font-family="'Inter','DejaVu Sans',sans-serif" font-size="30" fill="#a0a0a0">Run any coding-agent CLI in persistent tmux panes</text>
+</svg>

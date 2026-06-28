@@ -98,6 +98,10 @@ export default function (eleventyConfig) {
   eleventyConfig.addPassthroughCopy('website/css');
   eleventyConfig.addPassthroughCopy('website/js');
   eleventyConfig.addPassthroughCopy('website/assets');
+  // robots.txt (crawler discovery) + CNAME (the GitHub Pages custom domain,
+  // tracked so a redeploy can't drop it). Same prefix-stripping as above.
+  eleventyConfig.addPassthroughCopy('website/robots.txt');
+  eleventyConfig.addPassthroughCopy('website/CNAME');
 
   // Build-time syntax highlighting. Runs on rendered HTML output only, so the
   // page bodies stay verbatim in source. Blocks without a `language-*` class
@@ -113,8 +117,10 @@ export default function (eleventyConfig) {
       output: '_site',
       includes: '_includes',
     },
-    // Layouts are Nunjucks; page bodies are left untouched.
+    // Layouts are Nunjucks; page bodies are left untouched. `njk` is enabled
+    // for generated data files (sitemap.xml); `_includes` is excluded from
+    // page processing, so the shared layouts are unaffected.
     htmlTemplateEngine: false,
-    templateFormats: ['html'],
+    templateFormats: ['html', 'njk'],
   };
 }
