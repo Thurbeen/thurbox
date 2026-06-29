@@ -142,6 +142,7 @@ several repos. Thurbox optimizes the boring-but-load-bearing end of that list.
 | Tool | Interface | Session backend | Agents | Multi-repo session | Code review | Platforms | Remote / SSH | License |
 |------|-----------|-----------------|--------|--------------------|-------------|-----------|--------------|---------|
 | **Thurbox** | TUI | **Real tmux** (+ psmux on Windows) | **Any CLI** — data in `agents.toml` | **✓** (one session, many repos) | **✓** (native in-TUI diff) | Linux · macOS · Windows | **✓** (SSH hosts) | MIT |
+| [GitHub Copilot App](https://github.com/github/app) | Desktop GUI | App-managed (worktrees + GitHub cloud envs) | Copilot (GitHub's agent) | ✗ | Agent Merge (PR review) | Linux · macOS · Windows | GitHub-hosted cloud envs | Proprietary (paid Copilot) |
 | [Conductor](https://www.conductor.build/) | Native GUI | App-managed PTY | Claude, Codex, Cursor | ✗ | Visual diff (GUI) | macOS only | Cloud Workspaces | Free (closed source) |
 | [Herdr](https://herdr.dev/) | TUI | **Own** multiplexer (Rust) | Claude, Codex + many (any CLI) | ✗ | ✗ | Linux · macOS | Runs on a remote box | AGPL-3.0 |
 | [1Code](https://github.com/21st-dev/1code) | Desktop GUI | App-managed PTY | Claude, Codex | ✗ | Visual diff (GUI) | macOS · Windows · Linux | Cloud agents | Apache-2.0 |
@@ -187,8 +188,11 @@ runs on Windows **and** over SSH, and it ships a full headless CLI
 (`thurbox-cli`) plus cron-like automations to drive and schedule fleets of
 agents with no GUI at all — now with its own native code-review view, so the
 click-to-review visual diff is no longer a GUI-only trade-off. The GUI tools
-still trade footprint and that scriptability for a gentler on-ramp. Feature
-accuracy as of June 2026; check each project for the latest.
+still trade footprint and that scriptability for a gentler on-ramp — and the
+most polished of them, [GitHub's Copilot App](https://github.com/github/app),
+also ties you to a single vendor's agent and a paid subscription, where Thurbox
+stays agent-neutral and runs whatever CLI you already pay for. Feature accuracy
+as of June 2026; check each project for the latest.
 
 ## Features
 
