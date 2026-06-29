@@ -61,7 +61,7 @@ mod tests {
     fn save_then_load_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
-        let body = r#"{"QuitApp": ["ctrl+x"]}"#;
+        let body = r#"{"QuitApp": ["ctrl+a"]}"#;
         save_keybindings_json(body).unwrap();
         assert_eq!(load_keybindings_json().unwrap().as_deref(), Some(body));
     }

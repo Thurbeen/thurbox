@@ -178,7 +178,7 @@ point):
   scrollbars, plus drag-to-select — a gentler on-ramp than most TUIs, while
   staying fully keyboard-first (and toggleable via `[features] mouse`).
 - **Native code review, in the terminal.** A built-in, GitHub-style diff
-  reviewer (`F7`) — browse the branch, a commit, or working changes in a folder
+  reviewer (`Ctrl+X`) — browse the branch, a commit, or working changes in a folder
   tree, leave classified comments, fold reviewed files, then send the review
   back to the agent to address. The click-to-review visual diff that used to be
   a GUI-only perk, without leaving the TUI.
@@ -290,7 +290,7 @@ result; `Esc` restores exactly what you had.
 
 ### Code Review
 
-A native, GitHub-style diff reviewer (`F7`) — no external tool. Browse the
+A native, GitHub-style diff reviewer (`Ctrl+X`, `F7` alternate) — no external tool. Browse the
 branch (`<base>..HEAD`), a single commit, or the uncommitted changes; the
 changed files show as a **folder tree** with colored statuses, and the diff is
 syntax-highlighted. Leave classified comments (issue / suggestion / note /
@@ -623,7 +623,7 @@ repos? Add `--add-repo PATH@main` (its own worktree per repo) or
 | `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | **W**ork items |
 | `Ctrl+T` | Toggle shell pane | **T**erminal |
-| `F7` | Toggle code-review pane (native diff reviewer) | Review |
+| `Ctrl+X` / `F7` | Toggle code-review pane (native diff reviewer) | Review |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Select previous session | Vim: **k** = up |

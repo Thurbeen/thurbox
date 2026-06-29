@@ -6547,12 +6547,12 @@ mod tests {
         let mut app = app_with_sessions(0);
         app.handle_key(KeyCode::F(1), KeyModifiers::NONE); // open help (selected = 0)
         app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE); // begin capture
-        app.handle_key(KeyCode::Char('x'), KeyModifiers::CONTROL); // bind ctrl+x
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL); // bind ctrl+a (free)
 
         let action = crate::session::Action::rebindable_in_order()[0];
         assert_eq!(
             app.keybindings
-                .lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                .lookup(KeyCode::Char('a'), KeyModifiers::CONTROL),
             Some(action)
         );
         let modals::Modal::Help(ref h) = app.modal else {
@@ -6569,13 +6569,15 @@ mod tests {
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE); // cancel capture
 
         // Still in the help modal, no longer capturing, and nothing was bound.
+        // Ctrl+A is the probe because it is unbound by default (Ctrl+X is now
+        // ToggleReview's default chord).
         let modals::Modal::Help(ref h) = app.modal else {
             panic!("Esc during capture should not close the help modal");
         };
         assert!(!h.capturing);
         assert_eq!(
             app.keybindings
-                .lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                .lookup(KeyCode::Char('a'), KeyModifiers::CONTROL),
             None
         );
     }

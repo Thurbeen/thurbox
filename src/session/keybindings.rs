@@ -326,6 +326,11 @@ impl Action {
     /// rarely used and the convenient shell toggle wins. It also carries an `F8`
     /// alternate, so this is a considered choice — do not "fix" it by adding it
     /// here.
+    ///
+    /// `Ctrl+X` (`ToggleReview`) **is** in the list: it is the emacs/readline
+    /// *prefix* key (`C-x C-e` edits the command line, `C-x C-s` saves, …), so
+    /// deferring it keeps that prefix working for the inner agent/shell. `F7` is
+    /// its in-terminal alternate.
     pub fn terminal_passthrough(self) -> bool {
         matches!(
             self,
@@ -338,7 +343,8 @@ impl Action {
                 | Action::RestartSession    // Ctrl+R — reverse search
                 | Action::StartSync         // Ctrl+S — forward search / XOFF
                 | Action::OpenRestoreSessions // Ctrl+U — kill line
-                | Action::FocusTasks // Ctrl+W — delete word    (F5 alt)
+                | Action::FocusTasks        // Ctrl+W — delete word      (F5 alt)
+                | Action::ToggleReview // Ctrl+X — emacs prefix (C-x …)  (F7 alt)
         )
     }
 
@@ -374,9 +380,13 @@ impl Action {
             // one; F1–F7 are taken). Stays a shell toggle in the terminal — see
             // the `terminal_passthrough` exception note.
             Action::ToggleShell => vec![KeyChord::ctrl('t'), KeyChord::function(8)],
-            // F7 — the Ctrl+<letter> namespace is full and F-keys never collide
-            // with the PTY's readline chords. Fully rebindable.
-            Action::ToggleReview => vec![KeyChord::function(7)],
+            // Ctrl+X primary, F7 alternate — consistent with the other panel
+            // toggles. Ctrl+X is the emacs/readline *prefix* key (`C-x C-e`,
+            // `C-x C-s`, …), so it is in `terminal_passthrough`: it forwards to
+            // the agent in a focused terminal/shell pane (emacs `C-x` unaffected)
+            // and toggles the review only from non-terminal panes. F7 is the
+            // in-terminal escape hatch. Fully rebindable.
+            Action::ToggleReview => vec![KeyChord::ctrl('x'), KeyChord::function(7)],
             Action::ForkSession => vec![KeyChord::ctrl('f')],
             Action::RestartSession => vec![KeyChord::ctrl('r')],
             Action::UndoDelete => vec![KeyChord::ctrl('z')],
@@ -1057,6 +1067,7 @@ mod tests {
             Action::StartSync,           // Ctrl+S
             Action::OpenRestoreSessions, // Ctrl+U
             Action::FocusTasks,          // Ctrl+W
+            Action::ToggleReview,        // Ctrl+X — emacs prefix
         ] {
             assert!(
                 action.terminal_passthrough(),
@@ -1122,6 +1133,22 @@ mod tests {
     }
 
     #[test]
+    fn toggle_review_has_dual_ctrl_x_and_f7_chord() {
+        // Ctrl+X primary (in terminal_passthrough — the emacs prefix key), F7
+        // alternate. Mirrors the other panel toggles.
+        let kb = KeyBindings::default();
+        assert_eq!(
+            kb.lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Some(Action::ToggleReview)
+        );
+        assert_eq!(
+            kb.lookup(KeyCode::F(7), KeyModifiers::NONE),
+            Some(Action::ToggleReview)
+        );
+        assert!(Action::ToggleReview.terminal_passthrough());
+    }
+
+    #[test]
     fn lookup_finds_default_chord() {
         let kb = KeyBindings::default();
         assert_eq!(
@@ -1136,8 +1163,10 @@ mod tests {
 
     #[test]
     fn lookup_returns_none_for_unbound_chord() {
+        // Ctrl+A is unbound by default (it is a readline editing chord, not a
+        // thurbox action), so it is the neutral "free chord" for fixtures.
         let kb = KeyBindings::default();
-        assert_eq!(kb.lookup(KeyCode::Char('x'), KeyModifiers::CONTROL), None);
+        assert_eq!(kb.lookup(KeyCode::Char('a'), KeyModifiers::CONTROL), None);
     }
 
     #[test]
@@ -1183,23 +1212,23 @@ mod tests {
 
     #[test]
     fn from_json_falls_back_for_missing_actions() {
-        let json = r#"{ "QuitApp": ["ctrl+x"] }"#;
+        let json = r#"{ "QuitApp": ["ctrl+a"] }"#;
         let kb = KeyBindings::from_json(json).unwrap();
-        assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('x')));
+        assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('a')));
         // Unmodified actions retain defaults.
         assert_eq!(kb.chord_for(Action::NewSession), Some(&KeyChord::ctrl('n')));
     }
 
     #[test]
     fn from_json_ignores_unknown_actions_and_invalid_chords() {
-        let json = r#"{ "QuitApp": ["nonsense", "ctrl+x"], "BogusAction": ["ctrl+y"] }"#;
+        let json = r#"{ "QuitApp": ["nonsense", "ctrl+a"], "BogusAction": ["ctrl+y"] }"#;
         let kb = KeyBindings::from_json(json).unwrap();
-        assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('x')));
+        assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('a')));
     }
 
     #[test]
     fn from_json_with_warnings_reports_skipped_entries() {
-        let json = r#"{ "QuitApp": ["nonsense", "ctrl+x"], "BogusAction": ["ctrl+y"] }"#;
+        let json = r#"{ "QuitApp": ["nonsense", "ctrl+a"], "BogusAction": ["ctrl+y"] }"#;
         let (_, warnings) = KeyBindings::from_json_with_warnings(json).unwrap();
         assert!(
             warnings.iter().any(|w| w.contains("BogusAction")),
@@ -1214,22 +1243,22 @@ mod tests {
     #[test]
     fn from_json_with_warnings_reports_chord_conflicts() {
         // Two global actions on the same chord: one nondeterministically wins.
-        let json = r#"{ "QuitApp": ["ctrl+x"], "NewSession": ["ctrl+x"] }"#;
+        let json = r#"{ "QuitApp": ["ctrl+a"], "NewSession": ["ctrl+a"] }"#;
         let (_, warnings) = KeyBindings::from_json_with_warnings(json).unwrap();
         assert!(
             warnings
                 .iter()
-                .any(|w| w.contains("ctrl+x") && w.contains("bound to both")),
+                .any(|w| w.contains("ctrl+a") && w.contains("bound to both")),
             "conflict must be reported: {warnings:?}"
         );
     }
 
     #[test]
     fn from_json_with_warnings_is_quiet_for_valid_input() {
-        let json = r#"{ "QuitApp": ["ctrl+x"] }"#;
+        let json = r#"{ "QuitApp": ["ctrl+a"] }"#;
         let (kb, warnings) = KeyBindings::from_json_with_warnings(json).unwrap();
         assert!(warnings.is_empty(), "got: {warnings:?}");
-        assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('x')));
+        assert_eq!(kb.chord_for(Action::QuitApp), Some(&KeyChord::ctrl('a')));
     }
 
     #[test]
@@ -1330,11 +1359,12 @@ mod tests {
     #[test]
     fn rebind_replaces_all_chords() {
         let mut kb = KeyBindings::default();
-        let chord = KeyChord::ctrl('x');
+        // ctrl+a is free by default, so the rebind steals from no one.
+        let chord = KeyChord::ctrl('a');
         assert_eq!(kb.rebind(Action::ToggleHelp, chord), None);
         assert_eq!(kb.chords_for(Action::ToggleHelp), &[chord]);
         assert_eq!(
-            kb.lookup(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            kb.lookup(KeyCode::Char('a'), KeyModifiers::CONTROL),
             Some(Action::ToggleHelp)
         );
         // The old dual F-key fallback is gone after a single-chord rebind.
@@ -1458,8 +1488,10 @@ mod tests {
         // scopes overlap (e.g. a global and a session-list action). The lookup
         // must pick a stable winner regardless of HashMap iteration order.
         let mut kb = KeyBindings::default();
-        let chord = KeyChord::ctrl('x');
-        // Bind ctrl+x to a global action and a session-list action directly in
+        // Ctrl+A is unbound by default, so it has no other claimants to muddy
+        // the overlap test (Ctrl+X is now ToggleReview's default).
+        let chord = KeyChord::ctrl('a');
+        // Bind ctrl+a to a global action and a session-list action directly in
         // the map, bypassing `rebind`'s conflict resolution.
         kb.map.insert(Action::ToggleHelp, vec![chord]); // global
         kb.map.insert(Action::SessionListNext, vec![chord]); // scoped
@@ -1468,7 +1500,7 @@ mod tests {
         assert_eq!(
             kb.lookup_in(
                 KeyContext::SessionList,
-                KeyCode::Char('x'),
+                KeyCode::Char('a'),
                 KeyModifiers::CONTROL
             ),
             Some(Action::SessionListNext)
@@ -1477,7 +1509,7 @@ mod tests {
         assert_eq!(
             kb.lookup_in(
                 KeyContext::Terminal,
-                KeyCode::Char('x'),
+                KeyCode::Char('a'),
                 KeyModifiers::CONTROL
             ),
             Some(Action::ToggleHelp)
@@ -1487,7 +1519,7 @@ mod tests {
             assert_eq!(
                 kb.lookup_in(
                     KeyContext::SessionList,
-                    KeyCode::Char('x'),
+                    KeyCode::Char('a'),
                     KeyModifiers::CONTROL
                 ),
                 Some(Action::SessionListNext)

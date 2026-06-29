@@ -1350,8 +1350,10 @@ Thurbox has a **built-in, natively-rendered** code-review view (no external
 binary, no nested TUI) — a tuicr-like GitHub-style continuous diff with
 classified comments and a review summary. It targets the active session's
 worktree (`<base>..HEAD`), which maps cleanly onto thurbox's model (every
-session is a worktree on a branch forked from a base). Toggle with `F7`
-(rebindable `Action::ToggleReview`), like the shell pane; gated by `[features]
+session is a worktree on a branch forked from a base). Toggle with `Ctrl+X`
+(`F7` alternate; rebindable `Action::ToggleReview`), like the shell pane —
+`Ctrl+X` is in `terminal_passthrough` (the emacs prefix key), so in a focused
+terminal it reaches the agent and `F7` opens the review. Gated by `[features]
 code_review`.
 
 - **Surface (tuicr-like).** A continuous diff stream in the central pane (its own
@@ -1368,7 +1370,7 @@ code_review`.
   into the diff at the selected file (the file viewer's "open"), `r`/`R` toggle
   the file/hunk reviewed mark, and `Esc` closes the review
   (`App::handle_review_files_key`, captured before the global lookup like the diff
-  pane). While open it owns the central pane; `Esc`/`F7` close it.
+  pane). While open it owns the central pane; `Esc`/`Ctrl+X` (or `F7`) close it.
   Rendered by `ui::code_review`, reusing `scrollbar`/`focus_block`/
   `render_button_bar`/theme. **Unified or side-by-side** diff layout, toggled with
   `v` / the footer button (`side_by_side`). **Mouse-first** (no vim modal): click a
@@ -1463,8 +1465,12 @@ overrides `HOME`, so agents boot with fresh history/config (no
 past conversations leak); CLIs that authenticate via the system
 keyring stay logged in but show no account email on screen. The
 tapes exercise the session list, info panel (`Ctrl+B`), file
-viewer (`Ctrl+E`), theme picker, session-creation flow, and the
-Automations pane over the seeded sessions and sample tree.
+viewer (`Ctrl+E`), native code review (`Ctrl+X`, the default
+`ToggleReview` chord; `F7` alternate), theme picker, session-creation flow, and the
+Automations pane over the seeded sessions and sample tree. The hero
+`agents` demo also opens the code-review view, so it seeds the same
+worktree-with-a-committed-diff session the dedicated `code-review`
+clip uses.
 
 It runs fully isolated from your real environment — a dev build
 (`0.0.0-dev` → `dev_build` cfg) uses the `thurbox-dev` socket and
@@ -1645,7 +1651,7 @@ Global keys use `Ctrl` + semantic Vim conventions:
 | `Ctrl+W` / `F5` | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global search (sessions/tasks/automations/files) | **/** = search |
 | `Ctrl+T` / `F8` | Toggle shell pane | **T**erminal |
-| `F7` | Toggle native code-review view | Review |
+| `Ctrl+X` / `F7` | Toggle native code-review view | Review |
 | `Ctrl+H` | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Select previous session | Vim: **k** = up |
@@ -1673,7 +1679,7 @@ own scrollback, e.g. Terminal.app/iTerm2).
 
 These defaults can be overridden two ways, both writing the same
 `~/.config/thurbox/keybindings.json` (an `Action` name → one or more
-chord strings, e.g. `{ "QuitApp": ["ctrl+x"] }`):
+chord strings, e.g. `{ "QuitApp": ["ctrl+a"] }`):
 
 - **Interactively** from the F1 panel, which is a live editor rather
   than a read-only overlay. `j`/`k` select an action, `Enter`/`r`
@@ -1718,11 +1724,12 @@ kill-line, `Ctrl+R` = reverse-search, `Ctrl+D` = EOF, …). So when a session
 **terminal is focused**, the actions flagged by `Action::terminal_passthrough`
 (`ToggleInfoPanel`/`DeleteSession`/`ToggleFileViewer`/
 `ForkSession`/`OpenInEditor`/`OpenAutomations`/`RestartSession`/`StartSync`/
-`OpenRestoreSessions`/`FocusTasks`) **defer to the agent CLI** instead of
-running the thurbox command — `handle_key` skips `dispatch_action` and falls
-through to `handle_terminal_key`, which forwards the bytes to the PTY. The
+`OpenRestoreSessions`/`FocusTasks`/`ToggleReview`) **defer to the agent CLI**
+instead of running the thurbox command — `handle_key` skips `dispatch_action`
+and falls through to `handle_terminal_key`, which forwards the bytes to the PTY
+(so e.g. `Ctrl+X` reaches emacs's prefix key in a focused terminal). The
 thurbox command stays reachable from the **session list** (and via its `F`-key
-alternate where one exists — `F2`/`F3`/`F5`). The deferral is gated on the
+alternate where one exists — `F2`/`F3`/`F5`/`F7`). The deferral is gated on the
 bound chord still being a bare `Ctrl+<letter>` (`is_ctrl_letter_chord`), so
 rebinding a passthrough action to a non-conflicting key keeps it working in the
 terminal. Navigation / app-control chords (`Ctrl+H/J/K/L` focus + session nav,

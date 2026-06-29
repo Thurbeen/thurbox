@@ -373,7 +373,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+W` / `F5` | Global | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global | Global search across every scope | **/** = search |
 | `Ctrl+T` / `F8` | Global | Toggle shell pane alongside the agent session | **T**erminal |
-| `F7` | Global | Toggle the native code-review view | Review |
+| `Ctrl+X` / `F7` | Global | Toggle the native code-review view | Review |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Global | Select previous session | Vim: **k** = up |
@@ -433,7 +433,7 @@ action's defaults, and `Shift+D` resets every action at once (removing the
 override file). If the chord conflicts it is reassigned from the other action
 and a status toast reports the move. Changes persist immediately to
 `~/.config/thurbox/keybindings.json` (`Action` name → chord strings, e.g.
-`{ "QuitApp": ["ctrl+x"] }`) and take effect on the next keystroke — no
+`{ "QuitApp": ["ctrl+a"] }`) and take effect on the next keystroke — no
 restart. The file can also be hand-edited directly.
 
 **Context-scoped keys.** Each action belongs to a scope — `Global`,
@@ -556,7 +556,7 @@ editor of choice can open them as a workspace.
 
 ## Code Review (native)
 
-Thurbox ships a **native, built-in** tuicr-like review view (`F7`): a
+Thurbox ships a **native, built-in** tuicr-like review view (`Ctrl+X`, `F7` alternate): a
 GitHub-style continuous diff of the active session's worktree
 (`<base>..HEAD`) with classified comments (issue / suggestion / note /
 praise), per-file/hunk "reviewed" marks, and a review summary — rendered

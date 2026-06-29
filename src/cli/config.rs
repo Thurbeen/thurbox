@@ -335,7 +335,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         crate::storage::keybindings::save_keybindings_json(
-            r#"{ "QuitApp": ["ctrl+x"], "NewSession": ["ctrl+x"] }"#,
+            r#"{ "QuitApp": ["ctrl+a"], "NewSession": ["ctrl+a"] }"#,
         )
         .unwrap();
 

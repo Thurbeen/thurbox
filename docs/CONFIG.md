@@ -215,7 +215,7 @@ no results. Data is never touched, so re-enabling a flag is lossless.
 | `global_search` | `true` | global search strip (`Ctrl+/`) |
 | `info_panel` | `true` | info panel column (`F2`) |
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
-| `code_review` | `true` | native code-review view (diff + comments, `F7`) |
+| `code_review` | `true` | native code-review view (diff + comments, `Ctrl+X`) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
@@ -416,7 +416,7 @@ effect).
 Maps `Action` names to one or more chord strings:
 
 ```json
-{ "QuitApp": ["ctrl+x"], "OpenThemePicker": ["ctrl+y", "f4"] }
+{ "QuitApp": ["ctrl+a"], "OpenThemePicker": ["ctrl+y", "f4"] }
 ```
 
 - Preferred editing path is the **F1 panel** (live capture, conflict

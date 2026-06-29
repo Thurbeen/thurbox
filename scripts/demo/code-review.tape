@@ -6,8 +6,9 @@
 # vars this tape relies on ($THURBOX_BIN).
 #
 # Requires: vhs (charmbracelet/vhs) + ffmpeg + ttyd. VHS has no function-key
-# commands, so the review toggle (F7 by default) is rebound to Ctrl+X by the
-# runner's keybindings.json; everything else is Ctrl chords + plain keys.
+# commands, so the review toggle is opened with its default primary chord Ctrl+X
+# (F7 is the alternate VHS can't send); everything else is Ctrl chords + plain
+# keys.
 
 Output docs/media/code-review-demo.gif
 Output docs/media/code-review-demo.mp4
@@ -28,11 +29,15 @@ Sleep 2s
 Show
 
 # The worktree "review" session is seeded LAST, so restore leaves it selected on
-# launch with its terminal focused. Ctrl+X (rebound ToggleReview) opens the
+# launch with its terminal focused. Ctrl+X is in terminal_passthrough (the emacs
+# prefix key), so from a focused terminal it is forwarded to the agent — focus
+# the session list first (Ctrl+H), then Ctrl+X (default ToggleReview) opens the
 # native code-review view: a continuous diff of the branch (<base>..HEAD) in the
 # centre, the changed-files list in the right column, an action bar across the
 # bottom.
 Sleep 2500ms
+Ctrl+H
+Sleep 600ms
 Ctrl+X
 Sleep 2600ms
 

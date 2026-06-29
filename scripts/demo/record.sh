@@ -163,10 +163,12 @@ trap cleanup EXIT INT TERM
 # The search.tape opens the strip with Ctrl+A — an unambiguous chord every
 # terminal sends — so seed a keybindings.json that maps it. Only GlobalSearch is
 # overridden; every other action keeps its built-in default.
-# The code-review view toggles with F7 by default, which VHS also can't send, so
-# it is rebound to Ctrl+X for the code-review tape. Both overrides are harmless
-# for the other tapes.
-printf '{\n  "GlobalSearch": ["ctrl+a"],\n  "ToggleReview": ["ctrl+x"]\n}\n' \
+# The code-review view needs no override: its default primary chord is Ctrl+X
+# (F7 alternate, which VHS can't send), so the agents/code-review tapes open it
+# with a plain Ctrl+X. Because Ctrl+X is in terminal_passthrough (the emacs
+# prefix key), those tapes open the review from the session list, not a focused
+# terminal, where the chord would be forwarded to the agent instead.
+printf '{\n  "GlobalSearch": ["ctrl+a"]\n}\n' \
     > "$CFG_DIR/keybindings.json"
 
 # --- A throwaway sample repo so the file viewer shows a realistic tree --------
@@ -299,15 +301,16 @@ for a in $AGENTS; do
 done
 
 # --- Code-review demo: a worktree session with a real committed diff ---------
-# The review view diffs <base>..HEAD of a session's worktree, so the code-review
-# tape needs a session whose branch actually has changes. Create it LAST so
-# restore leaves it selected on launch (finish_adopted_session makes the
-# last-restored session active), on a worktree off the sample repo, then commit a
-# small multi-file change into that worktree so the Branch target shows a
-# colourful diff. Gated on the code-review tape so other clips stay fast /
-# unchanged.
+# The review view diffs <base>..HEAD of a session's worktree, so any tape that
+# opens the code-review view needs a session whose branch actually has changes.
+# Both the dedicated `code-review` clip and the hero `agents` demo (which now
+# showcases the review feature) use it. Create it LAST so restore leaves it
+# selected on launch (finish_adopted_session makes the last-restored session
+# active), on a worktree off the sample repo, then commit a small multi-file
+# change into that worktree so the Branch target shows a colourful diff. Gated on
+# those two tapes so the remaining clips stay fast / unchanged.
 # shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
-if printf '%s ' $TAPES | grep -Eq '(^| )code-review( |$)'; then
+if printf '%s ' $TAPES | grep -Eq '(^| )(code-review|agents)( |$)'; then
     echo "==> Seeding a worktree review session with a committed diff"
     review_agent=$(printf '%s\n' $AGENTS | head -n1)
     "$CLI_BIN" session create --name "review" --repo-path "$DEMO_REPO" \

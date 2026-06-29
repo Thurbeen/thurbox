@@ -141,8 +141,9 @@ trap cleanup EXIT INT TERM
 # Remap the actions whose default chords VHS cannot emit to free, typeable
 # Ctrl+<letter> chords so the tape can open them. The rendered panels are
 # identical regardless of which key opens them.
-#   GlobalSearch: Ctrl+/ -> Ctrl+A   OpenSettings: Ctrl+, -> Ctrl+X
-#   ToggleReview: F7     -> Ctrl+R   (code-review view)
+#   GlobalSearch: Ctrl+/    -> Ctrl+A   OpenSettings: Ctrl+, -> Ctrl+X
+#   ToggleReview: Ctrl+X/F7 -> Ctrl+R   (code-review view; remapping it here also
+#                                        frees its default Ctrl+X for OpenSettings)
 cat > "$CFG_DIR/keybindings.json" <<'EOF'
 {
   "GlobalSearch": ["ctrl+a"],
