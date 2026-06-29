@@ -94,6 +94,8 @@ impl App {
                         | ClickAction::ModalButton { .. }
                         | ClickAction::ModalField(_)
                         | ClickAction::RepoFocus(_)
+                        | ClickAction::RepoBasket { .. }
+                        | ClickAction::RepoBrowseAdd { .. }
                 )
             } else {
                 matches!(
@@ -873,16 +875,31 @@ impl App {
                 };
                 self.render_repo_picker_modal(frame, rp)
             };
-            if let Some(search) = areas.search {
-                self.record_click(
-                    search,
-                    ClickAction::RepoFocus(super::modals::RepoPickerFocus::Search),
-                );
-            }
             self.record_click(
                 areas.input,
-                ClickAction::RepoFocus(super::modals::RepoPickerFocus::Input),
+                ClickAction::RepoFocus(super::modals::RepoPickerFocus::PathInput),
             );
+            // Basket rows: body click toggles worktree, trailing `✕` removes.
+            for hit in areas.basket {
+                self.record_click(
+                    hit.body,
+                    ClickAction::RepoBasket {
+                        index: hit.index,
+                        remove: false,
+                    },
+                );
+                self.record_click(
+                    hit.remove,
+                    ClickAction::RepoBasket {
+                        index: hit.index,
+                        remove: true,
+                    },
+                );
+            }
+            // Browser `[+]` buttons on plain-folder rows add them as dirs.
+            for hit in areas.browse_add {
+                self.record_click(hit.rect, ClickAction::RepoBrowseAdd { index: hit.index });
+            }
             return Some(render);
         }
 
@@ -948,22 +965,19 @@ impl App {
         crate::ui::repo_picker_modal::render_repo_picker_modal(
             frame,
             &crate::ui::repo_picker_modal::RepoPickerState {
-                bookmarks: &rp.bookmarks,
-                selected: &rp.selected,
-                worktree: &rp.worktree,
-                is_header: &rp.is_header,
-                is_child: &rp.is_child,
-                collapsed: &rp.collapsed,
-                list_index: rp.list_index,
+                focus: rp.focus,
+                remote: self.new_session.backend.is_some(),
+                browse_dir: &rp.browse_dir,
+                browse_entries: &rp.browse_entries,
+                browse_filtered: &rp.browse_filtered,
+                browse_index: rp.browse_index,
+                filter_query: rp.filter_input.value(),
+                filter_active: rp.filter_active,
+                basket: &rp.basket,
+                basket_index: rp.basket_index,
                 path_input: rp.path_input.value(),
                 path_cursor: rp.path_input.cursor_pos(),
                 path_suggestion: rp.path_suggestion.as_deref(),
-                focus: rp.focus,
-                search_query: rp.search_input.value(),
-                search_cursor: rp.search_input.cursor_pos(),
-                search_active: rp.focus == super::modals::RepoPickerFocus::Search
-                    || !rp.search_input.value().is_empty(),
-                filtered_indices: &rp.filtered_indices,
             },
         )
     }

@@ -1,7 +1,6 @@
 // Modal state management for Thurbox TUI: a single discriminated `Modal` enum
 // makes invalid states (two modals open at once) unrepresentable.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -1201,120 +1200,232 @@ pub struct AutomationsListModal {
 
 // ── RepoPickerModal ─────────────────────────────────────────────────────
 
-/// Which section of the repo picker is focused.
+/// Which pane of the two-pane repo picker is focused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RepoPickerFocus {
-    /// The list of bookmarked/recent repos (multi-select).
+    /// Left pane: the interactive filesystem browser.
     #[default]
-    List,
-    /// The text input for adding a new path.
-    Input,
-    /// The fuzzy search filter input.
-    Search,
+    Browse,
+    /// Right pane: the basket of chosen repos.
+    Basket,
+    /// A path text-input overlay (local "go to path", or remote add-by-path).
+    PathInput,
 }
 
+/// What kind of row a [`BrowseEntry`] is — drives its glyph and what `Enter`
+/// does to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowseKind {
+    /// The `..` row — `Enter` ascends to the parent directory.
+    Up,
+    /// A pinned favorite/recent repo (shown above the current directory).
+    Favorite,
+    /// A subdirectory of the current directory.
+    Dir,
+}
+
+/// One row shown in the repo-picker filesystem browser. The `is_repo` flag and
+/// short `name` are precomputed in the `app` layer (the `ui` layer may not
+/// touch `crate::git` or the filesystem), so rendering is a pure read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseEntry {
+    /// Absolute path: the directory for `Dir`/`Favorite`, the parent for `Up`.
+    pub path: PathBuf,
+    /// Short display label (final path component, or `..`).
+    pub name: String,
+    /// Whether the directory is itself a git repo (drives the marker + addable).
+    pub is_repo: bool,
+    pub kind: BrowseKind,
+}
+
+impl BrowseEntry {
+    /// A plain current-directory subdirectory row.
+    pub fn dir(path: PathBuf, name: String, is_repo: bool) -> Self {
+        Self {
+            path,
+            name,
+            is_repo,
+            kind: BrowseKind::Dir,
+        }
+    }
+
+    /// Whether this row can be added to the basket: any directory (a git repo
+    /// or a plain dir attached as-is), but not the `..` row.
+    pub fn addable(&self) -> bool {
+        self.kind != BrowseKind::Up
+    }
+}
+
+/// A directory chosen into the basket (right pane). A git repo can spawn on its
+/// own worktree branch; a plain directory is attached as-is (`--add-dir`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BasketEntry {
+    pub path: PathBuf,
+    /// Short display label (final path component).
+    pub name: String,
+    /// Whether the directory is a git repo (only repos can use worktree mode).
+    pub is_repo: bool,
+    /// Whether this repo spawns on its own worktree branch (repos only).
+    pub worktree: bool,
+}
+
+/// Two-pane repo picker: a filesystem **browser** (left) feeds a **basket** of
+/// chosen repos (right). Replaces the older bookmark-list + parent-scan model;
+/// recency is still persisted via `repo_bookmarks` (it seeds the browser's
+/// start directory), but there is no separate bookmark list to navigate.
 #[derive(Debug, Clone, Default)]
 pub struct RepoPickerModal {
-    /// Bookmarked repos shown in the list. For a header row this is the parent
-    /// folder; for a child/standalone row it is the repo path.
-    pub bookmarks: Vec<PathBuf>,
-    /// Which bookmarks are selected (checked). Header rows stay unselected.
-    pub selected: Vec<bool>,
-    /// Whether each selected repo should use worktree mode (parallel to `bookmarks`).
-    pub worktree: Vec<bool>,
-    /// Whether each row is a parent header (non-selectable group title).
-    pub is_header: Vec<bool>,
-    /// Whether each row is a child repo nested under a parent header (drives the
-    /// indentation). `false` for headers and standalone repos. Parallel to `bookmarks`.
-    pub is_child: Vec<bool>,
-    /// Parent folders whose child tree is currently collapsed (keyed by path).
-    /// Survives row rebuilds so collapsing state is kept across re-scans.
-    pub collapsed: HashSet<PathBuf>,
-    /// Cursor index in the bookmark list (indexes into `filtered_indices`).
-    pub list_index: usize,
-    /// Text input for adding a new repo path.
+    /// Directory the browser is currently listing.
+    pub browse_dir: PathBuf,
+    /// The visible rows: pinned favorites, then `..`, then the current
+    /// directory's subdirectories.
+    pub browse_entries: Vec<BrowseEntry>,
+    /// Pinned favorite/recent repos, shown at the top of every directory so a
+    /// frequently-used repo is always one keystroke away.
+    pub favorites: Vec<BrowseEntry>,
+    /// Indices into `browse_entries` matching the current filter (all when the
+    /// filter is empty).
+    pub browse_filtered: Vec<usize>,
+    /// Cursor index into `browse_filtered`.
+    pub browse_index: usize,
+    /// Whether the browser shows hidden (`.`-prefixed) directories.
+    pub show_hidden: bool,
+    /// `/`-filter for the current directory's entries.
+    pub filter_input: TextInput,
+    /// Whether the filter input is being typed into.
+    pub filter_active: bool,
+    /// The basket of chosen repos (right pane).
+    pub basket: Vec<BasketEntry>,
+    /// Cursor index into `basket`.
+    pub basket_index: usize,
+    /// Path text-input (remote add-by-path, or local go-to-path).
     pub path_input: TextInput,
-    /// Autocomplete suggestion for the path input.
+    /// Autocomplete suggestion for `path_input`.
     pub path_suggestion: Option<String>,
-    /// Which section is focused (list vs input vs search).
+    /// Which pane is focused.
     pub focus: RepoPickerFocus,
-    /// Fuzzy search input for filtering bookmarks.
-    pub search_input: TextInput,
-    /// Indices into `bookmarks` that match the current search query.
-    /// When search is empty, contains `0..bookmarks.len()`.
-    pub filtered_indices: Vec<usize>,
 }
 
 impl RepoPickerModal {
-    /// Push a row, keeping all parallel vectors in lockstep.
-    pub fn push_row(&mut self, path: PathBuf, selected: bool, is_header: bool, is_child: bool) {
-        self.bookmarks.push(path);
-        self.selected.push(selected);
-        self.worktree.push(false);
-        self.is_header.push(is_header);
-        self.is_child.push(is_child);
+    /// Set the browser to `dir`, composing the visible rows: pinned favorites,
+    /// a `..` row (when `dir` has a parent), then the supplied `children`. The
+    /// filter is cleared. `select` pins the cursor onto a specific path (e.g.
+    /// the directory we just ascended out of); otherwise the cursor lands on the
+    /// first child (so a fresh `Enter` into a folder shows its contents).
+    pub fn set_browse_dir(
+        &mut self,
+        dir: PathBuf,
+        children: Vec<BrowseEntry>,
+        select: Option<PathBuf>,
+    ) {
+        // Pin favorites at the top — but skip any that are already visible as a
+        // child of the current directory (no point showing a repo twice).
+        let mut entries: Vec<BrowseEntry> = self
+            .favorites
+            .iter()
+            .filter(|f| !children.iter().any(|c| c.path == f.path))
+            .cloned()
+            .collect();
+        if let Some(parent) = dir.parent() {
+            entries.push(BrowseEntry {
+                path: parent.to_path_buf(),
+                name: "..".to_string(),
+                is_repo: false,
+                kind: BrowseKind::Up,
+            });
+        }
+        let first_child = entries.len();
+        entries.extend(children);
+
+        self.browse_dir = dir;
+        self.browse_entries = entries;
+        self.filter_input.clear();
+        self.filter_active = false;
+        self.recompute_browse_filter();
+
+        // Default the cursor to the first child; otherwise pin it onto `select`.
+        let abs = select
+            .and_then(|p| self.browse_entries.iter().position(|e| e.path == p))
+            .unwrap_or(first_child);
+        self.browse_index = self
+            .browse_filtered
+            .iter()
+            .position(|&i| i == abs)
+            .unwrap_or(0);
     }
 
-    /// Whether the row at `idx` is a parent header (bounds-safe).
-    pub fn is_header_row(&self, idx: usize) -> bool {
-        self.is_header.get(idx).copied().unwrap_or(false)
+    /// Rebuild `browse_filtered` from the current `/`-filter (fuzzy match on the
+    /// entry name), keeping `browse_index` in range.
+    pub fn recompute_browse_filter(&mut self) {
+        let query = self.filter_input.value().to_string();
+        self.browse_filtered = self
+            .browse_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                query.is_empty() || crate::fuzzy::fuzzy_match(&query, &e.name).is_some()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if self.browse_index >= self.browse_filtered.len() {
+            self.browse_index = self.browse_filtered.len().saturating_sub(1);
+        }
     }
 
-    /// Whether the row at `idx` is a child repo under a parent (bounds-safe).
-    pub fn is_child_row(&self, idx: usize) -> bool {
-        self.is_child.get(idx).copied().unwrap_or(false)
+    /// The directory entry currently under the browser cursor, if any.
+    pub fn browse_selected(&self) -> Option<&BrowseEntry> {
+        let real = *self.browse_filtered.get(self.browse_index)?;
+        self.browse_entries.get(real)
     }
 
-    /// Clear the search query and recompute the filter (collapse still applies).
-    pub fn clear_search(&mut self) {
-        self.search_input.clear();
-        self.list_index = 0;
-        self.recompute_filter();
-    }
-
-    /// Toggle the collapsed state of the parent header at `real_idx` (a no-op on
-    /// non-header rows) and recompute the visible rows.
-    pub fn toggle_collapsed(&mut self, real_idx: usize) {
-        if !self.is_header_row(real_idx) {
+    /// Move the browser cursor by `delta` within the filtered rows.
+    pub fn move_browse(&mut self, delta: isize) {
+        let len = self.browse_filtered.len();
+        if len == 0 {
             return;
         }
-        let path = self.bookmarks[real_idx].clone();
-        if !self.collapsed.insert(path.clone()) {
-            self.collapsed.remove(&path);
-        }
-        self.recompute_filter();
+        let next = (self.browse_index as isize + delta).clamp(0, len as isize - 1);
+        self.browse_index = next as usize;
     }
 
-    /// Rebuild `filtered_indices` from the current search query and collapse
-    /// state. Header rows are always visible; a child is hidden when its parent
-    /// is collapsed (unless a search is active, which expands all so matches are
-    /// findable). Keeps `list_index` in range.
-    pub fn recompute_filter(&mut self) {
-        let query = self.search_input.value().to_string();
-        let searching = !query.is_empty();
-        let matches = |path: &PathBuf| {
-            !searching || crate::fuzzy::fuzzy_match(&query, &path.display().to_string()).is_some()
-        };
+    /// Whether `path` is already in the basket.
+    pub fn basket_contains(&self, path: &std::path::Path) -> bool {
+        self.basket.iter().any(|r| r.path == path)
+    }
 
-        let mut indices = Vec::new();
-        let mut current_collapsed = false;
-        for (i, path) in self.bookmarks.iter().enumerate() {
-            let visible = if self.is_header[i] {
-                current_collapsed = self.collapsed.contains(path);
-                true
-            } else if self.is_child[i] {
-                let hidden = current_collapsed && !searching;
-                !hidden && matches(path)
-            } else {
-                matches(path)
-            };
-            if visible {
-                indices.push(i);
-            }
+    /// Add a directory to the basket (no-op if already present). Returns whether
+    /// it was newly added. `is_repo` gates worktree mode (plain dirs attach as-is).
+    pub fn add_to_basket(&mut self, path: PathBuf, name: String, is_repo: bool) -> bool {
+        if self.basket_contains(&path) {
+            return false;
         }
-        self.filtered_indices = indices;
-        if self.list_index >= self.filtered_indices.len() {
-            self.list_index = self.filtered_indices.len().saturating_sub(1);
+        self.basket.push(BasketEntry {
+            path,
+            name,
+            is_repo,
+            worktree: false,
+        });
+        true
+    }
+
+    /// Remove the basket entry under the cursor (keeping the cursor in range).
+    pub fn remove_basket_selected(&mut self) {
+        if self.basket_index >= self.basket.len() {
+            return;
+        }
+        self.basket.remove(self.basket_index);
+        if self.basket_index >= self.basket.len() {
+            self.basket_index = self.basket.len().saturating_sub(1);
+        }
+    }
+
+    /// Toggle the worktree flag on the basket entry under the cursor. A no-op on
+    /// a plain (non-repo) directory, which can't have a worktree.
+    pub fn toggle_basket_worktree(&mut self) {
+        if let Some(r) = self.basket.get_mut(self.basket_index) {
+            if r.is_repo {
+                r.worktree = !r.worktree;
+            }
         }
     }
 }
@@ -1895,7 +2006,9 @@ impl Modal {
             Modal::TaskActionPicker(p) => Some((&mut p.selected, KeyCode::Enter)),
             Modal::AutomationsList(al) => Some((&mut al.index, KeyCode::Enter)),
             Modal::RestoreSessions(rs) => Some((&mut rs.index, KeyCode::Enter)),
-            Modal::RepoPicker(rp) => Some((&mut rp.list_index, KeyCode::Char(' '))),
+            // The browser (left pane) is the wheel/drag target; a row click is
+            // handled specially in `select_modal_row` (no activation key).
+            Modal::RepoPicker(rp) => Some((&mut rp.browse_index, KeyCode::Char(' '))),
             _ => None,
         }
     }
@@ -2522,86 +2635,110 @@ mod tests {
         assert!(modal.entries.is_empty());
     }
 
-    #[test]
-    fn test_repo_picker_clear_search_resets_filter() {
-        let mut rp = RepoPickerModal::default();
-        rp.push_row("/a".into(), false, false, false);
-        rp.push_row("/b".into(), true, false, false);
-        rp.push_row("/c".into(), false, false, false);
-        rp.list_index = 1;
-        rp.filtered_indices = vec![1]; // simulating an active filter
-        rp.search_input.set("b");
-
-        rp.clear_search();
-
-        assert_eq!(rp.search_input.value(), "");
-        assert_eq!(rp.filtered_indices, vec![0, 1, 2]);
-        assert_eq!(rp.list_index, 0);
+    fn entry(name: &str, is_repo: bool) -> BrowseEntry {
+        BrowseEntry::dir(PathBuf::from("/p").join(name), name.to_string(), is_repo)
     }
 
     #[test]
-    fn test_repo_picker_push_row_keeps_vectors_in_lockstep() {
-        let mut rp = RepoPickerModal::default();
-        rp.push_row("/repo".into(), true, false, false);
-        rp.push_row("/parent".into(), false, true, false);
-        rp.push_row("/parent/child".into(), false, false, true);
-
-        let n = rp.bookmarks.len();
-        assert_eq!(n, 3);
-        assert_eq!(rp.selected.len(), n);
-        assert_eq!(rp.worktree.len(), n);
-        assert_eq!(rp.is_header.len(), n);
-        assert_eq!(rp.is_child.len(), n);
-        assert_eq!(rp.is_header, vec![false, true, false]);
-        assert_eq!(rp.is_child, vec![false, false, true]);
-    }
-
-    #[test]
-    fn test_repo_picker_toggle_collapsed_ignores_non_header_rows() {
-        let mut rp = RepoPickerModal::default();
-        rp.push_row("/repo".into(), false, false, false); // standalone, not a header
-        rp.toggle_collapsed(0);
-        assert!(
-            rp.collapsed.is_empty(),
-            "non-header rows can't be collapsed"
-        );
-        // An out-of-range index is also a no-op (no panic).
-        rp.toggle_collapsed(99);
-        assert!(rp.collapsed.is_empty());
-    }
-
-    #[test]
-    fn test_repo_picker_search_overrides_collapse() {
-        let mut rp = RepoPickerModal::default();
-        rp.push_row("/parent".into(), false, true, false); // header
-        rp.push_row("/parent/foo".into(), false, false, true);
-        rp.push_row("/parent/bar".into(), false, false, true);
-        rp.collapsed.insert("/parent".into());
-        rp.recompute_filter();
-        // Collapsed: only the header is visible.
-        assert_eq!(rp.filtered_indices, vec![0]);
-
-        // An active search expands all so matching children are findable.
-        rp.search_input.set("foo");
-        rp.recompute_filter();
-        // Header (always shown) + the matching child `foo`.
-        assert_eq!(rp.filtered_indices, vec![0, 1]);
-    }
-
-    #[test]
-    fn test_repo_picker_clear_search_empty_bookmarks() {
-        let mut rp = RepoPickerModal::default();
-        rp.clear_search();
-        assert!(rp.filtered_indices.is_empty());
-        assert_eq!(rp.list_index, 0);
-    }
-
-    #[test]
-    fn test_repo_picker_default_has_empty_search() {
+    fn test_repo_picker_default_focuses_browse() {
         let rp = RepoPickerModal::default();
-        assert_eq!(rp.search_input.value(), "");
-        assert!(rp.filtered_indices.is_empty());
-        assert_eq!(rp.focus, RepoPickerFocus::List);
+        assert_eq!(rp.focus, RepoPickerFocus::Browse);
+        assert!(rp.basket.is_empty());
+        assert!(rp.browse_filtered.is_empty());
+    }
+
+    #[test]
+    fn test_repo_picker_set_browse_dir_prepends_up_row() {
+        let mut rp = RepoPickerModal::default();
+        rp.set_browse_dir(
+            "/p".into(),
+            vec![entry("a", true), entry("b", false), entry("c", true)],
+            None,
+        );
+        // A `..` row precedes the children, and the cursor lands on the first
+        // child (not on `..`).
+        assert_eq!(rp.browse_entries[0].kind, BrowseKind::Up);
+        assert_eq!(rp.browse_entries[0].name, "..");
+        assert_eq!(rp.browse_selected().unwrap().name, "a");
+    }
+
+    #[test]
+    fn test_repo_picker_favorites_pinned_above_children() {
+        let mut rp = RepoPickerModal::default();
+        rp.favorites.push(BrowseEntry {
+            path: "/fav/repo".into(),
+            name: "fav".into(),
+            is_repo: true,
+            kind: BrowseKind::Favorite,
+        });
+        rp.set_browse_dir("/p".into(), vec![entry("a", true)], None);
+        assert_eq!(rp.browse_entries[0].kind, BrowseKind::Favorite);
+        assert_eq!(rp.browse_entries[1].kind, BrowseKind::Up);
+        // Cursor still defaults onto the first child, below the pinned rows.
+        assert_eq!(rp.browse_selected().unwrap().name, "a");
+    }
+
+    #[test]
+    fn test_repo_picker_filter_narrows_entries() {
+        let mut rp = RepoPickerModal::default();
+        rp.set_browse_dir(
+            "/p".into(),
+            vec![
+                entry("alpha", true),
+                entry("beta", true),
+                entry("gamma", true),
+            ],
+            None,
+        );
+        rp.filter_input.set("be");
+        rp.recompute_browse_filter();
+        assert_eq!(rp.browse_selected().unwrap().name, "beta");
+        assert_eq!(rp.browse_filtered.len(), 1, "`..` and non-matches dropped");
+    }
+
+    #[test]
+    fn test_repo_picker_basket_add_dedups_and_toggles() {
+        let mut rp = RepoPickerModal::default();
+        assert!(rp.add_to_basket("/p/a".into(), "a".into(), true));
+        assert!(!rp.add_to_basket("/p/a".into(), "a".into(), true), "dedup");
+        assert!(rp.add_to_basket("/p/b".into(), "b".into(), true));
+        assert_eq!(rp.basket.len(), 2);
+
+        rp.basket_index = 1;
+        rp.toggle_basket_worktree();
+        assert!(rp.basket[1].worktree);
+
+        rp.remove_basket_selected();
+        assert_eq!(rp.basket.len(), 1);
+        assert_eq!(rp.basket[0].name, "a");
+        assert_eq!(rp.basket_index, 0, "cursor clamps after removal");
+    }
+
+    #[test]
+    fn test_repo_picker_basket_non_repo_dir_no_worktree() {
+        let mut rp = RepoPickerModal::default();
+        assert!(rp.add_to_basket("/p/docs".into(), "docs".into(), false));
+        assert!(!rp.basket[0].is_repo);
+        rp.toggle_basket_worktree();
+        assert!(
+            !rp.basket[0].worktree,
+            "a plain dir can't be put in worktree mode"
+        );
+    }
+
+    #[test]
+    fn test_repo_picker_set_browse_dir_select_pins_cursor() {
+        let mut rp = RepoPickerModal::default();
+        rp.set_browse_dir(
+            "/p".into(),
+            vec![entry("a", true), entry("b", true)],
+            Some(PathBuf::from("/p/b")),
+        );
+        assert_eq!(
+            rp.browse_selected().unwrap().name,
+            "b",
+            "ascending restores the cursor onto the named child"
+        );
     }
 
     #[test]

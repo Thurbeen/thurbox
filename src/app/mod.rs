@@ -17,7 +17,7 @@ mod tasks;
 mod view;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -421,6 +421,13 @@ pub(crate) enum ClickAction {
     ModalField(usize),
     /// Focus the repo picker's `Input`/`Search` sub-area (its editable fields).
     RepoFocus(modals::RepoPickerFocus),
+    /// A repo-picker **basket** row: `remove` removes it, else toggles its
+    /// worktree flag. Dispatched by `handle_modal_click` → `try_repo_basket_click`.
+    RepoBasket { index: usize, remove: bool },
+    /// The `[+]` add button on a plain-folder browser row (`index` is the
+    /// filtered row index) — adds the dir without navigating into it. A repo row
+    /// has no button (clicking its name already adds it).
+    RepoBrowseAdd { index: usize },
     /// Focus an **in-pane editor** (automation / task) and select its index-th
     /// visible field. Dispatched by `activate_click_target`.
     PaneField { focus: InputFocus, index: usize },
@@ -1117,27 +1124,50 @@ impl App {
         });
     }
 
-    /// Open the repo picker modal for creating a new session.
+    /// Open the two-pane repo picker for creating a new session.
     ///
-    /// Loads bookmarks from the database, pre-selects repos from the active
-    /// project (if any), and shows the repo picker modal. For a remote target
-    /// (`new_session.backend` set) local bookmarks don't apply, so the picker opens
-    /// empty with the path input focused for a typed remote path.
+    /// The left pane is a filesystem **browser** opened at a sensible start
+    /// directory (the parent of the most-recent bookmark, else `$HOME`); the
+    /// right pane is the **basket** of chosen repos. For a remote target
+    /// (`new_session.backend` set) the local filesystem is meaningless, so the
+    /// picker opens with the path text-input focused for a typed remote path.
     pub(crate) fn open_repo_picker(&mut self) {
-        // Local bookmarks point at local paths, so they're meaningless for a
-        // remote target: open the picker empty with the path input focused.
         let remote = self.new_session.backend.is_some();
-        let bookmarks = if remote {
-            Vec::new()
-        } else {
-            self.load_repo_bookmarks()
-        };
         let mut rp = modals::RepoPickerModal::default();
-        Self::rebuild_repo_picker_rows(&mut rp, bookmarks);
         if remote {
-            rp.focus = modals::RepoPickerFocus::Input;
+            rp.focus = modals::RepoPickerFocus::PathInput;
+        } else {
+            let recents = self.load_repo_bookmarks();
+            rp.favorites = Self::repo_picker_favorites(&recents);
+            let dir = Self::repo_picker_start_dir(&recents);
+            let entries = Self::list_browse_entries(&dir, rp.show_hidden);
+            // Land the cursor on the most-recent repo (it's a child of the start
+            // dir) so a single `Enter` picks it — the keyboard fast path.
+            let select = recents.first().map(|b| b.repo_path.clone());
+            rp.set_browse_dir(dir, entries, select);
         }
         self.modal = modals::Modal::RepoPicker(rp);
+    }
+
+    /// Max number of favorite/recent repos pinned at the top of the browser.
+    const MAX_FAVORITES: usize = 8;
+
+    /// Build the pinned favorites rows from the recency-sorted bookmark list:
+    /// the most-recently-used repos that still exist as git repos on disk.
+    fn repo_picker_favorites(
+        recents: &[crate::storage::repo_bookmarks::RepoBookmark],
+    ) -> Vec<modals::BrowseEntry> {
+        recents
+            .iter()
+            .filter(|b| crate::git::is_git_repo(&b.repo_path))
+            .take(Self::MAX_FAVORITES)
+            .map(|b| modals::BrowseEntry {
+                name: crate::paths::display_path(&b.repo_path),
+                path: b.repo_path.clone(),
+                is_repo: true,
+                kind: modals::BrowseKind::Favorite,
+            })
+            .collect()
     }
 
     /// Load persisted repo bookmarks, logging (and swallowing) any DB error.
@@ -1151,89 +1181,46 @@ impl App {
         }
     }
 
-    /// Re-read bookmarks and rebuild the open repo picker's rows in place
-    /// (re-scanning parent folders). Used after importing/deleting a bookmark.
-    pub(crate) fn refresh_repo_picker_rows(&mut self) {
-        let bookmarks = self.load_repo_bookmarks();
-        let modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        Self::rebuild_repo_picker_rows(rp, bookmarks);
+    /// Where the browser opens: the parent of the most-recent bookmark (so you
+    /// land near what you last used), else `$HOME`, else `/`. `recents` is the
+    /// recency-sorted bookmark list.
+    fn repo_picker_start_dir(recents: &[crate::storage::repo_bookmarks::RepoBookmark]) -> PathBuf {
+        recents
+            .first()
+            .and_then(|b| b.repo_path.parent())
+            .map(Path::to_path_buf)
+            .or_else(crate::paths::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"))
     }
 
-    /// (Re)build the repo picker rows from persisted bookmarks, **re-scanning**
-    /// parent bookmarks for their current git sub-directories. Standalone repos
-    /// become one row; a parent becomes a header row followed by an indented
-    /// child row per discovered repo (children are ephemeral — never persisted).
-    /// Preserves the existing search input by recomputing the filter.
-    fn rebuild_repo_picker_rows(
-        rp: &mut modals::RepoPickerModal,
-        bookmarks: Vec<crate::storage::repo_bookmarks::RepoBookmark>,
-    ) {
-        use std::collections::HashSet;
-
-        rp.bookmarks.clear();
-        rp.selected.clear();
-        rp.worktree.clear();
-        rp.is_header.clear();
-        rp.is_child.clear();
-
-        // Scan each parent once; a path that appears as a child of any parent
-        // takes precedence over a standalone bookmark of the same path, so the
-        // repo is shown only once (grouped under its parent).
-        let scans: HashMap<PathBuf, Vec<PathBuf>> = bookmarks
-            .iter()
-            .filter(|b| b.is_parent)
-            .map(|b| {
-                (
-                    b.repo_path.clone(),
-                    crate::git::scan_child_repos(&b.repo_path),
-                )
+    /// List the immediate subdirectories of `dir` for the repo-picker filesystem
+    /// browser, annotated with whether each is a git repo. Hidden (`.`-prefixed)
+    /// directories are skipped unless `show_hidden`. Sorted by name. Returns an
+    /// empty vec when `dir` can't be read (missing/permission denied), matching
+    /// [`crate::git::scan_child_repos`] semantics.
+    ///
+    /// Lives in `app` (not `ui`) because it touches the filesystem and
+    /// `crate::git`, which the `ui` layer may not reference; the render layer
+    /// only reads the resulting [`modals::BrowseEntry`] slice.
+    fn list_browse_entries(dir: &Path, show_hidden: bool) -> Vec<modals::BrowseEntry> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut out: Vec<modals::BrowseEntry> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .filter_map(|e| {
+                let name = e.file_name().to_str()?.to_string();
+                if !show_hidden && name.starts_with('.') {
+                    return None;
+                }
+                let path = e.path();
+                let is_repo = crate::git::is_git_repo(&path);
+                Some(modals::BrowseEntry::dir(path, name, is_repo))
             })
             .collect();
-        let child_paths: HashSet<&PathBuf> = scans.values().flatten().collect();
-
-        // `emitted` guards against any path being rendered twice (duplicate
-        // bookmarks, a child shared by two parents, a parent nested in another).
-        let mut emitted: HashSet<PathBuf> = HashSet::new();
-        for bm in &bookmarks {
-            Self::emit_bookmark_row(rp, bm, &scans, &child_paths, &mut emitted);
-        }
-
-        rp.list_index = 0;
-        rp.recompute_filter();
-    }
-
-    /// Emit the row(s) for a single bookmark into the repo picker: a parent
-    /// header followed by its scanned children, or a standalone repo.
-    /// `emitted` dedupes paths across the whole list; `child_paths` lets a
-    /// standalone bookmark be dropped when a parent already covers it.
-    fn emit_bookmark_row(
-        rp: &mut modals::RepoPickerModal,
-        bm: &crate::storage::repo_bookmarks::RepoBookmark,
-        scans: &HashMap<PathBuf, Vec<PathBuf>>,
-        child_paths: &std::collections::HashSet<&PathBuf>,
-        emitted: &mut std::collections::HashSet<PathBuf>,
-    ) {
-        if !bm.is_parent {
-            // Drop a standalone bookmark that is already covered by a parent.
-            if child_paths.contains(&bm.repo_path) {
-                return;
-            }
-            if emitted.insert(bm.repo_path.clone()) {
-                rp.push_row(bm.repo_path.clone(), false, false, false);
-            }
-            return;
-        }
-        if !emitted.insert(bm.repo_path.clone()) {
-            return;
-        }
-        rp.push_row(bm.repo_path.clone(), false, true, false);
-        for child in scans.get(&bm.repo_path).into_iter().flatten() {
-            if emitted.insert(child.clone()) {
-                rp.push_row(child.clone(), false, false, true);
-            }
-        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     #[cfg(test)]
@@ -2146,9 +2133,10 @@ impl App {
 
         // Each `try_*` block filters the click registry to its own action type
         // (the registry also holds pane targets beneath the overlay; a plain
-        // first-match would hit those and swallow the click). Their rects never
-        // overlap, so the order is priority-for-clarity. First one to consume the
-        // click wins.
+        // first-match would hit those and swallow the click). First one to
+        // consume the click wins. Order is mostly priority-for-clarity, but the
+        // browser `[+]` button (`try_repo_browse_add_click`) sits *on top of* its
+        // full-width row hitbox, so it must be checked before `try_modal_row_click`.
         let pos = Position::new(x, y);
         if self.try_modal_button_click(pos) {
             return;
@@ -2157,6 +2145,12 @@ impl App {
             return;
         }
         if self.try_repo_focus_click(pos) {
+            return;
+        }
+        if self.try_repo_basket_click(pos) {
+            return;
+        }
+        if self.try_repo_browse_add_click(pos) {
             return;
         }
         self.try_modal_row_click(pos);
@@ -2199,7 +2193,7 @@ impl App {
         true
     }
 
-    /// Repo picker: clicking the path-input / search field focuses it.
+    /// Repo picker: clicking the path text-input row focuses it.
     fn try_repo_focus_click(&mut self, pos: Position) -> bool {
         let Some(focus) = self.click_targets.iter().find_map(|t| match t.action {
             ClickAction::RepoFocus(focus) if t.rect.contains(pos) => Some(focus),
@@ -2210,6 +2204,50 @@ impl App {
         if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
             rp.focus = focus;
         }
+        true
+    }
+
+    /// Repo picker: clicking a basket row toggles its worktree flag; clicking
+    /// its trailing `✕` removes it.
+    fn try_repo_basket_click(&mut self, pos: Position) -> bool {
+        let Some((index, remove)) = self.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::RepoBasket { index, remove } if t.rect.contains(pos) => {
+                Some((index, remove))
+            }
+            _ => None,
+        }) else {
+            return false;
+        };
+        if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.focus = modals::RepoPickerFocus::Basket;
+            if index < rp.basket.len() {
+                rp.basket_index = index;
+                if remove {
+                    rp.remove_basket_selected();
+                } else {
+                    rp.toggle_basket_worktree();
+                }
+            }
+        }
+        true
+    }
+
+    /// Repo picker: clicking the `[+]` on a plain-folder browser row adds that
+    /// folder to the basket (as an attached dir) without navigating into it.
+    fn try_repo_browse_add_click(&mut self, pos: Position) -> bool {
+        let Some(index) = self.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::RepoBrowseAdd { index } if t.rect.contains(pos) => Some(index),
+            _ => None,
+        }) else {
+            return false;
+        };
+        if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.focus = modals::RepoPickerFocus::Browse;
+            if index < rp.browse_filtered.len() {
+                rp.browse_index = index;
+            }
+        }
+        self.repo_picker_add_browsed(false);
         true
     }
 
@@ -2235,10 +2273,16 @@ impl App {
     /// frame's renderer, so it is always in bounds) and return the key that
     /// activates a row there (see [`modals::Modal::list_selection`]).
     fn select_modal_row(&mut self, row: usize) -> Option<KeyCode> {
-        // The repo picker routes keys by its internal focus; a row click always
-        // means the list (mirrors the keyboard path), so force it before moving.
+        // The repo picker's browser (left) pane records row hitboxes: a click
+        // selects the entry, then activates it by kind — opening a folder/`..`
+        // or adding a repo to the basket — so the browser is fully mouse-driven.
         if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
-            rp.focus = modals::RepoPickerFocus::List;
+            rp.focus = modals::RepoPickerFocus::Browse;
+            if row < rp.browse_filtered.len() {
+                rp.browse_index = row;
+            }
+            self.repo_picker_activate_clicked();
+            return None;
         }
         let (index, activation_key) = self.modal.list_selection()?;
         *index = row;
@@ -2320,7 +2364,9 @@ impl App {
             ClickAction::ModalRow(_)
             | ClickAction::ModalButton { .. }
             | ClickAction::ModalField(_)
-            | ClickAction::RepoFocus(_) => true,
+            | ClickAction::RepoFocus(_)
+            | ClickAction::RepoBasket { .. }
+            | ClickAction::RepoBrowseAdd { .. } => true,
             ClickAction::Global(action) => {
                 self.dispatch_action(action);
                 true
@@ -2495,9 +2541,9 @@ impl App {
             return;
         }
         // The repo picker routes keys by its internal focus; a scrollbar drag
-        // always means the list.
+        // always means the browser (left pane).
         if let modals::Modal::RepoPicker(ref mut rp) = self.modal {
-            rp.focus = modals::RepoPickerFocus::List;
+            rp.focus = modals::RepoPickerFocus::Browse;
         }
         loop {
             let Some(current) = self.modal_selected_index() else {
@@ -2808,14 +2854,13 @@ impl App {
             Modal::SessionName(sn) => sn.name.insert_str(text),
             Modal::RepoPicker(rp) => {
                 match rp.focus {
-                    modals::RepoPickerFocus::Input => rp.path_input.insert_str(text),
-                    modals::RepoPickerFocus::Search => {
-                        rp.search_input.insert_str(text);
-                        rp.recompute_filter();
+                    // Paste into the path input; in the browser, paste a path
+                    // into the (auto-opened) go-to input so it stays usable.
+                    modals::RepoPickerFocus::PathInput => rp.path_input.insert_str(text),
+                    modals::RepoPickerFocus::Browse | modals::RepoPickerFocus::Basket => {
+                        rp.path_input.set(text);
+                        rp.focus = modals::RepoPickerFocus::PathInput;
                     }
-                    // The list has no text field; swallow so paste doesn't
-                    // reach the terminal behind the overlay.
-                    modals::RepoPickerFocus::List => {}
                 }
                 // Refresh the autocomplete suggestion (no-op unless the path
                 // input is focused). Done after the `rp` borrow ends.
@@ -6429,16 +6474,17 @@ mod tests {
         assert_eq!(wn.name.value(), "feature ");
 
         let mut rp = modals::RepoPickerModal {
-            focus: modals::RepoPickerFocus::Search,
+            focus: modals::RepoPickerFocus::Browse,
+            filter_active: true,
             ..Default::default()
         };
-        rp.search_input.set("foo bar");
+        rp.filter_input.set("foo bar");
         app.modal = modals::Modal::RepoPicker(rp);
         app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
         let modals::Modal::RepoPicker(ref rp) = app.modal else {
             panic!("modal must stay open");
         };
-        assert_eq!(rp.search_input.value(), "foo ");
+        assert_eq!(rp.filter_input.value(), "foo ");
     }
 
     #[test]
@@ -7500,33 +7546,107 @@ mod tests {
     }
 
     #[test]
-    fn click_repo_picker_row_toggles_not_confirms() {
+    fn click_repo_picker_repo_row_adds_to_basket() {
         let mut app = app_with_sessions(0);
         app.start_new_session(); // no hosts → opens the repo picker
         let modals::Modal::RepoPicker(ref mut rp) = app.modal else {
             panic!("expected repo picker");
         };
-        // Seed two plain bookmarks (no headers/children).
-        rp.bookmarks = vec!["/tmp/a".into(), "/tmp/b".into()];
-        rp.selected = vec![false, false];
-        rp.worktree = vec![false, false];
-        rp.is_header = vec![false, false];
-        rp.is_child = vec![false, false];
-        rp.filtered_indices = vec![0, 1];
+        // Seed two browser rows (a `..` row is prepended automatically, so the
+        // rows are: 0=`..`, 1="a", 2="b").
+        rp.set_browse_dir(
+            "/tmp".into(),
+            vec![
+                modals::BrowseEntry::dir("/tmp/a".into(), "a".into(), true),
+                modals::BrowseEntry::dir("/tmp/b".into(), "b".into(), true),
+            ],
+            None,
+        );
         app.click_targets.push(ClickTarget {
             rect: Rect::new(30, 9, 40, 1),
-            action: ClickAction::ModalRow(1),
+            action: ClickAction::ModalRow(2),
         });
 
         app.handle_mouse_click(35, 9, KeyModifiers::NONE);
 
-        // The click toggled the row's checkbox (Space), not Enter: the
-        // modal stays open and nothing was spawned.
+        // Clicking a repo row adds it to the basket (the modal stays open;
+        // nothing was spawned).
         let modals::Modal::RepoPicker(ref rp) = app.modal else {
             panic!("repo picker must stay open after a row click");
         };
-        assert_eq!(rp.list_index, 1);
-        assert!(rp.selected[1]);
+        assert_eq!(rp.browse_index, 2);
+        assert_eq!(rp.focus, modals::RepoPickerFocus::Browse);
+        assert_eq!(rp.basket.len(), 1, "clicking a repo adds it");
+        assert_eq!(rp.basket[0].path, std::path::PathBuf::from("/tmp/b"));
+    }
+
+    #[test]
+    fn click_repo_picker_browse_add_button_adds_plain_dir() {
+        let mut app = app_with_sessions(0);
+        app.start_new_session();
+        let modals::Modal::RepoPicker(ref mut rp) = app.modal else {
+            panic!("expected repo picker");
+        };
+        // Rows: 0=`..`, 1="docs" (a plain, non-repo dir).
+        rp.set_browse_dir(
+            "/tmp".into(),
+            vec![modals::BrowseEntry::dir(
+                "/tmp/docs".into(),
+                "docs".into(),
+                false,
+            )],
+            None,
+        );
+        // The `[+]` button on the plain-folder row adds it as an attached dir.
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(70, 9, 3, 1),
+            action: ClickAction::RepoBrowseAdd { index: 1 },
+        });
+        app.handle_mouse_click(71, 9, KeyModifiers::NONE);
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("repo picker stays open");
+        };
+        assert_eq!(rp.basket.len(), 1, "[+] adds the plain dir");
+        assert_eq!(rp.basket[0].path, std::path::PathBuf::from("/tmp/docs"));
+        assert!(!rp.basket[0].is_repo);
+    }
+
+    #[test]
+    fn click_repo_picker_basket_row_toggles_and_removes() {
+        let mut app = app_with_sessions(0);
+        app.start_new_session();
+        let modals::Modal::RepoPicker(ref mut rp) = app.modal else {
+            panic!("expected repo picker");
+        };
+        rp.add_to_basket("/tmp/a".into(), "a".into(), true);
+        // Body click toggles worktree.
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(60, 9, 18, 1),
+            action: ClickAction::RepoBasket {
+                index: 0,
+                remove: false,
+            },
+        });
+        app.handle_mouse_click(61, 9, KeyModifiers::NONE);
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("repo picker stays open");
+        };
+        assert!(rp.basket[0].worktree, "body click toggles worktree");
+
+        // The `✕` click removes the row.
+        app.click_targets.clear();
+        app.click_targets.push(ClickTarget {
+            rect: Rect::new(79, 9, 1, 1),
+            action: ClickAction::RepoBasket {
+                index: 0,
+                remove: true,
+            },
+        });
+        app.handle_mouse_click(79, 9, KeyModifiers::NONE);
+        let modals::Modal::RepoPicker(ref rp) = app.modal else {
+            panic!("repo picker stays open");
+        };
+        assert!(rp.basket.is_empty(), "✕ click removes the repo");
     }
 
     #[test]
@@ -7816,9 +7936,9 @@ mod tests {
     #[test]
     fn click_repo_picker_input_focuses_input() {
         let mut app = app_with_sessions(0);
-        app.start_new_session(); // no hosts → opens the repo picker (List focus)
+        app.start_new_session(); // no hosts → opens the repo picker (Browse focus)
         let r = rendered_indexed_target(&mut app, |a| match a {
-            ClickAction::RepoFocus(modals::RepoPickerFocus::Input) => Some(0),
+            ClickAction::RepoFocus(modals::RepoPickerFocus::PathInput) => Some(0),
             _ => None,
         })
         .0;
@@ -7826,7 +7946,7 @@ mod tests {
         let modals::Modal::RepoPicker(ref rp) = app.modal else {
             panic!("repo picker must stay open");
         };
-        assert_eq!(rp.focus, modals::RepoPickerFocus::Input);
+        assert_eq!(rp.focus, modals::RepoPickerFocus::PathInput);
     }
 
     /// Hovering a footer button brightens its fill to `accent_bright` (a
@@ -9442,93 +9562,28 @@ mod tests {
         assert_eq!(msg.text, "new info");
     }
 
-    // --- Repo picker row building ---
-
-    fn repo_bookmark(path: &Path, is_parent: bool) -> crate::storage::repo_bookmarks::RepoBookmark {
-        crate::storage::repo_bookmarks::RepoBookmark {
-            repo_path: path.to_path_buf(),
-            label: None,
-            last_used_at: 0,
-            use_count: 1,
-            is_parent,
-        }
-    }
+    // --- Repo picker browser ---
 
     #[test]
-    fn rebuild_rows_dedupes_standalone_that_is_also_a_parent_child() {
+    fn list_browse_entries_flags_repos_and_skips_hidden() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("alpha").join(".git")).unwrap();
-        std::fs::create_dir_all(root.join("beta").join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("plain")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
 
-        // A standalone bookmark for `alpha` AND a parent bookmark for `root`
-        // whose scan also finds `alpha`. `alpha` must appear exactly once.
-        let bookmarks = vec![
-            repo_bookmark(&root.join("alpha"), false),
-            repo_bookmark(root, true),
-        ];
-        let mut rp = modals::RepoPickerModal::default();
-        App::rebuild_repo_picker_rows(&mut rp, bookmarks);
+        let entries = App::list_browse_entries(root, false);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha", "plain"],
+            "hidden dirs excluded, sorted"
+        );
+        assert!(entries[0].is_repo, "alpha is a git repo");
+        assert!(!entries[1].is_repo, "plain is not");
 
-        // Rows: parent header, alpha (child), beta (child). The standalone
-        // `alpha` was dropped in favour of the grouped child.
-        assert_eq!(rp.bookmarks.len(), 3);
-        assert_eq!(rp.is_header, vec![true, false, false]);
-        let alpha_rows = rp.bookmarks.iter().filter(|p| p.ends_with("alpha")).count();
-        assert_eq!(alpha_rows, 1, "alpha must not be duplicated");
-        // The single `alpha` row is the grouped child (nested under the parent).
-        let alpha_idx = rp
-            .bookmarks
-            .iter()
-            .position(|p| p.ends_with("alpha"))
-            .unwrap();
-        assert!(rp.is_child[alpha_idx]);
-    }
-
-    #[test]
-    fn rebuild_rows_dedupes_parent_child_that_is_also_a_parent() {
-        // `root/sub` is a git repo found by scanning `root`, and is *also*
-        // bookmarked as its own parent. Whichever order they are processed, the
-        // `sub` path must render exactly once (no duplicate row).
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::fs::create_dir_all(root.join("sub").join(".git")).unwrap();
-        std::fs::create_dir_all(root.join("sub").join("leaf").join(".git")).unwrap();
-
-        let bookmarks = vec![
-            repo_bookmark(root, true),
-            repo_bookmark(&root.join("sub"), true),
-        ];
-        let mut rp = modals::RepoPickerModal::default();
-        App::rebuild_repo_picker_rows(&mut rp, bookmarks);
-
-        let sub_rows = rp
-            .bookmarks
-            .iter()
-            .filter(|p| p.file_name().is_some_and(|n| n == "sub"))
-            .count();
-        assert_eq!(sub_rows, 1, "sub must not be duplicated across parents");
-    }
-
-    #[test]
-    fn rebuild_rows_collapse_hides_children() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::fs::create_dir_all(root.join("alpha").join(".git")).unwrap();
-        std::fs::create_dir_all(root.join("beta").join(".git")).unwrap();
-
-        let mut rp = modals::RepoPickerModal::default();
-        App::rebuild_repo_picker_rows(&mut rp, vec![repo_bookmark(root, true)]);
-        // Header + two children all visible.
-        assert_eq!(rp.filtered_indices.len(), 3);
-
-        // Collapse the parent header (row 0) → only the header stays visible.
-        rp.toggle_collapsed(0);
-        assert_eq!(rp.filtered_indices, vec![0]);
-
-        // Expanding restores the children.
-        rp.toggle_collapsed(0);
-        assert_eq!(rp.filtered_indices.len(), 3);
+        let with_hidden = App::list_browse_entries(root, true);
+        assert!(with_hidden.iter().any(|e| e.name == ".hidden"));
     }
 
     // --- Worktree sync tests ---
@@ -10438,7 +10493,7 @@ mod tests {
             modals::Modal::WorktreeName(wn) => wn.name.value(),
             modals::Modal::SessionName(sn) => sn.name.value(),
             modals::Modal::RepoPicker(rp) => match rp.focus {
-                modals::RepoPickerFocus::Search => rp.search_input.value(),
+                modals::RepoPickerFocus::Browse if rp.filter_active => rp.filter_input.value(),
                 _ => rp.path_input.value(),
             },
             _ => return None,
@@ -10451,7 +10506,7 @@ mod tests {
         // (modal, pasted, expected) — single-line fields strip embedded
         // newlines, so a pasted trailing newline must not survive.
         let repo_input = modals::Modal::RepoPicker(modals::RepoPickerModal {
-            focus: modals::RepoPickerFocus::Input,
+            focus: modals::RepoPickerFocus::PathInput,
             ..Default::default()
         });
         let cases: Vec<(modals::Modal, &str, &str)> = vec![

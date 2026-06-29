@@ -1442,167 +1442,358 @@ impl App {
         let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
             return;
         };
-        // Ctrl+P: import the typed path as a *parent* folder whose git
-        // sub-directories are re-scanned on each picker open. Works from any
-        // focus (uses the path input value). Not `Ctrl+I` — that is `Tab`.
-        if mods.contains(KeyModifiers::CONTROL)
-            && matches!(code, KeyCode::Char('p') | KeyCode::Char('P'))
-        {
-            self.repo_picker_import_parent();
+        // The footer `[ Done ]` button replays Ctrl+Enter so it confirms from
+        // any pane (a plain Enter in the browser opens a folder instead).
+        if code == KeyCode::Enter && mods.contains(KeyModifiers::CONTROL) {
+            self.submit_repo_picker();
             return;
         }
         match rp.focus {
-            super::modals::RepoPickerFocus::List => self.handle_repo_picker_list_key(code),
-            super::modals::RepoPickerFocus::Input => self.handle_repo_picker_input_key(code, mods),
-            super::modals::RepoPickerFocus::Search => {
-                self.handle_repo_picker_search_key(code, mods)
+            super::modals::RepoPickerFocus::Browse => {
+                self.handle_repo_picker_browse_key(code, mods)
+            }
+            super::modals::RepoPickerFocus::Basket => self.handle_repo_picker_basket_key(code),
+            super::modals::RepoPickerFocus::PathInput => {
+                self.handle_repo_picker_path_key(code, mods)
             }
         }
     }
 
-    fn handle_repo_picker_list_key(&mut self, code: KeyCode) {
+    /// Cycle focus across the three panes — Browse → Basket → Go-to-path
+    /// (and back) — so `Tab`/`Shift+Tab` reach every field including the path
+    /// input. A remote target has no local browser, so it cycles Basket ↔
+    /// Add-remote-path only.
+    fn repo_picker_cycle_focus(&mut self, forward: bool) {
+        use super::modals::RepoPickerFocus::*;
+        let remote = self.new_session.backend.is_some();
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        rp.path_suggestion = None;
+        rp.focus = match (rp.focus, forward) {
+            (Browse, true) => Basket,
+            (Basket, true) => PathInput,
+            (PathInput, true) => {
+                if remote {
+                    Basket
+                } else {
+                    Browse
+                }
+            }
+            (Browse, false) => PathInput,
+            (Basket, false) => {
+                if remote {
+                    PathInput
+                } else {
+                    Browse
+                }
+            }
+            (PathInput, false) => Basket,
+        };
+        self.update_repo_picker_path_suggestion();
+    }
+
+    /// Left pane — the filesystem browser. `Enter`/`l` open the highlighted
+    /// folder (conventional file-browser navigation); `Backspace`/`h` go up.
+    /// `a`/`Space` add the highlighted directory (repo or plain dir) to the
+    /// basket; confirming the picker happens from the basket (or the Done
+    /// button). `/` opens an in-pane fuzzy filter.
+    fn handle_repo_picker_browse_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        if rp.filter_active {
+            return self.handle_repo_picker_filter_key(code, mods);
+        }
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
         match code {
-            KeyCode::Esc => {
-                self.modal.close();
+            KeyCode::Esc => self.modal.close(),
+            KeyCode::Tab => self.repo_picker_cycle_focus(true),
+            KeyCode::BackTab => self.repo_picker_cycle_focus(false),
+            KeyCode::Char('j') | KeyCode::Down => rp.move_browse(1),
+            KeyCode::Char('k') | KeyCode::Up => rp.move_browse(-1),
+            // `Enter` picks the highlighted row: a repo is added + confirmed (the
+            // keyboard fast path); a folder / `..` is opened. `l`/`→` always open.
+            KeyCode::Enter => self.repo_picker_browse_enter(),
+            KeyCode::Char('l') | KeyCode::Right => self.repo_picker_browse_open(),
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+                self.repo_picker_browse_ascend()
             }
-            KeyCode::Tab => {
-                rp.focus = super::modals::RepoPickerFocus::Input;
-            }
-            KeyCode::Char('/') => {
-                rp.clear_search();
-                rp.focus = super::modals::RepoPickerFocus::Search;
-            }
-            KeyCode::Char('j') | KeyCode::Down if rp.list_index + 1 < rp.filtered_indices.len() => {
-                rp.list_index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                rp.list_index = rp.list_index.saturating_sub(1);
-            }
-            KeyCode::Char(' ') => self.repo_picker_toggle_selected(),
-            KeyCode::Char('w') => self.repo_picker_toggle_worktree(),
-            KeyCode::Char('d') => self.repo_picker_delete_bookmark(),
-            KeyCode::Enter => {
-                self.submit_repo_picker();
+            // `a` adds and stays; `Space` adds and advances to the next entry.
+            KeyCode::Char('a') => self.repo_picker_add_browsed(false),
+            KeyCode::Char(' ') => self.repo_picker_add_browsed(true),
+            KeyCode::Char('d') => self.repo_picker_forget_favorite(),
+            KeyCode::Char('.') => self.repo_picker_toggle_hidden(),
+            KeyCode::Char('~') => self.repo_picker_browse_home(),
+            // `/` filters the current directory; `g` jumps to a typed path.
+            KeyCode::Char('/') => rp.filter_active = true,
+            KeyCode::Char('g') => {
+                rp.path_input.clear();
+                rp.path_suggestion = None;
+                rp.focus = super::modals::RepoPickerFocus::PathInput;
             }
             _ => {}
         }
     }
 
-    /// `Space` on the row under the cursor: toggle the selected flag of a repo,
-    /// or expand/collapse a parent header's child tree.
-    fn repo_picker_toggle_selected(&mut self) {
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
-            return;
-        };
-        if rp.is_header_row(real_idx) {
-            rp.toggle_collapsed(real_idx);
-            return;
-        }
-        if let Some(sel) = rp.selected.get_mut(real_idx) {
-            *sel = !*sel;
-        }
-    }
-
-    /// Toggle the worktree flag of the repo under the cursor, auto-selecting it
-    /// when worktree mode is turned on.
-    fn repo_picker_toggle_worktree(&mut self) {
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
-            return;
-        };
-        if rp.is_header_row(real_idx) {
-            return;
-        }
-        let Some(wt) = rp.worktree.get_mut(real_idx) else {
-            return;
-        };
-        *wt = !*wt;
-        if *wt {
-            if let Some(sel) = rp.selected.get_mut(real_idx) {
-                *sel = true;
-            }
-        }
-    }
-
-    /// Delete the bookmark under the cursor. A standalone repo is removed in
-    /// place; a parent header drops the parent bookmark and its (ephemeral)
-    /// child rows via a full re-scan; a child row has no persistent identity, so
-    /// deleting it is a no-op (delete its parent header instead).
-    fn repo_picker_delete_bookmark(&mut self) {
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let Some(&real_idx) = rp.filtered_indices.get(rp.list_index) else {
-            return;
-        };
-        let path = rp.bookmarks[real_idx].clone();
-        let is_header = rp.is_header_row(real_idx);
-        let is_child = rp.is_child_row(real_idx);
-
-        if is_child {
-            self.set_status(
-                super::StatusLevel::Info,
-                "Child of a parent bookmark — delete the parent header instead",
-            );
-            return;
-        }
-
-        if let Err(e) = self.db.delete_repo_bookmark(&path) {
-            error!("Failed to delete repo bookmark: {e}");
-        }
-
-        if is_header {
-            // Rebuild so the header and all its child rows disappear together.
-            self.refresh_repo_picker_rows();
-            return;
-        }
-
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        rp.bookmarks.remove(real_idx);
-        rp.selected.remove(real_idx);
-        rp.worktree.remove(real_idx);
-        rp.is_header.remove(real_idx);
-        rp.is_child.remove(real_idx);
-        self.recompute_repo_filter();
-    }
-
-    fn handle_repo_picker_input_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+    /// The `/`-filter sub-mode of the browser: typing narrows the current
+    /// directory's entries by fuzzy match.
+    fn handle_repo_picker_filter_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
         match code {
             KeyCode::Esc => {
-                self.modal.close();
+                rp.filter_input.clear();
+                rp.filter_active = false;
+                rp.recompute_browse_filter();
+            }
+            KeyCode::Enter => rp.filter_active = false, // keep the filter, resume nav
+            KeyCode::Left => rp.filter_input.move_left(),
+            KeyCode::Right => rp.filter_input.move_right(),
+            KeyCode::Home => rp.filter_input.home(),
+            KeyCode::End => rp.filter_input.end(),
+            other => {
+                if super::modals::apply_text_input_key(Some(&mut rp.filter_input), other, mods) {
+                    rp.recompute_browse_filter();
+                }
+            }
+        }
+    }
+
+    /// Right pane — the basket of chosen repos.
+    fn handle_repo_picker_basket_key(&mut self, code: KeyCode) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Enter => self.submit_repo_picker(),
+            KeyCode::Tab => self.repo_picker_cycle_focus(true),
+            // `Esc`/`Shift+Tab`/`h`/`←` step back to the previous pane (the
+            // browser locally, the path input for a remote target).
+            KeyCode::Esc | KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+                self.repo_picker_cycle_focus(false)
+            }
+            KeyCode::Char('j') | KeyCode::Down if rp.basket_index + 1 < rp.basket.len() => {
+                rp.basket_index += 1;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                rp.basket_index = rp.basket_index.saturating_sub(1);
+            }
+            KeyCode::Char('w') => rp.toggle_basket_worktree(),
+            KeyCode::Char('x') | KeyCode::Char('d') | KeyCode::Backspace => {
+                rp.remove_basket_selected()
+            }
+            _ => {}
+        }
+    }
+
+    /// Activate the browser row a mouse click landed on (the click already moved
+    /// `browse_index` onto it): a repo/favorite is added to the basket, a folder
+    /// or `..` row is opened. Lets the whole browser be driven by the mouse.
+    pub(super) fn repo_picker_activate_clicked(&mut self) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        // A repo click adds it; a plain folder / `..` click opens it (navigates),
+        // so the mouse can still drill through the tree. Add a plain dir with `a`.
+        let is_repo = rp.browse_selected().map(|e| e.is_repo).unwrap_or(false);
+        if is_repo {
+            self.repo_picker_add_browsed(false);
+        } else {
+            self.repo_picker_browse_open();
+        }
+    }
+
+    /// `Enter` in the browser: pick the highlighted row. A repo (or favorite) is
+    /// added to the basket and the picker is confirmed in one keystroke — the
+    /// keyboard fast path; a plain folder / `..` is opened (navigated). `a`/`Space`
+    /// still add a repo *without* confirming, for building a multi-repo basket.
+    fn repo_picker_browse_enter(&mut self) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        let is_repo = rp.browse_selected().map(|e| e.is_repo).unwrap_or(false);
+        if is_repo {
+            self.repo_picker_add_browsed(false);
+            self.submit_repo_picker();
+        } else {
+            self.repo_picker_browse_open();
+        }
+    }
+
+    /// Open (navigate into) the highlighted row: the `..` row ascends; any other
+    /// directory (a favorite or a current-dir subdir) becomes the new browse dir.
+    fn repo_picker_browse_open(&mut self) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        let Some(entry) = rp.browse_selected() else {
+            return;
+        };
+        if entry.kind == super::modals::BrowseKind::Up {
+            return self.repo_picker_browse_ascend();
+        }
+        let dir = entry.path.clone();
+        self.repo_picker_navigate(dir, None);
+    }
+
+    /// Ascend to the parent directory, restoring the cursor onto the directory
+    /// we came from. A no-op at the filesystem root.
+    fn repo_picker_browse_ascend(&mut self) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        let Some(parent) = rp.browse_dir.parent().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        let came_from = rp.browse_dir.clone();
+        self.repo_picker_navigate(parent, Some(came_from));
+    }
+
+    /// Jump the browser to `$HOME`.
+    fn repo_picker_browse_home(&mut self) {
+        if let Some(home) = crate::paths::home_dir() {
+            self.repo_picker_navigate(home, None);
+        }
+    }
+
+    /// List `dir` and point the browser at it, pinning the cursor onto `select`
+    /// (e.g. the child we ascended out of) when given.
+    fn repo_picker_navigate(
+        &mut self,
+        dir: std::path::PathBuf,
+        select: Option<std::path::PathBuf>,
+    ) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        let show_hidden = rp.show_hidden;
+        let children = Self::list_browse_entries(&dir, show_hidden);
+        if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
+            rp.set_browse_dir(dir, children, select);
+        }
+    }
+
+    /// Re-list the current browser directory with hidden directories toggled.
+    fn repo_picker_toggle_hidden(&mut self) {
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        rp.show_hidden = !rp.show_hidden;
+        let dir = rp.browse_dir.clone();
+        self.repo_picker_navigate(dir, None);
+    }
+
+    /// Add the highlighted directory to the basket — a git repo (worktree-able)
+    /// or a plain directory (attached as-is, `--add-dir`). Only the `..` row is
+    /// not addable. With `advance`, the cursor moves to the next row (so repeated
+    /// `Space` adds several in one pass).
+    pub(super) fn repo_picker_add_browsed(&mut self, advance: bool) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        let Some(entry) = rp.browse_selected() else {
+            return;
+        };
+        if !entry.addable() {
+            return; // the `..` row
+        }
+        let path = entry.path.clone();
+        let name = entry.name.clone();
+        let is_repo = entry.is_repo;
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        let added = rp.add_to_basket(path.clone(), name, is_repo);
+        if advance {
+            rp.move_browse(1);
+        }
+        if added {
+            // Persist repos for recency so they surface as favorites next time;
+            // plain dirs aren't favorited (favorites are git repos).
+            if is_repo {
+                if let Err(e) = self.db.upsert_repo_bookmark(&path) {
+                    error!("Failed to save repo bookmark: {e}");
+                    self.set_error(format!("Failed to save repo bookmark: {e}"));
+                }
+            }
+            let label = if is_repo { "Added" } else { "Added dir" };
+            self.set_status(
+                super::StatusLevel::Info,
+                format!("{label} {}", crate::paths::display_path(&path)),
+            );
+        }
+    }
+
+    /// `d` in the browser: forget the highlighted favorite/recent repo (removes
+    /// the persisted bookmark and the pinned row). A no-op on non-favorite rows.
+    fn repo_picker_forget_favorite(&mut self) {
+        let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
+            return;
+        };
+        let Some(entry) = rp.browse_selected() else {
+            return;
+        };
+        if entry.kind != super::modals::BrowseKind::Favorite {
+            return;
+        }
+        let path = entry.path.clone();
+        if let Err(e) = self.db.delete_repo_bookmark(&path) {
+            error!("Failed to delete repo bookmark: {e}");
+        }
+        // Drop the pinned favorite and rebuild the current directory's rows.
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        rp.favorites.retain(|f| f.path != path);
+        let dir = rp.browse_dir.clone();
+        self.repo_picker_navigate(dir, None);
+    }
+
+    /// The path text-input (left pane for a remote target, or the `g` go-to
+    /// overlay locally). `Tab` accepts a completion or moves on; `Enter` commits.
+    fn handle_repo_picker_path_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let remote = self.new_session.backend.is_some();
+        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                if remote {
+                    self.modal.close();
+                } else {
+                    rp.path_input.clear();
+                    rp.path_suggestion = None;
+                    rp.focus = super::modals::RepoPickerFocus::Browse;
+                }
                 return;
             }
             KeyCode::Tab => {
-                if let Some(suggestion) = rp.path_suggestion.take() {
-                    for c in suggestion.chars() {
-                        rp.path_input.insert(c);
+                // Accept an inline completion if there is one; otherwise advance
+                // focus to the next pane.
+                let completed = match rp.path_suggestion.take() {
+                    Some(suggestion) => {
+                        for c in suggestion.chars() {
+                            rp.path_input.insert(c);
+                        }
+                        true
                     }
-                } else {
-                    rp.focus = super::modals::RepoPickerFocus::List;
-                    rp.path_suggestion = None;
+                    None => false,
+                };
+                if !completed {
+                    self.repo_picker_cycle_focus(true);
                     return;
                 }
             }
             KeyCode::BackTab => {
-                rp.focus = super::modals::RepoPickerFocus::List;
-                rp.path_suggestion = None;
+                self.repo_picker_cycle_focus(false);
                 return;
             }
             KeyCode::Enter => {
-                self.repo_picker_commit_path_input();
+                self.repo_picker_commit_path();
                 return;
             }
             other => {
@@ -1614,93 +1805,59 @@ impl App {
         self.update_repo_picker_path_suggestion();
     }
 
-    /// Commit the typed path in the repo-picker input: add or re-select the
-    /// bookmark, persist it, clear the input, and refresh the filter.
-    fn repo_picker_commit_path_input(&mut self) {
-        // For a remote target the path is a remote path: don't expand `~`
-        // against the local home, and don't persist it as a local bookmark.
+    /// Commit the typed path. Remotely, add it straight to the basket. Locally,
+    /// navigate the browser to it (highlighting the entry when it's a child).
+    fn repo_picker_commit_path(&mut self) {
         let remote = self.new_session.backend.is_some();
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
-        let path = rp.path_input.value().trim().to_string();
-        if path.is_empty() {
-            self.recompute_repo_filter();
+        let raw = rp.path_input.value().trim().to_string();
+        if raw.is_empty() {
             return;
         }
-        let expanded = if remote {
-            std::path::PathBuf::from(&path)
+        if remote {
+            let path = std::path::PathBuf::from(&raw);
+            let name = crate::paths::display_path(&path);
+            // A remote path can't be stat'd locally — assume a repo so worktree
+            // mode stays available for it.
+            rp.add_to_basket(path, name, true);
+            rp.path_input.clear();
+            rp.path_suggestion = None;
+            rp.focus = super::modals::RepoPickerFocus::Basket;
+            return;
+        }
+        let expanded = paths::expand_tilde(&raw);
+        // Navigate into a directory directly, or to a file/repo's parent —
+        // highlighting the typed path itself when it's a child of the target.
+        let (target, select) = if expanded.is_dir() {
+            (expanded, None)
         } else {
-            paths::expand_tilde(&path)
+            let parent = expanded
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| expanded.clone());
+            (parent, Some(expanded))
         };
-        let persist = Self::repo_picker_select_or_add_row(rp, &expanded);
-        if persist && !remote {
-            if let Err(e) = self.db.upsert_repo_bookmark(&expanded) {
-                error!("Failed to save repo bookmark: {e}");
-                self.set_error(format!("Failed to save repo bookmark: {e}"));
-            }
-        }
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        rp.path_input.clear();
-        rp.path_suggestion = None;
-        self.recompute_repo_filter();
-    }
-
-    /// Select an already-represented bookmark row for `expanded`, or push a new
-    /// auto-selected row. Returns whether the path should be persisted as a
-    /// standalone bookmark: a path already shown as a parent's child (or the
-    /// parent header itself) is already covered, so it is not re-persisted.
-    fn repo_picker_select_or_add_row(
-        rp: &mut super::modals::RepoPickerModal,
-        expanded: &std::path::Path,
-    ) -> bool {
-        // If already represented, just select it (no duplicate row or DB entry).
-        let Some(idx) = rp.bookmarks.iter().position(|p| p == expanded) else {
-            rp.push_row(expanded.to_path_buf(), true, false, false);
-            return true;
-        };
-        let is_child = rp.is_child_row(idx);
-        let is_header = rp.is_header_row(idx);
-        if !is_header {
-            rp.selected[idx] = true;
-        }
-        !is_child && !is_header
-    }
-
-    /// Import the typed path as a *parent* folder: persist it as a parent
-    /// bookmark, then rebuild the list (re-scanning its git sub-directories).
-    /// The parent itself is not added as a selectable repo — its children are.
-    fn repo_picker_import_parent(&mut self) {
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        let path = rp.path_input.value().trim().to_string();
-        if path.is_empty() {
-            self.set_status(
-                super::StatusLevel::Info,
-                "Type a folder path, then Ctrl+P to import its repos as a parent",
-            );
-            return;
-        }
-        let expanded = paths::expand_tilde(&path);
-        if let Err(e) = self.db.upsert_repo_bookmark_kind(&expanded, true) {
-            error!("Failed to save parent bookmark: {e}");
-            self.set_error(format!("Failed to save parent bookmark: {e}"));
-        }
         if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
             rp.path_input.clear();
             rp.path_suggestion = None;
-            rp.focus = super::modals::RepoPickerFocus::List;
+            rp.focus = super::modals::RepoPickerFocus::Browse;
         }
-        self.refresh_repo_picker_rows();
+        self.repo_picker_navigate(target, select);
     }
 
     pub(super) fn update_repo_picker_path_suggestion(&mut self) {
+        // Path completion walks the *local* filesystem — meaningless for a
+        // remote target, so suppress the suggestion there.
+        let remote = self.new_session.backend.is_some();
         let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
             return;
         };
+        if remote {
+            rp.path_suggestion = None;
+            return;
+        }
         let value = rp.path_input.value().to_string();
         let at_end = rp.path_input.cursor_pos() == value.chars().count();
         if at_end && !value.is_empty() {
@@ -1710,48 +1867,28 @@ impl App {
         }
     }
 
-    fn handle_repo_picker_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        let super::modals::Modal::RepoPicker(ref mut rp) = self.modal else {
-            return;
-        };
-        match code {
-            KeyCode::Esc => {
-                rp.clear_search();
-                rp.focus = super::modals::RepoPickerFocus::List;
-            }
-            KeyCode::Enter => {
-                rp.focus = super::modals::RepoPickerFocus::List;
-            }
-            // Cursor moves don't change the filter; edits (incl. Ctrl+W/U) do.
-            KeyCode::Left => rp.search_input.move_left(),
-            KeyCode::Right => rp.search_input.move_right(),
-            KeyCode::Home => rp.search_input.home(),
-            KeyCode::End => rp.search_input.end(),
-            other => {
-                if super::modals::apply_text_input_key(Some(&mut rp.search_input), other, mods) {
-                    self.recompute_repo_filter();
-                }
-            }
-        }
-    }
-
-    fn recompute_repo_filter(&mut self) {
-        if let super::modals::Modal::RepoPicker(ref mut rp) = self.modal {
-            rp.recompute_filter();
-        }
-    }
-
     fn submit_repo_picker(&mut self) {
         let super::modals::Modal::RepoPicker(ref rp) = self.modal else {
             return;
         };
+        let remote = self.new_session.backend.is_some();
 
-        let (worktree_repos, normal_repos) = Self::partition_selected_repos(rp);
+        let mut worktree_repos: Vec<std::path::PathBuf> = Vec::new();
+        let mut normal_repos: Vec<std::path::PathBuf> = Vec::new();
+        for repo in &rp.basket {
+            if repo.worktree {
+                worktree_repos.push(repo.path.clone());
+            } else {
+                normal_repos.push(repo.path.clone());
+            }
+        }
 
-        // Touch all selected bookmarks so they stay sorted by recency.
-        for repo in worktree_repos.iter().chain(normal_repos.iter()) {
-            if let Err(e) = self.db.upsert_repo_bookmark(repo) {
-                error!("Failed to touch repo bookmark: {e}");
+        // Touch chosen repos so they stay sorted by recency (local paths only).
+        if !remote {
+            for repo in worktree_repos.iter().chain(normal_repos.iter()) {
+                if let Err(e) = self.db.upsert_repo_bookmark(repo) {
+                    error!("Failed to touch repo bookmark: {e}");
+                }
             }
         }
 
@@ -1805,25 +1942,6 @@ impl App {
             ..SessionConfig::default()
         };
         self.spawn_session_with_config(&config);
-    }
-
-    /// Split the selected bookmarks into (worktree repos, normal repos).
-    fn partition_selected_repos(
-        rp: &super::modals::RepoPickerModal,
-    ) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
-        let mut worktree_repos: Vec<std::path::PathBuf> = Vec::new();
-        let mut normal_repos: Vec<std::path::PathBuf> = Vec::new();
-        for (i, path) in rp.bookmarks.iter().enumerate() {
-            if !rp.selected.get(i).copied().unwrap_or(false) {
-                continue;
-            }
-            if rp.worktree.get(i).copied().unwrap_or(false) {
-                worktree_repos.push(path.clone());
-            } else {
-                normal_repos.push(path.clone());
-            }
-        }
-        (worktree_repos, normal_repos)
     }
 }
 

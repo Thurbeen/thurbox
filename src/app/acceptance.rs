@@ -348,6 +348,33 @@ fn theme_picker_lists_palettes() {
     insta::assert_snapshot!(h.render());
 }
 
+#[test]
+fn repo_picker_browse_view_renders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let projects = tmp.path().join("projects");
+    // Stable, name-sorted fixture so the snapshot is deterministic.
+    std::fs::create_dir_all(projects.join("alpha").join(".git")).unwrap();
+    std::fs::create_dir_all(projects.join("beta")).unwrap();
+    let mut h = Harness::snapshot();
+    // Seed a bookmark inside `projects` so the browser opens there (hermetic).
+    h.app
+        .db
+        .upsert_repo_bookmark(&projects.join("alpha"))
+        .unwrap();
+    h.render();
+    h.ctrl('n');
+    assert_eq!(
+        repo_picker(&h).focus,
+        modals::RepoPickerFocus::Browse,
+        "the picker opens directly in the browser"
+    );
+    // The left pane title shows an absolute tempdir path; redact it so the
+    // snapshot is stable across machines/runs.
+    let dir = projects.display().to_string();
+    let rendered = h.render().replace(&dir, "<dir>");
+    insta::assert_snapshot!(rendered);
+}
+
 // ── Behavioral tests: drive keys, assert on App state ────────────────────────
 
 #[test]
@@ -361,6 +388,403 @@ fn ctrl_n_opens_repo_picker() {
     );
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(!h.app.modal.is_open(), "Esc should dismiss the modal");
+}
+
+/// Build a `projects/` dir holding two fake git repos (`.git` subdir),
+/// one plain dir, and one hidden dir. Returns `(tmp, projects_path)`; keep
+/// `tmp` alive for the tree to exist on disk.
+fn browse_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let projects = tmp.path().join("projects");
+    for repo in ["repo_a", "repo_b"] {
+        std::fs::create_dir_all(projects.join(repo).join(".git")).unwrap();
+    }
+    std::fs::create_dir_all(projects.join("plain_dir")).unwrap();
+    std::fs::create_dir_all(projects.join(".hidden_dir")).unwrap();
+    (tmp, projects)
+}
+
+/// Open the two-pane repo picker seeded with one bookmark inside `projects` so
+/// the browser's start dir resolves into the fixture (hermetic; avoids `$HOME`).
+/// The picker lands directly in the browser at `projects`.
+fn open_picker_in_fixture(h: &mut Harness, projects: &Path) {
+    h.app
+        .db
+        .upsert_repo_bookmark(&projects.join("repo_a"))
+        .unwrap();
+    h.render();
+    h.ctrl('n');
+}
+
+/// The repo picker's modal state, or panic.
+fn repo_picker(h: &Harness) -> &modals::RepoPickerModal {
+    match &h.app.modal {
+        modals::Modal::RepoPicker(rp) => rp,
+        other => panic!("expected repo picker, got {other:?}"),
+    }
+}
+
+#[test]
+fn repo_picker_opens_in_browser() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    let rp = repo_picker(&h);
+    assert_eq!(rp.focus, modals::RepoPickerFocus::Browse);
+    assert_eq!(rp.browse_dir, projects);
+    let names: Vec<&str> = rp.browse_entries.iter().map(|e| e.name.as_str()).collect();
+    // A `..` row precedes the (sorted, hidden-excluded) children. The seeded
+    // bookmark `repo_a` is a child here, so its favorite copy is deduped.
+    assert_eq!(names, vec!["..", "plain_dir", "repo_a", "repo_b"]);
+    assert_eq!(
+        rp.browse_selected().map(|e| e.name.as_str()),
+        Some("repo_a"),
+        "cursor starts on the most-recent repo (the seeded bookmark)"
+    );
+    let repo_b = rp
+        .browse_entries
+        .iter()
+        .find(|e| e.name == "repo_b")
+        .unwrap();
+    assert!(repo_b.is_repo, "git repos flagged");
+}
+
+#[test]
+fn repo_picker_browse_descend_and_ascend() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    // Cursor starts on the most-recent repo (repo_a); open it with `l`
+    // (navigate into it — `Enter` would pick+confirm instead).
+    assert_eq!(
+        repo_picker(&h).browse_selected().map(|e| e.name.as_str()),
+        Some("repo_a")
+    );
+    h.key(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert_eq!(repo_picker(&h).browse_dir, projects.join("repo_a"));
+
+    // Ascend with Backspace — cursor restored onto repo_a.
+    h.key(KeyCode::Backspace, KeyModifiers::NONE);
+    let rp = repo_picker(&h);
+    assert_eq!(rp.browse_dir, projects);
+    assert_eq!(
+        rp.browse_selected().map(|e| e.name.as_str()),
+        Some("repo_a"),
+        "ascending restores the cursor onto the directory we came from"
+    );
+}
+
+#[test]
+fn repo_picker_add_to_basket_and_submit() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    // Cursor starts on repo_a; move to repo_b and add it to the basket with `a`
+    // (which adds without confirming, so the basket can hold several).
+    h.key(KeyCode::Char('j'), KeyModifiers::NONE); // repo_b
+    assert_eq!(
+        repo_picker(&h).browse_selected().map(|e| e.name.as_str()),
+        Some("repo_b")
+    );
+    h.key(KeyCode::Char('a'), KeyModifiers::NONE);
+
+    let repo_b = projects.join("repo_b");
+    let rp = repo_picker(&h);
+    assert_eq!(rp.basket.len(), 1, "repo_b is in the basket");
+    assert_eq!(rp.basket[0].path, repo_b);
+    assert!(
+        !rp.basket[0].worktree,
+        "added as a plain (non-worktree) repo"
+    );
+
+    let persisted = h.app.db.list_repo_bookmarks().unwrap();
+    assert!(
+        persisted.iter().any(|b| b.repo_path == repo_b),
+        "added repo persisted for recency"
+    );
+
+    // Ctrl+Enter (the Done button) confirms from the browser; the wizard
+    // advances past the repo step (no worktree → session-name / agent step).
+    h.key(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(
+        !matches!(h.app.modal, modals::Modal::RepoPicker(_)),
+        "Ctrl+Enter submits the repo picker and advances the wizard"
+    );
+}
+
+#[test]
+fn repo_picker_enter_on_repo_picks_and_confirms() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    // Cursor starts on the most-recent repo (repo_a) — a single `Enter` adds it
+    // and confirms the picker (the keyboard fast path).
+    assert_eq!(
+        repo_picker(&h).browse_selected().map(|e| e.name.as_str()),
+        Some("repo_a")
+    );
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+
+    assert!(
+        !matches!(h.app.modal, modals::Modal::RepoPicker(_)),
+        "Enter on a repo confirms and advances the wizard"
+    );
+    let cwd = h
+        .app
+        .new_session
+        .spawn_config
+        .as_ref()
+        .and_then(|c| c.cwd.clone());
+    assert_eq!(
+        cwd,
+        Some(projects.join("repo_a")),
+        "the picked repo became the new session's cwd"
+    );
+}
+
+#[test]
+fn repo_picker_space_adds_and_advances() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    // Cursor starts on repo_a; Space adds it and advances to repo_b.
+    h.key(KeyCode::Char(' '), KeyModifiers::NONE);
+    let rp = repo_picker(&h);
+    assert_eq!(rp.basket.len(), 1);
+    assert_eq!(rp.basket[0].name, "repo_a");
+    assert_eq!(
+        rp.browse_selected().map(|e| e.name.as_str()),
+        Some("repo_b"),
+        "Space advances the cursor for rapid multi-add"
+    );
+}
+
+#[test]
+fn repo_picker_basket_worktree_toggle_and_remove() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    // Cursor starts on repo_a — add it, switch to the basket, toggle worktree,
+    // then remove it.
+    h.key(KeyCode::Char('a'), KeyModifiers::NONE);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(repo_picker(&h).focus, modals::RepoPickerFocus::Basket);
+
+    h.key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(repo_picker(&h).basket[0].worktree, "w toggles worktree");
+
+    h.key(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert!(
+        repo_picker(&h).basket.is_empty(),
+        "x removes from the basket"
+    );
+}
+
+#[test]
+fn repo_picker_adds_non_repo_dir_as_attached() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    // Move up onto plain_dir (a non-git directory) and `a` adds it as an
+    // attached (`--add-dir`) entry that can't be put in worktree mode.
+    h.key(KeyCode::Char('k'), KeyModifiers::NONE); // repo_a -> plain_dir
+    assert_eq!(
+        repo_picker(&h).browse_selected().map(|e| e.name.as_str()),
+        Some("plain_dir")
+    );
+    h.key(KeyCode::Char('a'), KeyModifiers::NONE);
+    let rp = repo_picker(&h);
+    assert_eq!(rp.basket.len(), 1, "a plain directory is addable");
+    assert_eq!(rp.basket[0].path, projects.join("plain_dir"));
+    assert!(!rp.basket[0].is_repo);
+
+    // Worktree mode is rejected for a plain dir.
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    h.key(KeyCode::Char('w'), KeyModifiers::NONE);
+    assert!(!repo_picker(&h).basket[0].worktree);
+}
+
+#[test]
+fn repo_picker_filter_narrows_browser() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+
+    // `/` opens the filter; typing "repo_b" narrows to one entry.
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(repo_picker(&h).filter_active);
+    for c in "repo_b".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let rp = repo_picker(&h);
+    assert_eq!(rp.browse_filtered.len(), 1);
+    assert_eq!(
+        rp.browse_selected().map(|e| e.name.as_str()),
+        Some("repo_b")
+    );
+}
+
+#[test]
+fn repo_picker_browse_toggle_hidden() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+    // `..` + plain_dir + repo_a + repo_b (hidden excluded).
+    assert_eq!(repo_picker(&h).browse_entries.len(), 4);
+
+    h.key(KeyCode::Char('.'), KeyModifiers::NONE);
+    let rp = repo_picker(&h);
+    assert!(rp.show_hidden);
+    assert!(
+        rp.browse_entries.iter().any(|e| e.name == ".hidden_dir"),
+        "toggling hidden reveals dotfiles"
+    );
+}
+
+#[test]
+fn repo_picker_favorites_pinned_and_addable() {
+    // A bookmark outside the browsed directory shows as a pinned ★ favorite.
+    let (_tmp, projects) = browse_fixture();
+    let other = _tmp.path().join("elsewhere");
+    std::fs::create_dir_all(other.join("widget").join(".git")).unwrap();
+    let widget = other.join("widget");
+
+    let mut h = Harness::standard(0);
+    h.app.db.upsert_repo_bookmark(&widget).unwrap();
+    h.render();
+    h.ctrl('n');
+
+    // Navigate to `projects` (which doesn't contain `widget`) via the go-to
+    // input, so the favorite stays pinned rather than deduped as a child.
+    h.key(KeyCode::Char('g'), KeyModifiers::NONE);
+    for c in projects.to_str().unwrap().chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+
+    let rp = repo_picker(&h);
+    assert_eq!(rp.browse_dir, projects);
+    let fav = &rp.browse_entries[0];
+    assert_eq!(fav.kind, modals::BrowseKind::Favorite);
+    assert_eq!(fav.name, "widget");
+
+    // Cursor starts on the first child (plain_dir); move up past `..` onto the
+    // pinned favorite and add it with `a` without leaving the directory.
+    h.key(KeyCode::Char('k'), KeyModifiers::NONE); // onto `..`
+    h.key(KeyCode::Char('k'), KeyModifiers::NONE); // onto the favorite
+    assert_eq!(
+        repo_picker(&h).browse_selected().map(|e| e.name.as_str()),
+        Some("widget")
+    );
+    h.key(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert_eq!(repo_picker(&h).basket[0].path, widget);
+    assert_eq!(
+        repo_picker(&h).browse_dir,
+        projects,
+        "stayed in the directory"
+    );
+}
+
+#[test]
+fn repo_picker_forget_favorite_deletes_bookmark() {
+    let (_tmp, projects) = browse_fixture();
+    let other = _tmp.path().join("elsewhere");
+    std::fs::create_dir_all(other.join("widget").join(".git")).unwrap();
+    let widget = other.join("widget");
+
+    let mut h = Harness::standard(0);
+    h.app.db.upsert_repo_bookmark(&widget).unwrap();
+    h.render();
+    h.ctrl('n');
+    // Go to `projects` so `widget` shows as a pinned favorite (not deduped).
+    h.key(KeyCode::Char('g'), KeyModifiers::NONE);
+    for c in projects.to_str().unwrap().chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        repo_picker(&h).browse_entries[0].kind,
+        modals::BrowseKind::Favorite
+    );
+
+    // Move onto the favorite and forget it with `d`.
+    h.key(KeyCode::Char('k'), KeyModifiers::NONE); // onto `..`
+    h.key(KeyCode::Char('k'), KeyModifiers::NONE); // onto the favorite
+    h.key(KeyCode::Char('d'), KeyModifiers::NONE);
+
+    let rp = repo_picker(&h);
+    assert!(rp.favorites.is_empty(), "the favorite row is dropped");
+    assert!(
+        !rp.browse_entries
+            .iter()
+            .any(|e| e.kind == modals::BrowseKind::Favorite),
+        "no favorite rows remain"
+    );
+    assert!(
+        h.app.db.list_repo_bookmarks().unwrap().is_empty(),
+        "the persisted bookmark is deleted"
+    );
+}
+
+#[test]
+fn repo_picker_remote_typed_path_adds_to_basket() {
+    let mut h = Harness::standard(0);
+    h.app.new_session.backend = Some("ssh:devbox".to_string());
+    h.app.open_repo_picker();
+    assert_eq!(repo_picker(&h).focus, modals::RepoPickerFocus::PathInput);
+
+    // Type a remote path and commit it — it lands in the basket as a repo
+    // (worktree-able) and focus moves to the basket.
+    for c in "/srv/app".chars() {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+
+    let rp = repo_picker(&h);
+    assert_eq!(rp.basket.len(), 1);
+    assert_eq!(rp.basket[0].path, std::path::PathBuf::from("/srv/app"));
+    assert!(rp.basket[0].is_repo);
+    assert_eq!(rp.focus, modals::RepoPickerFocus::Basket);
+}
+
+#[test]
+fn repo_picker_tab_cycles_through_all_panes() {
+    let (_tmp, projects) = browse_fixture();
+    let mut h = Harness::standard(0);
+    open_picker_in_fixture(&mut h, &projects);
+    assert_eq!(repo_picker(&h).focus, modals::RepoPickerFocus::Browse);
+
+    // Tab cycles Browse → Basket → Go-to-path → Browse, so the path input is
+    // reachable without the `g` shortcut.
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(repo_picker(&h).focus, modals::RepoPickerFocus::Basket);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(repo_picker(&h).focus, modals::RepoPickerFocus::PathInput);
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(repo_picker(&h).focus, modals::RepoPickerFocus::Browse);
+
+    // Shift+Tab cycles the other way.
+    h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(repo_picker(&h).focus, modals::RepoPickerFocus::PathInput);
+}
+
+#[test]
+fn repo_picker_remote_opens_path_input() {
+    let mut h = Harness::standard(0);
+    h.app.new_session.backend = Some("ssh:devbox".to_string());
+    h.app.open_repo_picker();
+    // A remote target has no local filesystem to browse — it opens straight
+    // into the path text-input with no browser entries.
+    let rp = repo_picker(&h);
+    assert_eq!(rp.focus, modals::RepoPickerFocus::PathInput);
+    assert!(rp.browse_entries.is_empty());
 }
 
 #[test]

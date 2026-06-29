@@ -206,10 +206,11 @@ git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo \
 # config) — used as the code-review demo's worktree base.
 DEMO_BASE_BRANCH=$(git -C "$DEMO_REPO" symbolic-ref --short HEAD)
 
-# --- A parent folder of several repos, for the "import as parent" demo --------
-# Lives under $HOME so the session-creation tape can type `~/projects` and have
-# the picker's tilde-expansion resolve it during recording. The picker imports
-# the folder as a parent and lists these git sub-dirs (by basename) beneath it.
+# --- A folder of several repos, for the session-creation browser demo ---------
+# Lives under $HOME so the session-creation tape can `g`o-to `~/projects` and
+# have the picker's tilde-expansion resolve it during recording. The browser
+# lists these git sub-dirs (by basename, marked `●`) and the user adds them to
+# the basket.
 PROJECTS_DIR="$HOME/projects"
 for r in api-server shared-lib web-app; do
     repo="$PROJECTS_DIR/$r"
@@ -297,6 +298,20 @@ echo "==> Seeding one session per agent:$AGENTS"
 for a in $AGENTS; do
     "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
 done
+
+# --- Seed a repo bookmark so the session-creation browser shows a `★` favorite.
+# `session create` doesn't bookmark repos (only the TUI picker does), so without
+# this the browser has no favorites to pin. Insert the sample repo as a recent
+# bookmark directly (the db + repo_bookmarks table exist after the calls above).
+# Gated on the session-creation tape so other clips stay unchanged.
+# shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
+if printf '%s ' $TAPES | grep -Eq '(^| )session-creation( |$)'; then
+    echo "==> Seeding a repo bookmark (favorite) for the session-creation demo"
+    sqlite3 "$DB_FILE" \
+        "INSERT INTO repo_bookmarks (repo_path, last_used_at, use_count, is_parent) \
+         VALUES ('$DEMO_REPO', $(date +%s)000, 5, 0) \
+         ON CONFLICT(repo_path) DO UPDATE SET last_used_at = excluded.last_used_at"
+fi
 
 # --- Code-review demo: a worktree session with a real committed diff ---------
 # The review view diffs <base>..HEAD of a session's worktree, so the code-review

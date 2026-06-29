@@ -173,12 +173,44 @@ not applicable.
    remote hosts are configured (preserving the local-only flow). For
    a remote host the repo picker opens to a typed remote path and the
    worktree + tmux window are created on that host over SSH.
-2. **Repo picker** — fuzzy-searchable list of bookmarked repo
-   paths. `Space` toggles selection, `w` marks the selected repo
-   as a worktree base, `d` deletes the bookmark, and a path-input
-   field with filesystem autocomplete adds new bookmarks. The
-   first selected repo becomes the session's `cwd`; the rest may be
-   exposed to the agent depending on the agent's own flags.
+2. **Repo picker** — a **two-pane** chooser. The left pane is an
+   interactive filesystem **browser**; the right pane is the **basket**
+   of chosen repos. The first basket repo becomes the session's `cwd`;
+   the rest may be exposed to the agent depending on the agent's own
+   flags.
+   - **Browser (left).** Conventional folder navigation: a `..` row at
+     the top, `l`/`→` open the highlighted folder, `Backspace`/`h`/`←` go
+     up. Git repos are marked `●`. The cursor opens on your **most-recent
+     repo**, and `Enter` **picks** the highlighted row — for a repo it
+     adds it *and confirms the picker in one keystroke* (so the common
+     case is `Ctrl+N` → `Enter`); for a folder/`..` it opens it. `a` adds
+     the highlighted directory to the basket *without* confirming, and
+     `Space` adds + advances, for building a multi-repo basket. `.`
+     toggles hidden directories, `/` opens a fuzzy filter, `g` jumps to a
+     typed path (with autocomplete), and `~` jumps to `$HOME`.
+   - **Repos vs plain directories.** A git repo can run on its own
+     worktree branch; a plain directory is added **as-is** (`--add-dir`,
+     e.g. a shared docs or reference folder) and can't use worktree
+     mode (shown with a `(dir)` tag in the basket). Both are addable.
+   - **Mouse.** Click a repo (`●`/`★`) to add it; click a folder to open
+     it, or its trailing `[+]` to add the folder as a dir. In the basket,
+     click a row to toggle worktree, or its `[✕]` to remove it. `Tab`
+     cycles Browse → Basket → Go-to-path.
+   - **Favorites.** Your most-recently-used repos are pinned at the top
+     of the browser as `★` rows (deduped when already visible in the
+     current directory), so the repo you keep spinning up sessions on is
+     always one keystroke away regardless of where you've navigated. `a`
+     adds a favorite; `d` forgets it. Opens near the most-recent repo's
+     parent (else `$HOME`).
+   - **Basket (right).** `Tab` switches panes. `w` toggles a repo's
+     worktree flag, `x`/`d` removes it. Confirm the picker with `Enter`
+     from the basket, `Enter` on a repo in the browser, or the
+     `[ Done ]` footer button (`Ctrl+Enter` from any pane).
+   - Adding a repo also persists a recency bookmark (so it surfaces as a
+     favorite next time).
+   - **Remote targets.** The browser reads the *local* filesystem, so a
+     remote SSH session opens straight into the path text-input — type
+     the remote path and `Enter` adds it to the basket.
 3. **Base branch selector** — worktree mode only.
 4. **Session name** — free text identifier shown in the sidebar.
 5. **New branch name** — worktree mode only.
