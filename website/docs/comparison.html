@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Comparison — Thurbox Docs'
-description: 'How Thurbox compares to other parallel coding-agent tools (Conductor, Herdr, 1Code, Orca, Claude Squad, Cursor): real tmux vs custom multiplexer, TUI vs Electron, native vendor CLI vs own models, native code review, and multi-repo sessions.'
+description: 'How Thurbox compares to other parallel coding-agent tools (GitHub Copilot App, Conductor, Herdr, 1Code, Orca, Claude Squad, Cursor): real tmux vs custom multiplexer, TUI vs Electron/GUI, native vendor CLI vs own models, native code review, and multi-repo sessions.'
 currentPage: 'comparison'
 breadcrumb: 'Comparison'
 ---
@@ -48,6 +48,19 @@ breadcrumb: 'Comparison'
                 <td>Linux &middot; macOS &middot; Windows</td>
                 <td><strong>&#x2713;</strong> (SSH hosts)</td>
                 <td>MIT</td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="https://github.com/github/app" target="_blank" rel="noopener">GitHub Copilot App</a>
+                </td>
+                <td>Desktop GUI</td>
+                <td>App-managed (worktrees + GitHub cloud envs)</td>
+                <td>Copilot (GitHub&rsquo;s agent)</td>
+                <td>&#x2717;</td>
+                <td>Agent Merge (PR review)</td>
+                <td>Linux &middot; macOS &middot; Windows</td>
+                <td>GitHub-hosted cloud envs</td>
+                <td>Proprietary (paid Copilot)</td>
               </tr>
               <tr>
                 <td>
@@ -199,7 +212,10 @@ breadcrumb: 'Comparison'
             ) plus cron-like automations to drive and schedule fleets of agents with no GUI at all
             &mdash; now with its own native code-review view, so the click-to-review visual diff is no
             longer a GUI-only trade-off. The GUI tools still trade footprint and that scriptability
-            for a gentler on-ramp.
+            for a gentler on-ramp &mdash; and the most polished of them,
+            <a href="https://github.com/github/app" target="_blank" rel="noopener">GitHub&rsquo;s Copilot App</a>,
+            also ties you to a single vendor&rsquo;s agent and a paid subscription, where Thurbox stays
+            agent-neutral and runs whatever CLI you already pay for.
           </p>
           <div class="info-box">
             <p>
