@@ -706,12 +706,13 @@ fn render_session_section(
         })
         .collect();
 
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .bg(Theme::selection_bg())
-            .fg(Theme::selection_fg())
-            .add_modifier(Modifier::BOLD),
-    );
+    // The active-row selection background is painted by `build_session_line`
+    // itself (per-span, full width), *not* by the List's `highlight_style` —
+    // because `highlight_style` patches the whole item area, which for a row
+    // that carries a prepended repo-group header would bleed the background up
+    // onto that header. Painting it in the row keeps the highlight to the
+    // session line only; the header gets a text-colour change instead.
+    let list = List::new(items).block(block);
 
     list_state.select(show_selection.then_some(active_index));
     frame.render_stateful_widget(list, area, list_state);
@@ -781,7 +782,8 @@ fn header_group_of(headers: &[Option<String>]) -> Vec<usize> {
 
 /// A full-width repo-group header: `● ── label ──────────`. The leading dot is
 /// the group's rolled-up most-urgent status; the label is muted by default and
-/// painted with the selection background when the active row is in its group.
+/// switches to an accent text colour (no background) when the active row is in
+/// its group, so the selection background stays on the session row alone.
 fn group_header_line(
     label: &str,
     rollup: SessionStatus,
@@ -789,11 +791,10 @@ fn group_header_line(
     selected: bool,
     spinner: &str,
 ) -> Line<'static> {
+    // Active group: a text-colour change only (accent + bold), never the full
+    // selection background — that belongs to the session row, not its header.
     let style = if selected {
-        Style::default()
-            .bg(Theme::selection_bg())
-            .fg(Theme::selection_fg())
-            .add_modifier(Modifier::BOLD)
+        Theme::selected_item()
     } else {
         Style::default().fg(Theme::text_muted())
     };
@@ -862,9 +863,9 @@ fn name_span_style(is_active: bool, is_dimmed: bool) -> Style {
     if is_dimmed {
         Style::default().fg(Theme::text_muted())
     } else if is_active {
-        // The active row is painted with the list's `selection_bg`, so the name
-        // must use the theme's `selection_fg` (not `accent`) to stay legible on
-        // that background — each theme tunes the pair for contrast.
+        // `build_session_line` paints the active row with `selection_bg`, so the
+        // name must use the theme's `selection_fg` (not `accent`) to stay legible
+        // on that background — each theme tunes the pair for contrast.
         Style::default()
             .fg(Theme::selection_fg())
             .add_modifier(Modifier::BOLD)
@@ -987,7 +988,27 @@ fn build_session_line<'a>(
 
     push_agent_status(&mut spans, info, status_style, inner_width);
 
-    Line::from(spans)
+    let mut line = Line::from(spans);
+
+    // Paint the selection background across the whole row here, rather than via
+    // the List's `highlight_style` (which would also tint the repo-group header
+    // prepended above the first row of each group). Pad to the full inner width
+    // and patch the selection style over every span so the bar fills the row.
+    if is_active {
+        let selection_style = Style::default()
+            .bg(Theme::selection_bg())
+            .fg(Theme::selection_fg())
+            .add_modifier(Modifier::BOLD);
+        let pad = inner_width.saturating_sub(line.width());
+        if pad > 0 {
+            line.spans.push(Span::raw(" ".repeat(pad)));
+        }
+        for span in &mut line.spans {
+            span.style = span.style.patch(selection_style);
+        }
+    }
+
+    line
 }
 
 #[cfg(test)]
@@ -1363,6 +1384,55 @@ mod tests {
             &s, None, false, false, 0, false, WIDE, "◐",
         ));
         assert!(text.contains("busy  Compacting conversation"));
+    }
+
+    #[test]
+    fn active_line_paints_selection_background_to_full_width() {
+        let s = info("active");
+        let line = build_session_line(&s, None, true, false, 0, false, WIDE, "◐");
+        // The bar is painted on the row itself (every span), so it can't bleed
+        // onto a prepended group header, and it fills the full inner width.
+        assert!(line
+            .spans
+            .iter()
+            .all(|sp| sp.style.bg == Some(Theme::selection_bg())));
+        assert_eq!(line.width(), WIDE);
+    }
+
+    #[test]
+    fn active_line_tints_spans_without_padding_when_too_narrow() {
+        // Inner width smaller than the rendered row: nothing to pad, but the
+        // selection background must still cover the spans (and not panic).
+        let s = info("a-fairly-long-session-name");
+        let line = build_session_line(&s, None, true, false, 0, false, 4, "◐");
+        assert!(line
+            .spans
+            .iter()
+            .all(|sp| sp.style.bg == Some(Theme::selection_bg())));
+    }
+
+    #[test]
+    fn inactive_line_has_no_selection_background() {
+        let s = info("idle");
+        let line = build_session_line(&s, None, false, false, 0, false, WIDE, "◐");
+        assert!(line.spans.iter().all(|sp| sp.style.bg.is_none()));
+    }
+
+    #[test]
+    fn selected_group_header_changes_text_colour_without_background() {
+        let line = group_header_line("repo", SessionStatus::Idle, WIDE, true, "◐");
+        // No background tint anywhere — only a text-colour change on the label.
+        assert!(line.spans.iter().all(|sp| sp.style.bg.is_none()));
+        let label = &line.spans[1];
+        assert_eq!(label.style.fg, Some(Theme::accent()));
+        assert!(label.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn unselected_group_header_is_muted_without_background() {
+        let line = group_header_line("repo", SessionStatus::Idle, WIDE, false, "◐");
+        assert!(line.spans.iter().all(|sp| sp.style.bg.is_none()));
+        assert_eq!(line.spans[1].style.fg, Some(Theme::text_muted()));
     }
 
     #[test]
