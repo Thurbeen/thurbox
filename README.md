@@ -194,6 +194,21 @@ also ties you to a single vendor's agent and a paid subscription, where Thurbox
 stays agent-neutral and runs whatever CLI you already pay for. Feature accuracy
 as of June 2026; check each project for the latest.
 
+> **Note:** The table above is a curated subset, not a leaderboard. The space of
+> agent orchestrators is large and grows weekly — see
+> [awesome-agent-orchestrators](https://github.com/andyrewlee/awesome-agent-orchestrators),
+> which already catalogs 140+ tools — so an exhaustive comparison would be both
+> enormous and stale the day it shipped. We list a representative handful along
+> the axes that actually distinguish them and keep it roughly current. Treat it
+> as a map of the terrain, not a ranking.
+>
+> Thurbox itself evolves quickly to fit how people actually work, and that's the
+> deeper point: AI has lowered the cost of building tooling so far that anyone can
+> rewrite a workflow into their own custom tool rather than wait for a vendor to
+> ship it. Thurbox leans into that — agents, hosts, themes, keybindings, and
+> extensions are all **data you edit**, not code you fork — so the "right" tool is
+> increasingly the one you shape for yourself.
+
 ## Features
 
 <table>
