@@ -66,6 +66,16 @@ passed by hand) and is suffixed `|| true` so it can never break the agent.
   `vibe-hooks.toml` (no code change). And if you already maintain your own
   `~/.vibe/hooks.toml`, the write is **refused** (no managed marker) so it's never
   clobbered — vibe simply goes unreported rather than broken.
+- **copilot** *(experimental)* — GitHub Copilot CLI (the `copilot` command) loads
+  hooks from its own dir, `~/.copilot/hooks/*.json`. We drop a managed standalone
+  file in (an `[[external_files]]`, guarded by `requires_dir`, only when copilot is
+  installed), so your other hook files are never touched. Events (copilot's own
+  schema): `sessionStart` → idle, `userPromptSubmitted`/`preToolUse` → working,
+  `agentStop` → done, and `notification` matched to `permission_prompt` → blocked
+  (so an `agent_idle`/`shell_completed` notification doesn't flip the dot red).
+  Both `bash` and `powershell` commands are shipped, so status works on Windows
+  too. **Caveat:** if a future `copilot` changes the hook schema, edit
+  `copilot-hooks.json` (no code change).
 - **antigravity** — antigravity (the `agy` CLI, the Gemini CLI successor) loads
   hooks only from its shared `~/.gemini/settings.json`, so we **JSON-merge** our
   entries in (a `[[config_merges]]`, guarded by `requires_dir`) without clobbering
@@ -97,6 +107,7 @@ other agents are wired by a reversible merge into — or a managed file dropped 
 | opencode | `~/.config/opencode/plugin/thurbox-status.js` | managed plugin file (`requires_dir`) |
 | codex | `~/.codex/hooks.json` | reversible JSON-merge of our entries |
 | vibe | `~/.vibe/hooks.toml` | managed file (refused if you already have one) |
+| copilot | `~/.copilot/hooks/thurbox-status.json` | managed standalone file (`requires_dir`) |
 | antigravity | `~/.gemini/settings.json` | reversible JSON-merge of our entries |
 
 The home dir is `~/.config/thurbox/hooks` for a release build and

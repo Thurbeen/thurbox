@@ -76,6 +76,15 @@ command = "aider"
 resume_args = ["--restore-chat-history"]
 resume_latest = true
 
+# GitHub Copilot CLI (the `copilot` command) resumes the most recent session in
+# the launch directory via `--continue`; it can't pin or report a session id and
+# has no fork (Ctrl+F falls back to a fresh session).
+[[agents]]
+name = "copilot"
+command = "copilot"
+resume_args = ["--continue"]
+resume_latest = true
+
 [[agents]]
 name = "vibe"
 command = "vibe"
@@ -353,6 +362,7 @@ mod tests {
         assert!(reg.get("antigravity").is_some());
         assert!(reg.get("opencode").is_some());
         assert!(reg.get("aider").is_some());
+        assert!(reg.get("copilot").is_some());
         assert!(reg.get("vibe").is_some());
 
         // Claude pins a thurbox id and resumes/forks by it.
@@ -370,8 +380,9 @@ mod tests {
         assert_eq!(opencode.fork_args, ["--continue", "--fork"]);
         assert!(opencode.resume_latest);
 
-        // antigravity/aider resume their latest session but have no fork group.
-        for name in ["antigravity", "aider"] {
+        // antigravity/aider/copilot resume their latest session but have no
+        // fork group.
+        for name in ["antigravity", "aider", "copilot"] {
             let a = reg.get(name).unwrap();
             assert!(a.resume_latest, "{name} should resume latest");
             assert!(!a.resume_args.is_empty(), "{name} needs resume_args");
@@ -380,7 +391,7 @@ mod tests {
 
         // No non-claude resume/fork token may carry a {id} placeholder — these
         // agents can't be addressed by a thurbox-known id.
-        for name in ["codex", "antigravity", "opencode", "aider"] {
+        for name in ["codex", "antigravity", "opencode", "aider", "copilot"] {
             let a = reg.get(name).unwrap();
             assert!(
                 !a.resume_args
@@ -394,7 +405,7 @@ mod tests {
 
     /// The seed must carry copy-pasteable examples (add-your-own-agent +
     /// pin-a-model) but keep them commented, so parsing still yields exactly
-    /// the six built-ins — a fresh install boots on pure defaults.
+    /// the seven built-ins — a fresh install boots on pure defaults.
     #[test]
     fn seed_documents_examples_yet_stays_builtin_only() {
         for marker in [
@@ -411,7 +422,7 @@ mod tests {
         // Examples are commented, so the seed parses to just the built-ins.
         let reg = builtin_registry();
         assert_eq!(reg.default, "claude");
-        assert_eq!(reg.agents.len(), 6, "examples must stay commented out");
+        assert_eq!(reg.agents.len(), 7, "examples must stay commented out");
         assert!(
             reg.get("claude-opus").is_none(),
             "example must not register"
@@ -478,7 +489,7 @@ mod tests {
     fn one_malformed_entry_is_skipped_and_the_rest_survive() {
         // The real-world footgun: `args` given a bare string instead of an
         // array. Previously this failed the whole document and stranded the
-        // user on the six built-ins; now only the bad entry is dropped.
+        // user on the built-ins; now only the bad entry is dropped.
         let toml = r#"
 default = "claude"
 

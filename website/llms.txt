@@ -1,8 +1,9 @@
 # Thurbox
 
 > Thurbox is a multi-session TUI orchestrator that runs any coding-agent CLI
-> — Claude Code, Codex, Antigravity, opencode, aider, Vibe, or any CLI you
-> define — inside persistent tmux panes. Sessions, agents, and git worktrees
+> — Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe,
+> or any CLI you define — inside persistent tmux panes. Sessions, agents, and
+> git worktrees
 > are first-class citizens, and sessions survive crashes, restarts, and
 > reboots because tmux keeps the agent processes alive. It is written in Rust,
 > open source under the MIT license, and runs on Linux, macOS, and Windows

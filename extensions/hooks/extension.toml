@@ -82,6 +82,24 @@ path = "~/.vibe/hooks.toml"
 source = "vibe-hooks.toml"
 requires_dir = "~/.vibe"
 
+# GitHub Copilot CLI (the `copilot` command) loads hooks from its own dir,
+# ~/.copilot/hooks/*.json (each file loaded alphabetically), so we drop a managed
+# standalone file in — never touching the user's other hook files. Guarded by
+# requires_dir so it's a no-op when copilot isn't installed; the hooks/ subdir is
+# created automatically. Events (copilot's own schema, see
+# https://docs.github.com/en/copilot/reference/hooks-configuration):
+# sessionStart → idle, userPromptSubmitted/preToolUse → working, agentStop →
+# done, and notification (matched to `permission_prompt`) → blocked. Both `bash`
+# and `powershell` commands are shipped so status works on Windows too. The
+# `session signal` JSON output carries none of copilot's decision keys
+# (permissionDecision/decision/additionalContext), so it never affects the
+# preToolUse/agentStop fail-open flow. If a future copilot changes the schema,
+# edit copilot-hooks.json (no code change).
+[[external_files]]
+path = "~/.copilot/hooks/thurbox-status.json"
+source = "copilot-hooks.json"
+requires_dir = "~/.copilot"
+
 # antigravity (the `agy` CLI, the Gemini CLI successor) loads hooks only from its
 # shared ~/.gemini/settings.json, which we must NOT clobber — so we JSON-merge our
 # entries in (reversibly; uninstall prunes exactly ours, leaving the user's

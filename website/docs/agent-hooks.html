@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Agent hooks — Thurbox Docs'
-description: 'The built-in hooks extension: wire each coding agent CLI lifecycle hook to thurbox-cli session signal so every session reports working/blocked/done/idle. Per-agent coverage matrix for claude, codex, antigravity, opencode, aider, and vibe.'
+description: 'The built-in hooks extension: wire each coding agent CLI lifecycle hook to thurbox-cli session signal so every session reports working/blocked/done/idle. Per-agent coverage matrix for claude, codex, antigravity, opencode, aider, copilot, and vibe.'
 currentPage: 'agent-hooks'
 breadcrumb: 'Agent hooks'
 onThisPage:
@@ -181,6 +181,13 @@ onThisPage:
                 <td>&mdash;</td>
               </tr>
               <tr>
+                <td>copilot <sup>*</sup></td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+                <td>&#x2713;</td>
+              </tr>
+              <tr>
                 <td>vibe <sup>*</sup></td>
                 <td>&mdash;</td>
                 <td>&#x2713;</td>
@@ -192,7 +199,7 @@ onThisPage:
           <p>
             <sup>*</sup>
             <strong>Experimental</strong>
-            &mdash; the hook schema for codex and vibe is newer or not exhaustively
+            &mdash; the hook schema for codex, copilot, and vibe is newer or not exhaustively
             verified against the live CLI. If event names differ, the fix is a one-file edit to the
             extension payload (no code change), and an unrecognized hook is a fail-open no-op
             (
@@ -304,6 +311,30 @@ onThisPage:
               <strong>refused</strong>
               (never clobbered) &mdash; vibe simply goes unreported.
             </li>
+            <li>
+              <strong>copilot</strong>
+              <em>(experimental)</em>
+              &mdash; GitHub Copilot CLI loads hooks from its own
+              <code>~/.copilot/hooks/</code>
+              dir, so Thurbox drops a managed standalone file in (only when copilot is installed),
+              never touching your other hook files.
+              <code>sessionStart</code>
+              &rarr; idle,
+              <code>userPromptSubmitted</code>
+              /
+              <code>preToolUse</code>
+              &rarr; working,
+              <code>agentStop</code>
+              &rarr; done, and
+              <code>notification</code>
+              matched to
+              <code>permission_prompt</code>
+              &rarr; blocked. Both
+              <code>bash</code>
+              and
+              <code>powershell</code>
+              commands ship, so status works on Windows too.
+            </li>
           </ul>
           <p>
             These use three manifest capabilities &mdash;
@@ -382,6 +413,11 @@ onThisPage:
                 <td>managed file (refused if you already have one)</td>
               </tr>
               <tr>
+                <td>copilot</td>
+                <td><code>~/.copilot/hooks/thurbox-status.json</code></td>
+                <td>managed standalone file</td>
+              </tr>
+              <tr>
                 <td>antigravity</td>
                 <td><code>~/.gemini/settings.json</code></td>
                 <td>reversible JSON-merge of our entries</td>
@@ -458,5 +494,7 @@ thurbox-cli extension activate hooks     # re-enable it</code></pre>
             <code>opencode-status.js</code>
             ,
             <code>vibe-hooks.toml</code>
+            ,
+            <code>copilot-hooks.json</code>
             ).
           </p>

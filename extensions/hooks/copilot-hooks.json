@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "thurbox-cli session signal --state idle || true  # managed by thurbox `extension install` — do not edit",
+        "powershell": "thurbox-cli session signal --state idle 2>$null; exit 0  # managed by thurbox `extension install`",
+        "timeoutSec": 10
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "thurbox-cli session signal --state working || true",
+        "powershell": "thurbox-cli session signal --state working 2>$null; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "thurbox-cli session signal --state working || true",
+        "powershell": "thurbox-cli session signal --state working 2>$null; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "matcher": "permission_prompt",
+        "bash": "thurbox-cli session signal --state blocked || true",
+        "powershell": "thurbox-cli session signal --state blocked 2>$null; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "thurbox-cli session signal --state done || true",
+        "powershell": "thurbox-cli session signal --state done 2>$null; exit 0",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

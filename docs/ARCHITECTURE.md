@@ -606,7 +606,7 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
 at creation time; each agent runs with its own default config.
 Agents are described as **data** in `~/.config/thurbox/agents.toml`
 (sibling of any other config), seeded with built-ins (claude,
-codex, antigravity, opencode, aider, vibe) on first run via
+codex, antigravity, opencode, aider, copilot, vibe) on first run via
 `agent::agent_config::load_or_seed`. An `AgentDef` carries a
 `command`, `args` (always passed — bake in flags like a model
 here if you want), and argument-template groups (`resume_args`,

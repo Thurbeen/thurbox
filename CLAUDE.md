@@ -350,7 +350,7 @@ Enforced by cocogitto via pre-commit hooks.
 
 The set of launchable coding agents is declared **as data** in
 `~/.config/thurbox/agents.toml`, seeded with built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `vibe`) on first run.
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`) on first run.
 Each `[[agents]]` entry is an `AgentDef`:
 
 ```toml
@@ -383,17 +383,19 @@ your own `[[agents]]` entry to support any CLI — no recompile.
 **Session id pinning vs. `resume_latest`.** thurbox generates the
 `agent_session_id` (a UUID) and only `claude` accepts it at creation
 (`--session-id {id}`), so only claude can resume/fork by that exact id.
-The other built-ins (`codex`, `opencode`, `antigravity`, `aider`) can't pin
-or report their id, so they set `resume_latest = true` with **id-less**
-resume/fork flags (no `{id}` token): the agent resolves "the last
+The other built-ins (`codex`, `opencode`, `antigravity`, `aider`, `copilot`)
+can't pin or report their id, so they set `resume_latest = true` with
+**id-less** resume/fork flags (no `{id}` token): the agent resolves "the last
 session in *this* directory" itself (`codex resume --last`, `opencode
---continue`, `agy --continue`, `aider --restore-chat-history`).
+--continue`, `agy --continue`, `aider --restore-chat-history`, `copilot
+--continue`).
 This works because restart reuses the session's cwd and a single-repo
 fork reuses the parent's cwd. `resume_latest` only changes *when* the
 resume group fires (see `session_ops::resume_trigger_for`): for these
 agents restart always triggers resume; for claude it still defers to an
 on-disk transcript check. Caveats: agents without `fork_args`
-(`antigravity`, `aider` — neither CLI forks) start fresh on `Ctrl+F`; and a
+(`antigravity`, `aider`, `copilot` — none of these CLIs fork) start fresh on
+`Ctrl+F`; and a
 **multi-repo** fork of a cwd-scoped agent lands in a fresh symlink
 workspace, so `--last`/`--continue` finds no parent session (multi-repo
 *restart* still resumes, since it keeps the same workspace dir).
@@ -1043,7 +1045,11 @@ the old `-c notify=…` done-only override — a reversible write into `hooks.js
 never `config.toml`), an `[[external_files]]` drops an opencode plugin into
 `~/.config/opencode/plugin/` (idle/working/blocked/done) and a managed
 `~/.vibe/hooks.toml` for Mistral `vibe` (working/blocked/done; **experimental**,
-refused if a user file already exists), and a `[[config_merges]]` deep-merges
+refused if a user file already exists), an `[[external_files]]` drops a managed
+`~/.copilot/hooks/thurbox-status.json` for GitHub Copilot CLI (`copilot`)
+(idle/working/blocked/done; **experimental**, copilot's own hook schema —
+`notification` matched to `permission_prompt` drives blocked; ships both
+`bash`+`powershell` commands), and a `[[config_merges]]` deep-merges
 hook entries into `antigravity`'s shared `~/.gemini/settings.json`
 (idle/working/blocked/done; `agy` adopted claude's hook schema, verified
 against agy 1.0.9 — `PreToolUse` drives working, `Notification` blocked, see

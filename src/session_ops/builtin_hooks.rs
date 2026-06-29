@@ -27,6 +27,7 @@ const OPENCODE_PLUGIN: &str = include_str!("../../extensions/hooks/opencode-stat
 const ANTIGRAVITY_HOOKS: &str = include_str!("../../extensions/hooks/antigravity-hooks.json");
 const CODEX_HOOKS: &str = include_str!("../../extensions/hooks/codex-hooks.json");
 const VIBE_HOOKS: &str = include_str!("../../extensions/hooks/vibe-hooks.toml");
+const COPILOT_HOOKS: &str = include_str!("../../extensions/hooks/copilot-hooks.json");
 
 /// The hooks extension's home, under this build's resolved config dir
 /// (`~/.config/thurbox/hooks` for a release build, `~/.config/thurbox-dev/hooks`
@@ -53,6 +54,7 @@ fn materialize_source() -> Result<PathBuf, String> {
         ("antigravity-hooks.json", ANTIGRAVITY_HOOKS),
         ("codex-hooks.json", CODEX_HOOKS),
         ("vibe-hooks.toml", VIBE_HOOKS),
+        ("copilot-hooks.json", COPILOT_HOOKS),
     ];
     for (name, contents) in writes {
         let path = dir.join(name);
@@ -134,6 +136,10 @@ mod tests {
         // marker (external-file uninstall, see `is_user_modified`).
         assert!(VIBE_HOOKS.contains("thurbox-cli session signal"));
         assert!(VIBE_HOOKS.contains("thurbox `extension install`"));
+        // The copilot payload carries the signal command and the managed marker
+        // (external-file uninstall, see `is_user_modified`).
+        assert!(COPILOT_HOOKS.contains("thurbox-cli session signal"));
+        assert!(COPILOT_HOOKS.contains("thurbox `extension install`"));
     }
 
     #[test]
@@ -209,6 +215,33 @@ mod tests {
         assert!(payload["hooks"]["BeforeTool"].is_null());
         assert!(payload["hooks"]["AfterAgent"].is_null());
         assert!(ANTIGRAVITY_HOOKS.contains("thurbox-cli session signal"));
+
+        // copilot drops a managed standalone file into ~/.copilot/hooks/ (guarded
+        // by requires_dir; the hooks/ subdir is created on write).
+        let copilot = def
+            .external_files
+            .iter()
+            .find(|f| f.path.contains(".copilot"))
+            .expect("copilot external file present");
+        assert_eq!(copilot.source_path(), "copilot-hooks.json");
+        assert_eq!(copilot.requires_dir.as_deref(), Some("~/.copilot"));
+
+        // The copilot payload is valid JSON using copilot's own event schema, so a
+        // typo can't ship a file copilot would reject.
+        let copilot_payload: serde_json::Value =
+            serde_json::from_str(COPILOT_HOOKS).expect("copilot payload is valid JSON");
+        for event in [
+            "sessionStart",
+            "userPromptSubmitted",
+            "preToolUse",
+            "notification",
+            "agentStop",
+        ] {
+            assert!(
+                copilot_payload["hooks"][event].is_array(),
+                "copilot hook event {event} missing"
+            );
+        }
     }
 
     #[test]

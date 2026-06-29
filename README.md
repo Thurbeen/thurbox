@@ -124,7 +124,7 @@ adds:
   repo(s) and branch, each running the agent you chose.
 - **Any agent** — a session runs one coding-agent CLI selected at
   creation time. Built-ins (claude, codex, antigravity, opencode,
-  aider, vibe) are seeded into `~/.config/thurbox/agents.toml`; add your
+  aider, copilot, vibe) are seeded into `~/.config/thurbox/agents.toml`; add your
   own without recompiling.
 - **Git worktree isolation** — each session can spawn on a fresh
   worktree; `Ctrl+S` syncs them with their base branch and asks the
@@ -365,7 +365,7 @@ switched live with `Ctrl+Y` (or `F4`) and persisted across restarts.
   stable identity.
 - **[Agent definitions](#agents)** — every launchable agent is declared as
   data in `agents.toml` (seeded with claude, codex, antigravity, opencode,
-  aider, vibe); add your own with no recompile.
+  aider, copilot, vibe); add your own with no recompile.
 - **[Git worktree isolation](#common-workflows)** — spawn a session on a
   fresh worktree branch; `Ctrl+S` syncs them with their base branch and asks
   the agent to resolve rebase conflicts.

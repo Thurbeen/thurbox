@@ -93,8 +93,8 @@ way), making it usable as a dotfiles CI gate.
 ## agents.toml
 
 Declares the launchable coding agents. Seeded with the built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `vibe`) on first
-run; edit or add `[[agents]]` entries to support any CLI — no
+(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`) on
+first run; edit or add `[[agents]]` entries to support any CLI — no
 recompile. A malformed `[[agents]]` entry is skipped (with a toast
 naming it) and the rest still load; only a document-level syntax error
 falls back to the built-ins. Either way the error is shown.
@@ -123,7 +123,7 @@ The seeded file also ships two commented, copy-pasteable templates
 below the built-ins — **Add your own agent** (every field annotated)
 and **Pin a model** (a `claude-opus` variant baking `--model opus`
 into `args`). Both stay commented, so a fresh install still resolves
-to exactly the six built-ins.
+to exactly the seven built-ins.
 
 ## hosts.toml
 
