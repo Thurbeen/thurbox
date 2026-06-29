@@ -36,8 +36,8 @@ backends register at startup) and `themes.toml` need a restart.
 opens a **Settings panel** listing every knob. It writes the file back
 **preserving its comments**, and feature flags that gate UI panels apply
 **live** on save; the rest (`mouse`, `notifications`, `automations`,
-`version_check`, the four editable `[notifications]` knobs, and the
-scalars) take effect on the next launch — the panel marks those rows
+`version_check`, `auto_update`, the four editable `[notifications]` knobs,
+and the scalars) take effect on the next launch — the panel marks those rows
 with `⟳` and toasts a restart note. The panel exposes only the four
 editable notification knobs (`also_on_waiting`, `suppress_for_active`,
 `sound`, `min_interval_secs`); `[notifications] backend` is **not** in
@@ -198,9 +198,12 @@ min_interval_secs   = 5        # per-session floor between notifications
 
 Turn major TUI features off entirely. All default to `true` **except
 `version_check` and `auto_update`, which default to `false`** (both
-reach the network, so they are opt-in). Like the rest of settings.toml,
-changes need a
-restart. A disabled feature's pane never renders, its keybinding shows
+reach the network, so they are opt-in). The UI-panel flags
+(`tasks`, `file_viewer`, `info_panel`, `global_search`, `shell_pane`,
+`code_review`, `soft_delete`) apply **live** on save; the rest
+(`automations`, `mouse`, `notifications`, `version_check`, `auto_update`)
+take effect on the next launch.
+A disabled feature's pane never renders, its keybinding shows
 a status toast instead of acting, and its global-search scope returns
 no results. Data is never touched, so re-enabling a flag is lossless.
 

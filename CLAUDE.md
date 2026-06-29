@@ -276,7 +276,8 @@ Every push to `main` automatically triggers the release workflow:
    - Determines semantic version (feat→minor, fix/perf→patch)
    - Creates lightweight git tag: `v{version}` (e.g., v0.1.0)
    - Pushes tag to origin
-   - Builds binaries for 3 platforms (version passed via environment variable)
+   - Builds binaries for 4 platforms (3 Unix `.tar.gz` + 1 Windows `.zip`;
+     version passed via environment variable)
    - Generates changelog from commits
    - Publishes GitHub Release with binaries and release notes
 
@@ -293,10 +294,12 @@ Every push to `main` automatically triggers the release workflow:
 
 Each release includes:
 
-- Binaries for 3 platforms:
+- Binaries for 4 platforms:
   - `thurbox-v{ver}-x86_64-unknown-linux-gnu.tar.gz`
   - `thurbox-v{ver}-x86_64-unknown-linux-musl.tar.gz`
   - `thurbox-v{ver}-aarch64-apple-darwin.tar.gz`
+  - `thurbox-v{ver}-x86_64-pc-windows-msvc.zip` (the Windows artifact
+    extracted by `install.ps1` / packaged by Chocolatey)
 - `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
 - Changelog with categorized commits
 
@@ -1289,7 +1292,7 @@ when the target session is the one in focus (`suppress_for_active`).
   the last delivery error; `--test` fires a sample notification
   *synchronously* (`notifications::send_blocking`, since the short-lived
   CLI has no dispatcher thread) so the user can confirm end-to-end.
-- **Click-to-focus** (dbus path only). The dbus action callback writes a
+- **Click-to-focus** (dbus + macOS `terminal-notifier` paths). The dbus action callback writes a
   session UUID to the SQLite `metadata` row keyed by
   [`PENDING_FOCUS_SESSION_ID_KEY`](src/session/mod.rs) (= the single
   source of truth shared by writer and reader). The TUI's
@@ -1297,10 +1300,14 @@ when the target session is the one in focus (`suppress_for_active`).
   `apply_pending_focus_request`) reads + deletes the row atomically
   (`Database::take_pending_focus_session_id`, a single
   `DELETE … RETURNING` statement) and switches `active_index` +
-  `InputFocus::Terminal`. The Windows-toast and macOS paths show the
-  banner but ignore clicks (a Windows toast can't call back into WSL;
-  modern macOS `UNUserNotificationCenter` actions need a signed app
-  bundle, which thurbox is not). **Terminal window-raising is
+  `InputFocus::Terminal`. On macOS the same row is written by
+  `terminal-notifier`'s `-execute` flag (which shells back into
+  `thurbox-cli session focus <id>`), so click-to-focus works whenever
+  `terminal-notifier` is installed. The Windows-toast path and macOS's
+  `osascript` fallback show the banner but ignore clicks (a Windows toast
+  can't call back into WSL; the `osascript`/`UNUserNotificationCenter`
+  action callbacks need a signed app bundle, which thurbox is not).
+  **Terminal window-raising is
   deliberately not implemented**: thurbox runs inside an arbitrary
   terminal emulator it doesn't own, and per-emulator window control is
   fragile (especially on Wayland). The session is pre-selected; the
@@ -1320,7 +1327,8 @@ when the target session is the one in focus (`suppress_for_active`).
 - **Code shape**. `src/notifications.rs` is the leaf side-effect layer
   (only knows `session` + `paths`) — a single background thread reads a
   per-process mpsc channel and dispatches over the resolved backend
-  (`notify-rust` for dbus/macOS, `powershell.exe` for the WSL toast). The
+  (`notify-rust` for dbus, `terminal-notifier`/`osascript` for macOS,
+  `powershell.exe` for the WSL toast). The
   notification body is bounded to 200 chars (`notify_state::truncate_body`)
   so a huge OSC message can't overflow the banner. The per-session
   bookkeeping (prior status, dedup timestamps) lives in
@@ -1797,7 +1805,7 @@ below the commented examples). The modal edits a working-copy `draft` and
 applies **only on `Ctrl+S`** (`Esc` discards — there is no live preview).
 
 Feature flags that gate UI panels (`tasks`, `file_viewer`, `info_panel`,
-`global_search`, `shell_pane`, `soft_delete`) are read from `App.features`
+`global_search`, `shell_pane`, `code_review`, `soft_delete`) are read from `App.features`
 every frame, so `submit_settings_panel` copies the draft's flags into
 `self.features` (via `App::apply_live_settings`) and they take effect
 immediately. Everything else is read once at startup from the write-once

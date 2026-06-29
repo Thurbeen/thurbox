@@ -23,9 +23,12 @@ onThisPage:
           <p>
             When the terminal panel is focused,
             <strong>all keys are forwarded to the PTY</strong>
-            except those with a
+            except most keys with a
             <code>Ctrl</code>
-            modifier (intercepted as global commands) and
+            modifier (intercepted as global commands &mdash; though a handful that collide with
+            readline, such as
+            <code>Ctrl+B/D/E/F/O/P/R/S/U/W</code>, defer to the agent CLI; see
+            <strong>Terminal passthrough</strong> below) and
             <code>Shift+arrow/page</code>
             /
             <code>Alt+page</code>

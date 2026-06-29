@@ -129,13 +129,11 @@ onThisPage:
             : the TUI polls their mtime (~1/s) and applies edits with a confirmation toast &mdash;
             no restart. For
             <code>settings.toml</code>
-            the feature flags and
+            the UI-panel feature flags apply immediately; the
             <code>[notifications]</code>
-            knobs apply immediately; the write-once scalars (plus
-            <code>version_check</code>
-            /
-            <code>auto_update</code>
-            ) take effect on the next launch and the toast says so.
+            knobs, the
+            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            feature flags, and the write-once scalars take effect on the next launch and the toast says so.
             <code>hosts.toml</code>
             and
             <code>themes.toml</code>
@@ -317,13 +315,11 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
             switches, seeded fully commented-out (defaults apply when absent). Only knobs a user
             plausibly wants are exposed; internals stay hardcoded. The file is
             <strong>live-reloaded</strong>
-            via mtime poll: the feature flags and
+            via mtime poll: the UI-panel feature flags apply immediately, while the
             <code>[notifications]</code>
-            knobs apply immediately, while the write-once scalars (plus
-            <code>version_check</code>
-            /
-            <code>auto_update</code>
-            ) take effect on the next launch.
+            knobs, the
+            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            feature flags, and the write-once scalars take effect on the next launch.
           </p>
           <div class="info-box">
             <p>
@@ -381,9 +377,10 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
           </table>
           <p>
             A complete <code>settings.toml</code> showing every knob at its default &mdash; copy
-            this and uncomment what you want to change (feature flags and
-            <code>[notifications]</code> apply live; the write-once scalars take effect on the next
-            launch):
+            this and uncomment what you want to change (the UI-panel feature flags apply live; the
+            <code>[notifications]</code> knobs, the
+            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            flags, and the write-once scalars take effect on the next launch):
           </p>
           <pre data-title="settings.toml"><code class="language-toml">config_version = 1
 
@@ -419,10 +416,13 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             Turn major TUI features off entirely. All default to
             <code>true</code>
             <strong>except <code>version_check</code> and <code>auto_update</code>, which default to <code>false</code></strong>
-            (both reach the network, so they are opt-in). Feature-flag changes are
-            <strong>live-reloaded</strong> &mdash; they take effect immediately, no restart (only the
-            write-once scalars and <code>version_check</code>/<code>auto_update</code> wait for the
-            next launch). A disabled feature's pane never renders, its keybinding shows a status
+            (both reach the network, so they are opt-in). The UI-panel feature flags
+            (<code>tasks</code>, <code>file_viewer</code>, <code>info_panel</code>,
+            <code>global_search</code>, <code>shell_pane</code>, <code>code_review</code>,
+            <code>soft_delete</code>) are <strong>live-reloaded</strong> &mdash; they take effect
+            immediately, no restart. The rest (<code>automations</code>, <code>mouse</code>,
+            <code>notifications</code>, <code>version_check</code>, <code>auto_update</code>) and the
+            write-once scalars wait for the next launch. A disabled feature's pane never renders, its keybinding shows a status
             toast instead of acting, and its global-search scope returns no results. Data is never
             touched, so re-enabling a flag is lossless.
           </p>

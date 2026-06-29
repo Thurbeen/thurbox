@@ -408,8 +408,9 @@ logs a warning and adoption proceeds with an empty seed.
 same tmux control-mode protocol over SSH. `LocalTmuxBackend` is
 generalized into `TmuxBackend { transport, socket, session, name }`
 where `transport: TmuxTransport` is either `Local` (a bare
-`Command::new("tmux")`) or `Ssh { destination, ssh_opts }`
-(`ssh <dest> tmux …`). The transport's *only* job is to build the
+`Command::new("tmux")`) or `Ssh { destination, ssh_opts, mux }`
+(`ssh <dest> <mux> …`, where `mux` is the remote multiplexer binary —
+`tmux` by default, or `psmux` for a Windows host). The transport's *only* job is to build the
 `Command`; everything downstream — the control-mode reader/writer
 threads, pane registration, `send-keys`/`%output` — is byte-for-byte
 identical (`control_mode.rs` was already transport-agnostic).
