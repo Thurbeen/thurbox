@@ -306,6 +306,13 @@ impl App {
     /// modal was open and consumed the key.
     pub(super) fn handle_modal_key_if_open(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         use super::modals::Modal;
+        // Pressing a modal's own opener chord again dismisses it (toggle),
+        // mirroring the help overlay's F1-to-close. Routed as an `Esc` so each
+        // modal keeps its own dismissal semantics — the theme picker restores
+        // its live-preview original, the Settings panel discards its draft.
+        if self.modal_opener_pressed(code, mods) {
+            return self.handle_modal_key_if_open(KeyCode::Esc, KeyModifiers::NONE);
+        }
         match self.modal {
             Modal::RestoreSessions(_) => self.handle_restore_sessions_key(code),
             Modal::BranchSelector(_) => self.handle_branch_selector_key(code),
@@ -324,6 +331,22 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Whether `code`/`mods` resolves to the action that *opens* the currently
+    /// open modal — i.e. the user re-pressed its toggle (e.g. `F4`/`Ctrl+Y`
+    /// with the theme picker open, `F6`/`Ctrl+,` with Settings open). Only the
+    /// self-toggling overlays opt in; the rest are dismissed only via `Esc`.
+    fn modal_opener_pressed(&self, code: KeyCode, mods: KeyModifiers) -> bool {
+        use super::modals::Modal;
+        let Some(action) = self.keybindings.lookup(code, mods) else {
+            return false;
+        };
+        match self.modal {
+            Modal::ThemePicker(_) => action == crate::session::Action::OpenThemePicker,
+            Modal::Settings(_) => action == crate::session::Action::OpenSettings,
+            _ => false,
+        }
     }
 
     /// Drive the Settings panel: edits a working copy, persists on `Ctrl+S`,

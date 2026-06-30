@@ -83,8 +83,7 @@ pub struct FooterState<'a> {
     /// Feature flags gating the panel buttons (hidden when off).
     pub tasks_enabled: bool,
     pub file_viewer_enabled: bool,
-    pub shell_pane_enabled: bool,
-    pub code_review_enabled: bool,
+    pub info_panel_enabled: bool,
     /// Live keybindings, so each footer pill can show its (rebindable) shortcut.
     pub keybindings: &'a KeyBindings,
 }
@@ -93,21 +92,22 @@ pub struct FooterState<'a> {
 /// dispatches. `render_footer` filters this by feature flags and returns the
 /// surviving `(ButtonHit, Action)` pairs so the click map can't drift from the
 /// render.
+///
+/// Ordered by F-key (`Help · F1`, `Info · F2`, … `Settings · F6`) with `Quit`
+/// last, so the row reads in the same order as the function-key alternates.
 const FOOTER_BUTTONS: &[(&str, Action)] = &[
     ("Help", Action::ToggleHelp),
-    ("Tasks", Action::FocusTasks),
+    ("Info", Action::ToggleInfoPanel),
     ("Files", Action::ToggleFileViewer),
-    ("Shell", Action::ToggleShell),
-    ("Review", Action::ToggleReview),
-    ("Settings", Action::OpenSettings),
     ("Theme", Action::OpenThemePicker),
+    ("Tasks", Action::FocusTasks),
+    ("Settings", Action::OpenSettings),
     ("Quit", Action::QuitApp),
 ];
 
 /// The footer buttons that survive the current feature flags, in render order.
-/// The panel/pane toggles (Tasks/Files/Shell/Review) are dropped when their
-/// feature is off (clicking a button that just toasts "disabled" would be
-/// noise).
+/// The panel toggles (Info/Files/Tasks) are dropped when their feature is off
+/// (clicking a button that just toasts "disabled" would be noise).
 fn footer_entries(flags: &FooterState<'_>) -> Vec<(&'static str, Action)> {
     FOOTER_BUTTONS
         .iter()
@@ -115,8 +115,7 @@ fn footer_entries(flags: &FooterState<'_>) -> Vec<(&'static str, Action)> {
         .filter(|(_, action)| match action {
             Action::FocusTasks => flags.tasks_enabled,
             Action::ToggleFileViewer => flags.file_viewer_enabled,
-            Action::ToggleShell => flags.shell_pane_enabled,
-            Action::ToggleReview => flags.code_review_enabled,
+            Action::ToggleInfoPanel => flags.info_panel_enabled,
             _ => true,
         })
         .collect()
@@ -135,12 +134,13 @@ fn pill_block_width(labels: &[String]) -> u16 {
 }
 
 /// Render the footer bar and return each clickable button's hitbox paired with
-/// the `Action` it dispatches, packed against the right edge. Tasks/Files are
-/// gated by their feature flags. The view-toggle pills (Shell/Review) are
-/// *optional*: when the full set would overflow the footer they're dropped
-/// first, so the essential Settings/Theme/Quit pills never fall off a narrow
-/// terminal. When the file viewer is open its navigation hints fill the space
-/// to the *left* of the buttons (right-aligned there) so both stay visible.
+/// the `Action` it dispatches, packed against the right edge. Info/Files/Tasks
+/// are gated by their feature flags, and the panel-toggle pills (Info/Files/
+/// Tasks) are *optional*: when the full set would overflow the footer they're
+/// dropped together, so the essential Help/Theme/Settings/Quit pills never fall
+/// off a narrow terminal. When the file viewer is open its navigation hints
+/// fill the space to the *left* of the buttons (right-aligned there) so both
+/// stay visible.
 pub fn render_footer(
     frame: &mut Frame,
     area: Rect,
@@ -168,11 +168,16 @@ pub fn render_footer(
             }
         })
         .collect();
-    // When the full set won't fit, drop *both* optional view-toggle pills
-    // together (so it's all-or-nothing, never a lone Shell or Review) rather
-    // than letting `render_button_bar` shed the rightmost essential pill.
+    // When the full set won't fit, drop the optional panel-toggle pills
+    // together (all-or-nothing) rather than letting `render_button_bar` shed
+    // the rightmost essential pill (Quit).
     if pill_block_width(&labels) > area.width {
-        let optional = |a: &Action| matches!(a, Action::ToggleShell | Action::ToggleReview);
+        let optional = |a: &Action| {
+            matches!(
+                a,
+                Action::ToggleInfoPanel | Action::ToggleFileViewer | Action::FocusTasks
+            )
+        };
         labels = entries
             .iter()
             .zip(&labels)
@@ -266,8 +271,8 @@ fn push_idle_counts<'a>(spans: &mut Vec<Span<'a>>, state: &FooterState<'a>) {
 
 fn push_shortcut_hints(spans: &mut Vec<Span<'_>>) {
     // Focus stays an informational hint (no single click target); the footer
-    // buttons (Help / Tasks / Files / Settings / Theme / Quit) are rendered as
-    // right-aligned clickable pills.
+    // buttons (Help / Info / Files / Theme / Tasks / Settings / Quit) are
+    // rendered as right-aligned clickable pills.
     let bold_key = Theme::keybind().add_modifier(Modifier::BOLD);
     let desc = Theme::keybind_desc();
     spans.extend([
@@ -370,8 +375,7 @@ mod tests {
             file_viewer_open,
             tasks_enabled: true,
             file_viewer_enabled: true,
-            shell_pane_enabled: true,
-            code_review_enabled: true,
+            info_panel_enabled: true,
             keybindings: test_keybindings(),
         }
     }
@@ -408,30 +412,29 @@ mod tests {
     fn footer_renders_all_buttons() {
         let (hits, line) = footer_render(false);
         for label in [
-            "Help", "Tasks", "Files", "Shell", "Review", "Settings", "Theme", "Quit",
+            "Help", "Info", "Files", "Theme", "Tasks", "Settings", "Quit",
         ] {
             assert!(line.contains(label), "missing {label} in footer: {line:?}");
         }
         // Each pill carries its live shortcut: an F-key alternate where one
-        // exists (Help · F1, Review · F7), else the caret-ctrl chord (Quit · ^Q).
-        for shortcut in ["F1", "F7", "F8", "^Q"] {
+        // exists (Help · F1, Info · F2), else the caret-ctrl chord (Quit · ^Q).
+        for shortcut in ["F1", "F2", "^Q"] {
             assert!(
                 line.contains(shortcut),
                 "missing shortcut {shortcut} in footer: {line:?}"
             );
         }
-        // Every button maps back to its Action, in render order — guards the
-        // index→action remapping in `render_footer`.
+        // Every button maps back to its Action, in render order (F-key order,
+        // Quit last) — guards the index→action remapping in `render_footer`.
         assert_eq!(
             hit_actions(&hits),
             vec![
                 Action::ToggleHelp,
-                Action::FocusTasks,
+                Action::ToggleInfoPanel,
                 Action::ToggleFileViewer,
-                Action::ToggleShell,
-                Action::ToggleReview,
-                Action::OpenSettings,
                 Action::OpenThemePicker,
+                Action::FocusTasks,
+                Action::OpenSettings,
                 Action::QuitApp,
             ]
         );
@@ -443,38 +446,41 @@ mod tests {
         let mut state = footer_state(false);
         state.tasks_enabled = false;
         state.file_viewer_enabled = false;
-        state.shell_pane_enabled = false;
-        state.code_review_enabled = false;
+        state.info_panel_enabled = false;
         let (hits, _) = render_footer_state(&state);
         assert_eq!(
             hit_actions(&hits),
             vec![
                 Action::ToggleHelp,
-                Action::OpenSettings,
                 Action::OpenThemePicker,
+                Action::OpenSettings,
                 Action::QuitApp,
             ],
             "only the non-panel buttons remain"
         );
     }
 
-    /// On a narrow footer the optional view-toggle pills (Shell/Review) drop as
-    /// a pair, but the essential Settings/Theme/Quit pills always survive.
+    /// On a narrow footer the optional panel-toggle pills (Info/Files/Tasks)
+    /// drop together, but the essential Help/Theme/Settings/Quit pills always
+    /// survive.
     #[test]
     fn footer_drops_view_toggles_when_narrow() {
         let state = footer_state(false);
-        let backend = TestBackend::new(100, 1);
+        let backend = TestBackend::new(70, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = Vec::new();
         terminal
-            .draw(|f| hits = render_footer(f, Rect::new(0, 0, 100, 1), &state))
+            .draw(|f| hits = render_footer(f, Rect::new(0, 0, 70, 1), &state))
             .unwrap();
         let actions = hit_actions(&hits);
         assert!(
-            !actions.contains(&Action::ToggleShell) && !actions.contains(&Action::ToggleReview),
-            "view-toggle pills drop together when the footer is too narrow: {actions:?}"
+            !actions.contains(&Action::ToggleInfoPanel)
+                && !actions.contains(&Action::ToggleFileViewer)
+                && !actions.contains(&Action::FocusTasks),
+            "panel-toggle pills drop together when the footer is too narrow: {actions:?}"
         );
         for essential in [
+            Action::ToggleHelp,
             Action::OpenSettings,
             Action::OpenThemePicker,
             Action::QuitApp,
@@ -508,7 +514,7 @@ mod tests {
         let (hits, line) = footer_render(true);
         assert_eq!(
             hits.len(),
-            8,
+            7,
             "buttons must remain when the file viewer is open"
         );
         assert!(line.contains("Quit"), "buttons still rendered: {line:?}");

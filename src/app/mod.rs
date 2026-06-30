@@ -6850,6 +6850,29 @@ mod tests {
         assert_eq!(app.focus, InputFocus::SessionList);
     }
 
+    /// The theme picker's own opener chord (`F4`/`Ctrl+Y`) closes it when it's
+    /// already open, restoring the live-preview original like `Esc`.
+    #[test]
+    fn f4_toggles_theme_picker_closed() {
+        let mut app = app_with_sessions(1);
+        app.handle_key(KeyCode::F(4), KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::ThemePicker(_)));
+        // Re-pressing the opener dismisses it instead of being swallowed.
+        app.handle_key(KeyCode::F(4), KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
+    /// The Settings panel's own opener chord (`F6`/`Ctrl+,`) closes it when it's
+    /// already open (discarding the draft, like `Esc`).
+    #[test]
+    fn f6_toggles_settings_closed() {
+        let mut app = app_with_sessions(1);
+        app.handle_key(KeyCode::F(6), KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::Settings(_)));
+        app.handle_key(KeyCode::F(6), KeyModifiers::NONE);
+        assert!(matches!(app.modal, modals::Modal::None));
+    }
+
     /// When the terminal is focused, readline/shell `Ctrl+<letter>` chords
     /// (here `Ctrl+W` = delete-word) defer to the PTY instead of running their
     /// thurbox command — but the same chord still works from the session list,

@@ -1613,15 +1613,15 @@ backend dependency stays visible at each call site.
   **Clickable buttons** reuse the same registry: `ui::render_button_bar`
   draws filled "pill" buttons (` Label ` on a solid accent/gray fill, no
   brackets) and returns `ui::ButtonHit`es. The bottom status-bar footer
-  renders Help/Tasks/Files/Shell/Review/Settings/Theme/Quit pills, each
-  suffixed with its live (rebindable) shortcut (`Help · F1`, an F-key
-  alternate where one exists, else the caret-ctrl chord `Quit · ^Q`). The
-  panel/pane toggles are feature-gated (Tasks/Files dropped when their panel
-  feature is off; the Shell/Review *view-toggle* pills are also dropped
-  *together* when the footer is too narrow to fit the full set
-  (`pill_block_width` vs the footer width) — so the essential
-  Settings/Theme/Quit pills never fall off). When the file viewer is open its
-  hints fill the space to their left.
+  renders Help/Info/Files/Theme/Tasks/Settings/Quit pills, ordered by F-key
+  (`Help · F1` … `Settings · F6`) with `Quit` last, each suffixed with its
+  live (rebindable) shortcut (an F-key alternate where one exists, else the
+  caret-ctrl chord `Quit · ^Q`). The panel toggles are feature-gated
+  (Info/Files/Tasks dropped when their panel feature is off; the same pills
+  are also dropped *together* when the footer is too narrow to fit the full
+  set (`pill_block_width` vs the footer width) — so the essential
+  Help/Theme/Settings/Quit pills never fall off). When the file viewer is open
+  its hints fill the space to their left.
   Pills are recorded as `ClickAction::Global(Action)` (a click runs
   `dispatch_action`, ignored while a modal is open). Every modal footer renders action buttons
   (Save/Cancel/Select/…) returned as `ui::ModalButtons` (each `ButtonHit`
@@ -1646,7 +1646,7 @@ backend dependency stays visible at each call site.
   `agent_picker_modal` drives the new-session flow.
 - **Central-pane tab strip.** The agent terminal, the per-session shell, and the
   code-review view share the central pane, surfaced as a clickable tab strip
-  (`Agent · Shell · F8 · Review · F7`) painted on the pane's **top border** by
+  (`Agent · Review · F7 · Shell · F8`) painted on the pane's **top border** by
   `App::draw_central_tabs`, which renders each tab as a filled **pill button**
   (`ui::render_pill`, the standalone form of the footer's `render_button_bar`
   chips) so it reads as clickable exactly like the Help/Tasks/… footer pills —

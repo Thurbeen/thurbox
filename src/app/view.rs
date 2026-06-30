@@ -681,18 +681,19 @@ impl App {
         // Shell toggle returns to it — so it shows no hint.
         let mut specs: Vec<(CentralTab, &str, Option<crate::session::Action>)> =
             vec![(CentralTab::Agent, "Agent", None)];
-        if self.features.shell_pane {
-            specs.push((
-                CentralTab::Shell,
-                "Shell",
-                Some(crate::session::Action::ToggleShell),
-            ));
-        }
+        // Ordered by F-key (Review · F7 before Shell · F8) to match the footer.
         if self.features.code_review {
             specs.push((
                 CentralTab::Review,
                 "Review",
                 Some(crate::session::Action::ToggleReview),
+            ));
+        }
+        if self.features.shell_pane {
+            specs.push((
+                CentralTab::Shell,
+                "Shell",
+                Some(crate::session::Action::ToggleShell),
             ));
         }
 
@@ -780,8 +781,7 @@ impl App {
                 file_viewer_open: self.show_file_viewer,
                 tasks_enabled: self.features.tasks,
                 file_viewer_enabled: self.features.file_viewer,
-                shell_pane_enabled: self.features.shell_pane,
-                code_review_enabled: self.features.code_review,
+                info_panel_enabled: self.features.info_panel,
                 keybindings: &self.keybindings,
             },
         );
