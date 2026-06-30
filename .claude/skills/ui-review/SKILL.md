@@ -82,10 +82,14 @@ continue the review with whatever PNGs exist — do not silently claim full cove
 ## Phase 3 — Report (native website docs page, default)
 
 By default this skill produces a **native page in the project website** under
-`website/docs/ui-review.html`, using the site's own nav / sidebar / CSS chrome, with
-the screenshots copied into `website/assets/ui-review/`. The page is wired into a
-**"Developer"** sidebar section (added once to every `website/docs/*.html` page and
-as a hub card on `website/docs/index.html`). This is what publishes to GitHub Pages.
+`website/docs/ui-review.html`, written as an **Eleventy content page** (front
+matter + bare body) that inherits the shared nav, the full `_includes/sidebar.njk`
+menu, and the CSS chrome from the `docs.njk` layout — so it never drifts from the
+other docs pages. The screenshots are copied into `website/assets/ui-review/`, and
+the review-specific widget styles live in `website/css/ui-review.css` (pulled in
+via the page's `extraCss`). The page is already wired into the shared sidebar's
+**"Developer"** section and a hub card on `website/docs/index.html`. This is what
+publishes to GitHub Pages.
 
 1. Write your Phase-2 findings to a JSON file (e.g. `target/ui-review/findings.json`)
    matching the schema documented at the top of `scripts/build_report.py`:
@@ -116,18 +120,17 @@ as a hub card on `website/docs/index.html`). This is what publishes to GitHub Pa
      --repo "$(git rev-parse --show-toplevel)"
    ```
 
-   It copies the PNGs into `website/assets/ui-review/`, writes
-   `website/docs/ui-review.html`, and prints the page path.
+   It copies the PNGs into `website/assets/ui-review/`, writes the Eleventy content
+   page `website/docs/ui-review.html`, and prints the page path. The sidebar entry
+   (`_includes/sidebar.njk` "Developer" section) and the `index.html` hub card are
+   already in place — the generator never edits other pages, so no per-page wiring
+   is needed.
 
-3. **First time only** — if the "Developer" section isn't yet in the sidebars, add it
-   to each `website/docs/*.html` (a `<h4>Developer</h4>` block linking
-   `ui-review.html`, right after the `Reference` block) and add a hub card on
-   `website/docs/index.html`. On later runs the page is just regenerated in place.
-
-4. Preview locally (`xdg-open website/docs/ui-review.html`), then **publish**: commit
-   the new/updated `website/**` files on a branch, push, and open a PR. The
-   `.github/workflows/pages.yml` workflow deploys `website/` to GitHub Pages on merge
-   to `main`. Use the `/ship` skill (or `gh pr create`) to open the PR.
+3. Preview locally by building the site (`npm ci && npx @11ty/eleventy --serve`,
+   then open the printed URL — a front-matter page won't render if opened directly),
+   then **publish**: commit the new/updated `website/**` files on a branch, push, and
+   open a PR. The `.github/workflows/pages.yml` workflow deploys `website/` to GitHub
+   Pages on merge to `main`. Use the `/ship` skill (or `gh pr create`) to open the PR.
 
 ### Standalone self-contained variant (optional)
 

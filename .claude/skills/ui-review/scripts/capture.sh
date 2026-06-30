@@ -144,11 +144,16 @@ trap cleanup EXIT INT TERM
 #   GlobalSearch: Ctrl+/    -> Ctrl+A   OpenSettings: Ctrl+, -> Ctrl+X
 #   ToggleReview: Ctrl+X/F7 -> Ctrl+R   (code-review view; remapping it here also
 #                                        frees its default Ctrl+X for OpenSettings)
+# RestartSession's default is also Ctrl+R, and a file-loaded override does NOT
+# steal a chord from another action — so without moving RestartSession off Ctrl+R
+# it shadows ToggleReview and the tape ends up restarting the session instead of
+# opening the diff. The tape never restarts, so park it on a chord it won't press.
 cat > "$CFG_DIR/keybindings.json" <<'EOF'
 {
   "GlobalSearch": ["ctrl+a"],
   "OpenSettings": ["ctrl+x"],
-  "ToggleReview": ["ctrl+r"]
+  "ToggleReview": ["ctrl+r"],
+  "RestartSession": ["ctrl+shift+r"]
 }
 EOF
 

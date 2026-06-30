@@ -37,7 +37,12 @@ Sleep 3s
 Screenshot "__SHOT_DIR__/01-session-list.png"
 
 # 11-14 — the native code-review view. The "review" session is seeded last, so
-# it's the one selected on launch; Ctrl+R (rebound ToggleReview) opens the diff.
+# it's the one selected on launch. ToggleReview is a terminal-passthrough chord,
+# so a bare Ctrl+R is forwarded to the agent while the terminal is focused — focus
+# the session list first (Ctrl+H, never passthrough) so Ctrl+R runs as a global
+# action and opens the diff for the selected "review" session.
+Ctrl+H
+Sleep 500ms
 Ctrl+R
 Sleep 1800ms
 # Move onto a changed line so the comment anchors to it.
