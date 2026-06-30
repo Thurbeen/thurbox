@@ -184,6 +184,8 @@ function Invoke-Install {
         Write-Warn "Added $InstallDir to your user PATH - restart your terminal for it to take effect."
     }
 
+    Write-Warn 'Windows support is experimental for now - expect rough edges and please report issues.'
+
     Write-Host "`nNext steps" -ForegroundColor Magenta
     Write-Step '* Install psmux (the Windows multiplexer): https://github.com/psmux/psmux'
     Write-Step '* Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, ...)'

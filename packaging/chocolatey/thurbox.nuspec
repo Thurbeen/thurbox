@@ -36,6 +36,9 @@ thurbox is a TUI for orchestrating multiple coding-agent CLI sessions
 Sessions survive crashes/restarts because the multiplexer keeps the processes
 alive.
 
+**Note:** Windows support is experimental for now — it sees less testing than
+Linux/macOS, so expect rough edges and please report issues.
+
 This package installs the prebuilt x86_64 Windows release binaries
 (`thurbox.exe` + `thurbox-cli.exe`) from the official GitHub Release and shims
 them onto your PATH.

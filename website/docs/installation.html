@@ -52,6 +52,15 @@ onThisPage:
           <pre data-wrap><code class="language-bash">VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <h3>Windows (PowerShell)</h3>
+          <div class="info-box warning">
+            <p>
+              <strong>Experimental.</strong>
+              Windows support is experimental for now &mdash; the core works
+              (psmux as the multiplexer, a native ConPTY backend, WSL distros as
+              remote hosts), but it sees less testing than Linux/macOS. Expect
+              rough edges and please report issues.
+            </p>
+          </div>
           <p>
             On native Windows the install script is PowerShell. It installs to
             <code>%LOCALAPPDATA%\Programs\thurbox</code>

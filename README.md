@@ -45,6 +45,12 @@ VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/mai
 
 **Windows (PowerShell):**
 
+> [!NOTE]
+> Windows support is **experimental** for now. The core works (psmux as the
+> multiplexer, a native ConPTY backend, WSL distros as remote hosts), but it
+> sees less testing than Linux/macOS — expect rough edges and please report
+> issues.
+
 ```powershell
 irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
 ```
