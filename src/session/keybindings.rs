@@ -735,6 +735,23 @@ impl KeyChord {
         parts.join("+")
     }
 
+    /// A compact one-token label for tight UI (footer pills, central-pane tabs):
+    /// `ctrl+<letter>` as `^X`, a bare F-key as `F7`, else the full
+    /// [`display`](Self::display) notation.
+    pub fn compact(&self) -> String {
+        if self.mods == KeyModifiers::CONTROL {
+            if let KeyCode::Char(c) = self.code {
+                return format!("^{}", c.to_ascii_uppercase());
+            }
+        }
+        if let KeyCode::F(n) = self.code {
+            if self.mods.is_empty() {
+                return format!("F{n}");
+            }
+        }
+        self.display()
+    }
+
     /// Parse `"ctrl+n"`, `"f1"`, `"shift+pageup"`, `"cmd+j"`. Case-insensitive.
     /// `cmd`/`super`/`command`/`win` all mean the SUPER modifier (`cmd` is the
     /// canonical display form).
@@ -798,6 +815,20 @@ impl KeyChord {
 /// at the same time.
 pub fn contexts_overlap(a: KeyContext, b: KeyContext) -> bool {
     a == KeyContext::Global || b == KeyContext::Global || a == b
+}
+
+/// The compact shortcut hint for an action's bound `chords`, preferring a bare
+/// **F-key** alternate over the primary chord — the F-key fits a tight footer
+/// and dispatches even from a focused terminal (where a `Ctrl+<letter>` is
+/// passed through to the agent CLI). Falls back to the first chord's
+/// [`compact`](KeyChord::compact) form; `None` when there is no binding. Shared
+/// by the footer pills and the central-pane tab strip so they never drift.
+pub fn compact_shortcut(chords: &[KeyChord]) -> Option<String> {
+    chords
+        .iter()
+        .find(|c| matches!(c.code, KeyCode::F(_)) && c.mods.is_empty())
+        .or_else(|| chords.first())
+        .map(KeyChord::compact)
 }
 
 /// A user-editable map from `Action` to one or more chords.
@@ -1697,5 +1728,37 @@ mod tests {
                 Some(Action::FileViewerPrevMatch)
             );
         }
+    }
+
+    #[test]
+    fn compact_renders_ctrl_fkey_and_fallback() {
+        assert_eq!(KeyChord::ctrl('x').compact(), "^X");
+        assert_eq!(KeyChord::function(7).compact(), "F7");
+        // Non-ctrl, non-F-key falls back to the full display notation.
+        assert_eq!(
+            KeyChord {
+                mods: KeyModifiers::NONE,
+                code: KeyCode::Enter,
+            }
+            .compact(),
+            "enter"
+        );
+    }
+
+    #[test]
+    fn compact_shortcut_prefers_the_f_key_alternate() {
+        // ToggleReview is bound to [Ctrl+X, F7]; the hint must surface F7 (it
+        // dispatches from a focused terminal where Ctrl+X is passed through).
+        assert_eq!(
+            compact_shortcut(KeyBindings::default().chords_for(Action::ToggleReview)),
+            Some("F7".to_string())
+        );
+        // QuitApp has no F-key, so it falls back to the primary chord's caret.
+        assert_eq!(
+            compact_shortcut(KeyBindings::default().chords_for(Action::QuitApp)),
+            Some("^Q".to_string())
+        );
+        // No binding → no hint.
+        assert_eq!(compact_shortcut(&[]), None);
     }
 }

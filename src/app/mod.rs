@@ -431,6 +431,9 @@ pub(crate) enum ClickAction {
     /// Jump the diff to the changed-file at this diff-file index (clicked in the
     /// changed-files list).
     ReviewFile(usize),
+    /// Select a central-pane view from the tab strip in the pane's top border
+    /// (Agent / Shell / Review). Dispatched by `activate_click_target`.
+    CentralTab(CentralTab),
 }
 
 /// One clickable region rendered this frame: its rect plus what a click on it
@@ -504,6 +507,17 @@ pub enum InputFocus {
 pub(crate) enum TerminalView {
     Claude,
     Shell,
+}
+
+/// The three mutually-exclusive central-pane views, surfaced as a clickable tab
+/// strip in the pane's top border. `Agent`/`Shell` map to [`TerminalView`];
+/// `Review` is the native code-review overlay. A tab click *selects* the view
+/// (see `App::select_central_tab`), unlike the keyboard toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CentralTab {
+    Agent,
+    Shell,
+    Review,
 }
 
 /// Holds a recently deleted session for undo (Ctrl+Z) support.
@@ -1974,44 +1988,106 @@ impl App {
     /// Toggle the terminal view between Claude and Shell for the active session.
     /// Lazily spawns the shell pane on first toggle.
     pub(crate) fn toggle_shell_view(&mut self) {
+        // A review overlays the central pane; F8/Ctrl+T leaves it straight to
+        // the shell (the user's "back to shell" expectation, same as the Shell
+        // tab) rather than silently flipping the hidden terminal view behind the
+        // review.
+        if self.active_review().is_some() {
+            self.select_central_tab(CentralTab::Shell);
+            return;
+        }
+        match self.active_terminal_view() {
+            TerminalView::Claude => self.show_shell_view(),
+            TerminalView::Shell => self.show_agent_view(),
+        }
+    }
+
+    /// Switch the active session's terminal view back to the agent CLI.
+    fn show_agent_view(&mut self) {
+        if let Some(sid) = self.active_session_id() {
+            self.session_terminal_views
+                .insert(sid, TerminalView::Claude);
+        }
+    }
+
+    /// Switch the active session's terminal view to its shell, creating the
+    /// shell pane on first use. Started in the same launch cwd as the agent (the
+    /// multi-repo workspace when there is one), so switching lands you there.
+    fn show_shell_view(&mut self) {
         let Some(session) = self.sessions.get(self.active_index) else {
             return;
         };
         let session_id = session.info.id;
-        let needs_shell = session.shell_pane.is_none();
+        if session.shell_pane.is_none() {
+            let (rows, cols) = self.content_area_size();
+            let Some(session) = self.active_session_mut() else {
+                // Active session removed concurrently — nothing to switch to.
+                return;
+            };
+            let shell_cwd = session_process_cwd(&session.info);
+            if let Err(e) = session.ensure_shell_pane(rows, cols, shell_cwd.as_deref()) {
+                error!("Failed to create shell pane: {e}");
+                self.set_error(format!("Failed to create shell: {e:#}"));
+                return;
+            }
+            self.save_state();
+        }
+        self.session_terminal_views
+            .insert(session_id, TerminalView::Shell);
+    }
 
-        let current = self
-            .session_terminal_views
-            .get(&session_id)
-            .copied()
-            .unwrap_or(TerminalView::Claude);
-
-        match current {
-            TerminalView::Claude => {
-                // Lazily create the shell pane if it doesn't exist. Start it in
-                // the same launch cwd as the agent (the multi-repo workspace when
-                // there is one), so switching to the terminal lands you there.
-                if needs_shell {
-                    let (rows, cols) = self.content_area_size();
-                    let Some(session) = self.active_session_mut() else {
-                        // Active session removed concurrently — nothing to toggle.
-                        return;
-                    };
-                    let shell_cwd = session_process_cwd(&session.info);
-                    if let Err(e) = session.ensure_shell_pane(rows, cols, shell_cwd.as_deref()) {
-                        error!("Failed to create shell pane: {e}");
-                        self.set_error(format!("Failed to create shell: {e:#}"));
-                        return;
-                    }
-                    self.save_state();
+    /// Select a central-pane view from the top-border tab strip. Unlike the
+    /// keyboard toggles this *selects* `tab` unambiguously: switching to
+    /// Agent/Shell closes any open review first, and Review opens the review if
+    /// it isn't already. Feature-gated tabs aren't rendered, so a click on a
+    /// disabled view can't arrive here.
+    pub(crate) fn select_central_tab(&mut self, tab: CentralTab) {
+        match tab {
+            CentralTab::Agent => {
+                if self.active_review().is_some() {
+                    self.close_code_review();
                 }
-                self.session_terminal_views
-                    .insert(session_id, TerminalView::Shell);
+                self.show_agent_view();
+                self.focus_central_terminal();
             }
-            TerminalView::Shell => {
-                self.session_terminal_views
-                    .insert(session_id, TerminalView::Claude);
+            CentralTab::Shell => {
+                if self.active_review().is_some() {
+                    self.close_code_review();
+                }
+                self.show_shell_view();
+                self.focus_central_terminal();
             }
+            CentralTab::Review => {
+                if self.active_review().is_none() {
+                    self.toggle_code_review();
+                }
+                // `toggle_code_review` can fail to open (e.g. no worktree); only
+                // grab focus when a review is actually present.
+                if self.active_review().is_some() && self.focus != InputFocus::CodeReview {
+                    self.focus = InputFocus::CodeReview;
+                    self.on_focus_changed();
+                }
+            }
+        }
+    }
+
+    /// Focus the central terminal pane (shared by the Agent/Shell tab clicks).
+    fn focus_central_terminal(&mut self) {
+        if self.focus != InputFocus::Terminal {
+            self.focus = InputFocus::Terminal;
+            self.on_focus_changed();
+        }
+    }
+
+    /// The central-pane tab currently shown: Review wins (it overlays the pane),
+    /// else the per-session terminal view.
+    pub(crate) fn active_central_tab(&self) -> CentralTab {
+        if self.active_review().is_some() {
+            CentralTab::Review
+        } else if self.active_terminal_view() == TerminalView::Shell {
+            CentralTab::Shell
+        } else {
+            CentralTab::Agent
         }
     }
 
@@ -2352,6 +2428,10 @@ impl App {
             ClickAction::ReviewFile(fi) => {
                 self.focus = InputFocus::ReviewFiles;
                 self.cr_jump_to_file(fi);
+                true
+            }
+            ClickAction::CentralTab(tab) => {
+                self.select_central_tab(tab);
                 true
             }
         }

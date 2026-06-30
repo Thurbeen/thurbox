@@ -316,6 +316,25 @@ impl Harness {
         });
         self
     }
+
+    /// Render, then click the central-pane tab strip's cell for `tab` (returns
+    /// false when no such tab was rendered, e.g. its feature is off).
+    fn click_central_tab(&mut self, tab: CentralTab) -> bool {
+        self.render();
+        let rect = self.app.click_targets.iter().find_map(|t| match t.action {
+            ClickAction::CentralTab(found) if found == tab => Some(t.rect),
+            _ => None,
+        });
+        let Some(rect) = rect else {
+            return false;
+        };
+        self.app.update(AppMessage::MouseClick {
+            x: rect.x + 1,
+            y: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        true
+    }
 }
 
 // ── Snapshot tests: stable, deterministic screens ────────────────────────────
@@ -1201,6 +1220,113 @@ async fn ctrl_t_opens_shell_pane_on_spawnable_backend() {
         h.app.session_terminal_views.get(&id),
         Some(&TerminalView::Shell),
         "the active session now shows its shell view"
+    );
+}
+
+#[tokio::test]
+async fn central_tab_strip_switches_agent_and_shell_views() {
+    // The top-border tab strip is mouse-driven: clicking Shell flips to the
+    // shell view (spawning the pane), clicking Agent flips back.
+    let mut h = Harness::spawnable(1);
+    let id = h.app.sessions[0].info.id;
+    assert_eq!(h.app.active_central_tab(), CentralTab::Agent);
+
+    assert!(h.click_central_tab(CentralTab::Shell), "Shell tab rendered");
+    assert!(
+        h.app.sessions[0].shell_pane.is_some(),
+        "clicking Shell spawned the shell pane"
+    );
+    assert_eq!(
+        h.app.session_terminal_views.get(&id),
+        Some(&TerminalView::Shell),
+        "clicking Shell selects the shell view"
+    );
+    assert_eq!(h.app.active_central_tab(), CentralTab::Shell);
+
+    assert!(h.click_central_tab(CentralTab::Agent), "Agent tab rendered");
+    assert_eq!(
+        h.app.session_terminal_views.get(&id),
+        Some(&TerminalView::Claude),
+        "clicking Agent returns to the agent view"
+    );
+    assert_eq!(h.app.active_central_tab(), CentralTab::Agent);
+}
+
+#[tokio::test]
+async fn f8_leaves_open_review_for_the_shell() {
+    // With a review overlaying the central pane, F8 (ToggleShell) must reach the
+    // global binding (the review's key capture lets it fall through) and land on
+    // the shell — not silently flip the hidden terminal view behind the review.
+    let mut h = Harness::spawnable(1);
+    let sid = h.app.active_session_id().unwrap();
+    h.app
+        .code_reviews
+        .insert(sid, super::code_review::CodeReviewState::for_test(sid, 2));
+    h.app.focus = InputFocus::CodeReview;
+    assert_eq!(h.app.active_central_tab(), CentralTab::Review);
+
+    h.func(8); // F8 = ToggleShell
+
+    assert!(
+        h.app.active_review().is_none(),
+        "F8 closes the open review instead of being swallowed"
+    );
+    assert_eq!(
+        h.app.active_central_tab(),
+        CentralTab::Shell,
+        "F8 lands on the shell view"
+    );
+    assert_eq!(
+        h.app.focus,
+        InputFocus::Terminal,
+        "focus moves out of the (now closed) review to the terminal"
+    );
+    assert!(
+        h.app.sessions[0].shell_pane.is_some(),
+        "the shell pane was spawned"
+    );
+}
+
+#[tokio::test]
+async fn central_tab_strip_renders_labels_and_shortcuts() {
+    // The strip paints Agent/Shell/Review with each toggle's shortcut hint in
+    // the pane's top border (Agent has no dedicated key, so no hint).
+    let mut h = Harness::spawnable(1);
+    let screen = h.render();
+    // The tab strip is the pane border row carrying the Review toggle hint `F7`
+    // (anchored on it to avoid the "…Agent Orchestrator" header banner). The
+    // F-key form is shown, not `^X`, since a focused terminal passes Ctrl chords
+    // through to the agent.
+    let top = screen.lines().find(|l| l.contains("F7")).unwrap_or("");
+    for needle in ["Agent", "Shell", "F8", "Review", "F7"] {
+        assert!(
+            top.contains(needle),
+            "central tab strip missing {needle:?}: {top:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn central_tab_strip_omits_feature_gated_tabs() {
+    // Shell/Review tabs are gated by their feature flags; Agent always shows.
+    let mut h = Harness::spawnable(1);
+    h.app.features.shell_pane = false;
+    h.app.features.code_review = false;
+    h.render();
+
+    let tabs: Vec<CentralTab> = h
+        .app
+        .click_targets
+        .iter()
+        .filter_map(|t| match t.action {
+            ClickAction::CentralTab(tab) => Some(tab),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tabs,
+        vec![CentralTab::Agent],
+        "only the Agent tab survives when Shell/Review features are off"
     );
 }
 

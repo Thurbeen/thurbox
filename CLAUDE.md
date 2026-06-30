@@ -1613,10 +1613,17 @@ backend dependency stays visible at each call site.
   **Clickable buttons** reuse the same registry: `ui::render_button_bar`
   draws filled "pill" buttons (` Label ` on a solid accent/gray fill, no
   brackets) and returns `ui::ButtonHit`es. The bottom status-bar footer
-  renders Help/Settings/Theme/Quit pills (always shown — when the file
-  viewer is open its hints fill the space to their left), recorded as
-  `ClickAction::Global(Action)` (a click runs `dispatch_action`, ignored
-  while a modal is open). Every modal footer renders action buttons
+  renders Help/Tasks/Files/Shell/Review/Settings/Theme/Quit pills, each
+  suffixed with its live (rebindable) shortcut (`Help · F1`, an F-key
+  alternate where one exists, else the caret-ctrl chord `Quit · ^Q`). The
+  panel/pane toggles are feature-gated (Tasks/Files dropped when their panel
+  feature is off; the Shell/Review *view-toggle* pills are also dropped
+  *together* when the footer is too narrow to fit the full set
+  (`pill_block_width` vs the footer width) — so the essential
+  Settings/Theme/Quit pills never fall off). When the file viewer is open its
+  hints fill the space to their left.
+  Pills are recorded as `ClickAction::Global(Action)` (a click runs
+  `dispatch_action`, ignored while a modal is open). Every modal footer renders action buttons
   (Save/Cancel/Select/…) returned as `ui::ModalButtons` (each `ButtonHit`
   paired with the key it replays) and recorded as
   `ClickAction::ModalButton { code, mods }`; `handle_modal_click` replays
@@ -1637,6 +1644,33 @@ backend dependency stays visible at each call site.
   `[features] mouse` in settings.toml — disabled, mouse capture is
   never enabled and the terminal keeps native mouse behavior.
   `agent_picker_modal` drives the new-session flow.
+- **Central-pane tab strip.** The agent terminal, the per-session shell, and the
+  code-review view share the central pane, surfaced as a clickable tab strip
+  (`Agent · Shell · F8 · Review · F7`) painted on the pane's **top border** by
+  `App::draw_central_tabs`, which renders each tab as a filled **pill button**
+  (`ui::render_pill`, the standalone form of the footer's `render_button_bar`
+  chips) so it reads as clickable exactly like the Help/Tasks/… footer pills —
+  the active view is the accent-filled "primary" pill, the rest neutral
+  "secondary" pills (hover reverses the fill via the shared `is_button` path).
+  Each tab carries its toggle's live shortcut hint, preferring the **F-key**
+  alternate
+  (`tab_shortcut`) — a focused agent terminal passes `Ctrl+<letter>` chords
+  through to the CLI (`Ctrl+X` is emacs's prefix key, so it never reaches
+  `ToggleReview`), whereas the F-key dispatches in every pane. Agent has no
+  dedicated key (the Shell toggle returns to it), so it shows no hint.
+  Shell/Review tabs are gated by their feature
+  flags. `central_tab_cells` lays out the on-border hitboxes (recorded as
+  `ClickAction::CentralTab(CentralTab::{Agent,Shell,Review})` **before** the
+  pane's whole-rect focus fallback so a tab click wins); a click runs
+  `App::select_central_tab`, which *selects* the view (closing any open review
+  when switching to Agent/Shell, opening it for Review) — distinct from the
+  keyboard `Ctrl+T`/`Ctrl+X` *toggles*. So the central pane's session-info title
+  (`terminal_view`/`code_review`) is **right-aligned** (via `title_top` +
+  `ui::title_style`) to leave the border's left free for the tabs. The F-keys
+  switch views from **any** view: `ToggleShell` is a `review_escape_chord` (so an
+  open review lets F8 fall through to the global binding instead of swallowing
+  it), and `toggle_shell_view` is review-aware — with a review open it closes it
+  and lands on the shell, mirroring the Shell tab.
 - **`cli/`** — `thurbox-cli` subcommand dispatch (headless
   session ops + scheduling + editor command).
 

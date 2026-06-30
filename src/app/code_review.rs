@@ -1166,6 +1166,10 @@ impl App {
                     | crate::session::Action::FocusBackward
                     | crate::session::Action::QuitApp
                     | crate::session::Action::ToggleReview
+                    // The sibling central-pane view: `ToggleShell` (F8) leaves
+                    // the review straight to the shell, mirroring how the
+                    // Shell tab does — so the F-keys switch views from anywhere.
+                    | crate::session::Action::ToggleShell
                     | crate::session::Action::ToggleHelp
                     | crate::session::Action::OpenSettings
                     | crate::session::Action::OpenThemePicker

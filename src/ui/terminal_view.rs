@@ -1,6 +1,7 @@
 use ratatui::{
     layout::{Margin, Rect},
     style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
@@ -52,7 +53,11 @@ pub fn render_terminal(
         }
     };
 
-    let block = focus_block(&title, level);
+    // The session-info title is right-aligned so the central-pane tab strip
+    // (Agent/Shell/Review), overlaid on the left of this same top border by the
+    // app layer, has room.
+    let block = focus_block("", level)
+        .title_top(Line::from(Span::styled(title, super::title_style(level))).right_aligned());
 
     let mut pseudo_term = PseudoTerminal::new(parser.screen())
         .block(block)
@@ -88,7 +93,6 @@ pub fn render_terminal(
 
 pub fn render_empty_terminal(frame: &mut Frame, area: Rect) {
     use ratatui::layout::{Alignment, Constraint, Direction, Layout};
-    use ratatui::text::{Line, Span};
 
     let block = Block::default()
         .title(" No Session ")

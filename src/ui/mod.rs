@@ -201,6 +201,25 @@ fn button_style(primary: bool) -> Style {
 /// than wrapped or clipped mid-glyph, so a narrow footer simply shows fewer
 /// buttons. The solid fill (not brackets) is what marks each label as a
 /// clickable button.
+/// Paint a single filled pill button (` label `, padded, on the solid
+/// primary/secondary fill) into `rect` — the standalone form of the chips
+/// [`render_button_bar`] packs, for callers that own their own layout (e.g. the
+/// central-pane tab strip painted on the pane border). `rect.width` should be
+/// the label width plus the two padding cells (` label `) so the fill spans the
+/// chip.
+pub fn render_pill(frame: &mut Frame, rect: Rect, label: &str, primary: bool) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {label} "),
+            button_style(primary),
+        ))),
+        rect,
+    );
+}
+
 pub fn render_button_bar(
     frame: &mut Frame,
     area: Rect,
@@ -509,30 +528,32 @@ pub enum FocusLevel {
 /// Focus is communicated by colour (bright accent vs plain accent vs gray)
 /// rather than border weight — every level uses rounded borders for a
 /// softer, opencode-style chrome.
-pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
+/// The title text style for a pane at the given focus level — shared by
+/// [`focus_block`] and callers that render a pane title themselves (e.g. a
+/// right-aligned session-info title alongside the central-pane tab strip).
+pub fn title_style(level: FocusLevel) -> Style {
     match level {
-        FocusLevel::Focused => Block::default()
-            .title(Line::from(Span::styled(title_text, Theme::focused_title())))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Theme::accent_bright())),
-        FocusLevel::Active => Block::default()
-            .title(Line::from(Span::styled(
-                title_text,
-                Style::default().fg(Theme::accent()),
-            )))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Theme::accent())),
-        FocusLevel::Inactive => Block::default()
-            .title(Line::from(Span::styled(
-                title_text,
-                Theme::unfocused_title(),
-            )))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Theme::border_unfocused())),
+        FocusLevel::Focused => Theme::focused_title(),
+        FocusLevel::Active => Style::default().fg(Theme::accent()),
+        FocusLevel::Inactive => Theme::unfocused_title(),
     }
+}
+
+/// The border style for a pane at the given focus level.
+fn border_style_for(level: FocusLevel) -> Style {
+    match level {
+        FocusLevel::Focused => Style::default().fg(Theme::accent_bright()),
+        FocusLevel::Active => Style::default().fg(Theme::accent()),
+        FocusLevel::Inactive => Style::default().fg(Theme::border_unfocused()),
+    }
+}
+
+pub fn focus_block(title_text: &str, level: FocusLevel) -> Block<'_> {
+    Block::default()
+        .title(Line::from(Span::styled(title_text, title_style(level))))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style_for(level))
 }
 
 /// Build a [`Block`] with focused or unfocused styling (backward compat).

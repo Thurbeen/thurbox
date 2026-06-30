@@ -55,7 +55,10 @@ pub(crate) fn render(
     let (add, del) = state.totals();
     let target = state.target.label(&state.repos, &state.commits);
     let title = format!(" Code review · {target}  +{add} -{del} ");
-    let block = focus_block(&title, level);
+    // Right-aligned so the app-layer central-pane tab strip (Agent/Shell/Review)
+    // overlaid on the left of this top border has room.
+    let block = focus_block("", level)
+        .title_top(Line::from(Span::styled(title, crate::ui::title_style(level))).right_aligned());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

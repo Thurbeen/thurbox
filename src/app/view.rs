@@ -22,8 +22,22 @@ use crate::ui::{
     terminal_view, theme_picker_modal, worktree_name_modal,
 };
 
-use super::{App, ClickAction, ClickTarget, InputFocus, ScrollTarget, ScrollbarHit, TerminalView};
+use super::{
+    App, CentralTab, ClickAction, ClickTarget, InputFocus, ScrollTarget, ScrollbarHit, TerminalView,
+};
 use crate::ui::scrollbar::ScrollbarGeom;
+
+/// One laid-out central-pane tab (Agent/Shell/Review) on the pane's top border:
+/// its on-border rect (click target + paint position), the display label (with
+/// any shortcut baked in, e.g. `"Review · F7"`), and whether it's the active
+/// view. Rendered as a filled pill via `ui::render_pill`, exactly like the
+/// footer buttons, so it reads as clickable.
+struct CentralTabCell {
+    tab: CentralTab,
+    rect: Rect,
+    label: String,
+    active: bool,
+}
 
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
@@ -104,6 +118,7 @@ impl App {
                         | ClickAction::SelectFileRow(_)
                         | ClickAction::Global(_)
                         | ClickAction::ReviewButton(_)
+                        | ClickAction::CentralTab(_)
                         | ClickAction::PaneField { .. }
                 )
             };
@@ -122,7 +137,10 @@ impl App {
         // fg/modifiers intact.
         let is_button = matches!(
             target.action,
-            ClickAction::Global(_) | ClickAction::ModalButton { .. } | ClickAction::ReviewButton(_)
+            ClickAction::Global(_)
+                | ClickAction::ModalButton { .. }
+                | ClickAction::ReviewButton(_)
+                | ClickAction::CentralTab(_)
         );
         let hover_bg = if is_button {
             Theme::accent_bright()
@@ -546,15 +564,24 @@ impl App {
             return;
         }
 
-        // The native code-review view takes over the central pane whenever the
-        // active session has one open — persisted per session like the shell
-        // view, so it survives session switches.
+        // Agent terminal / shell / code-review all share the central pane and a
+        // clickable tab strip in its top border. Record the tab click targets
+        // *before* the pane renders its own whole-rect focus fallback, so a tab
+        // click wins over a plain pane-focus click. The review overlay takes the
+        // pane whenever the active session has one open (persisted per session
+        // like the shell view, so it survives session switches).
+        let tabs = self.central_tab_cells(terminal);
+        for cell in &tabs {
+            self.record_click(cell.rect, ClickAction::CentralTab(cell.tab));
+        }
         if self.active_review().is_some() {
             self.render_code_review_pane(frame, terminal);
-            return;
+        } else {
+            self.render_terminal_pane(frame, terminal);
         }
-
-        self.render_terminal_pane(frame, terminal);
+        // Drawn last so it overlays the pane's top border (the right-aligned
+        // session-info title leaves the left free for the tabs).
+        self.draw_central_tabs(frame, &tabs);
     }
 
     /// Render the open code-review view into the central pane (dimmed when not
@@ -635,6 +662,84 @@ impl App {
         self.record_scrollbar(geom, ScrollTarget::Terminal);
     }
 
+    /// Lay out the central-pane tab strip (Agent / Shell / Review) along the top
+    /// border of `area` as filled pill buttons. Each cell carries its on-border
+    /// rect (click target + paint position), its display label (shortcut baked
+    /// in), and whether it's the active view. Packing mirrors `render_button_bar`
+    /// (` label ` chip = label+2 wide, one-space gaps) so the recorded hitboxes
+    /// match the pills `draw_central_tabs` paints. Shell/Review are gated by
+    /// their feature flags; cells stop before the right edge so they never run
+    /// into the right-aligned session-info title.
+    fn central_tab_cells(&self, area: Rect) -> Vec<CentralTabCell> {
+        // No tabs on the empty "No Session" screen, or when the pane is too
+        // narrow to hold even one.
+        if area.width < 6 || area.height == 0 || self.sessions.get(self.active_index).is_none() {
+            return Vec::new();
+        }
+        let active = self.active_central_tab();
+        // (tab, name, action-for-shortcut). Agent has no dedicated key — the
+        // Shell toggle returns to it — so it shows no hint.
+        let mut specs: Vec<(CentralTab, &str, Option<crate::session::Action>)> =
+            vec![(CentralTab::Agent, "Agent", None)];
+        if self.features.shell_pane {
+            specs.push((
+                CentralTab::Shell,
+                "Shell",
+                Some(crate::session::Action::ToggleShell),
+            ));
+        }
+        if self.features.code_review {
+            specs.push((
+                CentralTab::Review,
+                "Review",
+                Some(crate::session::Action::ToggleReview),
+            ));
+        }
+
+        // Pack pills left-to-right starting one cell in from the rounded corner,
+        // separated by a one-space gap (which shows the border between chips),
+        // matching `render_button_bar`.
+        let mut x = area.x + 1;
+        let limit = area.x + area.width.saturating_sub(1);
+        let mut cells = Vec::with_capacity(specs.len());
+        for (i, (tab, name, action)) in specs.into_iter().enumerate() {
+            let gap = u16::from(i > 0);
+            let shortcut = action
+                .and_then(|a| crate::session::compact_shortcut(self.keybindings.chords_for(a)));
+            let label = match shortcut {
+                Some(sc) => format!("{name} · {sc}"),
+                None => name.to_string(),
+            };
+            // Pill width = ` label ` (label + one pad cell each side), per
+            // `ui::button_width` for a hint-less `ButtonSpec`.
+            let width = label.chars().count() as u16 + 2;
+            if x + gap + width > limit {
+                break; // out of room — drop the rest rather than overrun the title
+            }
+            x += gap;
+            cells.push(CentralTabCell {
+                tab,
+                rect: Rect::new(x, area.y, width, 1),
+                label,
+                active: tab == active,
+            });
+            x += width;
+        }
+        cells
+    }
+
+    /// Paint the central-pane tab strip onto the top border row as filled pill
+    /// buttons (same look as the footer Help/Tasks/… pills, so they read as
+    /// clickable). The active view is the accent-filled "primary" pill; the rest
+    /// are neutral "secondary" pills. One-space gaps between them leave the
+    /// pane's border showing, and the right-aligned session-info title is
+    /// untouched.
+    fn draw_central_tabs(&self, frame: &mut Frame, cells: &[CentralTabCell]) {
+        for cell in cells {
+            crate::ui::render_pill(frame, cell.rect, &cell.label, cell.active);
+        }
+    }
+
     /// Render the bottom status-bar footer.
     fn render_footer(&mut self, frame: &mut Frame, footer: Rect) {
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
@@ -675,6 +780,8 @@ impl App {
                 file_viewer_open: self.show_file_viewer,
                 tasks_enabled: self.features.tasks,
                 file_viewer_enabled: self.features.file_viewer,
+                shell_pane_enabled: self.features.shell_pane,
+                code_review_enabled: self.features.code_review,
                 keybindings: &self.keybindings,
             },
         );
