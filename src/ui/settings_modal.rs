@@ -16,10 +16,24 @@ use crate::app::modals::SettingsField;
 use super::theme::Theme;
 use super::{key_hint_line, render_action_footer, render_modal_frame};
 
-/// Preferred modal width. Sized to fit the longest description plus the value
-/// column with a tidy gap, so values aren't flung to the far edge of a wide
-/// terminal. Clamped to the screen on narrow terminals.
+/// Default modal width. Sized to fit the value column with a tidy gap on a
+/// normal terminal. Clamped to the screen on narrow terminals.
 const MODAL_WIDTH: u16 = 66;
+
+/// Wider modal used on roomy (≥120-col) terminals so the longest field
+/// descriptions render in full instead of truncating with `…` — the value
+/// column stays the same width, the extra room all goes to the description.
+const MODAL_WIDTH_WIDE: u16 = 84;
+
+/// The modal width to use for a terminal `area_width` cols wide: the wide
+/// layout once there's room for it, the compact default otherwise.
+fn modal_width_for(area_width: u16) -> u16 {
+    if area_width >= 120 {
+        MODAL_WIDTH_WIDE
+    } else {
+        MODAL_WIDTH
+    }
+}
 
 /// A fixed `width × height` rect centered in `area` (clamped to it).
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -99,12 +113,13 @@ pub fn render_settings_modal(
     // key hints) is pinned to the bottom; the field list above it scroll-windows
     // around the active field when the modal is shorter than the content.
     let footer = footer_lines(state);
+    let width = modal_width_for(frame.area().width);
     // Build the rows first so the modal height matches the real content
     // (section headers, blank separators between sections, and field rows).
-    let rows = build_rows(state.modal, (MODAL_WIDTH - 2) as usize);
+    let rows = build_rows(state.modal, (width - 2) as usize);
     let desired = rows.len() as u16 + footer.len() as u16 + 2;
     let height = desired.min(frame.area().height.saturating_sub(2)).max(6);
-    let area = centered_rect(MODAL_WIDTH, height, frame.area());
+    let area = centered_rect(width, height, frame.area());
 
     let inner = render_modal_frame(frame, area, "Settings");
 
@@ -295,11 +310,19 @@ fn field_line<'a>(
         Style::default().fg(Theme::text_muted())
     };
     // Always reserve the marker column (2 cols) so value right-edges align on
-    // every row, restart-required or not.
-    let marker = if field.restart_required() {
-        " ⟳"
+    // every row, restart-required or not. The `⟳` glyph reuses the same
+    // accent-warning colour (bold) as the "some changes apply after restart"
+    // footer note, so the two read as the same signal — the old muted-gray
+    // glyph was nearly invisible. The reserved blank column stays muted (it
+    // paints nothing). `restart_required` is non-trivial, so compute it once.
+    let restart = field.restart_required();
+    let marker = if restart { " ⟳" } else { "  " };
+    let marker_style = if restart {
+        Style::default()
+            .fg(Theme::keybind_hint())
+            .add_modifier(Modifier::BOLD)
     } else {
-        "  "
+        Style::default().fg(Theme::text_muted())
     };
 
     // Columns: pointer(2) + keyword(keyword_width) + gap(1) + desc + pad +
@@ -329,6 +352,21 @@ fn field_line<'a>(
         Span::styled(desc, desc_style),
         Span::raw(" ".repeat(pad + value_pad)),
         Span::styled(value_str, value_style),
-        Span::styled(marker, Style::default().fg(Theme::text_muted())),
+        Span::styled(marker, marker_style),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modal_width_widens_only_on_roomy_terminals() {
+        // Below the 120-col threshold the compact default is used.
+        assert_eq!(modal_width_for(80), MODAL_WIDTH);
+        assert_eq!(modal_width_for(119), MODAL_WIDTH);
+        // At/above the threshold the wide layout gives descriptions more room.
+        assert_eq!(modal_width_for(120), MODAL_WIDTH_WIDE);
+        assert_eq!(modal_width_for(200), MODAL_WIDTH_WIDE);
+    }
 }

@@ -98,11 +98,13 @@ pub fn render_repo_picker_modal(
     );
 
     // Footer: focus-dependent key hints on the left, clickable `[ Done ]`
-    // (Enter) / `[ Cancel ]` (Esc) buttons on the right.
-    frame.render_widget(Paragraph::new(footer_line(state)), footer_area);
-    let buttons = super::render_action_footer(
+    // (Enter) / `[ Cancel ]` (Esc) buttons on the right. The hint is clipped to
+    // the space left of the pills so a wide hint row can't render underneath
+    // them (see `render_hint_action_footer`).
+    let buttons = super::render_hint_action_footer(
         frame,
         footer_area,
+        footer_line(state),
         (
             "Done",
             crossterm::event::KeyCode::Enter,

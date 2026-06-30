@@ -326,6 +326,44 @@ pub fn render_action_footer(
     modal_button_keys(hits, &[(code, mods), (KeyCode::Esc, KeyModifiers::NONE)])
 }
 
+/// Render a footer with a left-aligned `hint` line and right-aligned action
+/// buttons, reserving the buttons their own space so a long hint can never
+/// collide with them. The buttons are drawn first (right-packed via
+/// [`render_action_footer`]); the hint is then clipped to the space left of the
+/// leftmost button (minus a one-column gap), so it elides cleanly rather than
+/// rendering underneath the pills. Use this instead of painting a full-width
+/// hint `Paragraph` and the buttons over it whenever the hint can be wide (e.g.
+/// the repo picker's per-focus key hints).
+pub fn render_hint_action_footer(
+    frame: &mut Frame,
+    area: Rect,
+    hint: Line<'_>,
+    primary: (
+        &str,
+        crossterm::event::KeyCode,
+        crossterm::event::KeyModifiers,
+    ),
+    secondary_label: &str,
+) -> ModalButtons {
+    let buttons = render_action_footer(frame, area, primary, secondary_label);
+    let buttons_left = buttons
+        .iter()
+        .map(|(hit, _, _)| hit.rect.x)
+        .min()
+        .unwrap_or_else(|| area.right());
+    // One blank column between the hint and the pills; clip the hint to what
+    // remains so it never overlaps the buttons.
+    let hint_width = buttons_left
+        .saturating_sub(1)
+        .saturating_sub(area.x)
+        .min(area.width);
+    if hint_width > 0 {
+        let hint_area = Rect::new(area.x, area.y, hint_width, area.height);
+        frame.render_widget(Paragraph::new(hint), hint_area);
+    }
+    buttons
+}
+
 /// Render the standard selector-modal footer into the single-row `area`: a
 /// left-aligned `j/k navigate` hint plus right-aligned `[ Select ]` (Enter) /
 /// `[ Cancel ]` (Esc) buttons. Returns the buttons paired with their replay
@@ -1087,6 +1125,41 @@ mod tests {
         assert!(
             row.contains('…'),
             "left-aligned overflow marks dropped buttons with an ellipsis, got {row:?}"
+        );
+    }
+
+    #[test]
+    fn render_hint_action_footer_clips_hint_before_the_buttons() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let backend = ratatui::backend::TestBackend::new(40, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut buttons = Vec::new();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, 40, 1);
+                // A hint far wider than the space left of the right-packed pills.
+                let hint = Line::from("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+                buttons = render_hint_action_footer(
+                    f,
+                    area,
+                    hint,
+                    ("Done", KeyCode::Enter, KeyModifiers::NONE),
+                    "Cancel",
+                );
+            })
+            .unwrap();
+        let buttons_left = buttons.iter().map(|(h, _, _)| h.rect.x).min().unwrap();
+        let buf = terminal.backend().buffer();
+        // The cell directly before the leftmost pill is the reserved gap (blank),
+        // so the clipped hint never renders underneath a button.
+        assert!(buttons_left >= 2);
+        assert_eq!(buf[(buttons_left - 1, 0)].symbol(), " ");
+        let hint_cells: String = (0..buttons_left - 1)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect();
+        assert!(
+            hint_cells.starts_with('a'),
+            "the hint fills the space left of the gap, got {hint_cells:?}"
         );
     }
 
