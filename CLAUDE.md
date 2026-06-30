@@ -1409,8 +1409,27 @@ code_review`.
   diff line to select/comment, click footer buttons, drag the scrollbar,
   wheel-scroll. **tuicr nav keys**: `j`/`k` + arrows, PageUp/Down + `Ctrl+D`/`U`,
   `g`/`G`, `{`/`}` (or Tab) next/prev file, `[`/`]` next/prev hunk. Every footer
-  button is labelled with its key (`Comment·c`, `Send→Agent·e`, …) so the
-  shortcuts are discoverable; the changed-files column shows a nav-key legend.
+  button is labelled with its key (`Comment·c`, `Send→Agent·e`, `Find·/`, …) so
+  the shortcuts are discoverable; the changed-files column shows a nav-key legend.
+- **Find in diff (`/`).** A `/`-triggered find sub-mode (also the `Find·/` footer
+  button, and `/` from the changed-files pane) searches every visible row's text
+  — file paths, hunk headings, diff line bodies, comment bodies (case-insensitive
+  literal substring) — via the pure `CodeReviewState::{row_text,search_matches}`.
+  It **mirrors the file viewer's find**: a bar at the top of the diff shows the
+  `/`-prefixed query, the match position / count, and key hints; typing is
+  incremental (the selection jumps to the first match live); while typing,
+  `Enter`/`↓`/`Ctrl+N` step to the next match and `↑`/`Ctrl+P` the previous (all
+  staying in the input), `Tab` commits (the bar stays for highlighting), and after
+  committing `n`/`N` step matches relative to the cursor (`cr_search_step` scans
+  from the selection + wraps, like the file viewer's `next_match`). `Esc` clears
+  the search (a second `Esc` closes the review). Matched runs are highlighted in
+  place with the shared `ui::highlight` accent+underline emphasis (on a matched
+  diff line the literal hit replaces syntax colour for that line). State is
+  `CodeReviewState::search: Option<ReviewSearch>` (the displayed position is
+  derived from the selection, not stored), captured before the global keybinding
+  lookup like compose / the target picker. Side-by-side diff rows navigate but
+  aren't substring-highlighted (a v1 follow-up); folded (reviewed) files
+  contribute only their header to the search until expanded.
 - **Colours.** Dedicated theme keys `diff_added`/`diff_removed` (line fg) and
   `diff_added_bg`/`diff_removed_bg` (a subtle full-row tint) — added to
   `ThemePalette` (all 15 presets derive them; bg blended toward `app_bg` via

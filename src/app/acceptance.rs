@@ -1419,6 +1419,7 @@ fn open_minimal_review(h: &mut Harness) {
             commits: Vec::new(),
             host: None,
             target_picker: None,
+            search: None,
         },
     );
     h.app.focus = InputFocus::CodeReview;
@@ -1444,6 +1445,83 @@ fn review_toggle_key_closes_open_review() {
         InputFocus::CodeReview,
         "focus leaves the review when it closes"
     );
+}
+
+/// `/` opens find-in-diff (file-viewer pattern): typing jumps to the first
+/// match, `Tab` commits, `n`/`N` step matches relative to the cursor, and `Esc`
+/// clears the search before it closes the review.
+#[test]
+fn review_search_flow_finds_navigates_and_clears() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    let sid = h.app.sessions[0].info.id;
+    // Two files: src/f0.rs, src/f1.rs (each one added line).
+    h.app.code_reviews.insert(
+        sid,
+        crate::app::code_review::CodeReviewState::for_test(sid, 2),
+    );
+    h.app.focus = InputFocus::CodeReview;
+
+    // `/` enters the search sub-mode (capturing keys).
+    h.key(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(h
+        .app
+        .active_review()
+        .and_then(|cr| cr.search.as_ref())
+        .is_some_and(|s| s.editing));
+
+    // Type ".rs" → matches both file headers; selection jumps to the first.
+    for c in ['.', 'r', 's'] {
+        h.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let (first, second) = {
+        let cr = h.app.active_review().unwrap();
+        let s = cr.search.as_ref().unwrap();
+        assert_eq!(s.matches.len(), 2, "both file headers match '.rs'");
+        assert_eq!(cr.selected, s.matches[0], "jumps to the first match");
+        (s.matches[0], s.matches[1])
+    };
+
+    // Enter (while typing) steps to the next match without leaving the input.
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(h.app.active_review().unwrap().selected, second);
+    assert!(
+        h.app
+            .active_review()
+            .unwrap()
+            .search
+            .as_ref()
+            .unwrap()
+            .editing
+    );
+
+    // Tab commits: still open, no longer editing.
+    h.key(KeyCode::Tab, KeyModifiers::NONE);
+    assert!(h
+        .app
+        .active_review()
+        .and_then(|cr| cr.search.as_ref())
+        .is_some_and(|s| !s.editing));
+
+    // `n`/`N` step matches relative to the cursor (wrapping).
+    h.key(KeyCode::Char('n'), KeyModifiers::NONE);
+    assert_eq!(
+        h.app.active_review().unwrap().selected,
+        first,
+        "n from the last match wraps to the first"
+    );
+    h.key(KeyCode::Char('N'), KeyModifiers::NONE);
+    assert_eq!(
+        h.app.active_review().unwrap().selected,
+        second,
+        "N from the first match wraps to the last"
+    );
+
+    // Esc clears the search but keeps the review open; a second Esc closes it.
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.active_review().is_some());
+    assert!(h.app.active_review().unwrap().search.is_none());
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.active_review().is_none());
 }
 
 /// A review is per-session like the shell view: switching to another session

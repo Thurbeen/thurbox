@@ -67,9 +67,20 @@ pub(crate) fn render(
         };
     }
 
-    // Footer (buttons) is always the last row; the diff uses the rest.
+    // Footer (buttons) is always the last row; the diff uses the rest. A search
+    // bar, when open, takes the top row of what's left.
     let footer = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
-    let diff_area = Rect::new(inner.x, inner.y, inner.width, inner.height - 1);
+    let mut diff_area = Rect::new(inner.x, inner.y, inner.width, inner.height - 1);
+    if state.search.is_some() && diff_area.height > 1 {
+        let search_row = Rect::new(diff_area.x, diff_area.y, diff_area.width, 1);
+        diff_area = Rect::new(
+            diff_area.x,
+            diff_area.y + 1,
+            diff_area.width,
+            diff_area.height - 1,
+        );
+        render_search_bar(frame, search_row, state);
+    }
 
     let composing = state.compose.is_some();
     // The target picker, when open, replaces the diff body (keyboard-driven).
@@ -167,9 +178,22 @@ fn render_rows(
     // Line-number column width from the largest number on screen.
     let num_w = line_number_width(state);
 
+    // The active search query (lowercased) drives the in-row match highlight.
+    let query = state
+        .search
+        .as_ref()
+        .map(|s| s.query.to_lowercase())
+        .filter(|q| !q.trim().is_empty());
+
     let mut lines: Vec<Line> = Vec::with_capacity(end - start);
     for i in start..end {
-        lines.push(row_line(state, i, content.width as usize, num_w));
+        lines.push(row_line(
+            state,
+            i,
+            content.width as usize,
+            num_w,
+            query.as_deref(),
+        ));
     }
     frame.render_widget(Paragraph::new(lines), content);
 
@@ -202,8 +226,15 @@ fn line_number_width(state: &CodeReviewState) -> usize {
     max.to_string().len().max(2)
 }
 
-/// Build the styled `Line` for row `i`.
-fn row_line<'a>(state: &CodeReviewState, i: usize, width: usize, num_w: usize) -> Line<'a> {
+/// Build the styled `Line` for row `i`. `query` (lowercased, non-empty) is the
+/// active find-in-diff search, used to highlight literal match runs in the row.
+fn row_line<'a>(
+    state: &CodeReviewState,
+    i: usize,
+    width: usize,
+    num_w: usize,
+    query: Option<&str>,
+) -> Line<'a> {
     let selected = i == state.selected;
     let sel_style = |base: Style| {
         if selected {
@@ -214,19 +245,21 @@ fn row_line<'a>(state: &CodeReviewState, i: usize, width: usize, num_w: usize) -
     };
 
     match &state.rows[i] {
-        ReviewRow::FileHeader(fi) => file_header_line(state, *fi, width, &sel_style),
-        ReviewRow::HunkHeader(fi, hi) => hunk_header_line(state, *fi, *hi, width, &sel_style),
+        ReviewRow::FileHeader(fi) => file_header_line(state, *fi, width, query, &sel_style),
+        ReviewRow::HunkHeader(fi, hi) => {
+            hunk_header_line(state, *fi, *hi, width, query, &sel_style)
+        }
         ReviewRow::Line(fi, hi, li) => {
             let f = &state.files[*fi];
             let l = &f.hunks[*hi].lines[*li];
             if state.side_by_side {
                 side_by_side_line(l, width, num_w, &sel_style)
             } else {
-                unified_diff_line(f, l, width, num_w, selected, &sel_style)
+                unified_diff_line(f, l, width, num_w, selected, query, &sel_style)
             }
         }
         ReviewRow::Comment(id) | ReviewRow::Summary(id) => {
-            comment_line(state, *id, width, sel_style)
+            comment_line(state, *id, width, query, sel_style)
         }
         ReviewRow::SummaryHeader => Line::from(Span::styled(
             truncate("── Review summary (s to add) ──", width),
@@ -250,6 +283,7 @@ fn file_header_line<'a>(
     state: &CodeReviewState,
     fi: usize,
     width: usize,
+    query: Option<&str>,
     sel_style: &impl Fn(Style) -> Style,
 ) -> Line<'a> {
     let f = &state.files[fi];
@@ -293,10 +327,12 @@ fn file_header_line<'a>(
                     .add_modifier(Modifier::BOLD),
             ),
         ),
-        Span::styled(mid, sel_style(header)),
+    ];
+    spans.extend(highlight_text(mid, sel_style(header), query));
+    spans.extend([
         Span::styled(adds, sel_style(Style::default().fg(Theme::diff_added()))),
         Span::styled(dels, sel_style(Style::default().fg(Theme::diff_removed()))),
-    ];
+    ]);
     if !mark.is_empty() {
         spans.push(Span::styled(
             mark.to_string(),
@@ -314,6 +350,7 @@ fn hunk_header_line<'a>(
     fi: usize,
     hi: usize,
     width: usize,
+    query: Option<&str>,
     sel_style: &impl Fn(Style) -> Style,
 ) -> Line<'a> {
     let f = &state.files[fi];
@@ -331,14 +368,12 @@ fn hunk_header_line<'a>(
         "  @@ -{},{} +{},{} @@ {}{}",
         h.old_start, old_span, h.new_start, new_span, h.header, mark
     );
-    Line::from(Span::styled(
-        truncate(&text, width),
-        sel_style(
-            Style::default()
-                .fg(Theme::accent())
-                .add_modifier(Modifier::DIM),
-        ),
-    ))
+    let base = sel_style(
+        Style::default()
+            .fg(Theme::accent())
+            .add_modifier(Modifier::DIM),
+    );
+    Line::from(highlight_text(truncate(&text, width), base, query))
 }
 
 /// A unified-diff line: a `old new ±` gutter plus the syntax-highlighted body,
@@ -350,6 +385,7 @@ fn unified_diff_line<'a>(
     width: usize,
     num_w: usize,
     selected: bool,
+    query: Option<&str>,
     sel_style: &impl Fn(Style) -> Style,
 ) -> Line<'a> {
     let (sign, row_bg) = match l.kind {
@@ -371,18 +407,33 @@ fn unified_diff_line<'a>(
         gutter,
         sel_style(bg(Style::default().fg(Theme::text_muted()))),
     )];
-    let lang = crate::ui::syntax::lang_for(&f.path);
+    // When a search query hits this line, highlight the literal matches over the
+    // plain text (search clarity wins over syntax colour on the matched line);
+    // otherwise render the syntax-highlighted tokens as usual.
+    let truncated: String = l.text.chars().take(avail).collect();
+    let positions = query
+        .map(|q| match_positions(&truncated, q))
+        .unwrap_or_default();
     let mut used = 0usize;
-    for (tok, tcolor) in crate::ui::syntax::highlight(&l.text, &lang) {
-        if used >= avail {
-            break;
-        }
-        let tok: String = tok.chars().take(avail - used).collect();
-        used += tok.chars().count();
-        spans.push(Span::styled(
-            tok,
-            sel_style(bg(Style::default().fg(tcolor))),
+    if !positions.is_empty() {
+        used = truncated.chars().count();
+        let base = sel_style(bg(Style::default().fg(Theme::text_primary())));
+        spans.extend(crate::ui::highlight::highlighted_spans_owned(
+            &truncated, &positions, base,
         ));
+    } else {
+        let lang = crate::ui::syntax::lang_for(&f.path);
+        for (tok, tcolor) in crate::ui::syntax::highlight(&l.text, &lang) {
+            if used >= avail {
+                break;
+            }
+            let tok: String = tok.chars().take(avail - used).collect();
+            used += tok.chars().count();
+            spans.push(Span::styled(
+                tok,
+                sel_style(bg(Style::default().fg(tcolor))),
+            ));
+        }
     }
     // Pad so the row tint fills the full width.
     if used < avail {
@@ -398,6 +449,7 @@ fn comment_line<'a>(
     state: &CodeReviewState,
     id: i64,
     width: usize,
+    query: Option<&str>,
     sel_style: impl Fn(Style) -> Style,
 ) -> Line<'a> {
     let Some(c) = state.comment(id) else {
@@ -414,20 +466,20 @@ fn comment_line<'a>(
         &format!("{first}{more}"),
         width.saturating_sub(badge.chars().count()),
     );
-    Line::from(vec![
-        Span::styled(
-            badge,
-            sel_style(
-                Style::default()
-                    .fg(class_color(c.classification))
-                    .add_modifier(Modifier::BOLD),
-            ),
+    let mut spans = vec![Span::styled(
+        badge,
+        sel_style(
+            Style::default()
+                .fg(class_color(c.classification))
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            body,
-            sel_style(Style::default().fg(Theme::text_secondary())),
-        ),
-    ])
+    )];
+    spans.extend(highlight_text(
+        body,
+        sel_style(Style::default().fg(Theme::text_secondary())),
+        query,
+    ));
+    Line::from(spans)
 }
 
 /// Render one diff line as two side-by-side cells (old | new). One source line
@@ -516,7 +568,7 @@ pub(crate) fn render_files_list(
     let hint_row = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            truncate(" ↑↓ move · ↵ open · r seen", inner.width as usize),
+            truncate(" ↑↓ move · ↵ open · r seen · / find", inner.width as usize),
             Style::default().fg(Theme::text_muted()),
         ))),
         hint_row,
@@ -779,6 +831,7 @@ fn render_footer(
                 ButtonSpec::primary("Comment").with_hint("·c"),
                 ButtonSpec::primary("Send→Agent").with_hint("·e"),
                 ButtonSpec::secondary("Close").with_hint("·esc"),
+                ButtonSpec::secondary("Find").with_hint("·/"),
                 ButtonSpec::secondary("File").with_hint("·f"),
                 ButtonSpec::secondary("Summary").with_hint("·s"),
                 ButtonSpec::secondary("Reviewed").with_hint("·r"),
@@ -790,6 +843,7 @@ fn render_footer(
                 ReviewButton::Comment,
                 ReviewButton::SendToAgent,
                 ReviewButton::Close,
+                ReviewButton::Find,
                 ReviewButton::FileComment,
                 ReviewButton::Summary,
                 ReviewButton::MarkReviewed,
@@ -801,6 +855,85 @@ fn render_footer(
     };
     let hits = render_button_bar(frame, area, &specs, false);
     hits.into_iter().map(|h| (h, actions[h.index])).collect()
+}
+
+/// Byte offsets of every char inside a case-insensitive occurrence of `query`
+/// (already lowercased) within `text`. Non-overlapping, left-to-right. Feeds
+/// [`crate::ui::highlight::highlighted_spans_owned`] so search hits get the same
+/// accent+bold+underline emphasis as the fuzzy lists elsewhere in the app.
+fn match_positions(text: &str, query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let q: Vec<char> = query.chars().collect();
+    let (n, m) = (chars.len(), q.len());
+    let mut positions = Vec::new();
+    let mut i = 0;
+    while i + m <= n {
+        let hit = (0..m).all(|k| chars[i + k].1.to_lowercase().eq(q[k].to_lowercase()));
+        if hit {
+            positions.extend((0..m).map(|k| chars[i + k].0));
+            i += m;
+        } else {
+            i += 1;
+        }
+    }
+    positions
+}
+
+/// Spans for `text` styled with `base`, with literal `query` hits highlighted
+/// when `query` (lowercased, non-empty) is set and matches; otherwise a single
+/// plain span. Owned so the spans can outlive a per-row `String`.
+fn highlight_text(text: String, base: Style, query: Option<&str>) -> Vec<Span<'static>> {
+    if let Some(q) = query {
+        let positions = match_positions(&text, q);
+        if !positions.is_empty() {
+            return crate::ui::highlight::highlighted_spans_owned(&text, &positions, base);
+        }
+    }
+    vec![Span::styled(text, base)]
+}
+
+/// Render the find-in-diff search bar (the top row of the diff area while a
+/// search is open): the `/`-prefixed query (with a caret while typing) plus the
+/// match position/count and key hints, so the shortcut stays discoverable.
+fn render_search_bar(frame: &mut Frame, area: Rect, state: &CodeReviewState) {
+    let Some(s) = state.search.as_ref() else {
+        return;
+    };
+    let style = Style::default().fg(Theme::search_bar());
+    let total = s.matches.len();
+    // The "current" position is derived from the selection (like the file
+    // viewer's `current_match_index`), so it stays correct after `n`/`N` or a
+    // plain `j`/`k` move; 0 when the cursor isn't on a match.
+    let current = s
+        .matches
+        .iter()
+        .position(|&i| i == state.selected)
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let count = if s.query.trim().is_empty() {
+        String::new()
+    } else if total == 0 {
+        "  no matches".to_string()
+    } else {
+        format!("  {current}/{total}")
+    };
+    let caret = if s.editing { "█" } else { "" };
+    let hint = if s.editing {
+        "   ↵/↓ next · ↑ prev · tab done · esc cancel"
+    } else {
+        "   n next · N prev · esc clear"
+    };
+    let text = format!("/{}{caret}{count}{hint}", s.query);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate(&text, area.width as usize),
+            style,
+        ))),
+        area,
+    );
 }
 
 /// Truncate `s` to `width` display columns (char-based; good enough for the
@@ -876,6 +1009,7 @@ mod tests {
             commits: Vec::new(),
             host: None,
             target_picker: None,
+            search: None,
         };
         s.rebuild_rows();
         s
@@ -973,6 +1107,46 @@ mod tests {
         assert_eq!(file_indices.len(), 3);
         assert!(
             file_indices.contains(&0) && file_indices.contains(&1) && file_indices.contains(&2)
+        );
+    }
+
+    #[test]
+    fn match_positions_finds_case_insensitive_runs() {
+        // "Foo bar foo" with query "foo" → two non-overlapping matches, each
+        // contributing one byte offset per char (3 chars → 3 offsets).
+        let pos = match_positions("Foo bar foo", "foo");
+        assert_eq!(pos, vec![0, 1, 2, 8, 9, 10]);
+        // No match → empty; empty query → empty.
+        assert!(match_positions("abc", "z").is_empty());
+        assert!(match_positions("abc", "").is_empty());
+    }
+
+    #[test]
+    fn renders_search_bar_and_highlights_match() {
+        let mut state = demo_state();
+        state.search = Some(crate::app::code_review::ReviewSearch {
+            query: "ctx".to_string(),
+            editing: true,
+            matches: state.search_matches("ctx"),
+        });
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| {
+            let area = Rect::new(0, 0, 80, 20);
+            let _ = render(f, area, &mut state, FocusLevel::Focused);
+        })
+        .unwrap();
+        // The search bar prints the `/`-prefixed query somewhere on screen.
+        let buf = term.backend().buffer();
+        let mut screen = String::new();
+        for y in 0..20 {
+            for x in 0..80 {
+                screen.push_str(buf[(x, y)].symbol());
+            }
+            screen.push('\n');
+        }
+        assert!(
+            screen.contains("/ctx"),
+            "search bar shows the query: {screen}"
         );
     }
 

@@ -71,6 +71,8 @@ pub(crate) enum ReviewButton {
     ToggleView,
     /// Open the review-target picker (branch / working / per-commit).
     Target,
+    /// Open the find-in-diff search.
+    Find,
 }
 
 /// One rendered row in the flattened review view (diff + interleaved comments +
@@ -93,6 +95,24 @@ impl ReviewRow {
     pub(crate) fn is_selectable(&self) -> bool {
         !matches!(self, ReviewRow::Info(_))
     }
+}
+
+/// In-review text search (the `/`-triggered find-in-diff sub-mode), mirroring
+/// the file viewer's find. Matches rows whose text — file paths, hunk headers,
+/// diff line bodies, and comment bodies — contains the query (case-insensitive).
+/// While [`Self::editing`] every key edits the query (the selection jumps to the
+/// first match as you type); `Enter`/`↓`/`Ctrl+N` step to the next match, `↑`/
+/// `Ctrl+P` the previous, and `Tab` commits — after which the bar stays for
+/// highlighting and `n`/`N` step matches just like the file viewer.
+pub(crate) struct ReviewSearch {
+    /// The query being typed (append-only editing, like the file viewer).
+    pub query: String,
+    /// Whether the query line is still being typed (captures all keys).
+    pub editing: bool,
+    /// Matching row indices (into [`CodeReviewState::rows`]), in row order. The
+    /// "current" position shown in the bar is derived from the selection, so
+    /// `n`/`N` always step relative to where the cursor actually is.
+    pub matches: Vec<usize>,
 }
 
 /// In-progress comment composition (an in-view sub-mode of the review).
@@ -139,6 +159,8 @@ pub(crate) struct CodeReviewState {
     pub host: Option<HostDef>,
     /// The open target picker, if any.
     pub target_picker: Option<TargetPickerState>,
+    /// The open find-in-diff search, if any (see [`ReviewSearch`]).
+    pub search: Option<ReviewSearch>,
 }
 
 impl ReviewTarget {
@@ -268,6 +290,10 @@ impl CodeReviewState {
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
         }
+        // Row indices shifted (a fold toggle, a new comment) — refresh any open
+        // search's match set so `n`/`N` and the highlight stay anchored to live
+        // rows. Selection is left where the caller put it.
+        self.refresh_search_matches();
     }
 
     /// Append one file's rows: the header, then (unless folded) its file-level
@@ -303,6 +329,60 @@ impl CodeReviewState {
         let add = self.files.iter().map(DiffFile::added_count).sum();
         let del = self.files.iter().map(DiffFile::deleted_count).sum();
         (add, del)
+    }
+
+    /// The searchable text of a row: the file path, the hunk section heading,
+    /// the diff line body, or the comment body. Drives both `/` search matching
+    /// and the in-row match highlight, so the two never disagree about what a
+    /// row "contains".
+    pub(crate) fn row_text(&self, row: &ReviewRow) -> Option<String> {
+        match row {
+            ReviewRow::FileHeader(fi) => self.files.get(*fi).map(|f| f.path.clone()),
+            ReviewRow::HunkHeader(fi, hi) => self
+                .files
+                .get(*fi)
+                .and_then(|f| f.hunks.get(*hi))
+                .map(|h| h.header.clone()),
+            ReviewRow::Line(fi, hi, li) => self
+                .files
+                .get(*fi)
+                .and_then(|f| f.hunks.get(*hi))
+                .and_then(|h| h.lines.get(*li))
+                .map(|l| l.text.clone()),
+            ReviewRow::Comment(id) | ReviewRow::Summary(id) => {
+                self.comment(*id).map(|c| c.body.clone())
+            }
+            ReviewRow::SummaryHeader | ReviewRow::Info(_) => None,
+        }
+    }
+
+    /// Row indices (into [`Self::rows`], in order) whose [`Self::row_text`]
+    /// contains `query` case-insensitively. Empty/whitespace query → no matches.
+    /// Pure so the search is unit-testable independent of [`App`].
+    pub(crate) fn search_matches(&self, query: &str) -> Vec<usize> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        (0..self.rows.len())
+            .filter(|&i| {
+                self.row_text(&self.rows[i])
+                    .is_some_and(|t| t.to_lowercase().contains(&q))
+            })
+            .collect()
+    }
+
+    /// Refresh the open search's match set against the current [`Self::rows`]
+    /// (no-op when no search is open). Called after the query changes and after
+    /// the rows are rebuilt so `n`/`N` + the highlight stay anchored to live rows.
+    pub(crate) fn refresh_search_matches(&mut self) {
+        let Some(query) = self.search.as_ref().map(|s| s.query.clone()) else {
+            return;
+        };
+        let matches = self.search_matches(&query);
+        if let Some(s) = self.search.as_mut() {
+            s.matches = matches;
+        }
     }
 }
 
@@ -410,6 +490,7 @@ impl App {
             commits,
             host,
             target_picker: None,
+            search: None,
         };
         // Install the bare state for this session, then load comments + marks +
         // build rows through the single shared path (`reload_review_data`).
@@ -662,11 +743,129 @@ impl App {
         }
     }
 
-    /// Rows that fit in the diff viewport (excluding the title + footer chrome).
+    /// Rows that fit in the diff viewport (excluding the title + footer chrome,
+    /// and the search bar when it is open).
     fn code_review_viewport(&self) -> usize {
-        // Central pane height minus the block border (2) and the footer bar (1).
+        // Central pane height minus the block border (2) and the footer bar (1),
+        // minus the search bar's row when a search is open.
         let (rows, _) = self.content_area_size();
-        (rows as usize).saturating_sub(3)
+        let search = usize::from(self.active_review().is_some_and(|cr| cr.search.is_some()));
+        (rows as usize).saturating_sub(3 + search)
+    }
+
+    // ── Search ───────────────────────────────────────────────────────────────
+
+    /// Open the find-in-diff search (`/`), capturing keystrokes into the query
+    /// until `Tab`/`Esc`. A fresh query starts empty.
+    pub(crate) fn cr_start_search(&mut self) {
+        if let Some(cr) = self.active_review_mut() {
+            cr.search = Some(ReviewSearch {
+                query: String::new(),
+                editing: true,
+                matches: Vec::new(),
+            });
+        }
+    }
+
+    /// Close the search entirely (drops the query + highlights).
+    pub(crate) fn cr_close_search(&mut self) {
+        if let Some(cr) = self.active_review_mut() {
+            cr.search = None;
+        }
+    }
+
+    /// `Tab`: commit the query — stop editing but keep the search open so the
+    /// matches stay highlighted and `n`/`N` step. An empty query just closes it
+    /// (mirrors the file viewer hiding its bar on an empty commit).
+    fn cr_commit_search(&mut self) {
+        let Some(cr) = self.active_review_mut() else {
+            return;
+        };
+        match cr.search.as_mut() {
+            Some(s) if s.query.trim().is_empty() => cr.search = None,
+            Some(s) => s.editing = false,
+            None => {}
+        }
+    }
+
+    /// Edit the query (append a char or backspace), then re-match and jump the
+    /// selection to the first match — the file viewer's incremental search.
+    fn cr_edit_search(&mut self, push: Option<char>) {
+        if let Some(cr) = self.active_review_mut() {
+            if let Some(s) = cr.search.as_mut() {
+                match push {
+                    Some(c) => s.query.push(c),
+                    None => {
+                        s.query.pop();
+                    }
+                }
+            }
+            cr.refresh_search_matches();
+        }
+        self.cr_jump_first_match();
+    }
+
+    /// Move the selection to the first match, if any.
+    fn cr_jump_first_match(&mut self) {
+        if let Some(cr) = self.active_review_mut() {
+            if let Some(&first) = cr.search.as_ref().and_then(|s| s.matches.first()) {
+                cr.selected = first;
+                cr.ensure_visible();
+            }
+        }
+    }
+
+    /// Step to the next/previous match (`n`/`N`, `Enter`/arrows while typing),
+    /// scanning from the current selection and wrapping — so it always moves
+    /// relative to the cursor, exactly like the file viewer's `next_match`.
+    pub(crate) fn cr_search_step(&mut self, forward: bool) {
+        let Some(cr) = self.active_review_mut() else {
+            return;
+        };
+        let Some(s) = cr.search.as_ref() else {
+            return;
+        };
+        if s.matches.is_empty() {
+            return;
+        }
+        let next = if forward {
+            // First match strictly after the selection, else wrap to the first.
+            s.matches
+                .iter()
+                .find(|&&i| i > cr.selected)
+                .copied()
+                .or_else(|| s.matches.first().copied())
+        } else {
+            // Last match strictly before the selection, else wrap to the last.
+            s.matches
+                .iter()
+                .rev()
+                .find(|&&i| i < cr.selected)
+                .copied()
+                .or_else(|| s.matches.last().copied())
+        };
+        if let Some(sel) = next {
+            cr.selected = sel;
+            cr.ensure_visible();
+        }
+    }
+
+    /// Key handling while the search query line is being typed, mirroring the
+    /// file viewer: `Enter`/`↓`/`Ctrl+N` next match, `↑`/`Ctrl+P` previous (all
+    /// stay in the input), `Tab` commits, `Esc` cancels, `Backspace`/chars edit.
+    fn handle_review_search_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        match code {
+            KeyCode::Esc => self.cr_close_search(),
+            KeyCode::Enter | KeyCode::Down => self.cr_search_step(true),
+            KeyCode::Up => self.cr_search_step(false),
+            KeyCode::Tab => self.cr_commit_search(),
+            KeyCode::Char('n') if ctrl => self.cr_search_step(true),
+            KeyCode::Char('p') if ctrl => self.cr_search_step(false),
+            KeyCode::Backspace => self.cr_edit_search(None),
+            KeyCode::Char(c) if !ctrl => self.cr_edit_search(Some(c)),
+            _ => {}
+        }
     }
 
     // ── Comments ─────────────────────────────────────────────────────────────
@@ -948,6 +1147,7 @@ impl App {
             ReviewButton::CycleClass => self.cr_compose_cycle_class(true),
             ReviewButton::ToggleView => self.cr_toggle_side_by_side(),
             ReviewButton::Target => self.cr_open_target_picker(),
+            ReviewButton::Find => self.cr_start_search(),
         }
     }
 
@@ -1001,6 +1201,14 @@ impl App {
             self.handle_review_compose_key(code, mods);
             return true;
         }
+        // The search query line, while being typed, captures all keys.
+        let searching = self
+            .active_review()
+            .is_some_and(|cr| cr.search.as_ref().is_some_and(|s| s.editing));
+        if searching {
+            self.handle_review_search_key(code, mods);
+            return true;
+        }
 
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         // Ctrl+D / Ctrl+U half-page (pager convention). Handled before the guard
@@ -1020,7 +1228,15 @@ impl App {
             return true;
         }
         match code {
+            // Esc clears an active (confirmed) search before closing the review,
+            // so a stray `/` is one keystroke to undo.
+            KeyCode::Esc if self.active_review().is_some_and(|cr| cr.search.is_some()) => {
+                self.cr_close_search()
+            }
             KeyCode::Esc => self.close_code_review(),
+            KeyCode::Char('/') => self.cr_start_search(),
+            KeyCode::Char('n') => self.cr_search_step(true),
+            KeyCode::Char('N') => self.cr_search_step(false),
             KeyCode::Down | KeyCode::Char('j') => self.cr_move(1),
             KeyCode::Up | KeyCode::Char('k') => self.cr_move(-1),
             KeyCode::PageDown => self.cr_page(true),
@@ -1103,6 +1319,12 @@ impl App {
             }
             KeyCode::Char('r') => self.cr_toggle_reviewed(false),
             KeyCode::Char('R') => self.cr_toggle_reviewed(true),
+            // `/` searches the diff: open the find sub-mode and drop into the
+            // diff pane, which the search input owns.
+            KeyCode::Char('/') => {
+                self.cr_start_search();
+                self.focus = InputFocus::CodeReview;
+            }
             _ => {}
         }
         true
@@ -1345,6 +1567,7 @@ impl CodeReviewState {
             commits: Vec::new(),
             host: None,
             target_picker: None,
+            search: None,
         };
         s.rebuild_rows();
         s
@@ -1409,6 +1632,7 @@ mod tests {
             commits: Vec::new(),
             host: None,
             target_picker: None,
+            search: None,
         };
         s.rebuild_rows();
         s
@@ -1742,6 +1966,74 @@ mod tests {
         let orphan = vec![line_comment(9, "gone.rs", 1, Classification::Note, "n")];
         let md = review_markdown(&[sample_file()], &orphan).unwrap();
         assert!(!md.contains("gone.rs"), "orphan file omitted: {md}");
+    }
+
+    #[test]
+    fn search_matches_diff_text_paths_and_comments() {
+        // sample_file: src/foo.rs with a "ctx" context line + an "added" line.
+        let s = state_with(
+            vec![sample_file()],
+            vec![line_comment(
+                1,
+                "src/foo.rs",
+                2,
+                Classification::Note,
+                "look here",
+            )],
+        );
+        // Diff line body.
+        let added: Vec<String> = s
+            .search_matches("added")
+            .iter()
+            .filter_map(|&i| s.row_text(&s.rows[i]))
+            .collect();
+        assert!(added.iter().any(|t| t == "added"));
+        // File path (case-insensitive).
+        assert!(!s.search_matches("FOO.RS").is_empty());
+        // Comment body.
+        assert!(s
+            .search_matches("look")
+            .iter()
+            .any(|&i| matches!(s.rows[i], ReviewRow::Comment(1))));
+        // No matches for absent text, and an empty/whitespace query matches nothing.
+        assert!(s.search_matches("zzz-nope").is_empty());
+        assert!(s.search_matches("   ").is_empty());
+    }
+
+    #[test]
+    fn refresh_search_matches_reanchors_after_rebuild() {
+        // A reviewed file folds to just its header on rebuild, so a match that
+        // lived on a now-hidden line must drop out of the refreshed match set.
+        let mut s = state_with(vec![sample_file()], vec![]);
+        s.search = Some(ReviewSearch {
+            query: "added".to_string(),
+            editing: false,
+            matches: Vec::new(),
+        });
+        s.refresh_search_matches();
+        assert_eq!(
+            s.search.as_ref().unwrap().matches.len(),
+            1,
+            "the 'added' diff line matches while the file is expanded"
+        );
+
+        // Folding the file (mark reviewed) hides its lines; rebuild must refresh
+        // the matches so none point at a vanished row.
+        s.reviewed_files.insert("src/foo.rs".into());
+        s.rebuild_rows();
+        assert!(
+            s.search.as_ref().unwrap().matches.is_empty(),
+            "the hidden line no longer matches after the file folds"
+        );
+    }
+
+    #[test]
+    fn search_matches_are_in_row_order() {
+        let s = state_with(vec![sample_file()], vec![]);
+        // "ctx" and "added" both contain no shared substring; query "d" hits the
+        // "added" line. Ensure indices are ascending.
+        let m = s.search_matches("d");
+        assert!(m.windows(2).all(|w| w[0] < w[1]));
     }
 
     #[test]
