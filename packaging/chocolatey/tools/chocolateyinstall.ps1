@@ -23,3 +23,12 @@ $packageArgs = @{
 # package's tools dir; Chocolatey auto-shims the .exe files onto PATH. The
 # extensionless LICENSE is ignored by shimming.
 Install-ChocolateyZipPackage @packageArgs
+
+# thurbox drives psmux (a native-Windows tmux clone) as its session backend.
+# There is no Chocolatey package for psmux, so it can't be a hard <dependency>;
+# warn at install time if it isn't already on PATH (UX hint, never fatal).
+if (-not (Get-Command 'psmux' -ErrorAction SilentlyContinue)) {
+  Write-Warning ("thurbox needs psmux (a native-Windows tmux clone) on your PATH " +
+    "to run sessions, and it was not found. Install it from " +
+    "https://github.com/psmux/psmux and reopen your terminal.")
+}

@@ -28,7 +28,8 @@ x86_64 build and runs it under x64 emulation (matching
   multiplexer thurbox drives (a drop-in tmux clone). There is **no Chocolatey
   package for psmux**, so it cannot be declared as a package `<dependencies>`
   entry; install it separately. This is documented in the package
-  `<description>`.
+  `<description>`, and `chocolateyinstall.ps1` emits a `Write-Warning` at
+  install time when `psmux` isn't found on `PATH`.
 - A coding-agent CLI (claude, codex, antigravity, opencode, aider, …) on your PATH.
 
 ## Test locally
