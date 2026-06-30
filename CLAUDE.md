@@ -1907,7 +1907,12 @@ Feature flags that gate UI panels (`tasks`, `file_viewer`, `info_panel`,
 `global_search`, `shell_pane`, `code_review`, `soft_delete`) are read from `App.features`
 every frame, so `submit_settings_panel` copies the draft's flags into
 `self.features` (via `App::apply_live_settings`) and they take effect
-immediately. Everything else is read once at startup from the write-once
+immediately. `apply_live_settings` also runs `enforce_feature_visibility`,
+which tears down any surface a now-disabled live flag left open (the `show_*`
+panel toggles, a session's open shell view, an open code review) and moves
+focus off it — otherwise the panel would keep rendering with its tab/footer
+affordance gone. Each branch only forces the *hidden* state, so re-enabling a
+flag never re-opens anything. Everything else is read once at startup from the write-once
 `settings::global()` `OnceLock` (which can't be re-applied in-process):
 those rows are marked `⟳`, and a save that changes one toasts "some changes
 apply after restart".

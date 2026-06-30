@@ -1310,25 +1310,79 @@ async fn central_tab_strip_renders_labels_and_shortcuts() {
 
 #[tokio::test]
 async fn central_tab_strip_omits_feature_gated_tabs() {
-    // Shell/Review tabs are gated by their feature flags; Agent always shows.
+    // Shell/Review tabs are gated by their feature flags. With both off, only
+    // the Agent pill would remain — a tab strip you can't switch away from — so
+    // the whole strip is suppressed rather than advertising a lone dead tab.
     let mut h = Harness::spawnable(1);
+    let collect_tabs = |app: &super::App| -> Vec<CentralTab> {
+        app.click_targets
+            .iter()
+            .filter_map(|t| match t.action {
+                ClickAction::CentralTab(tab) => Some(tab),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Only one alternate view gated off → the strip stays (Agent + the other).
+    h.app.features.shell_pane = false;
+    h.app.features.code_review = true;
+    h.render();
+    assert_eq!(
+        collect_tabs(&h.app),
+        vec![CentralTab::Agent, CentralTab::Review],
+        "Review survives when only Shell is gated off"
+    );
+
+    // Both alternate views gated off → no tab strip at all.
     h.app.features.shell_pane = false;
     h.app.features.code_review = false;
     h.render();
+    assert!(
+        collect_tabs(&h.app).is_empty(),
+        "the lone Agent tab is dropped when Shell and Review are both off"
+    );
+}
 
-    let tabs: Vec<CentralTab> = h
-        .app
-        .click_targets
-        .iter()
-        .filter_map(|t| match t.action {
-            ClickAction::CentralTab(tab) => Some(tab),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        tabs,
-        vec![CentralTab::Agent],
-        "only the Agent tab survives when Shell/Review features are off"
+/// The F2 info panel lists upcoming automation runs. When the `automations`
+/// feature is off the TUI never fires those schedules (and the pane is hidden),
+/// so the info panel must not surface them either — even though the cache is
+/// still loaded from the DB.
+#[tokio::test]
+async fn info_panel_hides_automations_when_feature_off() {
+    use crate::session::{Automation, AutomationAction, AutomationSchedule};
+    let mut h = Harness::spawnable(1);
+    h.app.show_info_panel = true;
+    let far_future = crate::sync::current_time_millis() + 3_600_000;
+    h.app.automation_ui.cached_automations = vec![Automation {
+        id: 1,
+        name: "infopanelnightly".into(),
+        enabled: true,
+        schedule: AutomationSchedule::Once { at: 0 },
+        timezone: None,
+        action: AutomationAction::Send {
+            session_id: SessionId::default(),
+        },
+        prompt: "p".into(),
+        created_at: 0,
+        updated_at: 0,
+        last_run_at: None,
+        next_run_at: Some(far_future),
+    }];
+
+    // Feature on: the info panel's automations section lists it.
+    h.app.features.automations = true;
+    assert!(
+        h.render().contains("infopanelnightly"),
+        "info panel surfaces the upcoming automation when the feature is on"
+    );
+
+    // Feature off: the pane is hidden *and* the info-panel section is dropped,
+    // so the automation appears nowhere.
+    h.app.features.automations = false;
+    assert!(
+        !h.render().contains("infopanelnightly"),
+        "info panel must not surface automations when the feature is off"
     );
 }
 
@@ -1504,6 +1558,49 @@ fn perf_idle_iterations_skip_the_paint() {
     assert_eq!(requested, 1, "only the initial dirty frame paints");
     assert_eq!(skipped, 4, "idle iterations skip the expensive draw");
     assert_eq!(h.app.perf_counters().redraws_skipped, 4);
+}
+
+/// Disabling a live feature flag at runtime tears down whatever panel/view it
+/// had left open (otherwise the panel keeps rendering with its tab/footer
+/// affordance gone). Covers the `apply_live_settings` → `enforce_feature_visibility`
+/// path the settings panel and config-reload both run.
+#[tokio::test]
+async fn disabling_a_live_feature_tears_down_its_open_surfaces() {
+    let mut h = Harness::spawnable(1);
+    let sid = h.app.sessions[0].info.id;
+
+    // Open every live-gated surface, and park focus on the file viewer.
+    h.app.show_info_panel = true;
+    h.app.show_file_viewer = true;
+    h.app.show_tasks_panel = true;
+    h.app
+        .session_terminal_views
+        .insert(sid, TerminalView::Shell);
+    open_minimal_review(&mut h);
+    h.app.focus = InputFocus::FileViewer;
+
+    // Flip the live UI feature flags off and re-apply (as the settings panel does).
+    let mut settings = crate::session::settings::Settings::default();
+    settings.features.info_panel = false;
+    settings.features.file_viewer = false;
+    settings.features.tasks = false;
+    settings.features.shell_pane = false;
+    settings.features.code_review = false;
+    h.app.apply_live_settings(&settings);
+
+    assert!(!h.app.show_info_panel, "info panel hidden");
+    assert!(!h.app.show_file_viewer, "file viewer hidden");
+    assert!(!h.app.show_tasks_panel, "tasks panel hidden");
+    assert_eq!(
+        h.app.session_terminal_views.get(&sid).copied(),
+        Some(TerminalView::Claude),
+        "shell view reverted to the agent view"
+    );
+    assert!(h.app.code_reviews.is_empty(), "open review closed");
+    assert!(
+        matches!(h.app.focus, InputFocus::SessionList),
+        "focus moved off the now-hidden file viewer"
+    );
 }
 
 /// `dispatch_action` partitions `Action` across several sub-dispatchers whose

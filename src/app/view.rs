@@ -354,10 +354,15 @@ impl App {
         };
         let now = crate::sync::current_time_millis();
         let agent_usage = self.usage.get(&info.agent);
+        // Skip the upcoming-automations section entirely when the feature is
+        // off: the TUI won't fire those schedules, so advertising their
+        // countdowns here (the cache is loaded from the DB regardless) would
+        // surface a disabled feature. Mirrors the footer badge being zeroed.
         let automation_entries: Vec<info_panel::AutomationEntry> = self
             .automation_ui
             .cached_automations
             .iter()
+            .filter(|_| self.features.automations)
             .filter(|a| a.enabled && a.next_run_at.is_some())
             .map(|a| {
                 let remaining = a.next_run_at.unwrap_or(now).saturating_sub(now);
@@ -695,6 +700,12 @@ impl App {
                 "Shell",
                 Some(crate::session::Action::ToggleShell),
             ));
+        }
+        // With both Shell and Review gated off there's only the Agent pill left
+        // — a tab strip you can't switch away from. Drop it entirely so a
+        // single non-functional tab doesn't advertise views that are disabled.
+        if specs.len() < 2 {
+            return Vec::new();
         }
 
         // Pack pills left-to-right starting one cell in from the rounded corner,

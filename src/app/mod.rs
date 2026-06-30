@@ -1021,7 +1021,61 @@ impl App {
     /// the settings panel's save path and the live-reload poll.
     pub(crate) fn apply_live_settings(&mut self, settings: &crate::session::settings::Settings) {
         self.features = settings.features;
+        self.enforce_feature_visibility();
         self.resize_sessions_to_content_area();
+    }
+
+    /// Tear down any panel/view/focus that a now-disabled live feature flag
+    /// leaves stranded. The open-state booleans (`show_*`), the per-session
+    /// shell views, and the open code reviews are all opt-in toggles that
+    /// survive a flag flip, so without this a feature disabled at runtime would
+    /// keep rendering its panel even though its tab/footer affordance is gone.
+    /// Each branch only forces the *hidden* state, so it's idempotent and never
+    /// re-opens anything when a flag is turned back on.
+    fn enforce_feature_visibility(&mut self) {
+        if !self.features.info_panel {
+            self.show_info_panel = false;
+        }
+        if !self.features.file_viewer {
+            self.show_file_viewer = false;
+            if self.focus == InputFocus::FileViewer {
+                self.focus = InputFocus::SessionList;
+            }
+        }
+        if !self.features.tasks {
+            self.show_tasks_panel = false;
+            if matches!(self.focus, InputFocus::TaskList | InputFocus::TaskEditor) {
+                self.focus = InputFocus::SessionList;
+            }
+        }
+        if !self.features.automations
+            && matches!(
+                self.focus,
+                InputFocus::Automations
+                    | InputFocus::AutomationEditor
+                    | InputFocus::AutomationRunHistory
+            )
+        {
+            self.focus = InputFocus::SessionList;
+        }
+        if !self.features.global_search && self.global_search.active {
+            self.close_global_search();
+        }
+        if !self.features.shell_pane {
+            // Flip every session showing its shell back to the agent view (the
+            // Shell tab/toggle is gone, so there's no way back otherwise).
+            for view in self.session_terminal_views.values_mut() {
+                if *view == TerminalView::Shell {
+                    *view = TerminalView::Claude;
+                }
+            }
+        }
+        if !self.features.code_review && !self.code_reviews.is_empty() {
+            self.code_reviews.clear();
+            if matches!(self.focus, InputFocus::CodeReview | InputFocus::ReviewFiles) {
+                self.focus = InputFocus::Terminal;
+            }
+        }
     }
 
     /// Record the current `settings.toml` mtime so the next reload poll doesn't
