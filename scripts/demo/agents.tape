@@ -68,15 +68,14 @@ Ctrl+B
 Sleep 1200ms
 
 # --- Native code review ------------------------------------------------------
-# After antigravity (the 4th agent) the next session down is "review" — a
-# worktree on a branch with a real committed diff (seeded by record.sh). Select
-# it (focus stays on the session list, not the terminal — Ctrl+X is in
-# terminal_passthrough, so opening from a focused terminal would forward the
-# chord to the agent), then open the built-in code-review view (Ctrl+X, default
-# ToggleReview): a GitHub-style continuous diff in the centre, the changed-files
+# The 4× Ctrl+J above walked from the top (claude) down to the LAST session,
+# "review" — a worktree on a branch with a real committed diff (seeded by
+# record.sh) — and the panel toggles don't move the selection, so "review" is
+# still selected here. Focus is on the session list (not a terminal), so Ctrl+X
+# runs ToggleReview instead of being forwarded to the agent by
+# terminal_passthrough. Open the built-in code-review view: a GitHub-style
+# continuous diff of the branch (<base>..HEAD) in the centre, the changed-files
 # list on the right, an action bar across the bottom — no external binary.
-Ctrl+J
-Sleep 1s
 Ctrl+X
 Sleep 2500ms
 
