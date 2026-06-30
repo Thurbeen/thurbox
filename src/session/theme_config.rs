@@ -96,6 +96,18 @@ pub enum ThemePreset {
     SolarizedLight,
     /// Doom — dark hellish palette inspired by Doom Eternal with bright red and neon green.
     Doom,
+    /// Nord — cool arctic blue palette from the Nord project.
+    Nord,
+    /// Dracula — iconic dark palette with purple, pink, and cyan accents.
+    Dracula,
+    /// One Dark — Atom's signature dark palette.
+    OneDark,
+    /// Rosé Pine Moon — soft, muted dark palette with iris and rose accents.
+    RosePineMoon,
+    /// Everforest — comfortable green-tinted dark palette.
+    Everforest,
+    /// Kanagawa — muted, ink-wash dark palette inspired by Hokusai.
+    Kanagawa,
 }
 
 impl ThemePreset {
@@ -111,6 +123,12 @@ impl ThemePreset {
             Self::GruvboxLight => "gruvbox-light",
             Self::SolarizedLight => "solarized-light",
             Self::Doom => "doom",
+            Self::Nord => "nord",
+            Self::Dracula => "dracula",
+            Self::OneDark => "one-dark",
+            Self::RosePineMoon => "rose-pine-moon",
+            Self::Everforest => "everforest",
+            Self::Kanagawa => "kanagawa",
         }
     }
 
@@ -126,6 +144,12 @@ impl ThemePreset {
             Self::GruvboxLight => "Gruvbox Light",
             Self::SolarizedLight => "Solarized Light",
             Self::Doom => "Doom",
+            Self::Nord => "Nord",
+            Self::Dracula => "Dracula",
+            Self::OneDark => "One Dark",
+            Self::RosePineMoon => "Rosé Pine Moon",
+            Self::Everforest => "Everforest",
+            Self::Kanagawa => "Kanagawa",
         }
     }
 
@@ -141,21 +165,35 @@ impl ThemePreset {
             "gruvbox-light" => Some(Self::GruvboxLight),
             "solarized-light" => Some(Self::SolarizedLight),
             "doom" => Some(Self::Doom),
+            "nord" => Some(Self::Nord),
+            "dracula" => Some(Self::Dracula),
+            "one-dark" => Some(Self::OneDark),
+            "rose-pine-moon" => Some(Self::RosePineMoon),
+            "everforest" => Some(Self::Everforest),
+            "kanagawa" => Some(Self::Kanagawa),
             _ => None,
         }
     }
 
     pub fn all() -> &'static [ThemePreset] {
+        // Dark presets first, then the light ones grouped at the end so the
+        // picker shows all dark themes together before the light section.
         &[
             Self::Default,
             Self::CatppuccinMocha,
             Self::TokyoNight,
             Self::GruvboxDark,
+            Self::Doom,
+            Self::Nord,
+            Self::Dracula,
+            Self::OneDark,
+            Self::RosePineMoon,
+            Self::Everforest,
+            Self::Kanagawa,
             Self::CatppuccinLatte,
             Self::TokyoNightDay,
             Self::GruvboxLight,
             Self::SolarizedLight,
-            Self::Doom,
         ]
     }
 
@@ -171,6 +209,12 @@ impl ThemePreset {
             Self::GruvboxLight => gruvbox_light_palette(),
             Self::SolarizedLight => solarized_light_palette(),
             Self::Doom => doom_palette(),
+            Self::Nord => nord_palette(),
+            Self::Dracula => dracula_palette(),
+            Self::OneDark => one_dark_palette(),
+            Self::RosePineMoon => rose_pine_moon_palette(),
+            Self::Everforest => everforest_palette(),
+            Self::Kanagawa => kanagawa_palette(),
         }
     }
 
@@ -913,6 +957,240 @@ fn doom_palette() -> ThemePalette {
     .build()
 }
 
+fn nord_palette() -> ThemePalette {
+    let frost_cyan = Color::Rgb(0x88, 0xC0, 0xD0); // nord8
+    let frost_teal = Color::Rgb(0x8F, 0xBC, 0xBB); // nord7
+    let frost_blue = Color::Rgb(0x81, 0xA1, 0xC1); // nord9
+    let frost_deep = Color::Rgb(0x5E, 0x81, 0xAC); // nord10
+    let green = Color::Rgb(0xA3, 0xBE, 0x8C); // nord14
+    let yellow = Color::Rgb(0xEB, 0xCB, 0x8B); // nord13
+    let red = Color::Rgb(0xBF, 0x61, 0x6A); // nord11
+    let purple = Color::Rgb(0xB4, 0x8E, 0xAD); // nord15
+    let snow = Color::Rgb(0xEC, 0xEF, 0xF4); // nord6
+    let snow_dim = Color::Rgb(0xD8, 0xDE, 0xE9); // nord4
+    let polar3 = Color::Rgb(0x4C, 0x56, 0x6A); // nord3
+    let polar2 = Color::Rgb(0x43, 0x4C, 0x5E); // nord2
+    let polar1 = Color::Rgb(0x3B, 0x42, 0x52); // nord1
+    let polar0 = Color::Rgb(0x2E, 0x34, 0x40); // nord0
+    PaletteSlots {
+        accent: frost_cyan,
+        accent_bright: frost_teal,
+        green,
+        yellow,
+        red,
+        blue: frost_blue,
+        text_primary: snow,
+        text_secondary: snow_dim,
+        text_muted: polar3,
+        border_unfocused: polar2,
+        role_name: purple,
+        branch_name: green,
+        search_bar: frost_deep,
+        keybind_hint: yellow,
+        selection_bg: polar2,
+        selection_fg: snow,
+        modal_dim_bg: polar0,
+        modal_bg: polar1,
+        modal_border: frost_cyan,
+        base_bg: polar0,
+    }
+    .build()
+}
+
+fn dracula_palette() -> ThemePalette {
+    let purple = Color::Rgb(0xBD, 0x93, 0xF9);
+    let pink = Color::Rgb(0xFF, 0x79, 0xC6);
+    let green = Color::Rgb(0x50, 0xFA, 0x7B);
+    let yellow = Color::Rgb(0xF1, 0xFA, 0x8C);
+    let red = Color::Rgb(0xFF, 0x55, 0x55);
+    let cyan = Color::Rgb(0x8B, 0xE9, 0xFD);
+    let fg = Color::Rgb(0xF8, 0xF8, 0xF2);
+    let fg_dim = Color::Rgb(0xC5, 0xC5, 0xD8);
+    let comment = Color::Rgb(0x62, 0x72, 0xA4);
+    let current_line = Color::Rgb(0x44, 0x47, 0x5A);
+    let bg = Color::Rgb(0x28, 0x2A, 0x36);
+    let bg_dark = Color::Rgb(0x21, 0x22, 0x2C);
+    PaletteSlots {
+        accent: purple,
+        accent_bright: pink,
+        green,
+        yellow,
+        red,
+        blue: cyan,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: comment,
+        border_unfocused: current_line,
+        role_name: pink,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: current_line,
+        selection_fg: fg,
+        modal_dim_bg: bg_dark,
+        modal_bg: bg,
+        modal_border: purple,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn one_dark_palette() -> ThemePalette {
+    let blue = Color::Rgb(0x61, 0xAF, 0xEF);
+    let cyan = Color::Rgb(0x56, 0xB6, 0xC2);
+    let green = Color::Rgb(0x98, 0xC3, 0x79);
+    let yellow = Color::Rgb(0xE5, 0xC0, 0x7B);
+    let red = Color::Rgb(0xE0, 0x6C, 0x75);
+    let purple = Color::Rgb(0xC6, 0x78, 0xDD);
+    let fg = Color::Rgb(0xAB, 0xB2, 0xBF);
+    let fg_dim = Color::Rgb(0x9D, 0xA5, 0xB4);
+    let comment = Color::Rgb(0x5C, 0x63, 0x70);
+    let gutter = Color::Rgb(0x3E, 0x44, 0x51);
+    let bg = Color::Rgb(0x28, 0x2C, 0x34);
+    let bg_light = Color::Rgb(0x2C, 0x31, 0x3A);
+    let bg_dark = Color::Rgb(0x21, 0x25, 0x2B);
+    PaletteSlots {
+        accent: blue,
+        accent_bright: cyan,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: fg_dim,
+        text_muted: comment,
+        border_unfocused: gutter,
+        role_name: purple,
+        branch_name: green,
+        search_bar: cyan,
+        keybind_hint: yellow,
+        selection_bg: gutter,
+        selection_fg: fg,
+        modal_dim_bg: bg_dark,
+        modal_bg: bg_light,
+        modal_border: blue,
+        base_bg: bg,
+    }
+    .build()
+}
+
+fn rose_pine_moon_palette() -> ThemePalette {
+    let iris = Color::Rgb(0xC4, 0xA7, 0xE7); // purple
+    let rose = Color::Rgb(0xEA, 0x9A, 0x97);
+    let foam = Color::Rgb(0x9C, 0xCF, 0xD8); // teal/cyan
+    let gold = Color::Rgb(0xF6, 0xC1, 0x77); // yellow
+    let love = Color::Rgb(0xEB, 0x6F, 0x92); // red/pink
+    let pine = Color::Rgb(0x3E, 0x8F, 0xB0); // blue
+    let text = Color::Rgb(0xE0, 0xDE, 0xF4);
+    let subtle = Color::Rgb(0x90, 0x8C, 0xAA);
+    let muted = Color::Rgb(0x6E, 0x6A, 0x86);
+    let highlight_med = Color::Rgb(0x44, 0x41, 0x5A);
+    let surface = Color::Rgb(0x2A, 0x27, 0x3F);
+    let base = Color::Rgb(0x23, 0x21, 0x36);
+    PaletteSlots {
+        accent: iris,
+        accent_bright: rose,
+        green: foam,
+        yellow: gold,
+        red: love,
+        blue: pine,
+        text_primary: text,
+        text_secondary: subtle,
+        text_muted: muted,
+        border_unfocused: highlight_med,
+        role_name: iris,
+        branch_name: foam,
+        search_bar: pine,
+        keybind_hint: gold,
+        selection_bg: highlight_med,
+        selection_fg: text,
+        modal_dim_bg: base,
+        modal_bg: surface,
+        modal_border: iris,
+        base_bg: base,
+    }
+    .build()
+}
+
+fn everforest_palette() -> ThemePalette {
+    let green = Color::Rgb(0xA7, 0xC0, 0x80);
+    let aqua = Color::Rgb(0x83, 0xC0, 0x92);
+    let yellow = Color::Rgb(0xDB, 0xBC, 0x7F);
+    let red = Color::Rgb(0xE6, 0x7E, 0x80);
+    let blue = Color::Rgb(0x7F, 0xBB, 0xB3);
+    let purple = Color::Rgb(0xD6, 0x99, 0xB6);
+    let fg = Color::Rgb(0xD3, 0xC6, 0xAA);
+    let grey1 = Color::Rgb(0x9D, 0xA9, 0xA0);
+    let grey0 = Color::Rgb(0x7A, 0x84, 0x78);
+    let bg2 = Color::Rgb(0x3D, 0x48, 0x4D);
+    let bg1 = Color::Rgb(0x34, 0x3F, 0x44);
+    let bg0 = Color::Rgb(0x2D, 0x35, 0x3B);
+    let bg_dim = Color::Rgb(0x23, 0x2A, 0x2E);
+    PaletteSlots {
+        accent: green,
+        accent_bright: aqua,
+        green,
+        yellow,
+        red,
+        blue,
+        text_primary: fg,
+        text_secondary: grey1,
+        text_muted: grey0,
+        border_unfocused: bg2,
+        role_name: purple,
+        branch_name: aqua,
+        search_bar: blue,
+        keybind_hint: yellow,
+        selection_bg: bg2,
+        selection_fg: fg,
+        modal_dim_bg: bg_dim,
+        modal_bg: bg1,
+        modal_border: green,
+        base_bg: bg0,
+    }
+    .build()
+}
+
+fn kanagawa_palette() -> ThemePalette {
+    let crystal_blue = Color::Rgb(0x7E, 0x9C, 0xD8);
+    let spring_blue = Color::Rgb(0x7F, 0xB4, 0xCA); // cyan
+    let spring_green = Color::Rgb(0x98, 0xBB, 0x6C);
+    let carp_yellow = Color::Rgb(0xE6, 0xC3, 0x84);
+    let wave_red = Color::Rgb(0xE4, 0x68, 0x76);
+    let oni_violet = Color::Rgb(0x95, 0x7F, 0xB8);
+    let fuji_white = Color::Rgb(0xDC, 0xD7, 0xBA);
+    let old_white = Color::Rgb(0xC8, 0xC0, 0x93);
+    let fuji_gray = Color::Rgb(0x72, 0x71, 0x69);
+    let sumi_ink3 = Color::Rgb(0x36, 0x36, 0x46);
+    let wave_blue2 = Color::Rgb(0x2D, 0x4F, 0x67);
+    let sumi_ink2 = Color::Rgb(0x2A, 0x2A, 0x37);
+    let sumi_ink1 = Color::Rgb(0x1F, 0x1F, 0x28);
+    let sumi_ink0 = Color::Rgb(0x16, 0x16, 0x1D);
+    PaletteSlots {
+        accent: crystal_blue,
+        accent_bright: spring_blue,
+        green: spring_green,
+        yellow: carp_yellow,
+        red: wave_red,
+        blue: crystal_blue,
+        text_primary: fuji_white,
+        text_secondary: old_white,
+        text_muted: fuji_gray,
+        border_unfocused: sumi_ink3,
+        role_name: oni_violet,
+        branch_name: spring_green,
+        search_bar: spring_blue,
+        keybind_hint: carp_yellow,
+        selection_bg: wave_blue2,
+        selection_fg: fuji_white,
+        modal_dim_bg: sumi_ink0,
+        modal_bg: sumi_ink2,
+        modal_border: crystal_blue,
+        base_bg: sumi_ink1,
+    }
+    .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,13 +1251,38 @@ mod tests {
                 ThemePreset::GruvboxLight => 0,
                 ThemePreset::SolarizedLight => 0,
                 ThemePreset::Doom => 0,
+                ThemePreset::Nord => 0,
+                ThemePreset::Dracula => 0,
+                ThemePreset::OneDark => 0,
+                ThemePreset::RosePineMoon => 0,
+                ThemePreset::Everforest => 0,
+                ThemePreset::Kanagawa => 0,
             }
         }
-        const EXPECTED: usize = 9;
+        const EXPECTED: usize = 15;
         assert_eq!(ThemePreset::all().len(), EXPECTED);
         for p in ThemePreset::all() {
             classify(*p);
         }
+    }
+
+    #[test]
+    fn dark_presets_precede_light_presets_in_all() {
+        // The picker renders presets in `all()` order; dark themes are grouped
+        // first and the light ones at the end. Guard the invariant so a new
+        // preset inserted in the wrong place can't scatter the light section.
+        let mut seen_light = false;
+        for preset in ThemePreset::all() {
+            if preset.is_light() {
+                seen_light = true;
+            } else {
+                assert!(
+                    !seen_light,
+                    "dark preset {preset:?} appears after a light preset in all()",
+                );
+            }
+        }
+        assert!(seen_light, "expected at least one light preset in all()");
     }
 
     #[test]

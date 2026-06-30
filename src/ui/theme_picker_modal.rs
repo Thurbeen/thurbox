@@ -27,7 +27,10 @@ pub fn render_theme_picker_modal(
     frame: &mut Frame,
     state: &ThemePickerState<'_>,
 ) -> super::ModalRender {
-    let height = (state.entries.len() as u16).max(4) + 6;
+    // Grow with the entry count, but never taller than the frame so the id line
+    // and footer stay visible on short terminals; `render_selector_rows` then
+    // scroll-windows the list (with a scrollbar) when it can't show every row.
+    let height = ((state.entries.len() as u16).max(4) + 6).min(frame.area().height);
     let area = centered_fixed_height_rect(60, height, frame.area());
 
     let inner = render_modal_frame(frame, area, "Theme");

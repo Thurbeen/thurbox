@@ -1291,7 +1291,7 @@ frame; the static `icon()` is used in non-animated contexts (info panel).
   (the order cache stays status-independent).
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
   / `status_done` / `status_idle` / `status_error`
-  (`session::theme_config`, all 9 presets + custom-theme overrides), mapped
+  (`session::theme_config`, all 15 presets + custom-theme overrides), mapped
   by `ui::status_color`.
 - **Wiring the hooks** is the job of the built-in **hooks extension**
   (auto-activated; see the Extensions section) — core thurbox only knows
@@ -1413,7 +1413,7 @@ code_review`.
   shortcuts are discoverable; the changed-files column shows a nav-key legend.
 - **Colours.** Dedicated theme keys `diff_added`/`diff_removed` (line fg) and
   `diff_added_bg`/`diff_removed_bg` (a subtle full-row tint) — added to
-  `ThemePalette` (all 9 presets derive them; bg blended toward `app_bg` via
+  `ThemePalette` (all 15 presets derive them; bg blended toward `app_bg` via
   `blend_rgb`) and overridable per custom theme. Classification badges reuse the
   status/accent/danger palette colours, so the whole view is theme-aware.
 - **Review targets** (`t` / the Target footer button). The diff can show the
@@ -1821,8 +1821,9 @@ exists). On top of that:
 
 ## Themes
 
-The TUI ships with nine palettes — five dark (**Default**, **Catppuccin
-Mocha**, **Tokyo Night**, **Gruvbox Dark**, **Doom**) and four light
+The TUI ships with fifteen palettes — eleven dark (**Default**, **Catppuccin
+Mocha**, **Tokyo Night**, **Gruvbox Dark**, **Doom**, **Nord**, **Dracula**,
+**One Dark**, **Rosé Pine Moon**, **Everforest**, **Kanagawa**) and four light
 (**Catppuccin Latte**, **Tokyo Night Day**, **Gruvbox Light**,
 **Solarized Light**). Users can add **custom themes** in
 `~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour

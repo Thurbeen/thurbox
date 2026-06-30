@@ -1547,8 +1547,9 @@ palette. Widget files reference named colors (accent, text, status,
 border) rather than hard-coded `Color::*` values, so the whole UI
 can be re-skinned by swapping the active palette.
 
-Thurbox ships nine built-in presets — five dark (Default,
-Catppuccin Mocha, Tokyo Night, Gruvbox Dark, Doom) and four light
+Thurbox ships fifteen built-in presets — eleven dark (Default,
+Catppuccin Mocha, Tokyo Night, Gruvbox Dark, Doom, Nord, Dracula,
+One Dark, Rosé Pine Moon, Everforest, Kanagawa) and four light
 (Catppuccin Latte, Tokyo Night Day, Gruvbox Light, Solarized
 Light). Press `Ctrl+Y` (or `F4`, which avoids terminals that
 intercept `Ctrl+Y` as DSUSP) to pick one. The choice is persisted

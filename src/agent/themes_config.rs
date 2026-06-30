@@ -21,6 +21,7 @@ pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/t
 # Colours accept anything ratatui parses: "#rrggbb", ANSI names ("red",
 # "lightcyan"), indexed ("14"), or "reset" (terminal default — useful for
 # app_bg). Bases: default, catppuccin-mocha, tokyo-night, gruvbox-dark, doom,
+# nord, dracula, one-dark, rose-pine-moon, everforest, kanagawa,
 # catppuccin-latte, tokyo-night-day, gruvbox-light, solarized-light.
 #
 # Overridable colour keys: accent, accent_bright, status_working,

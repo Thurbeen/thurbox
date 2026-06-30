@@ -7,27 +7,27 @@ expression: h.render()
 │                       ││                                                                         │
 │    No sessions yet    ││                                                                         │
 │Press Ctrl+N to create ││                                                                         │
-│                       ││                                                                         │
-│                       ││                                                                         │
-│                       ││                                                                         │
 │                   ╭ Theme ───────────────────────────────────────────────────╮                   │
 │                   │▸ Default                   Accent      █████ █████       │                   │
 │                   │  Catppuccin Mocha          Status      ◐ ◆ ● ○ ✗         │                   │
 │                   │  Tokyo Night               Border      ╭─────╮           │                   │
 │                   │  Gruvbox Dark              Modal bg                      │                   │
+│                   │  Doom                                                    │                   │
+│                   │  Nord                                                    │                   │
+│                   │  Dracula                                                 │                   │
+│                   │  One Dark                                                │                   │
+│                   │  Rosé Pine Moon                                          │                   │
+│                   │  Everforest                                              │                   │
+│                   │  Kanagawa                                                │                   │
 │                   │  Catppuccin Latte (light)                                │                   │
 │                   │  Tokyo Night Day (light)                                 │                   │
 │                   │  Gruvbox Light (light)                                   │                   │
 │                   │  Solarized Light (light)                                 │                   │
-│                   │  Doom                                                    │                   │
 │                   │                                                          │                   │
 │                   │                                                          │                   │
 │                   │  theme id: default                                       │                   │
 │                   │j/k navigate                              Select   Cancel │                   │
-│                   ╰──────────────────────────────────────────────────────────╯                   │
-│                       ││                                                                         │
-│                       ││                                                                         │
-╰───────────────────────╯│                                                                         │
+╰───────────────────╰──────────────────────────────────────────────────────────╯                   │
 ┌ Automations ──────────┐│                                                                         │
 │none                   ││                                                                         │
 └───────────────────────┘└─────────────────────────────────────────────────────────────────────────┘

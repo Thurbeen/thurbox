@@ -400,7 +400,7 @@ per-agent detail: `extensions/hooks/README.md`.
 
 ## themes.toml
 
-User-defined themes, offered in the `Ctrl+Y` picker alongside the nine
+User-defined themes, offered in the `Ctrl+Y` picker alongside the fifteen
 built-in presets and persisted by `name` like any preset. Each
 `[[themes]]` entry starts from a built-in `base` and overrides only the
 colours it names:
@@ -608,7 +608,7 @@ Live in the `metadata` table and apply immediately (no restart):
 
 | Key | Set via | Purpose |
 |-----|---------|---------|
-| `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (nine built-ins) |
+| `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (fifteen built-ins) |
 | `editor_command` | `thurbox-cli editor set "<cmd>"` | what `Ctrl+O` runs |
 | `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
 | `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
