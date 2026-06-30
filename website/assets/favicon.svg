@@ -1,9 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <rect width="32" height="32" rx="7" fill="#1a080a"/>
   <rect x="1.5" y="1.5" width="29" height="29" rx="5.5" fill="none" stroke="#ff5c54" stroke-width="1.5"/>
-  <text x="5" y="18" font-family="monospace" font-size="13" font-weight="bold" fill="#6eff6e">$</text>
-  <rect x="16" y="11.5" width="8" height="4" rx="0.8" fill="#6eff6e"/>
-  <circle cx="9" cy="24" r="2.1" fill="#6eff6e"/>
-  <circle cx="16" cy="24" r="2.1" fill="#ffb627"/>
-  <circle cx="23" cy="24" r="2.1" fill="#ff5c54"/>
+  <text x="5" y="15" font-family="monospace" font-size="11" font-weight="bold" fill="#6eff6e">$</text>
+  <rect x="14" y="8.5" width="7" height="4" rx="0.8" fill="#6eff6e"/>
+  <g stroke="#ff5c54" stroke-width="1.4" fill="none" stroke-linecap="round">
+    <path d="M16 16 V19"/>
+    <path d="M7 19 H25"/>
+    <path d="M7 19 V22"/>
+    <path d="M16 19 V22"/>
+    <path d="M25 19 V22"/>
+  </g>
+  <circle cx="7" cy="25.5" r="2.4" fill="#1a080a" stroke="#6eff6e" stroke-width="1.6"/>
+  <circle cx="16" cy="25.5" r="2.4" fill="#1a080a" stroke="#ffb627" stroke-width="1.6"/>
+  <circle cx="25" cy="25.5" r="2.4" fill="#1a080a" stroke="#ff5c54" stroke-width="1.6"/>
 </svg>
