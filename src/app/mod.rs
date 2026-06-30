@@ -2342,10 +2342,15 @@ impl App {
                 true
             }
             ClickAction::ReviewRow(i) => {
+                // A click in the diff body focuses the review pane (the
+                // whole-pane `FocusPane` fallback is recorded after the row
+                // targets, so it never wins on a row hit).
+                self.focus = InputFocus::CodeReview;
                 self.cr_select_row(i);
                 true
             }
             ClickAction::ReviewButton(button) => {
+                self.focus = InputFocus::CodeReview;
                 self.cr_button(button);
                 true
             }

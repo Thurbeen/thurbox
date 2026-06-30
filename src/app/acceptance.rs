@@ -1590,6 +1590,42 @@ fn hovering_review_footer_button_brightens_it() {
     );
 }
 
+/// Clicking a diff row in the main review pane focuses it (regression: the
+/// `ReviewRow` click selected the row but never set `InputFocus::CodeReview`,
+/// so a click while another pane was focused left focus elsewhere — the
+/// whole-pane `FocusPane` fallback is recorded after the row targets and never
+/// wins on a row hit).
+#[test]
+fn clicking_review_row_focuses_the_pane() {
+    let mut h = Harness::new(STD_COLS, STD_ROWS, 1);
+    let sid = h.app.sessions[0].info.id;
+    h.app.code_reviews.insert(
+        sid,
+        crate::app::code_review::CodeReviewState::for_test(sid, 2),
+    );
+    h.app.focus = InputFocus::CodeReview;
+    h.render();
+    // Move focus off the review, as if the session list were active.
+    h.app.focus = InputFocus::SessionList;
+    let r = h
+        .app
+        .click_targets
+        .iter()
+        .find(|t| matches!(t.action, ClickAction::ReviewRow(_)))
+        .map(|t| t.rect)
+        .expect("review diff rows recorded as click targets");
+    h.app.update(AppMessage::MouseClick {
+        x: r.x,
+        y: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(
+        h.app.focus,
+        InputFocus::CodeReview,
+        "clicking a diff row focuses the review pane"
+    );
+}
+
 /// Global overlay/panel toggles fall through the review's key capture so they
 /// stay reachable while a review is open (regression: the capture handler
 /// swallowed them). The review itself stays open.
