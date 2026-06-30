@@ -90,21 +90,109 @@ impl Read for ControlModeReader {
 /// line). `send_keys_commands` splits larger writes across multiple commands.
 const SEND_KEYS_CHUNK_BYTES: usize = 512;
 
-/// Split `buf` into the ordered `send-keys -H` command lines for `pane_id`, each
-/// encoding at most `SEND_KEYS_CHUNK_BYTES` bytes. Chunking keeps a large paste
-/// from becoming one over-long control-mode line (which tmux truncates); the
-/// raw bytes — including the bracketed-paste markers — span the chunks and the
-/// receiving pane reassembles them transparently.
-fn send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
+/// Split `buf` into the ordered `send-keys` command lines for `pane_id`.
+///
+/// Two encodings: real tmux uses the byte-exact `send-keys -H` hex flag (each
+/// byte → two hex digits), chunked at `SEND_KEYS_CHUNK_BYTES` so no single
+/// control-mode line gets over-long (tmux truncates those); the raw bytes —
+/// including the bracketed-paste markers — span the chunks and the receiving
+/// pane reassembles them. psmux (the native-Windows tmux clone) does **not**
+/// implement `-H` — given `-H 62` it injects the literal text "62" instead of
+/// byte 0x62, so the whole `-H` path is silently broken there — so
+/// `psmux = true` selects the key-name/literal encoding it does support
+/// (`psmux_send_keys_commands`).
+pub fn send_keys_commands(pane_id: &str, buf: &[u8], psmux: bool) -> Vec<String> {
+    if psmux {
+        return psmux_send_keys_commands(pane_id, buf);
+    }
     buf.chunks(SEND_KEYS_CHUNK_BYTES)
         .map(|chunk| format_send_keys(pane_id, chunk))
         .collect()
 }
 
-/// Per-pane writer that sends input via `send-keys -H` through the shared control stdin.
+/// Build the psmux-compatible `send-keys` command line(s) for `buf`.
+///
+/// psmux supports `send-keys -l` (literal text) and key-names (`Enter`, `Tab`,
+/// `Escape`, `BSpace`, `C-<letter>`, …) but not tmux's `-H` hex flag. Encode the
+/// exact byte stream with those primitives: contiguous printable/UTF-8 runs go
+/// out as one `-l` literal command, each control byte as its key-name. Because
+/// every key-name injects exactly the byte it stands for, multi-byte sequences
+/// round-trip — an arrow key (`\x1b[A`) becomes `Escape` then literal `[A`,
+/// which the pane's PTY receives back as `\x1b[A`.
+fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
+    let mut cmds = Vec::new();
+    let mut literal: Vec<u8> = Vec::new();
+    for &b in buf {
+        match psmux_key_name(b) {
+            Some(name) => {
+                flush_psmux_literal(pane_id, &mut literal, &mut cmds);
+                cmds.push(format!("send-keys -t {pane_id} {name}\n"));
+            }
+            None => literal.push(b),
+        }
+    }
+    flush_psmux_literal(pane_id, &mut literal, &mut cmds);
+    cmds
+}
+
+/// Map a control byte to the psmux key-name that injects exactly that byte, or
+/// `None` for a printable / UTF-8 byte (which joins an `-l` literal run).
+fn psmux_key_name(b: u8) -> Option<String> {
+    Some(match b {
+        b'\r' => "Enter".to_string(),
+        b'\t' => "Tab".to_string(),
+        0x1b => "Escape".to_string(),
+        0x7f => "BSpace".to_string(),
+        // Ctrl+letter: 0x01..=0x1a → C-a..C-z (covers e.g. LF 0x0a → C-j).
+        0x01..=0x1a => format!("C-{}", (b'a' + b - 1) as char),
+        _ => return None,
+    })
+}
+
+/// Emit the pending printable run as one or more `send-keys -l` commands and
+/// clear it. Long runs are split at `SEND_KEYS_CHUNK_BYTES` (on char boundaries)
+/// so no control-mode line gets over-long.
+fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<String>) {
+    if literal.is_empty() {
+        return;
+    }
+    let text = String::from_utf8_lossy(literal).into_owned();
+    let emit = |chunk: &str, cmds: &mut Vec<String>| {
+        cmds.push(format!(
+            "send-keys -t {pane_id} -l {}\n",
+            psmux_quote(chunk)
+        ));
+    };
+    let mut chunk = String::new();
+    for ch in text.chars() {
+        if !chunk.is_empty() && chunk.len() + ch.len_utf8() > SEND_KEYS_CHUNK_BYTES {
+            emit(&chunk, cmds);
+            chunk.clear();
+        }
+        chunk.push(ch);
+    }
+    if !chunk.is_empty() {
+        emit(&chunk, cmds);
+    }
+    literal.clear();
+}
+
+/// Single-quote `s` for a psmux `send-keys -l` argument. Always quotes (even a
+/// bare word) so a leading `-` is never read as a flag; embedded single quotes
+/// use the POSIX `'\''` break. A literal run never contains a newline (both LF
+/// and CR map to key-names, not literal text), but the control-mode line is
+/// `\n`-delimited, so newlines are replaced with spaces defensively.
+fn psmux_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\n', " ").replace('\'', "'\\''"))
+}
+
+/// Per-pane writer that sends input via control-mode `send-keys` through the
+/// shared control stdin. `psmux` selects the key-name/literal encoding when the
+/// backend is psmux instead of tmux's `-H` hex (see [`send_keys_commands`]).
 pub struct ControlModeWriter {
     pub stdin: Arc<Mutex<std::process::ChildStdin>>,
     pub pane_id: String,
+    pub psmux: bool,
 }
 
 impl Write for ControlModeWriter {
@@ -116,7 +204,7 @@ impl Write for ControlModeWriter {
             .stdin
             .lock()
             .map_err(|e| std::io::Error::other(format!("stdin lock: {e}")))?;
-        for cmd in send_keys_commands(&self.pane_id, buf) {
+        for cmd in send_keys_commands(&self.pane_id, buf, self.psmux) {
             stdin.write_all(cmd.as_bytes())?;
         }
         stdin.flush()?;
@@ -536,13 +624,14 @@ mod tests {
 
     #[test]
     fn send_keys_commands_short_input_is_one_command() {
-        let cmds = send_keys_commands("%1", b"ABC");
+        let cmds = send_keys_commands("%1", b"ABC", false);
         assert_eq!(cmds, vec!["send-keys -t %1 -H 41 42 43\n".to_string()]);
     }
 
     #[test]
     fn send_keys_commands_empty_input_is_no_commands() {
-        assert!(send_keys_commands("%1", &[]).is_empty());
+        assert!(send_keys_commands("%1", &[], false).is_empty());
+        assert!(send_keys_commands("%1", &[], true).is_empty());
     }
 
     /// A large paste is split into multiple bounded `send-keys` commands whose
@@ -555,7 +644,7 @@ mod tests {
         input.extend((0..5000u32).map(|i| (i % 256) as u8));
         input.extend_from_slice(b"\x1b[201~");
 
-        let cmds = send_keys_commands("%1", &input);
+        let cmds = send_keys_commands("%1", &input, false);
 
         assert!(
             cmds.len() > 1,
@@ -584,6 +673,143 @@ mod tests {
             reassembled.extend(bytes);
         }
         assert_eq!(reassembled, input);
+    }
+
+    // --- psmux send-keys encoding tests ---
+    //
+    // Regression: psmux has no `send-keys -H`, so on Windows the hex path
+    // injected the literal text "62" when the user typed `b` (0x62), and Enter /
+    // Backspace did nothing. The psmux encoding must use `-l` literals + key-names.
+
+    #[test]
+    fn psmux_printable_char_uses_literal_not_hex() {
+        // Typing `b` must inject `b`, not the literal text "62".
+        assert_eq!(
+            send_keys_commands("%1", b"b", true),
+            vec!["send-keys -t %1 -l 'b'\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_printable_run_is_one_literal_command() {
+        assert_eq!(
+            send_keys_commands("%1", b"hello world", true),
+            vec!["send-keys -t %1 -l 'hello world'\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_enter_backspace_tab_escape_use_key_names() {
+        assert_eq!(
+            send_keys_commands("%1", b"\r", true),
+            vec!["send-keys -t %1 Enter\n".to_string()]
+        );
+        assert_eq!(
+            send_keys_commands("%1", &[0x7f], true),
+            vec!["send-keys -t %1 BSpace\n".to_string()]
+        );
+        assert_eq!(
+            send_keys_commands("%1", b"\t", true),
+            vec!["send-keys -t %1 Tab\n".to_string()]
+        );
+        assert_eq!(
+            send_keys_commands("%1", &[0x1b], true),
+            vec!["send-keys -t %1 Escape\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_ctrl_letters_map_to_c_prefix() {
+        assert_eq!(
+            send_keys_commands("%1", &[0x03], true), // Ctrl+C
+            vec!["send-keys -t %1 C-c\n".to_string()]
+        );
+        assert_eq!(
+            send_keys_commands("%1", &[0x01], true), // Ctrl+A
+            vec!["send-keys -t %1 C-a\n".to_string()]
+        );
+        assert_eq!(
+            send_keys_commands("%1", &[0x1a], true), // Ctrl+Z
+            vec!["send-keys -t %1 C-z\n".to_string()]
+        );
+        assert_eq!(
+            send_keys_commands("%1", &[0x0a], true), // LF → Ctrl+J
+            vec!["send-keys -t %1 C-j\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_arrow_sequence_splits_escape_then_literal() {
+        // An arrow key arrives as `\x1b[A`; psmux reconstructs the same bytes
+        // from `Escape` + literal `[A`.
+        assert_eq!(
+            send_keys_commands("%1", b"\x1b[A", true),
+            vec![
+                "send-keys -t %1 Escape\n".to_string(),
+                "send-keys -t %1 -l '[A'\n".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn psmux_literal_single_quote_is_escaped() {
+        assert_eq!(
+            send_keys_commands("%1", b"it's", true),
+            vec!["send-keys -t %1 -l 'it'\\''s'\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_mixed_text_then_enter() {
+        // The common "type a command and submit" path.
+        assert_eq!(
+            send_keys_commands("%1", b"ls\r", true),
+            vec![
+                "send-keys -t %1 -l 'ls'\n".to_string(),
+                "send-keys -t %1 Enter\n".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn psmux_bracketed_paste_splits_markers_from_text() {
+        // A paste arrives wrapped in `\x1b[200~ … \x1b[201~`; the ESC bytes
+        // become `Escape`, the rest stays literal — reconstructing the wrapper.
+        assert_eq!(
+            send_keys_commands("%1", b"\x1b[200~hi\x1b[201~", true),
+            vec![
+                "send-keys -t %1 Escape\n".to_string(),
+                "send-keys -t %1 -l '[200~hi'\n".to_string(),
+                "send-keys -t %1 Escape\n".to_string(),
+                "send-keys -t %1 -l '[201~'\n".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn psmux_utf8_char_goes_to_literal() {
+        assert_eq!(
+            send_keys_commands("%1", "é".as_bytes(), true),
+            vec!["send-keys -t %1 -l 'é'\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_long_run_splits_on_char_boundary() {
+        let input = "é".repeat(400); // 800 bytes, each char 2 bytes
+        let cmds = send_keys_commands("%1", input.as_bytes(), true);
+        assert!(cmds.len() > 1, "expected a long run to span >1 command");
+        // Reassemble the quoted literals back into the original text.
+        let mut text = String::new();
+        for cmd in &cmds {
+            let inner = cmd
+                .trim_end()
+                .strip_prefix("send-keys -t %1 -l '")
+                .and_then(|s| s.strip_suffix('\''))
+                .expect("literal command shape");
+            text.push_str(inner);
+        }
+        assert_eq!(text, input);
     }
 
     // --- ControlModeReader tests ---

@@ -490,8 +490,15 @@ drop-in tmux clone (ConPTY, no WSL) speaking the **same control-mode wire
 protocol** and pane-id (`%N`) / `-L` socket model, so the whole backend is
 parameterized by binary name rather than forked (a remote host can also pin
 `multiplexer = "psmux"`). The **control-mode** protocol
-(`control_mode.rs`) is byte-identical over either transport/binary — only
-the one-time process launch differs. Each host registers a backend
+(`control_mode.rs`) is byte-identical over either transport/binary, with one
+keystroke-encoding exception: psmux does **not** implement tmux's `send-keys
+-H` hex flag (given `-H 62` it injects the literal text "62", so typing `b`,
+Enter, Backspace, … were all broken on Windows). So `send_keys_commands`
+branches on `TmuxTransport::uses_psmux()` — tmux keeps the byte-exact `-H`
+hex path; psmux gets an equivalent encoding built from the primitives it
+*does* support (`send-keys -l` literal runs + `Enter`/`Tab`/`Escape`/`BSpace`/
+`C-<letter>` key-names), reconstructing the same byte stream the pane's PTY
+receives. Otherwise only the one-time process launch differs. Each host registers a backend
 named `ssh:<name>` (`TmuxBackend::from_host`, registered lazily in
 `main.rs`: a down host must not block startup, so
 `check_available`/`ensure_ready` are deferred to first use via

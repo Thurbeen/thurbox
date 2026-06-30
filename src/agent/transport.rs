@@ -100,6 +100,22 @@ impl TmuxTransport {
     pub fn is_remote(&self) -> bool {
         matches!(self, TmuxTransport::Ssh { .. })
     }
+
+    /// The multiplexer binary this transport launches: [`DEFAULT_MUX`] locally,
+    /// or the per-host `multiplexer` for an SSH host.
+    pub fn mux(&self) -> &str {
+        match self {
+            TmuxTransport::Local => DEFAULT_MUX,
+            TmuxTransport::Ssh { mux, .. } => mux,
+        }
+    }
+
+    /// Whether the multiplexer is psmux (the native-Windows tmux clone). psmux
+    /// lacks tmux's `send-keys -H` hex flag, so the keystroke-encoding path
+    /// branches on this — see [`crate::agent::control_mode::send_keys_commands`].
+    pub fn uses_psmux(&self) -> bool {
+        self.mux() == "psmux"
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +194,23 @@ mod tests {
                 "expected nesting env `{var}` to be removed"
             );
         }
+    }
+
+    #[test]
+    fn uses_psmux_reflects_mux_binary() {
+        assert_eq!(TmuxTransport::Local.uses_psmux(), cfg!(windows));
+        assert!(TmuxTransport::Ssh {
+            destination: "h".into(),
+            ssh_opts: vec![],
+            mux: "psmux".into(),
+        }
+        .uses_psmux());
+        assert!(!TmuxTransport::Ssh {
+            destination: "h".into(),
+            ssh_opts: vec![],
+            mux: "tmux".into(),
+        }
+        .uses_psmux());
     }
 
     #[test]

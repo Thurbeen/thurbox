@@ -811,10 +811,14 @@ impl TmuxBackend {
 
     /// Create a writer for a specific pane.
     fn pane_writer(&self, pane_id: &str) -> Result<ControlModeWriter> {
+        // psmux lacks tmux's `send-keys -H`, so the writer encodes keystrokes
+        // differently for it (see `control_mode::send_keys_commands`).
+        let psmux = self.transport.uses_psmux();
         self.with_control(|ctrl| {
             Ok(ControlModeWriter {
                 stdin: Arc::clone(&ctrl.stdin),
                 pane_id: pane_id.to_string(),
+                psmux,
             })
         })
     }
