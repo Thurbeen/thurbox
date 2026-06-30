@@ -1767,9 +1767,11 @@ mod tests {
 
     #[test]
     fn build_files_combines_and_namespaces_multiple_repos() {
-        use std::process::Command;
+        // `git_program` scrubs inherited `GIT_*` vars so these temp-repo git calls
+        // stay hermetic even under the project's pre-commit hook.
+        use crate::git::git_program;
         fn git(dir: &std::path::Path, args: &[&str]) {
-            let ok = Command::new("git")
+            let ok = git_program()
                 .args([
                     "-c",
                     "user.email=t@t",
@@ -1795,7 +1797,7 @@ mod tests {
             git(p, &["add", "-A"]);
             git(p, &["commit", "-q", "-m", "init"]);
             let base = String::from_utf8(
-                Command::new("git")
+                git_program()
                     .args(["symbolic-ref", "--short", "HEAD"])
                     .current_dir(p)
                     .output()
@@ -1841,7 +1843,7 @@ mod tests {
 
         // A commit target only pulls from its own repo.
         let commit_sha = {
-            let out = Command::new("git")
+            let out = git_program()
                 .args(["rev-parse", "--short", "HEAD"])
                 .current_dir(r1.path())
                 .output()

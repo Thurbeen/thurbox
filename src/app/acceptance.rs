@@ -45,7 +45,9 @@ const SNAP_ROWS: u16 = 30;
 /// session a worktree whose state `git::worktree_stats` can read.
 fn init_git_repo(dir: &Path, dirty: bool) {
     let git = |args: &[&str]| {
-        let ok = std::process::Command::new("git")
+        // `git_program` scrubs inherited `GIT_*` vars so this stays hermetic even
+        // when the suite runs under the project's pre-commit hook.
+        let ok = crate::git::git_program()
             .args(args)
             .current_dir(dir)
             .output()

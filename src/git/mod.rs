@@ -11,6 +11,43 @@ use crate::paths;
 use crate::session::HostDef;
 use crate::shell::{posix_quote, ssh_command, wsl_command};
 
+/// The ambient `GIT_*` variables that pin git to a specific repo/index/worktree,
+/// overriding the path we point it at via `current_dir`/`-C`. Git exports these
+/// to hook processes (a `pre-commit` hook runs with `GIT_DIR`/`GIT_INDEX_FILE`
+/// set), so if thurbox — or its test suite under the project's pre-commit
+/// `cargo nextest` hook — inherits them, a `git` call targeting an explicit
+/// worktree would silently operate on the *hook's* repo instead (writing the
+/// wrong index, running the wrong hooks). Every git invocation scrubs them so it
+/// always discovers the repo from the path it was given.
+const GIT_LOCATION_ENV: [&str; 8] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+];
+
+/// Remove the [`GIT_LOCATION_ENV`] variables from `cmd` so an inherited git-hook
+/// environment can't redirect a path-targeted git call to the wrong repo.
+pub(crate) fn scrub_git_location_env(cmd: &mut Command) {
+    for var in GIT_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+}
+
+/// A `git` [`Command`] with the ambient repo-location environment scrubbed (see
+/// [`scrub_git_location_env`]). Every git invocation — production and tests —
+/// must start from this rather than a bare `Command::new("git")`, so it always
+/// targets the path it is pointed at regardless of any inherited `GIT_*` vars.
+pub(crate) fn git_program() -> Command {
+    let mut cmd = Command::new("git");
+    scrub_git_location_env(&mut cmd);
+    cmd
+}
+
 /// Build the launcher [`Command`] for an off-local host: `ssh <opts> <dest>`
 /// for an SSH host, or `wsl.exe -d <distro>` for a WSL distro. Both join and
 /// shell-interpret the trailing tokens identically, so callers append the same
@@ -33,7 +70,7 @@ fn host_launcher(h: &HostDef) -> Command {
 fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
     match host {
         None => {
-            let mut cmd = Command::new("git");
+            let mut cmd = git_program();
             cmd.current_dir(cwd);
             cmd.args(args);
             cmd
@@ -180,7 +217,7 @@ pub fn scan_child_repos(parent: &Path) -> Vec<PathBuf> {
 
 /// Parse repo name from the origin remote URL.
 fn repo_name_from_remote(path: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = git_program()
         .args(["remote", "get-url", "origin"])
         .current_dir(path)
         .stdout(Stdio::piped())
@@ -468,7 +505,7 @@ pub fn add_existing_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> 
         return Ok(wt_path);
     }
 
-    let output = Command::new("git")
+    let output = git_program()
         .args(["worktree", "add", &wt_path.display().to_string(), branch])
         .current_dir(repo_path)
         .output()
@@ -574,7 +611,7 @@ pub enum SyncResult {
 
 /// Stash uncommitted changes. Returns `true` if anything was stashed.
 fn git_stash(worktree_path: &Path) -> Result<bool> {
-    let output = Command::new("git")
+    let output = git_program()
         .args(["stash"])
         .current_dir(worktree_path)
         .output()
@@ -611,14 +648,14 @@ pub fn git_fetch_on(host: Option<&HostDef>, worktree_path: &Path) -> Result<()> 
 /// Rebase the current branch onto `base_ref`. Returns `Ok(())` on success,
 /// or an error if there are conflicts (rebase is aborted before returning).
 fn git_rebase_onto(worktree_path: &Path, base_ref: &str) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_program()
         .args(["rebase", base_ref])
         .current_dir(worktree_path)
         .output()
         .context("failed to run git rebase")?;
 
     if !output.status.success() {
-        let _ = Command::new("git")
+        let _ = git_program()
             .args(["rebase", "--abort"])
             .current_dir(worktree_path)
             .output();
@@ -632,7 +669,7 @@ fn git_rebase_onto(worktree_path: &Path, base_ref: &str) -> Result<()> {
 
 /// Pop the most recent stash entry.
 fn git_stash_pop(worktree_path: &Path) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_program()
         .args(["stash", "pop"])
         .current_dir(worktree_path)
         .output()
@@ -659,7 +696,7 @@ fn is_transient_error(msg: &str) -> bool {
 
 /// Find the shared git directory for a worktree (handles linked worktrees).
 fn git_common_dir(worktree_path: &Path) -> Option<PathBuf> {
-    let output = Command::new("git")
+    let output = git_program()
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(worktree_path)
         .stderr(Stdio::null())
@@ -893,7 +930,7 @@ pub fn sync_worktree(worktree_path: &Path, base_ref: Option<&str>) -> SyncResult
 
 /// Run `git <args>` in `cwd`, returning stdout on success (`None` otherwise).
 fn run_git_capture(args: &[&str], cwd: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = git_program()
         .args(args)
         .current_dir(cwd)
         .stdout(Stdio::piped())
@@ -980,6 +1017,23 @@ mod tests {
     use crate::paths::TestPathGuard;
 
     #[test]
+    fn git_program_scrubs_inherited_location_env() {
+        // Git exports these to hook processes; git_program must mark every one
+        // for removal so an inherited hook environment can't redirect a
+        // path-targeted git call to the wrong repo (the bug that corrupted the
+        // index when the suite ran under the pre-commit `cargo nextest` hook).
+        let cmd = git_program();
+        let removed: std::collections::HashSet<&str> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_str().unwrap())
+            .collect();
+        for var in GIT_LOCATION_ENV {
+            assert!(removed.contains(var), "git_program must scrub {var}");
+        }
+    }
+
+    #[test]
     fn parse_numstat_sums_changes() {
         let (files, ins, dels) = parse_numstat("1\t2\tfile.rs\n3\t4\tother.rs\n-\t-\tbin.png\n");
         assert_eq!(files, 3);
@@ -1032,7 +1086,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
         let git = |args: &[&str]| {
-            let ok = Command::new("git")
+            let ok = git_program()
                 .args(args)
                 .current_dir(&repo)
                 .output()
@@ -1048,7 +1102,7 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
         let base = String::from_utf8(
-            Command::new("git")
+            git_program()
                 .args(["rev-parse", "--abbrev-ref", "HEAD"])
                 .current_dir(&repo)
                 .output()
@@ -1181,7 +1235,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
         let git = |args: &[&str]| {
-            let out = Command::new("git")
+            let out = git_program()
                 .args(args)
                 .current_dir(repo)
                 .output()
@@ -1210,7 +1264,7 @@ mod tests {
         let remote = tmp.path().join("remote.git");
         let work = tmp.path().join("work");
         let run = |dir: &Path, args: &[&str]| {
-            let out = Command::new("git")
+            let out = git_program()
                 .args(args)
                 .current_dir(dir)
                 .output()
