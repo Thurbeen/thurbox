@@ -286,42 +286,57 @@ fork_args = ["fork", "--last"]
 resume_latest = true
 ```
 
-### Remote SSH sessions
+### Remote SSH & WSL sessions
 
-Like agents, remote hosts are **data**. A session can run on a
-remote machine over SSH while the TUI stays local. Hosts are
-declared in `~/.config/thurbox/hosts.toml` (seeded commented-out, so
-a fresh install has none and behaves exactly as before):
+Like agents, off-local hosts are **data**. A session can run on a
+remote machine over SSH, or inside a local **WSL distro**, while the
+TUI stays local. Hosts are declared in
+`~/.config/thurbox/hosts.toml` (seeded commented-out, so a fresh
+install has none and behaves exactly as before) — **and WSL distros
+are auto-discovered on Windows** (`wsl.exe -l -q`), so they need no
+entry at all:
 
 ```toml
 [[hosts]]
 name = "devbox"            # selectable as backend "ssh:devbox"
 destination = "me@devbox"  # resolved via ~/.ssh/config
 ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
+
+# Only needed to override an auto-discovered WSL distro's defaults:
+[[hosts]]
+name = "ubuntu"            # selectable as backend "wsl:ubuntu"
+kind = "wsl"
+distro = "Ubuntu-22.04"    # defaults to `name`
 ```
 
-Each `[[hosts]]` entry (`session::HostDef`) has two required fields
-and four optional ones — the seeded `hosts.toml` documents each
-inline:
+Each `[[hosts]]` entry (`session::HostDef`) — the seeded `hosts.toml`
+documents each field inline:
 
 | Field | Required | Default | Meaning |
 |-------|----------|---------|---------|
-| `name` | yes | — | unique id; registers the backend `ssh:<name>` and is what `--host` expects |
-| `destination` | yes | — | ssh target (`user@host` or a `~/.ssh/config` alias) |
+| `name` | yes | — | unique id; registers the backend `ssh:<name>` / `wsl:<name>` and is what `--host` expects |
+| `kind` | no | `ssh` | transport: `ssh` (remote machine) or `wsl` (local distro) |
+| `destination` | for ssh | — | ssh target (`user@host` or a `~/.ssh/config` alias) |
+| `distro` | no | `name` | WSL distro name (`kind = "wsl"` only) |
 | `ssh_opts` | no | `[]` | extra `ssh` flags, one token per array element; no `~` expansion (use absolute paths) |
-| `socket` | no | `thurbox` | remote `tmux -L` socket name |
-| `session` | no | `thurbox` | remote tmux session name |
-| `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | absolute remote dir for git worktrees |
+| `socket` | no | `thurbox` | host `tmux -L` socket name |
+| `session` | no | `thurbox` | host tmux session name |
+| `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | absolute dir on the host/distro for git worktrees |
 
-Each host becomes a session backend named `ssh:<name>`. Thurbox
-shells out to the system `ssh` binary, so authentication, keys, and
-connection multiplexing come from your `~/.ssh/config` — thurbox
-never handles credentials. The same tmux control-mode protocol runs
-over the SSH pipe, so remote sessions get identical persistence,
-multi-instance sharing, and restore-on-startup as local ones; the
-worktree and agent process live on the remote host. In the session
-list a remote session is marked with a `☁` glyph (and the info panel
-shows its `Host:`), mirroring the worktree `⑂` mark.
+Each host becomes a session backend named `ssh:<name>` / `wsl:<name>`.
+For **SSH**, thurbox shells out to the system `ssh` binary, so
+authentication, keys, and connection multiplexing come from your
+`~/.ssh/config` — thurbox never handles credentials. A **WSL distro**
+is reached with `wsl.exe -d <distro>` (no credentials, no network);
+since `wsl.exe` joins + shell-interprets its trailing tokens just like
+`ssh`, the *same* tmux control-mode protocol, POSIX quoting, and
+worktree layout apply — only the launch prefix differs. So off-local
+sessions get identical persistence, multi-instance sharing, and
+restore-on-startup as local ones; the worktree and agent process live
+on the remote host / inside the distro (a WSL distro's worktrees stay
+in its own Linux filesystem, not on `/mnt/c`). In the session list an
+off-local session is marked with a `☁` glyph (and the info panel shows
+its `Host:`), mirroring the worktree `⑂` mark.
 
 **Why a config file rather than ad-hoc destinations?** Named hosts
 give the picker stable, readable entries and let `backend_type`

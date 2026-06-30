@@ -1,11 +1,18 @@
-//! Remote-host definitions — pure data describing SSH targets thurbox can run
-//! sessions on.
+//! Remote-host definitions — pure data describing the off-local targets
+//! thurbox can run sessions on: SSH machines and local WSL distros.
 //!
 //! Loaded from `~/.config/thurbox/hosts.toml` by
-//! [`crate::agent::host_config`]. Kept here in `session` (the dependency sink)
-//! so both `agent` (which builds the SSH tmux backend) and `git` (which runs
-//! `git` over SSH for remote worktrees) can depend on the same type without
-//! crossing the module-isolation rules.
+//! [`crate::agent::host_config`] (and, for WSL, auto-discovered there too).
+//! Kept here in `session` (the dependency sink) so both `agent` (which builds
+//! the tmux backend) and `git` (which runs `git` on the host for remote
+//! worktrees) can depend on the same type without crossing the
+//! module-isolation rules.
+//!
+//! A WSL distro is modeled as "SSH without the ssh": the only difference from
+//! a remote host is the launch prefix (`wsl.exe -d <distro>` instead of
+//! `ssh <dest>`). tmux, git, the agent, and the worktrees all run *inside* the
+//! distro at native Linux paths, so everything downstream of the launcher is
+//! identical to the SSH path.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,48 +20,122 @@ use serde::{Deserialize, Serialize};
 /// (and persisted in `backend_type`) as `ssh:devbox`.
 pub const SSH_BACKEND_PREFIX: &str = "ssh:";
 
+/// The backend-name prefix for WSL distros. A distro named `Ubuntu` is
+/// registered (and persisted in `backend_type`) as `wsl:Ubuntu`.
+pub const WSL_BACKEND_PREFIX: &str = "wsl:";
+
 /// Whether a backend name refers to a remote SSH host (`ssh:<name>`).
 pub fn is_ssh_backend(backend_name: &str) -> bool {
     backend_name.starts_with(SSH_BACKEND_PREFIX)
 }
 
-/// A single remote host reachable over SSH.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Whether a backend name refers to a WSL distro (`wsl:<distro>`).
+pub fn is_wsl_backend(backend_name: &str) -> bool {
+    backend_name.starts_with(WSL_BACKEND_PREFIX)
+}
+
+/// Whether a backend name refers to any off-local host (SSH or WSL) — i.e. one
+/// that needs a launch prefix and runs git/worktrees somewhere other than the
+/// local filesystem. Local backends (`""`, `tmux`, `local-tmux`) are not.
+pub fn is_remote_backend(backend_name: &str) -> bool {
+    is_ssh_backend(backend_name) || is_wsl_backend(backend_name)
+}
+
+/// How thurbox reaches a host: over SSH, or into a local WSL distro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HostKind {
+    /// A remote machine reached with `ssh <destination>`.
+    #[default]
+    Ssh,
+    /// A local Windows Subsystem for Linux distro reached with
+    /// `wsl.exe -d <distro>`.
+    Wsl,
+}
+
+/// A single off-local host: an SSH machine or a local WSL distro.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HostDef {
-    /// Short, unique name. The backend is registered as `ssh:<name>`.
+    /// Short, unique name. The backend is registered as `ssh:<name>` or
+    /// `wsl:<name>` depending on [`kind`](Self::kind).
     pub name: String,
+    /// Transport kind: SSH (default) or WSL.
+    #[serde(default)]
+    pub kind: HostKind,
     /// SSH destination (e.g. `me@devbox`), resolved via the user's
-    /// `~/.ssh/config`.
+    /// `~/.ssh/config`. Required for [`HostKind::Ssh`]; ignored for WSL.
+    #[serde(default)]
     pub destination: String,
-    /// Optional override for the remote `tmux -L` socket name. Defaults to the
+    /// WSL distro name (e.g. `Ubuntu`). Defaults to [`name`](Self::name) when
+    /// unset. Ignored for [`HostKind::Ssh`].
+    #[serde(default)]
+    pub distro: Option<String>,
+    /// Optional override for the host's `tmux -L` socket name. Defaults to the
     /// same socket thurbox uses locally.
     #[serde(default)]
     pub socket: Option<String>,
-    /// Optional override for the remote tmux session name.
+    /// Optional override for the host's tmux session name.
     #[serde(default)]
     pub session: Option<String>,
     /// Extra `ssh` flags inserted before the destination (e.g.
-    /// `["-o", "ControlMaster=auto"]`).
+    /// `["-o", "ControlMaster=auto"]`). SSH-only.
     #[serde(default)]
     pub ssh_opts: Vec<String>,
-    /// Optional absolute remote directory under which git worktrees are
-    /// created. When unset, the remote `$HOME/.local/share/thurbox/worktrees`
-    /// is resolved at spawn time.
+    /// Optional absolute directory (inside the host / distro) under which git
+    /// worktrees are created. When unset, the host's
+    /// `$HOME/.local/share/thurbox/worktrees` is resolved at spawn time.
     #[serde(default)]
     pub worktrees_dir: Option<String>,
-    /// Optional remote multiplexer binary. Defaults to `tmux`; set to `psmux`
-    /// for a Windows host (psmux speaks the same control-mode wire protocol).
+    /// Optional multiplexer binary on the host. Defaults to `tmux` (the WSL
+    /// distro and a Unix SSH host both run `tmux`); set to `psmux` for a
+    /// Windows SSH host (psmux speaks the same control-mode wire protocol).
     #[serde(default)]
     pub multiplexer: Option<String>,
 }
 
 impl HostDef {
-    /// The backend name this host registers under: `ssh:<name>`.
-    pub fn backend_name(&self) -> String {
-        format!("{SSH_BACKEND_PREFIX}{}", self.name)
+    /// Construct an auto-discovered WSL host for `distro` with all defaults.
+    pub fn wsl(distro: impl Into<String>) -> Self {
+        let distro = distro.into();
+        Self {
+            name: distro.clone(),
+            kind: HostKind::Wsl,
+            distro: Some(distro),
+            ..Self::default()
+        }
     }
 
-    /// The remote multiplexer binary for this host (`tmux` unless overridden).
+    /// Whether this host is a WSL distro.
+    pub fn is_wsl(&self) -> bool {
+        self.kind == HostKind::Wsl
+    }
+
+    /// The WSL distro name (the explicit `distro` field, else the host `name`).
+    /// Only meaningful for [`HostKind::Wsl`].
+    pub fn distro_name(&self) -> String {
+        self.distro.clone().unwrap_or_else(|| self.name.clone())
+    }
+
+    /// The backend name this host registers under: `ssh:<name>` or
+    /// `wsl:<name>`.
+    pub fn backend_name(&self) -> String {
+        let prefix = match self.kind {
+            HostKind::Ssh => SSH_BACKEND_PREFIX,
+            HostKind::Wsl => WSL_BACKEND_PREFIX,
+        };
+        format!("{prefix}{}", self.name)
+    }
+
+    /// A short detail string for the host picker (the SSH destination, or
+    /// `WSL` for a distro).
+    pub fn picker_detail(&self) -> String {
+        match self.kind {
+            HostKind::Ssh => self.destination.clone(),
+            HostKind::Wsl => "WSL".to_string(),
+        }
+    }
+
+    /// The host's multiplexer binary (`tmux` unless overridden).
     pub fn mux(&self) -> String {
         self.multiplexer
             .clone()
@@ -81,9 +162,11 @@ impl HostRegistry {
         self.hosts.iter().find(|h| h.name == name)
     }
 
-    /// Look up a host by its `ssh:<name>` backend name.
+    /// Look up a host by its `ssh:<name>` or `wsl:<name>` backend name.
     pub fn get_by_backend(&self, backend_name: &str) -> Option<&HostDef> {
-        let bare = backend_name.strip_prefix(SSH_BACKEND_PREFIX)?;
+        let bare = backend_name
+            .strip_prefix(SSH_BACKEND_PREFIX)
+            .or_else(|| backend_name.strip_prefix(WSL_BACKEND_PREFIX))?;
         self.get(bare)
     }
 
@@ -107,33 +190,96 @@ mod tests {
         let h = HostDef {
             name: "devbox".into(),
             destination: "me@devbox".into(),
-            socket: None,
-            session: None,
-            ssh_opts: vec![],
-            worktrees_dir: None,
-            multiplexer: None,
+            ..Default::default()
         };
         assert_eq!(h.backend_name(), "ssh:devbox");
+    }
+
+    #[test]
+    fn wsl_constructor_and_backend_name() {
+        let h = HostDef::wsl("Ubuntu");
+        assert!(h.is_wsl());
+        assert_eq!(h.kind, HostKind::Wsl);
+        assert_eq!(h.distro_name(), "Ubuntu");
+        assert_eq!(h.backend_name(), "wsl:Ubuntu");
+        assert_eq!(h.picker_detail(), "WSL");
+        // WSL distros run `tmux` inside the distro, same as a Unix SSH host.
+        assert_eq!(h.mux(), "tmux");
+
+        // An SSH host (the default kind) keeps the ssh prefix and is not WSL.
+        let ssh = HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        };
+        assert!(!ssh.is_wsl());
+        assert_eq!(ssh.picker_detail(), "me@devbox");
+    }
+
+    #[test]
+    fn distro_name_falls_back_to_host_name() {
+        let h = HostDef {
+            name: "work".into(),
+            kind: HostKind::Wsl,
+            distro: None,
+            ..Default::default()
+        };
+        assert_eq!(h.distro_name(), "work");
+    }
+
+    #[test]
+    fn backend_predicates_classify_prefixes() {
+        assert!(is_ssh_backend("ssh:devbox"));
+        assert!(!is_ssh_backend("wsl:Ubuntu"));
+        assert!(is_wsl_backend("wsl:Ubuntu"));
+        assert!(!is_wsl_backend("ssh:devbox"));
+        assert!(is_remote_backend("ssh:devbox"));
+        assert!(is_remote_backend("wsl:Ubuntu"));
+        assert!(!is_remote_backend("local-tmux"));
+        assert!(!is_remote_backend(""));
     }
 
     #[test]
     fn registry_lookup_by_name_and_backend() {
         let reg = HostRegistry {
             config_version: None,
-            hosts: vec![HostDef {
-                name: "devbox".into(),
-                destination: "me@devbox".into(),
-                socket: None,
-                session: None,
-                ssh_opts: vec![],
-                worktrees_dir: None,
-                multiplexer: None,
-            }],
+            hosts: vec![
+                HostDef {
+                    name: "devbox".into(),
+                    destination: "me@devbox".into(),
+                    ..Default::default()
+                },
+                HostDef::wsl("Ubuntu"),
+            ],
         };
         assert_eq!(reg.get("devbox").unwrap().destination, "me@devbox");
         assert_eq!(reg.get_by_backend("ssh:devbox").unwrap().name, "devbox");
+        assert_eq!(reg.get_by_backend("wsl:Ubuntu").unwrap().name, "Ubuntu");
         assert!(reg.get_by_backend("devbox").is_none());
         assert!(reg.get_by_backend("local-tmux").is_none());
+    }
+
+    #[test]
+    fn parses_wsl_host_from_toml() {
+        let toml = r#"
+[[hosts]]
+name = "Ubuntu"
+kind = "wsl"
+
+[[hosts]]
+name = "custom"
+kind = "wsl"
+distro = "Debian"
+worktrees_dir = "/home/me/wt"
+"#;
+        let reg: HostRegistry = toml::from_str(toml).unwrap();
+        let u = reg.get("Ubuntu").unwrap();
+        assert!(u.is_wsl());
+        assert_eq!(u.distro_name(), "Ubuntu");
+        assert_eq!(u.backend_name(), "wsl:Ubuntu");
+        let c = reg.get("custom").unwrap();
+        assert_eq!(c.distro_name(), "Debian");
+        assert_eq!(c.worktrees_dir.as_deref(), Some("/home/me/wt"));
     }
 
     #[test]

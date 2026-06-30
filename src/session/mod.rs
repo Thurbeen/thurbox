@@ -18,7 +18,10 @@ pub use extension_def::{
     AgentPatch, ConfigMerge, ExtensionAutomation, ExtensionDef, ExtensionFile, ExtensionSession,
     ExtensionSymlink, ExternalFile,
 };
-pub use host_def::{is_ssh_backend, HostDef, HostRegistry, SSH_BACKEND_PREFIX};
+pub use host_def::{
+    is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef, HostKind, HostRegistry,
+    SSH_BACKEND_PREFIX, WSL_BACKEND_PREFIX,
+};
 pub use keybindings::{Action, KeyBindings, KeyChord, KeyContext};
 pub use message::SessionMessage;
 pub use review::{

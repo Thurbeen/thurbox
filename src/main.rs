@@ -224,14 +224,15 @@ fn init_backends_and_config() -> Result<(
         thurbox::agent::settings_config::load_or_seed_with_warnings();
     thurbox::session::settings::init(settings);
 
-    // Register one SSH backend per configured remote host
-    // (~/.config/thurbox/hosts.toml). These are registered lazily: a down or
+    // Register one backend per off-local host: each configured SSH host in
+    // ~/.config/thurbox/hosts.toml, plus every auto-discovered local WSL distro
+    // (`wsl.exe -l -q`, Windows only). These are registered lazily: a down or
     // slow host must not block TUI startup, so check_available()/ensure_ready()
     // are deferred to first spawn/restore (see App::backend_for).
-    let (hosts, host_warnings) = thurbox::agent::host_config::load_or_seed_with_warnings();
+    let (hosts, host_warnings) = thurbox::agent::host_config::load_all_with_warnings();
     config_warnings.extend(host_warnings);
     for host in &hosts.hosts {
-        tracing::debug!(host = %host.name, dest = %host.destination, "Registering SSH backend");
+        tracing::debug!(host = %host.name, backend = %host.backend_name(), "Registering backend");
         backends.register(Arc::new(TmuxBackend::from_host(host)));
     }
 

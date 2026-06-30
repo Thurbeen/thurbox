@@ -37,6 +37,23 @@ pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
     cmd
 }
 
+/// Build a `wsl.exe -d <distro>` [`Command`], ready for the caller to append
+/// the in-distro command and its arguments.
+///
+/// This is the WSL analogue of [`ssh_command`]: `wsl.exe` joins the trailing
+/// arguments with spaces and runs them through the distro's default login
+/// shell (it only bypasses the shell with `-e`/`--exec`, which we don't pass),
+/// exactly like `ssh <dest> <command>`. So callers append the *same*
+/// POSIX-quoted tokens they would for SSH — the in-distro shell re-splits them
+/// identically. No `--` separator is used (none of thurbox's commands start
+/// with a `-`, matching the SSH path which also omits it), so distros are
+/// reached uniformly on every supported `wsl.exe`.
+pub fn wsl_command(distro: &str) -> Command {
+    let mut cmd = Command::new("wsl.exe");
+    cmd.arg("-d").arg(distro);
+    cmd
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +81,16 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert_eq!(args, ["-p", "2222", "me@box"]);
+    }
+
+    #[test]
+    fn wsl_command_sets_program_and_distro() {
+        let cmd = wsl_command("Ubuntu");
+        assert_eq!(cmd.get_program().to_string_lossy(), "wsl.exe");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["-d", "Ubuntu"]);
     }
 }

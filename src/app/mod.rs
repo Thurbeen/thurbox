@@ -1089,7 +1089,8 @@ impl App {
 
     /// Entry point for the new-session wizard.
     ///
-    /// When remote hosts are configured (`hosts.toml`), first shows the host
+    /// When any off-local host is available — a configured SSH/WSL host
+    /// (`hosts.toml`) or an auto-discovered WSL distro — first shows the host
     /// picker so the user can choose where the session runs; otherwise goes
     /// straight to the repo picker (preserving the local-only UX).
     pub(crate) fn start_new_session(&mut self) {
@@ -1107,7 +1108,7 @@ impl App {
         }];
         for host in &self.hosts.hosts {
             choices.push(crate::ui::host_picker_modal::HostChoice {
-                label: format!("{}  ({})", host.name, host.destination),
+                label: format!("{}  ({})", host.name, host.picker_detail()),
                 backend: host.backend_name(),
             });
         }
@@ -1808,9 +1809,10 @@ impl App {
             cwd,
         );
         config.resume_session_id = deleted.agent_session_id;
-        // Preserve the persisted backend so a restored remote (`ssh:<host>`)
-        // session keeps its backend name on the config; local sessions stay `None`.
-        if crate::session::is_ssh_backend(&deleted.backend_type) {
+        // Preserve the persisted backend so a restored off-local
+        // (`ssh:<host>` / `wsl:<distro>`) session keeps its backend name on the
+        // config; local sessions stay `None`.
+        if crate::session::is_remote_backend(&deleted.backend_type) {
             config.backend = Some(deleted.backend_type.clone());
         }
 
@@ -2982,20 +2984,22 @@ impl App {
         &self,
         backend: Option<&str>,
     ) -> Option<&crate::session::HostDef> {
-        // `get_by_backend` already returns `None` for non-`ssh:` names.
+        // `get_by_backend` returns `None` for local (`non-ssh:`/`non-wsl:`)
+        // names.
         self.hosts.get_by_backend(backend?)
     }
 
     /// Resolve the backend for a *persisted* session by its `backend_type`, or
     /// `None` when this instance cannot manage it.
     ///
-    /// An unknown `ssh:<host>` backend (e.g. a host this instance hasn't loaded
-    /// from `hosts.toml`, or another instance configured) is **skipped** rather
-    /// than falling back to local — adopting a remote session on the local
-    /// backend would corrupt its `backend_type` and risk a pane-id collision
-    /// (tmux numbers panes `%N` per server, so a remote `%1` can match an
-    /// unrelated local `%1`). Legacy/local values (empty, `tmux`, `local-tmux`)
-    /// still fall back to the default local backend.
+    /// An unknown off-local backend (`ssh:<host>` / `wsl:<distro>` — e.g. a host
+    /// this instance hasn't loaded from `hosts.toml`, a distro not present here,
+    /// or one another instance configured) is **skipped** rather than falling
+    /// back to local — adopting an off-local session on the local backend would
+    /// corrupt its `backend_type` and risk a pane-id collision (tmux numbers
+    /// panes `%N` per server, so a remote `%1` can match an unrelated local
+    /// `%1`). Legacy/local values (empty, `tmux`, `local-tmux`) still fall back
+    /// to the default local backend.
     pub(crate) fn resolve_persisted_backend(
         &self,
         backend_type: &str,
@@ -3003,7 +3007,7 @@ impl App {
         if let Some(b) = self.backends.get(backend_type) {
             return Some(b.clone());
         }
-        if crate::session::is_ssh_backend(backend_type) {
+        if crate::session::is_remote_backend(backend_type) {
             return None;
         }
         Some(self.backends.default_backend().clone())
@@ -5859,42 +5863,42 @@ mod tests {
         let mut app = app_with_sessions(0);
         app.set_hosts(crate::session::HostRegistry {
             config_version: None,
-            hosts: vec![crate::session::HostDef {
-                name: "devbox".into(),
-                destination: "me@devbox".into(),
-                socket: None,
-                session: None,
-                ssh_opts: vec![],
-                worktrees_dir: None,
-                multiplexer: None,
-            }],
+            hosts: vec![
+                crate::session::HostDef {
+                    name: "devbox".into(),
+                    destination: "me@devbox".into(),
+                    ..Default::default()
+                },
+                crate::session::HostDef::wsl("Ubuntu"),
+            ],
         });
         app.start_new_session();
         match app.modal {
             modals::Modal::HostPicker(ref hp) => {
-                // "local" first, then each ssh host.
-                assert_eq!(hp.choices.len(), 2);
+                // "local" first, then each off-local host (ssh + wsl).
+                assert_eq!(hp.choices.len(), 3);
                 assert_eq!(hp.choices[0].backend, "");
                 assert_eq!(hp.choices[1].backend, "ssh:devbox");
+                assert_eq!(hp.choices[2].backend, "wsl:Ubuntu");
+                assert!(hp.choices[2].label.contains("WSL"));
             }
             ref other => panic!("expected host picker, got {other:?}"),
         }
     }
 
     #[test]
-    fn host_for_backend_resolves_ssh_only() {
+    fn host_for_backend_resolves_ssh_and_wsl() {
         let mut app = app_with_sessions(0);
         app.set_hosts(crate::session::HostRegistry {
             config_version: None,
-            hosts: vec![crate::session::HostDef {
-                name: "devbox".into(),
-                destination: "me@devbox".into(),
-                socket: None,
-                session: None,
-                ssh_opts: vec![],
-                worktrees_dir: None,
-                multiplexer: None,
-            }],
+            hosts: vec![
+                crate::session::HostDef {
+                    name: "devbox".into(),
+                    destination: "me@devbox".into(),
+                    ..Default::default()
+                },
+                crate::session::HostDef::wsl("Ubuntu"),
+            ],
         });
         assert!(app.host_for_backend(None).is_none());
         assert!(app.host_for_backend(Some("local-tmux")).is_none());
@@ -5904,6 +5908,7 @@ mod tests {
                 .destination,
             "me@devbox"
         );
+        assert!(app.host_for_backend(Some("wsl:Ubuntu")).unwrap().is_wsl());
         assert!(app.host_for_backend(Some("ssh:unknown")).is_none());
     }
 

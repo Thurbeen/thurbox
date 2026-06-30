@@ -318,13 +318,13 @@ impl ShellPane {
     }
 }
 
-/// The bare remote host name for a session's backend (e.g. `devbox` for an
-/// `ssh:devbox` backend), or `None` for local backends. Drives the session
-/// list's remote indicator.
+/// The bare host name for a session's off-local backend (e.g. `devbox` for an
+/// `ssh:devbox` backend, `Ubuntu` for a `wsl:Ubuntu` backend), or `None` for
+/// local backends. Drives the session list's remote indicator.
 fn remote_host_from_backend(backend: &Arc<dyn SessionBackend>) -> Option<String> {
-    backend
-        .name()
-        .strip_prefix(crate::session::SSH_BACKEND_PREFIX)
+    let name = backend.name();
+    name.strip_prefix(crate::session::SSH_BACKEND_PREFIX)
+        .or_else(|| name.strip_prefix(crate::session::WSL_BACKEND_PREFIX))
         .map(str::to_string)
 }
 
@@ -1069,19 +1069,20 @@ mod tests {
     }
 
     #[test]
-    fn remote_host_from_backend_strips_ssh_prefix() {
+    fn remote_host_from_backend_strips_ssh_and_wsl_prefixes() {
         let host = crate::session::HostDef {
             name: "devbox".into(),
             destination: "me@devbox".into(),
-            socket: None,
-            session: None,
-            ssh_opts: vec![],
-            worktrees_dir: None,
-            multiplexer: None,
+            ..Default::default()
         };
         let ssh: Arc<dyn SessionBackend> =
             Arc::new(crate::agent::tmux::TmuxBackend::from_host(&host));
         assert_eq!(remote_host_from_backend(&ssh).as_deref(), Some("devbox"));
+
+        let wsl: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::TmuxBackend::from_host(
+            &crate::session::HostDef::wsl("Ubuntu"),
+        ));
+        assert_eq!(remote_host_from_backend(&wsl).as_deref(), Some("Ubuntu"));
 
         let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::TmuxBackend::local());
         assert_eq!(remote_host_from_backend(&local), None);

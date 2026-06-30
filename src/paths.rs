@@ -55,6 +55,16 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from)
 }
 
+/// Whether `exe` resolves on `PATH`. A minimal lookup that avoids pulling in a
+/// `which` crate for a one-off probe (used to detect optional helper binaries
+/// like `wsl.exe` / `powershell.exe`); cheap PATH scan, no process spawn.
+pub fn which_on_path(exe: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(exe).exists())
+}
+
 /// Base directory for config files. `$XDG_CONFIG_HOME` wins on every platform
 /// (some users set it on Windows too); otherwise `%APPDATA%` on Windows,
 /// `$HOME/.config` on Unix.
@@ -535,6 +545,27 @@ mod tests {
             display_path(Path::new("/home/user/Repositories/thurbox")),
             "thurbox"
         );
+    }
+
+    #[test]
+    fn which_on_path_finds_present_and_rejects_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // `which_on_path` checks for the file verbatim (no `.exe` munging), so a
+        // plain marker filename resolves identically on every platform.
+        let marker = "tbx_which_probe_marker";
+        std::fs::write(dir.path().join(marker), b"").unwrap();
+
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", dir.path());
+        let found = which_on_path(marker);
+        let missing = which_on_path("tbx_which_probe_absent");
+        match saved {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+
+        assert!(found, "marker on PATH should be found");
+        assert!(!missing, "a name not on PATH should not be found");
     }
 
     #[test]

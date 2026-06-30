@@ -449,82 +449,107 @@ PATH` (as-is); `AutomationAction::Spawn` persists the list as JSON in the
 `NULL`/empty = single-repo, so old rows are byte-identical). The flow extension's
 `create-task.sh` forwards these flags (see `extensions/flow/FLOW.md`).
 
-## Remote SSH Sessions
+## Remote SSH & WSL Sessions
 
-Sessions can run on a **remote host** over SSH while the TUI runs
-locally. Remote hosts are declared as data in
-`~/.config/thurbox/hosts.toml` (seeded commented-out on first run,
-so a fresh install has zero remote hosts and behaves as before). The
-seeded file documents every field inline; the schema:
+Sessions can run on an **off-local host** while the TUI runs locally: a
+**remote machine over SSH**, or a **local WSL distro** (`wsl.exe`). A WSL
+distro is modeled as "SSH without the ssh" — the *only* difference is the
+launch prefix (`wsl.exe -d <distro>` vs `ssh <dest>`); tmux, git, the agent,
+and the worktrees all run **inside the distro** at native Linux paths, so
+everything downstream of the launcher (control-mode protocol, POSIX quoting,
+worktree layout) is identical to the SSH path — no `wslpath` translation. Hosts
+are declared as data in `~/.config/thurbox/hosts.toml` (seeded commented-out;
+fresh install = zero SSH hosts, behaves as before), **plus WSL distros are
+auto-discovered on Windows** (`wsl.exe -l -q`) with no config. The seeded file
+documents every field inline; the schema:
 
 ```toml
+# An SSH host (the default kind):
 [[hosts]]
 name = "devbox"               # required — backend id "ssh:devbox"; what --host expects
-destination = "me@devbox"     # required — ssh target ("user@host" or ~/.ssh/config alias)
+destination = "me@devbox"     # required for ssh — target ("user@host" or ~/.ssh/config alias)
 ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]
                               # optional (default []) — extra ssh flags; no ~ expansion, use abs paths
-socket = "thurbox"            # optional (default "thurbox") — remote `tmux -L` socket
-session = "thurbox"           # optional (default "thurbox") — remote tmux session name
+socket = "thurbox"            # optional (default "thurbox") — host `tmux -L` socket
+session = "thurbox"           # optional (default "thurbox") — host tmux session name
 worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
-                              # optional — abs remote worktrees dir
-                              # (default $HOME/.local/share/thurbox/worktrees, resolved over ssh)
-multiplexer = "tmux"          # optional (default "tmux") — set "psmux" for a Windows host
+                              # optional — abs worktrees dir on the host
+multiplexer = "tmux"          # optional (default "tmux") — set "psmux" for a Windows SSH host
+
+# A WSL distro (only needed to OVERRIDE auto-discovery, e.g. a custom worktrees_dir):
+[[hosts]]
+name = "ubuntu"               # → backend "wsl:ubuntu"; what --host expects
+kind = "wsl"                  # required to select the WSL transport
+distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro name
 ```
 
 | Field | Req | Default | Purpose |
 |-------|-----|---------|---------|
-| `name` | yes | — | unique id; registers backend `ssh:<name>` |
-| `destination` | yes | — | ssh target, resolved via `~/.ssh/config` |
+| `name` | yes | — | unique id; registers backend `ssh:<name>` / `wsl:<name>` |
+| `kind` | no | `ssh` | transport: `ssh` (remote machine) or `wsl` (local distro) |
+| `destination` | ssh | — | ssh target, resolved via `~/.ssh/config` |
+| `distro` | no | `name` | WSL distro name (`kind = "wsl"` only) |
 | `ssh_opts` | no | `[]` | extra `ssh` flags (one token per element; no `~` expansion) |
-| `socket` | no | `thurbox` | remote `tmux -L` socket name |
-| `session` | no | `thurbox` | remote tmux session name |
-| `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | abs remote worktrees dir |
-| `multiplexer` | no | `tmux` | remote multiplexer binary; `psmux` for a Windows host |
+| `socket` | no | `thurbox` | host `tmux -L` socket name |
+| `session` | no | `thurbox` | host tmux session name |
+| `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | abs worktrees dir on the host/distro |
+| `multiplexer` | no | `tmux` | host multiplexer binary; `psmux` for a Windows SSH host |
 
 How it works: `TmuxBackend` is transport-neutral
 (`agent::transport::TmuxTransport`). The local backend launches
-`<mux> -L thurbox …`; a remote backend launches
-`ssh <dest> <mux> -L thurbox …`. The multiplexer binary (`agent::transport::DEFAULT_MUX`)
-is **`tmux` on Linux/macOS and `psmux` on Windows** — psmux is a native-Windows,
-drop-in tmux clone (ConPTY, no WSL) speaking the **same control-mode wire
-protocol** and pane-id (`%N`) / `-L` socket model, so the whole backend is
-parameterized by binary name rather than forked (a remote host can also pin
-`multiplexer = "psmux"`). The **control-mode** protocol
-(`control_mode.rs`) is byte-identical over either transport/binary, with one
+`<mux> -L thurbox …`; an SSH backend launches `ssh <dest> <mux> -L thurbox …`;
+a **WSL backend launches `wsl.exe -d <distro> tmux -L thurbox …`**
+(`TmuxTransport::Wsl`). `wsl.exe` joins + shell-interprets the trailing tokens
+exactly like `ssh`, so the same POSIX quoting (`shell::posix_quote`) and the
+byte-identical control-mode protocol (`control_mode.rs`) apply — only the
+one-time process launch differs. The local `DEFAULT_MUX` is **`tmux` on
+Linux/macOS and `psmux` on Windows** — psmux is a native-Windows, drop-in tmux
+clone (ConPTY, no WSL) speaking the **same control-mode wire protocol** and
+pane-id (`%N`) / `-L` socket model, so the whole backend is parameterized by
+binary name rather than forked (a remote SSH host can also pin
+`multiplexer = "psmux"`); a WSL distro runs `tmux` inside the distro. The
+control-mode protocol is byte-identical over either transport/binary, with one
 keystroke-encoding exception: psmux does **not** implement tmux's `send-keys
 -H` hex flag (given `-H 62` it injects the literal text "62", so typing `b`,
 Enter, Backspace, … were all broken on Windows). So `send_keys_commands`
-branches on `TmuxTransport::uses_psmux()` — tmux keeps the byte-exact `-H`
-hex path; psmux gets an equivalent encoding built from the primitives it
-*does* support (`send-keys -l` literal runs + `Enter`/`Tab`/`Escape`/`BSpace`/
-`C-<letter>` key-names), reconstructing the same byte stream the pane's PTY
-receives. Otherwise only the one-time process launch differs. Each host registers a backend
-named `ssh:<name>` (`TmuxBackend::from_host`, registered lazily in
-`main.rs`: a down host must not block startup, so
-`check_available`/`ensure_ready` are deferred to first use via
-`App::backend_for`).
+branches on `TmuxTransport::uses_psmux()` — tmux (incl. a WSL distro's tmux)
+keeps the byte-exact `-H` hex path; psmux gets an equivalent encoding built from
+the primitives it *does* support (`send-keys -l` literal runs +
+`Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names), reconstructing the same
+byte stream the pane's PTY receives. Each host registers a backend named
+`ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
+`main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
+not block startup, so `check_available`/`ensure_ready` are deferred to first use
+via `App::backend_for`).
 
-- **Data**: `session::HostDef`/`HostRegistry` (pure data, in
-  `session/` so both `agent` and `git` can use it). **Loading**:
-  `agent::host_config::load_or_seed()`.
-- **Selection**: `SessionConfig.backend` (`ssh:<host>` or `None` =
-  local). The TUI new-session flow shows a **host picker** first
-  (skipped when no hosts are configured); the chosen host runs git
-  worktree creation + branch listing on that host over SSH.
-- **Worktrees**: `git::*_on(host, …)` variants run `git` over
-  `ssh <dest> git -C <repo> …`. Remote worktrees live under the
-  host's `worktrees_dir` (or `$HOME/.local/share/thurbox/worktrees`
-  resolved + cached over ssh).
-- **Persistence/restore**: `backend_type` already round-trips in
-  SQLite; restore discovers windows **per backend** so remote
-  sessions re-adopt against their own host.
-- **Headless**: `thurbox-cli session create --host <name>` spawns
-  remotely (see below).
-- **Local e2e**: `scripts/dev/remote-ssh-test.sh up` spins a
-  throwaway Podman container (sshd + tmux + git) and `… test` runs
-  an isolated headless smoke test asserting a session lands on the
-  `ssh:podman` backend (state under `target/`, never touches your
-  real `~/.ssh`/`~/.config`).
+- **Data**: `session::HostDef` (with `kind: HostKind {Ssh, Wsl}`) /
+  `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use
+  it); backend-name helpers `is_ssh_backend`/`is_wsl_backend`/
+  `is_remote_backend`. **Loading**: `agent::host_config::load_all{,_with_warnings}`
+  = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry wins).
+- **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>` or `None`
+  = local). The TUI new-session flow shows a **host picker** first (skipped when
+  none configured/discovered); the chosen host runs git worktree creation +
+  branch listing on that host.
+- **Worktrees**: `git::*_on(host, …)` variants run `git` via the host launcher
+  (`git::host_launcher` → `ssh …` or `wsl.exe …`). Worktrees live under the
+  host's `worktrees_dir` (or `$HOME/.local/share/thurbox/worktrees` resolved +
+  cached per backend name — a WSL distro has no `destination`).
+- **Persistence/restore**: `backend_type` round-trips in SQLite; restore
+  discovers windows **per backend** so off-local sessions re-adopt against their
+  own host.
+- **Headless**: `thurbox-cli session create --host <name>` spawns on the host
+  (an SSH name or an auto-discovered WSL distro name).
+- **Caveats** (WSL inherits the SSH path): the headless `session delete --force`
+  teardown (`kill_window`/`git::remove_worktree`) is local-only — a `--force`
+  delete won't kill the in-distro window or remove the in-distro worktree (the
+  TUI's own teardown is backend-aware). `wsl.exe`'s exact arg-passing isn't
+  verified in CI (no WSL runner); the construction is unit-tested
+  (`transport::tests::wsl_*`, `git_command_wsl_*`).
+- **Local e2e**: `scripts/dev/remote-ssh-test.sh up` spins a throwaway Podman
+  container (sshd + tmux + git) and `… test` asserts a session lands on the
+  `ssh:podman` backend (state under `target/`, never touches your real
+  `~/.ssh`/`~/.config`).
 
 ## thurbox-cli
 

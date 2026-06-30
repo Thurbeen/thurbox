@@ -235,7 +235,10 @@ fn render_show(report: &Value) -> String {
 
 fn show(db: &Database) -> Result<Value, String> {
     let agents = crate::agent::agent_config::load_or_seed();
-    let hosts = crate::agent::host_config::load_or_seed();
+    // The *effective* host set: configured SSH/WSL hosts plus auto-discovered
+    // WSL distros — matching what `--host` and the TUI picker actually offer
+    // (`config validate` stays file-only).
+    let hosts = crate::agent::host_config::load_all();
     let settings = crate::session::settings::global();
     let (custom_themes, _) = crate::agent::themes_config::load_or_seed_with_warnings();
 

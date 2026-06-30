@@ -527,8 +527,9 @@ impl TmuxBackend {
         }
     }
 
-    /// Build a remote tmux backend that runs `tmux` over SSH on `host`. The
-    /// backend is named `ssh:<host.name>` and uses the same socket/session
+    /// Build an off-local tmux backend for `host` — `tmux` over SSH for an SSH
+    /// host, or `tmux` inside a WSL distro via `wsl.exe`. The backend is named
+    /// `ssh:<host.name>` / `wsl:<host.name>` and uses the same socket/session
     /// names as the local backend unless the host overrides them.
     pub fn from_host(host: &crate::session::HostDef) -> Self {
         let socket = host
@@ -539,16 +540,19 @@ impl TmuxBackend {
             .session
             .clone()
             .unwrap_or_else(|| TMUX_SESSION.to_string());
-        Self::with_transport(
+        let transport = if host.is_wsl() {
+            TmuxTransport::Wsl {
+                distro: host.distro_name(),
+                mux: host.mux(),
+            }
+        } else {
             TmuxTransport::Ssh {
                 destination: host.destination.clone(),
                 ssh_opts: host.ssh_opts.clone(),
                 mux: host.mux(),
-            },
-            socket,
-            session,
-            host.backend_name(),
-        )
+            }
+        };
+        Self::with_transport(transport, socket, session, host.backend_name())
     }
 
     /// Run a tmux command and return its stdout (used before control mode is available).
@@ -1650,16 +1654,27 @@ mod tests {
         let host = crate::session::HostDef {
             name: "devbox".into(),
             destination: "me@devbox".into(),
-            socket: None,
-            session: None,
             ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
-            worktrees_dir: None,
-            multiplexer: None,
+            ..Default::default()
         };
         let backend = TmuxBackend::from_host(&host);
         assert_eq!(backend.name(), "ssh:devbox");
         assert!(backend.transport.is_remote());
         // Falls back to the default socket/session when the host omits them.
+        assert_eq!(backend.socket, TMUX_SOCKET);
+        assert_eq!(backend.session, TMUX_SESSION);
+    }
+
+    #[test]
+    fn from_host_builds_named_wsl_backend() {
+        let host = crate::session::HostDef::wsl("Ubuntu");
+        let backend = TmuxBackend::from_host(&host);
+        assert_eq!(backend.name(), "wsl:Ubuntu");
+        assert!(backend.transport.is_remote());
+        assert!(matches!(
+            backend.transport,
+            TmuxTransport::Wsl { ref distro, .. } if distro == "Ubuntu"
+        ));
         assert_eq!(backend.socket, TMUX_SOCKET);
         assert_eq!(backend.session, TMUX_SESSION);
     }
@@ -1671,9 +1686,7 @@ mod tests {
             destination: "vm".into(),
             socket: Some("tb-vm".into()),
             session: Some("sess-vm".into()),
-            ssh_opts: vec![],
-            worktrees_dir: None,
-            multiplexer: None,
+            ..Default::default()
         };
         let backend = TmuxBackend::from_host(&host);
         assert_eq!(backend.socket, "tb-vm");

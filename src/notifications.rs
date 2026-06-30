@@ -297,7 +297,7 @@ fn dispatch_macos(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(target_os = "macos")]
 fn terminal_notifier_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| which_on_path("terminal-notifier"))
+    *AVAILABLE.get_or_init(|| crate::paths::which_on_path("terminal-notifier"))
 }
 
 #[cfg(target_os = "macos")]
@@ -604,15 +604,7 @@ fn detect_dbus_service() -> bool {
 
 /// `powershell.exe` on `PATH` (WSL interop). Cheap PATH scan; no process spawn.
 fn detect_powershell() -> bool {
-    which_on_path("powershell.exe")
-}
-
-/// Minimal `PATH` lookup (avoids pulling in a `which` crate for one probe).
-fn which_on_path(exe: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| dir.join(exe).exists())
+    crate::paths::which_on_path("powershell.exe")
 }
 
 /// SQLite `metadata` key the click handler writes to. The TUI's

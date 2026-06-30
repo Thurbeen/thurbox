@@ -336,19 +336,21 @@ fn dir_label(path: &std::path::Path) -> String {
 
 /// Resolve `--host` to `(backend_type, host)`.
 ///
-/// `None`/empty → the local backend. A named host must exist in `hosts.toml`,
-/// otherwise an error is returned listing the available hosts.
+/// `None`/empty → the local backend. A named host must exist in `hosts.toml`
+/// **or** be an auto-discovered local WSL distro, otherwise an error is
+/// returned listing the available hosts.
 fn resolve_host(host_name: Option<&str>) -> Result<(String, Option<HostDef>), String> {
     let Some(name) = host_name.filter(|n| !n.is_empty()) else {
         return Ok((LOCAL_TMUX_BACKEND_TYPE.to_string(), None));
     };
-    let registry = crate::agent::host_config::load_or_seed();
+    let registry = crate::agent::host_config::load_all();
     match registry.get(name) {
         Some(h) => Ok((h.backend_name(), Some(h.clone()))),
         None => {
             let available = registry.names().join(", ");
             Err(format!(
-                "Unknown host '{name}'. Configure it in hosts.toml. Available: [{available}]"
+                "Unknown host '{name}'. Configure it in hosts.toml (or check the \
+                 WSL distro name). Available: [{available}]"
             ))
         }
     }

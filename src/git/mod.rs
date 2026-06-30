@@ -9,13 +9,27 @@ use tracing::warn;
 
 use crate::paths;
 use crate::session::HostDef;
-use crate::shell::{posix_quote, ssh_command};
+use crate::shell::{posix_quote, ssh_command, wsl_command};
 
-/// Build a `git` [`Command`] targeting `cwd`, run either locally or over SSH.
+/// Build the launcher [`Command`] for an off-local host: `ssh <opts> <dest>`
+/// for an SSH host, or `wsl.exe -d <distro>` for a WSL distro. Both join and
+/// shell-interpret the trailing tokens identically, so callers append the same
+/// POSIX-quoted command afterward.
+fn host_launcher(h: &HostDef) -> Command {
+    if h.is_wsl() {
+        wsl_command(&h.distro_name())
+    } else {
+        ssh_command(&h.destination, &h.ssh_opts)
+    }
+}
+
+/// Build a `git` [`Command`] targeting `cwd`, run locally, over SSH, or inside
+/// a WSL distro.
 ///
-/// For the remote variant the command becomes
-/// `ssh <opts> <dest> git -C <cwd> <args…>`, with each remote token
-/// shell-escaped so it survives the remote login shell's re-splitting.
+/// For an off-local host the command becomes
+/// `<launcher> git -C <cwd> <args…>` (launcher = `ssh <opts> <dest>` or
+/// `wsl.exe -d <distro>`), with each token shell-escaped so it survives the
+/// host login shell's re-splitting.
 fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
     match host {
         None => {
@@ -25,7 +39,7 @@ fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
             cmd
         }
         Some(h) => {
-            let mut cmd = ssh_command(&h.destination, &h.ssh_opts);
+            let mut cmd = host_launcher(h);
             cmd.arg(posix_quote("git"));
             cmd.arg(posix_quote("-C"));
             cmd.arg(posix_quote(&cwd.to_string_lossy()));
@@ -37,40 +51,44 @@ fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
     }
 }
 
-/// Cache of resolved remote `$HOME` directories, keyed by ssh destination, so
-/// we only pay one round-trip per host. Entries live for the process lifetime:
-/// `hosts.toml` is read once at startup, so repointing a destination at a
-/// different machine requires a restart anyway — the cache can never be
-/// staler than the host config it derives from.
+/// Cache of resolved host `$HOME` directories, keyed by the host's backend name
+/// (`ssh:<name>` / `wsl:<name>`), so we only pay one round-trip per host. A WSL
+/// host has no `destination`, so the backend name — unique per host — is the
+/// stable key for both kinds. Entries live for the process lifetime:
+/// `hosts.toml` is read once at startup, so repointing a host requires a
+/// restart anyway — the cache can never be staler than the config it derives
+/// from.
 fn remote_home_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Resolve the remote `$HOME` for a host, caching the result.
+/// Resolve the `$HOME` directory on a host (over SSH or inside a WSL distro),
+/// caching the result.
 fn remote_home(host: &HostDef) -> Result<String> {
+    let key = host.backend_name();
     if let Ok(guard) = remote_home_cache().lock() {
-        if let Some(home) = guard.get(&host.destination) {
+        if let Some(home) = guard.get(&key) {
             return Ok(home.clone());
         }
     }
-    let mut cmd = ssh_command(&host.destination, &host.ssh_opts);
-    // Pass `$HOME` literally; the remote shell expands it.
+    let mut cmd = host_launcher(host);
+    // Pass `$HOME` literally; the host login shell expands it.
     cmd.arg("echo").arg("$HOME");
     let output = cmd
         .stderr(Stdio::piped())
         .output()
-        .context("failed to resolve remote $HOME over ssh")?;
+        .context("failed to resolve host $HOME")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("ssh echo $HOME failed: {}", stderr.trim());
+        anyhow::bail!("`echo $HOME` on {key} failed: {}", stderr.trim());
     }
     let home = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if home.is_empty() {
-        anyhow::bail!("remote $HOME resolved empty for {}", host.destination);
+        anyhow::bail!("$HOME resolved empty for {key}");
     }
     if let Ok(mut guard) = remote_home_cache().lock() {
-        guard.insert(host.destination.clone(), home.clone());
+        guard.insert(key, home.clone());
     }
     Ok(home)
 }
@@ -1343,11 +1361,9 @@ mod tests {
         HostDef {
             name: "h".into(),
             destination: dest.into(),
-            socket: None,
-            session: None,
             ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
             worktrees_dir: wt_dir.map(|s| s.to_string()),
-            multiplexer: None,
+            ..Default::default()
         }
     }
 
@@ -1395,6 +1411,33 @@ mod tests {
             ]
         );
         // No local current_dir is set for the remote variant.
+        assert_eq!(cmd.get_current_dir(), None);
+    }
+
+    #[test]
+    fn git_command_wsl_wraps_in_wsl_exe() {
+        let h = HostDef::wsl("Ubuntu");
+        let cmd = git_command(
+            Some(&h),
+            Path::new("/home/me/repo"),
+            &["worktree", "add", "-b", "x"],
+        );
+        let (prog, args) = program_and_args(&cmd);
+        assert_eq!(prog, "wsl.exe");
+        assert_eq!(
+            args,
+            [
+                "-d",
+                "Ubuntu",
+                "git",
+                "-C",
+                "/home/me/repo",
+                "worktree",
+                "add",
+                "-b",
+                "x",
+            ]
+        );
         assert_eq!(cmd.get_current_dir(), None);
     }
 

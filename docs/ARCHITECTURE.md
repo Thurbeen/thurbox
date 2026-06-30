@@ -402,54 +402,76 @@ logs a warning and adoption proceeds with an empty seed.
 
 ---
 
-## ADR-13: Remote sessions via an SSH tmux transport
+## ADR-13: Off-local sessions via an SSH / WSL tmux transport
 
-**Choice**: Run agent sessions on a remote host by launching the
-same tmux control-mode protocol over SSH. `LocalTmuxBackend` is
+**Choice**: Run agent sessions on a remote host (over SSH) or in a
+local WSL distro (via `wsl.exe`) by launching the same tmux
+control-mode protocol behind a launch prefix. `LocalTmuxBackend` is
 generalized into `TmuxBackend { transport, socket, session, name }`
-where `transport: TmuxTransport` is either `Local` (a bare
-`Command::new("tmux")`) or `Ssh { destination, ssh_opts, mux }`
-(`ssh <dest> <mux> …`, where `mux` is the remote multiplexer binary —
-`tmux` by default, or `psmux` for a Windows host). The transport's *only* job is to build the
-`Command`; everything downstream — the control-mode reader/writer
-threads, pane registration, `send-keys`/`%output` — is byte-for-byte
-identical (`control_mode.rs` was already transport-agnostic).
+where `transport: TmuxTransport` is `Local` (a bare
+`Command::new("tmux")`), `Ssh { destination, ssh_opts, mux }`
+(`ssh <dest> <mux> …`), or `Wsl { distro, mux }`
+(`wsl.exe -d <distro> <mux> …`). `mux` is the host multiplexer binary
+(`tmux` by default, or `psmux` for a Windows SSH host; a WSL distro
+runs `tmux`). The transport's *only* job is to build the `Command`;
+everything downstream — the control-mode reader/writer threads, pane
+registration, `send-keys`/`%output` — is byte-for-byte identical
+(`control_mode.rs` was already transport-agnostic). The SSH and WSL
+arms share `TmuxTransport::prefixed`, since both join + shell-interpret
+the trailing POSIX-quoted tokens identically; only the launcher prefix
+differs.
 
-Remote hosts are declared as data in `~/.config/thurbox/hosts.toml`
-(`session::HostDef`/`HostRegistry`, loaded by
-`agent::host_config::load_or_seed`), each registered as a backend
-named `ssh:<host>` via `TmuxBackend::from_host`.
+Hosts are declared as data in `~/.config/thurbox/hosts.toml`
+(`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
+and WSL distros are additionally **auto-discovered** on Windows
+(`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
+combined set is loaded by `agent::host_config::load_all`, each
+registered as a backend named `ssh:<host>` / `wsl:<distro>` via
+`TmuxBackend::from_host`.
 
-**Why**: The local-vs-remote difference is exactly one line (how the
-tmux process is launched). The per-session control commands travel
-over the stdin pipe, not ssh argv, so only the one-time
-`attach-session` launch crosses the ssh boundary. Relying on the
-system `ssh` binary + `~/.ssh/config` keeps auth/keys/multiplexing
-out of thurbox (ControlMaster/ControlPersist + ServerAliveInterval
-are recommended in the seeded `ssh_opts`).
+**Why WSL = "SSH without the ssh"**: `wsl.exe` runs `tmux`, `git`, the
+agent, and the worktrees all *inside* the distro at native Linux paths,
+so there's no Windows↔Linux path translation (`wslpath`) and the
+worktree layout matches the SSH path exactly. Modeling WSL as a host
+kind (rather than a per-session "run in WSL" flag wrapping a native
+psmux pane) reuses the entire remote-host subsystem — picker,
+persistence/restore, `git::*_on`, headless `--host` — for free.
+
+**Why** (general): The local-vs-off-local difference is exactly one
+line (how the tmux process is launched). The per-session control
+commands travel over the stdin pipe, not the launcher argv, so only the
+one-time `attach-session` launch crosses the boundary. SSH relies on
+the system `ssh` binary + `~/.ssh/config` for auth/keys/multiplexing;
+WSL needs no credentials at all.
 
 **Key design decisions**:
 
-- **Lazy registration**: SSH backends are registered but *not*
+- **Lazy registration**: off-local backends are registered but *not*
   connected at startup (`check_available`/`ensure_ready` deferred to
-  first use via `App::backend_for`), so a down host never blocks the
-  TUI.
-- **Selection**: `SessionConfig.backend` (`ssh:<host>` or `None`).
-  The TUI shows a host picker as the first new-session step (skipped
-  when no hosts are configured); `thurbox-cli session create --host`
-  is the headless equivalent.
-- **Persistence/restore**: `backend_type` already round-trips in
-  SQLite; restore was changed to discover windows **per backend** so
-  remote sessions re-adopt against their own host's tmux.
-- **Remote worktrees**: `git::*_on(host, …)` variants run
-  `ssh <dest> git -C <repo> …`. Remote worktree paths resolve under
-  the host's `worktrees_dir` (or `$HOME/.local/share/thurbox/…`
-  resolved + cached over ssh).
+  first use via `App::backend_for`), so a down host (or slow WSL
+  discovery) never blocks the TUI.
+- **Auto-discovery**: WSL distros appear with zero config; an explicit
+  `kind = "wsl"` entry of the same name wins (for overrides like
+  `worktrees_dir`). `discover_wsl_hosts` decodes `wsl.exe`'s UTF-16LE
+  output and is a no-op off Windows / without `wsl.exe`.
+- **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
+  or `None`); `is_remote_backend` covers both. The TUI shows a host
+  picker as the first new-session step (skipped when none configured/
+  discovered); `thurbox-cli session create --host` is the headless
+  equivalent.
+- **Persistence/restore**: `backend_type` round-trips in SQLite;
+  restore discovers windows **per backend** so off-local sessions
+  re-adopt against their own host's tmux.
+- **Off-local worktrees**: `git::*_on(host, …)` run git via
+  `git::host_launcher` (`ssh …` or `wsl.exe …`). Worktree paths resolve
+  under the host's `worktrees_dir` (or `$HOME/.local/share/thurbox/…`
+  resolved + cached, keyed by backend name since a WSL host has no
+  `destination`).
 
-**Module placement**: `HostDef`/`HostRegistry` live in `session/`
-(the dependency sink) so both `agent` (builds the backend) and `git`
-(runs git over SSH) can depend on them without violating the
-module-isolation rules.
+**Module placement**: `HostDef`/`HostRegistry`/`HostKind` live in
+`session/` (the dependency sink) so both `agent` (builds the backend)
+and `git` (runs git on the host) can depend on them without violating
+the module-isolation rules.
 
 **Riskiest area**: SSH reconnect on a flapping link — `reconnect_control`
 reopens the ssh connection; ControlMaster + keepalives mitigate

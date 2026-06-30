@@ -15,7 +15,7 @@ development checkout never touches your real setup.
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
 | `~/.config/thurbox/agents.toml` | TOML | you | **live** (mtime poll) | coding-agent CLI definitions |
-| `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts |
+| `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/keybindings.json` | JSON | F1 editor (or you) | **live** (mtime poll) | key chord overrides |
@@ -55,7 +55,7 @@ the right knob:
 | I want to… | Edit | Section |
 |------------|------|---------|
 | Add a coding agent, pin a model, change resume/fork flags | `agents.toml` | [agents.toml](#agentstoml) |
-| Run sessions on a remote machine over SSH | `hosts.toml` | [hosts.toml](#hoststoml) |
+| Run sessions on a remote machine over SSH, or in a local WSL distro | `hosts.toml` | [hosts.toml](#hoststoml) |
 | Turn a whole TUI feature on/off (tasks, mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
 | Tune scrollback, panel breakpoints, audit retention | `settings.toml` | [settings.toml](#settingstoml) |
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
@@ -127,24 +127,35 @@ to exactly the seven built-ins.
 
 ## hosts.toml
 
-Declares remote SSH hosts; each `[[hosts]]` entry registers a session
-backend named `ssh:<name>`. Seeded fully commented-out (fresh installs
-are local-only). Malformed file → zero remote hosts, error shown.
+Declares off-local hosts — **remote SSH machines** and **local WSL
+distros**. Each `[[hosts]]` entry registers a session backend named
+`ssh:<name>` (default kind) or `wsl:<name>`. Seeded fully commented-out
+(fresh installs are local-only for SSH). Malformed file → zero
+configured hosts, error shown.
 
 | Field | Required | Default | Purpose |
 |-------|----------|---------|---------|
-| `name` | yes | — | backend id `ssh:<name>`; what `--host` expects |
-| `destination` | yes | — | ssh target (`user@host` or `~/.ssh/config` alias) |
-| `ssh_opts` | no | `[]` | extra ssh flags, one token per element |
-| `socket` | no | `thurbox` | remote `tmux -L` socket |
-| `session` | no | `thurbox` | remote tmux session name |
-| `worktrees_dir` | no | remote `$HOME/.local/share/thurbox/worktrees` | absolute remote worktrees dir |
-| `multiplexer` | no | `tmux` | remote multiplexer binary; set to `psmux` for a Windows host |
+| `name` | yes | — | backend id `ssh:<name>` / `wsl:<name>`; what `--host` expects |
+| `kind` | no | `ssh` | transport: `ssh` (remote machine) or `wsl` (local distro) |
+| `destination` | for ssh | — | ssh target (`user@host` or `~/.ssh/config` alias) |
+| `distro` | no | `name` | WSL distro name (`kind = "wsl"` only) |
+| `ssh_opts` | no | `[]` | extra ssh flags, one token per element (ssh only) |
+| `socket` | no | `thurbox` | host `tmux -L` socket |
+| `session` | no | `thurbox` | host tmux session name |
+| `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
+| `multiplexer` | no | `tmux` | host multiplexer binary; set to `psmux` for a Windows SSH host |
 
-Auth comes entirely from your `~/.ssh/config`; thurbox never handles
-credentials. Host changes require a restart (the registry is read once
-and the remote `$HOME` is cached per destination for the process
-lifetime).
+**SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
+handles credentials. **WSL** distros are reached with
+`wsl.exe -d <distro>` and need no config entry at all — on Windows they
+are **auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
+and `--host` automatically; add a `kind = "wsl"` entry only to override
+a default (e.g. `worktrees_dir`). For both kinds, tmux, git, the agent,
+and worktrees all run **on the host / inside the distro** at native
+paths (a WSL distro's worktrees live in its own Linux filesystem, not on
+`/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes
+require a restart (the registry is read once and each host's `$HOME` is
+cached for the process lifetime).
 
 ## settings.toml
 
