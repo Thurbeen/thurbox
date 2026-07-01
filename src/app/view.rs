@@ -74,6 +74,9 @@ impl App {
                 },
             );
         }
+        if let Some(status_area) = areas.status_message {
+            status_bar::render_status_message_row(frame, status_area, &self.footer_state());
+        }
         self.render_footer(frame, areas.footer);
         self.render_modals(frame);
         self.repaint_theme_background(frame);
@@ -752,8 +755,11 @@ impl App {
         }
     }
 
-    /// Render the bottom status-bar footer.
-    fn render_footer(&mut self, frame: &mut Frame, footer: Rect) {
+    /// Build the shared `FooterState` for the current frame. Consumed by both
+    /// the footer button row (`render_footer`) and the transient status-message
+    /// row above it (`status_bar::render_status_message_row`), so the two can
+    /// never disagree about what to show.
+    fn footer_state(&self) -> status_bar::FooterState<'_> {
         let is_shell_view = self.active_terminal_view() == TerminalView::Shell;
         let focus_label = match self.focus {
             InputFocus::SessionList => "Sessions",
@@ -769,33 +775,34 @@ impl App {
             InputFocus::CodeReview => "Review",
             InputFocus::ReviewFiles => "Changed files",
         };
-        let button_hits = status_bar::render_footer(
-            frame,
-            footer,
-            &status_bar::FooterState {
-                session_count: self.sessions.len(),
-                status: self.status_message.as_ref(),
-                focus_label,
-                sync_in_progress: self.worktree_sync.in_progress,
-                tick_count: self.metrics.tick_count,
-                // With automations disabled the badge would advertise a
-                // feature the TUI won't fire — report 0 so it stays hidden.
-                automation_count: if self.features.automations {
-                    self.automation_ui
-                        .cached_automations
-                        .iter()
-                        .filter(|a| a.enabled)
-                        .count()
-                } else {
-                    0
-                },
-                file_viewer_open: self.show_file_viewer,
-                tasks_enabled: self.features.tasks,
-                file_viewer_enabled: self.features.file_viewer,
-                info_panel_enabled: self.features.info_panel,
-                keybindings: &self.keybindings,
+        status_bar::FooterState {
+            session_count: self.sessions.len(),
+            status: self.status_message.as_ref(),
+            focus_label,
+            sync_in_progress: self.worktree_sync.in_progress,
+            tick_count: self.metrics.tick_count,
+            // With automations disabled the badge would advertise a feature the
+            // TUI won't fire — report 0 so it stays hidden.
+            automation_count: if self.features.automations {
+                self.automation_ui
+                    .cached_automations
+                    .iter()
+                    .filter(|a| a.enabled)
+                    .count()
+            } else {
+                0
             },
-        );
+            file_viewer_open: self.show_file_viewer,
+            tasks_enabled: self.features.tasks,
+            file_viewer_enabled: self.features.file_viewer,
+            info_panel_enabled: self.features.info_panel,
+            keybindings: &self.keybindings,
+        }
+    }
+
+    /// Render the bottom status-bar footer.
+    fn render_footer(&mut self, frame: &mut Frame, footer: Rect) {
+        let button_hits = status_bar::render_footer(frame, footer, &self.footer_state());
         // The renderer pairs each surviving button with its Action, so the
         // click map can't drift from the (feature-filtered) render.
         for (hit, action) in button_hits {

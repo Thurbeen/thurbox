@@ -146,11 +146,15 @@ pub fn render_footer(
     area: Rect,
     state: &FooterState<'_>,
 ) -> Vec<(super::ButtonHit, Action)> {
+    // The footer always carries the idle session/automation counts + the focus
+    // hint; the transient status/error message (and sync spinner) now live on
+    // their own dedicated row above the footer (`render_status_message_row`), so
+    // nothing here can be overwritten by the right-aligned pills.
     let mut spans = vec![Span::styled(
         format!(" {} ", state.focus_label),
         Theme::focused_title(),
     )];
-    push_status_section(&mut spans, state);
+    push_idle_counts(&mut spans, state);
     push_shortcut_hints(&mut spans);
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -221,9 +225,20 @@ pub fn render_footer(
         .collect()
 }
 
-fn push_status_section<'a>(spans: &mut Vec<Span<'a>>, state: &'a FooterState<'a>) {
+/// Render the active status/error message (or the live sync spinner) into its
+/// own full-width row directly above the footer. The badge + message text get
+/// the whole line, so a long message is never clipped by the footer pills —
+/// this is the fix for messages being hidden under the right-aligned buttons.
+///
+/// The caller only carves this row (`PanelAreas::status_message`) when there is
+/// something to show, so the `else` branch below is a defensive no-op.
+pub fn render_status_message_row(frame: &mut Frame, area: Rect, state: &FooterState<'_>) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let mut spans: Vec<Span<'_>> = Vec::new();
     if state.sync_in_progress {
-        push_spinner_badge(spans, state.tick_count, "SYNC");
+        push_spinner_badge(&mut spans, state.tick_count, "SYNC");
         let text = state
             .status
             .map_or("Syncing...".to_string(), |s| s.text.clone());
@@ -232,10 +247,12 @@ fn push_status_section<'a>(spans: &mut Vec<Span<'a>>, state: &'a FooterState<'a>
             Style::default().fg(Theme::accent()),
         ));
     } else if let Some(msg) = state.status {
-        push_status_message(spans, msg);
+        push_status_message(&mut spans, msg);
     } else {
-        push_idle_counts(spans, state);
+        return; // nothing to show — row shouldn't have been carved
     }
+    // A status row is a single line; ratatui clips a longer message to width.
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn push_status_message<'a>(spans: &mut Vec<Span<'a>>, msg: &'a StatusMessage) {
@@ -523,6 +540,67 @@ mod tests {
             "file-viewer hints share the row: {line:?}"
         );
         // The rightmost button ends at the footer's right edge.
+        let last = hits.iter().max_by_key(|(h, _)| h.rect.x).unwrap().0.rect;
+        assert_eq!(last.x + last.width, 120);
+    }
+
+    fn long_error() -> StatusMessage {
+        StatusMessage {
+            text: "a long error that would previously be hidden under the footer pills".into(),
+            level: StatusLevel::Error,
+            created_at: std::time::Instant::now(),
+        }
+    }
+
+    /// A long status message renders in full on its dedicated row (no pills to
+    /// clip it) — the fix for messages hidden under the footer buttons.
+    #[test]
+    fn status_row_shows_full_message() {
+        let msg = long_error();
+        let mut state = footer_state(false);
+        state.status = Some(&msg);
+
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_status_message_row(f, Rect::new(0, 0, 120, 1), &state))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let line: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol())
+            .collect();
+
+        assert!(line.contains("ERROR"), "error badge present: {line:?}");
+        assert!(
+            line.contains("would previously be hidden"),
+            "message body visible on its own row: {line:?}"
+        );
+        // The status row carries no footer pills — they live on the footer row.
+        assert!(
+            !line.contains("Quit"),
+            "status row must not carry footer pills: {line:?}"
+        );
+    }
+
+    /// Regression guard for the original bug: with a message active, the footer
+    /// row still renders every pill intact (the message no longer flows across
+    /// it — it lives on the row above).
+    #[test]
+    fn footer_pills_survive_with_status_message() {
+        let msg = long_error();
+        let mut state = footer_state(false);
+        state.status = Some(&msg);
+        let (hits, line) = render_footer_state(&state);
+
+        assert!(
+            line.contains("Quit"),
+            "pills intact with a message: {line:?}"
+        );
+        // The footer row shows the idle counts, not the message.
+        assert!(
+            !line.contains("would previously be hidden"),
+            "message must not render on the footer row: {line:?}"
+        );
         let last = hits.iter().max_by_key(|(h, _)| h.rect.x).unwrap().0.rect;
         assert_eq!(last.x + last.width, 120);
     }

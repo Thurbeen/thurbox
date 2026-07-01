@@ -5177,6 +5177,10 @@ impl App {
             self.global_search.active,
             self.features.automations,
             self.automation_ui.cached_automations.len(),
+            // Carve the transient status row whenever there's a message to show
+            // (a status/error toast or the live sync spinner) — must match what
+            // `render_status_message_row` renders so the row is never empty.
+            self.worktree_sync.in_progress || self.status_message.is_some(),
         )
     }
 

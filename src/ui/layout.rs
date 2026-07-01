@@ -17,6 +17,10 @@ pub struct PanelAreas {
     /// Global search strip — full-width, docked along the bottom (above the
     /// footer) when active.
     pub global_search: Option<Rect>,
+    /// Full-width transient band for the active status/error message (or the
+    /// sync spinner), docked directly above the footer. Present only while a
+    /// message is showing, so nothing is clipped by the footer pills.
+    pub status_message: Option<Rect>,
     pub terminal: Rect,
     pub footer: Rect,
 }
@@ -55,16 +59,18 @@ fn split_left_column(col: Rect, automation_count: usize) -> (Rect, Option<Rect>)
 }
 
 /// Vertical bands carved from the full area: header, content region, optional
-/// global-search strip, and footer.
+/// global-search strip, optional status-message row, and footer.
 struct VerticalBands {
     header: Rect,
     content: Rect,
     global_search: Option<Rect>,
+    status_message: Option<Rect>,
     footer: Rect,
 }
 
-/// Split the full area into header / content / global-search / footer bands.
-fn split_vertical(area: Rect, show_global_search: bool) -> VerticalBands {
+/// Split the full area into header / content / global-search / status-message /
+/// footer bands.
+fn split_vertical(area: Rect, show_global_search: bool, show_status_row: bool) -> VerticalBands {
     // Compact mode: when the terminal is shorter than 20 rows, drop the
     // header line entirely so the content + footer get every row available.
     let header_height = if area.height < 20 { 0 } else { 1 };
@@ -78,12 +84,18 @@ fn split_vertical(area: Rect, show_global_search: bool) -> VerticalBands {
         0
     };
 
+    // One transient row for the active status/error message, directly above the
+    // footer (keeping the pills pinned to the bottom edge). Carved only while a
+    // message is showing, so content shrinks by 1 only transiently.
+    let status_height = if show_status_row { 1 } else { 0 };
+
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height),
             Constraint::Min(1),
             Constraint::Length(search_height),
+            Constraint::Length(status_height),
             Constraint::Length(1),
         ])
         .split(area);
@@ -92,7 +104,8 @@ fn split_vertical(area: Rect, show_global_search: bool) -> VerticalBands {
         header: vertical[0],
         content: vertical[1],
         global_search: (search_height > 0).then_some(vertical[2]),
-        footer: vertical[3],
+        status_message: (status_height > 0).then_some(vertical[3]),
+        footer: vertical[4],
     }
 }
 
@@ -163,6 +176,7 @@ fn three_panel_layout(
         tasks_panel,
         file_viewer,
         global_search: bands.global_search,
+        status_message: bands.status_message,
         terminal,
         footer: bands.footer,
     }
@@ -190,6 +204,7 @@ fn two_panel_layout(
         tasks_panel: None,
         file_viewer: None,
         global_search: bands.global_search,
+        status_message: bands.status_message,
         terminal: horizontal[1],
         footer: bands.footer,
     }
@@ -206,6 +221,12 @@ fn two_panel_layout(
 /// beneath it (whenever the column is tall enough and `show_automations_pane`
 /// is set — false when the `automations` feature flag is off);
 /// `automation_count` only sizes that pane.
+///
+/// `show_status_row` carves a transient full-width 1-row band directly above the
+/// footer for the active status/error message (or the sync spinner), so a long
+/// message is never clipped by the right-aligned footer pills. It shrinks the
+/// content region by one row while shown (mirroring `show_global_search`).
+#[allow(clippy::too_many_arguments)]
 pub fn compute_layout(
     area: Rect,
     show_info_panel: bool,
@@ -214,8 +235,9 @@ pub fn compute_layout(
     show_global_search: bool,
     show_automations_pane: bool,
     automation_count: usize,
+    show_status_row: bool,
 ) -> PanelAreas {
-    let bands = split_vertical(area, show_global_search);
+    let bands = split_vertical(area, show_global_search, show_status_row);
     let content = bands.content;
 
     let settings = crate::session::settings::global();
@@ -228,6 +250,7 @@ pub fn compute_layout(
             tasks_panel: None,
             file_viewer: None,
             global_search: bands.global_search,
+            status_message: bands.status_message,
             terminal: content,
             footer: bands.footer,
         };
@@ -262,7 +285,7 @@ mod tests {
 
     #[test]
     fn narrow_terminal_hides_left_panel() {
-        let areas = compute_layout(area(79, 24), false, false, false, false, true, 0);
+        let areas = compute_layout(area(79, 24), false, false, false, false, true, 0, false);
         assert!(areas.left_panel.is_none());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_none());
@@ -270,7 +293,7 @@ mod tests {
 
     #[test]
     fn normal_width_shows_two_panels() {
-        let areas = compute_layout(area(100, 24), false, false, false, false, true, 0);
+        let areas = compute_layout(area(100, 24), false, false, false, false, true, 0, false);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_none());
@@ -278,7 +301,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_with_info_panel_shows_three_panels() {
-        let areas = compute_layout(area(120, 24), true, false, false, false, true, 0);
+        let areas = compute_layout(area(120, 24), true, false, false, false, true, 0, false);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_some());
         assert!(areas.file_viewer.is_none());
@@ -286,7 +309,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_without_info_panel_shows_two_panels() {
-        let areas = compute_layout(area(120, 24), false, false, false, false, true, 0);
+        let areas = compute_layout(area(120, 24), false, false, false, false, true, 0, false);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_none());
@@ -294,7 +317,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_with_file_viewer_only() {
-        let areas = compute_layout(area(160, 24), false, false, true, false, true, 0);
+        let areas = compute_layout(area(160, 24), false, false, true, false, true, 0, false);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
         assert!(areas.file_viewer.is_some());
@@ -302,7 +325,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_with_info_and_file_viewer() {
-        let areas = compute_layout(area(160, 24), true, false, true, false, true, 0);
+        let areas = compute_layout(area(160, 24), true, false, true, false, true, 0, false);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_some());
         assert!(areas.file_viewer.is_some());
@@ -313,7 +336,7 @@ mod tests {
 
     #[test]
     fn wide_terminal_with_tasks_panel_only() {
-        let areas = compute_layout(area(160, 24), false, true, false, false, true, 0);
+        let areas = compute_layout(area(160, 24), false, true, false, false, true, 0, false);
         assert!(areas.left_panel.is_some());
         assert!(areas.info_panel.is_none());
         assert!(areas.tasks_panel.is_some());
@@ -325,7 +348,7 @@ mod tests {
 
     #[test]
     fn tasks_panel_sits_left_of_file_viewer() {
-        let areas = compute_layout(area(180, 24), false, true, true, false, true, 0);
+        let areas = compute_layout(area(180, 24), false, true, true, false, true, 0, false);
         let term = areas.terminal;
         let tp = areas.tasks_panel.expect("tasks panel shown");
         let fv = areas.file_viewer.expect("file viewer shown");
@@ -335,19 +358,19 @@ mod tests {
 
     #[test]
     fn tasks_panel_ignored_below_120_cols() {
-        let areas = compute_layout(area(119, 24), false, true, false, false, true, 0);
+        let areas = compute_layout(area(119, 24), false, true, false, false, true, 0, false);
         assert!(areas.tasks_panel.is_none());
     }
 
     #[test]
     fn global_search_strip_absent_by_default() {
-        let areas = compute_layout(area(120, 40), false, false, false, false, true, 0);
+        let areas = compute_layout(area(120, 40), false, false, false, false, true, 0, false);
         assert!(areas.global_search.is_none());
     }
 
     #[test]
     fn global_search_strip_present_when_active() {
-        let areas = compute_layout(area(120, 40), false, false, false, true, true, 0);
+        let areas = compute_layout(area(120, 40), false, false, false, true, true, 0, false);
         let strip = areas.global_search.expect("strip shown when active");
         // Full width, carved directly above the footer.
         assert_eq!(strip.width, 120);
@@ -358,22 +381,70 @@ mod tests {
 
     #[test]
     fn global_search_strip_shrinks_content() {
-        let without = compute_layout(area(120, 40), false, false, false, false, true, 0).terminal;
-        let with = compute_layout(area(120, 40), false, false, false, true, true, 0).terminal;
+        let without =
+            compute_layout(area(120, 40), false, false, false, false, true, 0, false).terminal;
+        let with =
+            compute_layout(area(120, 40), false, false, false, true, true, 0, false).terminal;
         // The terminal (content) region loses the strip's rows.
         assert_eq!(without.height - with.height, GLOBAL_SEARCH_HEIGHT);
     }
 
     #[test]
+    fn status_row_absent_by_default() {
+        let areas = compute_layout(area(120, 40), false, false, false, false, true, 0, false);
+        assert!(areas.status_message.is_none());
+        assert_eq!(areas.footer.height, 1);
+    }
+
+    #[test]
+    fn status_row_present_when_active() {
+        let areas = compute_layout(area(120, 40), false, false, false, false, true, 0, true);
+        let row = areas
+            .status_message
+            .expect("row shown when a message is active");
+        // Full width, one row, docked directly above the footer.
+        assert_eq!(row.width, 120);
+        assert_eq!(row.x, 0);
+        assert_eq!(row.height, 1);
+        assert_eq!(row.y + row.height, areas.footer.y);
+    }
+
+    #[test]
+    fn status_row_shrinks_content_by_one() {
+        let without =
+            compute_layout(area(120, 40), false, false, false, false, true, 0, false).terminal;
+        let with =
+            compute_layout(area(120, 40), false, false, false, false, true, 0, true).terminal;
+        assert_eq!(without.height - with.height, 1);
+    }
+
+    #[test]
+    fn status_row_stacks_below_global_search() {
+        // Both strips active: search on top, status row just above the footer.
+        let areas = compute_layout(area(120, 40), false, false, false, true, true, 0, true);
+        let gs = areas.global_search.expect("search strip shown");
+        let sm = areas.status_message.expect("status row shown");
+        assert!(
+            sm.y >= gs.y + gs.height,
+            "status row sits below the search strip"
+        );
+        assert_eq!(
+            sm.y + sm.height,
+            areas.footer.y,
+            "status row sits above the footer"
+        );
+    }
+
+    #[test]
     fn header_and_footer_are_one_line() {
-        let areas = compute_layout(area(100, 24), false, false, false, false, true, 0);
+        let areas = compute_layout(area(100, 24), false, false, false, false, true, 0, false);
         assert_eq!(areas.header.height, 1);
         assert_eq!(areas.footer.height, 1);
     }
 
     #[test]
     fn compact_mode_hides_header_below_20_rows() {
-        let areas = compute_layout(area(100, 19), false, false, false, false, true, 0);
+        let areas = compute_layout(area(100, 19), false, false, false, false, true, 0, false);
         assert_eq!(areas.header.height, 0);
         assert_eq!(areas.footer.height, 1);
         assert!(areas.left_panel.is_some());
@@ -381,26 +452,35 @@ mod tests {
 
     #[test]
     fn header_returns_at_20_rows() {
-        let areas = compute_layout(area(100, 20), false, false, false, false, true, 0);
+        let areas = compute_layout(area(100, 20), false, false, false, false, true, 0, false);
         assert_eq!(areas.header.height, 1);
     }
 
     #[test]
     fn info_panel_ignored_below_120_cols() {
-        let areas = compute_layout(area(119, 24), true, false, false, false, true, 0);
+        let areas = compute_layout(area(119, 24), true, false, false, false, true, 0, false);
         assert!(areas.info_panel.is_none());
     }
 
     #[test]
     fn file_viewer_ignored_below_120_cols() {
-        let areas = compute_layout(area(119, 24), false, false, true, false, true, 0);
+        let areas = compute_layout(area(119, 24), false, false, true, false, true, 0, false);
         assert!(areas.file_viewer.is_none());
     }
 
     fn terminal_inner(width: u16, height: u16, show_info: bool) -> (u16, u16) {
         use ratatui::widgets::{Block, Borders};
-        let terminal =
-            compute_layout(area(width, height), show_info, false, false, false, true, 0).terminal;
+        let terminal = compute_layout(
+            area(width, height),
+            show_info,
+            false,
+            false,
+            false,
+            true,
+            0,
+            false,
+        )
+        .terminal;
         let inner = Block::default().borders(Borders::ALL).inner(terminal);
         (inner.height, inner.width)
     }
@@ -437,7 +517,7 @@ mod tests {
     #[test]
     fn automations_pane_present_even_when_empty() {
         // Zero automations still get a minimum-height pane (so it's discoverable).
-        let areas = compute_layout(area(100, 24), false, false, false, false, true, 0);
+        let areas = compute_layout(area(100, 24), false, false, false, false, true, 0, false);
         assert!(areas.left_panel.is_some());
         let autos = areas.automations_panel.expect("empty pane still shown");
         assert_eq!(autos.height, AUTOMATIONS_PANE_MIN_ROWS);
@@ -445,7 +525,7 @@ mod tests {
 
     #[test]
     fn automations_pane_appears_below_sessions() {
-        let areas = compute_layout(area(100, 30), false, false, false, false, true, 2);
+        let areas = compute_layout(area(100, 30), false, false, false, false, true, 2, false);
         let sessions = areas.left_panel.unwrap();
         let autos = areas.automations_panel.expect("automations pane shown");
         assert_eq!(sessions.x, autos.x);
@@ -458,7 +538,7 @@ mod tests {
 
     #[test]
     fn automations_pane_height_is_capped() {
-        let areas = compute_layout(area(100, 60), false, false, false, false, true, 50);
+        let areas = compute_layout(area(100, 60), false, false, false, false, true, 50, false);
         assert_eq!(
             areas.automations_panel.unwrap().height,
             AUTOMATIONS_PANE_MAX_ROWS
@@ -467,8 +547,8 @@ mod tests {
 
     #[test]
     fn automations_pane_hidden_when_feature_disabled() {
-        let with = compute_layout(area(100, 30), false, false, false, false, true, 2);
-        let without = compute_layout(area(100, 30), false, false, false, false, false, 2);
+        let with = compute_layout(area(100, 30), false, false, false, false, true, 2, false);
+        let without = compute_layout(area(100, 30), false, false, false, false, false, 2, false);
         assert!(without.automations_panel.is_none());
         // The session list absorbs the whole left column.
         let full = without.left_panel.unwrap();
@@ -482,7 +562,7 @@ mod tests {
     #[test]
     fn automations_pane_hidden_when_column_too_short() {
         // Content height ≈ 4 rows leaves no room for both lists.
-        let areas = compute_layout(area(100, 6), false, false, false, false, true, 3);
+        let areas = compute_layout(area(100, 6), false, false, false, false, true, 3, false);
         assert!(areas.left_panel.is_some());
         assert!(areas.automations_panel.is_none());
     }
